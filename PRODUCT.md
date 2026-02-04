@@ -1,5 +1,7 @@
 # Faremeter Interchange
 
+*Product Brief*
+
 **The infrastructure layer for the agentic era.**
 
 We are witnessing an explosion of AI agents - autonomous systems that can reason, act, and collaborate. But the infrastructure to run them securely, connect them reliably, and hold them accountable doesn't exist. Today's agents run in ad-hoc environments with no isolation, no standard way to discover each other's capabilities, and no mechanism for economic accountability. As agents become more powerful and prevalent, this isn't just inconvenient - it's dangerous.
@@ -25,6 +27,19 @@ Every agent has a wallet. Agents spend to use tools and resources; agents earn b
 
 **Authorization**
 Fine-grained permissions control what each agent can access, invoke, and spend. Identity is cryptographically verifiable. Trust is explicit, auditable, and revocable.
+
+## Standards & Integration
+
+Interchange builds on established protocols rather than inventing new ones:
+
+- Agents expose and discover capabilities (e.g. MCP, OpenAPI)
+- Payments sent and received using standard protocols (e.g. x402)
+
+## Deployment
+
+- **Local** - Desktop or laptop for personal agent infrastructure
+- **Network** - Deployed as a service for teams or organizations
+- **Hybrid** - Combine local and network deployments
 
 ## The Vision
 
