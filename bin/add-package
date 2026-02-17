@@ -1,0 +1,48 @@
+#!/usr/bin/env opsh
+# shellcheck shell=bash
+
+opsh::version::require v0.7.0
+
+REPODIR=$(git rev-parse --show-toplevel)
+
+[[ $# -gt 0 ]] || log::fatal "usage: add-package <name> [name ...]"
+
+for name in "$@"; do
+	[[ $name =~ ^[a-z][a-z0-9-]*$ ]] || log::fatal "invalid package name: $name"
+
+	pkgdir="$REPODIR/packages/$name"
+	[[ ! -d $pkgdir ]] || log::fatal "package already exists: $name"
+
+	mkdir -p "$pkgdir/src"
+
+	cat > "$pkgdir/package.json" <<-EOF
+	{
+	  "name": "@interchange/$name",
+	  "version": "0.0.0",
+	  "license": "LGPL-2.1-only",
+	  "type": "module",
+	  "exports": {
+	    ".": {
+	      "types": "./src/index.ts",
+	      "default": "./src/index.ts"
+	    }
+	  }
+	}
+	EOF
+
+	cat > "$pkgdir/tsconfig.json" <<-EOF
+	{
+	  "extends": "../../tsconfig.base.json",
+	  "include": ["src/**/*.ts"]
+	}
+	EOF
+
+	cat > "$pkgdir/src/index.ts" <<-EOF
+	export {};
+	EOF
+
+	log::info "created package @interchange/$name"
+done
+
+log::info "running bun install..."
+bun install
