@@ -7,13 +7,21 @@ lib::import step-runner
 REPODIR=$(git rev-parse --show-toplevel)
 DBPKG="$REPODIR/packages/db"
 
-# Source .env from repo root if it exists
+# Source shared env, then migration-specific overrides
 if [[ -f "$REPODIR/.env" ]]; then
 	# shellcheck disable=SC1091
 	set -a
 	source "$REPODIR/.env"
 	set +a
 	log::info "loaded .env"
+fi
+
+if [[ -f "$REPODIR/.env.migrate" ]]; then
+	# shellcheck disable=SC1091
+	set -a
+	source "$REPODIR/.env.migrate"
+	set +a
+	log::info "loaded .env.migrate"
 fi
 
 step::10::type_check() {
@@ -23,17 +31,17 @@ step::10::type_check() {
 
 step::20::generate() {
 	log::info "generating migration from schema..."
-	bun drizzle-kit generate --config="$DBPKG/drizzle.config.ts" \
+	(cd "$DBPKG" && bun drizzle-kit generate) \
 		|| log::fatal "drizzle-kit generate failed"
 }
 
 step::30::migrate() {
-	for var in DB_HOST DB_USER DB_PASSWORD DB_NAME; do
+	for var in DB_HOST DB_USER DB_NAME; do
 		[[ -n "${!var:-}" ]] || log::fatal "missing required env var: $var"
 	done
 
 	log::info "applying migrations..."
-	bun drizzle-kit migrate --config="$DBPKG/drizzle.config.ts" \
+	(cd "$DBPKG" && bun drizzle-kit migrate) \
 		|| log::fatal "drizzle-kit migrate failed"
 }
 
