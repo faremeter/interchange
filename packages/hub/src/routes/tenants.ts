@@ -19,7 +19,7 @@ import {
   ErrorResponse,
 } from "@interchange/types";
 
-import type { AppEnv, TenantEnv } from "../context";
+import type { AppEnv, TenantRow } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
 
@@ -311,9 +311,8 @@ app.patch(
   },
 );
 
-// Federation routes -- these go through resolveTenant middleware via the
-// /api/tenants/:tenantId/* wildcard in app.ts, so tenant/principal are
-// available in context. We cast to TenantEnv for type safety.
+// Federation routes go through resolveTenant middleware via the
+// /api/tenants/:tenantId/* wildcard in app.ts.
 
 app.get(
   "/:tenantId/federation",
@@ -332,8 +331,8 @@ app.get(
     },
   }),
   async (c) => {
-    const tc = c as unknown as typeof c & { get: (k: string) => unknown };
-    const tenantCtx = tc.get("tenant") as TenantEnv["Variables"]["tenant"];
+    // Set by resolveTenant middleware via /api/tenants/:tenantId/* wildcard
+    const tenantCtx = c.get("tenant" as never) as TenantRow;
     const db = c.get("db");
 
     const trusts = await db.query.federationTrust.findMany({
@@ -388,8 +387,7 @@ app.post(
   }),
   validator("json", CreateFederationTrust),
   async (c) => {
-    const tc = c as unknown as typeof c & { get: (k: string) => unknown };
-    const tenantCtx = tc.get("tenant") as TenantEnv["Variables"]["tenant"];
+    const tenantCtx = c.get("tenant" as never) as TenantRow;
     const body = c.req.valid(
       "json" as never,
     ) as typeof CreateFederationTrust.infer;
@@ -467,8 +465,7 @@ app.delete(
     },
   }),
   async (c) => {
-    const tc = c as unknown as typeof c & { get: (k: string) => unknown };
-    const tenantCtx = tc.get("tenant") as TenantEnv["Variables"]["tenant"];
+    const tenantCtx = c.get("tenant" as never) as TenantRow;
     const targetTenantId = c.req.param("targetTenantId");
     const db = c.get("db");
 

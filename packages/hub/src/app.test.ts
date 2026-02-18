@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test";
+import type { DB } from "@interchange/db";
 import { createApp } from "./app";
 import type { Auth } from "./auth";
 
@@ -9,7 +10,9 @@ const mockAuth = {
   handler: async () => new Response("", { status: 404 }),
 } as unknown as Auth;
 
-const app = createApp({ auth: mockAuth });
+const mockDb = {} as unknown as DB["db"];
+
+const app = createApp({ auth: mockAuth, db: mockDb });
 
 describe("app", () => {
   test("GET /status returns ok", async () => {
