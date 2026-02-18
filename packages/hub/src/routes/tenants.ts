@@ -1,5 +1,15 @@
+import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
+
+import {
+  tenant,
+  principal,
+  role,
+  principalRole,
+  grant,
+  federationTrust,
+} from "@interchange/db/schema";
 import {
   CreateTenant,
   UpdateTenant,
@@ -9,7 +19,24 @@ import {
   ErrorResponse,
 } from "@interchange/types";
 
-import type { AppEnv } from "../context";
+import type { AppEnv, TenantEnv } from "../context";
+import { first, ts } from "../format";
+import { generateId } from "../ids";
+
+const SYSTEM_ROLES = ["owner", "admin", "member"] as const;
+
+function formatTenant(row: typeof tenant.$inferSelect) {
+  return {
+    id: row.id,
+    name: row.name,
+    slug: row.slug,
+    domain: row.domain,
+    parentId: row.parentId ?? null,
+    config: (row.config as Record<string, unknown>) ?? undefined,
+    createdAt: ts(row.createdAt),
+    updatedAt: ts(row.updatedAt),
+  };
+}
 
 const app = new Hono<AppEnv>();
 
@@ -36,11 +63,102 @@ app.post(
     },
   }),
   validator("json", CreateTenant),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const user = c.get("user");
+    if (!user) {
+      return c.json(
+        {
+          error: { code: "unauthorized", message: "Authentication required" },
+        },
+        401,
+      );
+    }
+
+    const body = c.req.valid("json" as never) as typeof CreateTenant.infer;
+    const db = c.get("db");
+
+    const tenantId = generateId("tenant");
+    const domain = `${body.slug}.localhost`;
+
+    const existing = await db.query.tenant.findFirst({
+      where: eq(tenant.slug, body.slug),
+    });
+    if (existing) {
+      return c.json(
+        {
+          error: { code: "conflict", message: "Slug already taken" },
+        },
+        409,
+      );
+    }
+
+    const now = new Date();
+
+    const tenantRow = first(
+      await db
+        .insert(tenant)
+        .values({
+          id: tenantId,
+          name: body.name,
+          slug: body.slug,
+          domain,
+          parentId: body.parentId ?? null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning(),
+    );
+
+    const roleIds: Record<string, string> = {};
+    for (const roleName of SYSTEM_ROLES) {
+      const roleId = generateId("role");
+      roleIds[roleName] = roleId;
+      await db.insert(role).values({
+        id: roleId,
+        tenantId,
+        name: roleName,
+        description: `System ${roleName} role`,
+        isSystem: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    const ownerRoleId = roleIds["owner"];
+    if (!ownerRoleId) throw new Error("Owner role was not created");
+
+    const principalId = generateId("principal");
+    await db.insert(principal).values({
+      id: principalId,
+      tenantId,
+      kind: "user",
+      refId: user.id,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await db.insert(principalRole).values({
+      principalId,
+      roleId: ownerRoleId,
+      createdAt: now,
+    });
+
+    // Grant owner role full access
+    await db.insert(grant).values({
+      id: generateId("grant"),
+      tenantId,
+      roleId: ownerRoleId,
+      resource: "*",
+      action: "*",
+      effect: "allow",
+      source: "system",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return c.json(formatTenant(tenantRow), 201);
+  },
 );
 
 app.get(
@@ -69,11 +187,51 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const user = c.get("user");
+    if (!user) {
+      return c.json(
+        {
+          error: { code: "unauthorized", message: "Authentication required" },
+        },
+        401,
+      );
+    }
+
+    const tenantId = c.req.param("tenantId");
+    const db = c.get("db");
+
+    const tenantRow = await db.query.tenant.findFirst({
+      where: eq(tenant.id, tenantId),
+    });
+    if (!tenantRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Tenant not found" } },
+        404,
+      );
+    }
+
+    const membership = await db.query.principal.findFirst({
+      where: and(
+        eq(principal.tenantId, tenantId),
+        eq(principal.kind, "user"),
+        eq(principal.refId, user.id),
+      ),
+    });
+    if (!membership) {
+      return c.json(
+        {
+          error: {
+            code: "forbidden",
+            message: "Not a member of this tenant",
+          },
+        },
+        403,
+      );
+    }
+
+    return c.json(formatTenant(tenantRow));
+  },
 );
 
 app.patch(
@@ -98,12 +256,64 @@ app.patch(
     },
   }),
   validator("json", UpdateTenant),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const user = c.get("user");
+    if (!user) {
+      return c.json(
+        {
+          error: { code: "unauthorized", message: "Authentication required" },
+        },
+        401,
+      );
+    }
+
+    const tenantId = c.req.param("tenantId");
+    const body = c.req.valid("json" as never) as typeof UpdateTenant.infer;
+    const db = c.get("db");
+
+    const membership = await db.query.principal.findFirst({
+      where: and(
+        eq(principal.tenantId, tenantId),
+        eq(principal.kind, "user"),
+        eq(principal.refId, user.id),
+      ),
+    });
+    if (!membership) {
+      return c.json(
+        {
+          error: {
+            code: "forbidden",
+            message: "Not a member of this tenant",
+          },
+        },
+        403,
+      );
+    }
+
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (body.name !== undefined) updates["name"] = body.name;
+    if (body.config !== undefined) updates["config"] = body.config;
+
+    const [updated] = await db
+      .update(tenant)
+      .set(updates)
+      .where(eq(tenant.id, tenantId))
+      .returning();
+
+    if (!updated) {
+      return c.json(
+        { error: { code: "not_found", message: "Tenant not found" } },
+        404,
+      );
+    }
+
+    return c.json(formatTenant(updated));
+  },
 );
+
+// Federation routes -- these go through resolveTenant middleware via the
+// /api/tenants/:tenantId/* wildcard in app.ts, so tenant/principal are
+// available in context. We cast to TenantEnv for type safety.
 
 app.get(
   "/:tenantId/federation",
@@ -121,11 +331,37 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tc = c as unknown as typeof c & { get: (k: string) => unknown };
+    const tenantCtx = tc.get("tenant") as TenantEnv["Variables"]["tenant"];
+    const db = c.get("db");
+
+    const trusts = await db.query.federationTrust.findMany({
+      where: eq(federationTrust.tenantId, tenantCtx.id),
+    });
+
+    const targetIds = trusts.map((t) => t.targetTenantId);
+    const tenants =
+      targetIds.length > 0
+        ? await db.query.tenant.findMany({
+            where: (t, { inArray }) => inArray(t.id, targetIds),
+          })
+        : [];
+    const tenantMap = new Map(tenants.map((t) => [t.id, t]));
+
+    const results = trusts.map((trust) => {
+      const target = tenantMap.get(trust.targetTenantId);
+      return {
+        tenantId: trust.targetTenantId,
+        tenantName: target?.name ?? "Unknown",
+        tenantDomain: target?.domain ?? "unknown",
+        direction: trust.direction,
+        createdAt: ts(trust.createdAt),
+      };
+    });
+
+    return c.json(results);
+  },
 );
 
 app.post(
@@ -151,11 +387,66 @@ app.post(
     },
   }),
   validator("json", CreateFederationTrust),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tc = c as unknown as typeof c & { get: (k: string) => unknown };
+    const tenantCtx = tc.get("tenant") as TenantEnv["Variables"]["tenant"];
+    const body = c.req.valid(
+      "json" as never,
+    ) as typeof CreateFederationTrust.infer;
+    const db = c.get("db");
+
+    const target = await db.query.tenant.findFirst({
+      where: eq(tenant.id, body.targetTenantId),
+    });
+    if (!target) {
+      return c.json(
+        {
+          error: {
+            code: "not_found",
+            message: "Target tenant not found",
+          },
+        },
+        404,
+      );
+    }
+
+    const existing = await db.query.federationTrust.findFirst({
+      where: and(
+        eq(federationTrust.tenantId, tenantCtx.id),
+        eq(federationTrust.targetTenantId, body.targetTenantId),
+      ),
+    });
+    if (existing) {
+      return c.json(
+        {
+          error: {
+            code: "conflict",
+            message: "Trust relationship already exists",
+          },
+        },
+        409,
+      );
+    }
+
+    await db.insert(federationTrust).values({
+      id: generateId("federationTrust"),
+      tenantId: tenantCtx.id,
+      targetTenantId: body.targetTenantId,
+      direction: body.direction,
+      createdAt: new Date(),
+    });
+
+    return c.json(
+      {
+        tenantId: body.targetTenantId,
+        tenantName: target.name,
+        tenantDomain: target.domain,
+        direction: body.direction,
+        createdAt: ts(new Date()),
+      },
+      201,
+    );
+  },
 );
 
 app.delete(
@@ -175,11 +466,33 @@ app.delete(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tc = c as unknown as typeof c & { get: (k: string) => unknown };
+    const tenantCtx = tc.get("tenant") as TenantEnv["Variables"]["tenant"];
+    const targetTenantId = c.req.param("targetTenantId");
+    const db = c.get("db");
+
+    const deleted = await db
+      .delete(federationTrust)
+      .where(
+        and(
+          eq(federationTrust.tenantId, tenantCtx.id),
+          eq(federationTrust.targetTenantId, targetTenantId),
+        ),
+      )
+      .returning();
+
+    if (deleted.length === 0) {
+      return c.json(
+        {
+          error: { code: "not_found", message: "Trust not found" },
+        },
+        404,
+      );
+    }
+
+    return c.body(null, 204);
+  },
 );
 
 export { app as tenantRoutes };

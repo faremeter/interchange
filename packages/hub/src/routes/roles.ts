@@ -1,5 +1,8 @@
+import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
+
+import { role, principalRole, principal } from "@interchange/db/schema";
 import {
   CreateRole,
   UpdateRole,
@@ -7,9 +10,23 @@ import {
   ErrorResponse,
 } from "@interchange/types";
 
-import type { AppEnv } from "../context";
+import type { TenantEnv } from "../context";
+import { first, ts } from "../format";
+import { generateId } from "../ids";
 
-const app = new Hono<AppEnv>();
+function formatRole(row: typeof role.$inferSelect) {
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    name: row.name,
+    description: row.description ?? null,
+    isSystem: row.isSystem,
+    createdAt: ts(row.createdAt),
+    updatedAt: ts(row.updatedAt),
+  };
+}
+
+const app = new Hono<TenantEnv>();
 
 app.get(
   "/",
@@ -29,11 +46,16 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const db = c.get("db");
+
+    const roles = await db.query.role.findMany({
+      where: eq(role.tenantId, tenantCtx.id),
+    });
+
+    return c.json(roles.map(formatRole));
+  },
 );
 
 app.post(
@@ -57,11 +79,29 @@ app.post(
     },
   }),
   validator("json", CreateRole),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const body = c.req.valid("json" as never) as typeof CreateRole.infer;
+    const db = c.get("db");
+
+    const now = new Date();
+    const row = first(
+      await db
+        .insert(role)
+        .values({
+          id: generateId("role"),
+          tenantId: tenantCtx.id,
+          name: body.name,
+          description: body.description ?? null,
+          isSystem: false,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning(),
+    );
+
+    return c.json(formatRole(row), 201);
+  },
 );
 
 app.get(
@@ -85,11 +125,24 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const roleId = c.req.param("roleId");
+    const db = c.get("db");
+
+    const row = await db.query.role.findFirst({
+      where: and(eq(role.id, roleId), eq(role.tenantId, tenantCtx.id)),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Role not found" } },
+        404,
+      );
+    }
+
+    return c.json(formatRole(row));
+  },
 );
 
 app.patch(
@@ -114,11 +167,46 @@ app.patch(
     },
   }),
   validator("json", UpdateRole),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const roleId = c.req.param("roleId");
+    const body = c.req.valid("json" as never) as typeof UpdateRole.infer;
+    const db = c.get("db");
+
+    const existing = await db.query.role.findFirst({
+      where: and(eq(role.id, roleId), eq(role.tenantId, tenantCtx.id)),
+    });
+
+    if (!existing) {
+      return c.json(
+        { error: { code: "not_found", message: "Role not found" } },
+        404,
+      );
+    }
+
+    if (existing.isSystem) {
+      return c.json(
+        {
+          error: {
+            code: "forbidden",
+            message: "Cannot modify system roles",
+          },
+        },
+        403,
+      );
+    }
+
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (body.name !== undefined) updates["name"] = body.name;
+    if (body.description !== undefined)
+      updates["description"] = body.description;
+
+    const updated = first(
+      await db.update(role).set(updates).where(eq(role.id, roleId)).returning(),
+    );
+
+    return c.json(formatRole(updated));
+  },
 );
 
 app.delete(
@@ -146,17 +234,60 @@ app.delete(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const roleId = c.req.param("roleId");
+    const db = c.get("db");
+
+    const existing = await db.query.role.findFirst({
+      where: and(eq(role.id, roleId), eq(role.tenantId, tenantCtx.id)),
+    });
+
+    if (!existing) {
+      return c.json(
+        { error: { code: "not_found", message: "Role not found" } },
+        404,
+      );
+    }
+
+    if (existing.isSystem) {
+      return c.json(
+        {
+          error: {
+            code: "forbidden",
+            message: "Cannot delete system roles",
+          },
+        },
+        403,
+      );
+    }
+
+    const assignments = await db.query.principalRole.findMany({
+      where: eq(principalRole.roleId, roleId),
+    });
+
+    if (assignments.length > 0) {
+      return c.json(
+        {
+          error: {
+            code: "bad_request",
+            message: `Role is still assigned to ${assignments.length} principal(s)`,
+          },
+        },
+        400,
+      );
+    }
+
+    await db.delete(role).where(eq(role.id, roleId));
+
+    return c.body(null, 204);
+  },
 );
 
 export { app as roleRoutes };
 
 // Role assignment routes are mounted under principals
-const assignApp = new Hono<AppEnv>();
+const assignApp = new Hono<TenantEnv>();
 
 assignApp.post(
   "/:roleId",
@@ -177,11 +308,52 @@ assignApp.post(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const principalId = c.req.param("principalId") ?? "";
+    const roleId = c.req.param("roleId") ?? "";
+    const db = c.get("db");
+
+    const principalRow = await db.query.principal.findFirst({
+      where: and(
+        eq(principal.id, principalId),
+        eq(principal.tenantId, tenantCtx.id),
+      ),
+    });
+    if (!principalRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Principal not found" } },
+        404,
+      );
+    }
+
+    const roleRow = await db.query.role.findFirst({
+      where: and(eq(role.id, roleId), eq(role.tenantId, tenantCtx.id)),
+    });
+    if (!roleRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Role not found" } },
+        404,
+      );
+    }
+
+    const existing = await db.query.principalRole.findFirst({
+      where: and(
+        eq(principalRole.principalId, principalId),
+        eq(principalRole.roleId, roleId),
+      ),
+    });
+
+    if (!existing) {
+      await db.insert(principalRole).values({
+        principalId,
+        roleId,
+        createdAt: new Date(),
+      });
+    }
+
+    return c.body(null, 204);
+  },
 );
 
 assignApp.delete(
@@ -201,11 +373,32 @@ assignApp.delete(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const principalId = c.req.param("principalId") ?? "";
+    const roleId = c.req.param("roleId") ?? "";
+    const db = c.get("db");
+
+    const deleted = await db
+      .delete(principalRole)
+      .where(
+        and(
+          eq(principalRole.principalId, principalId),
+          eq(principalRole.roleId, roleId),
+        ),
+      )
+      .returning();
+
+    if (deleted.length === 0) {
+      return c.json(
+        {
+          error: { code: "not_found", message: "Assignment not found" },
+        },
+        404,
+      );
+    }
+
+    return c.body(null, 204);
+  },
 );
 
 export { assignApp as roleAssignRoutes };

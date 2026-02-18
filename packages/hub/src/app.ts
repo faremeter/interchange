@@ -4,6 +4,7 @@ import { openAPIRouteHandler } from "hono-openapi";
 import { honoLogger, type HonoContext } from "@interchange/log/hono";
 import type { Auth } from "./auth";
 import type { AppEnv } from "./context";
+import { requireAuth, resolveTenant } from "./middleware/tenant";
 import { meRoutes } from "./routes/me";
 import { tenantRoutes } from "./routes/tenants";
 import { principalRoutes, inviteRoutes } from "./routes/principals";
@@ -47,14 +48,16 @@ export function createApp({ auth }: CreateAppOpts) {
 
   app.get("/status", (c) => c.json({ status: "ok" }));
 
-  // User-scoped (cross-tenant)
+  // User-scoped (cross-tenant) -- requires auth but not tenant membership
+  app.use("/api/me/*", requireAuth);
   app.route("/api/me", meRoutes);
 
-  // Global
+  // Global tenant routes (create needs auth, detail/update need tenant membership)
   app.route("/api/tenants", tenantRoutes);
   app.route("/api/models", modelRoutes);
 
-  // Tenant-scoped
+  // Tenant-scoped -- require auth + tenant membership
+  app.use("/api/tenants/:tenantId/*", resolveTenant);
   app.route("/api/tenants/:tenantId/principals", principalRoutes);
   app.route("/api/tenants/:tenantId/members/invite", inviteRoutes);
   app.route("/api/tenants/:tenantId/roles", roleRoutes);
