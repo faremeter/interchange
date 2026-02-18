@@ -38,9 +38,18 @@
       "dependencies": {
         "@hono/standard-validator": "^0.2.2",
         "@interchange/db": "workspace:*",
+        "@interchange/types": "workspace:*",
+        "arktype": "^2.1.29",
         "better-auth": "^1.4.18",
         "hono": "^4.11.9",
         "hono-openapi": "^1.2.0",
+      },
+    },
+    "packages/types": {
+      "name": "@interchange/types",
+      "version": "0.0.0",
+      "dependencies": {
+        "arktype": "^2.1.29",
       },
     },
   },
@@ -148,6 +157,8 @@
     "@interchange/hub": ["@interchange/hub@workspace:packages/hub"],
 
     "@interchange/hub-app": ["@interchange/hub-app@workspace:apps/hub"],
+
+    "@interchange/types": ["@interchange/types@workspace:packages/types"],
 
     "@noble/ciphers": ["@noble/ciphers@2.1.1", "", {}, "sha512-bysYuiVfhxNJuldNXlFEitTVdNnYUc+XNJZd7Qm2a5j1vZHgY+fazadNFWFaMK/2vye0JVlxV3gHmC0WDfAOQw=="],
 
