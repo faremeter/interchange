@@ -12,6 +12,7 @@
   "dependencies": {
     "@hono/standard-validator": "^0.2.2",
     "@interchange/db": "workspace:*",
+    "@interchange/log": "workspace:*",
     "@interchange/types": "workspace:*",
     "arktype": "^2.1.29",
     "better-auth": "^1.4.18",

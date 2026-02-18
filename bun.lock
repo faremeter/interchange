@@ -21,6 +21,7 @@
       "dependencies": {
         "@interchange/db": "workspace:*",
         "@interchange/hub": "workspace:*",
+        "@interchange/log": "workspace:*",
       },
     },
     "packages/db": {
@@ -38,12 +39,27 @@
       "dependencies": {
         "@hono/standard-validator": "^0.2.2",
         "@interchange/db": "workspace:*",
+        "@interchange/log": "workspace:*",
         "@interchange/types": "workspace:*",
         "arktype": "^2.1.29",
         "better-auth": "^1.4.18",
         "hono": "^4.11.9",
         "hono-openapi": "^1.2.0",
       },
+    },
+    "packages/log": {
+      "name": "@interchange/log",
+      "version": "0.0.0",
+      "dependencies": {
+        "@logtape/hono": "^2.0.2",
+        "@logtape/logtape": "^2.0.2",
+      },
+      "peerDependencies": {
+        "hono": "^4.0.0",
+      },
+      "optionalPeers": [
+        "hono",
+      ],
     },
     "packages/types": {
       "name": "@interchange/types",
@@ -158,7 +174,13 @@
 
     "@interchange/hub-app": ["@interchange/hub-app@workspace:apps/hub"],
 
+    "@interchange/log": ["@interchange/log@workspace:packages/log"],
+
     "@interchange/types": ["@interchange/types@workspace:packages/types"],
+
+    "@logtape/hono": ["@logtape/hono@2.0.2", "", { "peerDependencies": { "@logtape/logtape": "^2.0.2", "hono": "^4.0.0" } }, "sha512-dCIfdFnpEguVvd0cLeo7BOMXXBZ/e0dTcOiB9rn46tMsILZlmiIVWz+O0q1wOqSkooOau6zCkw+Rt58UT5nvPQ=="],
+
+    "@logtape/logtape": ["@logtape/logtape@2.0.2", "", {}, "sha512-cveUBLbCMFkvkLycP/2vNWvywl47JcJbazHIju94/QNGboZ/jyYAgZIm0ZXezAOx3eIz8OG1EOZ5CuQP3+2FQg=="],
 
     "@noble/ciphers": ["@noble/ciphers@2.1.1", "", {}, "sha512-bysYuiVfhxNJuldNXlFEitTVdNnYUc+XNJZd7Qm2a5j1vZHgY+fazadNFWFaMK/2vye0JVlxV3gHmC0WDfAOQw=="],
 

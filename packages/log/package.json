@@ -1,0 +1,28 @@
+{
+  "name": "@interchange/log",
+  "version": "0.0.0",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./hono": {
+      "types": "./src/hono.ts",
+      "default": "./src/hono.ts"
+    }
+  },
+  "dependencies": {
+    "@logtape/hono": "^2.0.2",
+    "@logtape/logtape": "^2.0.2"
+  },
+  "peerDependencies": {
+    "hono": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "hono": {
+      "optional": true
+    }
+  }
+}
