@@ -1,4 +1,5 @@
 bun.lock
 dist
+docs/API.md
 *~
 *\#*
