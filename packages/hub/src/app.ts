@@ -19,11 +19,14 @@ import { capabilityRoutes, modelRoutes } from "./routes/capabilities";
 import { observabilityRoutes } from "./routes/observability";
 import { agentDataRoutes } from "./routes/agent-data";
 
+import type { DB } from "@interchange/db";
+
 export type CreateAppOpts = {
   auth: Auth;
+  db: DB["db"];
 };
 
-export function createApp({ auth }: CreateAppOpts) {
+export function createApp({ auth, db }: CreateAppOpts) {
   const app = new Hono<AppEnv>();
 
   app.use(
@@ -34,6 +37,7 @@ export function createApp({ auth }: CreateAppOpts) {
   );
 
   app.use(async (c, next) => {
+    c.set("db", db);
     const result = await auth.api.getSession({
       headers: c.req.raw.headers,
     });
@@ -52,12 +56,16 @@ export function createApp({ auth }: CreateAppOpts) {
   app.use("/api/me/*", requireAuth);
   app.route("/api/me", meRoutes);
 
-  // Global tenant routes (create needs auth, detail/update need tenant membership)
+  // Tenant-scoped middleware -- require auth + tenant membership for any
+  // path under /api/tenants/:tenantId/*. Must be registered before routes
+  // so Hono includes it in the middleware chain.
+  app.use("/api/tenants/:tenantId/*", resolveTenant);
+
+  // Global tenant routes (create needs auth, detail/update handle auth inline)
   app.route("/api/tenants", tenantRoutes);
   app.route("/api/models", modelRoutes);
 
-  // Tenant-scoped -- require auth + tenant membership
-  app.use("/api/tenants/:tenantId/*", resolveTenant);
+  // Tenant-scoped routes
   app.route("/api/tenants/:tenantId/principals", principalRoutes);
   app.route("/api/tenants/:tenantId/members/invite", inviteRoutes);
   app.route("/api/tenants/:tenantId/roles", roleRoutes);

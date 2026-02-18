@@ -15,12 +15,7 @@ const { db } = createDB({
 });
 
 const auth = createAuth(db);
-const app = createApp({ auth });
-
-app.use(async (c, next) => {
-  c.set("db", db);
-  await next();
-});
+const app = createApp({ auth, db });
 
 const port = Number(process.env["PORT"] ?? 3000);
 
