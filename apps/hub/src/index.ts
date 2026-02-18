@@ -1,5 +1,5 @@
 import { createDB } from "@interchange/db";
-import { createApp } from "@interchange/hub";
+import { createApp, createAuth } from "@interchange/hub";
 
 const { db } = createDB({
   host: process.env["DB_HOST"] ?? "localhost",
@@ -9,7 +9,8 @@ const { db } = createDB({
   database: process.env["DB_NAME"] ?? "interchange",
 });
 
-const app = createApp();
+const auth = createAuth(db);
+const app = createApp({ auth });
 
 app.use(async (c, next) => {
   c.set("db", db);
