@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { openAPIRouteHandler } from "hono-openapi";
 
+import { honoLogger, type HonoContext } from "@interchange/log/hono";
 import type { Auth } from "./auth";
 import type { AppEnv } from "./context";
 import { meRoutes } from "./routes/me";
@@ -23,6 +24,13 @@ export type CreateAppOpts = {
 
 export function createApp({ auth }: CreateAppOpts) {
   const app = new Hono<AppEnv>();
+
+  app.use(
+    honoLogger({
+      category: ["hub", "requests"],
+      skip: (c: HonoContext) => c.req.path === "/status",
+    }),
+  );
 
   app.use(async (c, next) => {
     const result = await auth.api.getSession({

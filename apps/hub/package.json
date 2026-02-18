@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@interchange/db": "workspace:*",
-    "@interchange/hub": "workspace:*"
+    "@interchange/hub": "workspace:*",
+    "@interchange/log": "workspace:*"
   }
 }
