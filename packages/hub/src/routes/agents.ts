@@ -1,5 +1,8 @@
+import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
+
+import { agent, agentVersion, principal, grant } from "@interchange/db/schema";
 import {
   CreateAgent,
   UpdateAgent,
@@ -11,9 +14,32 @@ import {
   ErrorResponse,
 } from "@interchange/types";
 
-import type { AppEnv } from "../context";
+import type { TenantEnv } from "../context";
+import { first, ts } from "../format";
+import { generateId } from "../ids";
 
-const app = new Hono<AppEnv>();
+function formatAgent(row: typeof agent.$inferSelect) {
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    principalId: row.principalId,
+    name: row.name,
+    description: row.description ?? null,
+    systemPrompt: row.systemPrompt ?? null,
+    skills: (row.skills as Record<string, unknown>) ?? undefined,
+    contextConfig: (row.contextConfig as Record<string, unknown>) ?? undefined,
+    initialState: (row.initialState as Record<string, unknown>) ?? undefined,
+    modelConfig: (row.modelConfig as Record<string, unknown>) ?? undefined,
+    currentVersion: row.currentVersion,
+    status: row.status as "deployed" | "stopped" | "updating" | "error",
+    kernelId: row.kernelId ?? null,
+    capabilities: (row.capabilities as Record<string, unknown>) ?? undefined,
+    createdAt: ts(row.createdAt),
+    updatedAt: ts(row.updatedAt),
+  };
+}
+
+const app = new Hono<TenantEnv>();
 
 app.get(
   "/",
@@ -43,11 +69,27 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const db = c.get("db");
+    const status = c.req.query("status");
+
+    const conditions = [eq(agent.tenantId, tenantCtx.id)];
+    if (
+      status === "deployed" ||
+      status === "stopped" ||
+      status === "updating" ||
+      status === "error"
+    ) {
+      conditions.push(eq(agent.status, status));
+    }
+
+    const agents = await db.query.agent.findMany({
+      where: and(...conditions),
+    });
+
+    return c.json(agents.map(formatAgent));
+  },
 );
 
 app.post(
@@ -73,11 +115,78 @@ app.post(
     },
   }),
   validator("json", CreateAgent),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const body = c.req.valid("json" as never) as typeof CreateAgent.infer;
+    const db = c.get("db");
+
+    const now = new Date();
+    const agentId = generateId("agent");
+    const principalId = generateId("principal");
+
+    // Create the agent's principal first
+    await db.insert(principal).values({
+      id: principalId,
+      tenantId: tenantCtx.id,
+      kind: "agent",
+      refId: agentId,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const agentRow = first(
+      await db
+        .insert(agent)
+        .values({
+          id: agentId,
+          tenantId: tenantCtx.id,
+          principalId,
+          name: body.name,
+          description: body.description ?? null,
+          systemPrompt: body.systemPrompt ?? null,
+          skills: body.skills ?? null,
+          contextConfig: body.contextConfig ?? null,
+          initialState: body.initialState ?? null,
+          modelConfig: body.modelConfig ?? null,
+          capabilities: body.capabilities ?? null,
+          currentVersion: "1",
+          status: "deployed",
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning(),
+    );
+
+    // Create initial version
+    await db.insert(agentVersion).values({
+      id: generateId("agentVersion"),
+      agentId,
+      version: "1",
+      status: "active",
+      createdAt: now,
+    });
+
+    // Create initial grants for the agent's principal
+    if (body.initialGrants) {
+      for (const g of body.initialGrants) {
+        await db.insert(grant).values({
+          id: generateId("grant"),
+          tenantId: tenantCtx.id,
+          principalId,
+          resource: g.resource,
+          action: g.action,
+          effect: g.effect,
+          conditions: g.conditions ?? null,
+          source: "creator",
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+
+    return c.json(formatAgent(agentRow), 201);
+  },
 );
 
 app.get(
@@ -102,11 +211,24 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const agentId = c.req.param("agentId");
+    const db = c.get("db");
+
+    const row = await db.query.agent.findFirst({
+      where: and(eq(agent.id, agentId), eq(agent.tenantId, tenantCtx.id)),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Agent not found" } },
+        404,
+      );
+    }
+
+    return c.json(formatAgent(row));
+  },
 );
 
 app.patch(
@@ -132,11 +254,74 @@ app.patch(
     },
   }),
   validator("json", UpdateAgent),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const agentId = c.req.param("agentId");
+    const body = c.req.valid("json" as never) as typeof UpdateAgent.infer;
+    const db = c.get("db");
+
+    const existing = await db.query.agent.findFirst({
+      where: and(eq(agent.id, agentId), eq(agent.tenantId, tenantCtx.id)),
+    });
+
+    if (!existing) {
+      return c.json(
+        { error: { code: "not_found", message: "Agent not found" } },
+        404,
+      );
+    }
+
+    const now = new Date();
+    const newVersion = String(Number(existing.currentVersion) + 1);
+
+    const updates: Record<string, unknown> = {
+      updatedAt: now,
+      currentVersion: newVersion,
+    };
+    if (body.name !== undefined) updates["name"] = body.name;
+    if (body.description !== undefined)
+      updates["description"] = body.description;
+    if (body.systemPrompt !== undefined)
+      updates["systemPrompt"] = body.systemPrompt;
+    if (body.skills !== undefined) updates["skills"] = body.skills;
+    if (body.contextConfig !== undefined)
+      updates["contextConfig"] = body.contextConfig;
+    if (body.initialState !== undefined)
+      updates["initialState"] = body.initialState;
+    if (body.modelConfig !== undefined)
+      updates["modelConfig"] = body.modelConfig;
+    if (body.capabilities !== undefined)
+      updates["capabilities"] = body.capabilities;
+
+    const updated = first(
+      await db
+        .update(agent)
+        .set(updates)
+        .where(eq(agent.id, agentId))
+        .returning(),
+    );
+
+    // Mark old version inactive, create new version
+    await db
+      .update(agentVersion)
+      .set({ status: "inactive" })
+      .where(
+        and(
+          eq(agentVersion.agentId, agentId),
+          eq(agentVersion.version, existing.currentVersion),
+        ),
+      );
+
+    await db.insert(agentVersion).values({
+      id: generateId("agentVersion"),
+      agentId,
+      version: newVersion,
+      status: "active",
+      createdAt: now,
+    });
+
+    return c.json(formatAgent(updated));
+  },
 );
 
 app.delete(
@@ -158,11 +343,36 @@ app.delete(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const agentId = c.req.param("agentId");
+    const db = c.get("db");
+
+    const existing = await db.query.agent.findFirst({
+      where: and(eq(agent.id, agentId), eq(agent.tenantId, tenantCtx.id)),
+    });
+
+    if (!existing) {
+      return c.json(
+        { error: { code: "not_found", message: "Agent not found" } },
+        404,
+      );
+    }
+
+    // Deactivate agent principal
+    await db
+      .update(principal)
+      .set({ status: "deactivated", updatedAt: new Date() })
+      .where(eq(principal.id, existing.principalId));
+
+    // Set agent status to stopped
+    await db
+      .update(agent)
+      .set({ status: "stopped", updatedAt: new Date() })
+      .where(eq(agent.id, agentId));
+
+    return c.body(null, 204);
+  },
 );
 
 app.get(
@@ -182,11 +392,22 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const agentId = c.req.param("agentId");
+    const db = c.get("db");
+
+    const versions = await db.query.agentVersion.findMany({
+      where: eq(agentVersion.agentId, agentId),
+    });
+
+    return c.json(
+      versions.map((v) => ({
+        version: v.version,
+        status: v.status as "active" | "inactive" | "failed",
+        createdAt: ts(v.createdAt),
+      })),
+    );
+  },
 );
 
 app.post(
@@ -212,11 +433,75 @@ app.post(
     },
   }),
   validator("json", RollbackRequest),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const agentId = c.req.param("agentId");
+    const body = c.req.valid("json" as never) as typeof RollbackRequest.infer;
+    const db = c.get("db");
+
+    const existing = await db.query.agent.findFirst({
+      where: and(eq(agent.id, agentId), eq(agent.tenantId, tenantCtx.id)),
+    });
+    if (!existing) {
+      return c.json(
+        { error: { code: "not_found", message: "Agent not found" } },
+        404,
+      );
+    }
+
+    const targetVersion = await db.query.agentVersion.findFirst({
+      where: and(
+        eq(agentVersion.agentId, agentId),
+        eq(agentVersion.version, body.version),
+      ),
+    });
+    if (!targetVersion) {
+      return c.json(
+        {
+          error: {
+            code: "bad_request",
+            message: "Target version not found",
+          },
+        },
+        400,
+      );
+    }
+
+    const now = new Date();
+
+    // Deactivate current version
+    await db
+      .update(agentVersion)
+      .set({ status: "inactive" })
+      .where(
+        and(
+          eq(agentVersion.agentId, agentId),
+          eq(agentVersion.version, existing.currentVersion),
+        ),
+      );
+
+    // Activate target version
+    await db
+      .update(agentVersion)
+      .set({ status: "active" })
+      .where(
+        and(
+          eq(agentVersion.agentId, agentId),
+          eq(agentVersion.version, body.version),
+        ),
+      );
+
+    // Update agent
+    const updated = first(
+      await db
+        .update(agent)
+        .set({ currentVersion: body.version, updatedAt: now })
+        .where(eq(agent.id, agentId))
+        .returning(),
+    );
+
+    return c.json(formatAgent(updated));
+  },
 );
 
 app.get(
@@ -240,11 +525,29 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const agentId = c.req.param("agentId");
+    const db = c.get("db");
+
+    const row = await db.query.agent.findFirst({
+      where: and(eq(agent.id, agentId), eq(agent.tenantId, tenantCtx.id)),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Agent not found" } },
+        404,
+      );
+    }
+
+    // Placeholder health -- in production this would query the agent kernel
+    return c.json({
+      liveness: row.status === "deployed" ? "ok" : "unhealthy",
+      readiness: row.status === "deployed" ? "ok" : "not_ready",
+      lastCheckedAt: null,
+    });
+  },
 );
 
 app.get(
@@ -265,11 +568,25 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const agentId = c.req.param("agentId");
+    const db = c.get("db");
+
+    const row = await db.query.agent.findFirst({
+      where: and(eq(agent.id, agentId), eq(agent.tenantId, tenantCtx.id)),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Agent not found" } },
+        404,
+      );
+    }
+
+    // Capabilities are stored as jsonb -- return empty array if none
+    return c.json([]);
+  },
 );
 
 export { app as agentRoutes };

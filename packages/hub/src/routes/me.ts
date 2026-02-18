@@ -1,5 +1,8 @@
+import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver } from "hono-openapi";
+
+import { principal } from "@interchange/db/schema";
 import {
   UserProfile,
   PrincipalSummary,
@@ -10,6 +13,7 @@ import {
 } from "@interchange/types";
 
 import type { AppEnv } from "../context";
+import { ts } from "../format";
 
 const app = new Hono<AppEnv>();
 
@@ -33,11 +37,24 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  (c) => {
+    const user = c.get("user");
+    if (!user) {
+      return c.json(
+        { error: { code: "unauthorized", message: "Authentication required" } },
+        401,
+      );
+    }
+    return c.json({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      emailVerified: user.emailVerified,
+      image: user.image ?? null,
+      createdAt: ts(user.createdAt),
+      updatedAt: ts(user.updatedAt),
+    });
+  },
 );
 
 app.get(
@@ -64,11 +81,73 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const user = c.get("user");
+    if (!user) {
+      return c.json(
+        { error: { code: "unauthorized", message: "Authentication required" } },
+        401,
+      );
+    }
+    const db = c.get("db");
+
+    const principals = await db.query.principal.findMany({
+      where: and(eq(principal.kind, "user"), eq(principal.refId, user.id)),
+    });
+
+    const tenantIds = principals.map((p) => p.tenantId);
+    const tenants =
+      tenantIds.length > 0
+        ? await db.query.tenant.findMany({
+            where: (t, { inArray }) => inArray(t.id, tenantIds),
+          })
+        : [];
+    const tenantMap = new Map(tenants.map((t) => [t.id, t]));
+
+    const principalIds = principals.map((p) => p.id);
+    const assignments =
+      principalIds.length > 0
+        ? await db.query.principalRole.findMany({
+            where: (pr, { inArray }) => inArray(pr.principalId, principalIds),
+          })
+        : [];
+
+    const roleIds = [...new Set(assignments.map((a) => a.roleId))];
+    const roles =
+      roleIds.length > 0
+        ? await db.query.role.findMany({
+            where: (r, { inArray }) => inArray(r.id, roleIds),
+          })
+        : [];
+    const roleMap = new Map(roles.map((r) => [r.id, r]));
+
+    const assignmentsByPrincipal = new Map<
+      string,
+      { id: string; name: string }[]
+    >();
+    for (const a of assignments) {
+      const r = roleMap.get(a.roleId);
+      if (!r) continue;
+      const list = assignmentsByPrincipal.get(a.principalId) ?? [];
+      list.push({ id: r.id, name: r.name });
+      assignmentsByPrincipal.set(a.principalId, list);
+    }
+
+    const results = principals.map((p) => {
+      const t = tenantMap.get(p.tenantId);
+      return {
+        principalId: p.id,
+        tenantId: p.tenantId,
+        tenantName: t?.name ?? "Unknown",
+        tenantSlug: t?.slug ?? "unknown",
+        kind: p.kind as "user" | "agent",
+        status: p.status as "active" | "suspended" | "invited" | "deactivated",
+        roles: assignmentsByPrincipal.get(p.id) ?? [],
+      };
+    });
+
+    return c.json(results);
+  },
 );
 
 app.get(
@@ -89,11 +168,43 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const user = c.get("user");
+    if (!user) {
+      return c.json(
+        { error: { code: "unauthorized", message: "Authentication required" } },
+        401,
+      );
+    }
+    const db = c.get("db");
+
+    const principals = await db.query.principal.findMany({
+      where: and(eq(principal.kind, "user"), eq(principal.refId, user.id)),
+    });
+
+    const tenantIds = principals.map((p) => p.tenantId);
+    if (tenantIds.length === 0) return c.json([]);
+
+    const tenants = await db.query.tenant.findMany({
+      where: (t, { inArray }) => inArray(t.id, tenantIds),
+    });
+    const tenantMap = new Map(tenants.map((t) => [t.id, t]));
+
+    const agents = await db.query.agent.findMany({
+      where: (a, { inArray }) => inArray(a.tenantId, tenantIds),
+    });
+
+    const results = agents.map((a) => ({
+      id: a.id,
+      tenantId: a.tenantId,
+      tenantName: tenantMap.get(a.tenantId)?.name ?? "Unknown",
+      name: a.name,
+      description: a.description ?? null,
+      status: a.status as "deployed" | "stopped" | "updating" | "error",
+    }));
+
+    return c.json(results);
+  },
 );
 
 app.get(
@@ -114,11 +225,10 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  (_c) => {
+    // Sessions deferred to later phase
+    return _c.json([]);
+  },
 );
 
 app.get(
@@ -139,11 +249,10 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  (_c) => {
+    // Approvals deferred to later phase
+    return _c.json([]);
+  },
 );
 
 export { app as meRoutes };

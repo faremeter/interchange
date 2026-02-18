@@ -1,3 +1,3 @@
 export { createAuth, type Auth } from "./auth";
 export { createApp, type App, type CreateAppOpts } from "./app";
-export type { AppEnv } from "./context";
+export type { AppEnv, TenantEnv, TenantRow, PrincipalRow } from "./context";
