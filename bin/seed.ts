@@ -63,65 +63,62 @@ function check(label: string, status: number, expected: number, data: unknown) {
   log(`  OK ${label} (${status})`);
 }
 
-// -- Sign up users --
+// -- Authenticate users (sign up, or sign in if they already exist) --
 
-log("Signing up users...");
+async function authenticate(
+  name: string,
+  email: string,
+  password: string,
+): Promise<{ cookies: CookieJar; userId: string }> {
+  const signUp = await api("POST", "/api/auth/sign-up/email", {
+    name,
+    email,
+    password,
+  });
 
-const { data: u1Data, cookies: u1Cookies } = await api(
-  "POST",
-  "/api/auth/sign-up/email",
-  {
-    name: "Alice Admin",
-    email: "alice@example.com",
-    password: "password123",
-  },
-);
-check(
-  "sign-up alice",
-  (u1Data as { user?: unknown })?.user ? 200 : 200,
-  200,
-  u1Data,
-);
-const aliceCookies = u1Cookies;
-const aliceId = (u1Data as { user: { id: string } })?.user?.id;
-log(`  Alice ID: ${aliceId}`);
+  if (signUp.cookies.length > 0) {
+    const userId = (signUp.data as { user?: { id: string } })?.user?.id ?? "";
+    return { cookies: signUp.cookies, userId };
+  }
 
-const { data: u2Data, cookies: u2Cookies } = await api(
-  "POST",
-  "/api/auth/sign-up/email",
-  {
-    name: "Bob Builder",
-    email: "bob@example.com",
-    password: "password123",
-  },
-);
-check(
-  "sign-up bob",
-  (u2Data as { user?: unknown })?.user ? 200 : 200,
-  200,
-  u2Data,
-);
-const bobCookies = u2Cookies;
-const bobId = (u2Data as { user: { id: string } })?.user?.id;
-log(`  Bob ID: ${bobId}`);
+  // User already exists -- sign in instead
+  const signIn = await api("POST", "/api/auth/sign-in/email", {
+    email,
+    password,
+  });
 
-const { data: u3Data, cookies: u3Cookies } = await api(
-  "POST",
-  "/api/auth/sign-up/email",
-  {
-    name: "Carol Creator",
-    email: "carol@example.com",
-    password: "password123",
-  },
+  if (signIn.cookies.length === 0) {
+    process.stderr.write(`[seed] FATAL: could not authenticate ${email}\n`);
+    process.stderr.write(`[seed]   sign-up: ${JSON.stringify(signUp.data)}\n`);
+    process.stderr.write(`[seed]   sign-in: ${JSON.stringify(signIn.data)}\n`);
+    process.exit(1);
+  }
+
+  const userId = (signIn.data as { user?: { id: string } })?.user?.id ?? "";
+  return { cookies: signIn.cookies, userId };
+}
+
+log("Authenticating users...");
+
+const alice = await authenticate(
+  "Alice Admin",
+  "alice@example.com",
+  "password123",
 );
-check(
-  "sign-up carol",
-  (u3Data as { user?: unknown })?.user ? 200 : 200,
-  200,
-  u3Data,
+const aliceCookies = alice.cookies;
+log(`  Alice ID: ${alice.userId}`);
+
+const bob = await authenticate("Bob Builder", "bob@example.com", "password123");
+const bobCookies = bob.cookies;
+log(`  Bob ID: ${bob.userId}`);
+
+const carol = await authenticate(
+  "Carol Creator",
+  "carol@example.com",
+  "password123",
 );
-const carolCookies = u3Cookies;
-log(`  Carol ID: ${(u3Data as { user: { id: string } })?.user?.id}`);
+const carolCookies = carol.cookies;
+log(`  Carol ID: ${carol.userId}`);
 
 // -- Create tenants (as Alice) --
 
