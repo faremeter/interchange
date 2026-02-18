@@ -1,0 +1,179 @@
+# Interchange
+
+Multi-tenant control plane for agent orchestration. Manages tenants, principals (users and agents under a unified authorization model), roles, capability grants, and agent lifecycle.
+
+## Prerequisites
+
+- [Bun](https://bun.sh/) (1.2+)
+- [opsh](https://github.com/anomalyco/opsh) (v0.7+) -- for the shell scripts in `bin/`
+- PostgreSQL (15+)
+
+## Setup
+
+### 1. Install dependencies
+
+```
+bun install
+```
+
+### 2. Configure git hooks
+
+```
+git config core.hooksPath .githooks
+```
+
+Verify with `bin/check-env`.
+
+### 3. Create the database
+
+Connect as a Postgres superuser and create the database:
+
+```sql
+CREATE DATABASE interchange;
+```
+
+Then run the init script to set up roles and permissions:
+
+```
+psql -d interchange -f db/init.sql
+```
+
+### 4. Environment files
+
+Three env files are needed, all gitignored. Create them at the repo root:
+
+**.env** -- shared database connection:
+
+```
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=interchange
+```
+
+**.env.hub** -- hub server config (DB_USER here is the app role created by `db/init.sql`):
+
+```
+DB_USER=interchange-hub
+DB_PASSWORD=hub-dev-password
+
+BETTER_AUTH_SECRET=<random 64-char hex string>
+BETTER_AUTH_URL=http://localhost:3000
+
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+```
+
+**.env.migrate** -- migration credentials (a superuser or the DB owner):
+
+```
+DB_USER=<your-postgres-user>
+DB_PASSWORD=<your-postgres-password>
+```
+
+### 5. Run migrations
+
+```
+bin/db-migrate
+```
+
+This runs a type check, generates any new Drizzle migration files, and applies them to the database.
+
+## Running
+
+### Hub (API server)
+
+```
+bin/hub
+```
+
+Starts the Hono API server on `http://localhost:3000` with file watching. Verify with:
+
+```
+curl http://localhost:3000/status
+```
+
+### UI (development)
+
+In a second terminal:
+
+```
+cd apps/ui
+bunx vite
+```
+
+Opens on `http://localhost:5173`. The Vite dev server proxies `/api` requests to the hub on port 3000.
+
+### Seed data
+
+With the hub running, seed the database with test data:
+
+```
+bin/seed.ts
+```
+
+Creates 3 users (alice/bob/carol, all with password `password123`), 2 tenants, 3 agents, roles, grants, and a federation trust. The seed is partially idempotent -- authentication will sign in existing users, but tenant/agent creation will fail with 409 if data already exists.
+
+To start fresh, truncate all tables before seeding:
+
+```
+psql -d interchange -c 'TRUNCATE "user", account, session, verification, tenant, principal, role, principal_role, "grant", agent, agent_version, federation_trust CASCADE;'
+```
+
+## Project structure
+
+```
+apps/
+  hub/          Entry point -- starts the Hono server, wires DB + auth
+  ui/           React SPA -- Vite + TanStack Router/Query + Tailwind
+
+packages/
+  db/           Drizzle schema, migrations, connection pooling
+  hub/          Hono app factory, route handlers, middleware
+  log/          LogTape wrapper (setup, getLogger, Hono middleware)
+  types/        Shared ArkType type definitions for API request/response
+
+bin/
+  hub           Start the hub server (sources .env + .env.hub)
+  db-migrate    Generate and apply Drizzle migrations
+  seed.ts       Seed test data via the HTTP API
+  gen-api-docs.ts  Generate docs/API.md from OpenAPI spec + ArkType introspection
+  add-package   Scaffold a new workspace package
+  check-env     Verify git hooks configuration
+
+db/
+  init.sql      Bootstrap database roles and permissions
+
+docs/
+  AUTH.md       Authorization model design
+  ROUTES.md     API route conventions
+  API.md        Generated API reference (gitignored from prettier)
+```
+
+## Scripts
+
+These are run from the repo root via `bun run`:
+
+| Script   | Command                             |
+| -------- | ----------------------------------- |
+| `check`  | `bun run check` -- type check       |
+| `lint`   | `bun run lint` -- prettier + eslint |
+| `format` | `bun run format` -- auto-format     |
+| `test`   | `bun test` -- run tests             |
+
+## API
+
+The hub exposes a REST API at `http://localhost:3000`. Key routes:
+
+- `POST /api/auth/sign-up/email` -- create account
+- `POST /api/auth/sign-in/email` -- sign in (cookie-based sessions)
+- `GET /api/me` -- current user profile
+- `GET /api/me/principals` -- user's memberships across tenants
+- `POST /api/tenants` -- create a tenant (bootstraps system roles)
+- `GET /api/tenants/:tenantId` -- tenant detail
+- `GET /api/tenants/:tenantId/principals` -- list members and agents
+- `GET /api/tenants/:tenantId/roles` -- list roles
+- `GET /api/tenants/:tenantId/grants` -- list capability grants
+- `POST /api/tenants/:tenantId/agents` -- create an agent
+- `GET /openapi.json` -- full OpenAPI spec
+
+Full reference: run `bin/gen-api-docs.ts` to generate `docs/API.md`.
