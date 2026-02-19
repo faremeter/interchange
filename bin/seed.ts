@@ -169,9 +169,10 @@ async function ensureTenant(
     undefined,
     cookies,
   );
-  const match = (principals as { tenantId: string; tenantSlug: string }[]).find(
-    (p) => p.tenantSlug === slug,
-  );
+  const principalList = (
+    principals as { data: { tenantId: string; tenantSlug: string }[] }
+  ).data;
+  const match = principalList.find((p) => p.tenantSlug === slug);
 
   if (match) {
     log(`  ${slug} tenant already exists`);
@@ -202,9 +203,8 @@ const { data: rolesData } = await api(
   undefined,
   aliceCookies,
 );
-const memberRole = (rolesData as { id: string; name: string }[]).find(
-  (r) => r.name === "member",
-);
+const rolesList = (rolesData as { data: { id: string; name: string }[] }).data;
+const memberRole = rolesList.find((r) => r.name === "member");
 
 const { status: inviteStatus, data: inviteData } = await api(
   "POST",
@@ -230,9 +230,10 @@ if (checkOrSkip("invite bob", inviteStatus, 201, inviteData)) {
     undefined,
     aliceCookies,
   );
-  const bobP = (acmePrincipals as { id: string; refId: string }[]).find(
-    (p) => p.refId === bob.userId,
-  );
+  const acmePrincipalList = (
+    acmePrincipals as { data: { id: string; refId: string }[] }
+  ).data;
+  const bobP = acmePrincipalList.find((p) => p.refId === bob.userId);
   bobPrincipalId = bobP?.id ?? "";
 }
 log(`  Bob principal ID: ${bobPrincipalId}`);
@@ -247,9 +248,10 @@ const { data: widgetRoles } = await api(
   undefined,
   aliceCookies,
 );
-const widgetAdminRole = (widgetRoles as { id: string; name: string }[]).find(
-  (r) => r.name === "admin",
-);
+const widgetRolesList = (
+  widgetRoles as { data: { id: string; name: string }[] }
+).data;
+const widgetAdminRole = widgetRolesList.find((r) => r.name === "admin");
 
 const { status: carolInviteStatus, data: carolInviteData } = await api(
   "POST",
@@ -392,50 +394,146 @@ const { status: fedStatus, data: fedData } = await api(
 );
 checkOrSkip("create federation trust", fedStatus, 201, fedData);
 
+// -- Create providers --
+
+log("Creating providers...");
+
+const { status: prv1Status, data: prv1Data } = await api(
+  "POST",
+  `/api/tenants/${acmeTenantId}/providers`,
+  {
+    name: "OpenAI",
+    plugin: "openai",
+    metadata: { defaultModel: "gpt-4" },
+  },
+  aliceCookies,
+);
+checkOrSkip("create openai provider", prv1Status, 201, prv1Data);
+
+const { status: prv2Status, data: prv2Data } = await api(
+  "POST",
+  `/api/tenants/${acmeTenantId}/providers`,
+  {
+    name: "GitHub",
+    plugin: "github",
+    authorizationUrl: "https://github.com/login/oauth/authorize",
+    tokenUrl: "https://github.com/login/oauth/access_token",
+    userInfoUrl: "https://api.github.com/user",
+    scopes: ["repo", "read:user"],
+  },
+  aliceCookies,
+);
+checkOrSkip("create github provider", prv2Status, 201, prv2Data);
+
+const { status: prv3Status, data: prv3Data } = await api(
+  "POST",
+  `/api/tenants/${widgetsTenantId}/providers`,
+  {
+    name: "Stripe",
+    plugin: "stripe",
+  },
+  aliceCookies,
+);
+checkOrSkip("create stripe provider", prv3Status, 201, prv3Data);
+
+// Look up provider IDs (handles re-runs where providers already exist)
+const { data: acmeProviders } = await api(
+  "GET",
+  `/api/tenants/${acmeTenantId}/providers`,
+  undefined,
+  aliceCookies,
+);
+const providerList = acmeProviders as { data: { id: string; name: string }[] };
+const openaiProvider = providerList.data.find((p) => p.name === "OpenAI");
+const githubProvider = providerList.data.find((p) => p.name === "GitHub");
+
+const { data: widgetProviders } = await api(
+  "GET",
+  `/api/tenants/${widgetsTenantId}/providers`,
+  undefined,
+  aliceCookies,
+);
+const widgetProviderList = widgetProviders as {
+  data: { id: string; name: string }[];
+};
+const stripeProvider = widgetProviderList.data.find((p) => p.name === "Stripe");
+
+// -- Create OAuth clients --
+
+log("Creating OAuth clients...");
+
+if (githubProvider) {
+  const { status: oclStatus, data: oclData } = await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/oauth-clients`,
+    {
+      providerId: githubProvider.id,
+      name: "Acme GitHub App",
+      clientId: "fake-github-client-id",
+      clientSecret: "fake-github-client-secret",
+      redirectUris: ["http://localhost:3000/api/oauth/callback/github"],
+      defaultScopes: ["repo", "read:user"],
+    },
+    aliceCookies,
+  );
+  checkOrSkip("create github oauth client", oclStatus, 201, oclData);
+}
+
 // -- Create credentials --
 
 log("Creating credentials...");
 
-const { status: cred1Status, data: cred1Data } = await api(
-  "POST",
-  `/api/tenants/${acmeTenantId}/credentials`,
-  {
-    name: "OpenAI API Key",
-    type: "api_key",
-    description: "Production OpenAI key for Research Bot",
-    secret: "sk-fake-openai-key-for-seed-data",
-    metadata: { provider: "openai", model: "gpt-4" },
-  },
-  aliceCookies,
-);
-checkOrSkip("create openai credential", cred1Status, 201, cred1Data);
+if (openaiProvider) {
+  const { status: cred1Status, data: cred1Data } = await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/credentials`,
+    {
+      name: "OpenAI API Key",
+      type: "api_key",
+      providerId: openaiProvider.id,
+      description: "Production OpenAI key for Research Bot",
+      secret: "sk-fake-openai-key-for-seed-data",
+      scopes: ["chat", "embeddings"],
+      metadata: { model: "gpt-4" },
+    },
+    aliceCookies,
+  );
+  checkOrSkip("create openai credential", cred1Status, 201, cred1Data);
+}
 
-const { status: cred2Status, data: cred2Data } = await api(
-  "POST",
-  `/api/tenants/${acmeTenantId}/credentials`,
-  {
-    name: "GitHub OAuth Token",
-    type: "oauth_token",
-    description: "GitHub access for Code Review Bot",
-    secret: "ghp_fake-github-token-for-seed-data",
-    metadata: { scopes: ["repo", "pull_request"] },
-  },
-  aliceCookies,
-);
-checkOrSkip("create github credential", cred2Status, 201, cred2Data);
+if (githubProvider) {
+  const { status: cred2Status, data: cred2Data } = await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/credentials`,
+    {
+      name: "GitHub OAuth Token",
+      type: "oauth_token",
+      providerId: githubProvider.id,
+      description: "GitHub access for Code Review Bot",
+      secret: "ghp_fake-github-token-for-seed-data",
+      scopes: ["repo", "pull_request"],
+    },
+    aliceCookies,
+  );
+  checkOrSkip("create github credential", cred2Status, 201, cred2Data);
+}
 
-const { status: cred3Status, data: cred3Data } = await api(
-  "POST",
-  `/api/tenants/${widgetsTenantId}/credentials`,
-  {
-    name: "Stripe API Key",
-    type: "api_key",
-    description: "Stripe key for billing operations",
-    secret: "sk_test_fake-stripe-key-for-seed-data",
-  },
-  aliceCookies,
-);
-checkOrSkip("create stripe credential", cred3Status, 201, cred3Data);
+if (stripeProvider) {
+  const { status: cred3Status, data: cred3Data } = await api(
+    "POST",
+    `/api/tenants/${widgetsTenantId}/credentials`,
+    {
+      name: "Stripe API Key",
+      type: "api_key",
+      providerId: stripeProvider.id,
+      description: "Stripe key for billing operations",
+      secret: "sk_test_fake-stripe-key-for-seed-data",
+      scopes: ["charges:read", "refunds:write"],
+    },
+    aliceCookies,
+  );
+  checkOrSkip("create stripe credential", cred3Status, 201, cred3Data);
+}
 
 // -- Create wallets --
 
@@ -478,7 +576,7 @@ const { data: acmeAgents } = await api(
   undefined,
   aliceCookies,
 );
-const agentList = acmeAgents as { id: string; name: string }[];
+const agentList = (acmeAgents as { data: { id: string; name: string }[] }).data;
 const researchBot = agentList.find((a) => a.name === "Research Bot");
 const codeReviewBot = agentList.find((a) => a.name === "Code Review Bot");
 
@@ -488,7 +586,9 @@ const { data: widgetAgents } = await api(
   undefined,
   aliceCookies,
 );
-const widgetAgentList = widgetAgents as { id: string; name: string }[];
+const widgetAgentList = (
+  widgetAgents as { data: { id: string; name: string }[] }
+).data;
 const supportBot = widgetAgentList.find(
   (a) => a.name === "Customer Support Bot",
 );
@@ -597,7 +697,7 @@ const { status: mePrincipals, data: mePrinData } = await api(
 );
 check("get alice principals", mePrincipals, 200, mePrinData);
 log(
-  `  Alice has ${(mePrinData as unknown[]).length} principal(s) across tenants`,
+  `  Alice has ${(mePrinData as { data: unknown[] }).data.length} principal(s) across tenants`,
 );
 
 const { status: meAgents, data: meAgentData } = await api(
@@ -607,7 +707,9 @@ const { status: meAgents, data: meAgentData } = await api(
   aliceCookies,
 );
 check("get alice agents", meAgents, 200, meAgentData);
-log(`  Alice can see ${(meAgentData as unknown[]).length} agent(s)`);
+log(
+  `  Alice can see ${(meAgentData as { data: unknown[] }).data.length} agent(s)`,
+);
 
 // Verify Bob's view
 const { data: bobPrinData } = await api(
@@ -616,7 +718,9 @@ const { data: bobPrinData } = await api(
   undefined,
   bobCookies,
 );
-log(`  Bob has ${(bobPrinData as unknown[]).length} principal(s)`);
+log(
+  `  Bob has ${(bobPrinData as { data: unknown[] }).data.length} principal(s)`,
+);
 
 // Verify Carol's view
 const { data: carolPrinData } = await api(
@@ -625,6 +729,8 @@ const { data: carolPrinData } = await api(
   undefined,
   carolCookies,
 );
-log(`  Carol has ${(carolPrinData as unknown[]).length} principal(s)`);
+log(
+  `  Carol has ${(carolPrinData as { data: unknown[] }).data.length} principal(s)`,
+);
 
 log("Seed completed successfully.");
