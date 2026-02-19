@@ -17,11 +17,19 @@ import {
   FederationTrust,
   CreateFederationTrust,
   ErrorResponse,
+  paginatedSchema,
 } from "@interchange/types";
 
 import type { AppEnv, TenantRow } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
+import {
+  parsePageParams,
+  cursorCondition,
+  pageOrder,
+  paginatedResponse,
+  pageParameters,
+} from "../pagination";
 
 const SYSTEM_ROLES = ["owner", "admin", "member"] as const;
 
@@ -375,12 +383,13 @@ app.get(
   describeRoute({
     tags: ["Tenants"],
     summary: "List federation trust relationships",
+    parameters: [...pageParameters],
     responses: {
       200: {
         description: "Federation trusts",
         content: {
           "application/json": {
-            schema: resolver(FederationTrust.array()),
+            schema: resolver(paginatedSchema(FederationTrust)),
           },
         },
       },
@@ -390,12 +399,25 @@ app.get(
     // Set by resolveTenant middleware via /api/tenants/:tenantId/* wildcard
     const tenantCtx = c.get("tenant" as never) as TenantRow;
     const db = c.get("db");
-
-    const trusts = await db.query.federationTrust.findMany({
-      where: eq(federationTrust.tenantId, tenantCtx.id),
+    const { limit, cursor } = parsePageParams({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
     });
 
-    const targetIds = trusts.map((t) => t.targetTenantId);
+    const conditions = [eq(federationTrust.tenantId, tenantCtx.id)];
+    if (cursor) {
+      conditions.push(
+        cursorCondition(federationTrust.createdAt, federationTrust.id, cursor),
+      );
+    }
+
+    const rows = await db.query.federationTrust.findMany({
+      where: and(...conditions),
+      orderBy: pageOrder(federationTrust.createdAt, federationTrust.id),
+      limit,
+    });
+
+    const targetIds = rows.map((t) => t.targetTenantId);
     const tenants =
       targetIds.length > 0
         ? await db.query.tenant.findMany({
@@ -404,7 +426,7 @@ app.get(
         : [];
     const tenantMap = new Map(tenants.map((t) => [t.id, t]));
 
-    const results = trusts.map((trust) => {
+    const items = rows.map((trust) => {
       const target = tenantMap.get(trust.targetTenantId);
       return {
         tenantId: trust.targetTenantId,
@@ -415,7 +437,7 @@ app.get(
       };
     });
 
-    return c.json(results);
+    return c.json(paginatedResponse(items, rows, limit));
   },
 );
 

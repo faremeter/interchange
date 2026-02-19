@@ -9,12 +9,20 @@ import {
   WalletResponse,
   TransactionResponse,
   ErrorResponse,
+  paginatedSchema,
 } from "@interchange/types";
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
 import { requireGrant, idResource } from "../middleware/grant";
+import {
+  parsePageParams,
+  cursorCondition,
+  pageOrder,
+  paginatedResponse,
+  pageParameters,
+} from "../pagination";
 
 function formatWallet(row: typeof wallet.$inferSelect) {
   return {
@@ -54,12 +62,13 @@ app.get(
   describeRoute({
     tags: ["Wallets"],
     summary: "List wallets in the tenant",
+    parameters: [...pageParameters],
     responses: {
       200: {
         description: "List of wallets",
         content: {
           "application/json": {
-            schema: resolver(WalletResponse.array()),
+            schema: resolver(paginatedSchema(WalletResponse)),
           },
         },
       },
@@ -68,12 +77,23 @@ app.get(
   async (c) => {
     const tenantCtx = c.get("tenant");
     const db = c.get("db");
-
-    const rows = await db.query.wallet.findMany({
-      where: eq(wallet.tenantId, tenantCtx.id),
+    const { limit, cursor } = parsePageParams({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
     });
 
-    return c.json(rows.map(formatWallet));
+    const conditions = [eq(wallet.tenantId, tenantCtx.id)];
+    if (cursor) {
+      conditions.push(cursorCondition(wallet.createdAt, wallet.id, cursor));
+    }
+
+    const rows = await db.query.wallet.findMany({
+      where: and(...conditions),
+      orderBy: pageOrder(wallet.createdAt, wallet.id),
+      limit,
+    });
+
+    return c.json(paginatedResponse(rows.map(formatWallet), rows, limit));
   },
 );
 
@@ -275,13 +295,14 @@ app.get(
         in: "query",
         schema: { type: "string", enum: ["pending", "completed", "failed"] },
       },
+      ...pageParameters,
     ],
     responses: {
       200: {
         description: "List of transactions",
         content: {
           "application/json": {
-            schema: resolver(TransactionResponse.array()),
+            schema: resolver(paginatedSchema(TransactionResponse)),
           },
         },
       },
@@ -292,7 +313,6 @@ app.get(
     const walletId = c.req.param("walletId");
     const db = c.get("db");
 
-    // Verify wallet belongs to tenant
     const walletRow = await db.query.wallet.findFirst({
       where: and(eq(wallet.id, walletId), eq(wallet.tenantId, tenantCtx.id)),
     });
@@ -306,18 +326,29 @@ app.get(
 
     const agentId = c.req.query("agentId");
     const status = c.req.query("status");
+    const { limit, cursor } = parsePageParams({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
+    });
 
     const conditions = [eq(transaction.walletId, walletId)];
     if (agentId) conditions.push(eq(transaction.agentId, agentId));
     if (status === "pending" || status === "completed" || status === "failed") {
       conditions.push(eq(transaction.status, status));
     }
+    if (cursor) {
+      conditions.push(
+        cursorCondition(transaction.createdAt, transaction.id, cursor),
+      );
+    }
 
     const rows = await db.query.transaction.findMany({
       where: and(...conditions),
+      orderBy: pageOrder(transaction.createdAt, transaction.id),
+      limit,
     });
 
-    return c.json(rows.map(formatTransaction));
+    return c.json(paginatedResponse(rows.map(formatTransaction), rows, limit));
   },
 );
 

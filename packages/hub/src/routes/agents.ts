@@ -12,12 +12,20 @@ import {
   RollbackRequest,
   Capability,
   ErrorResponse,
+  paginatedSchema,
 } from "@interchange/types";
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
 import { requireGrant, idResource } from "../middleware/grant";
+import {
+  parsePageParams,
+  cursorCondition,
+  pageOrder,
+  paginatedResponse,
+  pageParameters,
+} from "../pagination";
 
 function formatAgent(row: typeof agent.$inferSelect) {
   return {
@@ -59,13 +67,14 @@ app.get(
           enum: ["deployed", "stopped", "updating", "error"],
         },
       },
+      ...pageParameters,
     ],
     responses: {
       200: {
         description: "List of agents",
         content: {
           "application/json": {
-            schema: resolver(AgentResponse.array()),
+            schema: resolver(paginatedSchema(AgentResponse)),
           },
         },
       },
@@ -75,6 +84,10 @@ app.get(
     const tenantCtx = c.get("tenant");
     const db = c.get("db");
     const status = c.req.query("status");
+    const { limit, cursor } = parsePageParams({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
+    });
 
     const conditions = [eq(agent.tenantId, tenantCtx.id)];
     if (
@@ -85,12 +98,17 @@ app.get(
     ) {
       conditions.push(eq(agent.status, status));
     }
+    if (cursor) {
+      conditions.push(cursorCondition(agent.createdAt, agent.id, cursor));
+    }
 
-    const agents = await db.query.agent.findMany({
+    const rows = await db.query.agent.findMany({
       where: and(...conditions),
+      orderBy: pageOrder(agent.createdAt, agent.id),
+      limit,
     });
 
-    return c.json(agents.map(formatAgent));
+    return c.json(paginatedResponse(rows.map(formatAgent), rows, limit));
   },
 );
 
@@ -388,12 +406,13 @@ app.get(
     tags: ["Agents"],
     summary: "List agent versions",
     description: "Lists all versions with their deployment status.",
+    parameters: [...pageParameters],
     responses: {
       200: {
         description: "List of versions",
         content: {
           "application/json": {
-            schema: resolver(AgentVersion.array()),
+            schema: resolver(paginatedSchema(AgentVersion)),
           },
         },
       },
@@ -402,18 +421,31 @@ app.get(
   async (c) => {
     const agentId = c.req.param("agentId");
     const db = c.get("db");
-
-    const versions = await db.query.agentVersion.findMany({
-      where: eq(agentVersion.agentId, agentId),
+    const { limit, cursor } = parsePageParams({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
     });
 
-    return c.json(
-      versions.map((v) => ({
-        version: v.version,
-        status: v.status as "active" | "inactive" | "failed",
-        createdAt: ts(v.createdAt),
-      })),
-    );
+    const conditions = [eq(agentVersion.agentId, agentId)];
+    if (cursor) {
+      conditions.push(
+        cursorCondition(agentVersion.createdAt, agentVersion.id, cursor),
+      );
+    }
+
+    const rows = await db.query.agentVersion.findMany({
+      where: and(...conditions),
+      orderBy: pageOrder(agentVersion.createdAt, agentVersion.id),
+      limit,
+    });
+
+    const items = rows.map((v) => ({
+      version: v.version,
+      status: v.status as "active" | "inactive" | "failed",
+      createdAt: ts(v.createdAt),
+    }));
+
+    return c.json(paginatedResponse(items, rows, limit));
   },
 );
 

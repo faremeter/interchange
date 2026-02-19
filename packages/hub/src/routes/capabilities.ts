@@ -9,12 +9,20 @@ import {
   CapabilityDetail,
   ModelInfo,
   ErrorResponse,
+  paginatedSchema,
 } from "@interchange/types";
 
 import type { TenantEnv, AppEnv } from "../context";
 import { first } from "../format";
 import { generateId } from "../ids";
 import { requireGrant, idResource } from "../middleware/grant";
+import {
+  parsePageParams,
+  cursorCondition,
+  pageOrder,
+  paginatedResponse,
+  pageParameters,
+} from "../pagination";
 
 type Pricing = {
   base?: { amount: string; currency: string };
@@ -54,13 +62,14 @@ app.get(
       { name: "minPrice", in: "query", schema: { type: "string" } },
       { name: "maxPrice", in: "query", schema: { type: "string" } },
       { name: "paymentMethod", in: "query", schema: { type: "string" } },
+      ...pageParameters,
     ],
     responses: {
       200: {
         description: "List of capabilities",
         content: {
           "application/json": {
-            schema: resolver(CapabilityDetail.array()),
+            schema: resolver(paginatedSchema(CapabilityDetail)),
           },
         },
       },
@@ -70,17 +79,27 @@ app.get(
     const tenantCtx = c.get("tenant");
     const db = c.get("db");
     const name = c.req.query("name");
+    const { limit, cursor } = parsePageParams({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
+    });
 
     const conditions = [eq(capability.tenantId, tenantCtx.id)];
     if (name) {
       conditions.push(ilike(capability.name, `%${name}%`));
     }
+    if (cursor) {
+      conditions.push(
+        cursorCondition(capability.createdAt, capability.id, cursor),
+      );
+    }
 
     const rows = await db.query.capability.findMany({
       where: and(...conditions),
+      orderBy: pageOrder(capability.createdAt, capability.id),
+      limit,
     });
 
-    // Batch-resolve agent names
     const agentIds = [...new Set(rows.map((r) => r.agentId))];
     const agentNames = new Map<string, string>();
     if (agentIds.length > 0) {
@@ -92,11 +111,11 @@ app.get(
       }
     }
 
-    return c.json(
-      rows.map((r) =>
-        formatCapability(r, agentNames.get(r.agentId) ?? r.agentId),
-      ),
+    const items = rows.map((r) =>
+      formatCapability(r, agentNames.get(r.agentId) ?? r.agentId),
     );
+
+    return c.json(paginatedResponse(items, rows, limit));
   },
 );
 

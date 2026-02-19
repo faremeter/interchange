@@ -8,12 +8,20 @@ import {
   UpdateCredential,
   CredentialResponse,
   ErrorResponse,
+  paginatedSchema,
 } from "@interchange/types";
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
 import { requireGrant, idResource } from "../middleware/grant";
+import {
+  parsePageParams,
+  cursorCondition,
+  pageOrder,
+  paginatedResponse,
+  pageParameters,
+} from "../pagination";
 
 function formatCredential(row: typeof credential.$inferSelect) {
   return {
@@ -38,12 +46,13 @@ app.get(
     summary: "List credentials",
     description:
       "Lists credential metadata. Secrets are never returned. Access for agents is managed through capability grants.",
+    parameters: [...pageParameters],
     responses: {
       200: {
         description: "List of credentials",
         content: {
           "application/json": {
-            schema: resolver(CredentialResponse.array()),
+            schema: resolver(paginatedSchema(CredentialResponse)),
           },
         },
       },
@@ -52,12 +61,25 @@ app.get(
   async (c) => {
     const tenantCtx = c.get("tenant");
     const db = c.get("db");
-
-    const rows = await db.query.credential.findMany({
-      where: eq(credential.tenantId, tenantCtx.id),
+    const { limit, cursor } = parsePageParams({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
     });
 
-    return c.json(rows.map(formatCredential));
+    const conditions = [eq(credential.tenantId, tenantCtx.id)];
+    if (cursor) {
+      conditions.push(
+        cursorCondition(credential.createdAt, credential.id, cursor),
+      );
+    }
+
+    const rows = await db.query.credential.findMany({
+      where: and(...conditions),
+      orderBy: pageOrder(credential.createdAt, credential.id),
+      limit,
+    });
+
+    return c.json(paginatedResponse(rows.map(formatCredential), rows, limit));
   },
 );
 
