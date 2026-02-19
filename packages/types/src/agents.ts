@@ -63,7 +63,7 @@ export const RollbackRequest = type({
   version: "string",
 });
 
-export const Capability = type({
+export const Offering = type({
   id: "string",
   agentId: "string",
   name: "string",

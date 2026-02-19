@@ -19,7 +19,7 @@ app.post(
     tags: ["Sessions"],
     summary: "Create a session",
     description:
-      "Creates a new session with the specified agent. Returns a session ID and session token (JWT for WebSocket authentication). Invoker-granted capabilities become grants with source 'invoker' scoped to the session lifetime.",
+      "Creates a new session with the specified agent. Returns a session ID and session token (JWT for WebSocket authentication). Invoker grants become grants with source 'invoker' scoped to the session lifetime.",
     responses: {
       201: {
         description: "Session created",
@@ -104,7 +104,7 @@ app.delete(
     tags: ["Sessions"],
     summary: "End a session",
     description:
-      "Ends the session and expires all invoker-granted capabilities associated with it.",
+      "Ends the session and expires all invoker grants associated with it.",
     responses: {
       204: {
         description: "Session ended",

@@ -104,7 +104,7 @@ app.post(
     tags: ["Wallets"],
     summary: "Create a wallet",
     description:
-      "Creates a wallet with the specified payment backend and currency. Access for agents is managed through capability grants.",
+      "Creates a wallet with the specified payment backend and currency. Access for agents is managed through grants.",
     responses: {
       201: {
         description: "Wallet created",

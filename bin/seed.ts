@@ -565,9 +565,9 @@ const { status: w2Status, data: w2Data } = await api(
 );
 checkOrSkip("create widgets wallet", w2Status, 201, w2Data);
 
-// -- Create capabilities --
+// -- Create offerings --
 
-log("Creating capabilities...");
+log("Creating offerings...");
 
 // Get agent IDs from listing if we didn't just create them
 const { data: acmeAgents } = await api(
@@ -594,9 +594,9 @@ const supportBot = widgetAgentList.find(
 );
 
 if (researchBot) {
-  const { status: cap1Status, data: cap1Data } = await api(
+  const { status: ofr1Status, data: ofr1Data } = await api(
     "POST",
-    `/api/tenants/${acmeTenantId}/capabilities`,
+    `/api/tenants/${acmeTenantId}/offerings`,
     {
       agentId: researchBot.id,
       name: "Web Research",
@@ -609,11 +609,11 @@ if (researchBot) {
     },
     aliceCookies,
   );
-  checkOrSkip("create web research capability", cap1Status, 201, cap1Data);
+  checkOrSkip("create web research offering", ofr1Status, 201, ofr1Data);
 
-  const { status: cap2Status, data: cap2Data } = await api(
+  const { status: ofr2Status, data: ofr2Data } = await api(
     "POST",
-    `/api/tenants/${acmeTenantId}/capabilities`,
+    `/api/tenants/${acmeTenantId}/offerings`,
     {
       agentId: researchBot.id,
       name: "Document Summarization",
@@ -627,13 +627,13 @@ if (researchBot) {
     },
     aliceCookies,
   );
-  checkOrSkip("create summarization capability", cap2Status, 201, cap2Data);
+  checkOrSkip("create summarization offering", ofr2Status, 201, ofr2Data);
 }
 
 if (codeReviewBot) {
-  const { status: cap3Status, data: cap3Data } = await api(
+  const { status: ofr3Status, data: ofr3Data } = await api(
     "POST",
-    `/api/tenants/${acmeTenantId}/capabilities`,
+    `/api/tenants/${acmeTenantId}/offerings`,
     {
       agentId: codeReviewBot.id,
       name: "Pull Request Review",
@@ -654,13 +654,13 @@ if (codeReviewBot) {
     },
     aliceCookies,
   );
-  checkOrSkip("create pr review capability", cap3Status, 201, cap3Data);
+  checkOrSkip("create pr review offering", ofr3Status, 201, ofr3Data);
 }
 
 if (supportBot) {
-  const { status: cap4Status, data: cap4Data } = await api(
+  const { status: ofr4Status, data: ofr4Data } = await api(
     "POST",
-    `/api/tenants/${widgetsTenantId}/capabilities`,
+    `/api/tenants/${widgetsTenantId}/offerings`,
     {
       agentId: supportBot.id,
       name: "Ticket Resolution",
@@ -674,7 +674,7 @@ if (supportBot) {
     },
     aliceCookies,
   );
-  checkOrSkip("create ticket resolution capability", cap4Status, 201, cap4Data);
+  checkOrSkip("create ticket resolution offering", ofr4Status, 201, ofr4Data);
 }
 
 // -- Verify with /me endpoints --

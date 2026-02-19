@@ -71,7 +71,7 @@ app.post(
     tags: ["Approvals"],
     summary: "Approve an action",
     description:
-      "Approves the pending action. With scope 'once', the approval is one-time. With scope 'always', a persistent capability grant is created so the agent won't need to ask again.",
+      "Approves the pending action. With scope 'once', the approval is one-time. With scope 'always', a persistent grant is created so the agent won't need to ask again.",
     responses: {
       200: {
         description: "Action approved",

@@ -3,7 +3,7 @@ import { jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 import { agent } from "./agents";
 import { tenant } from "./tenants";
 
-export const capability = pgTable("capability", {
+export const offering = pgTable("offering", {
   id: text("id").primaryKey(),
   agentId: text("agent_id")
     .notNull()

@@ -13,7 +13,7 @@ const PREFIXES = {
   credential: "crd_",
   wallet: "wlt_",
   transaction: "txn_",
-  capability: "cap_",
+  offering: "ofr_",
 } as const;
 
 type IDKind = keyof typeof PREFIXES;

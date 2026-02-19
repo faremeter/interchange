@@ -6,7 +6,7 @@ _Implementation_
 
 The Interchange message bus is built on SMTP and IMAP as wire protocols, leveraging existing global messaging infrastructure as the transport layer for agent communication. SMTP/IMAP provide the durable, federated message routing that Interchange needs — but Interchange clients are not email clients.
 
-Interchange clients (kernels, UIs, CLIs) speak SMTP/IMAP to send and receive messages, but they are purpose-built for Interchange semantics: structured message payloads, conversation threading, capability negotiation, and real-time session channels. A traditional email client _could_ connect to an agent's inbox and see messages, but the experience would be like reading raw HTTP traffic — technically possible, not practically useful.
+Interchange clients (kernels, UIs, CLIs) speak SMTP/IMAP to send and receive messages, but they are purpose-built for Interchange semantics: structured message payloads, conversation threading, offering negotiation, and real-time session channels. A traditional email client _could_ connect to an agent's inbox and see messages, but the experience would be like reading raw HTTP traffic — technically possible, not practically useful.
 
 ### Why SMTP/IMAP
 
@@ -312,11 +312,11 @@ Policy violations are logged and the payment is rejected. The agent receives an 
 
 ### Pricing Advertisement
 
-Agents that charge for their services publish pricing in their capability metadata:
+Agents that charge for their services publish pricing in their offering metadata:
 
 ```json
 {
-  "capability": "web-search",
+  "offering": "web-search",
   "pricing": {
     "base": { "amount": "0.001", "currency": "USD" },
     "methods": ["ethereum", "lightning", "stripe"],
@@ -335,7 +335,7 @@ All payment transactions are logged to the audit trail:
 - Transaction ID / hash
 - Amount and currency
 - Payer and recipient identities
-- Associated request (tool invocation, capability call)
+- Associated request (tool invocation, offering call)
 - Timestamp
 - Success/failure status
 
@@ -372,11 +372,11 @@ Cross-tenant communication uses standard SMTP federation:
 
 ### Tenant Discovery
 
-Tenants publish their federated agents and capabilities through DNS:
+Tenants publish their federated agents and offerings through DNS:
 
 - **SRV records** - Advertise the tenant's Interchange endpoints
-- **TXT records** - Publish federation policies and capability manifests
-- **Well-known URIs** - HTTPS endpoints for detailed capability and discovery queries (discovered via DNS)
+- **TXT records** - Publish federation policies and offering manifests
+- **Well-known URIs** - HTTPS endpoints for detailed offering and discovery queries (discovered via DNS)
 
 This allows agents to discover other tenants and their available services using standard DNS resolution.
 

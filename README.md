@@ -126,7 +126,7 @@ With the hub running, seed the database with test data:
 bin/seed.ts
 ```
 
-Creates 3 users (alice/bob/carol, all with password `password123`), 2 tenants, 3 agents, roles, grants, credentials, wallets, capabilities, and a federation trust. The seed is idempotent -- it signs in existing users and skips resources that already exist (409).
+Creates 3 users (alice/bob/carol, all with password `password123`), 2 tenants, 3 agents, roles, grants, credentials, wallets, offerings, and a federation trust. The seed is idempotent -- it signs in existing users and skips resources that already exist (409).
 
 To start completely fresh, drop and recreate the schema, then re-run migrations and seed:
 
@@ -195,7 +195,7 @@ The hub exposes a REST API at `http://localhost:3000`. All tenant-scoped routes 
 - `POST /api/tenants/:tenantId/agents` -- create an agent
 - `GET /api/tenants/:tenantId/credentials` -- list credentials
 - `GET /api/tenants/:tenantId/wallets` -- list wallets
-- `GET /api/tenants/:tenantId/capabilities` -- list capabilities
+- `GET /api/tenants/:tenantId/offerings` -- list offerings
 - `GET /openapi.json` -- full OpenAPI spec
 
 Full reference: run `bin/gen-api-docs.ts` to generate `docs/API.md`.

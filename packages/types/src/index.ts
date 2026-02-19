@@ -11,6 +11,7 @@ export * from "./wallets";
 export * from "./providers";
 export * from "./oauth-clients";
 export * from "./credentials";
-export * from "./capabilities";
+export * from "./offerings";
+export * from "./models";
 export * from "./observability";
 export * from "./agent-data";

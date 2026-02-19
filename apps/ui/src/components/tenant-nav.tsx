@@ -11,7 +11,7 @@ const NAV_ITEMS = [
   { label: "Grants", path: "/grants" },
   { label: "Credentials", path: "/credentials" },
   { label: "Wallets", path: "/wallets" },
-  { label: "Capabilities", path: "/capabilities" },
+  { label: "Offerings", path: "/offerings" },
 ] as const;
 
 export function TenantNav() {

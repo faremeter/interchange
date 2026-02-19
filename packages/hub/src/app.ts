@@ -17,7 +17,7 @@ import { walletRoutes } from "./routes/wallets";
 import { providerRoutes } from "./routes/providers";
 import { oauthClientRoutes } from "./routes/oauth-clients";
 import { credentialRoutes } from "./routes/credentials";
-import { capabilityRoutes, modelRoutes } from "./routes/capabilities";
+import { offeringRoutes, modelRoutes } from "./routes/offerings";
 import { observabilityRoutes } from "./routes/observability";
 import { agentDataRoutes } from "./routes/agent-data";
 
@@ -92,7 +92,7 @@ export function createApp({ auth, db }: CreateAppOpts) {
   app.route("/api/tenants/:tenantId/providers", providerRoutes);
   app.route("/api/tenants/:tenantId/oauth-clients", oauthClientRoutes);
   app.route("/api/tenants/:tenantId/credentials", credentialRoutes);
-  app.route("/api/tenants/:tenantId/capabilities", capabilityRoutes);
+  app.route("/api/tenants/:tenantId/offerings", offeringRoutes);
   app.route("/api/tenants/:tenantId", observabilityRoutes);
   app.route("/api/tenants/:tenantId/agents/:agentId", agentDataRoutes);
 

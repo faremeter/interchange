@@ -16,7 +16,7 @@ import { TenantRolesPage } from "@/pages/tenant-roles";
 import { TenantGrantsPage } from "@/pages/tenant-grants";
 import { TenantCredentialsPage } from "@/pages/tenant-credentials";
 import { TenantWalletsPage } from "@/pages/tenant-wallets";
-import { TenantCapabilitiesPage } from "@/pages/tenant-capabilities";
+import { TenantOfferingsPage } from "@/pages/tenant-offerings";
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -88,10 +88,10 @@ const tenantWalletsRoute = createRoute({
   component: TenantWalletsPage,
 });
 
-const tenantCapabilitiesRoute = createRoute({
+const tenantOfferingsRoute = createRoute({
   getParentRoute: () => authedRoute,
-  path: "/tenants/$tenantId/capabilities",
-  component: TenantCapabilitiesPage,
+  path: "/tenants/$tenantId/offerings",
+  component: TenantOfferingsPage,
 });
 
 const routeTree = rootRoute.addChildren([
@@ -105,7 +105,7 @@ const routeTree = rootRoute.addChildren([
     tenantGrantsRoute,
     tenantCredentialsRoute,
     tenantWalletsRoute,
-    tenantCapabilitiesRoute,
+    tenantOfferingsRoute,
   ]),
 ]);
 
