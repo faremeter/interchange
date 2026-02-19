@@ -16,12 +16,20 @@ import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
 
-function formatGrant(row: typeof grant.$inferSelect) {
+type ResolvedNames = {
+  roleNames: Map<string, string>;
+  principalNames: Map<string, string>;
+};
+
+function formatGrant(row: typeof grant.$inferSelect, names?: ResolvedNames) {
   return {
     id: row.id,
     tenantId: row.tenantId,
     roleId: row.roleId ?? null,
+    roleName: (row.roleId && names?.roleNames.get(row.roleId)) ?? null,
     principalId: row.principalId ?? null,
+    principalName:
+      (row.principalId && names?.principalNames.get(row.principalId)) ?? null,
     resource: row.resource,
     action: row.action,
     effect: row.effect as "allow" | "deny" | "ask",
@@ -31,6 +39,75 @@ function formatGrant(row: typeof grant.$inferSelect) {
     createdAt: ts(row.createdAt),
     updatedAt: ts(row.updatedAt),
   };
+}
+
+async function resolveGrantNames(
+  db: TenantEnv["Variables"]["db"],
+  grants: (typeof grant.$inferSelect)[],
+): Promise<ResolvedNames> {
+  const roleIds = [
+    ...new Set(
+      grants.map((g) => g.roleId).filter((id): id is string => id !== null),
+    ),
+  ];
+  const principalIds = [
+    ...new Set(
+      grants
+        .map((g) => g.principalId)
+        .filter((id): id is string => id !== null),
+    ),
+  ];
+
+  const roleNames = new Map<string, string>();
+  if (roleIds.length > 0) {
+    const roles = await db.query.role.findMany({
+      where: (r, { inArray }) => inArray(r.id, roleIds),
+    });
+    for (const r of roles) {
+      roleNames.set(r.id, r.name);
+    }
+  }
+
+  const principalNames = new Map<string, string>();
+  if (principalIds.length > 0) {
+    const principals = await db.query.principal.findMany({
+      where: (p, { inArray }) => inArray(p.id, principalIds),
+    });
+
+    const userRefIds = principals
+      .filter((p) => p.kind === "user")
+      .map((p) => p.refId);
+    const agentRefIds = principals
+      .filter((p) => p.kind === "agent")
+      .map((p) => p.refId);
+
+    const refToName = new Map<string, string>();
+
+    if (userRefIds.length > 0) {
+      const users = await db.query.user.findMany({
+        where: (u, { inArray }) => inArray(u.id, userRefIds),
+      });
+      for (const u of users) {
+        refToName.set(u.id, u.name);
+      }
+    }
+
+    if (agentRefIds.length > 0) {
+      const agents = await db.query.agent.findMany({
+        where: (a, { inArray }) => inArray(a.id, agentRefIds),
+      });
+      for (const a of agents) {
+        refToName.set(a.id, a.name);
+      }
+    }
+
+    for (const p of principals) {
+      const name = refToName.get(p.refId);
+      if (name) principalNames.set(p.id, name);
+    }
+  }
+
+  return { roleNames, principalNames };
 }
 
 const app = new Hono<TenantEnv>();
@@ -84,7 +161,8 @@ app.get(
       where: and(...conditions),
     });
 
-    return c.json(grants.map(formatGrant));
+    const names = await resolveGrantNames(db, grants);
+    return c.json(grants.map((g) => formatGrant(g, names)));
   },
 );
 

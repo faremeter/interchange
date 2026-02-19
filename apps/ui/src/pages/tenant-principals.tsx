@@ -37,8 +37,8 @@ export function TenantPrincipalsPage() {
           <table className="w-full text-left text-sm">
             <thead className="border-b border-gray-100 bg-gray-50">
               <tr>
+                <th className="px-4 py-2 font-medium text-gray-600">Name</th>
                 <th className="px-4 py-2 font-medium text-gray-600">Kind</th>
-                <th className="px-4 py-2 font-medium text-gray-600">Ref ID</th>
                 <th className="px-4 py-2 font-medium text-gray-600">Status</th>
                 <th className="px-4 py-2 font-medium text-gray-600">Roles</th>
               </tr>
@@ -50,12 +50,17 @@ export function TenantPrincipalsPage() {
                   className="border-b border-gray-50 last:border-0"
                 >
                   <td className="px-4 py-2">
+                    <div className="font-medium text-gray-900">
+                      {p.displayName}
+                    </div>
+                    {p.email ? (
+                      <div className="text-xs text-gray-400">{p.email}</div>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-2">
                     <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
                       {KIND_LABELS[p.kind] ?? p.kind}
                     </span>
-                  </td>
-                  <td className="px-4 py-2 font-mono text-xs text-gray-500">
-                    {p.refId}
                   </td>
                   <td className="px-4 py-2">
                     <span
