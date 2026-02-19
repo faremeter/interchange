@@ -1,4 +1,12 @@
 {
-  "extends": "./tsconfig.base.json",
-  "include": ["**/*.ts"]
+  "files": [],
+  "references": [
+    { "path": "packages/types" },
+    { "path": "packages/log" },
+    { "path": "packages/db" },
+    { "path": "packages/authz" },
+    { "path": "packages/hub" },
+    { "path": "apps/hub" },
+    { "path": "apps/ui" }
+  ]
 }
