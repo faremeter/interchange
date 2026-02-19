@@ -157,6 +157,62 @@ app.post(
       updatedAt: now,
     });
 
+    // Grant admin role broad management access
+    const adminRoleId = roleIds["admin"];
+    if (adminRoleId) {
+      await db.insert(grant).values([
+        {
+          id: generateId("grant"),
+          tenantId,
+          roleId: adminRoleId,
+          resource: "*",
+          action: "read",
+          effect: "allow",
+          source: "system",
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: generateId("grant"),
+          tenantId,
+          roleId: adminRoleId,
+          resource: "*",
+          action: "create",
+          effect: "allow",
+          source: "system",
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: generateId("grant"),
+          tenantId,
+          roleId: adminRoleId,
+          resource: "*",
+          action: "manage",
+          effect: "allow",
+          source: "system",
+          createdAt: now,
+          updatedAt: now,
+        },
+      ]);
+    }
+
+    // Grant member role read-only access
+    const memberRoleId = roleIds["member"];
+    if (memberRoleId) {
+      await db.insert(grant).values({
+        id: generateId("grant"),
+        tenantId,
+        roleId: memberRoleId,
+        resource: "*",
+        action: "read",
+        effect: "allow",
+        source: "system",
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
     return c.json(formatTenant(tenantRow), 201);
   },
 );
