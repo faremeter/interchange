@@ -59,16 +59,24 @@ export function TenantGrantsPage() {
                   </td>
                   <td className="px-4 py-2 text-gray-500">{g.source}</td>
                   <td className="px-4 py-2">
-                    {g.roleId && (
-                      <span className="font-mono text-xs text-purple-600">
-                        role:{g.roleId.slice(0, 12)}...
+                    {g.roleName ? (
+                      <span className="rounded bg-purple-50 px-1.5 py-0.5 text-xs text-purple-700">
+                        {g.roleName}
                       </span>
-                    )}
-                    {g.principalId && (
-                      <span className="font-mono text-xs text-blue-600">
-                        principal:{g.principalId.slice(0, 12)}...
+                    ) : g.roleId ? (
+                      <span className="font-mono text-xs text-purple-400">
+                        {g.roleId}
                       </span>
-                    )}
+                    ) : null}
+                    {g.principalName ? (
+                      <span className="rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-700">
+                        {g.principalName}
+                      </span>
+                    ) : g.principalId ? (
+                      <span className="font-mono text-xs text-blue-400">
+                        {g.principalId}
+                      </span>
+                    ) : null}
                   </td>
                 </tr>
               ))}

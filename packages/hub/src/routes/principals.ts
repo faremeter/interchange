@@ -14,20 +14,59 @@ import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
 
+type ResolvedIdentity = { displayName: string; email?: string };
+
 function formatPrincipal(
   row: typeof principal.$inferSelect,
   roles: { id: string; name: string }[],
+  identity?: ResolvedIdentity,
 ) {
   return {
     id: row.id,
     tenantId: row.tenantId,
     kind: row.kind as "user" | "agent",
     refId: row.refId,
+    displayName: identity?.displayName ?? row.refId,
+    ...(identity?.email ? { email: identity.email } : {}),
     status: row.status as "active" | "suspended" | "invited" | "deactivated",
     roles,
     createdAt: ts(row.createdAt),
     updatedAt: ts(row.updatedAt),
   };
+}
+
+async function resolveIdentities(
+  db: TenantEnv["Variables"]["db"],
+  principals: (typeof principal.$inferSelect)[],
+): Promise<Map<string, ResolvedIdentity>> {
+  const identities = new Map<string, ResolvedIdentity>();
+
+  const userRefIds = principals
+    .filter((p) => p.kind === "user")
+    .map((p) => p.refId);
+  const agentRefIds = principals
+    .filter((p) => p.kind === "agent")
+    .map((p) => p.refId);
+
+  if (userRefIds.length > 0) {
+    const users = await db.query.user.findMany({
+      where: (u, { inArray }) => inArray(u.id, userRefIds),
+    });
+    for (const u of users) {
+      identities.set(u.id, { displayName: u.name, email: u.email });
+    }
+  }
+
+  if (agentRefIds.length > 0) {
+    const agents = await db.query.agent.findMany({
+      where: (a, { inArray }) => inArray(a.id, agentRefIds),
+    });
+    for (const a of agents) {
+      identities.set(a.id, { displayName: a.name });
+    }
+  }
+
+  return identities;
 }
 
 async function loadRolesForPrincipal(
@@ -133,8 +172,14 @@ app.get(
       rolesByPrincipal.set(a.principalId, list);
     }
 
+    const identities = await resolveIdentities(db, principals);
+
     const results = principals.map((p) =>
-      formatPrincipal(p, rolesByPrincipal.get(p.id) ?? []),
+      formatPrincipal(
+        p,
+        rolesByPrincipal.get(p.id) ?? [],
+        identities.get(p.refId),
+      ),
     );
 
     return c.json(results);
@@ -183,7 +228,8 @@ app.get(
     }
 
     const roles = await loadRolesForPrincipal(db, principalId);
-    return c.json(formatPrincipal(row, roles));
+    const identities = await resolveIdentities(db, [row]);
+    return c.json(formatPrincipal(row, roles, identities.get(row.refId)));
   },
 );
 
@@ -234,7 +280,10 @@ app.patch(
     }
 
     const roles = await loadRolesForPrincipal(db, principalId);
-    return c.json(formatPrincipal(updated, roles));
+    const identities = await resolveIdentities(db, [updated]);
+    return c.json(
+      formatPrincipal(updated, roles, identities.get(updated.refId)),
+    );
   },
 );
 
@@ -386,7 +435,11 @@ inviteApp.post(
       }
     }
 
-    return c.json(formatPrincipal(row, roles), 201);
+    const identity: ResolvedIdentity = {
+      displayName: invitedUser.name,
+      email: invitedUser.email,
+    };
+    return c.json(formatPrincipal(row, roles, identity), 201);
   },
 );
 

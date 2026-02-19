@@ -5,6 +5,8 @@ export const PrincipalResponse = type({
   tenantId: "string",
   kind: "'user' | 'agent'",
   refId: "string",
+  displayName: "string",
+  "email?": "string",
   status: "'active' | 'suspended' | 'invited' | 'deactivated'",
   roles: type({
     id: "string",
