@@ -8,6 +8,8 @@ const PREFIXES = {
   agent: "agt_",
   agentVersion: "avr_",
   federationTrust: "ftr_",
+  provider: "prv_",
+  oauthClient: "ocl_",
   credential: "crd_",
   wallet: "wlt_",
   transaction: "txn_",
