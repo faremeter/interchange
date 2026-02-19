@@ -38,10 +38,19 @@ export const meProfileQuery = queryOptions({
 
 export const mePrincipalsQuery = queryOptions({
   queryKey: ["me", "principals"],
-  queryFn: () => api<PrincipalSummary[]>("GET", "/api/me/principals"),
+  queryFn: async () => {
+    const res = await api<{ data: PrincipalSummary[] }>(
+      "GET",
+      "/api/me/principals",
+    );
+    return res.data;
+  },
 });
 
 export const meAgentsQuery = queryOptions({
   queryKey: ["me", "agents"],
-  queryFn: () => api<AgentSummary[]>("GET", "/api/me/agents"),
+  queryFn: async () => {
+    const res = await api<{ data: AgentSummary[] }>("GET", "/api/me/agents");
+    return res.data;
+  },
 });

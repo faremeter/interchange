@@ -73,31 +73,52 @@ export function tenantDetailQuery(tenantId: string) {
 export function tenantPrincipalsQuery(tenantId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "principals"],
-    queryFn: () =>
-      api<PrincipalResponse[]>("GET", `/api/tenants/${tenantId}/principals`),
+    queryFn: async () => {
+      const res = await api<{ data: PrincipalResponse[] }>(
+        "GET",
+        `/api/tenants/${tenantId}/principals`,
+      );
+      return res.data;
+    },
   });
 }
 
 export function tenantRolesQuery(tenantId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "roles"],
-    queryFn: () => api<RoleResponse[]>("GET", `/api/tenants/${tenantId}/roles`),
+    queryFn: async () => {
+      const res = await api<{ data: RoleResponse[] }>(
+        "GET",
+        `/api/tenants/${tenantId}/roles`,
+      );
+      return res.data;
+    },
   });
 }
 
 export function tenantAgentsQuery(tenantId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "agents"],
-    queryFn: () =>
-      api<AgentResponse[]>("GET", `/api/tenants/${tenantId}/agents`),
+    queryFn: async () => {
+      const res = await api<{ data: AgentResponse[] }>(
+        "GET",
+        `/api/tenants/${tenantId}/agents`,
+      );
+      return res.data;
+    },
   });
 }
 
 export function tenantGrantsQuery(tenantId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "grants"],
-    queryFn: () =>
-      api<GrantResponse[]>("GET", `/api/tenants/${tenantId}/grants`),
+    queryFn: async () => {
+      const res = await api<{ data: GrantResponse[] }>(
+        "GET",
+        `/api/tenants/${tenantId}/grants`,
+      );
+      return res.data;
+    },
   });
 }
 
@@ -143,23 +164,38 @@ type CapabilityResponse = {
 export function tenantCredentialsQuery(tenantId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "credentials"],
-    queryFn: () =>
-      api<CredentialResponse[]>("GET", `/api/tenants/${tenantId}/credentials`),
+    queryFn: async () => {
+      const res = await api<{ data: CredentialResponse[] }>(
+        "GET",
+        `/api/tenants/${tenantId}/credentials`,
+      );
+      return res.data;
+    },
   });
 }
 
 export function tenantWalletsQuery(tenantId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "wallets"],
-    queryFn: () =>
-      api<WalletResponse[]>("GET", `/api/tenants/${tenantId}/wallets`),
+    queryFn: async () => {
+      const res = await api<{ data: WalletResponse[] }>(
+        "GET",
+        `/api/tenants/${tenantId}/wallets`,
+      );
+      return res.data;
+    },
   });
 }
 
 export function tenantCapabilitiesQuery(tenantId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "capabilities"],
-    queryFn: () =>
-      api<CapabilityResponse[]>("GET", `/api/tenants/${tenantId}/capabilities`),
+    queryFn: async () => {
+      const res = await api<{ data: CapabilityResponse[] }>(
+        "GET",
+        `/api/tenants/${tenantId}/capabilities`,
+      );
+      return res.data;
+    },
   });
 }

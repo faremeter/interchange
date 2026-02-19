@@ -1,8 +1,8 @@
-import { eq, and } from "drizzle-orm";
+import { type SQL, eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver } from "hono-openapi";
 
-import { principal } from "@interchange/db/schema";
+import { agent, principal } from "@interchange/db/schema";
 import {
   UserProfile,
   PrincipalSummary,
@@ -10,10 +10,18 @@ import {
   SessionSummary,
   ApprovalSummary,
   ErrorResponse,
+  paginatedSchema,
 } from "@interchange/types";
 
 import type { AppEnv } from "../context";
 import { ts } from "../format";
+import {
+  parsePageParams,
+  cursorCondition,
+  pageOrder,
+  paginatedResponse,
+  pageParameters,
+} from "../pagination";
 
 const app = new Hono<AppEnv>();
 
@@ -64,12 +72,13 @@ app.get(
     summary: "List principals across all tenants",
     description:
       "Returns all of the authenticated user's principals across tenants, with tenant name, roles, and status in each.",
+    parameters: [...pageParameters],
     responses: {
       200: {
         description: "List of principals across tenants",
         content: {
           "application/json": {
-            schema: resolver(PrincipalSummary.array()),
+            schema: resolver(paginatedSchema(PrincipalSummary)),
           },
         },
       },
@@ -90,12 +99,28 @@ app.get(
       );
     }
     const db = c.get("db");
-
-    const principals = await db.query.principal.findMany({
-      where: and(eq(principal.kind, "user"), eq(principal.refId, user.id)),
+    const { limit, cursor } = parsePageParams({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
     });
 
-    const tenantIds = principals.map((p) => p.tenantId);
+    const conditions = [
+      eq(principal.kind, "user"),
+      eq(principal.refId, user.id),
+    ];
+    if (cursor) {
+      conditions.push(
+        cursorCondition(principal.createdAt, principal.id, cursor),
+      );
+    }
+
+    const rows = await db.query.principal.findMany({
+      where: and(...conditions),
+      orderBy: pageOrder(principal.createdAt, principal.id),
+      limit,
+    });
+
+    const tenantIds = rows.map((p) => p.tenantId);
     const tenants =
       tenantIds.length > 0
         ? await db.query.tenant.findMany({
@@ -104,7 +129,7 @@ app.get(
         : [];
     const tenantMap = new Map(tenants.map((t) => [t.id, t]));
 
-    const principalIds = principals.map((p) => p.id);
+    const principalIds = rows.map((p) => p.id);
     const assignments =
       principalIds.length > 0
         ? await db.query.principalRole.findMany({
@@ -133,7 +158,7 @@ app.get(
       assignmentsByPrincipal.set(a.principalId, list);
     }
 
-    const results = principals.map((p) => {
+    const items = rows.map((p) => {
       const t = tenantMap.get(p.tenantId);
       return {
         principalId: p.id,
@@ -146,7 +171,7 @@ app.get(
       };
     });
 
-    return c.json(results);
+    return c.json(paginatedResponse(items, rows, limit));
   },
 );
 
@@ -157,12 +182,13 @@ app.get(
     summary: "List agents across all tenants",
     description:
       "Aggregates agents from all tenants the user belongs to. Each result is tagged with tenantId.",
+    parameters: [...pageParameters],
     responses: {
       200: {
         description: "Agents across tenants",
         content: {
           "application/json": {
-            schema: resolver(AgentSummary.array()),
+            schema: resolver(paginatedSchema(AgentSummary)),
           },
         },
       },
@@ -177,24 +203,38 @@ app.get(
       );
     }
     const db = c.get("db");
+    const { limit, cursor } = parsePageParams({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
+    });
 
     const principals = await db.query.principal.findMany({
       where: and(eq(principal.kind, "user"), eq(principal.refId, user.id)),
     });
 
     const tenantIds = principals.map((p) => p.tenantId);
-    if (tenantIds.length === 0) return c.json([]);
+    if (tenantIds.length === 0) {
+      return c.json({ data: [], nextCursor: null });
+    }
 
     const tenants = await db.query.tenant.findMany({
       where: (t, { inArray }) => inArray(t.id, tenantIds),
     });
     const tenantMap = new Map(tenants.map((t) => [t.id, t]));
 
-    const agents = await db.query.agent.findMany({
-      where: (a, { inArray }) => inArray(a.tenantId, tenantIds),
+    const conditions: SQL[] = [];
+    if (cursor) {
+      conditions.push(cursorCondition(agent.createdAt, agent.id, cursor));
+    }
+
+    const rows = await db.query.agent.findMany({
+      where: (a, { inArray }) =>
+        and(inArray(a.tenantId, tenantIds), ...conditions),
+      orderBy: pageOrder(agent.createdAt, agent.id),
+      limit,
     });
 
-    const results = agents.map((a) => ({
+    const items = rows.map((a) => ({
       id: a.id,
       tenantId: a.tenantId,
       tenantName: tenantMap.get(a.tenantId)?.name ?? "Unknown",
@@ -203,7 +243,7 @@ app.get(
       status: a.status as "deployed" | "stopped" | "updating" | "error",
     }));
 
-    return c.json(results);
+    return c.json(paginatedResponse(items, rows, limit));
   },
 );
 

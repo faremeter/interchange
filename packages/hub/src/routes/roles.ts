@@ -8,12 +8,20 @@ import {
   UpdateRole,
   RoleResponse,
   ErrorResponse,
+  paginatedSchema,
 } from "@interchange/types";
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
 import { requireGrant, idResource } from "../middleware/grant";
+import {
+  parsePageParams,
+  cursorCondition,
+  pageOrder,
+  paginatedResponse,
+  pageParameters,
+} from "../pagination";
 
 function formatRole(row: typeof role.$inferSelect) {
   return {
@@ -37,12 +45,13 @@ app.get(
     summary: "List roles in the tenant",
     description:
       "Lists both system roles (owner, admin, member) and custom roles.",
+    parameters: [...pageParameters],
     responses: {
       200: {
         description: "List of roles",
         content: {
           "application/json": {
-            schema: resolver(RoleResponse.array()),
+            schema: resolver(paginatedSchema(RoleResponse)),
           },
         },
       },
@@ -51,12 +60,23 @@ app.get(
   async (c) => {
     const tenantCtx = c.get("tenant");
     const db = c.get("db");
-
-    const roles = await db.query.role.findMany({
-      where: eq(role.tenantId, tenantCtx.id),
+    const { limit, cursor } = parsePageParams({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
     });
 
-    return c.json(roles.map(formatRole));
+    const conditions = [eq(role.tenantId, tenantCtx.id)];
+    if (cursor) {
+      conditions.push(cursorCondition(role.createdAt, role.id, cursor));
+    }
+
+    const rows = await db.query.role.findMany({
+      where: and(...conditions),
+      orderBy: pageOrder(role.createdAt, role.id),
+      limit,
+    });
+
+    return c.json(paginatedResponse(rows.map(formatRole), rows, limit));
   },
 );
 

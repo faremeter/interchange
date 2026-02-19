@@ -8,12 +8,20 @@ import {
   UpdatePrincipal,
   InviteMember,
   ErrorResponse,
+  paginatedSchema,
 } from "@interchange/types";
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
 import { requireGrant, idResource } from "../middleware/grant";
+import {
+  parsePageParams,
+  cursorCondition,
+  pageOrder,
+  paginatedResponse,
+  pageParameters,
+} from "../pagination";
 
 type ResolvedIdentity = { displayName: string; email?: string };
 
@@ -110,13 +118,14 @@ app.get(
           enum: ["active", "suspended", "invited", "deactivated"],
         },
       },
+      ...pageParameters,
     ],
     responses: {
       200: {
         description: "List of principals",
         content: {
           "application/json": {
-            schema: resolver(PrincipalResponse.array()),
+            schema: resolver(paginatedSchema(PrincipalResponse)),
           },
         },
       },
@@ -127,6 +136,10 @@ app.get(
     const db = c.get("db");
     const kind = c.req.query("kind");
     const status = c.req.query("status");
+    const { limit, cursor } = parsePageParams({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
+    });
 
     const conditions = [eq(principal.tenantId, tenantCtx.id)];
     if (kind === "user" || kind === "agent") {
@@ -140,18 +153,25 @@ app.get(
     ) {
       conditions.push(eq(principal.status, status));
     }
+    if (cursor) {
+      conditions.push(
+        cursorCondition(principal.createdAt, principal.id, cursor),
+      );
+    }
 
-    const principals = await db.query.principal.findMany({
+    const rows = await db.query.principal.findMany({
       where: and(...conditions),
+      orderBy: pageOrder(principal.createdAt, principal.id),
+      limit,
     });
 
     const allAssignments =
-      principals.length > 0
+      rows.length > 0
         ? await db.query.principalRole.findMany({
             where: (pr, { inArray }) =>
               inArray(
                 pr.principalId,
-                principals.map((p) => p.id),
+                rows.map((p) => p.id),
               ),
           })
         : [];
@@ -174,9 +194,9 @@ app.get(
       rolesByPrincipal.set(a.principalId, list);
     }
 
-    const identities = await resolveIdentities(db, principals);
+    const identities = await resolveIdentities(db, rows);
 
-    const results = principals.map((p) =>
+    const items = rows.map((p) =>
       formatPrincipal(
         p,
         rolesByPrincipal.get(p.id) ?? [],
@@ -184,7 +204,7 @@ app.get(
       ),
     );
 
-    return c.json(results);
+    return c.json(paginatedResponse(items, rows, limit));
   },
 );
 

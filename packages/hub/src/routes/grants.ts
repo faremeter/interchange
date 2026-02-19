@@ -11,12 +11,20 @@ import {
   EvaluateRequest,
   EvaluateResult,
   ErrorResponse,
+  paginatedSchema,
 } from "@interchange/types";
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
 import { requireGrant, idResource } from "../middleware/grant";
+import {
+  parsePageParams,
+  cursorCondition,
+  pageOrder,
+  paginatedResponse,
+  pageParameters,
+} from "../pagination";
 
 type ResolvedNames = {
   roleNames: Map<string, string>;
@@ -131,13 +139,14 @@ app.get(
         in: "query",
         schema: { type: "string", enum: ["allow", "deny", "ask"] },
       },
+      ...pageParameters,
     ],
     responses: {
       200: {
         description: "List of grants",
         content: {
           "application/json": {
-            schema: resolver(GrantResponse.array()),
+            schema: resolver(paginatedSchema(GrantResponse)),
           },
         },
       },
@@ -151,6 +160,10 @@ app.get(
     const roleId = c.req.query("roleId");
     const resource = c.req.query("resource");
     const effect = c.req.query("effect");
+    const { limit, cursor } = parsePageParams({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
+    });
 
     const conditions = [eq(grant.tenantId, tenantCtx.id)];
     if (principalId) conditions.push(eq(grant.principalId, principalId));
@@ -159,13 +172,24 @@ app.get(
     if (effect === "allow" || effect === "deny" || effect === "ask") {
       conditions.push(eq(grant.effect, effect));
     }
+    if (cursor) {
+      conditions.push(cursorCondition(grant.createdAt, grant.id, cursor));
+    }
 
-    const grants = await db.query.grant.findMany({
+    const rows = await db.query.grant.findMany({
       where: and(...conditions),
+      orderBy: pageOrder(grant.createdAt, grant.id),
+      limit,
     });
 
-    const names = await resolveGrantNames(db, grants);
-    return c.json(grants.map((g) => formatGrant(g, names)));
+    const names = await resolveGrantNames(db, rows);
+    return c.json(
+      paginatedResponse(
+        rows.map((g) => formatGrant(g, names)),
+        rows,
+        limit,
+      ),
+    );
   },
 );
 

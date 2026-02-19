@@ -1,4 +1,4 @@
-import { type } from "arktype";
+import { type, type Type } from "arktype";
 
 export const ErrorResponse = type({
   error: {
@@ -13,9 +13,20 @@ export const PaginationParams = type({
 });
 
 export const PaginatedList = type({
-  items: "unknown[]",
-  "nextCursor?": "string | null",
+  data: "unknown[]",
+  nextCursor: "string | null",
 });
+
+/**
+ * Creates a typed paginated response schema for use with OpenAPI.
+ * Wraps an item array schema in `{ data: T[], nextCursor: string | null }`.
+ */
+export function paginatedSchema(itemSchema: Type) {
+  return type({
+    data: itemSchema.array(),
+    nextCursor: "string | null",
+  });
+}
 
 export const Timestamps = type({
   createdAt: "string",
