@@ -1,13 +1,14 @@
 import { useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
-import { TenantNav } from "../components/tenant-nav";
+import { TenantNav } from "@/components/tenant-nav";
 import {
   tenantDetailQuery,
   tenantPrincipalsQuery,
   tenantAgentsQuery,
   tenantRolesQuery,
-} from "../lib/queries/tenants";
+} from "@/lib/queries/tenants";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export function TenantPage() {
   const { tenantId } = useParams({ strict: false }) as { tenantId: string };
@@ -16,47 +17,65 @@ export function TenantPage() {
   const { data: agents } = useQuery(tenantAgentsQuery(tenantId));
   const { data: roles } = useQuery(tenantRolesQuery(tenantId));
 
-  if (isLoading) return <p className="text-sm text-gray-400">Loading...</p>;
+  if (isLoading) {
+    return <p className="text-sm text-muted-foreground">Loading...</p>;
+  }
 
   return (
     <div>
       <TenantNav />
 
-      <div className="grid gap-6 sm:grid-cols-3">
-        <div className="rounded-lg border border-gray-200 bg-white p-4">
-          <p className="text-sm text-gray-500">Members</p>
-          <p className="text-2xl font-semibold text-gray-900">
-            {principals?.filter((p) => p.kind === "user").length ?? 0}
-          </p>
-        </div>
-        <div className="rounded-lg border border-gray-200 bg-white p-4">
-          <p className="text-sm text-gray-500">Agents</p>
-          <p className="text-2xl font-semibold text-gray-900">
-            {agents?.length ?? 0}
-          </p>
-        </div>
-        <div className="rounded-lg border border-gray-200 bg-white p-4">
-          <p className="text-sm text-gray-500">Roles</p>
-          <p className="text-2xl font-semibold text-gray-900">
-            {roles?.length ?? 0}
-          </p>
-        </div>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Members
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <p className="text-2xl font-semibold">
+              {principals?.filter((p) => p.kind === "user").length ?? 0}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Agents
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <p className="text-2xl font-semibold">{agents?.length ?? 0}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Roles
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <p className="text-2xl font-semibold">{roles?.length ?? 0}</p>
+          </CardContent>
+        </Card>
       </div>
 
       {tenant && (
-        <div className="mt-6 rounded-lg border border-gray-200 bg-white p-4">
-          <h3 className="text-sm font-medium text-gray-600">Tenant details</h3>
-          <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-            <dt className="text-gray-500">Slug</dt>
-            <dd className="font-mono text-gray-900">{tenant.slug}</dd>
-            <dt className="text-gray-500">Domain</dt>
-            <dd className="font-mono text-gray-900">{tenant.domain}</dd>
-            <dt className="text-gray-500">Created</dt>
-            <dd className="text-gray-900">
-              {new Date(tenant.createdAt).toLocaleDateString()}
-            </dd>
-          </dl>
-        </div>
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle className="text-sm">Tenant details</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+              <dt className="text-muted-foreground">Slug</dt>
+              <dd className="font-mono">{tenant.slug}</dd>
+              <dt className="text-muted-foreground">Domain</dt>
+              <dd className="font-mono">{tenant.domain}</dd>
+              <dt className="text-muted-foreground">Created</dt>
+              <dd>{new Date(tenant.createdAt).toLocaleDateString()}</dd>
+            </dl>
+          </CardContent>
+        </Card>
       )}
     </div>
   );

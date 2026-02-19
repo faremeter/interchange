@@ -1,8 +1,17 @@
 import { useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
-import { TenantNav } from "../components/tenant-nav";
-import { tenantCapabilitiesQuery } from "../lib/queries/tenants";
+import { TenantNav } from "@/components/tenant-nav";
+import { tenantCapabilitiesQuery } from "@/lib/queries/tenants";
+import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export function TenantCapabilitiesPage() {
   const { tenantId } = useParams({ strict: false }) as { tenantId: string };
@@ -14,62 +23,55 @@ export function TenantCapabilitiesPage() {
     <div>
       <TenantNav />
 
-      <h2 className="text-lg font-semibold text-gray-900">Capabilities</h2>
+      <h2 className="text-lg font-semibold">Capabilities</h2>
 
       {isLoading ? (
-        <p className="mt-4 text-sm text-gray-400">Loading...</p>
+        <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
       ) : capabilities?.length === 0 ? (
-        <p className="mt-4 text-sm text-gray-400">
+        <p className="mt-4 text-sm text-muted-foreground">
           No capabilities registered.
         </p>
       ) : (
-        <div className="mt-4 overflow-hidden rounded-lg border border-gray-200 bg-white">
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-gray-100 bg-gray-50">
-              <tr>
-                <th className="px-4 py-2 font-medium text-gray-600">Name</th>
-                <th className="px-4 py-2 font-medium text-gray-600">Agent</th>
-                <th className="px-4 py-2 font-medium text-gray-600">
-                  Description
-                </th>
-                <th className="px-4 py-2 font-medium text-gray-600">Pricing</th>
-              </tr>
-            </thead>
-            <tbody>
+        <div className="mt-4 rounded-lg border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Agent</TableHead>
+                <TableHead>Description</TableHead>
+                <TableHead>Pricing</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {capabilities?.map((cap) => (
-                <tr
-                  key={cap.id}
-                  className="border-b border-gray-50 last:border-0"
-                >
-                  <td className="px-4 py-2 font-medium text-gray-900">
-                    {cap.name}
-                  </td>
-                  <td className="px-4 py-2">
-                    <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
-                      {cap.agentName}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2 text-gray-500">
+                <TableRow key={cap.id}>
+                  <TableCell className="font-medium">{cap.name}</TableCell>
+                  <TableCell>
+                    <Badge variant="secondary">{cap.agentName}</Badge>
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
                     {cap.description ?? "-"}
-                  </td>
-                  <td className="px-4 py-2">
+                  </TableCell>
+                  <TableCell>
                     {cap.pricing?.base ? (
-                      <span className="font-mono text-xs text-gray-700">
+                      <span className="font-mono text-xs">
                         {cap.pricing.base.amount} {cap.pricing.base.currency}
                       </span>
                     ) : (
-                      <span className="text-xs text-gray-400">Free</span>
+                      <span className="text-xs text-muted-foreground">
+                        Free
+                      </span>
                     )}
                     {cap.pricing?.negotiable ? (
-                      <span className="ml-1 text-xs text-yellow-600">
-                        (negotiable)
-                      </span>
+                      <Badge variant="outline" className="ml-1">
+                        negotiable
+                      </Badge>
                     ) : null}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       )}
     </div>
