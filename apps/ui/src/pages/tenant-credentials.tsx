@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { TenantNav } from "@/components/tenant-nav";
+import { MutationError } from "@/components/mutation-error";
 import {
   createCredentialMutation,
   deleteCredentialMutation,
@@ -307,6 +308,7 @@ export function TenantCredentialsPage() {
                 placeholder="Optional"
               />
             </div>
+            <MutationError error={createMut.error} />
             <DialogFooter>
               <Button
                 type="submit"
@@ -379,6 +381,7 @@ export function TenantCredentialsPage() {
                 onChange={(e) => setEditSecret(e.target.value)}
               />
             </div>
+            <MutationError error={updateMut.error} />
             <DialogFooter>
               <Button type="submit" disabled={updateMut.isPending}>
                 {updateMut.isPending ? "Saving..." : "Save"}
@@ -403,6 +406,7 @@ export function TenantCredentialsPage() {
               {deleteTarget?.name}&rdquo;. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <MutationError error={deleteMut.error} />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction

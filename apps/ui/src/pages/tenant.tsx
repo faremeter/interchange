@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil } from "lucide-react";
 
 import { TenantNav } from "@/components/tenant-nav";
+import { MutationError } from "@/components/mutation-error";
 import {
   tenantAgentsQuery,
   tenantDetailQuery,
@@ -140,6 +141,7 @@ export function TenantPage() {
                 autoFocus
               />
             </div>
+            <MutationError error={updateMut.error} />
             <DialogFooter>
               <Button type="submit" disabled={updateMut.isPending}>
                 {updateMut.isPending ? "Saving..." : "Save"}

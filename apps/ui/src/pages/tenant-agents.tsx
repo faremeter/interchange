@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { TenantNav } from "@/components/tenant-nav";
+import { MutationError } from "@/components/mutation-error";
 import {
   createAgentMutation,
   deleteAgentMutation,
@@ -79,6 +80,7 @@ function AgentFormDialog({
   initial,
   isPending,
   onSubmit,
+  error,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -86,6 +88,7 @@ function AgentFormDialog({
   initial: AgentFormValues;
   isPending: boolean;
   onSubmit: (values: AgentFormValues) => void;
+  error: Error | null;
 }) {
   const [name, setName] = useState(initial.name);
   const [description, setDescription] = useState(initial.description);
@@ -146,6 +149,7 @@ function AgentFormDialog({
               rows={4}
             />
           </div>
+          <MutationError error={error} />
           <DialogFooter>
             <Button type="submit" disabled={isPending || !name.trim()}>
               {isPending ? "Saving..." : "Save"}
@@ -283,6 +287,7 @@ export function TenantAgentsPage() {
         title="Create Agent"
         initial={{ name: "", description: "", systemPrompt: "" }}
         isPending={createMut.isPending}
+        error={createMut.error}
         onSubmit={(v) => {
           const body: {
             name: string;
@@ -311,6 +316,7 @@ export function TenantAgentsPage() {
             systemPrompt: "",
           }}
           isPending={updateMut.isPending}
+          error={updateMut.error}
           onSubmit={(v) => {
             const body: {
               name?: string;
@@ -341,6 +347,7 @@ export function TenantAgentsPage() {
               deactivate its principal. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <MutationError error={deleteMut.error} />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction

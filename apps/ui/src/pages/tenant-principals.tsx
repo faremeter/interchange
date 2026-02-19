@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal, Plus, Shield, Trash2, UserCog } from "lucide-react";
 
 import { TenantNav } from "@/components/tenant-nav";
+import { MutationError } from "@/components/mutation-error";
 import {
   assignRoleMutation,
   deletePrincipalMutation,
@@ -313,6 +314,7 @@ export function TenantPrincipalsPage() {
                 </SelectContent>
               </Select>
             </div>
+            <MutationError error={inviteMut.error} />
             <DialogFooter>
               <Button
                 type="submit"
@@ -369,6 +371,7 @@ export function TenantPrincipalsPage() {
                 </SelectContent>
               </Select>
             </div>
+            <MutationError error={updateMut.error} />
             <DialogFooter>
               <Button
                 type="submit"
@@ -449,6 +452,7 @@ export function TenantPrincipalsPage() {
                 </Button>
               </form>
             )}
+            <MutationError error={assignMut.error} />
           </div>
         </DialogContent>
       </Dialog>
@@ -468,6 +472,7 @@ export function TenantPrincipalsPage() {
               &rdquo; from this tenant. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <MutationError error={deleteMut.error} />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
