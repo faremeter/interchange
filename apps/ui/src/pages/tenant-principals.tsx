@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, Plus, Trash2, UserCog } from "lucide-react";
+import { MoreHorizontal, Plus, Shield, Trash2, UserCog } from "lucide-react";
 
 import { TenantNav } from "@/components/tenant-nav";
 import {
+  assignRoleMutation,
   deletePrincipalMutation,
   inviteMemberMutation,
+  removeRoleMutation,
   tenantPrincipalsQuery,
   tenantRolesQuery,
   updatePrincipalMutation,
@@ -16,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -90,6 +93,8 @@ export function TenantPrincipalsPage() {
   const [statusTarget, setStatusTarget] = useState<PrincipalRow | null>(null);
   const [statusValue, setStatusValue] = useState<string>("");
   const [deleteTarget, setDeleteTarget] = useState<PrincipalRow | null>(null);
+  const [rolesTarget, setRolesTarget] = useState<PrincipalRow | null>(null);
+  const [addRoleId, setAddRoleId] = useState("");
 
   const inviteMut = useMutation({
     ...inviteMemberMutation(tenantId, queryClient),
@@ -124,6 +129,39 @@ export function TenantPrincipalsPage() {
       setDeleteTarget(null);
     },
   });
+
+  const assignMut = useMutation({
+    ...assignRoleMutation(tenantId, rolesTarget?.id ?? "", queryClient),
+    onSuccess: () => {
+      assignRoleMutation(
+        tenantId,
+        rolesTarget?.id ?? "",
+        queryClient,
+      ).onSuccess();
+      setAddRoleId("");
+    },
+  });
+
+  const removeMut = useMutation({
+    ...removeRoleMutation(tenantId, rolesTarget?.id ?? "", queryClient),
+    onSuccess: () => {
+      removeRoleMutation(
+        tenantId,
+        rolesTarget?.id ?? "",
+        queryClient,
+      ).onSuccess();
+    },
+  });
+
+  // Roles that haven't been assigned to the current target yet
+  const availableRoles = roles?.filter(
+    (r) => !rolesTarget?.roles.some((assigned) => assigned.id === r.id),
+  );
+
+  // Re-sync the rolesTarget with fresh data whenever principals refresh
+  const syncedRolesTarget = rolesTarget
+    ? (principals?.find((p) => p.id === rolesTarget.id) ?? rolesTarget)
+    : null;
 
   return (
     <div>
@@ -187,6 +225,15 @@ export function TenantPrincipalsPage() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onClick={() => {
+                            setRolesTarget(p);
+                            setAddRoleId("");
+                          }}
+                        >
+                          <Shield />
+                          Manage Roles
+                        </DropdownMenuItem>
                         <DropdownMenuItem
                           onClick={() => {
                             setStatusTarget(p);
@@ -333,6 +380,76 @@ export function TenantPrincipalsPage() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Manage roles dialog */}
+      <Dialog
+        open={!!rolesTarget}
+        onOpenChange={(open) => {
+          if (!open) setRolesTarget(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Manage Roles</DialogTitle>
+            <DialogDescription>
+              Roles for {syncedRolesTarget?.displayName}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            {syncedRolesTarget?.roles.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No roles assigned.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {syncedRolesTarget?.roles.map((r) => (
+                  <Badge key={r.id} variant="secondary" className="gap-1 pr-1">
+                    {r.name}
+                    <button
+                      type="button"
+                      className="ml-1 rounded-sm px-0.5 hover:bg-muted"
+                      onClick={() => removeMut.mutate(r.id)}
+                      disabled={removeMut.isPending}
+                      aria-label={`Remove ${r.name}`}
+                    >
+                      x
+                    </button>
+                  </Badge>
+                ))}
+              </div>
+            )}
+            {availableRoles && availableRoles.length > 0 && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (addRoleId) assignMut.mutate(addRoleId);
+                }}
+                className="flex gap-2"
+              >
+                <Select value={addRoleId} onValueChange={setAddRoleId}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Add a role" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableRoles.map((r) => (
+                      <SelectItem key={r.id} value={r.id}>
+                        {r.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={!addRoleId || assignMut.isPending}
+                >
+                  {assignMut.isPending ? "Adding..." : "Add"}
+                </Button>
+              </form>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
 
