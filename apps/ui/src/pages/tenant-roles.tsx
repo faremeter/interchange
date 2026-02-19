@@ -3,6 +3,7 @@ import { useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 
+import { MutationError } from "@/components/mutation-error";
 import { TenantNav } from "@/components/tenant-nav";
 import {
   createRoleMutation,
@@ -60,6 +61,7 @@ function RoleFormDialog({
   title,
   initial,
   isPending,
+  error,
   onSubmit,
 }: {
   open: boolean;
@@ -67,6 +69,7 @@ function RoleFormDialog({
   title: string;
   initial: RoleFormValues;
   isPending: boolean;
+  error: Error | null;
   onSubmit: (values: RoleFormValues) => void;
 }) {
   const [name, setName] = useState(initial.name);
@@ -113,6 +116,7 @@ function RoleFormDialog({
               placeholder="Optional"
             />
           </div>
+          <MutationError error={error} />
           <DialogFooter>
             <Button type="submit" disabled={isPending || !name.trim()}>
               {isPending ? "Saving..." : "Save"}
@@ -246,6 +250,7 @@ export function TenantRolesPage() {
         title="Create Role"
         initial={{ name: "", description: "" }}
         isPending={createMut.isPending}
+        error={createMut.error}
         onSubmit={(v) => {
           const body: { name: string; description?: string } = { name: v.name };
           if (v.description) body.description = v.description;
@@ -266,6 +271,7 @@ export function TenantRolesPage() {
             description: editTarget.description ?? "",
           }}
           isPending={updateMut.isPending}
+          error={updateMut.error}
           onSubmit={(v) => {
             const body: { name?: string; description?: string } = {};
             if (v.name !== editTarget.name) body.name = v.name;
@@ -291,6 +297,7 @@ export function TenantRolesPage() {
               &rdquo;. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <MutationError error={deleteMut.error} />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction

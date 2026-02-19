@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { TenantNav } from "@/components/tenant-nav";
+import { MutationError } from "@/components/mutation-error";
 import {
   createCapabilityMutation,
   deleteCapabilityMutation,
@@ -281,6 +282,7 @@ export function TenantCapabilitiesPage() {
                 placeholder="Optional"
               />
             </div>
+            <MutationError error={createMut.error} />
             <DialogFooter>
               <Button
                 type="submit"
@@ -337,6 +339,7 @@ export function TenantCapabilitiesPage() {
                 placeholder="Optional"
               />
             </div>
+            <MutationError error={updateMut.error} />
             <DialogFooter>
               <Button type="submit" disabled={updateMut.isPending}>
                 {updateMut.isPending ? "Saving..." : "Save"}
@@ -362,6 +365,7 @@ export function TenantCapabilitiesPage() {
               This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <MutationError error={deleteMut.error} />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
