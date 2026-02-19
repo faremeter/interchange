@@ -63,6 +63,27 @@ function check(label: string, status: number, expected: number, data: unknown) {
   log(`  OK ${label} (${status})`);
 }
 
+function checkOrSkip(
+  label: string,
+  status: number,
+  expected: number,
+  data: unknown,
+): boolean {
+  if (status === expected) {
+    log(`  OK ${label} (${status})`);
+    return true;
+  }
+  if (status === 409) {
+    log(`  SKIP ${label} (already exists)`);
+    return false;
+  }
+  process.stderr.write(
+    `[seed] FAIL ${label}: expected ${expected}, got ${status}\n`,
+  );
+  process.stderr.write(`[seed]   ${JSON.stringify(data)}\n`);
+  process.exit(1);
+}
+
 // -- Authenticate users (sign up, or sign in if they already exist) --
 
 async function authenticate(
@@ -124,31 +145,57 @@ log(`  Carol ID: ${carol.userId}`);
 
 log("Creating tenants...");
 
-const { status: t1Status, data: t1Data } = await api(
-  "POST",
-  "/api/tenants",
-  { name: "Acme Corp", slug: "acme" },
-  aliceCookies,
-);
-check("create acme tenant", t1Status, 201, t1Data);
-const acmeTenantId = (t1Data as { id: string }).id;
+async function ensureTenant(
+  name: string,
+  slug: string,
+  cookies: CookieJar,
+): Promise<string> {
+  const { status, data } = await api(
+    "POST",
+    "/api/tenants",
+    { name, slug },
+    cookies,
+  );
+
+  if (status === 201) {
+    log(`  Created ${slug} tenant`);
+    return (data as { id: string }).id;
+  }
+
+  // Already exists -- look up via /me/principals
+  const { data: principals } = await api(
+    "GET",
+    "/api/me/principals",
+    undefined,
+    cookies,
+  );
+  const match = (principals as { tenantId: string; tenantSlug: string }[]).find(
+    (p) => p.tenantSlug === slug,
+  );
+
+  if (match) {
+    log(`  ${slug} tenant already exists`);
+    return match.tenantId;
+  }
+
+  process.stderr.write(`[seed] FATAL: could not resolve tenant ${slug}\n`);
+  process.exit(1);
+}
+
+const acmeTenantId = await ensureTenant("Acme Corp", "acme", aliceCookies);
 log(`  Acme tenant ID: ${acmeTenantId}`);
 
-const { status: t2Status, data: t2Data } = await api(
-  "POST",
-  "/api/tenants",
-  { name: "Widget Labs", slug: "widgets" },
+const widgetsTenantId = await ensureTenant(
+  "Widget Labs",
+  "widgets",
   aliceCookies,
 );
-check("create widgets tenant", t2Status, 201, t2Data);
-const widgetsTenantId = (t2Data as { id: string }).id;
 log(`  Widgets tenant ID: ${widgetsTenantId}`);
 
 // -- Invite Bob to Acme --
 
 log("Inviting Bob to Acme...");
 
-// First get acme roles to find member role
 const { data: rolesData } = await api(
   "GET",
   `/api/tenants/${acmeTenantId}/roles`,
@@ -165,18 +212,30 @@ const { status: inviteStatus, data: inviteData } = await api(
   { email: "bob@example.com", roleId: memberRole?.id },
   aliceCookies,
 );
-check("invite bob", inviteStatus, 201, inviteData);
-const bobPrincipalId = (inviteData as { id: string }).id;
-log(`  Bob principal ID: ${bobPrincipalId}`);
 
-// Activate Bob's principal (simulating accepting the invite)
-const { status: activateStatus } = await api(
-  "PATCH",
-  `/api/tenants/${acmeTenantId}/principals/${bobPrincipalId}`,
-  { status: "active" },
-  aliceCookies,
-);
-check("activate bob", activateStatus, 200, null);
+let bobPrincipalId: string;
+if (checkOrSkip("invite bob", inviteStatus, 201, inviteData)) {
+  bobPrincipalId = (inviteData as { id: string }).id;
+  await api(
+    "PATCH",
+    `/api/tenants/${acmeTenantId}/principals/${bobPrincipalId}`,
+    { status: "active" },
+    aliceCookies,
+  );
+} else {
+  // Already invited -- find Bob's principal
+  const { data: acmePrincipals } = await api(
+    "GET",
+    `/api/tenants/${acmeTenantId}/principals`,
+    undefined,
+    aliceCookies,
+  );
+  const bobP = (acmePrincipals as { id: string; refId: string }[]).find(
+    (p) => p.refId === bob.userId,
+  );
+  bobPrincipalId = bobP?.id ?? "";
+}
+log(`  Bob principal ID: ${bobPrincipalId}`);
 
 // -- Invite Carol to Widgets --
 
@@ -198,16 +257,22 @@ const { status: carolInviteStatus, data: carolInviteData } = await api(
   { email: "carol@example.com", roleId: widgetAdminRole?.id },
   aliceCookies,
 );
-check("invite carol to widgets", carolInviteStatus, 201, carolInviteData);
-
-// Activate Carol
-const carolPrincipalId = (carolInviteData as { id: string }).id;
-await api(
-  "PATCH",
-  `/api/tenants/${widgetsTenantId}/principals/${carolPrincipalId}`,
-  { status: "active" },
-  aliceCookies,
-);
+if (
+  checkOrSkip(
+    "invite carol to widgets",
+    carolInviteStatus,
+    201,
+    carolInviteData,
+  )
+) {
+  const carolPrincipalId = (carolInviteData as { id: string }).id;
+  await api(
+    "PATCH",
+    `/api/tenants/${widgetsTenantId}/principals/${carolPrincipalId}`,
+    { status: "active" },
+    aliceCookies,
+  );
+}
 
 // -- Create agents in Acme --
 
@@ -229,8 +294,9 @@ const { status: a1Status, data: a1Data } = await api(
   },
   aliceCookies,
 );
-check("create research bot", a1Status, 201, a1Data);
-log(`  Research Bot ID: ${(a1Data as { id: string }).id}`);
+checkOrSkip("create research bot", a1Status, 201, a1Data);
+const researchBotId = a1Status === 201 ? (a1Data as { id: string }).id : null;
+if (researchBotId) log(`  Research Bot ID: ${researchBotId}`);
 
 const { status: a2Status, data: a2Data } = await api(
   "POST",
@@ -248,8 +314,9 @@ const { status: a2Status, data: a2Data } = await api(
   },
   aliceCookies,
 );
-check("create code review bot", a2Status, 201, a2Data);
-log(`  Code Review Bot ID: ${(a2Data as { id: string }).id}`);
+checkOrSkip("create code review bot", a2Status, 201, a2Data);
+const codeReviewBotId = a2Status === 201 ? (a2Data as { id: string }).id : null;
+if (codeReviewBotId) log(`  Code Review Bot ID: ${codeReviewBotId}`);
 
 // -- Create agent in Widgets --
 
@@ -272,8 +339,9 @@ const { status: a3Status, data: a3Data } = await api(
   },
   aliceCookies,
 );
-check("create support bot", a3Status, 201, a3Data);
-log(`  Support Bot ID: ${(a3Data as { id: string }).id}`);
+checkOrSkip("create support bot", a3Status, 201, a3Data);
+const supportBotId = a3Status === 201 ? (a3Data as { id: string }).id : null;
+if (supportBotId) log(`  Support Bot ID: ${supportBotId}`);
 
 // -- Create custom role and grants --
 
@@ -285,36 +353,35 @@ const { status: crStatus, data: crData } = await api(
   { name: "reviewer", description: "Can review and comment on documents" },
   aliceCookies,
 );
-check("create reviewer role", crStatus, 201, crData);
-const reviewerRoleId = (crData as { id: string }).id;
+if (checkOrSkip("create reviewer role", crStatus, 201, crData)) {
+  const reviewerRoleId = (crData as { id: string }).id;
 
-// Grant the reviewer role read access to documents
-await api(
-  "POST",
-  `/api/tenants/${acmeTenantId}/grants`,
-  {
-    roleId: reviewerRoleId,
-    resource: "documents:*",
-    action: "read",
-    effect: "allow",
-    source: "role",
-  },
-  aliceCookies,
-);
+  await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/grants`,
+    {
+      roleId: reviewerRoleId,
+      resource: "documents:*",
+      action: "read",
+      effect: "allow",
+      source: "role",
+    },
+    aliceCookies,
+  );
 
-// Assign reviewer role to Bob
-await api(
-  "POST",
-  `/api/tenants/${acmeTenantId}/principals/${bobPrincipalId}/roles/${reviewerRoleId}`,
-  undefined,
-  aliceCookies,
-);
+  await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/principals/${bobPrincipalId}/roles/${reviewerRoleId}`,
+    undefined,
+    aliceCookies,
+  );
+}
 
 // -- Set up federation between Acme and Widgets --
 
 log("Setting up federation...");
 
-const { status: fedStatus } = await api(
+const { status: fedStatus, data: fedData } = await api(
   "POST",
   `/api/tenants/${acmeTenantId}/federation`,
   {
@@ -323,7 +390,192 @@ const { status: fedStatus } = await api(
   },
   aliceCookies,
 );
-check("create federation trust", fedStatus, 201, null);
+checkOrSkip("create federation trust", fedStatus, 201, fedData);
+
+// -- Create credentials --
+
+log("Creating credentials...");
+
+const { status: cred1Status, data: cred1Data } = await api(
+  "POST",
+  `/api/tenants/${acmeTenantId}/credentials`,
+  {
+    name: "OpenAI API Key",
+    type: "api_key",
+    description: "Production OpenAI key for Research Bot",
+    secret: "sk-fake-openai-key-for-seed-data",
+    metadata: { provider: "openai", model: "gpt-4" },
+  },
+  aliceCookies,
+);
+checkOrSkip("create openai credential", cred1Status, 201, cred1Data);
+
+const { status: cred2Status, data: cred2Data } = await api(
+  "POST",
+  `/api/tenants/${acmeTenantId}/credentials`,
+  {
+    name: "GitHub OAuth Token",
+    type: "oauth_token",
+    description: "GitHub access for Code Review Bot",
+    secret: "ghp_fake-github-token-for-seed-data",
+    metadata: { scopes: ["repo", "pull_request"] },
+  },
+  aliceCookies,
+);
+checkOrSkip("create github credential", cred2Status, 201, cred2Data);
+
+const { status: cred3Status, data: cred3Data } = await api(
+  "POST",
+  `/api/tenants/${widgetsTenantId}/credentials`,
+  {
+    name: "Stripe API Key",
+    type: "api_key",
+    description: "Stripe key for billing operations",
+    secret: "sk_test_fake-stripe-key-for-seed-data",
+  },
+  aliceCookies,
+);
+checkOrSkip("create stripe credential", cred3Status, 201, cred3Data);
+
+// -- Create wallets --
+
+log("Creating wallets...");
+
+const { status: w1Status, data: w1Data } = await api(
+  "POST",
+  `/api/tenants/${acmeTenantId}/wallets`,
+  {
+    name: "Operating Budget",
+    backendType: "credits",
+    currency: "USD",
+    config: { monthlyLimit: "10000" },
+  },
+  aliceCookies,
+);
+checkOrSkip("create acme wallet", w1Status, 201, w1Data);
+
+const { status: w2Status, data: w2Data } = await api(
+  "POST",
+  `/api/tenants/${widgetsTenantId}/wallets`,
+  {
+    name: "Support Budget",
+    backendType: "credits",
+    currency: "USD",
+    config: { monthlyLimit: "5000" },
+  },
+  aliceCookies,
+);
+checkOrSkip("create widgets wallet", w2Status, 201, w2Data);
+
+// -- Create capabilities --
+
+log("Creating capabilities...");
+
+// Get agent IDs from listing if we didn't just create them
+const { data: acmeAgents } = await api(
+  "GET",
+  `/api/tenants/${acmeTenantId}/agents`,
+  undefined,
+  aliceCookies,
+);
+const agentList = acmeAgents as { id: string; name: string }[];
+const researchBot = agentList.find((a) => a.name === "Research Bot");
+const codeReviewBot = agentList.find((a) => a.name === "Code Review Bot");
+
+const { data: widgetAgents } = await api(
+  "GET",
+  `/api/tenants/${widgetsTenantId}/agents`,
+  undefined,
+  aliceCookies,
+);
+const widgetAgentList = widgetAgents as { id: string; name: string }[];
+const supportBot = widgetAgentList.find(
+  (a) => a.name === "Customer Support Bot",
+);
+
+if (researchBot) {
+  const { status: cap1Status, data: cap1Data } = await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/capabilities`,
+    {
+      agentId: researchBot.id,
+      name: "Web Research",
+      description: "Search the web and summarize findings on any topic",
+      pricing: {
+        base: { amount: "0.50", currency: "USD" },
+        methods: ["credits"],
+        negotiable: false,
+      },
+    },
+    aliceCookies,
+  );
+  checkOrSkip("create web research capability", cap1Status, 201, cap1Data);
+
+  const { status: cap2Status, data: cap2Data } = await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/capabilities`,
+    {
+      agentId: researchBot.id,
+      name: "Document Summarization",
+      description: "Summarize long documents into key takeaways",
+      pricing: {
+        base: { amount: "0.25", currency: "USD" },
+        methods: ["credits"],
+        negotiable: true,
+        bounds: { min: "0.10", max: "1.00" },
+      },
+    },
+    aliceCookies,
+  );
+  checkOrSkip("create summarization capability", cap2Status, 201, cap2Data);
+}
+
+if (codeReviewBot) {
+  const { status: cap3Status, data: cap3Data } = await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/capabilities`,
+    {
+      agentId: codeReviewBot.id,
+      name: "Pull Request Review",
+      description:
+        "Automated code review with bug detection and improvement suggestions",
+      pricing: {
+        base: { amount: "1.00", currency: "USD" },
+        methods: ["credits"],
+        negotiable: false,
+      },
+      schema: {
+        input: { type: "object", properties: { prUrl: { type: "string" } } },
+        output: {
+          type: "object",
+          properties: { comments: { type: "array" } },
+        },
+      },
+    },
+    aliceCookies,
+  );
+  checkOrSkip("create pr review capability", cap3Status, 201, cap3Data);
+}
+
+if (supportBot) {
+  const { status: cap4Status, data: cap4Data } = await api(
+    "POST",
+    `/api/tenants/${widgetsTenantId}/capabilities`,
+    {
+      agentId: supportBot.id,
+      name: "Ticket Resolution",
+      description: "Automatically resolve common customer support tickets",
+      pricing: {
+        base: { amount: "0.75", currency: "USD" },
+        methods: ["credits", "fiat"],
+        negotiable: true,
+        bounds: { min: "0.25", max: "2.00" },
+      },
+    },
+    aliceCookies,
+  );
+  checkOrSkip("create ticket resolution capability", cap4Status, 201, cap4Data);
+}
 
 // -- Verify with /me endpoints --
 
