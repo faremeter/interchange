@@ -1,10 +1,44 @@
+import { eq, and, ilike } from "drizzle-orm";
 import { Hono } from "hono";
-import { describeRoute, resolver } from "hono-openapi";
-import { CapabilityDetail, ModelInfo, ErrorResponse } from "@interchange/types";
+import { describeRoute, resolver, validator } from "hono-openapi";
 
-import type { AppEnv } from "../context";
+import { agent, capability } from "@interchange/db/schema";
+import {
+  CreateCapability,
+  UpdateCapability,
+  CapabilityDetail,
+  ModelInfo,
+  ErrorResponse,
+} from "@interchange/types";
 
-const app = new Hono<AppEnv>();
+import type { TenantEnv, AppEnv } from "../context";
+import { first } from "../format";
+import { generateId } from "../ids";
+
+type Pricing = {
+  base?: { amount: string; currency: string };
+  methods?: string[];
+  negotiable?: boolean;
+  bounds?: { min?: string; max?: string };
+};
+
+function formatCapability(
+  row: typeof capability.$inferSelect,
+  agentName: string,
+) {
+  return {
+    id: row.id,
+    agentId: row.agentId,
+    agentName,
+    tenantId: row.tenantId,
+    name: row.name,
+    description: row.description ?? null,
+    pricing: (row.pricing as Pricing | null) ?? undefined,
+    schema: (row.schema as Record<string, unknown> | null) ?? null,
+  };
+}
+
+const app = new Hono<TenantEnv>();
 
 app.get(
   "/",
@@ -30,11 +64,110 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const db = c.get("db");
+    const name = c.req.query("name");
+
+    const conditions = [eq(capability.tenantId, tenantCtx.id)];
+    if (name) {
+      conditions.push(ilike(capability.name, `%${name}%`));
+    }
+
+    const rows = await db.query.capability.findMany({
+      where: and(...conditions),
+    });
+
+    // Batch-resolve agent names
+    const agentIds = [...new Set(rows.map((r) => r.agentId))];
+    const agentNames = new Map<string, string>();
+    if (agentIds.length > 0) {
+      const agents = await db.query.agent.findMany({
+        where: (a, { inArray }) => inArray(a.id, agentIds),
+      });
+      for (const a of agents) {
+        agentNames.set(a.id, a.name);
+      }
+    }
+
+    return c.json(
+      rows.map((r) =>
+        formatCapability(r, agentNames.get(r.agentId) ?? r.agentId),
+      ),
+    );
+  },
+);
+
+app.post(
+  "/",
+  describeRoute({
+    tags: ["Discovery"],
+    summary: "Register a capability",
+    description:
+      "Registers a capability for an agent. The agent must belong to the tenant.",
+    responses: {
+      201: {
+        description: "Capability registered",
+        content: {
+          "application/json": { schema: resolver(CapabilityDetail) },
+        },
+      },
+      400: {
+        description: "Validation error",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      404: {
+        description: "Agent not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+    },
+  }),
+  validator("json", CreateCapability),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const body = c.req.valid("json" as never) as typeof CreateCapability.infer;
+    const db = c.get("db");
+
+    const agentRow = await db.query.agent.findFirst({
+      where: and(eq(agent.id, body.agentId), eq(agent.tenantId, tenantCtx.id)),
+    });
+
+    if (!agentRow) {
+      return c.json(
+        {
+          error: {
+            code: "not_found",
+            message: "Agent not found in this tenant",
+          },
+        },
+        404,
+      );
+    }
+
+    const now = new Date();
+    const row = first(
+      await db
+        .insert(capability)
+        .values({
+          id: generateId("capability"),
+          agentId: body.agentId,
+          tenantId: tenantCtx.id,
+          name: body.name,
+          description: body.description ?? null,
+          pricing: body.pricing ?? null,
+          schema: body.schema ?? null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning(),
+    );
+
+    return c.json(formatCapability(row, agentRow.name), 201);
+  },
 );
 
 app.get(
@@ -59,16 +192,140 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const capabilityId = c.req.param("capabilityId");
+    const db = c.get("db");
+
+    const row = await db.query.capability.findFirst({
+      where: and(
+        eq(capability.id, capabilityId),
+        eq(capability.tenantId, tenantCtx.id),
+      ),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Capability not found" } },
+        404,
+      );
+    }
+
+    const agentRow = await db.query.agent.findFirst({
+      where: eq(agent.id, row.agentId),
+    });
+
+    return c.json(formatCapability(row, agentRow?.name ?? row.agentId));
+  },
+);
+
+app.patch(
+  "/:capabilityId",
+  describeRoute({
+    tags: ["Discovery"],
+    summary: "Update a capability",
+    responses: {
+      200: {
+        description: "Capability updated",
+        content: {
+          "application/json": { schema: resolver(CapabilityDetail) },
+        },
+      },
+      404: {
+        description: "Capability not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+    },
+  }),
+  validator("json", UpdateCapability),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const capabilityId = c.req.param("capabilityId");
+    const body = c.req.valid("json" as never) as typeof UpdateCapability.infer;
+    const db = c.get("db");
+
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (body.name !== undefined) updates["name"] = body.name;
+    if (body.description !== undefined)
+      updates["description"] = body.description;
+    if (body.pricing !== undefined) updates["pricing"] = body.pricing;
+    if (body.schema !== undefined) updates["schema"] = body.schema;
+
+    const [updated] = await db
+      .update(capability)
+      .set(updates)
+      .where(
+        and(
+          eq(capability.id, capabilityId),
+          eq(capability.tenantId, tenantCtx.id),
+        ),
+      )
+      .returning();
+
+    if (!updated) {
+      return c.json(
+        { error: { code: "not_found", message: "Capability not found" } },
+        404,
+      );
+    }
+
+    const agentRow = await db.query.agent.findFirst({
+      where: eq(agent.id, updated.agentId),
+    });
+
+    return c.json(formatCapability(updated, agentRow?.name ?? updated.agentId));
+  },
+);
+
+app.delete(
+  "/:capabilityId",
+  describeRoute({
+    tags: ["Discovery"],
+    summary: "Remove a capability",
+    responses: {
+      204: {
+        description: "Capability removed",
+      },
+      404: {
+        description: "Capability not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const capabilityId = c.req.param("capabilityId");
+    const db = c.get("db");
+
+    const deleted = await db
+      .delete(capability)
+      .where(
+        and(
+          eq(capability.id, capabilityId),
+          eq(capability.tenantId, tenantCtx.id),
+        ),
+      )
+      .returning();
+
+    if (deleted.length === 0) {
+      return c.json(
+        { error: { code: "not_found", message: "Capability not found" } },
+        404,
+      );
+    }
+
+    return c.body(null, 204);
+  },
 );
 
 export { app as capabilityRoutes };
 
-// Models endpoint is global (not tenant-scoped)
+// Models endpoint is global (not tenant-scoped) -- remains a stub for now
+// since model discovery requires external provider integration
 const modelsApp = new Hono<AppEnv>();
 
 modelsApp.get(

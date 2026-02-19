@@ -18,6 +18,8 @@ type PrincipalResponse = {
   tenantId: string;
   kind: "user" | "agent";
   refId: string;
+  displayName: string;
+  email?: string;
   status: "active" | "suspended" | "invited" | "deactivated";
   roles: { id: string; name: string }[];
   createdAt: string;
@@ -50,7 +52,9 @@ type GrantResponse = {
   id: string;
   tenantId: string;
   roleId: string | null;
+  roleName: string | null;
   principalId: string | null;
+  principalName: string | null;
   resource: string;
   action: string;
   effect: "allow" | "deny" | "ask";
@@ -94,5 +98,68 @@ export function tenantGrantsQuery(tenantId: string) {
     queryKey: ["tenants", tenantId, "grants"],
     queryFn: () =>
       api<GrantResponse[]>("GET", `/api/tenants/${tenantId}/grants`),
+  });
+}
+
+type CredentialResponse = {
+  id: string;
+  tenantId: string;
+  name: string;
+  type: "api_key" | "oauth_token" | "certificate" | "other";
+  description: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type WalletResponse = {
+  id: string;
+  tenantId: string;
+  name: string;
+  backendType: "crypto" | "fiat" | "credits";
+  currency: string;
+  balance: string;
+  config?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type CapabilityResponse = {
+  id: string;
+  agentId: string;
+  agentName: string;
+  tenantId: string;
+  name: string;
+  description: string | null;
+  pricing?: {
+    base?: { amount: string; currency: string };
+    methods?: string[];
+    negotiable?: boolean;
+    bounds?: { min?: string; max?: string };
+  };
+  schema: Record<string, unknown> | null;
+};
+
+export function tenantCredentialsQuery(tenantId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "credentials"],
+    queryFn: () =>
+      api<CredentialResponse[]>("GET", `/api/tenants/${tenantId}/credentials`),
+  });
+}
+
+export function tenantWalletsQuery(tenantId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "wallets"],
+    queryFn: () =>
+      api<WalletResponse[]>("GET", `/api/tenants/${tenantId}/wallets`),
+  });
+}
+
+export function tenantCapabilitiesQuery(tenantId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "capabilities"],
+    queryFn: () =>
+      api<CapabilityResponse[]>("GET", `/api/tenants/${tenantId}/capabilities`),
   });
 }

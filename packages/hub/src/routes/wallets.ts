@@ -1,5 +1,8 @@
+import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
+
+import { wallet, transaction } from "@interchange/db/schema";
 import {
   CreateWallet,
   UpdateWallet,
@@ -8,9 +11,41 @@ import {
   ErrorResponse,
 } from "@interchange/types";
 
-import type { AppEnv } from "../context";
+import type { TenantEnv } from "../context";
+import { first, ts } from "../format";
+import { generateId } from "../ids";
 
-const app = new Hono<AppEnv>();
+function formatWallet(row: typeof wallet.$inferSelect) {
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    name: row.name,
+    backendType: row.backendType as "crypto" | "fiat" | "credits",
+    currency: row.currency,
+    balance: row.balance,
+    config: (row.config as Record<string, unknown> | null) ?? undefined,
+    createdAt: ts(row.createdAt),
+    updatedAt: ts(row.updatedAt),
+  };
+}
+
+function formatTransaction(row: typeof transaction.$inferSelect) {
+  return {
+    id: row.id,
+    walletId: row.walletId,
+    agentId: row.agentId ?? null,
+    direction: row.direction as "inbound" | "outbound",
+    amount: row.amount,
+    currency: row.currency,
+    recipientId: row.recipientId ?? null,
+    senderId: row.senderId ?? null,
+    requestId: row.requestId ?? null,
+    status: row.status as "pending" | "completed" | "failed",
+    createdAt: ts(row.createdAt),
+  };
+}
+
+const app = new Hono<TenantEnv>();
 
 app.get(
   "/",
@@ -28,11 +63,16 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const db = c.get("db");
+
+    const rows = await db.query.wallet.findMany({
+      where: eq(wallet.tenantId, tenantCtx.id),
+    });
+
+    return c.json(rows.map(formatWallet));
+  },
 );
 
 app.post(
@@ -58,11 +98,31 @@ app.post(
     },
   }),
   validator("json", CreateWallet),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const body = c.req.valid("json" as never) as typeof CreateWallet.infer;
+    const db = c.get("db");
+
+    const now = new Date();
+    const row = first(
+      await db
+        .insert(wallet)
+        .values({
+          id: generateId("wallet"),
+          tenantId: tenantCtx.id,
+          name: body.name,
+          backendType: body.backendType,
+          currency: body.currency,
+          balance: "0",
+          config: body.config ?? null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning(),
+    );
+
+    return c.json(formatWallet(row), 201);
+  },
 );
 
 app.get(
@@ -86,11 +146,24 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const walletId = c.req.param("walletId");
+    const db = c.get("db");
+
+    const row = await db.query.wallet.findFirst({
+      where: and(eq(wallet.id, walletId), eq(wallet.tenantId, tenantCtx.id)),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Wallet not found" } },
+        404,
+      );
+    }
+
+    return c.json(formatWallet(row));
+  },
 );
 
 app.patch(
@@ -114,11 +187,31 @@ app.patch(
     },
   }),
   validator("json", UpdateWallet),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const walletId = c.req.param("walletId");
+    const body = c.req.valid("json" as never) as typeof UpdateWallet.infer;
+    const db = c.get("db");
+
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (body.name !== undefined) updates["name"] = body.name;
+    if (body.config !== undefined) updates["config"] = body.config;
+
+    const [updated] = await db
+      .update(wallet)
+      .set(updates)
+      .where(and(eq(wallet.id, walletId), eq(wallet.tenantId, tenantCtx.id)))
+      .returning();
+
+    if (!updated) {
+      return c.json(
+        { error: { code: "not_found", message: "Wallet not found" } },
+        404,
+      );
+    }
+
+    return c.json(formatWallet(updated));
+  },
 );
 
 app.delete(
@@ -138,11 +231,25 @@ app.delete(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const walletId = c.req.param("walletId");
+    const db = c.get("db");
+
+    const deleted = await db
+      .delete(wallet)
+      .where(and(eq(wallet.id, walletId), eq(wallet.tenantId, tenantCtx.id)))
+      .returning();
+
+    if (deleted.length === 0) {
+      return c.json(
+        { error: { code: "not_found", message: "Wallet not found" } },
+        404,
+      );
+    }
+
+    return c.body(null, 204);
+  },
 );
 
 app.get(
@@ -173,11 +280,38 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const walletId = c.req.param("walletId");
+    const db = c.get("db");
+
+    // Verify wallet belongs to tenant
+    const walletRow = await db.query.wallet.findFirst({
+      where: and(eq(wallet.id, walletId), eq(wallet.tenantId, tenantCtx.id)),
+    });
+
+    if (!walletRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Wallet not found" } },
+        404,
+      );
+    }
+
+    const agentId = c.req.query("agentId");
+    const status = c.req.query("status");
+
+    const conditions = [eq(transaction.walletId, walletId)];
+    if (agentId) conditions.push(eq(transaction.agentId, agentId));
+    if (status === "pending" || status === "completed" || status === "failed") {
+      conditions.push(eq(transaction.status, status));
+    }
+
+    const rows = await db.query.transaction.findMany({
+      where: and(...conditions),
+    });
+
+    return c.json(rows.map(formatTransaction));
+  },
 );
 
 export { app as walletRoutes };
