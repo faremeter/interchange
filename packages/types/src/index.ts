@@ -8,6 +8,8 @@ export * from "./agents";
 export * from "./sessions";
 export * from "./approvals";
 export * from "./wallets";
+export * from "./providers";
+export * from "./oauth-clients";
 export * from "./credentials";
 export * from "./capabilities";
 export * from "./observability";

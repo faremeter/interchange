@@ -4,6 +4,8 @@ export * from "./principals";
 export * from "./roles";
 export * from "./grants";
 export * from "./agents";
+export * from "./providers";
+export * from "./oauth-clients";
 export * from "./credentials";
 export * from "./wallets";
 export * from "./capabilities";
