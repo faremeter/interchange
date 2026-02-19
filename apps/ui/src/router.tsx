@@ -6,17 +6,17 @@ import {
   redirect,
 } from "@tanstack/react-router";
 
-import { Layout } from "./components/layout";
-import { LoginPage } from "./pages/login";
-import { DashboardPage } from "./pages/dashboard";
-import { TenantPage } from "./pages/tenant";
-import { TenantAgentsPage } from "./pages/tenant-agents";
-import { TenantPrincipalsPage } from "./pages/tenant-principals";
-import { TenantRolesPage } from "./pages/tenant-roles";
-import { TenantGrantsPage } from "./pages/tenant-grants";
-import { TenantCredentialsPage } from "./pages/tenant-credentials";
-import { TenantWalletsPage } from "./pages/tenant-wallets";
-import { TenantCapabilitiesPage } from "./pages/tenant-capabilities";
+import { Layout } from "@/components/layout";
+import { LoginPage } from "@/pages/login";
+import { DashboardPage } from "@/pages/dashboard";
+import { TenantPage } from "@/pages/tenant";
+import { TenantAgentsPage } from "@/pages/tenant-agents";
+import { TenantPrincipalsPage } from "@/pages/tenant-principals";
+import { TenantRolesPage } from "@/pages/tenant-roles";
+import { TenantGrantsPage } from "@/pages/tenant-grants";
+import { TenantCredentialsPage } from "@/pages/tenant-credentials";
+import { TenantWalletsPage } from "@/pages/tenant-wallets";
+import { TenantCapabilitiesPage } from "@/pages/tenant-capabilities";
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,

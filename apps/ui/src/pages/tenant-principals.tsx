@@ -1,20 +1,27 @@
 import { useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
-import { TenantNav } from "../components/tenant-nav";
-import { tenantPrincipalsQuery } from "../lib/queries/tenants";
+import { TenantNav } from "@/components/tenant-nav";
+import { tenantPrincipalsQuery } from "@/lib/queries/tenants";
+import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
-const STATUS_COLORS: Record<string, string> = {
-  active: "bg-green-100 text-green-700",
-  invited: "bg-yellow-100 text-yellow-700",
-  suspended: "bg-red-100 text-red-700",
-  deactivated: "bg-gray-100 text-gray-500",
-};
-
-const KIND_LABELS: Record<string, string> = {
-  user: "User",
-  agent: "Agent",
-};
+function StatusBadge({ status }: { status: string }) {
+  const variant =
+    status === "active"
+      ? "secondary"
+      : status === "suspended" || status === "deactivated"
+        ? "destructive"
+        : "outline";
+  return <Badge variant={variant}>{status}</Badge>;
+}
 
 export function TenantPrincipalsPage() {
   const { tenantId } = useParams({ strict: false }) as { tenantId: string };
@@ -26,65 +33,53 @@ export function TenantPrincipalsPage() {
     <div>
       <TenantNav />
 
-      <h2 className="text-lg font-semibold text-gray-900">Members</h2>
+      <h2 className="text-lg font-semibold">Members</h2>
 
       {isLoading ? (
-        <p className="mt-4 text-sm text-gray-400">Loading...</p>
+        <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
       ) : principals?.length === 0 ? (
-        <p className="mt-4 text-sm text-gray-400">No members yet.</p>
+        <p className="mt-4 text-sm text-muted-foreground">No members yet.</p>
       ) : (
-        <div className="mt-4 overflow-hidden rounded-lg border border-gray-200 bg-white">
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-gray-100 bg-gray-50">
-              <tr>
-                <th className="px-4 py-2 font-medium text-gray-600">Name</th>
-                <th className="px-4 py-2 font-medium text-gray-600">Kind</th>
-                <th className="px-4 py-2 font-medium text-gray-600">Status</th>
-                <th className="px-4 py-2 font-medium text-gray-600">Roles</th>
-              </tr>
-            </thead>
-            <tbody>
+        <div className="mt-4 rounded-lg border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Kind</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Roles</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {principals?.map((p) => (
-                <tr
-                  key={p.id}
-                  className="border-b border-gray-50 last:border-0"
-                >
-                  <td className="px-4 py-2">
-                    <div className="font-medium text-gray-900">
-                      {p.displayName}
-                    </div>
+                <TableRow key={p.id}>
+                  <TableCell>
+                    <div className="font-medium">{p.displayName}</div>
                     {p.email ? (
-                      <div className="text-xs text-gray-400">{p.email}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {p.email}
+                      </div>
                     ) : null}
-                  </td>
-                  <td className="px-4 py-2">
-                    <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
-                      {KIND_LABELS[p.kind] ?? p.kind}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2">
-                    <span
-                      className={`rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[p.status] ?? "bg-gray-100"}`}
-                    >
-                      {p.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2">
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="outline">{p.kind}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge status={p.status} />
+                  </TableCell>
+                  <TableCell>
                     <div className="flex flex-wrap gap-1">
                       {p.roles.map((r) => (
-                        <span
-                          key={r.id}
-                          className="rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-700"
-                        >
+                        <Badge key={r.id} variant="secondary">
                           {r.name}
-                        </span>
+                        </Badge>
                       ))}
                     </div>
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       )}
     </div>
