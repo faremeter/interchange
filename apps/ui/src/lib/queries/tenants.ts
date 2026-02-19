@@ -209,6 +209,19 @@ function invalidate(qc: QueryClient, tenantId: string, segment: string) {
   return qc.invalidateQueries({ queryKey: ["tenants", tenantId, segment] });
 }
 
+// Tenant
+
+export function updateTenantMutation(tenantId: string, qc: QueryClient) {
+  return {
+    mutationFn: (body: { name?: string; config?: Record<string, unknown> }) =>
+      api<TenantResponse>("PATCH", `/api/tenants/${tenantId}`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["tenants", tenantId] });
+      qc.invalidateQueries({ queryKey: ["me", "principals"] });
+    },
+  };
+}
+
 // Roles
 
 export function createRoleMutation(tenantId: string, qc: QueryClient) {
@@ -247,6 +260,38 @@ export function deleteRoleMutation(
   };
 }
 
+// Role assignment
+
+export function assignRoleMutation(
+  tenantId: string,
+  principalId: string,
+  qc: QueryClient,
+) {
+  return {
+    mutationFn: (roleId: string) =>
+      api<undefined>(
+        "POST",
+        `/api/tenants/${tenantId}/principals/${principalId}/roles/${roleId}`,
+      ),
+    onSuccess: () => invalidate(qc, tenantId, "principals"),
+  };
+}
+
+export function removeRoleMutation(
+  tenantId: string,
+  principalId: string,
+  qc: QueryClient,
+) {
+  return {
+    mutationFn: (roleId: string) =>
+      api<undefined>(
+        "DELETE",
+        `/api/tenants/${tenantId}/principals/${principalId}/roles/${roleId}`,
+      ),
+    onSuccess: () => invalidate(qc, tenantId, "principals"),
+  };
+}
+
 // Principals
 
 export function inviteMemberMutation(tenantId: string, qc: QueryClient) {
@@ -254,7 +299,7 @@ export function inviteMemberMutation(tenantId: string, qc: QueryClient) {
     mutationFn: (body: { email: string; roleId?: string }) =>
       api<PrincipalResponse>(
         "POST",
-        `/api/tenants/${tenantId}/invitations`,
+        `/api/tenants/${tenantId}/members/invite`,
         body,
       ),
     onSuccess: () => invalidate(qc, tenantId, "principals"),
