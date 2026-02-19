@@ -8,6 +8,10 @@ const PREFIXES = {
   agent: "agt_",
   agentVersion: "avr_",
   federationTrust: "ftr_",
+  credential: "crd_",
+  wallet: "wlt_",
+  transaction: "txn_",
+  capability: "cap_",
 } as const;
 
 type IDKind = keyof typeof PREFIXES;
