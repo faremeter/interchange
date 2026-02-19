@@ -1,5 +1,5 @@
 {
-  "name": "@interchange/types",
+  "name": "@interchange/authz",
   "version": "0.0.0",
   "license": "LGPL-2.1-only",
   "type": "module",
@@ -7,13 +7,9 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
-    },
-    "./authz": {
-      "types": "./src/authz.ts",
-      "default": "./src/authz.ts"
     }
   },
   "dependencies": {
-    "arktype": "^2.1.29"
+    "@interchange/types": "workspace:*"
   }
 }
