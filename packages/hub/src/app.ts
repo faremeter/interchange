@@ -14,6 +14,8 @@ import { agentRoutes } from "./routes/agents";
 import { sessionRoutes } from "./routes/sessions";
 import { approvalRoutes } from "./routes/approvals";
 import { walletRoutes } from "./routes/wallets";
+import { providerRoutes } from "./routes/providers";
+import { oauthClientRoutes } from "./routes/oauth-clients";
 import { credentialRoutes } from "./routes/credentials";
 import { capabilityRoutes, modelRoutes } from "./routes/capabilities";
 import { observabilityRoutes } from "./routes/observability";
@@ -51,7 +53,7 @@ export function createApp({ auth, db }: CreateAppOpts) {
     await next();
   });
 
-  app.on(["POST", "GET"], "/api/auth/**", (c) => {
+  app.all("/api/auth/*", (c) => {
     return auth.handler(c.req.raw);
   });
 
@@ -87,6 +89,8 @@ export function createApp({ auth, db }: CreateAppOpts) {
   app.route("/api/tenants/:tenantId/sessions", sessionRoutes);
   app.route("/api/tenants/:tenantId/approvals", approvalRoutes);
   app.route("/api/tenants/:tenantId/wallets", walletRoutes);
+  app.route("/api/tenants/:tenantId/providers", providerRoutes);
+  app.route("/api/tenants/:tenantId/oauth-clients", oauthClientRoutes);
   app.route("/api/tenants/:tenantId/credentials", credentialRoutes);
   app.route("/api/tenants/:tenantId/capabilities", capabilityRoutes);
   app.route("/api/tenants/:tenantId", observabilityRoutes);

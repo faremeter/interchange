@@ -1,8 +1,9 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import { credential } from "@interchange/db/schema";
+import { credential, provider } from "@interchange/db/schema";
+import { getAncestorChain, resolveCredentialByName } from "@interchange/db";
 import {
   CreateCredential,
   UpdateCredential,
@@ -27,9 +28,15 @@ function formatCredential(row: typeof credential.$inferSelect) {
   return {
     id: row.id,
     tenantId: row.tenantId,
+    providerId: row.providerId,
+    principalId: row.principalId ?? null,
+    oauthClientId: row.oauthClientId ?? null,
     name: row.name,
     type: row.type as "api_key" | "oauth_token" | "certificate" | "other",
     description: row.description ?? null,
+    scopes: row.scopes ?? null,
+    expiresAt: row.expiresAt ? ts(row.expiresAt) : null,
+    status: row.status as "active" | "expired" | "revoked" | "error",
     metadata: (row.metadata as Record<string, unknown> | null) ?? null,
     createdAt: ts(row.createdAt),
     updatedAt: ts(row.updatedAt),
@@ -45,8 +52,15 @@ app.get(
     tags: ["Credentials"],
     summary: "List credentials",
     description:
-      "Lists credential metadata. Secrets are never returned. Access for agents is managed through capability grants.",
-    parameters: [...pageParameters],
+      "Lists credential metadata. Secrets are never returned. Filterable by owner type.",
+    parameters: [
+      {
+        name: "owner",
+        in: "query",
+        schema: { type: "string", enum: ["me", "org", "all"] },
+      },
+      ...pageParameters,
+    ],
     responses: {
       200: {
         description: "List of credentials",
@@ -60,13 +74,22 @@ app.get(
   }),
   async (c) => {
     const tenantCtx = c.get("tenant");
+    const principalCtx = c.get("principal");
     const db = c.get("db");
+    const owner = c.req.query("owner") ?? "all";
     const { limit, cursor } = parsePageParams({
       cursor: c.req.query("cursor"),
       limit: c.req.query("limit"),
     });
 
     const conditions = [eq(credential.tenantId, tenantCtx.id)];
+
+    if (owner === "me") {
+      conditions.push(eq(credential.principalId, principalCtx.id));
+    } else if (owner === "org") {
+      conditions.push(isNull(credential.principalId));
+    }
+
     if (cursor) {
       conditions.push(
         cursorCondition(credential.createdAt, credential.id, cursor),
@@ -90,7 +113,7 @@ app.post(
     tags: ["Credentials"],
     summary: "Store a credential",
     description:
-      "Stores a credential (API key, OAuth token, etc.). The secret is stored securely and never returned in subsequent reads.",
+      "Stores a credential (API key, OAuth token, etc.). The secret is stored securely and never returned in subsequent reads. A provider must be specified.",
     responses: {
       201: {
         description: "Credential stored",
@@ -104,6 +127,18 @@ app.post(
           "application/json": { schema: resolver(ErrorResponse) },
         },
       },
+      404: {
+        description: "Provider not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      409: {
+        description: "Credential name already exists in this tenant",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
     },
   }),
   validator("json", CreateCredential),
@@ -112,6 +147,42 @@ app.post(
     const body = c.req.valid("json" as never) as typeof CreateCredential.infer;
     const db = c.get("db");
 
+    const providerRow = await db.query.provider.findFirst({
+      where: eq(provider.id, body.providerId),
+    });
+    if (!providerRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Provider not found" } },
+        404,
+      );
+    }
+
+    const chain = await getAncestorChain(db, tenantCtx.id);
+    if (!chain.includes(providerRow.tenantId)) {
+      return c.json(
+        { error: { code: "not_found", message: "Provider not found" } },
+        404,
+      );
+    }
+
+    const existing = await db.query.credential.findFirst({
+      where: and(
+        eq(credential.tenantId, tenantCtx.id),
+        eq(credential.name, body.name),
+      ),
+    });
+    if (existing) {
+      return c.json(
+        {
+          error: {
+            code: "conflict",
+            message: "Credential name already exists in this tenant",
+          },
+        },
+        409,
+      );
+    }
+
     const now = new Date();
     const row = first(
       await db
@@ -119,10 +190,16 @@ app.post(
         .values({
           id: generateId("credential"),
           tenantId: tenantCtx.id,
+          providerId: body.providerId,
+          principalId: body.principalId ?? null,
+          oauthClientId: body.oauthClientId ?? null,
           name: body.name,
           type: body.type,
           description: body.description ?? null,
           secret: body.secret,
+          refreshSecret: body.refreshSecret ?? null,
+          scopes: body.scopes ?? null,
+          expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
           metadata: body.metadata ?? null,
           createdAt: now,
           updatedAt: now,
@@ -135,12 +212,54 @@ app.post(
 );
 
 app.get(
+  "/resolve/:name",
+  requireGrant("credential:*", "read"),
+  describeRoute({
+    tags: ["Credentials"],
+    summary: "Resolve a credential by name",
+    description:
+      "Resolves a credential by name, walking the tenant hierarchy. Returns metadata only (no secret). Useful for discovering which credential an agent would get.",
+    responses: {
+      200: {
+        description: "Credential metadata",
+        content: {
+          "application/json": { schema: resolver(CredentialResponse) },
+        },
+      },
+      404: {
+        description: "Credential not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const name = c.req.param("name");
+    const db = c.get("db");
+
+    const row = await resolveCredentialByName(db, tenantCtx.id, name);
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Credential not found" } },
+        404,
+      );
+    }
+
+    return c.json(formatCredential(row));
+  },
+);
+
+app.get(
   "/:credentialId",
   requireGrant(idResource("credential", "credentialId"), "read"),
   describeRoute({
     tags: ["Credentials"],
     summary: "Get credential metadata",
-    description: "Returns credential metadata. The secret is never included.",
+    description:
+      "Returns credential metadata. The secret is never included. Supports hierarchy-aware access.",
     responses: {
       200: {
         description: "Credential metadata",
@@ -162,13 +281,18 @@ app.get(
     const db = c.get("db");
 
     const row = await db.query.credential.findFirst({
-      where: and(
-        eq(credential.id, credentialId),
-        eq(credential.tenantId, tenantCtx.id),
-      ),
+      where: eq(credential.id, credentialId),
     });
 
     if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Credential not found" } },
+        404,
+      );
+    }
+
+    const chain = await getAncestorChain(db, tenantCtx.id);
+    if (!chain.includes(row.tenantId)) {
       return c.json(
         { error: { code: "not_found", message: "Credential not found" } },
         404,
@@ -185,6 +309,7 @@ app.patch(
   describeRoute({
     tags: ["Credentials"],
     summary: "Rotate or update a credential",
+    description: "Only credentials owned by this tenant can be updated.",
     responses: {
       200: {
         description: "Credential updated",
@@ -212,6 +337,12 @@ app.patch(
     if (body.description !== undefined)
       updates["description"] = body.description;
     if (body.secret !== undefined) updates["secret"] = body.secret;
+    if (body.refreshSecret !== undefined)
+      updates["refreshSecret"] = body.refreshSecret;
+    if (body.scopes !== undefined) updates["scopes"] = body.scopes;
+    if (body.expiresAt !== undefined)
+      updates["expiresAt"] = body.expiresAt ? new Date(body.expiresAt) : null;
+    if (body.status !== undefined) updates["status"] = body.status;
     if (body.metadata !== undefined) updates["metadata"] = body.metadata;
 
     const [updated] = await db
@@ -242,6 +373,7 @@ app.delete(
   describeRoute({
     tags: ["Credentials"],
     summary: "Revoke a credential",
+    description: "Only credentials owned by this tenant can be revoked.",
     responses: {
       204: {
         description: "Credential revoked",
