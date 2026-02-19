@@ -31,7 +31,14 @@ export default defineConfig(
     },
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService: {
+          allowDefaultProject: [
+            "eslint.config.ts",
+            "apps/ui/vite.config.ts",
+            "bin/*.ts",
+            "packages/db/drizzle.config.ts",
+          ],
+        },
         tsconfigRootDir: import.meta.dirname,
       },
     },

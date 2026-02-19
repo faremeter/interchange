@@ -12,6 +12,8 @@
     "noUncheckedIndexedAccess": true,
     "module": "ESNext",
     "noEmit": true,
+    "composite": true,
+    "declaration": true,
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
     "baseUrl": ".",
