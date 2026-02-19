@@ -14,6 +14,7 @@ import {
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
+import { requireGrant, idResource } from "../middleware/grant";
 
 function formatWallet(row: typeof wallet.$inferSelect) {
   return {
@@ -49,6 +50,7 @@ const app = new Hono<TenantEnv>();
 
 app.get(
   "/",
+  requireGrant("wallet:*", "read"),
   describeRoute({
     tags: ["Wallets"],
     summary: "List wallets in the tenant",
@@ -77,6 +79,7 @@ app.get(
 
 app.post(
   "/",
+  requireGrant("wallet:*", "create"),
   describeRoute({
     tags: ["Wallets"],
     summary: "Create a wallet",
@@ -127,6 +130,7 @@ app.post(
 
 app.get(
   "/:walletId",
+  requireGrant(idResource("wallet", "walletId"), "read"),
   describeRoute({
     tags: ["Wallets"],
     summary: "Get wallet details",
@@ -168,6 +172,7 @@ app.get(
 
 app.patch(
   "/:walletId",
+  requireGrant(idResource("wallet", "walletId"), "manage"),
   describeRoute({
     tags: ["Wallets"],
     summary: "Update wallet config",
@@ -216,6 +221,7 @@ app.patch(
 
 app.delete(
   "/:walletId",
+  requireGrant(idResource("wallet", "walletId"), "manage"),
   describeRoute({
     tags: ["Wallets"],
     summary: "Deactivate a wallet",
@@ -254,6 +260,7 @@ app.delete(
 
 app.get(
   "/:walletId/transactions",
+  requireGrant(idResource("wallet", "walletId"), "read"),
   describeRoute({
     tags: ["Wallets"],
     summary: "List transactions",
