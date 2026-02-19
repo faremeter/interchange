@@ -53,10 +53,18 @@
         "vite": "^6.3.5",
       },
     },
+    "packages/authz": {
+      "name": "@interchange/authz",
+      "version": "0.0.0",
+      "dependencies": {
+        "@interchange/types": "workspace:*",
+      },
+    },
     "packages/db": {
       "name": "@interchange/db",
       "version": "0.0.0",
       "dependencies": {
+        "@interchange/types": "workspace:*",
         "arktype": "^2.1.29",
         "drizzle-orm": "^0.45.1",
         "postgres": "^3.4.8",
@@ -67,6 +75,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@hono/standard-validator": "^0.2.2",
+        "@interchange/authz": "workspace:*",
         "@interchange/db": "workspace:*",
         "@interchange/log": "workspace:*",
         "@interchange/types": "workspace:*",
@@ -282,6 +291,8 @@
     "@inquirer/figures": ["@inquirer/figures@1.0.15", "", {}, "sha512-t2IEY+unGHOzAaVM5Xx6DEWKeXlDDcNPeDyUpsRc6CUhBfU3VQOEl+Vssh7VNp1dR8MdUJBWhuObjXCsVpjN5g=="],
 
     "@inquirer/type": ["@inquirer/type@3.0.10", "", { "peerDependencies": { "@types/node": ">=18" }, "optionalPeers": ["@types/node"] }, "sha512-BvziSRxfz5Ov8ch0z/n3oijRSEcEsHnhggm4xFZe93DHcUCTlutlq9Ox4SVENAfcRD22UQq7T/atg9Wr3k09eA=="],
+
+    "@interchange/authz": ["@interchange/authz@workspace:packages/authz"],
 
     "@interchange/db": ["@interchange/db@workspace:packages/db"],
 

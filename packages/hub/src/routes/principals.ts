@@ -13,6 +13,7 @@ import {
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
+import { requireGrant, idResource } from "../middleware/grant";
 
 type ResolvedIdentity = { displayName: string; email?: string };
 
@@ -89,6 +90,7 @@ const app = new Hono<TenantEnv>();
 
 app.get(
   "/",
+  requireGrant("principal:*", "read"),
   describeRoute({
     tags: ["Principals"],
     summary: "List principals in the tenant",
@@ -188,6 +190,7 @@ app.get(
 
 app.get(
   "/:principalId",
+  requireGrant(idResource("principal", "principalId"), "read"),
   describeRoute({
     tags: ["Principals"],
     summary: "Get principal details",
@@ -235,6 +238,7 @@ app.get(
 
 app.patch(
   "/:principalId",
+  requireGrant(idResource("principal", "principalId"), "manage"),
   describeRoute({
     tags: ["Principals"],
     summary: "Update principal status",
@@ -289,6 +293,7 @@ app.patch(
 
 app.delete(
   "/:principalId",
+  requireGrant(idResource("principal", "principalId"), "manage"),
   describeRoute({
     tags: ["Principals"],
     summary: "Remove principal from tenant",
@@ -339,6 +344,7 @@ const inviteApp = new Hono<TenantEnv>();
 
 inviteApp.post(
   "/",
+  requireGrant("principal:*", "create"),
   describeRoute({
     tags: ["Principals"],
     summary: "Invite a user to the tenant",

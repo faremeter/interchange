@@ -2,7 +2,8 @@ import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import { grant, principal, principalRole } from "@interchange/db/schema";
+import { authorize } from "@interchange/authz";
+import { grant, principal } from "@interchange/db/schema";
 import {
   CreateGrant,
   UpdateGrant,
@@ -15,6 +16,7 @@ import {
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
+import { requireGrant, idResource } from "../middleware/grant";
 
 type ResolvedNames = {
   roleNames: Map<string, string>;
@@ -114,6 +116,7 @@ const app = new Hono<TenantEnv>();
 
 app.get(
   "/",
+  requireGrant("grant:*", "read"),
   describeRoute({
     tags: ["Grants"],
     summary: "List capability grants in the tenant",
@@ -168,6 +171,7 @@ app.get(
 
 app.post(
   "/",
+  requireGrant("grant:*", "create"),
   describeRoute({
     tags: ["Grants"],
     summary: "Create a capability grant",
@@ -233,6 +237,7 @@ app.post(
 
 app.get(
   "/:grantId",
+  requireGrant(idResource("grant", "grantId"), "read"),
   describeRoute({
     tags: ["Grants"],
     summary: "Get grant details",
@@ -273,6 +278,7 @@ app.get(
 
 app.patch(
   "/:grantId",
+  requireGrant(idResource("grant", "grantId"), "manage"),
   describeRoute({
     tags: ["Grants"],
     summary: "Update a grant",
@@ -325,6 +331,7 @@ app.patch(
 
 app.delete(
   "/:grantId",
+  requireGrant(idResource("grant", "grantId"), "manage"),
   describeRoute({
     tags: ["Grants"],
     summary: "Revoke a grant",
@@ -394,6 +401,8 @@ evaluateApp.post(
     const principalId = c.req.param("principalId") ?? "";
     const body = c.req.valid("json" as never) as typeof EvaluateRequest.infer;
     const db = c.get("db");
+    const grantStore = c.get("grantStore");
+    const conditionRegistry = c.get("conditionRegistry");
 
     const principalRow = await db.query.principal.findFirst({
       where: and(
@@ -409,54 +418,23 @@ evaluateApp.post(
       );
     }
 
-    // Collect role IDs for the principal
-    const roleAssignments = await db.query.principalRole.findMany({
-      where: eq(principalRole.principalId, principalId),
-    });
-    const roleIds = roleAssignments.map((a) => a.roleId);
-
-    // Find all matching grants: direct principal grants + role-based grants
-    const allGrants = await db.query.grant.findMany({
-      where: eq(grant.tenantId, tenantCtx.id),
-    });
-
-    const now = new Date();
-    const matching = allGrants.filter((g) => {
-      // Skip expired grants
-      if (g.expiresAt && g.expiresAt < now) return false;
-
-      // Must be relevant to this principal (direct or via role)
-      const isDirectGrant = g.principalId === principalId;
-      const isRoleGrant = g.roleId !== null && roleIds.includes(g.roleId);
-      if (!isDirectGrant && !isRoleGrant) return false;
-
-      // Match resource (wildcard or exact)
-      if (g.resource !== "*" && g.resource !== body.resource) return false;
-
-      // Match action (wildcard or exact)
-      if (g.action !== "*" && g.action !== body.action) return false;
-
-      return true;
-    });
-
-    // Resolve effect: deny > ask > allow
-    let resolved: "allow" | "deny" | "ask" = "deny";
-    if (matching.some((g) => g.effect === "deny")) {
-      resolved = "deny";
-    } else if (matching.some((g) => g.effect === "ask")) {
-      resolved = "ask";
-    } else if (matching.some((g) => g.effect === "allow")) {
-      resolved = "allow";
-    }
+    const result = await authorize(
+      grantStore,
+      principalId,
+      tenantCtx.id,
+      body.resource,
+      body.action,
+      conditionRegistry,
+    );
 
     return c.json({
-      effect: resolved,
-      matchingGrants: matching.map((g) => ({
+      effect: result.effect ?? "deny",
+      matchingGrants: result.matchingGrants.map((g) => ({
         id: g.id,
         resource: g.resource,
         action: g.action,
-        effect: g.effect as "allow" | "deny" | "ask",
-        source: g.source as "system" | "role" | "creator" | "invoker",
+        effect: g.effect,
+        source: g.source,
       })),
     });
   },

@@ -14,6 +14,7 @@ import {
 import type { TenantEnv, AppEnv } from "../context";
 import { first } from "../format";
 import { generateId } from "../ids";
+import { requireGrant, idResource } from "../middleware/grant";
 
 type Pricing = {
   base?: { amount: string; currency: string };
@@ -42,6 +43,7 @@ const app = new Hono<TenantEnv>();
 
 app.get(
   "/",
+  requireGrant("capability:*", "read"),
   describeRoute({
     tags: ["Discovery"],
     summary: "Search capabilities",
@@ -100,6 +102,7 @@ app.get(
 
 app.post(
   "/",
+  requireGrant("capability:*", "create"),
   describeRoute({
     tags: ["Discovery"],
     summary: "Register a capability",
@@ -172,6 +175,7 @@ app.post(
 
 app.get(
   "/:capabilityId",
+  requireGrant(idResource("capability", "capabilityId"), "read"),
   describeRoute({
     tags: ["Discovery"],
     summary: "Get capability details",
@@ -221,6 +225,7 @@ app.get(
 
 app.patch(
   "/:capabilityId",
+  requireGrant(idResource("capability", "capabilityId"), "manage"),
   describeRoute({
     tags: ["Discovery"],
     summary: "Update a capability",
@@ -281,6 +286,7 @@ app.patch(
 
 app.delete(
   "/:capabilityId",
+  requireGrant(idResource("capability", "capabilityId"), "manage"),
   describeRoute({
     tags: ["Discovery"],
     summary: "Remove a capability",

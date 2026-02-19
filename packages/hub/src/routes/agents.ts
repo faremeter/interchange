@@ -17,6 +17,7 @@ import {
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
+import { requireGrant, idResource } from "../middleware/grant";
 
 function formatAgent(row: typeof agent.$inferSelect) {
   return {
@@ -43,6 +44,7 @@ const app = new Hono<TenantEnv>();
 
 app.get(
   "/",
+  requireGrant("agent:*", "read"),
   describeRoute({
     tags: ["Agents"],
     summary: "List agents in the tenant",
@@ -94,6 +96,7 @@ app.get(
 
 app.post(
   "/",
+  requireGrant("agent:*", "create"),
   describeRoute({
     tags: ["Agents"],
     summary: "Create an agent",
@@ -191,6 +194,7 @@ app.post(
 
 app.get(
   "/:agentId",
+  requireGrant(idResource("agent", "agentId"), "read"),
   describeRoute({
     tags: ["Agents"],
     summary: "Get agent details",
@@ -233,6 +237,7 @@ app.get(
 
 app.patch(
   "/:agentId",
+  requireGrant(idResource("agent", "agentId"), "manage"),
   describeRoute({
     tags: ["Agents"],
     summary: "Update agent definition",
@@ -326,6 +331,7 @@ app.patch(
 
 app.delete(
   "/:agentId",
+  requireGrant(idResource("agent", "agentId"), "manage"),
   describeRoute({
     tags: ["Agents"],
     summary: "Retire an agent",
@@ -377,6 +383,7 @@ app.delete(
 
 app.get(
   "/:agentId/versions",
+  requireGrant(idResource("agent", "agentId"), "read"),
   describeRoute({
     tags: ["Agents"],
     summary: "List agent versions",
@@ -412,6 +419,7 @@ app.get(
 
 app.post(
   "/:agentId/rollback",
+  requireGrant(idResource("agent", "agentId"), "manage"),
   describeRoute({
     tags: ["Agents"],
     summary: "Rollback to a previous version",
@@ -506,6 +514,7 @@ app.post(
 
 app.get(
   "/:agentId/health",
+  requireGrant(idResource("agent", "agentId"), "read"),
   describeRoute({
     tags: ["Agents"],
     summary: "Get agent health status",
@@ -552,6 +561,7 @@ app.get(
 
 app.get(
   "/:agentId/capabilities",
+  requireGrant(idResource("agent", "agentId"), "read"),
   describeRoute({
     tags: ["Agents"],
     summary: "List agent capabilities",

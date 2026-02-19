@@ -13,6 +13,7 @@ import {
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
+import { requireGrant, idResource } from "../middleware/grant";
 
 function formatRole(row: typeof role.$inferSelect) {
   return {
@@ -30,6 +31,7 @@ const app = new Hono<TenantEnv>();
 
 app.get(
   "/",
+  requireGrant("role:*", "read"),
   describeRoute({
     tags: ["Roles"],
     summary: "List roles in the tenant",
@@ -60,6 +62,7 @@ app.get(
 
 app.post(
   "/",
+  requireGrant("role:*", "create"),
   describeRoute({
     tags: ["Roles"],
     summary: "Create a custom role",
@@ -106,6 +109,7 @@ app.post(
 
 app.get(
   "/:roleId",
+  requireGrant(idResource("role", "roleId"), "read"),
   describeRoute({
     tags: ["Roles"],
     summary: "Get role details",
@@ -147,6 +151,7 @@ app.get(
 
 app.patch(
   "/:roleId",
+  requireGrant(idResource("role", "roleId"), "manage"),
   describeRoute({
     tags: ["Roles"],
     summary: "Update a role",
@@ -211,6 +216,7 @@ app.patch(
 
 app.delete(
   "/:roleId",
+  requireGrant(idResource("role", "roleId"), "manage"),
   describeRoute({
     tags: ["Roles"],
     summary: "Delete a custom role",
@@ -291,6 +297,7 @@ const assignApp = new Hono<TenantEnv>();
 
 assignApp.post(
   "/:roleId",
+  requireGrant("role:*", "manage"),
   describeRoute({
     tags: ["Roles"],
     summary: "Assign a role to a principal",
@@ -358,6 +365,7 @@ assignApp.post(
 
 assignApp.delete(
   "/:roleId",
+  requireGrant("role:*", "manage"),
   describeRoute({
     tags: ["Roles"],
     summary: "Remove a role from a principal",

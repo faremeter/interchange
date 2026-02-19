@@ -1,4 +1,5 @@
 import type { DB } from "@interchange/db";
+import type { ConditionRegistry, GrantStore } from "@interchange/types/authz";
 import type { Env } from "hono";
 
 import type { Auth } from "./auth";
@@ -27,6 +28,8 @@ export type PrincipalRow = {
 export type AppEnv = Env & {
   Variables: {
     db: DB["db"];
+    grantStore: GrantStore;
+    conditionRegistry: ConditionRegistry;
     user: Auth["$Infer"]["Session"]["user"] | null;
     session: Auth["$Infer"]["Session"]["session"] | null;
   };

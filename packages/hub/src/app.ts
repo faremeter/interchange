@@ -19,7 +19,8 @@ import { capabilityRoutes, modelRoutes } from "./routes/capabilities";
 import { observabilityRoutes } from "./routes/observability";
 import { agentDataRoutes } from "./routes/agent-data";
 
-import type { DB } from "@interchange/db";
+import { type DB, createGrantStore } from "@interchange/db";
+import type { ConditionRegistry } from "@interchange/types/authz";
 
 export type CreateAppOpts = {
   auth: Auth;
@@ -28,6 +29,8 @@ export type CreateAppOpts = {
 
 export function createApp({ auth, db }: CreateAppOpts) {
   const app = new Hono<AppEnv>();
+  const grantStore = createGrantStore(db);
+  const conditionRegistry: ConditionRegistry = {};
 
   app.use(
     honoLogger({
@@ -38,6 +41,8 @@ export function createApp({ auth, db }: CreateAppOpts) {
 
   app.use(async (c, next) => {
     c.set("db", db);
+    c.set("grantStore", grantStore);
+    c.set("conditionRegistry", conditionRegistry);
     const result = await auth.api.getSession({
       headers: c.req.raw.headers,
     });

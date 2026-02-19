@@ -13,6 +13,7 @@ import {
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
+import { requireGrant, idResource } from "../middleware/grant";
 
 function formatCredential(row: typeof credential.$inferSelect) {
   return {
@@ -31,6 +32,7 @@ const app = new Hono<TenantEnv>();
 
 app.get(
   "/",
+  requireGrant("credential:*", "read"),
   describeRoute({
     tags: ["Credentials"],
     summary: "List credentials",
@@ -61,6 +63,7 @@ app.get(
 
 app.post(
   "/",
+  requireGrant("credential:*", "create"),
   describeRoute({
     tags: ["Credentials"],
     summary: "Store a credential",
@@ -111,6 +114,7 @@ app.post(
 
 app.get(
   "/:credentialId",
+  requireGrant(idResource("credential", "credentialId"), "read"),
   describeRoute({
     tags: ["Credentials"],
     summary: "Get credential metadata",
@@ -155,6 +159,7 @@ app.get(
 
 app.patch(
   "/:credentialId",
+  requireGrant(idResource("credential", "credentialId"), "manage"),
   describeRoute({
     tags: ["Credentials"],
     summary: "Rotate or update a credential",
@@ -211,6 +216,7 @@ app.patch(
 
 app.delete(
   "/:credentialId",
+  requireGrant(idResource("credential", "credentialId"), "manage"),
   describeRoute({
     tags: ["Credentials"],
     summary: "Revoke a credential",
