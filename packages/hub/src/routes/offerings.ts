@@ -2,11 +2,11 @@ import { eq, and, ilike } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import { agent, capability } from "@interchange/db/schema";
+import { agent, offering } from "@interchange/db/schema";
 import {
-  CreateCapability,
-  UpdateCapability,
-  CapabilityDetail,
+  CreateOffering,
+  UpdateOffering,
+  OfferingDetail,
   ModelInfo,
   ErrorResponse,
   paginatedSchema,
@@ -31,10 +31,7 @@ type Pricing = {
   bounds?: { min?: string; max?: string };
 };
 
-function formatCapability(
-  row: typeof capability.$inferSelect,
-  agentName: string,
-) {
+function formatOffering(row: typeof offering.$inferSelect, agentName: string) {
   return {
     id: row.id,
     agentId: row.agentId,
@@ -51,12 +48,12 @@ const app = new Hono<TenantEnv>();
 
 app.get(
   "/",
-  requireGrant("capability:*", "read"),
+  requireGrant("offering:*", "read"),
   describeRoute({
     tags: ["Discovery"],
-    summary: "Search capabilities",
+    summary: "Search offerings",
     description:
-      "Searches capabilities across discoverable agents in the tenant and federated tenants. Filterable by capability name, pricing range, and payment method.",
+      "Searches offerings across discoverable agents in the tenant and federated tenants. Filterable by offering name, pricing range, and payment method.",
     parameters: [
       { name: "name", in: "query", schema: { type: "string" } },
       { name: "minPrice", in: "query", schema: { type: "string" } },
@@ -66,10 +63,10 @@ app.get(
     ],
     responses: {
       200: {
-        description: "List of capabilities",
+        description: "List of offerings",
         content: {
           "application/json": {
-            schema: resolver(paginatedSchema(CapabilityDetail)),
+            schema: resolver(paginatedSchema(OfferingDetail)),
           },
         },
       },
@@ -84,19 +81,17 @@ app.get(
       limit: c.req.query("limit"),
     });
 
-    const conditions = [eq(capability.tenantId, tenantCtx.id)];
+    const conditions = [eq(offering.tenantId, tenantCtx.id)];
     if (name) {
-      conditions.push(ilike(capability.name, `%${name}%`));
+      conditions.push(ilike(offering.name, `%${name}%`));
     }
     if (cursor) {
-      conditions.push(
-        cursorCondition(capability.createdAt, capability.id, cursor),
-      );
+      conditions.push(cursorCondition(offering.createdAt, offering.id, cursor));
     }
 
-    const rows = await db.query.capability.findMany({
+    const rows = await db.query.offering.findMany({
       where: and(...conditions),
-      orderBy: pageOrder(capability.createdAt, capability.id),
+      orderBy: pageOrder(offering.createdAt, offering.id),
       limit,
     });
 
@@ -112,7 +107,7 @@ app.get(
     }
 
     const items = rows.map((r) =>
-      formatCapability(r, agentNames.get(r.agentId) ?? r.agentId),
+      formatOffering(r, agentNames.get(r.agentId) ?? r.agentId),
     );
 
     return c.json(paginatedResponse(items, rows, limit));
@@ -121,17 +116,17 @@ app.get(
 
 app.post(
   "/",
-  requireGrant("capability:*", "create"),
+  requireGrant("offering:*", "create"),
   describeRoute({
     tags: ["Discovery"],
-    summary: "Register a capability",
+    summary: "Register an offering",
     description:
-      "Registers a capability for an agent. The agent must belong to the tenant.",
+      "Registers an offering for an agent. The agent must belong to the tenant.",
     responses: {
       201: {
-        description: "Capability registered",
+        description: "Offering registered",
         content: {
-          "application/json": { schema: resolver(CapabilityDetail) },
+          "application/json": { schema: resolver(OfferingDetail) },
         },
       },
       400: {
@@ -148,10 +143,10 @@ app.post(
       },
     },
   }),
-  validator("json", CreateCapability),
+  validator("json", CreateOffering),
   async (c) => {
     const tenantCtx = c.get("tenant");
-    const body = c.req.valid("json" as never) as typeof CreateCapability.infer;
+    const body = c.req.valid("json" as never) as typeof CreateOffering.infer;
     const db = c.get("db");
 
     const agentRow = await db.query.agent.findFirst({
@@ -173,9 +168,9 @@ app.post(
     const now = new Date();
     const row = first(
       await db
-        .insert(capability)
+        .insert(offering)
         .values({
-          id: generateId("capability"),
+          id: generateId("offering"),
           agentId: body.agentId,
           tenantId: tenantCtx.id,
           name: body.name,
@@ -188,27 +183,27 @@ app.post(
         .returning(),
     );
 
-    return c.json(formatCapability(row, agentRow.name), 201);
+    return c.json(formatOffering(row, agentRow.name), 201);
   },
 );
 
 app.get(
-  "/:capabilityId",
-  requireGrant(idResource("capability", "capabilityId"), "read"),
+  "/:offeringId",
+  requireGrant(idResource("offering", "offeringId"), "read"),
   describeRoute({
     tags: ["Discovery"],
-    summary: "Get capability details",
+    summary: "Get offering details",
     description:
       "Returns pricing, agent info, and request/response type information.",
     responses: {
       200: {
-        description: "Capability details",
+        description: "Offering details",
         content: {
-          "application/json": { schema: resolver(CapabilityDetail) },
+          "application/json": { schema: resolver(OfferingDetail) },
         },
       },
       404: {
-        description: "Capability not found",
+        description: "Offering not found",
         content: {
           "application/json": { schema: resolver(ErrorResponse) },
         },
@@ -217,19 +212,19 @@ app.get(
   }),
   async (c) => {
     const tenantCtx = c.get("tenant");
-    const capabilityId = c.req.param("capabilityId");
+    const offeringId = c.req.param("offeringId");
     const db = c.get("db");
 
-    const row = await db.query.capability.findFirst({
+    const row = await db.query.offering.findFirst({
       where: and(
-        eq(capability.id, capabilityId),
-        eq(capability.tenantId, tenantCtx.id),
+        eq(offering.id, offeringId),
+        eq(offering.tenantId, tenantCtx.id),
       ),
     });
 
     if (!row) {
       return c.json(
-        { error: { code: "not_found", message: "Capability not found" } },
+        { error: { code: "not_found", message: "Offering not found" } },
         404,
       );
     }
@@ -238,36 +233,36 @@ app.get(
       where: eq(agent.id, row.agentId),
     });
 
-    return c.json(formatCapability(row, agentRow?.name ?? row.agentId));
+    return c.json(formatOffering(row, agentRow?.name ?? row.agentId));
   },
 );
 
 app.patch(
-  "/:capabilityId",
-  requireGrant(idResource("capability", "capabilityId"), "manage"),
+  "/:offeringId",
+  requireGrant(idResource("offering", "offeringId"), "manage"),
   describeRoute({
     tags: ["Discovery"],
-    summary: "Update a capability",
+    summary: "Update an offering",
     responses: {
       200: {
-        description: "Capability updated",
+        description: "Offering updated",
         content: {
-          "application/json": { schema: resolver(CapabilityDetail) },
+          "application/json": { schema: resolver(OfferingDetail) },
         },
       },
       404: {
-        description: "Capability not found",
+        description: "Offering not found",
         content: {
           "application/json": { schema: resolver(ErrorResponse) },
         },
       },
     },
   }),
-  validator("json", UpdateCapability),
+  validator("json", UpdateOffering),
   async (c) => {
     const tenantCtx = c.get("tenant");
-    const capabilityId = c.req.param("capabilityId");
-    const body = c.req.valid("json" as never) as typeof UpdateCapability.infer;
+    const offeringId = c.req.param("offeringId");
+    const body = c.req.valid("json" as never) as typeof UpdateOffering.infer;
     const db = c.get("db");
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -278,19 +273,16 @@ app.patch(
     if (body.schema !== undefined) updates["schema"] = body.schema;
 
     const [updated] = await db
-      .update(capability)
+      .update(offering)
       .set(updates)
       .where(
-        and(
-          eq(capability.id, capabilityId),
-          eq(capability.tenantId, tenantCtx.id),
-        ),
+        and(eq(offering.id, offeringId), eq(offering.tenantId, tenantCtx.id)),
       )
       .returning();
 
     if (!updated) {
       return c.json(
-        { error: { code: "not_found", message: "Capability not found" } },
+        { error: { code: "not_found", message: "Offering not found" } },
         404,
       );
     }
@@ -299,22 +291,22 @@ app.patch(
       where: eq(agent.id, updated.agentId),
     });
 
-    return c.json(formatCapability(updated, agentRow?.name ?? updated.agentId));
+    return c.json(formatOffering(updated, agentRow?.name ?? updated.agentId));
   },
 );
 
 app.delete(
-  "/:capabilityId",
-  requireGrant(idResource("capability", "capabilityId"), "manage"),
+  "/:offeringId",
+  requireGrant(idResource("offering", "offeringId"), "manage"),
   describeRoute({
     tags: ["Discovery"],
-    summary: "Remove a capability",
+    summary: "Remove an offering",
     responses: {
       204: {
-        description: "Capability removed",
+        description: "Offering removed",
       },
       404: {
-        description: "Capability not found",
+        description: "Offering not found",
         content: {
           "application/json": { schema: resolver(ErrorResponse) },
         },
@@ -323,22 +315,19 @@ app.delete(
   }),
   async (c) => {
     const tenantCtx = c.get("tenant");
-    const capabilityId = c.req.param("capabilityId");
+    const offeringId = c.req.param("offeringId");
     const db = c.get("db");
 
     const deleted = await db
-      .delete(capability)
+      .delete(offering)
       .where(
-        and(
-          eq(capability.id, capabilityId),
-          eq(capability.tenantId, tenantCtx.id),
-        ),
+        and(eq(offering.id, offeringId), eq(offering.tenantId, tenantCtx.id)),
       )
       .returning();
 
     if (deleted.length === 0) {
       return c.json(
-        { error: { code: "not_found", message: "Capability not found" } },
+        { error: { code: "not_found", message: "Offering not found" } },
         404,
       );
     }
@@ -347,7 +336,7 @@ app.delete(
   },
 );
 
-export { app as capabilityRoutes };
+export { app as offeringRoutes };
 
 // Models endpoint is global (not tenant-scoped) -- remains a stub for now
 // since model discovery requires external provider integration

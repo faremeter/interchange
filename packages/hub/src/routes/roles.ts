@@ -133,7 +133,7 @@ app.get(
   describeRoute({
     tags: ["Roles"],
     summary: "Get role details",
-    description: "Returns role details including attached capability grants.",
+    description: "Returns role details including attached grants.",
     responses: {
       200: {
         description: "Role details",

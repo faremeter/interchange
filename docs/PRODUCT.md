@@ -4,7 +4,7 @@ _Product Brief_
 
 **The infrastructure layer for the agentic era.**
 
-We are witnessing an explosion of AI agents - autonomous systems that can reason, act, and collaborate. But the infrastructure to run them securely, connect them reliably, and hold them accountable doesn't exist. Today's agents run in ad-hoc environments with no isolation, no standard way to discover each other's capabilities, and no mechanism for economic accountability. As agents become more powerful and prevalent, this isn't just inconvenient - it's dangerous.
+We are witnessing an explosion of AI agents - autonomous systems that can reason, act, and collaborate. But the infrastructure to run them securely, connect them reliably, and hold them accountable doesn't exist. Today's agents run in ad-hoc environments with no isolation, no standard way to discover each other's offerings, and no mechanism for economic accountability. As agents become more powerful and prevalent, this isn't just inconvenient - it's dangerous.
 
 Faremeter Interchange is the foundational platform for deploying, connecting, and governing AI agents. It provides the primitives necessary for agents to operate as trusted, autonomous participants in a networked economy.
 
@@ -20,7 +20,7 @@ Agents can use any model backend - local models running on-device, remote APIs, 
 Interchange provides tools to construct agents and skills with properly assembled context and prompts. The builder handles composition of system prompts, skill instructions, initial state, and runtime context into coherent agent configurations. Operators define the building blocks; the builder assembles them into deployable agents.
 
 **Tool Discovery**
-Agents expose their capabilities through a registry that other agents can query. Need an agent that can search the web, execute code, or process payments? Discover it, verify its permissions, and invoke it - all through standard protocols.
+Agents expose their offerings through a registry that other agents can query. Need an agent that can search the web, execute code, or process payments? Discover it, verify its permissions, and invoke it - all through standard protocols.
 
 **Human Interface**
 Humans interact with agents through the same messaging and session infrastructure that agents use with each other. On desktop and mobile, users connect to agents through session channels that stream responses in real-time. When disconnected, messages queue and are available on reconnect. The interface is native to each deployment platform - not a bolted-on afterthought. Agents don't distinguish between human and agent callers at the protocol level; the kernel handles both through the same message bus and session channel primitives.
@@ -59,7 +59,7 @@ Agents interact with external systems - LLMs for inference, APIs for tools and d
 
 Interchange builds on established protocols rather than inventing new ones:
 
-- **Capability discovery** - Agents expose and discover capabilities using MCP, OpenAPI, or A2A
+- **Offering discovery** - Agents expose and discover offerings using MCP, OpenAPI, or A2A
 - **Payments** - Wallets send and receive using [Faremeter](https://github.com/faremeter/faremeter), supporting a superset of payment protocols (x402, L402, and others) with an open integration layer for third-party payment systems
 - **Identity** - Cryptographic identity based on existing PKI and DID standards
 - **Messaging** - Built on SMTP/IMAP for universal interoperability

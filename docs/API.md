@@ -42,7 +42,7 @@
 | GET | /api/tenants/:tenantId/agents/:agentId/versions | List agent versions |
 | POST | /api/tenants/:tenantId/agents/:agentId/rollback | Rollback to a previous version |
 | GET | /api/tenants/:tenantId/agents/:agentId/health | Get agent health status |
-| GET | /api/tenants/:tenantId/agents/:agentId/capabilities | List agent capabilities |
+| GET | /api/tenants/:tenantId/agents/:agentId/offerings | List agent offerings |
 | POST | /api/tenants/:tenantId/sessions | Create a session |
 | GET | /api/tenants/:tenantId/sessions | List sessions in the tenant |
 | GET | /api/tenants/:tenantId/sessions/:sessionId | Get session metadata |
@@ -68,8 +68,8 @@
 | GET | /api/tenants/:tenantId/credentials/:credentialId | Get credential metadata |
 | PATCH | /api/tenants/:tenantId/credentials/:credentialId | Rotate or update a credential |
 | DELETE | /api/tenants/:tenantId/credentials/:credentialId | Revoke a credential |
-| GET | /api/tenants/:tenantId/capabilities | Search capabilities |
-| GET | /api/tenants/:tenantId/capabilities/:capabilityId | Get capability details |
+| GET | /api/tenants/:tenantId/offerings | Search offerings |
+| GET | /api/tenants/:tenantId/offerings/:offeringId | Get offering details |
 | GET | /api/tenants/:tenantId/agents/:agentId/logs | Get agent logs |
 | GET | /api/tenants/:tenantId/agents/:agentId/metrics | Get agent metrics |
 | GET | /api/tenants/:tenantId/traces | Query distributed traces |
@@ -177,22 +177,22 @@ Lists available models across configured providers with capabilities, pricing, a
 
 200: ModelInfo[] -- List of models
 
-### GET /api/tenants/:tenantId/capabilities
-Search capabilities
+### GET /api/tenants/:tenantId/offerings
+Search offerings
 
-Searches capabilities across discoverable agents in the tenant and federated tenants. Filterable by capability name, pricing range, and payment method.
+Searches offerings across discoverable agents in the tenant and federated tenants. Filterable by offering name, pricing range, and payment method.
 
 Query: name?, minPrice?, maxPrice?, paymentMethod?
 
-200: CapabilityDetail[] -- List of capabilities
+200: OfferingDetail[] -- List of offerings
 
-### GET /api/tenants/:tenantId/capabilities/:capabilityId
-Get capability details
+### GET /api/tenants/:tenantId/offerings/:offeringId
+Get offering details
 
 Returns pricing, agent info, and request/response type information.
 
-200: CapabilityDetail -- Capability details
-404: ErrorResponse -- Capability not found
+200: OfferingDetail -- Offering details
+404: ErrorResponse -- Offering not found
 
 ## Principals
 
@@ -357,9 +357,9 @@ Body: EvaluateRequest
 ### GET /api/tenants/:tenantId/agents
 List agents in the tenant
 
-Filterable by capability and status.
+Filterable by offering and status.
 
-Query: capability?, status?: deployed|stopped|updating|error
+Query: offering?, status?: deployed|stopped|updating|error
 
 200: AgentResponse[] -- List of agents
 
@@ -376,7 +376,7 @@ Body: CreateAgent
 ### GET /api/tenants/:tenantId/agents/:agentId
 Get agent details
 
-Returns the agent definition, status, health, capabilities, and principal ID.
+Returns the agent definition, status, health, offerings, and principal ID.
 
 200: AgentResponse -- Agent details
 404: ErrorResponse -- Agent not found
@@ -424,12 +424,12 @@ Returns liveness and readiness status.
 200: AgentHealth -- Health status
 404: ErrorResponse -- Agent not found
 
-### GET /api/tenants/:tenantId/agents/:agentId/capabilities
-List agent capabilities
+### GET /api/tenants/:tenantId/agents/:agentId/offerings
+List agent offerings
 
-Returns the agent's exposed capabilities with pricing metadata.
+Returns the agent's exposed offerings with pricing metadata.
 
-200: Capability[] -- List of capabilities
+200: Offering[] -- List of offerings
 
 ## Sessions
 
@@ -759,13 +759,13 @@ Source: packages/types/src/approvals.ts
 `{ name: string, isCurrent?: boolean, lastCommitAt?: string | null, lastCommitMessage?: string | null, lastCommitRef?: string | null }`
 Source: packages/types/src/agent-data.ts
 
-### Capability
+### Offering
 `{ agentId: string, id: string, name: string, description?: string | null, pricing?: { base?: { amount: string, currency: string }, bounds?: { max?: string, min?: string }, methods?: string[], negotiable?: boolean } }`
 Source: packages/types/src/agents.ts
 
-### CapabilityDetail
+### OfferingDetail
 `{ agentId: string, agentName: string, id: string, name: string, tenantId: string, description?: string | null, pricing?: { base?: { amount: string, currency: string }, bounds?: { max?: string, min?: string }, methods?: string[], negotiable?: boolean }, schema?: { [string]: unknown } | null }`
-Source: packages/types/src/capabilities.ts
+Source: packages/types/src/offerings.ts
 
 ### CommitDetail
 `{ author: string, changes: { path: string, status: "added" | "deleted" | "modified", additions?: number, deletions?: number }[], message: string, ref: string, timestamp: string }`
@@ -857,7 +857,7 @@ Source: packages/types/src/observability.ts
 
 ### ModelInfo
 `{ id: string, name: string, providerId: string, capabilities?: string[], description?: string | null, limits?: { context?: number, output?: number }, pricing?: { cacheRead?: string, cacheWrite?: string, input?: string, output?: string } }`
-Source: packages/types/src/capabilities.ts
+Source: packages/types/src/models.ts
 
 ### PrincipalResponse
 `{ createdAt: string, id: string, kind: "agent" | "user", refId: string, roles: { id: string, name: string }[], status: "active" | "deactivated" | "invited" | "suspended", tenantId: string, updatedAt: string }`

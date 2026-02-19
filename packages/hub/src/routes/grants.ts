@@ -127,9 +127,9 @@ app.get(
   requireGrant("grant:*", "read"),
   describeRoute({
     tags: ["Grants"],
-    summary: "List capability grants in the tenant",
+    summary: "List grants in the tenant",
     description:
-      "Lists all capability grants. Filterable by principalId, roleId, resource pattern, and effect.",
+      "Lists all grants. Filterable by principalId, roleId, resource pattern, and effect.",
     parameters: [
       { name: "principalId", in: "query", schema: { type: "string" } },
       { name: "roleId", in: "query", schema: { type: "string" } },
@@ -198,7 +198,7 @@ app.post(
   requireGrant("grant:*", "create"),
   describeRoute({
     tags: ["Grants"],
-    summary: "Create a capability grant",
+    summary: "Create a grant",
     description:
       "Creates a grant targeting either a role or a principal directly. Exactly one of roleId or principalId must be provided.",
     responses: {

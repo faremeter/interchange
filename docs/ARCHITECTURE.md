@@ -40,7 +40,7 @@ The kernel orchestrates five primary concerns:
 The kernel manages the connection to the agent's model backend - whether a local model, remote API, or self-hosted inference server. It handles request/response cycles, streaming, context management, and model-specific protocol translation. The agent's reasoning happens through this interface.
 
 **Tools**
-The kernel exposes a standardized interface for invoking tools, whether local or remote. Local tools run within the agent's runtime - file system access, code execution, network requests, or custom tools registered by the operator. Remote tools are discovered through the control plane and invoke capabilities exposed by other agents or services on the Interchange network. From the agent's perspective, local and remote tools share the same interface; the kernel handles protocol negotiation, request routing, and wallet-based payment transparently. All tool invocations are subject to authorization policies.
+The kernel exposes a standardized interface for invoking tools, whether local or remote. Local tools run within the agent's runtime - file system access, code execution, network requests, or custom tools registered by the operator. Remote tools are discovered through the control plane and invoke offerings exposed by other agents or services on the Interchange network. From the agent's perspective, local and remote tools share the same interface; the kernel handles protocol negotiation, request routing, and wallet-based payment transparently. All tool invocations are subject to authorization policies.
 
 **Local Data**
 The kernel provides access to persistent storage scoped to the agent. This includes working memory, cached artifacts, and any other state the agent accumulates during operation. Data is isolated per-agent unless explicitly shared. Credentials are managed separately by the kernel and not exposed as agent-accessible data. All mutable local data is version-controlled, providing change history and recovery capabilities.
@@ -62,7 +62,7 @@ The kernel handles all communication with external entities through a durable me
 
 - _Agent-to-agent_ - Discovering other agents, sending requests, receiving responses
 - _Agent-to-human_ - Surfacing questions, receiving instructions, reporting status
-- _Agent-to-system_ - Registering capabilities, reporting health, receiving control signals
+- _Agent-to-system_ - Registering offerings, reporting health, receiving control signals
 
 Agents subscribe to message buses with different topologies:
 
@@ -101,7 +101,7 @@ The kernel is event-driven. Incoming events - messages from other agents, tool r
 ### Lifecycle
 
 1. **Initialization** - Kernel starts, loads the agent package (skills, system prompt, context builder, initial state, tool policy), establishes connections to inference and storage backends
-2. **Registration** - Kernel announces the agent's presence and capabilities to the control plane
+2. **Registration** - Kernel announces the agent's presence and offerings to the control plane
 3. **Operation** - Kernel enters the event loop, receiving and routing events to internal handlers
 4. **Shutdown** - Kernel deregisters, flushes state, and terminates cleanly
 
@@ -205,7 +205,7 @@ All resources in Interchange are scoped to a tenant:
 
 Tenants are not siloed - they can federate to enable cross-tenant discovery and interaction:
 
-- **Discovery** - Tenants can publish selected agents and capabilities through the control plane, making them visible to other tenants.
+- **Discovery** - Tenants can publish selected agents and offerings through the control plane, making them visible to other tenants.
 - **Trust establishment** - Before cross-tenant interaction, tenants establish trust relationships. Trust can be bilateral (mutual agreement) or follow a hierarchical model (parent tenant grants access to child tenants).
 - **Cross-tenant invocation** - Once trust is established, agents in one tenant can invoke tools and services provided by agents in another tenant. Authorization policies govern what cross-tenant actions are permitted.
 - **Message routing** - Federated message buses allow agents in different tenants to communicate while maintaining tenant-level observability and control.
@@ -234,7 +234,7 @@ The control plane tracks all available kernels within a tenant. Kernels can be p
 The control plane launches agents onto kernels. When an agent is deployed, the control plane selects an appropriate kernel, transfers the agent package, and instructs the kernel to initialize the agent. The control plane tracks which agents are running on which kernels, handles redeployment when kernels fail, and coordinates graceful shutdown during updates or retirement.
 
 **Discovery**
-The control plane is the source of truth for agent discovery. It maintains the registry of agents and their capabilities within each tenant. Other agents and external callers query the control plane to find agents that provide specific capabilities. The control plane also handles federation — publishing selected agents to other tenants and incorporating federated entries from trusted tenants into local discovery results.
+The control plane is the source of truth for agent discovery. It maintains the registry of agents and their offerings within each tenant. Other agents and external callers query the control plane to find agents that provide specific offerings. The control plane also handles federation — publishing selected agents to other tenants and incorporating federated entries from trusted tenants into local discovery results.
 
 **Health Monitoring**
 The control plane continuously monitors kernel and agent health. It polls health endpoints, processes heartbeat messages, and maintains the operational status of all components. Unhealthy agents are removed from discovery. Unhealthy kernels trigger agent migration to healthy kernels. Health data feeds into the observability layer for dashboards and alerting.
@@ -357,7 +357,7 @@ When agents provide services, pricing is controlled through policy:
 - **Operator-configured** — The operator sets base prices, acceptable payment methods, and pricing rules
 - **Agent-negotiable** — Within operator-defined bounds, agents can adjust pricing dynamically (demand-based pricing, bulk discounts, etc.)
 
-Pricing metadata is published as part of the agent's capability advertisement in the control plane.
+Pricing metadata is published as part of the agent's offering advertisement in the control plane.
 
 ### Payment Failure
 

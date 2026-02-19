@@ -146,7 +146,7 @@ type WalletResponse = {
   updatedAt: string;
 };
 
-type CapabilityResponse = {
+type OfferingResponse = {
   id: string;
   agentId: string;
   agentName: string;
@@ -188,13 +188,13 @@ export function tenantWalletsQuery(tenantId: string) {
   });
 }
 
-export function tenantCapabilitiesQuery(tenantId: string) {
+export function tenantOfferingsQuery(tenantId: string) {
   return queryOptions({
-    queryKey: ["tenants", tenantId, "capabilities"],
+    queryKey: ["tenants", tenantId, "offerings"],
     queryFn: async () => {
-      const res = await api<{ data: CapabilityResponse[] }>(
+      const res = await api<{ data: OfferingResponse[] }>(
         "GET",
-        `/api/tenants/${tenantId}/capabilities`,
+        `/api/tenants/${tenantId}/offerings`,
       );
       return res.data;
     },
@@ -552,9 +552,9 @@ export function deleteWalletMutation(
   };
 }
 
-// Capabilities
+// Offerings
 
-type CreateCapabilityBody = {
+type CreateOfferingBody = {
   agentId: string;
   name: string;
   description?: string;
@@ -567,52 +567,48 @@ type CreateCapabilityBody = {
   schema?: Record<string, unknown>;
 };
 
-type UpdateCapabilityBody = {
+type UpdateOfferingBody = {
   name?: string;
   description?: string;
-  pricing?: CreateCapabilityBody["pricing"];
+  pricing?: CreateOfferingBody["pricing"];
   schema?: Record<string, unknown>;
 };
 
-export function createCapabilityMutation(tenantId: string, qc: QueryClient) {
+export function createOfferingMutation(tenantId: string, qc: QueryClient) {
   return {
-    mutationFn: (body: CreateCapabilityBody) =>
-      api<CapabilityResponse>(
-        "POST",
-        `/api/tenants/${tenantId}/capabilities`,
-        body,
-      ),
-    onSuccess: () => invalidate(qc, tenantId, "capabilities"),
+    mutationFn: (body: CreateOfferingBody) =>
+      api<OfferingResponse>("POST", `/api/tenants/${tenantId}/offerings`, body),
+    onSuccess: () => invalidate(qc, tenantId, "offerings"),
   };
 }
 
-export function updateCapabilityMutation(
+export function updateOfferingMutation(
   tenantId: string,
-  capabilityId: string,
+  offeringId: string,
   qc: QueryClient,
 ) {
   return {
-    mutationFn: (body: UpdateCapabilityBody) =>
-      api<CapabilityResponse>(
+    mutationFn: (body: UpdateOfferingBody) =>
+      api<OfferingResponse>(
         "PATCH",
-        `/api/tenants/${tenantId}/capabilities/${capabilityId}`,
+        `/api/tenants/${tenantId}/offerings/${offeringId}`,
         body,
       ),
-    onSuccess: () => invalidate(qc, tenantId, "capabilities"),
+    onSuccess: () => invalidate(qc, tenantId, "offerings"),
   };
 }
 
-export function deleteCapabilityMutation(
+export function deleteOfferingMutation(
   tenantId: string,
-  capabilityId: string,
+  offeringId: string,
   qc: QueryClient,
 ) {
   return {
     mutationFn: () =>
       api<undefined>(
         "DELETE",
-        `/api/tenants/${tenantId}/capabilities/${capabilityId}`,
+        `/api/tenants/${tenantId}/offerings/${offeringId}`,
       ),
-    onSuccess: () => invalidate(qc, tenantId, "capabilities"),
+    onSuccess: () => invalidate(qc, tenantId, "offerings"),
   };
 }

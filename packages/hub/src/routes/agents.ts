@@ -10,7 +10,7 @@ import {
   AgentVersion,
   AgentHealth,
   RollbackRequest,
-  Capability,
+  Offering,
   ErrorResponse,
   paginatedSchema,
 } from "@interchange/types";
@@ -56,9 +56,9 @@ app.get(
   describeRoute({
     tags: ["Agents"],
     summary: "List agents in the tenant",
-    description: "Filterable by capability and status.",
+    description: "Filterable by offering and status.",
     parameters: [
-      { name: "capability", in: "query", schema: { type: "string" } },
+      { name: "offering", in: "query", schema: { type: "string" } },
       {
         name: "status",
         in: "query",
@@ -119,7 +119,7 @@ app.post(
     tags: ["Agents"],
     summary: "Create an agent",
     description:
-      "Creates an agent and its corresponding principal. Accepts the agent definition and optional initial capability grants for the agent's principal.",
+      "Creates an agent and its corresponding principal. Accepts the agent definition and optional initial grants for the agent's principal.",
     responses: {
       201: {
         description: "Agent created",
@@ -592,19 +592,18 @@ app.get(
 );
 
 app.get(
-  "/:agentId/capabilities",
+  "/:agentId/offerings",
   requireGrant(idResource("agent", "agentId"), "read"),
   describeRoute({
     tags: ["Agents"],
-    summary: "List agent capabilities",
-    description:
-      "Returns the agent's exposed capabilities with pricing metadata.",
+    summary: "List agent offerings",
+    description: "Returns the agent's exposed offerings with pricing metadata.",
     responses: {
       200: {
-        description: "List of capabilities",
+        description: "List of offerings",
         content: {
           "application/json": {
-            schema: resolver(Capability.array()),
+            schema: resolver(Offering.array()),
           },
         },
       },
@@ -626,7 +625,7 @@ app.get(
       );
     }
 
-    // Capabilities are stored as jsonb -- return empty array if none
+    // Offerings are stored as jsonb -- return empty array if none
     return c.json([]);
   },
 );

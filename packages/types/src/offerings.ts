@@ -1,6 +1,6 @@
 import { type } from "arktype";
 
-export const CreateCapability = type({
+export const CreateOffering = type({
   agentId: "string",
   name: "string",
   "description?": "string",
@@ -19,7 +19,7 @@ export const CreateCapability = type({
   "schema?": "Record<string, unknown>",
 });
 
-export const UpdateCapability = type({
+export const UpdateOffering = type({
   "name?": "string",
   "description?": "string",
   "pricing?": {
@@ -37,14 +37,14 @@ export const UpdateCapability = type({
   "schema?": "Record<string, unknown>",
 });
 
-export const CapabilitySearch = type({
+export const OfferingSearch = type({
   "name?": "string",
   "minPrice?": "string",
   "maxPrice?": "string",
   "paymentMethod?": "string",
 });
 
-export const CapabilityDetail = type({
+export const OfferingDetail = type({
   id: "string",
   agentId: "string",
   agentName: "string",
@@ -64,22 +64,4 @@ export const CapabilityDetail = type({
     },
   },
   "schema?": "Record<string, unknown> | null",
-});
-
-export const ModelInfo = type({
-  id: "string",
-  providerId: "string",
-  name: "string",
-  "description?": "string | null",
-  "capabilities?": "string[]",
-  "pricing?": {
-    "input?": "string",
-    "output?": "string",
-    "cacheRead?": "string",
-    "cacheWrite?": "string",
-  },
-  "limits?": {
-    "context?": "number",
-    "output?": "number",
-  },
 });

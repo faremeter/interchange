@@ -6,11 +6,11 @@ import { MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
 import {
-  createCapabilityMutation,
-  deleteCapabilityMutation,
+  createOfferingMutation,
+  deleteOfferingMutation,
   tenantAgentsQuery,
-  tenantCapabilitiesQuery,
-  updateCapabilityMutation,
+  tenantOfferingsQuery,
+  updateOfferingMutation,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -56,7 +56,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-type CapabilityRow = {
+type OfferingRow = {
   id: string;
   agentId: string;
   agentName: string;
@@ -68,17 +68,17 @@ type CapabilityRow = {
   };
 };
 
-export function TenantCapabilitiesPage() {
+export function TenantOfferingsPage() {
   const { tenantId } = useParams({ strict: false }) as { tenantId: string };
   const queryClient = useQueryClient();
-  const { data: capabilities, isLoading } = useQuery(
-    tenantCapabilitiesQuery(tenantId),
+  const { data: offerings, isLoading } = useQuery(
+    tenantOfferingsQuery(tenantId),
   );
   const { data: agents } = useQuery(tenantAgentsQuery(tenantId));
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [editTarget, setEditTarget] = useState<CapabilityRow | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<CapabilityRow | null>(null);
+  const [editTarget, setEditTarget] = useState<OfferingRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<OfferingRow | null>(null);
 
   // Create form state
   const [createAgentId, setCreateAgentId] = useState("");
@@ -96,18 +96,18 @@ export function TenantCapabilitiesPage() {
   }
 
   const createMut = useMutation({
-    ...createCapabilityMutation(tenantId, queryClient),
+    ...createOfferingMutation(tenantId, queryClient),
     onSuccess: () => {
-      createCapabilityMutation(tenantId, queryClient).onSuccess();
+      createOfferingMutation(tenantId, queryClient).onSuccess();
       setCreateOpen(false);
       resetCreateForm();
     },
   });
 
   const updateMut = useMutation({
-    ...updateCapabilityMutation(tenantId, editTarget?.id ?? "", queryClient),
+    ...updateOfferingMutation(tenantId, editTarget?.id ?? "", queryClient),
     onSuccess: () => {
-      updateCapabilityMutation(
+      updateOfferingMutation(
         tenantId,
         editTarget?.id ?? "",
         queryClient,
@@ -117,9 +117,9 @@ export function TenantCapabilitiesPage() {
   });
 
   const deleteMut = useMutation({
-    ...deleteCapabilityMutation(tenantId, deleteTarget?.id ?? "", queryClient),
+    ...deleteOfferingMutation(tenantId, deleteTarget?.id ?? "", queryClient),
     onSuccess: () => {
-      deleteCapabilityMutation(
+      deleteOfferingMutation(
         tenantId,
         deleteTarget?.id ?? "",
         queryClient,
@@ -133,18 +133,18 @@ export function TenantCapabilitiesPage() {
       <TenantNav />
 
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Capabilities</h2>
+        <h2 className="text-lg font-semibold">Offerings</h2>
         <Button size="sm" onClick={() => setCreateOpen(true)}>
           <Plus className="size-4" />
-          Add Capability
+          Add Offering
         </Button>
       </div>
 
       {isLoading ? (
         <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
-      ) : capabilities?.length === 0 ? (
+      ) : offerings?.length === 0 ? (
         <p className="mt-4 text-sm text-muted-foreground">
-          No capabilities registered.
+          No offerings registered.
         </p>
       ) : (
         <div className="mt-4 rounded-lg border">
@@ -159,26 +159,26 @@ export function TenantCapabilitiesPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {capabilities?.map((cap) => (
-                <TableRow key={cap.id}>
-                  <TableCell className="font-medium">{cap.name}</TableCell>
+              {offerings?.map((ofr) => (
+                <TableRow key={ofr.id}>
+                  <TableCell className="font-medium">{ofr.name}</TableCell>
                   <TableCell>
-                    <Badge variant="secondary">{cap.agentName}</Badge>
+                    <Badge variant="secondary">{ofr.agentName}</Badge>
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {cap.description ?? "-"}
+                    {ofr.description ?? "-"}
                   </TableCell>
                   <TableCell>
-                    {cap.pricing?.base ? (
+                    {ofr.pricing?.base ? (
                       <span className="font-mono text-xs">
-                        {cap.pricing.base.amount} {cap.pricing.base.currency}
+                        {ofr.pricing.base.amount} {ofr.pricing.base.currency}
                       </span>
                     ) : (
                       <span className="text-xs text-muted-foreground">
                         Free
                       </span>
                     )}
-                    {cap.pricing?.negotiable ? (
+                    {ofr.pricing?.negotiable ? (
                       <Badge variant="outline" className="ml-1">
                         negotiable
                       </Badge>
@@ -194,9 +194,9 @@ export function TenantCapabilitiesPage() {
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem
                           onClick={() => {
-                            setEditTarget(cap);
-                            setEditName(cap.name);
-                            setEditDescription(cap.description ?? "");
+                            setEditTarget(ofr);
+                            setEditName(ofr.name);
+                            setEditDescription(ofr.description ?? "");
                           }}
                         >
                           <Pencil />
@@ -205,7 +205,7 @@ export function TenantCapabilitiesPage() {
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
                           variant="destructive"
-                          onClick={() => setDeleteTarget(cap)}
+                          onClick={() => setDeleteTarget(ofr)}
                         >
                           <Trash2 />
                           Delete
@@ -230,7 +230,7 @@ export function TenantCapabilitiesPage() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Add Capability</DialogTitle>
+            <DialogTitle>Add Offering</DialogTitle>
           </DialogHeader>
           <form
             onSubmit={(e) => {
@@ -265,18 +265,18 @@ export function TenantCapabilitiesPage() {
               </Select>
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="cap-name">Name</Label>
+              <Label htmlFor="ofr-name">Name</Label>
               <Input
-                id="cap-name"
+                id="ofr-name"
                 value={createName}
                 onChange={(e) => setCreateName(e.target.value)}
                 required
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="cap-description">Description</Label>
+              <Label htmlFor="ofr-description">Description</Label>
               <Input
-                id="cap-description"
+                id="ofr-description"
                 value={createDescription}
                 onChange={(e) => setCreateDescription(e.target.value)}
                 placeholder="Optional"
@@ -306,7 +306,7 @@ export function TenantCapabilitiesPage() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit Capability</DialogTitle>
+            <DialogTitle>Edit Offering</DialogTitle>
           </DialogHeader>
           <form
             onSubmit={(e) => {
@@ -321,9 +321,9 @@ export function TenantCapabilitiesPage() {
             className="grid gap-4"
           >
             <div className="grid gap-2">
-              <Label htmlFor="edit-cap-name">Name</Label>
+              <Label htmlFor="edit-ofr-name">Name</Label>
               <Input
-                id="edit-cap-name"
+                id="edit-ofr-name"
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
                 required
@@ -331,9 +331,9 @@ export function TenantCapabilitiesPage() {
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="edit-cap-description">Description</Label>
+              <Label htmlFor="edit-ofr-description">Description</Label>
               <Input
-                id="edit-cap-description"
+                id="edit-ofr-description"
                 value={editDescription}
                 onChange={(e) => setEditDescription(e.target.value)}
                 placeholder="Optional"
@@ -358,9 +358,9 @@ export function TenantCapabilitiesPage() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete capability?</AlertDialogTitle>
+            <AlertDialogTitle>Delete offering?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete the capability &ldquo;
+              This will permanently delete the offering &ldquo;
               {deleteTarget?.name}&rdquo; from agent {deleteTarget?.agentName}.
               This action cannot be undone.
             </AlertDialogDescription>

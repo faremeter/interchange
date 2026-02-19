@@ -63,7 +63,7 @@ All IDs are globally unique with typed prefixes:
 - `prn_` -- principal
 - `agt_` -- agent
 - `rol_` -- role
-- `cap_` -- capability grant
+- `ofr_` -- offering
 - `ses_` -- session
 - `msg_` -- message
 - `wal_` -- wallet
