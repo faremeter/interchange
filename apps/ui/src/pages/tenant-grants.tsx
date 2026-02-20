@@ -13,6 +13,7 @@ import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
 import {
   createGrantMutation,
+  tenantCredentialsQuery,
   tenantGrantsQuery,
   tenantPrincipalsQuery,
   tenantRolesQuery,
@@ -61,6 +62,7 @@ export function TenantGrantsPage() {
   const { data: grants, isLoading } = useQuery(tenantGrantsQuery(tenantId));
   const { data: roles } = useQuery(tenantRolesQuery(tenantId));
   const { data: principals } = useQuery(tenantPrincipalsQuery(tenantId));
+  const { data: credentials } = useQuery(tenantCredentialsQuery(tenantId));
 
   const [createOpen, setCreateOpen] = useState(false);
   const [resource, setResource] = useState("");
@@ -131,7 +133,17 @@ export function TenantGrantsPage() {
                   }
                 >
                   <TableCell className="font-mono text-xs">
-                    {g.resource}
+                    {g.resource.startsWith("credential:")
+                      ? (credentials?.find(
+                          (c) =>
+                            c.id === g.resource.slice("credential:".length),
+                        )?.name ?? g.resource.slice("credential:".length))
+                      : g.resource}
+                    {g.resource.startsWith("credential:") && (
+                      <Badge variant="outline" className="ml-2 text-[10px]">
+                        credential
+                      </Badge>
+                    )}
                   </TableCell>
                   <TableCell className="font-mono text-xs">
                     {g.action}
@@ -143,20 +155,21 @@ export function TenantGrantsPage() {
                     {g.source}
                   </TableCell>
                   <TableCell>
-                    {g.roleName ? (
-                      <Badge variant="secondary">{g.roleName}</Badge>
-                    ) : g.roleId ? (
-                      <span className="font-mono text-xs text-muted-foreground">
-                        {g.roleId}
-                      </span>
-                    ) : null}
-                    {g.principalName ? (
-                      <Badge variant="outline">{g.principalName}</Badge>
-                    ) : g.principalId ? (
-                      <span className="font-mono text-xs text-muted-foreground">
-                        {g.principalId}
-                      </span>
-                    ) : null}
+                    {g.roleId && (
+                      <Badge variant="secondary">
+                        {g.roleName ??
+                          roles?.find((r) => r.id === g.roleId)?.name ??
+                          g.roleId}
+                      </Badge>
+                    )}
+                    {g.principalId && (
+                      <Badge variant="outline">
+                        {g.principalName ??
+                          principals?.find((p) => p.id === g.principalId)
+                            ?.displayName ??
+                          g.principalId}
+                      </Badge>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
