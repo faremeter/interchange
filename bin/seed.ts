@@ -289,6 +289,13 @@ const { status: a1Status, data: a1Data } = await api(
     systemPrompt:
       "You are a research assistant. Find and summarize information.",
     capabilities: { research: true, summarize: true },
+    credentialRequirements: [
+      {
+        providerName: "OpenAI",
+        source: "tenant",
+        scopes: ["chat", "embeddings"],
+      },
+    ],
     initialGrants: [
       { resource: "documents:*", action: "read", effect: "allow" },
       { resource: "documents:*", action: "write", effect: "ask" },
@@ -309,6 +316,9 @@ const { status: a2Status, data: a2Data } = await api(
     systemPrompt:
       "You are a code reviewer. Analyze code for bugs and improvements.",
     capabilities: { codeReview: true },
+    credentialRequirements: [
+      { providerName: "GitHub", source: "tenant", scopes: ["repo"] },
+    ],
     initialGrants: [
       { resource: "repos:*", action: "read", effect: "allow" },
       { resource: "repos:*", action: "comment", effect: "allow" },
@@ -333,6 +343,13 @@ const { status: a3Status, data: a3Data } = await api(
     systemPrompt:
       "You are a customer support agent. Help customers with their issues.",
     capabilities: { ticketManagement: true, knowledgeBase: true },
+    credentialRequirements: [
+      {
+        providerName: "Stripe",
+        source: "tenant",
+        scopes: ["charges:read", "refunds:write"],
+      },
+    ],
     initialGrants: [
       { resource: "tickets:*", action: "*", effect: "allow" },
       { resource: "billing:*", action: "read", effect: "allow" },
@@ -533,6 +550,114 @@ if (stripeProvider) {
     aliceCookies,
   );
   checkOrSkip("create stripe credential", cred3Status, 201, cred3Data);
+}
+
+// -- Grant credential access to agents --
+
+log("Granting credential access to agents...");
+
+// Look up agent details to get principalIds
+const { data: acmeAgentsForGrants } = await api(
+  "GET",
+  `/api/tenants/${acmeTenantId}/agents`,
+  undefined,
+  aliceCookies,
+);
+const acmeAgentsList = (
+  acmeAgentsForGrants as {
+    data: { id: string; name: string; principalId: string }[];
+  }
+).data;
+const researchBotAgent = acmeAgentsList.find((a) => a.name === "Research Bot");
+const codeReviewBotAgent = acmeAgentsList.find(
+  (a) => a.name === "Code Review Bot",
+);
+
+const { data: widgetAgentsForGrants } = await api(
+  "GET",
+  `/api/tenants/${widgetsTenantId}/agents`,
+  undefined,
+  aliceCookies,
+);
+const widgetAgentsList = (
+  widgetAgentsForGrants as {
+    data: { id: string; name: string; principalId: string }[];
+  }
+).data;
+const supportBotAgent = widgetAgentsList.find(
+  (a) => a.name === "Customer Support Bot",
+);
+
+// Look up credential IDs
+const { data: acmeCredsData } = await api(
+  "GET",
+  `/api/tenants/${acmeTenantId}/credentials`,
+  undefined,
+  aliceCookies,
+);
+const acmeCredsList = (
+  acmeCredsData as { data: { id: string; name: string }[] }
+).data;
+const openaiCred = acmeCredsList.find((c) => c.name === "OpenAI API Key");
+const githubCred = acmeCredsList.find((c) => c.name === "GitHub OAuth Token");
+
+const { data: widgetCredsData } = await api(
+  "GET",
+  `/api/tenants/${widgetsTenantId}/credentials`,
+  undefined,
+  aliceCookies,
+);
+const widgetCredsList = (
+  widgetCredsData as { data: { id: string; name: string }[] }
+).data;
+const stripeCred = widgetCredsList.find((c) => c.name === "Stripe API Key");
+
+if (researchBotAgent && openaiCred) {
+  const { status, data } = await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/grants`,
+    {
+      principalId: researchBotAgent.principalId,
+      resource: `credential:${openaiCred.id}`,
+      action: "use",
+      effect: "allow",
+      source: "creator",
+    },
+    aliceCookies,
+  );
+  checkOrSkip("grant research bot openai access", status, 201, data);
+}
+
+if (codeReviewBotAgent && githubCred) {
+  const { status, data } = await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/grants`,
+    {
+      principalId: codeReviewBotAgent.principalId,
+      resource: `credential:${githubCred.id}`,
+      action: "use",
+      effect: "allow",
+      source: "creator",
+    },
+    aliceCookies,
+  );
+  checkOrSkip("grant code review bot github access", status, 201, data);
+}
+
+if (supportBotAgent && stripeCred) {
+  const { status, data } = await api(
+    "POST",
+    `/api/tenants/${widgetsTenantId}/grants`,
+    {
+      principalId: supportBotAgent.principalId,
+      resource: `credential:${stripeCred.id}`,
+      action: "use",
+      effect: "allow",
+      source: "creator",
+    },
+    aliceCookies,
+  );
+  checkOrSkip("grant support bot stripe access", status, 201, data);
 }
 
 // -- Create wallets --

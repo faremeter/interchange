@@ -1,0 +1,1 @@
+ALTER TABLE "agent" ADD COLUMN "credential_requirements" jsonb;

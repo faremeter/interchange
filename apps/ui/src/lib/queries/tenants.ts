@@ -37,6 +37,13 @@ type RoleResponse = {
   updatedAt: string;
 };
 
+type CredentialRequirement = {
+  providerName: string;
+  scopes?: string[];
+  source: "tenant" | "creator" | "invoker";
+  name?: string;
+};
+
 type AgentResponse = {
   id: string;
   tenantId: string;
@@ -48,6 +55,7 @@ type AgentResponse = {
   currentVersion: string;
   kernelId: string | null;
   capabilities: Record<string, unknown> | null;
+  credentialRequirements?: CredentialRequirement[];
   createdAt: string;
   updatedAt: string;
 };
@@ -433,6 +441,7 @@ type UpdateAgentBody = {
   name?: string;
   description?: string;
   systemPrompt?: string;
+  credentialRequirements?: CredentialRequirement[];
 };
 
 export function createAgentMutation(tenantId: string, qc: QueryClient) {
