@@ -2,6 +2,10 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Trash2, X } from "lucide-react";
+import {
+  type UpdatablePrincipalStatus,
+  updatablePrincipalStatuses,
+} from "@interchange/types";
 
 import { MutationError } from "@/components/mutation-error";
 import {
@@ -75,7 +79,9 @@ export function TenantPrincipalDetailPage() {
   const { data: allRoles } = useQuery(tenantRolesQuery(tenantId));
 
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [selectedStatus, setSelectedStatus] = useState<string>("");
+  const [selectedStatus, setSelectedStatus] = useState<
+    UpdatablePrincipalStatus | ""
+  >("");
   const [selectedRoleId, setSelectedRoleId] = useState<string>("");
 
   const updateMut = useMutation({
@@ -179,15 +185,19 @@ export function TenantPrincipalDetailPage() {
                 </Label>
                 <Select
                   value={selectedStatus || principal.status}
-                  onValueChange={setSelectedStatus}
+                  onValueChange={(v) =>
+                    setSelectedStatus(v as UpdatablePrincipalStatus)
+                  }
                 >
                   <SelectTrigger id="status-select" className="h-8 w-44">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="active">active</SelectItem>
-                    <SelectItem value="suspended">suspended</SelectItem>
-                    <SelectItem value="deactivated">deactivated</SelectItem>
+                    {updatablePrincipalStatuses.map((s) => (
+                      <SelectItem key={s} value={s}>
+                        {s}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
                 <Button
@@ -197,14 +207,10 @@ export function TenantPrincipalDetailPage() {
                     !selectedStatus ||
                     selectedStatus === principal.status
                   }
-                  onClick={() =>
-                    updateMut.mutate({
-                      status: selectedStatus as
-                        | "active"
-                        | "suspended"
-                        | "deactivated",
-                    })
-                  }
+                  onClick={() => {
+                    if (!selectedStatus) return;
+                    updateMut.mutate({ status: selectedStatus });
+                  }}
                 >
                   {updateMut.isPending ? "Saving..." : "Save"}
                 </Button>

@@ -1,9 +1,30 @@
 import { type } from "arktype";
+import { grantEffects } from "./grants";
+
+export const credentialRequirementSources = [
+  "tenant",
+  "creator",
+  "invoker",
+] as const;
+export type CredentialRequirementSource =
+  (typeof credentialRequirementSources)[number];
+
+export const agentStatuses = [
+  "deployed",
+  "stopped",
+  "updating",
+  "error",
+] as const;
+export type AgentStatus = (typeof agentStatuses)[number];
+
+const CredReqSource = type.enumerated(...credentialRequirementSources);
+const AgentStatusType = type.enumerated(...agentStatuses);
+const Effect = type.enumerated(...grantEffects);
 
 export const CredentialRequirement = type({
   providerName: "string",
   "scopes?": "string[]",
-  source: "'tenant' | 'creator' | 'invoker'",
+  source: CredReqSource,
   "name?": "string",
 });
 
@@ -20,7 +41,7 @@ export const CreateAgent = type({
   "initialGrants?": type({
     resource: "string",
     action: "string",
-    effect: "'allow' | 'deny' | 'ask'",
+    effect: Effect,
     "conditions?": "Record<string, unknown> | null",
   }).array(),
 });
@@ -49,7 +70,7 @@ export const AgentResponse = type({
   "initialState?": "Record<string, unknown>",
   "modelConfig?": "Record<string, unknown>",
   currentVersion: "string",
-  status: "'deployed' | 'stopped' | 'updating' | 'error'",
+  status: AgentStatusType,
   "kernelId?": "string | null",
   "capabilities?": "Record<string, unknown>",
   "credentialRequirements?": CredentialRequirement.array(),

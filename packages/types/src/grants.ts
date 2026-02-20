@@ -1,18 +1,27 @@
 import { type } from "arktype";
 
+export const grantEffects = ["allow", "deny", "ask"] as const;
+export type GrantEffect = (typeof grantEffects)[number];
+
+export const grantSources = ["system", "role", "creator", "invoker"] as const;
+export type GrantSource = (typeof grantSources)[number];
+
+const Effect = type.enumerated(...grantEffects);
+const Source = type.enumerated(...grantSources);
+
 export const CreateGrant = type({
   "roleId?": "string | null",
   "principalId?": "string | null",
   resource: "string",
   action: "string",
-  effect: "'allow' | 'deny' | 'ask'",
+  effect: Effect,
   "conditions?": "Record<string, unknown> | null",
-  source: "'system' | 'role' | 'creator' | 'invoker'",
+  source: Source,
   "expiresAt?": "string | null",
 });
 
 export const UpdateGrant = type({
-  "effect?": "'allow' | 'deny' | 'ask'",
+  "effect?": Effect,
   "conditions?": "Record<string, unknown> | null",
   "expiresAt?": "string | null",
 });
@@ -26,9 +35,9 @@ export const GrantResponse = type({
   "principalName?": "string | null",
   resource: "string",
   action: "string",
-  effect: "'allow' | 'deny' | 'ask'",
+  effect: Effect,
   "conditions?": "Record<string, unknown> | null",
-  source: "'system' | 'role' | 'creator' | 'invoker'",
+  source: Source,
   "expiresAt?": "string | null",
   createdAt: "string",
   updatedAt: "string",
@@ -40,12 +49,12 @@ export const EvaluateRequest = type({
 });
 
 export const EvaluateResult = type({
-  effect: "'allow' | 'deny' | 'ask'",
+  effect: Effect,
   matchingGrants: type({
     id: "string",
     resource: "string",
     action: "string",
-    effect: "'allow' | 'deny' | 'ask'",
-    source: "'system' | 'role' | 'creator' | 'invoker'",
+    effect: Effect,
+    source: Source,
   }).array(),
 });

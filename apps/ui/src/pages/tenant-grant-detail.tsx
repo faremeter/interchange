@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Pencil, Trash2, X } from "lucide-react";
+import { type GrantEffect, grantEffects } from "@interchange/types";
 
 import { MutationError } from "@/components/mutation-error";
 import {
@@ -73,9 +74,7 @@ export function TenantGrantDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   // Edit form state -- initialized when entering edit mode
-  const [editEffect, setEditEffect] = useState<"allow" | "deny" | "ask">(
-    "allow",
-  );
+  const [editEffect, setEditEffect] = useState<GrantEffect>("allow");
 
   function enterEditMode() {
     if (!grant) return;
@@ -109,7 +108,7 @@ export function TenantGrantDetailPage() {
   function handleSave(e: React.FormEvent) {
     e.preventDefault();
     if (!grant) return;
-    const body: { effect?: "allow" | "deny" | "ask" } = {};
+    const body: { effect?: GrantEffect } = {};
     if (editEffect !== grant.effect) body.effect = editEffect;
     updateMut.mutate(body);
   }
@@ -178,17 +177,17 @@ export function TenantGrantDetailPage() {
                 <div className="px-4 py-2">
                   <Select
                     value={editEffect}
-                    onValueChange={(v) =>
-                      setEditEffect(v as "allow" | "deny" | "ask")
-                    }
+                    onValueChange={(v) => setEditEffect(v as GrantEffect)}
                   >
                     <SelectTrigger id="edit-effect">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="allow">allow</SelectItem>
-                      <SelectItem value="deny">deny</SelectItem>
-                      <SelectItem value="ask">ask</SelectItem>
+                      {grantEffects.map((e) => (
+                        <SelectItem key={e} value={e}>
+                          {e}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
