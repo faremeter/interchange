@@ -1,5 +1,12 @@
 import { type } from "arktype";
 
+export const CredentialRequirement = type({
+  providerName: "string",
+  "scopes?": "string[]",
+  source: "'tenant' | 'creator' | 'invoker'",
+  "name?": "string",
+});
+
 export const CreateAgent = type({
   name: "string",
   "description?": "string",
@@ -9,6 +16,7 @@ export const CreateAgent = type({
   "initialState?": "Record<string, unknown>",
   "modelConfig?": "Record<string, unknown>",
   "capabilities?": "Record<string, unknown>",
+  "credentialRequirements?": CredentialRequirement.array(),
   "initialGrants?": type({
     resource: "string",
     action: "string",
@@ -26,6 +34,7 @@ export const UpdateAgent = type({
   "initialState?": "Record<string, unknown>",
   "modelConfig?": "Record<string, unknown>",
   "capabilities?": "Record<string, unknown>",
+  "credentialRequirements?": CredentialRequirement.array(),
 });
 
 export const AgentResponse = type({
@@ -43,6 +52,7 @@ export const AgentResponse = type({
   status: "'deployed' | 'stopped' | 'updating' | 'error'",
   "kernelId?": "string | null",
   "capabilities?": "Record<string, unknown>",
+  "credentialRequirements?": CredentialRequirement.array(),
   createdAt: "string",
   updatedAt: "string",
 });

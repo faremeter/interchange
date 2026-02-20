@@ -19,6 +19,7 @@ export const agent = pgTable("agent", {
   initialState: jsonb("initial_state"),
   modelConfig: jsonb("model_config"),
   capabilities: jsonb("capabilities"),
+  credentialRequirements: jsonb("credential_requirements"),
   currentVersion: text("current_version").notNull().default("1"),
   status: text("status", {
     enum: ["deployed", "stopped", "updating", "error"],

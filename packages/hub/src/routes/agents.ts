@@ -43,6 +43,15 @@ function formatAgent(row: typeof agent.$inferSelect) {
     status: row.status as "deployed" | "stopped" | "updating" | "error",
     kernelId: row.kernelId ?? null,
     capabilities: (row.capabilities as Record<string, unknown>) ?? undefined,
+    credentialRequirements:
+      (row.credentialRequirements as
+        | {
+            providerName: string;
+            scopes?: string[];
+            source: string;
+            name?: string;
+          }[]
+        | null) ?? undefined,
     createdAt: ts(row.createdAt),
     updatedAt: ts(row.updatedAt),
   };
@@ -171,6 +180,7 @@ app.post(
           initialState: body.initialState ?? null,
           modelConfig: body.modelConfig ?? null,
           capabilities: body.capabilities ?? null,
+          credentialRequirements: body.credentialRequirements ?? null,
           currentVersion: "1",
           status: "deployed",
           createdAt: now,
@@ -315,6 +325,8 @@ app.patch(
       updates["modelConfig"] = body.modelConfig;
     if (body.capabilities !== undefined)
       updates["capabilities"] = body.capabilities;
+    if (body.credentialRequirements !== undefined)
+      updates["credentialRequirements"] = body.credentialRequirements;
 
     const updated = first(
       await db
