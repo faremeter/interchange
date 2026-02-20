@@ -1,17 +1,15 @@
 import { useState } from "react";
-import { useParams } from "@tanstack/react-router";
+import { useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
+import { Plus } from "lucide-react";
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
 import {
   createGrantMutation,
-  deleteGrantMutation,
   tenantGrantsQuery,
   tenantPrincipalsQuery,
   tenantRolesQuery,
-  updateGrantMutation,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,23 +20,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import {
   Select,
   SelectContent,
@@ -57,21 +38,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-type GrantRow = {
-  id: string;
-  resource: string;
-  action: string;
-  effect: "allow" | "deny" | "ask";
-  source: "system" | "role" | "creator" | "invoker";
-  roleId: string | null;
-  roleName: string | null;
-  principalId: string | null;
-  principalName: string | null;
-};
-
-const EFFECTS = ["allow", "deny", "ask"] as const;
-const SOURCES = ["system", "role", "creator", "invoker"] as const;
-
 function EffectBadge({ effect }: { effect: string }) {
   const variant =
     effect === "allow"
@@ -84,16 +50,13 @@ function EffectBadge({ effect }: { effect: string }) {
 
 export function TenantGrantsPage() {
   const { tenantId } = useParams({ strict: false }) as { tenantId: string };
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: grants, isLoading } = useQuery(tenantGrantsQuery(tenantId));
   const { data: roles } = useQuery(tenantRolesQuery(tenantId));
   const { data: principals } = useQuery(tenantPrincipalsQuery(tenantId));
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [editTarget, setEditTarget] = useState<GrantRow | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<GrantRow | null>(null);
-
-  // Create form state
   const [resource, setResource] = useState("");
   const [action, setAction] = useState("");
   const [effect, setEffect] = useState<string>("allow");
@@ -102,8 +65,8 @@ export function TenantGrantsPage() {
   const [roleId, setRoleId] = useState("");
   const [principalId, setPrincipalId] = useState("");
 
-  // Edit form state
-  const [editEffect, setEditEffect] = useState<string>("allow");
+  const EFFECTS = ["allow", "deny", "ask"] as const;
+  const SOURCES = ["system", "role", "creator", "invoker"] as const;
 
   function resetCreateForm() {
     setResource("");
@@ -121,30 +84,6 @@ export function TenantGrantsPage() {
       createGrantMutation(tenantId, queryClient).onSuccess();
       setCreateOpen(false);
       resetCreateForm();
-    },
-  });
-
-  const updateMut = useMutation({
-    ...updateGrantMutation(tenantId, editTarget?.id ?? "", queryClient),
-    onSuccess: () => {
-      updateGrantMutation(
-        tenantId,
-        editTarget?.id ?? "",
-        queryClient,
-      ).onSuccess();
-      setEditTarget(null);
-    },
-  });
-
-  const deleteMut = useMutation({
-    ...deleteGrantMutation(tenantId, deleteTarget?.id ?? "", queryClient),
-    onSuccess: () => {
-      deleteGrantMutation(
-        tenantId,
-        deleteTarget?.id ?? "",
-        queryClient,
-      ).onSuccess();
-      setDeleteTarget(null);
     },
   });
 
@@ -174,12 +113,20 @@ export function TenantGrantsPage() {
                 <TableHead>Effect</TableHead>
                 <TableHead>Source</TableHead>
                 <TableHead>Target</TableHead>
-                <TableHead className="w-10" />
               </TableRow>
             </TableHeader>
             <TableBody>
               {grants?.map((g) => (
-                <TableRow key={g.id}>
+                <TableRow
+                  key={g.id}
+                  className="cursor-pointer"
+                  onClick={() =>
+                    navigate({
+                      to: "/tenants/$tenantId/grants/$grantId",
+                      params: { tenantId, grantId: g.id },
+                    })
+                  }
+                >
                   <TableCell className="font-mono text-xs">
                     {g.resource}
                   </TableCell>
@@ -207,34 +154,6 @@ export function TenantGrantsPage() {
                         {g.principalId}
                       </span>
                     ) : null}
-                  </TableCell>
-                  <TableCell>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon-xs">
-                          <MoreHorizontal />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          onClick={() => {
-                            setEditTarget(g);
-                            setEditEffect(g.effect);
-                          }}
-                        >
-                          <Pencil />
-                          Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onClick={() => setDeleteTarget(g)}
-                        >
-                          <Trash2 />
-                          Revoke
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
                   </TableCell>
                 </TableRow>
               ))}
@@ -395,99 +314,6 @@ export function TenantGrantsPage() {
           </form>
         </DialogContent>
       </Dialog>
-
-      {/* Edit dialog (effect only) */}
-      <Dialog
-        open={!!editTarget}
-        onOpenChange={(open) => {
-          if (!open) setEditTarget(null);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Edit Grant</DialogTitle>
-          </DialogHeader>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              updateMut.mutate({
-                effect: editEffect as "allow" | "deny" | "ask",
-              });
-            }}
-            className="grid gap-4"
-          >
-            <div className="grid gap-2 text-sm">
-              <div className="flex gap-2">
-                <span className="text-muted-foreground">Resource:</span>
-                <span className="font-mono">{editTarget?.resource}</span>
-              </div>
-              <div className="flex gap-2">
-                <span className="text-muted-foreground">Action:</span>
-                <span className="font-mono">{editTarget?.action}</span>
-              </div>
-            </div>
-            <div className="grid gap-2">
-              <Label>Effect</Label>
-              <Select value={editEffect} onValueChange={setEditEffect}>
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {EFFECTS.map((e) => (
-                    <SelectItem key={e} value={e}>
-                      {e}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <MutationError error={updateMut.error} />
-            <DialogFooter>
-              <Button
-                type="submit"
-                disabled={
-                  updateMut.isPending || editEffect === editTarget?.effect
-                }
-              >
-                {updateMut.isPending ? "Saving..." : "Save"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Revoke confirmation */}
-      <AlertDialog
-        open={!!deleteTarget}
-        onOpenChange={(open) => {
-          if (!open) setDeleteTarget(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Revoke grant?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently revoke the{" "}
-              <span className="font-semibold">{deleteTarget?.effect}</span>{" "}
-              grant on{" "}
-              <span className="font-mono">{deleteTarget?.resource}</span> /{" "}
-              <span className="font-mono">{deleteTarget?.action}</span>. This
-              action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <MutationError error={deleteMut.error} />
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => deleteMut.mutate()}
-              disabled={deleteMut.isPending}
-            >
-              {deleteMut.isPending ? "Revoking..." : "Revoke"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

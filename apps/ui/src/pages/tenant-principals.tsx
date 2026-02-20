@@ -1,46 +1,24 @@
 import { useState } from "react";
-import { useParams } from "@tanstack/react-router";
+import { useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, Plus, Shield, Trash2, UserCog } from "lucide-react";
+import { Plus } from "lucide-react";
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
 import {
-  assignRoleMutation,
-  deletePrincipalMutation,
   inviteMemberMutation,
-  removeRoleMutation,
   tenantPrincipalsQuery,
   tenantRolesQuery,
-  updatePrincipalMutation,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import {
   Select,
   SelectContent,
@@ -59,17 +37,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-type PrincipalRow = {
-  id: string;
-  displayName: string;
-  email?: string;
-  kind: "user" | "agent";
-  status: "active" | "suspended" | "invited" | "deactivated";
-  roles: { id: string; name: string }[];
-};
-
-const STATUS_OPTIONS = ["active", "suspended", "deactivated"] as const;
-
 function StatusBadge({ status }: { status: string }) {
   const variant =
     status === "active"
@@ -82,6 +49,7 @@ function StatusBadge({ status }: { status: string }) {
 
 export function TenantPrincipalsPage() {
   const { tenantId } = useParams({ strict: false }) as { tenantId: string };
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: principals, isLoading } = useQuery(
     tenantPrincipalsQuery(tenantId),
@@ -91,11 +59,6 @@ export function TenantPrincipalsPage() {
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRoleId, setInviteRoleId] = useState("");
-  const [statusTarget, setStatusTarget] = useState<PrincipalRow | null>(null);
-  const [statusValue, setStatusValue] = useState<string>("");
-  const [deleteTarget, setDeleteTarget] = useState<PrincipalRow | null>(null);
-  const [rolesTarget, setRolesTarget] = useState<PrincipalRow | null>(null);
-  const [addRoleId, setAddRoleId] = useState("");
 
   const inviteMut = useMutation({
     ...inviteMemberMutation(tenantId, queryClient),
@@ -106,63 +69,6 @@ export function TenantPrincipalsPage() {
       setInviteRoleId("");
     },
   });
-
-  const updateMut = useMutation({
-    ...updatePrincipalMutation(tenantId, statusTarget?.id ?? "", queryClient),
-    onSuccess: () => {
-      updatePrincipalMutation(
-        tenantId,
-        statusTarget?.id ?? "",
-        queryClient,
-      ).onSuccess();
-      setStatusTarget(null);
-    },
-  });
-
-  const deleteMut = useMutation({
-    ...deletePrincipalMutation(tenantId, deleteTarget?.id ?? "", queryClient),
-    onSuccess: () => {
-      deletePrincipalMutation(
-        tenantId,
-        deleteTarget?.id ?? "",
-        queryClient,
-      ).onSuccess();
-      setDeleteTarget(null);
-    },
-  });
-
-  const assignMut = useMutation({
-    ...assignRoleMutation(tenantId, rolesTarget?.id ?? "", queryClient),
-    onSuccess: () => {
-      assignRoleMutation(
-        tenantId,
-        rolesTarget?.id ?? "",
-        queryClient,
-      ).onSuccess();
-      setAddRoleId("");
-    },
-  });
-
-  const removeMut = useMutation({
-    ...removeRoleMutation(tenantId, rolesTarget?.id ?? "", queryClient),
-    onSuccess: () => {
-      removeRoleMutation(
-        tenantId,
-        rolesTarget?.id ?? "",
-        queryClient,
-      ).onSuccess();
-    },
-  });
-
-  // Roles that haven't been assigned to the current target yet
-  const availableRoles = roles?.filter(
-    (r) => !rolesTarget?.roles.some((assigned) => assigned.id === r.id),
-  );
-
-  // Re-sync the rolesTarget with fresh data whenever principals refresh
-  const syncedRolesTarget = rolesTarget
-    ? (principals?.find((p) => p.id === rolesTarget.id) ?? rolesTarget)
-    : null;
 
   return (
     <div>
@@ -189,12 +95,20 @@ export function TenantPrincipalsPage() {
                 <TableHead>Kind</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Roles</TableHead>
-                <TableHead className="w-10" />
               </TableRow>
             </TableHeader>
             <TableBody>
               {principals?.map((p) => (
-                <TableRow key={p.id}>
+                <TableRow
+                  key={p.id}
+                  className="cursor-pointer"
+                  onClick={() =>
+                    navigate({
+                      to: "/tenants/$tenantId/principals/$principalId",
+                      params: { tenantId, principalId: p.id },
+                    })
+                  }
+                >
                   <TableCell>
                     <div className="font-medium">{p.displayName}</div>
                     {p.email ? (
@@ -217,43 +131,6 @@ export function TenantPrincipalsPage() {
                         </Badge>
                       ))}
                     </div>
-                  </TableCell>
-                  <TableCell>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon-xs">
-                          <MoreHorizontal />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          onClick={() => {
-                            setRolesTarget(p);
-                            setAddRoleId("");
-                          }}
-                        >
-                          <Shield />
-                          Manage Roles
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => {
-                            setStatusTarget(p);
-                            setStatusValue(p.status);
-                          }}
-                        >
-                          <UserCog />
-                          Change Status
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onClick={() => setDeleteTarget(p)}
-                        >
-                          <Trash2 />
-                          Remove
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
                   </TableCell>
                 </TableRow>
               ))}
@@ -326,165 +203,6 @@ export function TenantPrincipalsPage() {
           </form>
         </DialogContent>
       </Dialog>
-
-      {/* Change status dialog */}
-      <Dialog
-        open={!!statusTarget}
-        onOpenChange={(open) => {
-          if (!open) setStatusTarget(null);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Change Status</DialogTitle>
-          </DialogHeader>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (
-                statusValue === "active" ||
-                statusValue === "suspended" ||
-                statusValue === "deactivated"
-              ) {
-                updateMut.mutate({ status: statusValue });
-              }
-            }}
-            className="grid gap-4"
-          >
-            <div className="grid gap-2">
-              <Label>
-                Status for{" "}
-                <span className="font-semibold">
-                  {statusTarget?.displayName}
-                </span>
-              </Label>
-              <Select value={statusValue} onValueChange={setStatusValue}>
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {STATUS_OPTIONS.map((s) => (
-                    <SelectItem key={s} value={s}>
-                      {s}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <MutationError error={updateMut.error} />
-            <DialogFooter>
-              <Button
-                type="submit"
-                disabled={
-                  updateMut.isPending || statusValue === statusTarget?.status
-                }
-              >
-                {updateMut.isPending ? "Saving..." : "Save"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Manage roles dialog */}
-      <Dialog
-        open={!!rolesTarget}
-        onOpenChange={(open) => {
-          if (!open) setRolesTarget(null);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Manage Roles</DialogTitle>
-            <DialogDescription>
-              Roles for {syncedRolesTarget?.displayName}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4">
-            {syncedRolesTarget?.roles.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No roles assigned.
-              </p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {syncedRolesTarget?.roles.map((r) => (
-                  <Badge key={r.id} variant="secondary" className="gap-1 pr-1">
-                    {r.name}
-                    <button
-                      type="button"
-                      className="ml-1 rounded-sm px-0.5 hover:bg-muted"
-                      onClick={() => removeMut.mutate(r.id)}
-                      disabled={removeMut.isPending}
-                      aria-label={`Remove ${r.name}`}
-                    >
-                      x
-                    </button>
-                  </Badge>
-                ))}
-              </div>
-            )}
-            {availableRoles && availableRoles.length > 0 && (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  if (addRoleId) assignMut.mutate(addRoleId);
-                }}
-                className="flex gap-2"
-              >
-                <Select value={addRoleId} onValueChange={setAddRoleId}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Add a role" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableRoles.map((r) => (
-                      <SelectItem key={r.id} value={r.id}>
-                        {r.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button
-                  type="submit"
-                  size="sm"
-                  disabled={!addRoleId || assignMut.isPending}
-                >
-                  {assignMut.isPending ? "Adding..." : "Add"}
-                </Button>
-              </form>
-            )}
-            <MutationError error={assignMut.error} />
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete confirmation */}
-      <AlertDialog
-        open={!!deleteTarget}
-        onOpenChange={(open) => {
-          if (!open) setDeleteTarget(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove member?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently remove &ldquo;{deleteTarget?.displayName}
-              &rdquo; from this tenant. This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <MutationError error={deleteMut.error} />
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => deleteMut.mutate()}
-              disabled={deleteMut.isPending}
-            >
-              {deleteMut.isPending ? "Removing..." : "Remove"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

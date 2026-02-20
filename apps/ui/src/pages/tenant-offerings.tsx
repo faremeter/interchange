@@ -1,16 +1,14 @@
 import { useState } from "react";
-import { useParams } from "@tanstack/react-router";
+import { useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
+import { Plus } from "lucide-react";
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
 import {
   createOfferingMutation,
-  deleteOfferingMutation,
   tenantAgentsQuery,
   tenantOfferingsQuery,
-  updateOfferingMutation,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,23 +19,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import {
   Select,
   SelectContent,
@@ -56,20 +37,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-type OfferingRow = {
-  id: string;
-  agentId: string;
-  agentName: string;
-  name: string;
-  description: string | null;
-  pricing?: {
-    base?: { amount: string; currency: string };
-    negotiable?: boolean;
-  };
-};
-
 export function TenantOfferingsPage() {
   const { tenantId } = useParams({ strict: false }) as { tenantId: string };
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: offerings, isLoading } = useQuery(
     tenantOfferingsQuery(tenantId),
@@ -77,17 +47,9 @@ export function TenantOfferingsPage() {
   const { data: agents } = useQuery(tenantAgentsQuery(tenantId));
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [editTarget, setEditTarget] = useState<OfferingRow | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<OfferingRow | null>(null);
-
-  // Create form state
   const [createAgentId, setCreateAgentId] = useState("");
   const [createName, setCreateName] = useState("");
   const [createDescription, setCreateDescription] = useState("");
-
-  // Edit form state
-  const [editName, setEditName] = useState("");
-  const [editDescription, setEditDescription] = useState("");
 
   function resetCreateForm() {
     setCreateAgentId("");
@@ -101,30 +63,6 @@ export function TenantOfferingsPage() {
       createOfferingMutation(tenantId, queryClient).onSuccess();
       setCreateOpen(false);
       resetCreateForm();
-    },
-  });
-
-  const updateMut = useMutation({
-    ...updateOfferingMutation(tenantId, editTarget?.id ?? "", queryClient),
-    onSuccess: () => {
-      updateOfferingMutation(
-        tenantId,
-        editTarget?.id ?? "",
-        queryClient,
-      ).onSuccess();
-      setEditTarget(null);
-    },
-  });
-
-  const deleteMut = useMutation({
-    ...deleteOfferingMutation(tenantId, deleteTarget?.id ?? "", queryClient),
-    onSuccess: () => {
-      deleteOfferingMutation(
-        tenantId,
-        deleteTarget?.id ?? "",
-        queryClient,
-      ).onSuccess();
-      setDeleteTarget(null);
     },
   });
 
@@ -155,12 +93,20 @@ export function TenantOfferingsPage() {
                 <TableHead>Agent</TableHead>
                 <TableHead>Description</TableHead>
                 <TableHead>Pricing</TableHead>
-                <TableHead className="w-10" />
               </TableRow>
             </TableHeader>
             <TableBody>
               {offerings?.map((ofr) => (
-                <TableRow key={ofr.id}>
+                <TableRow
+                  key={ofr.id}
+                  className="cursor-pointer"
+                  onClick={() =>
+                    navigate({
+                      to: "/tenants/$tenantId/offerings/$offeringId",
+                      params: { tenantId, offeringId: ofr.id },
+                    })
+                  }
+                >
                   <TableCell className="font-medium">{ofr.name}</TableCell>
                   <TableCell>
                     <Badge variant="secondary">{ofr.agentName}</Badge>
@@ -183,35 +129,6 @@ export function TenantOfferingsPage() {
                         negotiable
                       </Badge>
                     ) : null}
-                  </TableCell>
-                  <TableCell>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon-xs">
-                          <MoreHorizontal />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          onClick={() => {
-                            setEditTarget(ofr);
-                            setEditName(ofr.name);
-                            setEditDescription(ofr.description ?? "");
-                          }}
-                        >
-                          <Pencil />
-                          Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onClick={() => setDeleteTarget(ofr)}
-                        >
-                          <Trash2 />
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
                   </TableCell>
                 </TableRow>
               ))}
@@ -296,88 +213,6 @@ export function TenantOfferingsPage() {
           </form>
         </DialogContent>
       </Dialog>
-
-      {/* Edit dialog */}
-      <Dialog
-        open={!!editTarget}
-        onOpenChange={(open) => {
-          if (!open) setEditTarget(null);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Edit Offering</DialogTitle>
-          </DialogHeader>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const body: { name?: string; description?: string } = {};
-              if (editName.trim() !== editTarget?.name)
-                body.name = editName.trim();
-              if (editDescription.trim() !== (editTarget?.description ?? ""))
-                body.description = editDescription.trim();
-              updateMut.mutate(body);
-            }}
-            className="grid gap-4"
-          >
-            <div className="grid gap-2">
-              <Label htmlFor="edit-ofr-name">Name</Label>
-              <Input
-                id="edit-ofr-name"
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
-                required
-                autoFocus
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="edit-ofr-description">Description</Label>
-              <Input
-                id="edit-ofr-description"
-                value={editDescription}
-                onChange={(e) => setEditDescription(e.target.value)}
-                placeholder="Optional"
-              />
-            </div>
-            <MutationError error={updateMut.error} />
-            <DialogFooter>
-              <Button type="submit" disabled={updateMut.isPending}>
-                {updateMut.isPending ? "Saving..." : "Save"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete confirmation */}
-      <AlertDialog
-        open={!!deleteTarget}
-        onOpenChange={(open) => {
-          if (!open) setDeleteTarget(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete offering?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete the offering &ldquo;
-              {deleteTarget?.name}&rdquo; from agent {deleteTarget?.agentName}.
-              This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <MutationError error={deleteMut.error} />
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => deleteMut.mutate()}
-              disabled={deleteMut.isPending}
-            >
-              {deleteMut.isPending ? "Deleting..." : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

@@ -11,12 +11,19 @@ import { LoginPage } from "@/pages/login";
 import { DashboardPage } from "@/pages/dashboard";
 import { TenantPage } from "@/pages/tenant";
 import { TenantAgentsPage } from "@/pages/tenant-agents";
+import { TenantAgentDetailPage } from "@/pages/tenant-agent-detail";
 import { TenantPrincipalsPage } from "@/pages/tenant-principals";
+import { TenantPrincipalDetailPage } from "@/pages/tenant-principal-detail";
 import { TenantRolesPage } from "@/pages/tenant-roles";
+import { TenantRoleDetailPage } from "@/pages/tenant-role-detail";
 import { TenantGrantsPage } from "@/pages/tenant-grants";
+import { TenantGrantDetailPage } from "@/pages/tenant-grant-detail";
 import { TenantCredentialsPage } from "@/pages/tenant-credentials";
+import { TenantCredentialDetailPage } from "@/pages/tenant-credential-detail";
 import { TenantWalletsPage } from "@/pages/tenant-wallets";
+import { TenantWalletDetailPage } from "@/pages/tenant-wallet-detail";
 import { TenantOfferingsPage } from "@/pages/tenant-offerings";
+import { TenantOfferingDetailPage } from "@/pages/tenant-offering-detail";
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -58,10 +65,22 @@ const tenantAgentsRoute = createRoute({
   component: TenantAgentsPage,
 });
 
+const tenantAgentDetailRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/agents/$agentId",
+  component: TenantAgentDetailPage,
+});
+
 const tenantPrincipalsRoute = createRoute({
   getParentRoute: () => authedRoute,
   path: "/tenants/$tenantId/principals",
   component: TenantPrincipalsPage,
+});
+
+const tenantPrincipalDetailRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/principals/$principalId",
+  component: TenantPrincipalDetailPage,
 });
 
 const tenantRolesRoute = createRoute({
@@ -70,10 +89,22 @@ const tenantRolesRoute = createRoute({
   component: TenantRolesPage,
 });
 
+const tenantRoleDetailRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/roles/$roleId",
+  component: TenantRoleDetailPage,
+});
+
 const tenantGrantsRoute = createRoute({
   getParentRoute: () => authedRoute,
   path: "/tenants/$tenantId/grants",
   component: TenantGrantsPage,
+});
+
+const tenantGrantDetailRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/grants/$grantId",
+  component: TenantGrantDetailPage,
 });
 
 const tenantCredentialsRoute = createRoute({
@@ -82,10 +113,22 @@ const tenantCredentialsRoute = createRoute({
   component: TenantCredentialsPage,
 });
 
+const tenantCredentialDetailRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/credentials/$credentialId",
+  component: TenantCredentialDetailPage,
+});
+
 const tenantWalletsRoute = createRoute({
   getParentRoute: () => authedRoute,
   path: "/tenants/$tenantId/wallets",
   component: TenantWalletsPage,
+});
+
+const tenantWalletDetailRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/wallets/$walletId",
+  component: TenantWalletDetailPage,
 });
 
 const tenantOfferingsRoute = createRoute({
@@ -94,18 +137,31 @@ const tenantOfferingsRoute = createRoute({
   component: TenantOfferingsPage,
 });
 
+const tenantOfferingDetailRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/offerings/$offeringId",
+  component: TenantOfferingDetailPage,
+});
+
 const routeTree = rootRoute.addChildren([
   loginRoute,
   authedRoute.addChildren([
     dashboardRoute,
     tenantRoute,
     tenantAgentsRoute,
+    tenantAgentDetailRoute,
     tenantPrincipalsRoute,
+    tenantPrincipalDetailRoute,
     tenantRolesRoute,
+    tenantRoleDetailRoute,
     tenantGrantsRoute,
+    tenantGrantDetailRoute,
     tenantCredentialsRoute,
+    tenantCredentialDetailRoute,
     tenantWalletsRoute,
+    tenantWalletDetailRoute,
     tenantOfferingsRoute,
+    tenantOfferingDetailRoute,
   ]),
 ]);
 
