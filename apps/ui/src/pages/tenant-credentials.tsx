@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
+import { type CredentialType, credentialTypes } from "@interchange/types";
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
@@ -36,14 +37,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-const TYPE_OPTIONS = [
-  { value: "api_key", label: "API Key" },
-  { value: "oauth_token", label: "OAuth Token" },
-  { value: "certificate", label: "Certificate" },
-  { value: "other", label: "Other" },
-] as const;
-
-const TYPE_LABELS: Record<string, string> = {
+const TYPE_LABELS: Record<CredentialType, string> = {
   api_key: "API Key",
   oauth_token: "OAuth Token",
   certificate: "Certificate",
@@ -57,7 +51,11 @@ function TypeBadge({ type }: { type: string }) {
       : type === "oauth_token"
         ? "outline"
         : "default";
-  return <Badge variant={variant}>{TYPE_LABELS[type] ?? type}</Badge>;
+  return (
+    <Badge variant={variant}>
+      {TYPE_LABELS[type as CredentialType] ?? type}
+    </Badge>
+  );
 }
 
 export function TenantCredentialsPage() {
@@ -70,7 +68,7 @@ export function TenantCredentialsPage() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
-  const [createType, setCreateType] = useState<string>("api_key");
+  const [createType, setCreateType] = useState<CredentialType>("api_key");
   const [createSecret, setCreateSecret] = useState("");
   const [createDescription, setCreateDescription] = useState("");
 
@@ -165,16 +163,12 @@ export function TenantCredentialsPage() {
               e.preventDefault();
               const body: {
                 name: string;
-                type: "api_key" | "oauth_token" | "certificate" | "other";
+                type: CredentialType;
                 secret: string;
                 description?: string;
               } = {
                 name: createName.trim(),
-                type: createType as
-                  | "api_key"
-                  | "oauth_token"
-                  | "certificate"
-                  | "other",
+                type: createType,
                 secret: createSecret,
               };
               if (createDescription.trim())
@@ -195,14 +189,17 @@ export function TenantCredentialsPage() {
             </div>
             <div className="grid gap-2">
               <Label>Type</Label>
-              <Select value={createType} onValueChange={setCreateType}>
+              <Select
+                value={createType}
+                onValueChange={(v) => setCreateType(v as CredentialType)}
+              >
                 <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {TYPE_OPTIONS.map((t) => (
-                    <SelectItem key={t.value} value={t.value}>
-                      {t.label}
+                  {credentialTypes.map((t) => (
+                    <SelectItem key={t} value={t}>
+                      {TYPE_LABELS[t]}
                     </SelectItem>
                   ))}
                 </SelectContent>

@@ -1,8 +1,13 @@
 import { type } from "arktype";
 
+export const walletBackendTypes = ["crypto", "fiat", "credits"] as const;
+export type WalletBackendType = (typeof walletBackendTypes)[number];
+
+const BackendType = type.enumerated(...walletBackendTypes);
+
 export const CreateWallet = type({
   name: "string",
-  backendType: "'crypto' | 'fiat' | 'credits'",
+  backendType: BackendType,
   currency: "string",
   "config?": "Record<string, unknown>",
 });
@@ -16,7 +21,7 @@ export const WalletResponse = type({
   id: "string",
   tenantId: "string",
   name: "string",
-  backendType: "'crypto' | 'fiat' | 'credits'",
+  backendType: BackendType,
   currency: "string",
   balance: "string",
   "config?": "Record<string, unknown>",

@@ -28,6 +28,7 @@
       "name": "@interchange/ui",
       "version": "0.0.0",
       "dependencies": {
+        "@interchange/types": "workspace:*",
         "@tanstack/react-query": "^5.80.7",
         "@tanstack/react-router": "^1.121.3",
         "better-auth": "^1.4.18",

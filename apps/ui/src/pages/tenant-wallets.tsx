@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
+import { type WalletBackendType, walletBackendTypes } from "@interchange/types";
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
@@ -36,13 +37,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-const BACKEND_OPTIONS = [
-  { value: "crypto", label: "Crypto" },
-  { value: "fiat", label: "Fiat" },
-  { value: "credits", label: "Credits" },
-] as const;
-
-const BACKEND_LABELS: Record<string, string> = {
+const BACKEND_LABELS: Record<WalletBackendType, string> = {
   crypto: "Crypto",
   fiat: "Fiat",
   credits: "Credits",
@@ -55,7 +50,11 @@ function BackendBadge({ type }: { type: string }) {
       : type === "fiat"
         ? "secondary"
         : "outline";
-  return <Badge variant={variant}>{BACKEND_LABELS[type] ?? type}</Badge>;
+  return (
+    <Badge variant={variant}>
+      {BACKEND_LABELS[type as WalletBackendType] ?? type}
+    </Badge>
+  );
 }
 
 export function TenantWalletsPage() {
@@ -66,7 +65,7 @@ export function TenantWalletsPage() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
-  const [createBackend, setCreateBackend] = useState<string>("fiat");
+  const [createBackend, setCreateBackend] = useState<WalletBackendType>("fiat");
   const [createCurrency, setCreateCurrency] = useState("");
 
   function resetCreateForm() {
@@ -161,7 +160,7 @@ export function TenantWalletsPage() {
               e.preventDefault();
               createMut.mutate({
                 name: createName.trim(),
-                backendType: createBackend as "crypto" | "fiat" | "credits",
+                backendType: createBackend,
                 currency: createCurrency.trim().toUpperCase(),
               });
             }}
@@ -179,14 +178,17 @@ export function TenantWalletsPage() {
             </div>
             <div className="grid gap-2">
               <Label>Backend Type</Label>
-              <Select value={createBackend} onValueChange={setCreateBackend}>
+              <Select
+                value={createBackend}
+                onValueChange={(v) => setCreateBackend(v as WalletBackendType)}
+              >
                 <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {BACKEND_OPTIONS.map((b) => (
-                    <SelectItem key={b.value} value={b.value}>
-                      {b.label}
+                  {walletBackendTypes.map((b) => (
+                    <SelectItem key={b} value={b}>
+                      {BACKEND_LABELS[b]}
                     </SelectItem>
                   ))}
                 </SelectContent>

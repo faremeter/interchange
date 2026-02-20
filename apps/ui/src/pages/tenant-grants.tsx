@@ -2,6 +2,12 @@ import { useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
+import {
+  type GrantEffect,
+  type GrantSource,
+  grantEffects,
+  grantSources,
+} from "@interchange/types";
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
@@ -59,14 +65,11 @@ export function TenantGrantsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [resource, setResource] = useState("");
   const [action, setAction] = useState("");
-  const [effect, setEffect] = useState<string>("allow");
-  const [source, setSource] = useState<string>("role");
+  const [effect, setEffect] = useState<GrantEffect>("allow");
+  const [source, setSource] = useState<GrantSource>("role");
   const [targetType, setTargetType] = useState<string>("role");
   const [roleId, setRoleId] = useState("");
   const [principalId, setPrincipalId] = useState("");
-
-  const EFFECTS = ["allow", "deny", "ask"] as const;
-  const SOURCES = ["system", "role", "creator", "invoker"] as const;
 
   function resetCreateForm() {
     setResource("");
@@ -177,23 +180,16 @@ export function TenantGrantsPage() {
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              const body: {
-                resource: string;
-                action: string;
-                effect: "allow" | "deny" | "ask";
-                source: "system" | "role" | "creator" | "invoker";
-                roleId?: string;
-                principalId?: string;
-              } = {
+              createMut.mutate({
                 resource: resource.trim(),
                 action: action.trim(),
-                effect: effect as "allow" | "deny" | "ask",
-                source: source as "system" | "role" | "creator" | "invoker",
-              };
-              if (targetType === "role" && roleId) body.roleId = roleId;
-              if (targetType === "principal" && principalId)
-                body.principalId = principalId;
-              createMut.mutate(body);
+                effect,
+                source,
+                ...(targetType === "role" && roleId ? { roleId } : {}),
+                ...(targetType === "principal" && principalId
+                  ? { principalId }
+                  : {}),
+              });
             }}
             className="grid gap-4"
           >
@@ -221,12 +217,15 @@ export function TenantGrantsPage() {
             <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-2">
                 <Label>Effect</Label>
-                <Select value={effect} onValueChange={setEffect}>
+                <Select
+                  value={effect}
+                  onValueChange={(v) => setEffect(v as GrantEffect)}
+                >
                   <SelectTrigger className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {EFFECTS.map((e) => (
+                    {grantEffects.map((e) => (
                       <SelectItem key={e} value={e}>
                         {e}
                       </SelectItem>
@@ -236,12 +235,15 @@ export function TenantGrantsPage() {
               </div>
               <div className="grid gap-2">
                 <Label>Source</Label>
-                <Select value={source} onValueChange={setSource}>
+                <Select
+                  value={source}
+                  onValueChange={(v) => setSource(v as GrantSource)}
+                >
                   <SelectTrigger className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {SOURCES.map((s) => (
+                    {grantSources.map((s) => (
                       <SelectItem key={s} value={s}>
                         {s}
                       </SelectItem>
