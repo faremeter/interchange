@@ -9,6 +9,9 @@ import {
   grantDetailQuery,
   deleteGrantMutation,
   updateGrantMutation,
+  tenantCredentialsQuery,
+  tenantRolesQuery,
+  tenantPrincipalsQuery,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -69,6 +72,9 @@ export function TenantGrantDetailPage() {
   const { data: grant, isLoading } = useQuery(
     grantDetailQuery(tenantId, grantId),
   );
+  const { data: roles } = useQuery(tenantRolesQuery(tenantId));
+  const { data: principals } = useQuery(tenantPrincipalsQuery(tenantId));
+  const { data: credentials } = useQuery(tenantCredentialsQuery(tenantId));
 
   const [editing, setEditing] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -121,6 +127,12 @@ export function TenantGrantDetailPage() {
     return <div className="p-4 text-sm text-muted-foreground">Not found.</div>;
   }
 
+  const resourceName = grant.resource.startsWith("credential:")
+    ? (credentials?.find(
+        (c) => c.id === grant.resource.slice("credential:".length),
+      )?.name ?? grant.resource.slice("credential:".length))
+    : grant.resource;
+
   return (
     <div>
       {/* Back link + header */}
@@ -137,7 +149,7 @@ export function TenantGrantDetailPage() {
 
       <div className="flex items-start justify-between">
         <div>
-          <h2 className="text-lg font-semibold">{grant.resource}</h2>
+          <h2 className="text-lg font-semibold">{resourceName}</h2>
           <p className="mt-1 text-sm text-muted-foreground">{grant.action}</p>
         </div>
         <div className="flex items-center gap-2">
@@ -203,7 +215,12 @@ export function TenantGrantDetailPage() {
         ) : (
           <dl className="overflow-hidden rounded-lg border">
             <Row label="Resource">
-              <span className="font-mono text-xs">{grant.resource}</span>
+              <span className="font-mono text-xs">{resourceName}</span>
+              {grant.resource.startsWith("credential:") && (
+                <Badge variant="outline" className="ml-2 text-[10px]">
+                  credential
+                </Badge>
+              )}
             </Row>
             <Row label="Action">
               <span className="font-mono text-xs">{grant.action}</span>
@@ -213,14 +230,19 @@ export function TenantGrantDetailPage() {
             </Row>
             <Row label="Source">{grant.source}</Row>
             <Row label="Target">
-              {grant.roleName ? (
-                <Badge variant="secondary">{grant.roleName}</Badge>
-              ) : grant.principalName ? (
-                <Badge variant="outline">{grant.principalName}</Badge>
-              ) : grant.roleId ? (
-                <span className="font-mono text-xs">{grant.roleId}</span>
+              {grant.roleId ? (
+                <Badge variant="secondary">
+                  {grant.roleName ??
+                    roles?.find((r) => r.id === grant.roleId)?.name ??
+                    grant.roleId}
+                </Badge>
               ) : grant.principalId ? (
-                <span className="font-mono text-xs">{grant.principalId}</span>
+                <Badge variant="outline">
+                  {grant.principalName ??
+                    principals?.find((p) => p.id === grant.principalId)
+                      ?.displayName ??
+                    grant.principalId}
+                </Badge>
               ) : (
                 <span className="text-muted-foreground">--</span>
               )}
@@ -242,7 +264,7 @@ export function TenantGrantDetailPage() {
             <AlertDialogTitle>Revoke grant?</AlertDialogTitle>
             <AlertDialogDescription>
               This will permanently revoke the grant on &ldquo;
-              {grant.resource}&rdquo;. This action cannot be undone.
+              {resourceName}&rdquo;. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <MutationError error={deleteMut.error} />
