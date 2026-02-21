@@ -114,6 +114,29 @@ type OfferingResponse = {
   schema: Record<string, unknown> | null;
 };
 
+type ProviderResponse = {
+  id: string;
+  tenantId: string;
+  name: string;
+  plugin: string;
+  scopes: string[] | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function tenantProvidersQuery(tenantId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "providers"],
+    queryFn: async () => {
+      const res = await api<{ data: ProviderResponse[] }>(
+        "GET",
+        `/api/tenants/${tenantId}/providers?inherited=true`,
+      );
+      return res.data;
+    },
+  });
+}
+
 export function tenantDetailQuery(tenantId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId],
