@@ -14,10 +14,13 @@ import {
 import { MutationError } from "@/components/mutation-error";
 import {
   agentDetailQuery,
+  chatWithAgentMutation,
   createGrantMutation,
   deleteAgentMutation,
   deleteGrantMutation,
   principalGrantsQuery,
+  startAgentMutation,
+  stopAgentMutation,
   tenantProvidersQuery,
   updateAgentMutation,
 } from "@/lib/queries/tenants";
@@ -108,6 +111,12 @@ export function TenantAgentDetailPage() {
 
   const [editing, setEditing] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+
+  // Chat state
+  const [chatMessages, setChatMessages] = useState<
+    { role: "user" | "assistant"; content: string }[]
+  >([]);
+  const [chatInput, setChatInput] = useState("");
 
   // Edit form state
   const [editName, setEditName] = useState("");
@@ -268,6 +277,38 @@ export function TenantAgentDetailPage() {
     },
   });
 
+  const startMut = useMutation({
+    ...startAgentMutation(tenantId, agentId, queryClient),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({
+        queryKey: ["tenants", tenantId, "agents", agentId],
+      });
+      if (data.initialResponse) {
+        setChatMessages([{ role: "assistant", content: data.initialResponse }]);
+      }
+    },
+  });
+
+  const stopMut = useMutation({
+    ...stopAgentMutation(tenantId, agentId, queryClient),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["tenants", tenantId, "agents", agentId],
+      });
+      setChatMessages([]);
+    },
+  });
+
+  const chatMut = useMutation({
+    ...chatWithAgentMutation(tenantId, agentId),
+    onSuccess: (data) => {
+      setChatMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: data.text },
+      ]);
+    },
+  });
+
   function resetPermissionForm() {
     setPermProvider("");
     setPermScopes("");
@@ -292,6 +333,19 @@ export function TenantAgentDetailPage() {
     if (editSystemPrompt.trim() !== (agent.systemPrompt ?? ""))
       body.systemPrompt = editSystemPrompt.trim();
     updateMut.mutate(body);
+  }
+
+  function handleSendChat(e: React.FormEvent) {
+    e.preventDefault();
+    if (!chatInput.trim() || chatMut.isPending) return;
+
+    const userMessage = chatInput.trim();
+    setChatInput("");
+    setChatMessages((prev) => [
+      ...prev,
+      { role: "user", content: userMessage },
+    ]);
+    chatMut.mutate({ text: userMessage });
   }
 
   function addPermission(e: React.FormEvent) {
@@ -519,6 +573,83 @@ export function TenantAgentDetailPage() {
           </dl>
         )}
       </div>
+
+      {/* Agent Actions */}
+      <div className="mt-6 flex items-center gap-2">
+        {agent.status === "running" ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => stopMut.mutate()}
+            disabled={stopMut.isPending}
+          >
+            {stopMut.isPending ? "Stopping..." : "Stop Agent"}
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            onClick={() => startMut.mutate()}
+            disabled={startMut.isPending}
+          >
+            {startMut.isPending ? "Starting..." : "Start Agent"}
+          </Button>
+        )}
+      </div>
+
+      {/* Chat Section - only show when running */}
+      {agent.status === "running" && agent.kernelId && agent.sessionId && (
+        <div className="mt-8">
+          <h3 className="text-sm font-semibold">Chat</h3>
+          <div className="mt-3 flex flex-col gap-3 rounded-lg border p-4">
+            {/* Messages */}
+            <div className="flex h-64 flex-col gap-2 overflow-y-auto">
+              {chatMessages.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  Start a conversation with the agent...
+                </p>
+              ) : (
+                chatMessages.map((msg, i) => (
+                  <div
+                    key={i}
+                    className={`rounded p-2 text-sm ${
+                      msg.role === "user"
+                        ? "bg-muted ml-8"
+                        : "mr-8 bg-primary/10"
+                    }`}
+                  >
+                    <span className="font-medium">
+                      {msg.role === "user" ? "You" : "Agent"}:
+                    </span>{" "}
+                    {msg.content}
+                  </div>
+                ))
+              )}
+              {chatMut.isPending && (
+                <div className="text-sm text-muted-foreground">
+                  Agent is typing...
+                </div>
+              )}
+            </div>
+
+            {/* Input */}
+            <form onSubmit={handleSendChat} className="flex gap-2">
+              <Input
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                placeholder="Type a message..."
+                disabled={chatMut.isPending}
+              />
+              <Button
+                type="submit"
+                disabled={chatMut.isPending || !chatInput.trim()}
+              >
+                Send
+              </Button>
+            </form>
+            <MutationError error={chatMut.error} />
+          </div>
+        </div>
+      )}
 
       {/* Unified Permissions section */}
       <div className="mt-8">

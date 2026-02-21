@@ -1,0 +1,17 @@
+{
+  "name": "@interchange/sidecar",
+  "version": "0.0.0",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "@interchange/log": "workspace:*",
+    "@interchange/types": "workspace:*",
+    "hono": "^4.11.9"
+  }
+}

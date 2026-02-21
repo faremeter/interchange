@@ -6,6 +6,7 @@
     { "path": "packages/db" },
     { "path": "packages/authz" },
     { "path": "packages/hub" },
+    { "path": "packages/sidecar" },
     { "path": "apps/hub" },
     { "path": "apps/ui" }
   ]

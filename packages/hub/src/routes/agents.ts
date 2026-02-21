@@ -1,8 +1,15 @@
 import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
+import { type } from "arktype";
 
-import { agent, agentVersion, principal, grant } from "@interchange/db/schema";
+import {
+  agent,
+  agentVersion,
+  principal,
+  grant,
+  sidecar,
+} from "@interchange/db/schema";
 import {
   CreateAgent,
   UpdateAgent,
@@ -16,6 +23,7 @@ import {
 } from "@interchange/types";
 
 import type { TenantEnv } from "../context";
+import { getLogger } from "@interchange/log";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
 import { requireGrant, idResource } from "../middleware/grant";
@@ -26,6 +34,32 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
+
+const SidecarSessionResponse = type({
+  id: "string",
+  initialResponse: "string?",
+});
+
+const SidecarMessageResponse = type({
+  text: "string",
+});
+
+const logger = getLogger(["hub", "routes", "agents"]);
+
+const SIDEKAR_REQUEST_TIMEOUT = 30000;
+
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SIDEKAR_REQUEST_TIMEOUT);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 function formatAgent(row: typeof agent.$inferSelect) {
   return {
@@ -40,8 +74,14 @@ function formatAgent(row: typeof agent.$inferSelect) {
     initialState: (row.initialState as Record<string, unknown>) ?? undefined,
     modelConfig: (row.modelConfig as Record<string, unknown>) ?? undefined,
     currentVersion: row.currentVersion,
-    status: row.status as "deployed" | "stopped" | "updating" | "error",
+    status: row.status as
+      | "deployed"
+      | "stopped"
+      | "updating"
+      | "error"
+      | "running",
     kernelId: row.kernelId ?? null,
+    sessionId: row.sessionId ?? null,
     capabilities: (row.capabilities as Record<string, unknown>) ?? undefined,
     credentialRequirements:
       (row.credentialRequirements as
@@ -639,6 +679,297 @@ app.get(
 
     // Offerings are stored as jsonb -- return empty array if none
     return c.json([]);
+  },
+);
+
+// Start agent on a sidecar
+app.post(
+  "/:agentId/start",
+  requireGrant(idResource("agent", "agentId"), "manage"),
+  describeRoute({
+    summary: "Start agent on sidecar",
+    description: "Deploys an agent to a sidecar and starts a session",
+    responses: {
+      200: {
+        description: "Agent started",
+        content: {
+          "application/json": { schema: resolver(AgentResponse) },
+        },
+      },
+      400: {
+        description: "Validation error",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const agentId = c.req.param("agentId");
+    const db = c.get("db");
+
+    const row = await db.query.agent.findFirst({
+      where: and(eq(agent.id, agentId), eq(agent.tenantId, tenantCtx.id)),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Agent not found" } },
+        404,
+      );
+    }
+
+    if (row.status === "running" && row.kernelId && row.sessionId) {
+      return c.json(formatAgent(row));
+    }
+
+    // Find a sidecar for this tenant
+    const sidecars = await db.select().from(sidecar);
+    const availableSidecar = sidecars[0];
+
+    if (!availableSidecar) {
+      return c.json(
+        { error: { code: "no_sidecar", message: "No sidecar available" } },
+        400,
+      );
+    }
+
+    // Create session on sidecar
+    const requestBody = {
+      agentId: row.id,
+      systemPrompt: row.systemPrompt,
+      skills: row.skills,
+    };
+    const sidecarUrl = `${availableSidecar.url}/agents`;
+
+    const response = await fetchWithTimeout(sidecarUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      return c.json(
+        {
+          error: {
+            code: "session_failed",
+            message: "Failed to create session",
+          },
+        },
+        500,
+      );
+    }
+
+    const rawSessionResult = await response.json();
+    const sessionResult = SidecarSessionResponse(rawSessionResult);
+    if (sessionResult instanceof type.errors) {
+      logger.error(
+        `Invalid sidecar session response: ${sessionResult.summary}`,
+      );
+      return c.json(
+        {
+          error: {
+            code: "invalid_response",
+            message: "Invalid response from sidecar",
+          },
+        },
+        500,
+      );
+    }
+
+    // Update agent with kernel and session
+    const [updated] = await db
+      .update(agent)
+      .set({
+        kernelId: availableSidecar.id,
+        sessionId: sessionResult.id,
+        status: "running",
+        updatedAt: new Date(),
+      })
+      .where(eq(agent.id, agentId))
+      .returning();
+
+    if (!updated) {
+      return c.json(
+        { error: { code: "update_failed", message: "Failed to update agent" } },
+        500,
+      );
+    }
+
+    return c.json({
+      ...formatAgent(updated),
+      initialResponse: sessionResult.initialResponse,
+    });
+  },
+);
+
+// Chat with running agent
+app.post(
+  "/:agentId/chat",
+  requireGrant(idResource("agent", "agentId"), "manage"),
+  describeRoute({
+    summary: "Chat with running agent",
+    description: "Sends a message to a running agent session",
+    responses: {
+      200: {
+        description: "Agent response",
+        content: {
+          "application/json": { schema: resolver(type({ text: "string" })) },
+        },
+      },
+      400: {
+        description: "Agent not running",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+    },
+  }),
+  validator("json", type({ text: "string" })),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const agentId = c.req.param("agentId");
+    const body = c.req.valid("json" as never) as { text: string };
+    const db = c.get("db");
+
+    const row = await db.query.agent.findFirst({
+      where: and(eq(agent.id, agentId), eq(agent.tenantId, tenantCtx.id)),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Agent not found" } },
+        404,
+      );
+    }
+
+    if (!row.kernelId || !row.sessionId) {
+      return c.json(
+        { error: { code: "not_running", message: "Agent is not running" } },
+        400,
+      );
+    }
+
+    const [sidecarRow] = await db
+      .select()
+      .from(sidecar)
+      .where(eq(sidecar.id, row.kernelId));
+
+    if (!sidecarRow) {
+      return c.json(
+        {
+          error: {
+            code: "sidecar_gone",
+            message: "Sidecar no longer available",
+          },
+        },
+        400,
+      );
+    }
+
+    const response = await fetchWithTimeout(
+      `${sidecarRow.url}/agents/${row.sessionId}/message`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: body.text }),
+      },
+    );
+
+    if (!response.ok) {
+      return c.json(
+        { error: { code: "chat_failed", message: "Failed to send message" } },
+        500,
+      );
+    }
+
+    const rawResult = await response.json();
+    const result = SidecarMessageResponse(rawResult);
+    if (result instanceof type.errors) {
+      logger.error(`Invalid sidecar message response: ${result.summary}`);
+      return c.json(
+        {
+          error: {
+            code: "invalid_response",
+            message: "Invalid response from sidecar",
+          },
+        },
+        500,
+      );
+    }
+    return c.json({ text: result.text });
+  },
+);
+
+// Stop running agent
+app.post(
+  "/:agentId/stop",
+  requireGrant(idResource("agent", "agentId"), "manage"),
+  describeRoute({
+    summary: "Stop running agent",
+    description: "Stops the agent session on the sidecar",
+    responses: {
+      200: {
+        description: "Agent stopped",
+        content: {
+          "application/json": { schema: resolver(AgentResponse) },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const agentId = c.req.param("agentId");
+    const db = c.get("db");
+
+    const row = await db.query.agent.findFirst({
+      where: and(eq(agent.id, agentId), eq(agent.tenantId, tenantCtx.id)),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Agent not found" } },
+        404,
+      );
+    }
+
+    if (!row.kernelId || !row.sessionId) {
+      return c.json(formatAgent(row));
+    }
+
+    // Stop session on sidecar
+    const [sidecarRow] = await db
+      .select()
+      .from(sidecar)
+      .where(eq(sidecar.id, row.kernelId));
+
+    if (sidecarRow) {
+      await fetchWithTimeout(`${sidecarRow.url}/agents/${row.sessionId}`, {
+        method: "DELETE",
+      });
+    }
+
+    // Update agent
+    const [updated] = await db
+      .update(agent)
+      .set({
+        kernelId: null,
+        sessionId: null,
+        status: "deployed",
+        updatedAt: new Date(),
+      })
+      .where(eq(agent.id, agentId))
+      .returning();
+
+    if (!updated) {
+      return c.json(
+        { error: { code: "update_failed", message: "Failed to update agent" } },
+        500,
+      );
+    }
+
+    return c.json(formatAgent(updated));
   },
 );
 
