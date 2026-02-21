@@ -14,6 +14,7 @@ export const agentStatuses = [
   "stopped",
   "updating",
   "error",
+  "running",
 ] as const;
 export type AgentStatus = (typeof agentStatuses)[number];
 
@@ -72,8 +73,10 @@ export const AgentResponse = type({
   currentVersion: "string",
   status: AgentStatusType,
   "kernelId?": "string | null",
+  "sessionId?": "string | null",
   "capabilities?": "Record<string, unknown>",
   "credentialRequirements?": CredentialRequirement.array(),
+  "initialResponse?": "string | null",
   createdAt: "string",
   updatedAt: "string",
 });

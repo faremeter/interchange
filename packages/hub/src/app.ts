@@ -7,6 +7,7 @@ import type { AppEnv } from "./context";
 import { requireAuth, resolveTenant } from "./middleware/tenant";
 import { meRoutes } from "./routes/me";
 import { tenantRoutes } from "./routes/tenants";
+import { tenantFederationRoutes } from "./routes/tenant-federation";
 import { principalRoutes, inviteRoutes } from "./routes/principals";
 import { roleRoutes, roleAssignRoutes } from "./routes/roles";
 import { grantRoutes, evaluateRoutes } from "./routes/grants";
@@ -20,6 +21,7 @@ import { credentialRoutes } from "./routes/credentials";
 import { offeringRoutes, modelRoutes } from "./routes/offerings";
 import { observabilityRoutes } from "./routes/observability";
 import { agentDataRoutes } from "./routes/agent-data";
+import { default as sidecarRoutes } from "./routes/sidecars";
 
 import { type DB, createGrantStore } from "@interchange/db";
 import type { ConditionRegistry } from "@interchange/types/authz";
@@ -94,7 +96,10 @@ export function createApp({ auth, db }: CreateAppOpts) {
   app.route("/api/tenants/:tenantId/credentials", credentialRoutes);
   app.route("/api/tenants/:tenantId/offerings", offeringRoutes);
   app.route("/api/tenants/:tenantId", observabilityRoutes);
+  app.route("/api/tenants/:tenantId/federation", tenantFederationRoutes);
   app.route("/api/tenants/:tenantId/agents/:agentId", agentDataRoutes);
+
+  app.route("/api/sidecars", sidecarRoutes);
 
   app.get(
     "/openapi.json",

@@ -51,11 +51,13 @@ type AgentResponse = {
   name: string;
   description: string | null;
   systemPrompt: string | null;
-  status: "deployed" | "stopped" | "updating" | "error";
+  status: "deployed" | "stopped" | "updating" | "error" | "running";
   currentVersion: string;
   kernelId: string | null;
+  sessionId: string | null;
   capabilities: Record<string, unknown> | null;
   credentialRequirements?: CredentialRequirement[];
+  initialResponse?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -500,6 +502,47 @@ export function deleteAgentMutation(
     mutationFn: () =>
       api<undefined>("DELETE", `/api/tenants/${tenantId}/agents/${agentId}`),
     onSuccess: () => invalidate(qc, tenantId, "agents"),
+  };
+}
+
+export function startAgentMutation(
+  tenantId: string,
+  agentId: string,
+  qc: QueryClient,
+) {
+  return {
+    mutationFn: () =>
+      api<AgentResponse>(
+        "POST",
+        `/api/tenants/${tenantId}/agents/${agentId}/start`,
+      ),
+    onSuccess: () => invalidate(qc, tenantId, "agents"),
+  };
+}
+
+export function stopAgentMutation(
+  tenantId: string,
+  agentId: string,
+  qc: QueryClient,
+) {
+  return {
+    mutationFn: () =>
+      api<AgentResponse>(
+        "POST",
+        `/api/tenants/${tenantId}/agents/${agentId}/stop`,
+      ),
+    onSuccess: () => invalidate(qc, tenantId, "agents"),
+  };
+}
+
+export function chatWithAgentMutation(tenantId: string, agentId: string) {
+  return {
+    mutationFn: (body: { text: string }) =>
+      api<{ text: string }>(
+        "POST",
+        `/api/tenants/${tenantId}/agents/${agentId}/chat`,
+        body,
+      ),
   };
 }
 

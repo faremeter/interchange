@@ -22,11 +22,12 @@ export const agent = pgTable("agent", {
   credentialRequirements: jsonb("credential_requirements"),
   currentVersion: text("current_version").notNull().default("1"),
   status: text("status", {
-    enum: ["deployed", "stopped", "updating", "error"],
+    enum: ["deployed", "stopped", "updating", "error", "running"],
   })
     .notNull()
     .default("deployed"),
   kernelId: text("kernel_id"),
+  sessionId: text("session_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

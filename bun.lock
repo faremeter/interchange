@@ -100,6 +100,15 @@
         "hono",
       ],
     },
+    "packages/sidecar": {
+      "name": "@interchange/sidecar",
+      "version": "0.0.0",
+      "dependencies": {
+        "@interchange/log": "workspace:*",
+        "@interchange/types": "workspace:*",
+        "hono": "^4.11.9",
+      },
+    },
     "packages/types": {
       "name": "@interchange/types",
       "version": "0.0.0",
@@ -302,6 +311,8 @@
     "@interchange/hub-app": ["@interchange/hub-app@workspace:apps/hub"],
 
     "@interchange/log": ["@interchange/log@workspace:packages/log"],
+
+    "@interchange/sidecar": ["@interchange/sidecar@workspace:packages/sidecar"],
 
     "@interchange/types": ["@interchange/types@workspace:packages/types"],
 
