@@ -40,10 +40,6 @@ const SidecarSessionResponse = type({
   initialResponse: "string?",
 });
 
-const SidecarMessageResponse = type({
-  text: "string",
-});
-
 const logger = getLogger(["hub", "routes", "agents"]);
 
 const SIDEKAR_REQUEST_TIMEOUT = 30000;
@@ -804,22 +800,32 @@ app.post(
   },
 );
 
-// Chat with running agent
+// Send a message to a running agent (fire-and-forget)
 app.post(
-  "/:agentId/chat",
+  "/:agentId/messages",
   requireGrant(idResource("agent", "agentId"), "manage"),
   describeRoute({
-    summary: "Chat with running agent",
-    description: "Sends a message to a running agent session",
+    tags: ["Agents"],
+    summary: "Send message to running agent",
+    description:
+      "Enqueues a message for the agent to process. Returns immediately; responses arrive via the SSE event stream.",
     responses: {
-      200: {
-        description: "Agent response",
+      201: {
+        description: "Message accepted",
         content: {
-          "application/json": { schema: resolver(type({ text: "string" })) },
+          "application/json": {
+            schema: resolver(type({ status: "string" })),
+          },
         },
       },
       400: {
         description: "Agent not running",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      404: {
+        description: "Agent not found",
         content: {
           "application/json": { schema: resolver(ErrorResponse) },
         },
@@ -879,26 +885,14 @@ app.post(
 
     if (!response.ok) {
       return c.json(
-        { error: { code: "chat_failed", message: "Failed to send message" } },
-        500,
-      );
-    }
-
-    const rawResult = await response.json();
-    const result = SidecarMessageResponse(rawResult);
-    if (result instanceof type.errors) {
-      logger.error(`Invalid sidecar message response: ${result.summary}`);
-      return c.json(
         {
-          error: {
-            code: "invalid_response",
-            message: "Invalid response from sidecar",
-          },
+          error: { code: "message_failed", message: "Failed to send message" },
         },
         500,
       );
     }
-    return c.json({ text: result.text });
+
+    return c.json({ status: "sent" }, 201);
   },
 );
 
