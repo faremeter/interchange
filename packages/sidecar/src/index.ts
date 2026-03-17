@@ -24,6 +24,7 @@ export async function createApp(config: SidecarConfig) {
   app.get("/agents/:id", agentRoutes["/agents/:id"].GET);
   app.delete("/agents/:id", agentRoutes["/agents/:id"].DELETE);
   app.post("/agents/:id/message", agentRoutes["/agents/:id/message"].POST);
+  app.get("/agents/:id/events", agentRoutes["/agents/:id/events"].GET);
 
   const toolRoutes = createToolRoutes();
   app.post("/tools/:toolId/invoke", toolRoutes["/tools/:toolId/invoke"].POST);

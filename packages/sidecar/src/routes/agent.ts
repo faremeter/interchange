@@ -4,6 +4,80 @@ import { getLogger } from "@interchange/log";
 
 const logger = getLogger(["sidecar", "routes", "agent"]);
 
+function sseEvent(type: string, data: Record<string, unknown>): string {
+  return `data: ${JSON.stringify({ type, data })}\n\n`;
+}
+
+function translateEvent(raw: string): string | null {
+  let event: { type: string; properties: Record<string, unknown> };
+  try {
+    event = JSON.parse(raw) as typeof event;
+  } catch {
+    return null;
+  }
+
+  const { type, properties } = event;
+
+  if (type === "message.part.delta") {
+    const p = properties as {
+      field?: string;
+      delta?: string;
+      partID?: string;
+      sessionID?: string;
+      messageID?: string;
+    };
+    if (p.field !== "text") return null;
+    return sseEvent("inference.token", {
+      delta: p.delta ?? "",
+      partId: p.partID,
+      sessionId: p.sessionID,
+      messageId: p.messageID,
+    });
+  }
+
+  if (type === "message.part.updated") {
+    const part = (
+      properties as {
+        part?: {
+          type?: string;
+          id?: string;
+          sessionID?: string;
+          messageID?: string;
+          text?: string;
+        };
+      }
+    ).part;
+    if (!part || part.type !== "text") return null;
+    // Only emit part_start on first creation (text is empty string)
+    if (part.text !== "") return null;
+    return sseEvent("inference.part_start", {
+      partId: part.id,
+      sessionId: part.sessionID,
+      messageId: part.messageID,
+    });
+  }
+
+  if (type === "message.updated") {
+    const info = (
+      properties as {
+        info?: { id?: string; sessionID?: string; finish?: string };
+      }
+    ).info;
+    if (!info || info.finish !== "stop") return null;
+    return sseEvent("inference.done", {
+      messageId: info.id,
+      sessionId: info.sessionID,
+    });
+  }
+
+  if (type === "session.idle") {
+    const p = properties as { sessionID?: string };
+    return sseEvent("session.idle", { sessionId: p.sessionID });
+  }
+
+  return null;
+}
+
 export function createAgentRoutes(opencode: OpenCodeManager) {
   return {
     "/agents": {
@@ -58,6 +132,40 @@ export function createAgentRoutes(opencode: OpenCodeManager) {
         }
 
         return c.json({ text: result.text });
+      },
+    },
+    "/agents/:id/events": {
+      GET: (c: Context) => {
+        const id = c.req.param("id");
+        const encoder = new TextEncoder();
+        let cleanup: (() => void) | null = null;
+
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            cleanup = opencode.subscribe(id, (raw) => {
+              const line = translateEvent(raw);
+              if (!line) return;
+              try {
+                controller.enqueue(encoder.encode(line));
+              } catch {
+                cleanup?.();
+                cleanup = null;
+              }
+            });
+          },
+          cancel() {
+            cleanup?.();
+            cleanup = null;
+          },
+        });
+
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+          },
+        });
       },
     },
   };
