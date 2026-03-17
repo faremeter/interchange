@@ -92,6 +92,23 @@ function Row({
   );
 }
 
+// Module-level store keyed by agentId — survives React Strict Mode remounts.
+type ChatMessage = { role: "user" | "assistant"; content: string };
+const agentMessages = new Map<string, ChatMessage[]>();
+const agentStreaming = new Map<string, string>();
+
+function getMessages(agentId: string): ChatMessage[] {
+  const existing = agentMessages.get(agentId);
+  if (existing) return existing;
+  const fresh: ChatMessage[] = [];
+  agentMessages.set(agentId, fresh);
+  return fresh;
+}
+
+function getStreaming(agentId: string): string {
+  return agentStreaming.get(agentId) ?? "";
+}
+
 export function TenantAgentDetailPage() {
   const { tenantId, agentId } = useParams({ strict: false }) as {
     tenantId: string;
@@ -112,12 +129,12 @@ export function TenantAgentDetailPage() {
   const [editing, setEditing] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
-  // Chat state
-  const [chatMessages, setChatMessages] = useState<
-    { role: "user" | "assistant"; content: string }[]
-  >([]);
+  // Chat render trigger — the actual message data lives in module-level Maps
+  // (agentMessages / agentStreaming) so it survives React Strict Mode remounts.
+  const [, forceRender] = useState(0);
+  const rerender = () => forceRender((n) => n + 1);
+
   const [chatInput, setChatInput] = useState("");
-  const [streamingContent, setStreamingContent] = useState<string>("");
   const [isSending, setIsSending] = useState(false);
   const closeStreamRef = useRef<(() => void) | null>(null);
 
@@ -282,65 +299,91 @@ export function TenantAgentDetailPage() {
 
   const startMut = useMutation({
     ...startAgentMutation(tenantId, agentId, queryClient),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ["tenants", tenantId, "agents"],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["tenants", tenantId, "agents", agentId],
-      });
-
-      const close = openStream(
-        `/api/tenants/${tenantId}/agents/${agentId}/events`,
-        (type, eventData) => {
-          const d = eventData as Record<string, unknown>;
-          if (type === "inference.part_start") {
-            setStreamingContent("");
-          } else if (type === "inference.token") {
-            setStreamingContent((prev) => prev + ((d.delta as string) ?? ""));
-          } else if (type === "inference.done") {
-            setStreamingContent((prev) => {
-              if (prev) {
-                setChatMessages((msgs) => [
-                  ...msgs,
-                  { role: "assistant", content: prev },
-                ]);
-              }
-              return "";
-            });
-          }
-          // session.idle: no-op
-        },
-        () => {
-          // EventSource error events carry no status code or message.
-          // The browser will auto-retry.
-        },
-      );
-      closeStreamRef.current = close;
+    onSuccess: (data) => {
+      // Set cache directly — no invalidation. Invalidating would cycle the
+      // detail query through stale states (running→deployed→running), which
+      // triggers the SSE useEffect multiple times and loses the boot message.
+      // The agents list will pick up the status change on its next natural refetch.
+      queryClient.setQueryData(["tenants", tenantId, "agents", agentId], data);
     },
   });
 
   const stopMut = useMutation({
     ...stopAgentMutation(tenantId, agentId, queryClient),
     onSuccess: () => {
-      closeStreamRef.current?.();
-      closeStreamRef.current = null;
       queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "agents"],
       });
       queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "agents", agentId],
       });
-      setChatMessages([]);
-      setStreamingContent("");
+      agentMessages.delete(agentId);
+      agentStreaming.delete(agentId);
+      rerender();
     },
   });
 
+  // Open/close the EventSource based on agent running state.
+  // useEffect cleanup handles Strict Mode correctly and also reconnects
+  // when navigating back to an already-running agent.
   useEffect(() => {
+    if (agent?.status !== "running") return;
+
+    let cancelled = false;
+
+    const close = openStream(
+      `/api/tenants/${tenantId}/agents/${agentId}/events`,
+      (type, eventData) => {
+        if (cancelled) return;
+        const d = eventData as Record<string, unknown>;
+        if (type === "history.message") {
+          const h = eventData as { role: string; text: string };
+          // Only populate history once — skip if already loaded
+          if (getMessages(agentId).length === 0) {
+            getMessages(agentId).push({
+              role: h.role as "user" | "assistant",
+              content: h.text,
+            });
+            rerender();
+          } else {
+            // Append if not already present (dedup by content+role)
+            const msgs = getMessages(agentId);
+            const last = msgs[msgs.length - 1];
+            if (!last || last.content !== h.text || last.role !== h.role) {
+              msgs.push({
+                role: h.role as "user" | "assistant",
+                content: h.text,
+              });
+              rerender();
+            }
+          }
+        } else if (type === "inference.part_start") {
+          agentStreaming.set(agentId, "");
+          rerender();
+        } else if (type === "inference.token") {
+          agentStreaming.set(
+            agentId,
+            getStreaming(agentId) + ((d.delta as string) ?? ""),
+          );
+          rerender();
+        } else if (type === "inference.done") {
+          const content = getStreaming(agentId);
+          agentStreaming.set(agentId, "");
+          if (content) {
+            getMessages(agentId).push({ role: "assistant", content });
+          }
+          rerender();
+        }
+      },
+    );
+    closeStreamRef.current = close;
+
     return () => {
-      closeStreamRef.current?.();
+      cancelled = true;
+      close();
+      closeStreamRef.current = null;
     };
-  }, []);
+  }, [agent?.status, tenantId, agentId]);
 
   function resetPermissionForm() {
     setPermProvider("");
@@ -373,10 +416,8 @@ export function TenantAgentDetailPage() {
     if (!chatInput.trim() || isSending) return;
     const userMessage = chatInput.trim();
     setChatInput("");
-    setChatMessages((prev) => [
-      ...prev,
-      { role: "user", content: userMessage },
-    ]);
+    getMessages(agentId).push({ role: "user", content: userMessage });
+    rerender();
     setIsSending(true);
     try {
       await api("POST", `/api/tenants/${tenantId}/agents/${agentId}/messages`, {
@@ -642,12 +683,12 @@ export function TenantAgentDetailPage() {
           <div className="mt-3 flex flex-col gap-3 rounded-lg border p-4">
             {/* Messages */}
             <div className="flex h-64 flex-col gap-2 overflow-y-auto">
-              {chatMessages.length === 0 ? (
+              {getMessages(agentId).length === 0 && !getStreaming(agentId) ? (
                 <p className="text-sm text-muted-foreground">
                   Start a conversation with the agent...
                 </p>
               ) : (
-                chatMessages.map((msg, i) => (
+                getMessages(agentId).map((msg, i) => (
                   <div
                     key={i}
                     className={`rounded p-2 text-sm ${
@@ -663,12 +704,13 @@ export function TenantAgentDetailPage() {
                   </div>
                 ))
               )}
-              {streamingContent && (
+              {getStreaming(agentId) && (
                 <div className="rounded p-2 text-sm mr-8 bg-primary/10">
-                  <span className="font-medium">Agent:</span> {streamingContent}
+                  <span className="font-medium">Agent:</span>{" "}
+                  {getStreaming(agentId)}
                 </div>
               )}
-              {isSending && !streamingContent && (
+              {isSending && !getStreaming(agentId) && (
                 <div className="text-sm text-muted-foreground">
                   Agent is thinking...
                 </div>
