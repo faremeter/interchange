@@ -36,4 +36,6 @@ const app = await main();
 export default {
   port: parseInt(process.env.SIDECAR_PORT || "4097"),
   fetch: app.fetch,
+  // Disable idle timeout so long-lived SSE connections are not killed.
+  idleTimeout: 0,
 };
