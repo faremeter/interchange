@@ -24,4 +24,4 @@ fi
 SIDECAR_PORT=${SIDECAR_PORT:-4097}
 OPENCODE_PORT=${OPENCODE_PORT:-4096}
 
-exec bun run --watch "$REPODIR/packages/sidecar/src/index.ts"
+exec bun run --watch "$REPODIR/packages/sidecar/src/main.ts"
