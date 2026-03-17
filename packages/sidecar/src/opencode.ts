@@ -19,6 +19,18 @@ export class OpenCodeManager {
   private sidecar: Sidecar;
   private process: ReturnType<typeof spawn> | null = null;
 
+  private sessions = new Map<
+    string,
+    {
+      buffer: { data: string; timestamp: number }[];
+      listeners: Set<(data: string) => void>;
+    }
+  >();
+
+  private eventReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectDelay = 1000;
+
   constructor(sidecar: Sidecar) {
     this.sidecar = sidecar;
   }
@@ -78,6 +90,7 @@ export class OpenCodeManager {
 
     const maxAttempts = 15;
     const delayMs = 1000;
+    let started = false;
     for (let i = 0; i < maxAttempts; i++) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
       try {
@@ -86,18 +99,40 @@ export class OpenCodeManager {
         );
         if (response.ok) {
           logger.info("OpenCode started");
-          return;
+          started = true;
+          break;
         }
       } catch {
         // OpenCode not ready yet
       }
     }
-    logger.warn("OpenCode health check timed out, assuming started");
+    if (!started) {
+      logger.warn("OpenCode health check timed out, assuming started");
+    }
+
+    this.startEventListener().catch((err) => {
+      logger.error(`Event listener startup error: ${err}`);
+    });
   }
 
   async stop(): Promise<void> {
     if (this.process) {
       logger.info("Stopping OpenCode...");
+
+      if (this.reconnectTimer !== null) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+
+      if (this.eventReader) {
+        try {
+          await this.eventReader.cancel();
+        } catch {
+          // ignore cancel errors
+        }
+        this.eventReader = null;
+      }
+
       this.process.kill();
       this.process = null;
     }
@@ -211,6 +246,131 @@ export class OpenCodeManager {
     } catch (error) {
       logger.error(`Error deleting session: ${error}`);
       return false;
+    } finally {
+      this.sessions.delete(sessionId);
+    }
+  }
+
+  subscribe(sessionId: string, callback: (data: string) => void): () => void {
+    const entry = this.getOrCreateSession(sessionId);
+
+    const now = Date.now();
+    for (const item of entry.buffer) {
+      if (now - item.timestamp < 60_000) {
+        callback(item.data);
+      }
+    }
+
+    entry.listeners.add(callback);
+
+    return () => {
+      entry.listeners.delete(callback);
+    };
+  }
+
+  private getOrCreateSession(sessionId: string): {
+    buffer: { data: string; timestamp: number }[];
+    listeners: Set<(data: string) => void>;
+  } {
+    const existing = this.sessions.get(sessionId);
+    if (existing) return existing;
+    const created = {
+      buffer: [] as { data: string; timestamp: number }[],
+      listeners: new Set<(data: string) => void>(),
+    };
+    this.sessions.set(sessionId, created);
+    return created;
+  }
+
+  private fanout(sessionId: string, data: string): void {
+    const entry = this.getOrCreateSession(sessionId);
+    const now = Date.now();
+
+    if (entry.listeners.size === 0) {
+      entry.buffer = entry.buffer.filter(
+        (item) => now - item.timestamp < 60_000,
+      );
+      if (entry.buffer.length >= 500) {
+        entry.buffer.shift();
+      }
+      entry.buffer.push({ data, timestamp: now });
+    } else {
+      for (const cb of entry.listeners) {
+        try {
+          cb(data);
+        } catch (err) {
+          logger.error(`Event listener callback error: ${err}`);
+          entry.listeners.delete(cb);
+        }
+      }
+    }
+  }
+
+  private async startEventListener(): Promise<void> {
+    try {
+      const { opencodePort } = this.sidecar.config;
+      const response = await fetch(`http://localhost:${opencodePort}/event`, {
+        headers: this.authHeaders(),
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error(`Event stream connect failed: ${response.status}`);
+      }
+
+      this.reconnectDelay = 1000;
+      this.eventReader =
+        response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
+      const decoder = new TextDecoder();
+      let lineBuffer = "";
+
+      while (true) {
+        const { done, value } = await this.eventReader.read();
+        if (done) break;
+
+        if (value) {
+          lineBuffer += decoder.decode(value, { stream: true });
+        }
+        const lines = lineBuffer.split("\n");
+        lineBuffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const raw = line.slice(6).trim();
+          if (!raw) continue;
+
+          try {
+            const event = JSON.parse(raw) as {
+              type: string;
+              properties: Record<string, unknown>;
+            };
+            const sessionId =
+              ((event.properties as Record<string, unknown>)?.sessionID as
+                | string
+                | undefined) ??
+              ((event.properties?.part as Record<string, unknown>)
+                ?.sessionID as string | undefined) ??
+              (event.properties as { info?: { sessionID?: string } })?.info
+                ?.sessionID;
+            if (sessionId) {
+              this.fanout(sessionId, raw);
+            }
+          } catch {
+            // malformed event, skip
+          }
+        }
+      }
+    } catch (err) {
+      logger.error(`OpenCode event stream error: ${err}`);
+    }
+
+    if (this.process !== null) {
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        this.startEventListener().catch((err) => {
+          logger.error(`Event listener reconnect error: ${err}`);
+        });
+      }, this.reconnectDelay);
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30_000);
     }
   }
 
