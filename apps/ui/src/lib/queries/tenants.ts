@@ -535,17 +535,6 @@ export function stopAgentMutation(
   };
 }
 
-export function chatWithAgentMutation(tenantId: string, agentId: string) {
-  return {
-    mutationFn: (body: { text: string }) =>
-      api<{ text: string }>(
-        "POST",
-        `/api/tenants/${tenantId}/agents/${agentId}/chat`,
-        body,
-      ),
-  };
-}
-
 // Grants
 
 type CreateGrantBody = {
