@@ -131,7 +131,7 @@ export function createAgentRoutes(opencode: OpenCodeManager) {
           return c.json({ error: "Failed to send message" }, 500);
         }
 
-        return c.json({ text: result.text });
+        return c.json({ queued: true });
       },
     },
     "/agents/:id/events": {

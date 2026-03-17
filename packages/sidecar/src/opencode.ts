@@ -10,11 +10,6 @@ interface SessionResponse {
   id: string;
 }
 
-interface MessageResponse {
-  info: { id: string; role: string };
-  parts: { type: string; text?: string }[];
-}
-
 export class OpenCodeManager {
   private sidecar: Sidecar;
   private process: ReturnType<typeof spawn> | null = null;
@@ -196,12 +191,12 @@ export class OpenCodeManager {
   async sendMessage(
     sessionId: string,
     message: string,
-  ): Promise<{ text: string } | null> {
+  ): Promise<{ queued: boolean } | null> {
     const { opencodePort } = this.sidecar.config;
 
     try {
       const response = await fetch(
-        `http://localhost:${opencodePort}/session/${sessionId}/message`,
+        `http://localhost:${opencodePort}/session/${sessionId}/prompt_async`,
         {
           method: "POST",
           headers: {
@@ -215,15 +210,12 @@ export class OpenCodeManager {
       );
 
       if (!response.ok) {
-        logger.error(
-          `Failed to send message: ${response.status} ${await response.text()}`,
-        );
+        logger.error(`Failed to send message: ${response.status}`);
         return null;
       }
 
-      const data = (await response.json()) as MessageResponse;
-      const textPart = data.parts.find((p) => p.type === "text");
-      return { text: textPart?.text || "" };
+      // prompt_async returns 204 No Content — don't parse body
+      return { queued: true };
     } catch (error) {
       logger.error(`Error sending message: ${error}`);
       return null;
