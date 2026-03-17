@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Pencil, Plus, Trash2, X } from "lucide-react";
@@ -14,7 +14,6 @@ import {
 import { MutationError } from "@/components/mutation-error";
 import {
   agentDetailQuery,
-  chatWithAgentMutation,
   createGrantMutation,
   deleteAgentMutation,
   deleteGrantMutation,
@@ -24,6 +23,7 @@ import {
   tenantProvidersQuery,
   updateAgentMutation,
 } from "@/lib/queries/tenants";
+import { api, openStream } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -117,6 +117,9 @@ export function TenantAgentDetailPage() {
     { role: "user" | "assistant"; content: string }[]
   >([]);
   const [chatInput, setChatInput] = useState("");
+  const [streamingContent, setStreamingContent] = useState<string>("");
+  const [isSending, setIsSending] = useState(false);
+  const closeStreamRef = useRef<(() => void) | null>(null);
 
   // Edit form state
   const [editName, setEditName] = useState("");
@@ -279,35 +282,65 @@ export function TenantAgentDetailPage() {
 
   const startMut = useMutation({
     ...startAgentMutation(tenantId, agentId, queryClient),
-    onSuccess: (data) => {
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["tenants", tenantId, "agents"],
+      });
       queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "agents", agentId],
       });
-      if (data.initialResponse) {
-        setChatMessages([{ role: "assistant", content: data.initialResponse }]);
-      }
+
+      const close = openStream(
+        `/api/tenants/${tenantId}/agents/${agentId}/events`,
+        (type, eventData) => {
+          const d = eventData as Record<string, unknown>;
+          if (type === "inference.part_start") {
+            setStreamingContent("");
+          } else if (type === "inference.token") {
+            setStreamingContent((prev) => prev + ((d.delta as string) ?? ""));
+          } else if (type === "inference.done") {
+            setStreamingContent((prev) => {
+              if (prev) {
+                setChatMessages((msgs) => [
+                  ...msgs,
+                  { role: "assistant", content: prev },
+                ]);
+              }
+              return "";
+            });
+          }
+          // session.idle: no-op
+        },
+        () => {
+          // EventSource error events carry no status code or message.
+          // The browser will auto-retry.
+        },
+      );
+      closeStreamRef.current = close;
     },
   });
 
   const stopMut = useMutation({
     ...stopAgentMutation(tenantId, agentId, queryClient),
     onSuccess: () => {
+      closeStreamRef.current?.();
+      closeStreamRef.current = null;
+      queryClient.invalidateQueries({
+        queryKey: ["tenants", tenantId, "agents"],
+      });
       queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "agents", agentId],
       });
       setChatMessages([]);
+      setStreamingContent("");
     },
   });
 
-  const chatMut = useMutation({
-    ...chatWithAgentMutation(tenantId, agentId),
-    onSuccess: (data) => {
-      setChatMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: data.text },
-      ]);
-    },
-  });
+  useEffect(() => {
+    return () => {
+      closeStreamRef.current?.();
+    };
+  }, []);
 
   function resetPermissionForm() {
     setPermProvider("");
@@ -335,17 +368,23 @@ export function TenantAgentDetailPage() {
     updateMut.mutate(body);
   }
 
-  function handleSendChat(e: React.FormEvent) {
+  async function handleSendChat(e: React.FormEvent) {
     e.preventDefault();
-    if (!chatInput.trim() || chatMut.isPending) return;
-
+    if (!chatInput.trim() || isSending) return;
     const userMessage = chatInput.trim();
     setChatInput("");
     setChatMessages((prev) => [
       ...prev,
       { role: "user", content: userMessage },
     ]);
-    chatMut.mutate({ text: userMessage });
+    setIsSending(true);
+    try {
+      await api("POST", `/api/tenants/${tenantId}/agents/${agentId}/messages`, {
+        text: userMessage,
+      });
+    } finally {
+      setIsSending(false);
+    }
   }
 
   function addPermission(e: React.FormEvent) {
@@ -624,9 +663,14 @@ export function TenantAgentDetailPage() {
                   </div>
                 ))
               )}
-              {chatMut.isPending && (
+              {streamingContent && (
+                <div className="rounded p-2 text-sm mr-8 bg-primary/10">
+                  <span className="font-medium">Agent:</span> {streamingContent}
+                </div>
+              )}
+              {isSending && !streamingContent && (
                 <div className="text-sm text-muted-foreground">
-                  Agent is typing...
+                  Agent is thinking...
                 </div>
               )}
             </div>
@@ -637,16 +681,12 @@ export function TenantAgentDetailPage() {
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 placeholder="Type a message..."
-                disabled={chatMut.isPending}
+                disabled={isSending}
               />
-              <Button
-                type="submit"
-                disabled={chatMut.isPending || !chatInput.trim()}
-              >
+              <Button type="submit" disabled={isSending || !chatInput.trim()}>
                 Send
               </Button>
             </form>
-            <MutationError error={chatMut.error} />
           </div>
         </div>
       )}

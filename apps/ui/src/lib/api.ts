@@ -34,3 +34,26 @@ export async function api<T>(
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
+
+// Note: EventSource error events carry no HTTP status or message — `e` is an
+// opaque Event object. Do not expect to extract error details from it.
+export function openStream(
+  path: string,
+  onEvent: (type: string, data: unknown) => void,
+  onError?: (e: Event) => void,
+): () => void {
+  const es = new EventSource(path);
+  es.onmessage = (e) => {
+    try {
+      const { type, data } = JSON.parse(e.data) as {
+        type: string;
+        data: unknown;
+      };
+      onEvent(type, data);
+    } catch {
+      // malformed event, ignore
+    }
+  };
+  if (onError) es.onerror = onError;
+  return () => es.close();
+}
