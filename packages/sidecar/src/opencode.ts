@@ -245,19 +245,58 @@ export class OpenCodeManager {
 
   subscribe(sessionId: string, callback: (data: string) => void): () => void {
     const entry = this.getOrCreateSession(sessionId);
+    const isFirstSubscriber = entry.listeners.size === 0;
 
     const now = Date.now();
-    for (const item of entry.buffer) {
-      if (now - item.timestamp < 60_000) {
-        callback(item.data);
-      }
+    const validItems = entry.buffer.filter((i) => now - i.timestamp < 60_000);
+    for (const item of validItems) {
+      callback(item.data);
     }
 
     entry.listeners.add(callback);
 
+    // On the first subscriber, fetch session history from OpenCode and deliver
+    // it as history events ahead of any live stream. This ensures the full
+    // conversation (including the boot user message) is visible to any client.
+    if (isFirstSubscriber) {
+      this.emitHistory(sessionId, callback);
+    }
+
     return () => {
       entry.listeners.delete(callback);
     };
+  }
+
+  private emitHistory(
+    sessionId: string,
+    callback: (data: string) => void,
+  ): void {
+    const { opencodePort } = this.sidecar.config;
+    fetch(`http://localhost:${opencodePort}/session/${sessionId}/message`, {
+      headers: this.authHeaders(),
+    })
+      .then((r) => r.json())
+      .then((messages: unknown) => {
+        if (!Array.isArray(messages)) return;
+        for (const msg of messages) {
+          const role = msg?.info?.role as string | undefined;
+          if (!role) continue;
+          const textPart = (msg?.parts ?? []).find(
+            (p: { type: string }) => p.type === "text",
+          ) as { text?: string } | undefined;
+          const text = textPart?.text;
+          if (!text) continue;
+          callback(
+            JSON.stringify({
+              type: "history.message",
+              properties: { role, text, sessionID: sessionId },
+            }),
+          );
+        }
+      })
+      .catch((err) => {
+        logger.error(`Failed to fetch session history: ${err}`);
+      });
   }
 
   private getOrCreateSession(sessionId: string): {
@@ -286,6 +325,14 @@ export class OpenCodeManager {
         entry.buffer.shift();
       }
       entry.buffer.push({ data, timestamp: now });
+      try {
+        const ev = JSON.parse(data) as { type: string };
+        logger.info(
+          `[fanout] buffered type=${ev.type} sessionId=${sessionId.slice(-8)} bufferSize=${entry.buffer.length}`,
+        );
+      } catch {
+        /* ignore */
+      }
     } else {
       for (const cb of entry.listeners) {
         try {
