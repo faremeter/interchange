@@ -717,7 +717,28 @@ app.post(
     }
 
     if (row.status === "running" && row.kernelId && row.sessionId) {
-      return c.json(formatAgent(row));
+      // Verify the sidecar exists and the session is still alive on it.
+      const [existingSidecar] = await db
+        .select()
+        .from(sidecar)
+        .where(eq(sidecar.id, row.kernelId));
+      if (existingSidecar) {
+        try {
+          const health = await fetchWithTimeout(
+            `${existingSidecar.url}/agents/${row.sessionId}`,
+          );
+          if (health.ok) {
+            return c.json(formatAgent(row));
+          }
+        } catch {
+          // sidecar unreachable or session gone — fall through to re-assign
+        }
+      }
+      // Sidecar gone or session invalid — reset and re-assign below
+      await db
+        .update(agent)
+        .set({ status: "deployed", kernelId: null, sessionId: null })
+        .where(eq(agent.id, agentId));
     }
 
     // Find a sidecar for this tenant
@@ -1053,7 +1074,6 @@ app.get(
     try {
       upstream = await fetch(
         `${sidecarRow.url}/agents/${row.sessionId}/events`,
-        { signal: c.req.raw.signal },
       );
     } catch {
       return c.json(
@@ -1079,7 +1099,31 @@ app.get(
       );
     }
 
-    return new Response(upstream.body, {
+    // Prepend an SSE comment immediately so Bun's idle timeout doesn't kill
+    // the connection before the first real event arrives from the sidecar.
+    const encoder = new TextEncoder();
+    const keepalive = encoder.encode(": keepalive\n\n");
+    const body = new ReadableStream({
+      async start(controller) {
+        controller.enqueue(keepalive);
+        if (!upstream.body) {
+          controller.close();
+          return;
+        }
+        const reader = upstream.body.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            controller.enqueue(value);
+          }
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(body, {
       headers: {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
