@@ -24,4 +24,6 @@ log.info("Starting server on port {port}", { port });
 export default {
   fetch: app.fetch,
   port,
+  // Disable idle timeout so long-lived SSE connections are not killed.
+  idleTimeout: 0,
 };
