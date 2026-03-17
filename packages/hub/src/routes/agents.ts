@@ -973,4 +973,126 @@ app.post(
   },
 );
 
+// Stream SSE events from running agent
+app.get(
+  "/:agentId/events",
+  requireGrant(idResource("agent", "agentId"), "manage"),
+  describeRoute({
+    tags: ["Agents"],
+    summary: "Stream agent events",
+    description:
+      "Opens a server-sent event stream proxied from the agent sidecar. The stream closes when the agent stops or the client disconnects.",
+    responses: {
+      200: {
+        description: "SSE event stream",
+        content: {
+          "text/event-stream": {
+            schema: { type: "string" },
+          },
+        },
+      },
+      400: {
+        description: "Agent not running",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      404: {
+        description: "Agent not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      502: {
+        description: "Sidecar unreachable",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const agentId = c.req.param("agentId");
+    const db = c.get("db");
+
+    const row = await db.query.agent.findFirst({
+      where: and(eq(agent.id, agentId), eq(agent.tenantId, tenantCtx.id)),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Agent not found" } },
+        404,
+      );
+    }
+
+    if (!row.kernelId || !row.sessionId) {
+      return c.json(
+        { error: { code: "not_running", message: "Agent is not running" } },
+        400,
+      );
+    }
+
+    const [sidecarRow] = await db
+      .select()
+      .from(sidecar)
+      .where(eq(sidecar.id, row.kernelId));
+
+    if (!sidecarRow) {
+      return c.json(
+        {
+          error: {
+            code: "sidecar_gone",
+            message: "Sidecar no longer available",
+          },
+        },
+        502,
+      );
+    }
+
+    // NOTE: c.req.raw.signal does not reliably propagate browser-side
+    // EventSource disconnects in Bun. The upstream Hub→Sidecar fetch may not
+    // abort immediately when the browser closes the EventSource. The sidecar
+    // will clean up when the session is stopped.
+    let upstream: Response;
+    try {
+      upstream = await fetch(
+        `${sidecarRow.url}/agents/${row.sessionId}/events`,
+        { signal: c.req.raw.signal },
+      );
+    } catch {
+      return c.json(
+        {
+          error: {
+            code: "sidecar_error",
+            message: "Sidecar event stream unavailable",
+          },
+        },
+        502,
+      );
+    }
+
+    if (!upstream.ok) {
+      return c.json(
+        {
+          error: {
+            code: "sidecar_error",
+            message: "Sidecar event stream unavailable",
+          },
+        },
+        502,
+      );
+    }
+
+    return new Response(upstream.body, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+      },
+    });
+  },
+);
+
 export { app as agentRoutes };
