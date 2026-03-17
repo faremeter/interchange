@@ -11,7 +11,8 @@ interface SessionResponse {
 }
 
 interface MessageResponse {
-  parts?: { type: string; text?: string }[];
+  info: { id: string; role: string };
+  parts: { type: string; text?: string }[];
 }
 
 export class OpenCodeManager {
@@ -20,6 +21,14 @@ export class OpenCodeManager {
 
   constructor(sidecar: Sidecar) {
     this.sidecar = sidecar;
+  }
+
+  private authHeaders(): Record<string, string> {
+    const { opencodePassword } = this.sidecar.config;
+    if (!opencodePassword) return {};
+    return {
+      Authorization: `Basic ${btoa(`opencode:${opencodePassword}`)}`,
+    };
   }
 
   async start(): Promise<void> {
@@ -72,7 +81,9 @@ export class OpenCodeManager {
     for (let i = 0; i < maxAttempts; i++) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
       try {
-        const response = await fetch(`http://localhost:${opencodePort}/health`);
+        const response = await fetch(
+          `http://localhost:${opencodePort}/global/health`,
+        );
         if (response.ok) {
           logger.info("OpenCode started");
           return;
@@ -97,21 +108,15 @@ export class OpenCodeManager {
     _skills: string[],
   ): Promise<{ id: string; initialResponse: string } | null> {
     logger.info(`Creating session with systemPrompt: "${systemPrompt}"`);
-    const { opencodePort, opencodePassword } = this.sidecar.config;
-
-    const authHeaders = opencodePassword
-      ? {
-          Authorization: `Basic ${btoa(`opencode:${opencodePassword}`)}`,
-        }
-      : {};
+    const { opencodePort } = this.sidecar.config;
+    const baseUrl = `http://localhost:${opencodePort}`;
 
     try {
-      // Create a basic session first
-      const response = await fetch(`http://localhost:${opencodePort}/session`, {
+      const response = await fetch(`${baseUrl}/session`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...authHeaders,
+          ...this.authHeaders(),
         },
         body: JSON.stringify({}),
       });
@@ -126,34 +131,27 @@ export class OpenCodeManager {
       const data = (await response.json()) as SessionResponse;
       const sessionId = data.id;
 
-      let initialResponse = "";
-
-      // Send system prompt as a message to trigger the agent's initial response
+      // Fire-and-forget: send system prompt as boot message via prompt_async.
+      // The system field sets the persona; the parts trigger the model to
+      // produce an opening response. The response arrives asynchronously
+      // via the OpenCode SSE event stream.
       if (systemPrompt) {
-        const promptResponse = await fetch(
-          `http://localhost:${opencodePort}/session/${sessionId}/message`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              ...authHeaders,
-            },
-            body: JSON.stringify({
-              parts: [{ type: "text", text: systemPrompt }],
-            }),
+        fetch(`${baseUrl}/session/${sessionId}/prompt_async`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...this.authHeaders(),
           },
-        );
-
-        if (promptResponse.ok) {
-          const result = (await promptResponse.json()) as MessageResponse;
-          const textPart = result.parts?.find(
-            (p: { type: string }) => p.type === "text",
-          );
-          initialResponse = textPart?.text || "";
-        }
+          body: JSON.stringify({
+            system: systemPrompt,
+            parts: [{ type: "text", text: systemPrompt }],
+          }),
+        }).catch((err) => {
+          logger.error(`Failed to send boot prompt: ${err}`);
+        });
       }
 
-      return { id: sessionId, initialResponse };
+      return { id: sessionId, initialResponse: "" };
     } catch (error) {
       logger.error(`Error creating OpenCode session: ${error}`);
       return null;
@@ -164,7 +162,7 @@ export class OpenCodeManager {
     sessionId: string,
     message: string,
   ): Promise<{ text: string } | null> {
-    const { opencodePort, opencodePassword } = this.sidecar.config;
+    const { opencodePort } = this.sidecar.config;
 
     try {
       const response = await fetch(
@@ -173,13 +171,7 @@ export class OpenCodeManager {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            ...(opencodePassword
-              ? {
-                  Authorization: `Basic ${btoa(
-                    `opencode:${opencodePassword}`,
-                  )}`,
-                }
-              : {}),
+            ...this.authHeaders(),
           },
           body: JSON.stringify({
             parts: [{ type: "text", text: message }],
@@ -195,9 +187,7 @@ export class OpenCodeManager {
       }
 
       const data = (await response.json()) as MessageResponse;
-      const textPart = data.parts?.find(
-        (p: { type: string }) => p.type === "text",
-      );
+      const textPart = data.parts.find((p) => p.type === "text");
       return { text: textPart?.text || "" };
     } catch (error) {
       logger.error(`Error sending message: ${error}`);
@@ -206,18 +196,14 @@ export class OpenCodeManager {
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
-    const { opencodePort, opencodePassword } = this.sidecar.config;
+    const { opencodePort } = this.sidecar.config;
 
     try {
       const response = await fetch(
         `http://localhost:${opencodePort}/session/${sessionId}`,
         {
           method: "DELETE",
-          headers: opencodePassword
-            ? {
-                Authorization: `Basic ${btoa(`opencode:${opencodePassword}`)}`,
-              }
-            : {},
+          headers: this.authHeaders(),
         },
       );
 
@@ -229,6 +215,6 @@ export class OpenCodeManager {
   }
 
   isRunning(): boolean {
-    return this.process !== undefined;
+    return this.process !== null;
   }
 }
