@@ -150,15 +150,19 @@ For clients that cannot use WebSocket (some embedded environments, restrictive f
 
 ### Message Format
 
-Session channel messages are JSON objects with a type field and payload:
+Session channel messages are JSON objects with a type field, sequence number, and payload. The event types are defined in INFERENCE.md and shared end-to-end — the inference layer emits the same events that session channel subscribers receive.
 
 ```json
-{"type": "inference.token", "data": {"token": "Hello", "seq": 1}}
-{"type": "inference.done", "data": {"seq": 42, "message_id": "<abc123@example.com>"}}
+{"type": "inference.start", "seq": 1, "data": {"model": "claude-4"}}
+{"type": "inference.text.delta", "seq": 2, "data": {"token": "The", "partial": {...}}}
+{"type": "inference.thinking.delta", "seq": 3, "data": {"token": "Let me think", "partial": {...}}}
+{"type": "inference.text.delta", "seq": 4, "data": {"token": " weather", "partial": {...}}}
+{"type": "inference.usage", "seq": 47, "data": {"input": 120, "output": 47, "cacheRead": 0, "cacheWrite": 80, "thinking": 15}}
+{"type": "inference.done", "seq": 48, "data": {"message_id": "<abc123@example.com>", "usage": {"input": 120, "output": 47}}}
 {"type": "user.message", "data": {"content": "What's the weather?"}}
 ```
 
-Message types are namespaced by category (inference, user, debug, system). The kernel and client negotiate supported message types during session establishment.
+Event types are namespaced by category: `inference.*` for model streaming, `tool.*` for tool execution, `reactor.*` for lifecycle, `fork.*` for fork management, `message.*` for inbound messages, `custom.*` for plugin-defined events, and `user.*`, `debug.*`, `system.*` for session-level events. See INFERENCE.md for the complete event type reference.
 
 ### Connection Establishment
 
@@ -191,18 +195,19 @@ Tokens are signed with the control plane's Ed25519 key. Kernels verify the signa
 
 ### Streaming Inference
 
-When an agent performs inference, the kernel streams tokens to the session channel as they arrive from the model backend:
+When an agent performs inference, the kernel streams events to the session channel as they arrive from the model backend. Events use the protocol defined in INFERENCE.md:
 
 ```
-← {"type": "inference.start", "data": {"model": "claude-3"}}
-← {"type": "inference.token", "data": {"token": "The", "seq": 1}}
-← {"type": "inference.token", "data": {"token": " weather", "seq": 2}}
-← {"type": "inference.token", "data": {"token": " today", "seq": 3}}
+← {"type": "inference.start", "seq": 1, "data": {"model": "claude-4"}}
+← {"type": "inference.text.delta", "seq": 2, "data": {"token": "The", "partial": {...}}}
+← {"type": "inference.text.delta", "seq": 3, "data": {"token": " weather", "partial": {...}}}
+← {"type": "inference.text.delta", "seq": 4, "data": {"token": " today", "partial": {...}}}
 ...
-← {"type": "inference.done", "data": {"seq": 47, "usage": {"input": 120, "output": 47}}}
+← {"type": "inference.usage", "seq": 47, "data": {"input": 120, "output": 47, "cacheRead": 0, "cacheWrite": 80, "thinking": 15}}
+← {"type": "inference.done", "seq": 48, "data": {"usage": {"input": 120, "output": 47}, "message_id": "<abc123@example.com>"}}
 ```
 
-Sequence numbers allow clients to detect dropped messages. The `inference.done` message includes final metadata (token counts, model info).
+Sequence numbers are monotonic across the session (not per-inference-call), enabling gap detection and ordered replay. The `inference.usage` event fires before `inference.done`, allowing clients to process token accounting before the terminal event. `inference.done` also carries a usage summary for clients that only need totals. Reasoning tokens stream as `inference.thinking.delta` events, separate from `inference.text.delta`.
 
 When inference completes, the complete message is also delivered via SMTP to the client's IMAP inbox. Clients connected to both the session channel and IMAP will see the content twice — once as streaming tokens, once as the complete message. The client is responsible for deduplication, typically by matching the message ID included in `inference.done` with the IMAP message.
 
