@@ -316,7 +316,7 @@ Every outbound message is signed with the sending agent's Ed25519 private key. T
 
 ### Signing Process
 
-1. The `multipart/mixed` payload (structured JSON + optional parts) is assembled
+1. The signed content is assembled — `text/plain` for conversation messages, `multipart/mixed` for structured messages
 2. Content is canonicalized: CRLF line endings, trailing whitespace removed, 7-bit encoding applied (base64 for binary parts, quoted-printable for 8-bit text)
 3. The payload is hashed (SHA-512, as required by Ed25519's internal construction)
 4. The hash is signed with the agent's Ed25519 private key
@@ -325,7 +325,7 @@ Every outbound message is signed with the sending agent's Ed25519 private key. T
 
 ### Verification Process
 
-1. Recipient extracts the `multipart/mixed` payload (IMAP `BODY[1]`) and the signature (`BODY[2]`)
+1. Recipient extracts the signed content (IMAP `BODY[1]`) and the signature (`BODY[2]`)
 2. Payload is canonicalized using the same rules
 3. Signature is verified against the sender's Ed25519 public key
 4. Public key is resolved from: the control plane's published keys, DNS OPENPGPKEY records (RFC 7929), or a previously established key exchange
@@ -410,15 +410,14 @@ HEADER Interchange-Correlation-ID abc123 HEADER Interchange-Type offering.respon
 
 IMAP FETCH with section specifiers enables retrieving specific parts of a message without downloading the entire thing. This is critical for messages with large attachments.
 
-| Fetch specifier                                               | What it retrieves                                                          |
-| ------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `BODY[HEADER]`                                                | All message headers                                                        |
-| `BODY[HEADER.FIELDS (From To Subject Date Interchange-Type)]` | Specific headers only                                                      |
-| `BODY[1.1]`                                                   | The `application/vnd.interchange+json` payload                             |
-| `BODY[1.2]`                                                   | The `text/plain` summary                                                   |
-| `BODY[1.1.MIME]`                                              | MIME headers of the JSON payload part                                      |
-| `BODY[2]`                                                     | The PGP signature                                                          |
-| `BODYSTRUCTURE`                                               | MIME structure metadata (types, sizes, part hierarchy) without any content |
+| Fetch specifier                                               | What it retrieves                                                                |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `BODY[HEADER]`                                                | All message headers                                                              |
+| `BODY[HEADER.FIELDS (From To Subject Date Interchange-Type)]` | Specific headers only                                                            |
+| `BODY[1]`                                                     | Signed content (`text/plain` for conversation, `multipart/mixed` for structured) |
+| `BODY[1.1]`                                                   | The `application/vnd.interchange+json` payload (structured messages only)        |
+| `BODY[2]`                                                     | The PGP signature                                                                |
+| `BODYSTRUCTURE`                                               | MIME structure metadata (types, sizes, part hierarchy) without any content       |
 
 The `BODYSTRUCTURE` fetch is particularly useful. It returns the MIME tree structure — content types, sizes, dispositions, parameters — for every part of the message without transferring any content. An agent can examine the structure to decide which parts to fetch.
 
