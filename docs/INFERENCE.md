@@ -249,7 +249,7 @@ Invalid action sets produce a `reactor.error` event with a diagnostic message. T
 
 ### Message Handling
 
-Inbound messages arrive at the reactor regardless of current state. The plugin decides how to handle them:
+Inbound messages arrive at the reactor regardless of current state. Correlated messages (responses to pending outbound requests) are matched and resolved by the reactor before the plugin sees them (see Correlation). Non-correlated messages are delivered to the plugin as `message.received` events. The plugin decides how to handle them:
 
 **Queue** — Add to the message history for the next model call. The model sees the message when the current action completes. This is the simple case: a human sends a follow-up while the model is generating.
 
@@ -257,21 +257,23 @@ Inbound messages arrive at the reactor regardless of current state. The plugin d
 
 **Fork** — Create a new reactor instance to handle the message independently. The current work continues uninterrupted. Use case: a second user starts a conversation while the agent is already busy.
 
-**Correlate** — Match the message to a pending outbound by correlation ID. Deliver it as a synthetic resolution message and clear the corresponding message-response gate if one is active. Use case: Agent X responds to a message we sent earlier.
-
 **Ignore** — Drop the message. Use case: duplicate delivery, irrelevant system notification.
 
-### Message Correlation
+### Correlation
 
-Correlation connects outbound async tool calls to inbound responses. The mechanics:
+Correlation connects outbound async tool calls to inbound responses. The reactor owns correlation matching — it is mechanical protocol behavior, not a policy decision.
 
-- **Correlation IDs** are assigned by the tool implementation when it sends a message. The format is opaque to the reactor — typically a UUID, but the tool and the external protocol determine the format.
-- The tool returns the correlation ID in its pending marker: `{ status: "pending", correlationId: "abc123" }`.
-- The plugin registers the correlation ID with the reactor's async state.
-- When a `message.received` event arrives, the plugin checks its correlation ID (carried in the message metadata) against registered pending operations.
-- If matched, the plugin handles it as a correlated response (inject as resolution, clear gate, etc.).
-- **Duplicate responses** (same correlation ID) are delivered to the plugin. The plugin decides whether to process or ignore. The reactor does not deduplicate.
-- **Orphaned correlations** (pending operation whose response never arrives) are cleaned up by gate timeouts.
+**Registration.** When a tool returns a pending marker, the reactor registers the correlation ID in its async state. The pending marker may include additional matching criteria beyond the correlation ID; these are protocol-specific and opaque to the reactor's core. The reactor delegates validation of those criteria to a correlation validator provided at startup.
+
+**Matching.** When an inbound event carries a correlation ID, the reactor checks it against registered correlations before delivering it to the plugin. The reactor calls the correlation validator with the registered state and the inbound event. The validator returns whether the match is authentic. If validation fails, the event is delivered to the plugin as a regular uncorrelated event.
+
+For message correlation specifically, the validator enforces sender identity and cryptographic signature verification. See MESSAGE.md for the full security model.
+
+**On match.** The reactor clears the corresponding gate, injects the response as a resolution into the message history, and emits a `message.correlated` event. The plugin sees the correlated event and decides the next action (infer, done, fork) but does not participate in the matching itself.
+
+**Duplicate responses** (same correlation ID, already resolved) are delivered to the plugin as regular uncorrelated events. The reactor does not deduplicate — the plugin decides whether to process or ignore.
+
+**Orphaned correlations** (pending operations whose responses never arrive) are cleaned up by gate timeouts.
 
 ### Forking
 
@@ -296,22 +298,23 @@ Fork lifecycle is managed by the reactor. Forks emit their own events (tagged wi
 
 Tools that need to wait for something external (a response from another agent, a payment confirmation, human approval) follow the **pending marker pattern**:
 
-1. The tool does its immediate work (sends the message, submits the payment request)
-2. The tool returns immediately with a pending marker: `{ status: "pending", correlationId: "abc123" }`
-3. The `tool.done` event fires with the pending result
-4. The plugin sees the pending marker and decides what to do
+1. The tool does its immediate work (sends the message, submits the payment request).
+2. The tool returns immediately with a pending marker: `{ status: "pending", correlationId: "abc123" }`.
+3. The reactor registers the correlation ID in its async state.
+4. The `tool.done` event fires with the pending result.
+5. The plugin sees the pending marker and decides what to do.
 
 The plugin has several options when it sees a pending result:
 
-**Suspend** — Enter a message-response gate that waits for the correlated response. The reactor suspends but continues receiving messages. When the response arrives, the gate clears and the plugin injects the response into the message history.
+**Suspend** — Enter a gate that waits for the correlated response. The reactor suspends but continues receiving messages. When the reactor resolves the correlation, it clears the gate and injects the resolution into the message history.
 
-**Continue** — Infer with partial results. The model sees "message sent, awaiting response" as the tool result and can do other work while waiting. When the response arrives later as a `message.received` event, the plugin handles it normally (queue, inject, fork).
+**Continue** — Infer with partial results. The model sees "message sent, awaiting response" as the tool result and can do other work while waiting. When the reactor resolves the correlation later, it emits a `message.correlated` event and the plugin handles it normally (queue, inject, fork).
 
-**Fork** — Spawn a child fork that suspends at the gate while the parent continues working. When the response arrives, the child processes it and reports the result back to the parent.
+**Fork** — Spawn a child fork that suspends at the gate while the parent continues working. When the reactor resolves the correlation, the child processes it and reports the result back to the parent.
 
-This pattern is uniform across all async operations: message passing, payment requests, approval gates, credential refresh. The tool does the immediate action; the plugin manages the wait.
+This pattern is uniform across all async operations: message passing, payment requests, approval gates, credential refresh. The tool does the immediate action; the reactor owns matching responses to pending correlations; the plugin manages the wait strategy.
 
-**Parallel execution with mixed sync/async tools** works naturally. If the model calls `read_file`, `send_message`, and `grep` in one turn, all three execute concurrently. The sync tools complete and return results. The async tool returns a pending marker. All three `tool.done` events fire. The plugin sees two complete results and one pending, and decides how to proceed.
+**Parallel execution with mixed sync/async tools** works naturally. If the model calls `read_file`, `send_message`, and `grep` in one turn, all three execute concurrently. The sync tools complete and return results. The async tool returns a pending marker. The reactor registers the correlation. All three `tool.done` events fire. The plugin sees two complete results and one pending, and decides how to proceed.
 
 ### Async State Awareness
 
