@@ -8,7 +8,7 @@ This API is the control plane's HTTP interface for human users and client applic
 
 This API is not:
 
-- **The kernel's internal API.** Kernels talk to the control plane via a separate persistent connection.
+- **The harness's internal API.** Harnesses talk to the control plane via a separate persistent connection.
 - **Agent-to-agent communication.** That goes through SMTP/IMAP.
 - **The session channel protocol.** That uses WebSocket with an SSE fallback (documented below since WebSocket semantics are not fully expressible in OpenAPI).
 

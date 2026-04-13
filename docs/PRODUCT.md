@@ -23,7 +23,7 @@ Interchange provides tools to construct agents and skills with properly assemble
 Agents expose their offerings through a registry that other agents can query. Need an agent that can search the web, execute code, or process payments? Discover it, verify its permissions, and invoke it - all through standard protocols.
 
 **Human Interface**
-Humans interact with agents through the same messaging and session infrastructure that agents use with each other. On desktop and mobile, users connect to agents through session channels that stream responses in real-time. When disconnected, messages queue and are available on reconnect. The interface is native to each deployment platform - not a bolted-on afterthought. Agents don't distinguish between human and agent callers at the protocol level; the kernel handles both through the same message bus and session channel primitives.
+Humans interact with agents through the same messaging and session infrastructure that agents use with each other. On desktop and mobile, users connect to agents through session channels that stream responses in real-time. When disconnected, messages queue and are available on reconnect. The interface is native to each deployment platform - not a bolted-on afterthought. Agents don't distinguish between human and agent callers at the protocol level; the harness handles both through the same message bus and session channel primitives.
 
 **Message Passing**
 Interchange handles communication between agents and humans with built-in routing and delivery guarantees. Agents can collaborate on complex tasks without bespoke integration work.

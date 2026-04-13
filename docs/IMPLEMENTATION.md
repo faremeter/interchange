@@ -6,7 +6,7 @@ _Implementation_
 
 The Interchange message bus is built on SMTP and IMAP as wire protocols, leveraging existing global messaging infrastructure as the transport layer for agent communication. SMTP/IMAP provide the durable, federated message routing that Interchange needs — but Interchange clients are not email clients.
 
-Interchange clients (kernels, UIs, CLIs) speak SMTP/IMAP to send and receive messages, but they are purpose-built for Interchange semantics: structured message payloads, conversation threading, offering negotiation, and real-time session channels. A traditional email client _could_ connect to an agent's inbox and see messages, but the experience would be like reading raw HTTP traffic — technically possible, not practically useful.
+Interchange clients (harnesses, UIs, CLIs) speak SMTP/IMAP to send and receive messages, but they are purpose-built for Interchange semantics: structured message payloads, conversation threading, offering negotiation, and real-time session channels. A traditional email client _could_ connect to an agent's inbox and see messages, but the experience would be like reading raw HTTP traffic — technically possible, not practically useful.
 
 ### Why SMTP/IMAP
 
@@ -34,10 +34,10 @@ The local part identifies the agent; the domain identifies the tenant. Tenant bo
 ### Message Transport
 
 **Outbound (SMTP)**
-When an agent sends a message to another agent or human, the kernel composes and submits it via SMTP. The payload is serialized into the body. Structured data uses MIME multipart encoding.
+When an agent sends a message to another agent or human, the harness composes and submits it via SMTP. The payload is serialized into the body. Structured data uses MIME multipart encoding.
 
 **Inbound (IMAP)**
-The kernel maintains an IMAP connection to the agent's inbox. Incoming messages are fetched, parsed, and converted into events that the kernel routes to internal handlers.
+The harness maintains an IMAP connection to the agent's inbox. Incoming messages are fetched, parsed, and converted into events that the harness routes to internal handlers.
 
 ### Message Topologies
 
@@ -59,13 +59,13 @@ Agent identity is bound to its SMTP address and verified through these mechanism
 
 ### Content Safety
 
-Beyond authenticating message senders, the kernel applies content-level safety measures:
+Beyond authenticating message senders, the harness applies content-level safety measures:
 
 **Context Framing**
 All input assembled into the agent's context uses consistent structural delimiters. System prompts and skill instructions are clearly marked as trusted. External content (messages, tool responses, user input) is framed as data with explicit boundaries. The framing format is designed to be recognizable by models and resistant to delimiter injection.
 
 **Action Validation**
-Before executing tool invocations, the kernel validates the action against the agent's tool policy. Validation checks include:
+Before executing tool invocations, the harness validates the action against the agent's tool policy. Validation checks include:
 
 - Is this tool permitted for this agent?
 - Does the invocation match expected patterns?
@@ -88,20 +88,20 @@ All inputs, outputs, and policy decisions are logged. Logs are partitioned by te
 
 Interchange uses Ed25519 as the single key algorithm for all cryptographic identity operations. Ed25519 is compact, fast, and supported by SSH (since OpenSSH 6.5), PGP/GnuPG (since 2.1), and TLS 1.3 (RFC 8446), allowing one key algorithm to serve across all protocol contexts. For encryption operations, the corresponding Curve25519 (X25519) is used.
 
-The kernel generates one Ed25519 key pair per kernel and per agent. The same key material is used across protocols, with SSH, PGP, and X.509 serving as wire formats depending on context:
+The harness generates one Ed25519 key pair per harness and per agent. The same key material is used across protocols, with SSH, PGP, and X.509 serving as wire formats depending on context:
 
-- **SSH format** - Used for kernel-to-kernel communication, control plane interactions, and general identity verification. Public keys are published in OpenSSH format.
+- **SSH format** - Used for harness-to-harness communication, control plane interactions, and general identity verification. Public keys are published in OpenSSH format.
 - **PGP format** - Used for message-level signatures and encryption over the SMTP/IMAP transport, where PGP integration with email infrastructure is a natural fit. Agent PGP keys can be published via DNS (DANE/OPENPGPKEY records) or through the control plane.
 - **X.509 format** - Used for TLS client certificates enabling mutual authentication. The control plane issues X.509 certificates wrapping the agent's Ed25519 public key, signed by a tenant certificate authority. This allows agents to authenticate via standard TLS mutual auth without introducing a separate key type.
 
 **Protocol mapping:**
 
-- **Agent/kernel identity and control plane** - Ed25519 in SSH format
+- **Agent/harness identity and control plane** - Ed25519 in SSH format
 - **Message payload signatures** - Ed25519 in PGP format, integrated with SMTP/IMAP transport
 - **End-to-end message encryption** - X25519 in PGP format (S/MIME as an alternative where required)
 - **TLS mutual authentication** - Ed25519 in X.509 format, certificates issued by the control plane
 
-The kernel manages key generation, storage, rotation, and revocation. Key rotation follows a grace period model: the new key is published alongside the old key, both are accepted for verification during the overlap window, and the old key is retired after the grace period.
+The harness manages key generation, storage, rotation, and revocation. Key rotation follows a grace period model: the new key is published alongside the old key, both are accepted for verification during the overlap window, and the old key is retired after the grace period.
 
 ### Spam and Abuse Prevention
 
@@ -172,14 +172,14 @@ Event types are namespaced by category: `inference.*` for model streaming, `tool
 2. Control plane returns a session token (JWT signed by the control plane, containing agent ID, client identity, capabilities, expiry)
 3. Client opens WebSocket to control plane's session endpoint: `wss://controlplane.example/session`
 4. Client sends session token in the first message
-5. Control plane validates token and routes connection to the kernel hosting the target agent
-6. Kernel sends `session.ready` message; bidirectional streaming begins
+5. Control plane validates token and routes connection to the harness hosting the target agent
+6. Harness sends `session.ready` message; bidirectional streaming begins
 
-**Development (direct to kernel):**
+**Development (direct to harness):**
 
-1. Client opens WebSocket directly to kernel: `ws://localhost:8080/session`
+1. Client opens WebSocket directly to harness: `ws://localhost:8080/session`
 2. Client sends authentication (API key, or signed challenge)
-3. Kernel validates and sends `session.ready`
+3. Harness validates and sends `session.ready`
 
 ### Authentication
 
@@ -191,11 +191,11 @@ Session tokens issued by the control plane are JWTs containing:
 - `exp` — token expiry (short-lived, typically minutes)
 - `jti` — unique token ID for replay prevention
 
-Tokens are signed with the control plane's Ed25519 key. Kernels verify the signature against the control plane's published public key.
+Tokens are signed with the control plane's Ed25519 key. Harnesses verify the signature against the control plane's published public key.
 
 ### Streaming Inference
 
-When an agent performs inference, the kernel streams events to the session channel as they arrive from the model backend. Events use the protocol defined in INFERENCE.md:
+When an agent performs inference, the harness streams events to the session channel as they arrive from the model backend. Events use the protocol defined in INFERENCE.md:
 
 ```
 ← {"type": "inference.start", "seq": 1, "data": {"model": "claude-4"}}
@@ -213,7 +213,7 @@ When inference completes, the complete message is also delivered via SMTP to the
 
 ### Heartbeats and Timeouts
 
-Both client and kernel send periodic heartbeat messages to detect dead connections:
+Both client and harness send periodic heartbeat messages to detect dead connections:
 
 ```json
 {"type": "system.ping", "data": {"ts": 1699999999}}
@@ -256,25 +256,25 @@ An operator provides an OpenAPI spec (or a reference to one) alongside a subset 
 - Parameter constraints (e.g., only certain query parameter values)
 - Required headers or authentication scopes
 
-The kernel loads the OpenAPI spec, applies the subset policy, and generates a filtered view of the API that the agent can discover and invoke through the standard tool interface.
+The harness loads the OpenAPI spec, applies the subset policy, and generates a filtered view of the API that the agent can discover and invoke through the standard tool interface.
 
 ### Dynamic Skill and Tool Generation
 
-From the filtered OpenAPI spec, the kernel dynamically generates tools that the agent can invoke. Each permitted endpoint becomes a tool with typed parameters derived from the spec's schema definitions. The agent sees only the operations it is authorized to use, and the kernel validates every invocation against the subset policy before forwarding the request to the external API.
+From the filtered OpenAPI spec, the harness dynamically generates tools that the agent can invoke. Each permitted endpoint becomes a tool with typed parameters derived from the spec's schema definitions. The agent sees only the operations it is authorized to use, and the harness validates every invocation against the subset policy before forwarding the request to the external API.
 
 This approach allows operators to grant access to complex APIs without writing custom tool definitions. The OpenAPI spec serves as both documentation and enforcement boundary.
 
 ### Credential Binding
 
-Subset policies are paired with the delegated credentials for the API. The kernel injects authentication (OAuth tokens, API keys) into outbound requests transparently. The agent never sees raw credentials; it invokes tools and the kernel handles authentication.
+Subset policies are paired with the delegated credentials for the API. The harness injects authentication (OAuth tokens, API keys) into outbound requests transparently. The agent never sees raw credentials; it invokes tools and the harness handles authentication.
 
 ## Wallets: Payment Tools and Plugins
 
-Wallets provide agents with the ability to send and receive payments. The kernel exposes wallet functionality as tools, with a plugin architecture for payment backends.
+Wallets provide agents with the ability to send and receive payments. The harness exposes wallet functionality as tools, with a plugin architecture for payment backends.
 
 ### Payment Tools
 
-The kernel provides standard payment tools that agents invoke like any other capability:
+The harness provides standard payment tools that agents invoke like any other capability:
 
 - **`wallet.pay`** — Send payment to a recipient
 - **`wallet.request_payment`** — Request payment from a caller, blocking until received or timeout
@@ -282,31 +282,31 @@ The kernel provides standard payment tools that agents invoke like any other cap
 - **`wallet.verify_payment`** — Verify that a payment was received
 - **`wallet.list_transactions`** — Query recent transaction history
 
-These tools abstract over payment protocols and backends. The agent specifies what to pay (amount, currency, recipient); the kernel handles how (signing, broadcasting, proof generation).
+These tools abstract over payment protocols and backends. The agent specifies what to pay (amount, currency, recipient); the harness handles how (signing, broadcasting, proof generation).
 
 ### Payment Framework
 
-The kernel defines a payment integration interface behind the payment tools. This interface is what connects the agent-facing tools (`wallet.pay`, etc.) to actual payment implementations. Multiple implementations can be active simultaneously — the kernel selects the appropriate one based on the payment requirements of a given transaction.
+The harness defines a payment integration interface behind the payment tools. This interface is what connects the agent-facing tools (`wallet.pay`, etc.) to actual payment implementations. Multiple implementations can be active simultaneously — the harness selects the appropriate one based on the payment requirements of a given transaction.
 
 ### Faremeter
 
 [Faremeter](https://github.com/faremeter/faremeter) is the primary payment framework. It provides a pluggable, standards-agnostic payment system that supports a superset of emerging payment protocols including x402, L402, and Cloudflare's Pay-Per-Crawl.
 
 **Agent as consumer (outbound payments):**
-The kernel uses Faremeter's client library (`@faremeter/fetch`) to handle outbound payments. When an agent invokes a remote tool that requires payment, the kernel uses Faremeter to negotiate and execute the payment using the appropriate protocol and wallet backend. Faremeter's plugin system handles scheme and network selection — the kernel connects the agent's configured wallet plugins and Faremeter handles the rest.
+The harness uses Faremeter's client library (`@faremeter/fetch`) to handle outbound payments. When an agent invokes a remote tool that requires payment, the harness uses Faremeter to negotiate and execute the payment using the appropriate protocol and wallet backend. Faremeter's plugin system handles scheme and network selection — the harness connects the agent's configured wallet plugins and Faremeter handles the rest.
 
 **Agent as provider (inbound payments):**
-For agents that charge for their services, the kernel uses Faremeter's middleware to handle payment collection. The middleware intercepts inbound requests, enforces pricing, and verifies payment before allowing the agent to process the request. This separates payment handling from agent logic — the agent focuses on its work while Faremeter handles the payment mechanics.
+For agents that charge for their services, the harness uses Faremeter's middleware to handle payment collection. The middleware intercepts inbound requests, enforces pricing, and verifies payment before allowing the agent to process the request. This separates payment handling from agent logic — the agent focuses on its work while Faremeter handles the payment mechanics.
 
-Faremeter's plugin architecture is wallet and blockchain agnostic. Tenants configure which payment plugins are available (Solana, EVM chains, fiat processors) and bind them to wallets. New payment standards can be supported by adding plugins without changes to the kernel or agent.
+Faremeter's plugin architecture is wallet and blockchain agnostic. Tenants configure which payment plugins are available (Solana, EVM chains, fiat processors) and bind them to wallets. New payment standards can be supported by adding plugins without changes to the harness or agent.
 
 ### Third-Party Integrations
 
-The payment integration interface is open. Payment implementations outside of Faremeter's ecosystem can plug into the kernel's wallet layer, allowing tenants to connect proprietary payment systems, custom billing platforms, or emerging protocols that haven't yet been adopted by Faremeter. Third-party integrations implement the same interface and are available to agents through the same payment tools.
+The payment integration interface is open. Payment implementations outside of Faremeter's ecosystem can plug into the harness's wallet layer, allowing tenants to connect proprietary payment systems, custom billing platforms, or emerging protocols that haven't yet been adopted by Faremeter. Third-party integrations implement the same interface and are available to agents through the same payment tools.
 
 ### Policy Enforcement
 
-The kernel enforces spending policy before executing any payment:
+The harness enforces spending policy before executing any payment:
 
 - **Spending limits** — Per-transaction, per-day, per-recipient caps
 - **Approved recipients** — Whitelist of addresses/accounts permitted to receive funds
@@ -364,7 +364,7 @@ Subdomains support hierarchical tenancy - child tenants inherit the parent domai
 
 ### Tenant-Local Communication
 
-Messages between agents in the same tenant (same domain) are routed internally without traversing external SMTP infrastructure. The kernel can optimize tenant-local delivery for lower latency and higher throughput.
+Messages between agents in the same tenant (same domain) are routed internally without traversing external SMTP infrastructure. The harness can optimize tenant-local delivery for lower latency and higher throughput.
 
 ### Cross-Tenant Federation
 
@@ -400,7 +400,7 @@ Interchange uses OpenTelemetry as the observability framework, providing a vendo
 
 ### Instrumentation
 
-The kernel instruments key operations:
+The harness instruments key operations:
 
 - **Inference calls** - Span per model invocation, recording model ID, token counts, latency
 - **Tool invocations** - Span per tool call, recording tool name, parameters (redacted as needed), result status
@@ -441,9 +441,9 @@ Packages are versioned with semantic versioning. The control plane tracks which 
 
 ### Health Protocol
 
-The kernel exposes health endpoints:
+The harness exposes health endpoints:
 
-- **Liveness** - Returns OK if the kernel process is running and responsive
+- **Liveness** - Returns OK if the harness process is running and responsive
 - **Readiness** - Returns OK if the agent is ready to accept work (connections established, initialization complete)
 
 Health checks are polled by the control plane. Agents that fail liveness are restarted. Agents that fail readiness are removed from discovery until they recover.
@@ -484,7 +484,7 @@ The repository contains agent-specific resources:
 - Tool policy
 - Dependency references (resolved at deployment)
 
-External packages and libraries are not stored directly. Configuration files reference them, and the kernel resolves these references when building the agent package for deployment.
+External packages and libraries are not stored directly. Configuration files reference them, and the harness resolves these references when building the agent package for deployment.
 
 ### Deployment
 
@@ -518,7 +518,7 @@ The git repository can be backed by different storage implementations depending 
 - **In-memory with remote sync** - For JavaScript runtimes (Cloudflare Workers, web workers) and mobile/embedded environments that lack persistent filesystem access. Uses isomorphic-git or similar pure-JS implementations with object storage (R2, S3) as the backing store. Repository state is loaded on initialization and synced on commits.
 - **Virtual filesystem** - For environments with partial filesystem semantics. Adapts git operations to the available storage primitives.
 
-The kernel abstracts these differences - agents interact with the same history tools regardless of the underlying backend.
+The harness abstracts these differences - agents interact with the same history tools regardless of the underlying backend.
 
 ### Repository Structure
 
@@ -533,13 +533,13 @@ Each agent has a git repository for its local data:
     ...
 ```
 
-The kernel initializes this repository when the agent is created and manages it throughout the agent's lifecycle.
+The harness initializes this repository when the agent is created and manages it throughout the agent's lifecycle.
 
 ### Commit Policy
 
-The kernel uses a hybrid commit strategy:
+The harness uses a hybrid commit strategy:
 
-- **Auto-commits** - The kernel commits automatically only on lifecycle boundaries:
+- **Auto-commits** - The harness commits automatically only on lifecycle boundaries:
   - On agent suspension or shutdown (preserving state before the agent goes offline)
   - On context window compaction (preserving state before truncation loses information)
 
@@ -551,14 +551,14 @@ The hybrid approach ensures no work is lost across session boundaries while keep
 
 ### Branch Management
 
-Agents create and switch branches through kernel-provided tools:
+Agents create and switch branches through harness-provided tools:
 
 - `branch create <name>` - Create a new branch from current state
 - `branch switch <name>` - Switch to an existing branch
 - `branch merge <name>` - Merge another branch into current
 - `branch delete <name>` - Remove a branch
 
-The kernel tracks branch metadata (creation time, purpose, parent branch) for garbage collection and auditing.
+The harness tracks branch metadata (creation time, purpose, parent branch) for garbage collection and auditing.
 
 ### Worktree Support
 
@@ -580,7 +580,7 @@ Agents query history through structured tools:
 
 ### Garbage Collection
 
-The kernel periodically cleans up:
+The harness periodically cleans up:
 
 - Merged branches older than a retention threshold
 - Orphaned worktrees

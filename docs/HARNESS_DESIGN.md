@@ -1,8 +1,8 @@
-# Agent Kernel Design - Implementation Plan
+# Agent Harness Design - Implementation Plan
 
 ## Overview
 
-The Agent Kernel uses OpenCode as the execution engine, managed by a sidecar service that bridges to the Hub control plane.
+The Agent Harness uses OpenCode as the execution engine, managed by a sidecar service that bridges to the Hub control plane.
 
 ## Architecture
 
@@ -11,7 +11,7 @@ The Agent Kernel uses OpenCode as the execution engine, managed by a sidecar ser
 │                         Hub (existing)                           │
 │  - Agent definitions, credentials, wallets                      │
 │  - Offerings/discovery                                         │
-│  - Kernel registration and lifecycle management                │
+│  - Harness registration and lifecycle management               │
 │  - Credential refresh (pushes updates to sidecars)             │
 └───────────────────────────┬─────────────────────────────────────┘
                             │
