@@ -458,6 +458,81 @@ Extensions layer on top of the core plugin without replacing it:
 - **Provider request intercept** — Inspect or modify the raw provider request before sending. Enables header injection, payload logging, or tenant-specific modifications.
 - **Message routing** — Intercept inbound messages before the core plugin sees them. Can filter, transform, or drop messages. Enables cross-cutting concerns like logging, rate limiting, or content safety filtering. The first extension that drops a message prevents further processing.
 
+## Tool Interaction Patterns
+
+The model interacts with the world through tools. How those tools accept input, report results, handle failures, and manage state has measurable impact on agent performance, cost, and reliability. The patterns described here are general — they apply to any tool that mutates state, validates content, or produces results the model must reason about.
+
+### Mutation Formats
+
+When a model needs to modify structured content through a tool (a file, a configuration, a database record, a document), it must express the change in some format. The format affects both reliability and cost.
+
+Research across multiple benchmarks and production systems has identified four primary mutation formats. Each has different reliability characteristics depending on the model and the direction of the task.
+
+**Search/replace blocks.** The model specifies an exact string to find and a replacement. No line numbers, no position arithmetic. The model is good at reproducing a chunk of content it recently read (pattern matching) and bad at counting lines or characters. Search/replace plays to the model's strengths. Benchmark data (Kamoi et al., "Diff-XYZ," arxiv 2510.12487, 2025) shows frontier models achieve 0.74-0.95 exact match for generating search/replace edits — substantially higher than unified diff generation (0.43-0.82 exact match) across the same models and tasks.
+
+**Unified diff.** Standard patch format with hunk headers, context lines, and +/- prefixes. Models are better at applying diffs (reading and executing them: 0.90-0.95 exact match) than generating them. Hunk header arithmetic is a consistent source of errors. The asymmetry matters: unified diff is most useful when the harness generates diffs for the model to review or apply, not when the model generates them for the harness.
+
+**Whole content.** The model produces the entire updated content. Highest token cost, highest reliability for small targets (under ~400 lines or equivalent). No format compliance issues — the model generates text. A variant uses a fine-tuned apply model that takes the model's output and merges it with existing content using speculative decoding, enabling high throughput without sacrificing accuracy.
+
+**Lazy edit with apply model.** The model uses placeholder markers (e.g., `[... unchanged ...]`) to indicate regions that should be preserved from the original. A purpose-trained smaller model resolves the placeholders against the original content. This separates the planning model (which decides what changes) from the apply model (which produces the merged output). Requires an additional model endpoint and adds latency for the apply step.
+
+The inference layer does not mandate a mutation format. Tool definitions choose the format that matches their mutation target and the model's capabilities. The patterns above inform that choice.
+
+**Format compliance varies by model.** From the Aider code editing benchmark, search/replace format compliance rates range from 84% (o1-preview) to 98% (Claude 3.7 Sonnet). Models that cannot reliably produce a structured format should use whole-content tools instead. The tool definition should match the model's demonstrated reliability, not an ideal format. Format compliance should be measured per-model as part of tool development, not assumed.
+
+**Layered matching.** Tools that accept search/replace input should implement fallback matching: exact match, then whitespace-normalized, then fuzzy (Levenshtein/difflib), then progressively looser heuristics. Every production system that achieves high reliability uses this pattern. A single exact-match strategy causes avoidable failures when the model introduces minor whitespace differences.
+
+**Structured error feedback on match failure.** When a mutation target cannot be found (the search string doesn't match the file), the tool result must include what the content actually looks like near the expected match point. Telling the model "not found" is insufficient. Showing the model "you said X, but the content at that location is Y" enables immediate correction.
+
+### Validation Authorities
+
+A validation authority is any external system that can evaluate the correctness of a mutation and return structured diagnostics. The inference layer does not care what the authority is — only that it returns structured feedback with severity, location, and message.
+
+Examples: a language server (LSP) validating code, a JSON schema validator checking configuration, a SQL linter checking queries, a Kubernetes admission controller validating manifests, a prose grammar checker reviewing documentation. The pattern is identical across all of them: tool mutates content, authority validates, diagnostics enrich the tool result.
+
+**Integration through the after-tool-execution extension hook.** Validation does not belong inside individual tool implementations. It belongs in the extension layer. An after-tool-execution extension inspects the mutation (file path, content type, change summary), submits it to the appropriate authority, waits for diagnostics, and enriches the tool result with structured error information. The tool itself handles the mutation; the extension handles validation. This separation means new validation authorities can be added without modifying tool code.
+
+**Diagnostic format.** Diagnostics from any authority are normalized to a common structure: severity (error, warning, info), location (file/path/line/column or equivalent), message, and optionally a machine-readable code and suggested fix. The tool result includes diagnostics in a format the model can read and act on. Raw protocol output (JSON-RPC responses, XML validation reports) is not useful to the model. Formatted, human-readable diagnostics are.
+
+**Severity filtering.** Not all diagnostics warrant model attention. Errors should always be reported. Warnings may or may not be relevant depending on the task. Informational diagnostics are noise. The extension filters by severity and caps the count of diagnostics per result to a model-manageable number configured by the extension. Too few diagnostics and the model misses problems; too many and the context is overwhelmed with validation output that displaces useful information.
+
+**Cross-target diagnostics.** A mutation to one target can cause errors in other targets. Changing a field name in a schema causes validation failures in every document that references it. Modifying an API contract breaks every client that depends on it. The extension should report diagnostics from the mutated target and from a bounded set of affected targets. Reporting every error across all targets is counterproductive; reporting only the mutated target misses cascading failures. The bound is configured by the extension based on the target topology — a system with 5 dependents needs different limits than one with 500.
+
+**Mechanical fixes.** Some validation authorities provide not just diagnostics but also suggested fixes (auto-corrections in linters, suggested edits from schema validators, quick-fix actions from language servers). When a diagnostic includes a fix that can be applied mechanically, the tool can apply the fix internally and re-validate without involving the model. This is the highest-leverage optimization: the error is caught, fixed, and verified in a single tool execution. The model never sees the failure, the context is not polluted, and the cache prefix is not affected.
+
+### Tool Result Lifecycle
+
+Tool results enter the message history and stay there. Over a long session, old tool results accumulate — file contents that have since changed, search results that are no longer relevant, error messages from issues that were resolved turns ago. This has two costs: token spend (every old result is re-sent on each inference call) and context degradation (model performance measurably worsens as context grows — see Context Window Tracking for measurements). Old tool results sitting in the middle of a long conversation are in the worst position for both cost and retrieval quality.
+
+**Tool result clearing.** The context transform extension can clear old tool results before each inference call. Cleared results are replaced with a placeholder indicating that the result existed but was removed. The model knows the tool was called and completed, but does not see the full output. Clearing is ephemeral — it affects the inference call but not the persisted message history in the context store.
+
+Clearing strategy: prioritize clearing the oldest and largest tool results first. Results from the current step (the most recent tool call/response cycle) should never be cleared. Results from older steps that have been superseded by newer information (a file was read again, a search was re-run) are safe to clear. The plugin controls the clearing policy.
+
+**Post-success collapse.** When a tool fails and the model retries, the failure sequence (error result, model apology, retry call, success result) pollutes the conversation. After a successful retry, the failure sequence can be collapsed into a compact annotation on the successful result: "Applied successfully. 2 prior attempts failed: missing required field, invalid reference format." The model retains the lesson without the verbose error/retry/apology turns consuming context.
+
+Collapse should happen before the next inference call so the collapsed form becomes part of the stable cache prefix. The alternative — leaving the full failure sequence — gives better immediate cache hits (the prefix is unchanged) but worse long-term cost (the verbose sequence is re-sent on every future turn at 10% of base price per cached token).
+
+**Cache invalidation from collapse.** All current providers use prefix-based caching. Modifying content at position N in the conversation invalidates the cache from position N through the end of the request — including content after the collapsed region that is byte-identical to its previous version. The tokens are at different offsets in the sequence, so the KV-cache entries are invalid. This is a fundamental property of how attention-based caching works, not a provider limitation.
+
+The implication: collapse is cheapest when the failure sequence is near the end of the conversation (small tail to rebuild) and most expensive when it is near the beginning (most of the context must be re-cached). Since failure sequences typically occur in the most recent turns, the typical case is favorable. If a failure sequence is deep in history, it may be better to defer its collapse until the next full compaction rather than pay a large cache rebuild for a small token savings.
+
+**Tool-internal retry.** The strongest pattern for handling tool failures is to never let them enter the conversation. When a tool detects a failure it can fix mechanically (validation authority provides a fix, format error has an obvious correction, retry with different parameters), it should retry internally and return only the final result. The model sees one tool call and one successful result. No context pollution, no cache impact, no wasted tokens on error/retry cycles.
+
+Tool-internal retry works for: format validation failures, mechanical fixes from validation authorities, transient errors (network timeouts, lock contention), and idempotent operations that can be re-attempted safely. It does not work for failures that require the model to reason about a different approach — those must enter the conversation so the model can adapt.
+
+### Mutation Transactions
+
+Tools that mutate state should support transactional semantics: checkpoint before mutation, roll back on failure. The mechanism depends on the mutation target:
+
+- **Filesystem** — Git commit or snapshot before modification; `git restore` or equivalent on failure
+- **Database** — SQL transaction; rollback on error
+- **API state** — Record the prior state; issue compensating calls on failure
+- **Configuration** — Copy-on-write; restore the copy on failure
+
+These are application-level transactions, managed by the tool implementation. The reactor's `checkpoint` action (described in Suspension, Checkpoint, and Resumption) is a separate concern: it commits the conversation state (message history, async state, token accounting) to the context store. A reactor checkpoint does not create a savepoint of the external system being mutated. Combining `[checkpoint, execute_tools]` means the reactor can resume the conversation from a known state if the process crashes — but rolling back the external mutation (the database, the filesystem, the API) is the tool's responsibility, not the reactor's.
+
+Transaction granularity is the tool's decision. Per-call transactions maximize safety but add overhead. Batch transactions (one savepoint before a sequence of mutations) balance safety and performance. The inference layer provides conversation checkpointing; tools provide mutation rollback. The two are orthogonal.
+
 ## Context Management
 
 ### Context Store
@@ -504,6 +579,10 @@ Token usage is tracked per-message from provider usage reports. The context stor
 
 When usage data is unavailable (errored or aborted requests), the package falls back to character-based estimation (characters / 4) calibrated against the last successful response. This heuristic is imprecise — it undercounts for CJK text and overcounts for single-character-heavy code — but it provides a usable floor for compaction decisions and wallet accounting. Providers that return usage data on error responses are preferred.
 
+**Context length degrades performance.** Research (Liu et al., "Lost in the Middle," TACL 2024; arxiv 2510.05381) demonstrates that model performance degrades as context length increases, even when the model can perfectly retrieve all relevant information. The effect is task-dependent and model-dependent — frontier models on simple retrieval tasks show single-digit degradation, while smaller models on complex reasoning tasks show degradation exceeding 50%. The degradation follows a U-shaped curve: information at the beginning and end of context is retrieved most reliably; information in the middle suffers a roughly 20 percentage point accuracy drop relative to the ends. This is not purely a retrieval problem — it is a property of attention mechanisms under long inputs.
+
+The implication for context window tracking is that the token count is not just a budget to stay under. It is a quality signal. A conversation consuming 80% of the model's context window is measurably worse at reasoning than the same conversation at 40%, even if no information has been lost. Context window tracking should inform compaction decisions not just at the overflow boundary but at quality thresholds well before it. The cost-based compaction trigger (described below) serves this purpose indirectly — high input token cost correlates with long context and degraded quality.
+
 ### Compaction Triggers
 
 Compaction can be triggered by multiple conditions:
@@ -511,6 +590,7 @@ Compaction can be triggered by multiple conditions:
 - **Capacity** — Context usage approaches the model's window limit. This is the standard trigger.
 - **Cost** — The per-request input token cost exceeds a threshold. A conversation spending $0.50/request on input tokens when it could spend $0.10 after compaction is wasting wallet balance. The cost threshold is configured by the tenant or agent policy.
 - **Overflow recovery** — The model rejects a request as too long. One automatic compaction attempt, then fail. No infinite loops.
+- **Quality** — Context length has crossed a threshold where model performance is measurably degraded. This is distinct from capacity (which triggers near the hard limit) and cost (which triggers on per-request spend). A quality trigger fires earlier, compacting proactively to maintain reasoning accuracy rather than waiting for the context to approach overflow. The threshold is model-dependent and configured by the agent policy.
 - **Explicit** — The reactor plugin or an extension requests compaction directly.
 
 ### Compaction Contract
@@ -577,6 +657,58 @@ When a request fails or aborts before returning usage data, the package emits es
 
 Token accounting is per-reactor. When a reactor forks, each fork tracks its own usage independently (starting from zero). The parent can query aggregate usage across itself and its children via the state object.
 
+## Prompt Caching
+
+Prompt caching is a provider-level optimization where identical prefixes of the request (tools, system prompt, message history) are cached and reused across turns. The inference layer must structure requests to maximize cache hits, because caching dominates the cost profile of multi-turn agent sessions.
+
+### Provider Mechanics
+
+Caching is prefix-based. The provider matches the incoming request against previously cached content from the start of the request forward. The longest matching prefix is served from cache; everything after the first divergence is processed fresh.
+
+The cache hierarchy is strict and ordered: **Tools → System → Messages**. A change at any level invalidates that level and everything downstream. Modifying a tool definition invalidates tools, system, and all messages. Modifying the system prompt invalidates system and messages but preserves the tools cache. Modifying messages invalidates only the message cache.
+
+This hierarchy has a critical implication for tool management: adding or removing a tool mid-session invalidates the entire cache. Dynamic tool sets (tools discovered from remote registries, tools that connect and disconnect during a session) break the prefix every time they change.
+
+**Anthropic.** Explicit cache breakpoints via `cache_control` markers, maximum 4 per request. Minimum cacheable length varies by model (1,024-4,096 tokens). Default TTL is 5 minutes, refreshed on each hit; extended TTL of 1 hour is available at 2x write cost. Cache writes cost 1.25x base input price (5-minute) or 2.0x (1-hour). Cache reads cost 0.1x base input price — a 90% discount.
+
+**OpenAI.** Fully automatic prefix caching, no explicit markers. Minimum 1,024 tokens, cached in 128-token increments. TTL varies by usage pattern and load — generally minutes to an hour of inactivity; consult current documentation for specifics as retention policies have changed over time. Cache reads cost 0.5x base input price — a 50% discount. No surcharge for cache writes.
+
+### Request Structure for Cache Performance
+
+Stable content goes first, variable content goes last. This is a hard constraint — prefix matching cannot skip content.
+
+1. **Tool definitions** — Most stable. Change rarely or never during a session. Place cache breakpoints on the last tool in the array.
+2. **System prompt** — Stable for the session duration. Do not inject per-request data (timestamps, mode flags, dynamic context) into the system prompt. Put variable context into messages instead.
+3. **Message history** — Grows each turn. The existing prefix is cached; new messages extend it. Modifications to earlier messages (compaction, collapse, clearing) invalidate the cache from the modification point forward.
+
+The reactor should not inject ephemeral data (pending status, dynamic context) into the system prompt. The context transform extension handles ephemeral injection by modifying the message array, leaving the system prompt cache intact.
+
+### Tool Definition Stability
+
+Tool definitions are part of the cached prefix. Their token cost compounds: a set of 15 tools with moderately complex parameters consumes roughly 5,000-6,000 tokens, sent and cached on every turn.
+
+For agents with dynamic capabilities (tools from remote registries, plugin-provided tools), the mitigation is a stable core with deferred loading: a small, fixed set of always-available tools lives in the tool definition array (stable, always cached). Tools that are not always needed are excluded from the array entirely. When the model needs a deferred tool, it discovers it through a search/discovery tool in the core set, and the discovered tool's definition is injected inline as a tool reference in the message history. The tool prefix stays stable; discovered tools are part of the message stream, not the tool array.
+
+The cost of dynamic tool sets without these mitigations is severe. Each MCP server adds 1,500-12,000 tokens to the tool prefix. Three to four servers can add 10,000-18,000 tokens of overhead per turn. Every connect/disconnect event invalidates the entire cache.
+
+### Cache-Aware Compaction
+
+Compaction (described in Context Management) replaces older messages with a summary. Because caching is strictly prefix-based, any modification to the message history invalidates the cache from the modification point through the end of the request. Content after the compacted region is rebuilt even if it is unchanged — it now sits at different token offsets. The cost of compaction is not just the summarization inference call — it includes a full cache rebuild of everything from the compaction point forward.
+
+For compaction to be worthwhile, the tokens saved per turn must recoup the one-time cache rebuild cost within the remaining session. The rebuild cost depends on the tail: everything from the compaction point forward must be re-cached, regardless of whether it changed. At Anthropic's pricing, each re-cached token costs 1.25x base price instead of the 0.1x it would have cost as a cache read — a per-token premium of 1.15x base price for the rebuild turn.
+
+Consider a conversation at 60,000 tokens where compaction at the midpoint removes 10,000 tokens. The post-compaction conversation is 50,000 tokens. The tail from the compaction point is 25,000 tokens (the second half minus the removed content plus the summary). Rebuild premium: 25,000 tokens at 1.15x base price. Per-turn savings: 10,000 fewer cached tokens at 0.1x base price = 1,000 base-price-equivalents per turn. Break-even depends on the ratio of tail size to tokens removed — the larger the tail relative to the savings, the longer until break-even. Compaction near the end of the conversation (small tail) pays back quickly. Compaction near the beginning (large tail) takes many turns to recoup.
+
+The failure collapse pattern (described in Tool Interaction Patterns) is the favorable case: the failure sequence is typically near the end of the conversation, so the tail is small. The stable prefix before the failure point is preserved; only the collapsed region and whatever follows it are rebuilt.
+
+### Parallel Requests and Cache Sharing
+
+Cache entries are only available after the first response begins. Parallel requests sent simultaneously cannot share a fresh cache — each pays full input price for the shared prefix. Sequential requests benefit from caching because each subsequent request finds the prefix already cached.
+
+This affects the fork architecture. When the reactor forks, each fork makes independent inference calls. If forks share the same tool definitions and system prompt (typical), the prefix cache is shared automatically — these are content-addressed, not session-addressed. But if two forks send requests concurrently, only one benefits from a cache write by the other.
+
+For cost-sensitive deployments, sequential subagent invocations that share a prefix are cheaper than parallel invocations. The tradeoff is latency vs. cost.
+
 ## Thinking and Reasoning
 
 Extended thinking (Anthropic) and reasoning tokens (OpenAI) are supported from day one.
@@ -591,6 +723,8 @@ Reasoning is configured per-agent as part of the agent definition, not per-reque
 The budget is a ceiling, not a target. The provider adapter translates the on/off + budget into the provider-specific mechanism (Anthropic's `thinking` parameter, OpenAI's `reasoning_effort`, provider-variant formats for OpenRouter, z.ai, Qwen).
 
 The reactor plugin can override reasoning configuration per-call if needed (for example, enabling reasoning for a complex planning step and disabling it for simple tool result processing). But the default comes from the agent definition, not from the inference package.
+
+**Cache interaction.** Changing the thinking budget between turns invalidates the message cache. Tool and system prompt caches survive, but all message-level cache entries are rebuilt. If the plugin toggles reasoning on and off per-call, each toggle pays a cache rebuild cost. For cost-sensitive agents, holding a consistent thinking budget across the session is preferable to dynamic adjustment. If variable reasoning depth is needed, achieve it through prompt engineering (instructing the model to think briefly vs. deeply) rather than through the API parameter, preserving the cache.
 
 ### Thinking Content
 
