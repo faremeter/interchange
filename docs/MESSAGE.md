@@ -24,6 +24,20 @@ Every Interchange message is a PGP/MIME signed (RFC 3156) multipart message. The
 
 ### MIME Structure
 
+The outer layer is always `multipart/signed` per RFC 3156. The signed content is the first part; the detached PGP signature is the second part, computed after canonicalization (trailing whitespace removed, line endings normalized to CRLF, content constrained to 7-bit).
+
+The signed content varies by message type. Conversation messages use `text/plain` directly — they are just signed emails, readable by any mail client. Structured messages (offerings, payments, approvals, system) use `multipart/mixed` with an `application/vnd.interchange+json` part carrying machine-readable data.
+
+**Conversation messages:**
+
+```
+multipart/signed; protocol="application/pgp-signature"; micalg=pgp-sha512
+├── text/plain                              [the message]
+└── application/pgp-signature               [Ed25519 detached signature]
+```
+
+**Structured messages:**
+
 ```
 multipart/signed; protocol="application/pgp-signature"; micalg=pgp-sha512
 ├── multipart/mixed
@@ -33,13 +47,20 @@ multipart/signed; protocol="application/pgp-signature"; micalg=pgp-sha512
 └── application/pgp-signature               [Ed25519 detached signature]
 ```
 
-The outer layer is always `multipart/signed` per RFC 3156. The first part contains the actual content as `multipart/mixed`. The second part contains the detached PGP signature over the first part, computed after canonicalization (trailing whitespace removed, line endings normalized to CRLF, content constrained to 7-bit).
-
-The `multipart/mixed` payload contains at minimum one `application/vnd.interchange+json` part. This is the machine-readable structured payload that carries the Interchange-specific message semantics. Additional parts are optional: a `text/plain` summary for human readability (or for non-Interchange mail clients that might see the message), and any number of attachments with appropriate MIME types.
+The `Interchange-Type` header determines which shape to expect. Conversation types (`conversation.message`, `conversation.join`, `conversation.leave`) use the plain text form. All other types use the structured form.
 
 ### Part Addressing
 
-IMAP FETCH addresses MIME parts by position using dot-separated numeric paths (RFC 9051). For the structure above:
+IMAP FETCH addresses MIME parts by position using dot-separated numeric paths (RFC 9051). Part paths differ between the two MIME shapes.
+
+**Conversation messages:**
+
+| IMAP Part | Content                         |
+| --------- | ------------------------------- |
+| `1`       | The `text/plain` message body   |
+| `2`       | The `application/pgp-signature` |
+
+**Structured messages:**
 
 | IMAP Part | Content                                       |
 | --------- | --------------------------------------------- |
@@ -49,7 +70,7 @@ IMAP FETCH addresses MIME parts by position using dot-separated numeric paths (R
 | `1.3+`    | Attachments (if present)                      |
 | `2`       | The `application/pgp-signature`               |
 
-An agent that only needs the structured payload fetches `BODY[1.1]` without downloading attachments. An agent verifying a signature fetches `BODY[1]` (the signed content) and `BODY[2]` (the signature). Part headers are accessible via `BODY[1.1.MIME]`.
+For conversation messages, `BODY[1]` fetches the text. For structured messages, `BODY[1.1]` fetches just the JSON payload without downloading attachments. In both cases, `BODY[2]` fetches the signature for verification.
 
 ### Headers
 
@@ -96,7 +117,7 @@ Interchange headers use the `Interchange-` prefix. RFC 6648 deprecated the `X-` 
 
 ### Payload Types
 
-The `application/vnd.interchange+json` part carries a JSON object with a `type` field that determines the message semantics. The `Interchange-Type` header mirrors this field for routing without body parsing.
+The `Interchange-Type` header identifies every message's type for routing without body parsing. Conversation types use `text/plain` bodies. All other types use `application/vnd.interchange+json` with a JSON object whose `type` field matches the header value.
 
 **Conversation messages:**
 
@@ -141,35 +162,23 @@ The `application/vnd.interchange+json` part carries a JSON object with a `type` 
 | `system.deregister`         | Agent shutting down             |
 | `system.credential.refresh` | Credential refresh notification |
 
-Each payload type has a defined JSON schema. The schema version is carried in the `Interchange-Schema-Version` header for forward compatibility. Receivers that encounter an unknown schema version or unknown type treat the message as opaque data and surface it to the plugin for handling.
+Each structured payload type has a defined JSON schema. The schema version is carried in the `Interchange-Schema-Version` header for forward compatibility. Receivers that encounter an unknown schema version or unknown type treat the message as opaque data and surface it to the plugin for handling.
 
 ### Payload Structure
 
-Every `application/vnd.interchange+json` payload shares a common envelope:
+Conversation messages (`conversation.message`, `conversation.join`, `conversation.leave`) have `text/plain` bodies. No JSON envelope, no schema. The message is the text.
+
+Structured messages use `application/vnd.interchange+json` with a common envelope:
 
 ```json
 {
-  "type": "conversation.message",
+  "type": "offering.request",
   "version": "1",
-  "timestamp": "2026-04-13T18:30:00Z",
   "body": { ... }
 }
 ```
 
-The `body` field varies by type. Examples:
-
-**conversation.message:**
-
-```json
-{
-  "type": "conversation.message",
-  "version": "1",
-  "timestamp": "2026-04-13T18:30:00Z",
-  "body": {
-    "content": "I've reviewed the authentication module. The token refresh logic has a race condition on line 42."
-  }
-}
-```
+The `type` field matches the `Interchange-Type` header. The `version` field matches the `Interchange-Schema-Version` header. The `body` field varies by type. Examples:
 
 **offering.request:**
 
@@ -177,7 +186,6 @@ The `body` field varies by type. Examples:
 {
   "type": "offering.request",
   "version": "1",
-  "timestamp": "2026-04-13T18:30:00Z",
   "body": {
     "offeringId": "code-review",
     "parameters": {
@@ -195,7 +203,6 @@ The `body` field varies by type. Examples:
 {
   "type": "offering.response",
   "version": "1",
-  "timestamp": "2026-04-13T18:31:00Z",
   "body": {
     "status": "complete",
     "result": {
@@ -218,7 +225,6 @@ The `body` field varies by type. Examples:
 {
   "type": "payment.required",
   "version": "1",
-  "timestamp": "2026-04-13T18:30:00Z",
   "body": {
     "amount": "0.50",
     "currency": "USD",
@@ -236,7 +242,6 @@ The `body` field varies by type. Examples:
 {
   "type": "payment.receipt",
   "version": "1",
-  "timestamp": "2026-04-13T18:30:05Z",
   "body": {
     "transactionId": "txn-789",
     "amount": "0.50",
@@ -254,7 +259,6 @@ The `body` field varies by type. Examples:
 {
   "type": "payment.verified",
   "version": "1",
-  "timestamp": "2026-04-13T18:30:06Z",
   "body": {
     "transactionId": "txn-789",
     "status": "confirmed"
@@ -630,7 +634,7 @@ Parameters:
 - `type`: Interchange payload type (default: `conversation.message`)
 - `attachments`: array of `{ name, contentType, data }` (optional)
 
-When `type` is `conversation.message`, the `content` string is used as `body.content`. For other types, the `payload` object is used as the `body` field directly. Providing both `content` and `payload` is an error.
+When `type` is a conversation type, the `content` string becomes the `text/plain` message body. For structured types, the `payload` object becomes the `body` field of the `application/vnd.interchange+json` part. Providing both `content` and `payload` is an error.
 
 Returns on success: `{ messageId: string }` if delivery is fire-and-forget, or `{ messageId: string, status: "pending", correlationId: string }` if the message expects a correlated response.
 
