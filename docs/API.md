@@ -732,7 +732,7 @@ Restores the agent's working directory to the state at the specified commit.
 Source: packages/types/src/agents.ts
 
 ### AgentResponse
-`{ createdAt: string, currentVersion: string, id: string, name: string, principalId: string, status: "deployed" | "error" | "stopped" | "updating", tenantId: string, updatedAt: string, capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, description?: string | null, initialState?: { [string]: unknown }, kernelId?: string | null, modelConfig?: { [string]: unknown }, skills?: { [string]: unknown }, systemPrompt?: string | null }`
+`{ createdAt: string, currentVersion: string, id: string, name: string, principalId: string, status: "deployed" | "error" | "stopped" | "updating", tenantId: string, updatedAt: string, capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, description?: string | null, initialState?: { [string]: unknown }, harnessId?: string | null, modelConfig?: { [string]: unknown }, skills?: { [string]: unknown }, systemPrompt?: string | null }`
 Source: packages/types/src/agents.ts
 
 ### AgentSummary

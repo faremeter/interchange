@@ -159,17 +159,17 @@ This document uses "context" in three distinct senses:
 
 When the distinction matters, this document uses the specific term. When it doesn't, "context" refers to the message history.
 
-### Relationship to the Kernel
+### Relationship to the Harness
 
-The kernel (described in ARCHITECTURE.md) is the agent's runtime. The inference package is a library the kernel uses. The kernel:
+The harness (described in ARCHITECTURE.md) is the agent's runtime. The inference package is a library the harness uses. The harness:
 
 - Instantiates the reactor with a plugin, context store, and provider configuration
 - Delivers inbound messages from the message bus to the reactor
 - Routes reactor events to session channel subscribers
-- Manages the agent's credential lifecycle (the reactor requests credentials via gates; the kernel fulfills them)
+- Manages the agent's credential lifecycle (the reactor requests credentials via gates; the harness fulfills them)
 - Handles agent lifecycle (startup, shutdown, health checks) — the reactor handles inference lifecycle
 
-The reactor does not own the message bus, the session channel, or the credential store. It owns the inference loop, tool execution, context management, and event emission. The kernel is the integration layer.
+The reactor does not own the message bus, the session channel, or the credential store. It owns the inference loop, tool execution, context management, and event emission. The harness is the integration layer.
 
 ### Why Not a Loop
 
@@ -277,7 +277,7 @@ Correlation connects outbound async tool calls to inbound responses. The mechani
 
 When the plugin returns a `fork` action, the reactor creates a new reactor instance. Two fork modes are supported:
 
-**Independent** — The new reactor gets a full copy of the message history up to the fork point. After that, the two reactors share nothing. Each has its own message history, its own plugin state, its own lifecycle, its own token accounting. In git terms, this is a branch that diverges immediately. The kernel manages both reactors. Use case: handling a completely separate conversation.
+**Independent** — The new reactor gets a full copy of the message history up to the fork point. After that, the two reactors share nothing. Each has its own message history, its own plugin state, its own lifecycle, its own token accounting. In git terms, this is a branch that diverges immediately. The harness manages both reactors. Use case: handling a completely separate conversation.
 
 **Child** — The new reactor gets a copy of the message history and reports results back to the parent. The parent can wait for the child (`suspend` on a child-completion gate) or continue working. When the child completes, its result is delivered to the parent as a `fork.done` event. The child's token usage is tracked independently but the parent can query aggregate usage. In git terms, this is a branch that gets merged back. Use case: delegating a subtask to a cheaper model or a specialized tool set.
 
@@ -394,7 +394,7 @@ When the reactor suspends, its resumable state is:
 - Async operations (pending ops list)
 - Token accounting
 
-If this state has been checkpointed, the kernel process can restart and the reactor can resume from the checkpoint. This supports the lifecycle patterns in ARCHITECTURE.md — agents that survive restarts, migrate between kernels, or hibernate when idle.
+If this state has been checkpointed, the harness process can restart and the reactor can resume from the checkpoint. This supports the lifecycle patterns in ARCHITECTURE.md — agents that survive restarts, migrate between harnesses, or hibernate when idle.
 
 ### Shutdown
 
@@ -565,7 +565,7 @@ The message history is stored in the agent's git-backed local storage. This is n
 
 **Suspension with checkpoint is durable.** When the reactor checkpoints and suspends, the context is persisted in git. The reactor can be killed and restarted; it reads context from git on resume.
 
-**Migration works.** If an agent migrates from one kernel to another, context travels as a git repo. Push and pull.
+**Migration works.** If an agent migrates from one harness to another, context travels as a git repo. Push and pull.
 
 ### Working State and Commits
 
@@ -635,7 +635,7 @@ Interchange has more abort sources than a single-user tool, and the reason deter
 
 - **User disconnect** — May or may not mean "stop." A background agent should continue. An interactive session should pause. The plugin decides.
 - **Wallet exhaustion** — Hard stop. No more inference calls or paid tool invocations. Checkpoint state for resumption when funded.
-- **Admin kill** — Hard stop. The kernel is shutting down. No checkpoint.
+- **Admin kill** — Hard stop. The harness is shutting down. No checkpoint.
 - **Session timeout** — The session channel has been idle too long. Checkpoint and suspend.
 - **Credential revocation** — The creator revoked a capability. Stop exercising it immediately.
 

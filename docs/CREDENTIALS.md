@@ -8,9 +8,9 @@ Credentials enable agents to interact with third-party services on behalf of use
 
 ## Design Principles
 
-Agents never discover or look up credentials at runtime. When an agent is launched into a kernel, the control plane resolves the credentials the agent needs and provides them to the kernel as part of the launch process. The kernel then mediates the agent's access to those credentials, either by proxying requests (attaching authentication headers transparently) or by injecting credentials into the agent's runtime environment, depending on the credential type and the provider's integration model.
+Agents never discover or look up credentials at runtime. When an agent is launched into a harness, the control plane resolves the credentials the agent needs and provides them to the harness as part of the launch process. The harness then mediates the agent's access to those credentials, either by proxying requests (attaching authentication headers transparently) or by injecting credentials into the agent's runtime environment, depending on the credential type and the provider's integration model.
 
-This means credential resolution, access control, and scope validation all happen at launch time, not at runtime. The kernel receives ready-to-use credentials and is responsible for their secure handling during the agent's lifecycle.
+This means credential resolution, access control, and scope validation all happen at launch time, not at runtime. The harness receives ready-to-use credentials and is responsible for their secure handling during the agent's lifecycle.
 
 ## Providers
 
@@ -79,7 +79,7 @@ The source field maps to the architecture document's dual-authority model. Creat
 
 ## Resolution at Launch Time
 
-When the control plane launches an agent into a kernel, it processes each credential requirement:
+When the control plane launches an agent into a harness, it processes each credential requirement:
 
 1. Resolve the provider by name, walking up the tenant hierarchy
 2. Find credentials matching the provider, source (principal filter), and scopes
@@ -87,7 +87,7 @@ When the control plane launches an agent into a kernel, it processes each creden
 4. If multiple credentials still match, the launch fails -- the administrator must resolve the ambiguity
 5. Validate that the agent's principal has appropriate grants for the resolved credential
 6. If zero matches, the launch fails (missing required credential)
-7. If all checks pass, the resolved credential is included in the kernel's launch payload
+7. If all checks pass, the resolved credential is included in the harness's launch payload
 
 The grant validation ensures that an agent creator cannot grant an agent access to credentials the creator doesn't have access to themselves. This is enforced at agent creation time: the control plane resolves the agent definition's credential requirements using the creator's context and validates that the creator holds appropriate grants for every resolved credential.
 
@@ -111,29 +111,29 @@ This model is consistent with the architecture document's statement that child t
 
 The control plane runs a background process that refreshes OAuth tokens before they expire. It queries credentials approaching expiration, resolves the associated OAuth client and provider, and performs a token refresh using the provider's token endpoint. The refreshed access token and expiry are updated in place. If the provider rotates refresh tokens, the new refresh token is stored as well.
 
-When a credential is refreshed, the control plane pushes the updated credential to every kernel that currently holds it. This happens over the persistent bidirectional connection that kernels maintain with the control plane (described in the architecture document). The control plane tracks which kernels hold which credentials based on agent launch records.
+When a credential is refreshed, the control plane pushes the updated credential to every harness that currently holds it. This happens over the persistent bidirectional connection that harnesses maintain with the control plane (described in the architecture document). The control plane tracks which harnesses hold which credentials based on agent launch records.
 
 ### Runtime Token Failure
 
 Proactive refresh handles the happy path where tokens expire on schedule. The unhappy path -- a provider invalidating a token unexpectedly (service restart, manual revocation, security incident) -- requires a reactive flow.
 
-When the kernel encounters an authentication failure (e.g., a 401 response from a provider), it recognizes this as a credential failure and requests a refresh from the control plane over the persistent connection. The control plane receives the request, attempts to refresh the credential using the refresh token and OAuth client, and responds:
+When the harness encounters an authentication failure (e.g., a 401 response from a provider), it recognizes this as a credential failure and requests a refresh from the control plane over the persistent connection. The control plane receives the request, attempts to refresh the credential using the refresh token and OAuth client, and responds:
 
-- **Refresh succeeds**: the control plane sends the new credential back to the kernel. The kernel updates its in-memory credential and retries the failed request once.
-- **Refresh fails**: the control plane marks the credential as errored and notifies the kernel. The kernel surfaces the error to the agent as a tool failure. The control plane notifies the credential owner (the principal, or tenant administrators for organizational credentials) that reauthorization is needed.
+- **Refresh succeeds**: the control plane sends the new credential back to the harness. The harness updates its in-memory credential and retries the failed request once.
+- **Refresh fails**: the control plane marks the credential as errored and notifies the harness. The harness surfaces the error to the agent as a tool failure. The control plane notifies the credential owner (the principal, or tenant administrators for organizational credentials) that reauthorization is needed.
 
-If multiple kernels hold the same credential and report failures simultaneously, the control plane deduplicates refresh attempts -- only one actual refresh per credential within a short time window. All requesting kernels receive the result.
+If multiple harnesses hold the same credential and report failures simultaneously, the control plane deduplicates refresh attempts -- only one actual refresh per credential within a short time window. All requesting harnesses receive the result.
 
-The kernel enforces a retry budget: one retry after a successful refresh. If the retried request also fails, the kernel surfaces the error without further retry attempts.
+The harness enforces a retry budget: one retry after a successful refresh. If the retried request also fails, the harness surfaces the error without further retry attempts.
 
 ### Bidirectional Credential Channel
 
-The persistent connection between kernels and the control plane serves both directions of credential lifecycle management:
+The persistent connection between harnesses and the control plane serves both directions of credential lifecycle management:
 
-- **Control plane to kernel**: proactive credential updates when the control plane refreshes a token on schedule.
-- **Kernel to control plane**: reactive refresh requests when the kernel encounters an authentication failure at runtime.
+- **Control plane to harness**: proactive credential updates when the control plane refreshes a token on schedule.
+- **Harness to control plane**: reactive refresh requests when the harness encounters an authentication failure at runtime.
 
-This is not two separate mechanisms but two uses of the same bidirectional channel. The control plane pushes updates when it knows a credential has changed. The kernel requests updates when it discovers a credential is no longer valid.
+This is not two separate mechanisms but two uses of the same bidirectional channel. The control plane pushes updates when it knows a credential has changed. The harness requests updates when it discovers a credential is no longer valid.
 
 ## Access Control
 
@@ -171,7 +171,7 @@ For non-OAuth providers (API key services, certificate-based auth), the plugin f
 
 better-auth owns user authentication: sign-in, sign-up, session management, the `user`, `session`, and `account` tables. The credential system does not read from or write to these tables.
 
-The credential system owns integration credentials: the `provider`, `oauth_client`, and `credential` tables, tenant hierarchy walk-up, principal ownership, grant-based access control, proactive refresh, and kernel distribution. It uses better-auth's OAuth2 protocol machinery as a library dependency, not as a framework it runs inside of.
+The credential system owns integration credentials: the `provider`, `oauth_client`, and `credential` tables, tenant hierarchy walk-up, principal ownership, grant-based access control, proactive refresh, and harness distribution. It uses better-auth's OAuth2 protocol machinery as a library dependency, not as a framework it runs inside of.
 
 This separation means the two systems can evolve independently. Adding a new OAuth provider to better-auth's catalog automatically makes it available for integration credentials. Changes to better-auth's session or account model do not affect credential storage. The credential system's tenant-scoped, principal-aware storage model is entirely its own concern.
 
@@ -179,9 +179,9 @@ This separation means the two systems can evolve independently. Adding a new OAu
 
 For proactive refresh, the control plane uses the same provider objects that performed the original OAuth flow. The provider's `refreshAccessToken` method handles provider-specific refresh behavior. The control plane reads the refresh token from the credential table, calls the provider's refresh method, and updates the credential table with the new access token and expiry.
 
-For reactive refresh (when a kernel reports a 401), the same path applies: the control plane resolves the provider, calls its refresh method, and pushes the result back to the kernel.
+For reactive refresh (when a harness reports a 401), the same path applies: the control plane resolves the provider, calls its refresh method, and pushes the result back to the harness.
 
 ## What This Design Does Not Cover
 
 - **Encryption at rest**: secrets are currently stored as plaintext. Envelope encryption or KMS integration is a separate concern to be addressed independently.
-- **Kernel injection protocol**: the mechanism by which the control plane transmits resolved credentials to kernels is not specified here. It depends on the kernel implementation and deployment environment.
+- **Harness injection protocol**: the mechanism by which the control plane transmits resolved credentials to harnesses is not specified here. It depends on the harness implementation and deployment environment.
