@@ -79,6 +79,7 @@ export function createHarness(config: HarnessConfig): Harness {
       provider.model,
       config.systemPrompt,
       getMessageToolDefinitions(),
+      config.pluginPolicy ?? {},
     );
   }
 

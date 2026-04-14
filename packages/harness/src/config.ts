@@ -45,6 +45,30 @@ export type HarnessConfig = {
    * is used (message.received → infer → execute_tools loop → reply → wait).
    */
   plugin?: ReactorPlugin;
+
+  /**
+   * Policy overrides for the default plugin. Ignored when a custom plugin is
+   * provided. Each field controls a specific decision point in the plugin's
+   * event handling loop.
+   */
+  pluginPolicy?: PluginPolicy;
+};
+
+export type PluginPolicy = {
+  /**
+   * Controls the agent's behavior after inference completes.
+   *
+   *   "conversational" (default) — The standard agentic loop. After tools
+   *     complete, re-infer so the model can reason about results, issue more
+   *     tool calls, or compose a reply. When inference produces text without
+   *     tool calls, send it as a connector reply.
+   *
+   *   "reactive" — The agent acts on each message by executing tools, then
+   *     returns to the event loop to wait for the next inbound event. It does
+   *     not re-infer after tools complete and does not send connector replies.
+   *     Use this for agents that perform a single action per message.
+   */
+  mode?: "conversational" | "reactive";
 };
 
 export function validateConfig(config: HarnessConfig): void {

@@ -70,6 +70,10 @@ export function createCapabilities(): ReactorCapabilities {
       return { type: "checkpoint" };
     },
 
+    wait(): ReactorAction {
+      return { type: "wait" };
+    },
+
     done(): ReactorAction {
       return { type: "done" };
     },

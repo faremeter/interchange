@@ -24,6 +24,7 @@ import type {
   ToolCall,
   ToolDefinition,
 } from "@interchange/types/runtime";
+import type { PluginPolicy } from "./config";
 
 const logger = getLogger(["interchange", "harness", "plugin"]);
 
@@ -55,6 +56,7 @@ export class DefaultPlugin implements ReactorPlugin {
   private readonly model: string;
   private readonly systemPrompt: string;
   private readonly toolDefinitions: ToolDefinition[];
+  private readonly policy: PluginPolicy;
 
   // Track outstanding tool results so we only re-infer once per batch.
   private pendingToolResults = 0;
@@ -63,10 +65,12 @@ export class DefaultPlugin implements ReactorPlugin {
     model: string,
     systemPrompt: string,
     toolDefinitions: ToolDefinition[] = [],
+    policy: PluginPolicy = {},
   ) {
     this.model = model;
     this.systemPrompt = systemPrompt;
     this.toolDefinitions = toolDefinitions;
+    this.policy = policy;
   }
 
   async decide(
@@ -89,7 +93,14 @@ export class DefaultPlugin implements ReactorPlugin {
           return capabilities.executeTools(toolCalls, true);
         }
 
-        // No tool calls: send reply via the connector.
+        // No tool calls — the model is done reasoning for this turn.
+        if (this.policy.mode === "reactive") {
+          // Reactive agent: discard any text output and wait for the next
+          // inbound event. The agent's job was to execute tools, not reply.
+          return capabilities.wait();
+        }
+
+        // Conversational agent: send reply via the connector.
         const replyContent = extractTextContent(event.message);
         if (replyContent.length > 0) {
           return capabilities.reply(replyContent);
@@ -102,6 +113,9 @@ export class DefaultPlugin implements ReactorPlugin {
         this.pendingToolResults--;
         if (this.pendingToolResults > 0) {
           return [];
+        }
+        if (this.policy.mode === "reactive") {
+          return capabilities.wait();
         }
         // All tool results received — re-infer with complete context.
         return capabilities.infer(this.model, {
@@ -138,6 +152,7 @@ export function createDefaultPlugin(
   model: string,
   systemPrompt: string,
   toolDefinitions: ToolDefinition[] = [],
+  policy: PluginPolicy = {},
 ): ReactorPlugin {
-  return new DefaultPlugin(model, systemPrompt, toolDefinitions);
+  return new DefaultPlugin(model, systemPrompt, toolDefinitions, policy);
 }
