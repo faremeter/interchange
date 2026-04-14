@@ -312,6 +312,98 @@ function makeMessageReadHandler(transport: MessageTransport): ToolHandler {
   };
 }
 
+function makeMessageWaitHandler(transport: MessageTransport): ToolHandler {
+  return async (call, signal) => {
+    const args = call.arguments;
+
+    const query =
+      typeof args["query"] === "object" && args["query"] !== null
+        ? (args["query"] as SearchQuery)
+        : {};
+
+    const timeoutSeconds =
+      typeof args["timeout"] === "number" ? args["timeout"] : 120;
+
+    const mailbox =
+      typeof args["mailbox"] === "string" ? args["mailbox"] : "INBOX";
+
+    // Check for an existing match first.
+    const existing = await transport.search(mailbox, query, signal);
+    const firstMatch = existing[0];
+    if (firstMatch !== undefined) {
+      const message = await transport.fetchFull(firstMatch, signal);
+      return {
+        callId: call.id,
+        content: {
+          ref: firstMatch,
+          from: message.headers.from,
+          subject: message.headers.subject,
+          content: message.content,
+        },
+      };
+    }
+
+    // No match yet — watch for new arrivals.
+    return new Promise<ToolResult>((resolve) => {
+      let settled = false;
+
+      const unsubscribe = transport.watch(mailbox, (event) => {
+        if (settled) return;
+        if (event.type !== "exists") return;
+
+        // Match against the query's 'from' field (the primary use case).
+        if (query.from !== undefined && event.headers.from !== query.from) {
+          return;
+        }
+
+        settled = true;
+        unsubscribe();
+        clearTimeout(timer);
+
+        void (async () => {
+          const ref = { uid: event.uid, mailbox };
+          const message = await transport.fetchFull(ref, signal);
+          resolve({
+            callId: call.id,
+            content: {
+              ref,
+              from: message.headers.from,
+              subject: message.headers.subject,
+              content: message.content,
+            },
+          });
+        })();
+      });
+
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        unsubscribe();
+        resolve(
+          errorResult(
+            call.id,
+            `Timed out after ${timeoutSeconds}s waiting for a matching message`,
+            "timeout",
+          ),
+        );
+      }, timeoutSeconds * 1000);
+
+      // Respect the abort signal.
+      signal.addEventListener(
+        "abort",
+        () => {
+          if (settled) return;
+          settled = true;
+          unsubscribe();
+          clearTimeout(timer);
+          resolve(errorResult(call.id, "aborted", "aborted"));
+        },
+        { once: true },
+      );
+    });
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tool name registry
 // ---------------------------------------------------------------------------
@@ -320,7 +412,8 @@ export type MessageToolName =
   | "message_send"
   | "message_reply"
   | "message_search"
-  | "message_read";
+  | "message_read"
+  | "message_wait";
 
 /**
  * Tool definitions for the built-in message tools, suitable for passing to
@@ -409,6 +502,33 @@ export function getMessageToolDefinitions(): ToolDefinition[] {
         required: ["ref"],
       },
     },
+    {
+      name: "message_wait",
+      description:
+        "Wait for a message matching a query to arrive. Blocks until a matching message is delivered or the timeout expires. Use this instead of polling message_search in a loop.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: {
+            type: "object",
+            description:
+              "Search criteria for the message to wait for (e.g. { from: 'agent@...' })",
+          },
+          timeout: {
+            type: "number",
+            description:
+              "Maximum seconds to wait before returning a timeout error (default: 120)",
+            default: 120,
+          },
+          mailbox: {
+            type: "string",
+            description: "Mailbox to watch (default: INBOX)",
+            default: "INBOX",
+          },
+        },
+        required: ["query"],
+      },
+    },
   ];
 }
 
@@ -423,6 +543,7 @@ export function buildMessageToolHandlers(
   handlers.set("message_reply", makeMessageReplyHandler(transport));
   handlers.set("message_search", makeMessageSearchHandler(transport));
   handlers.set("message_read", makeMessageReadHandler(transport));
+  handlers.set("message_wait", makeMessageWaitHandler(transport));
   return handlers;
 }
 
