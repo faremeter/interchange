@@ -659,6 +659,11 @@ export type InferenceEvent =
       seq: number;
       data: { message: InboundMessage; correlationId: string };
     }
+  | {
+      type: "connector.reply";
+      seq: number;
+      data: { content: string };
+    }
   | { type: "reactor.start"; seq: number; data: Record<string, never> }
   | {
       type: "reactor.gate.blocked";
@@ -865,6 +870,10 @@ export type ReactorAction =
       eventType: `custom.${string}`;
       data: Record<string, unknown>;
     }
+  | {
+      type: "reply";
+      content: string;
+    }
   | { type: "checkpoint" }
   | { type: "done" };
 
@@ -892,6 +901,7 @@ export type ReactorCapabilities = {
     eventType: `custom.${string}`,
     data: Record<string, unknown>,
   ): ReactorAction;
+  reply(content: string): ReactorAction;
   checkpoint(): ReactorAction;
   done(): ReactorAction;
 };
@@ -1033,6 +1043,7 @@ export type InferenceOptions = {
   temperature?: number;
   thinking?: { enabled: boolean; budgetTokens?: number };
   systemPrompt?: string;
+  tools?: ToolDefinition[];
 };
 
 // ---------------------------------------------------------------------------
