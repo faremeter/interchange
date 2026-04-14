@@ -8,42 +8,87 @@ import { generateKeyPair, createNodeCrypto } from "@interchange/crypto-node";
 import { createIsogitStore } from "@interchange/storage-isogit";
 import { createPosixTools } from "@interchange/tools-posix";
 import { createHarness } from "@interchange/harness";
-import type { InferenceEvent } from "@interchange/types/runtime";
+import type {
+  InferenceEvent,
+  ProviderConfig,
+} from "@interchange/types/runtime";
 
 await setup({ dev: true });
 
 const log = getLogger(["demo"]);
 
 // ---------------------------------------------------------------------------
-// Environment
+// Environment — per-agent provider config
 // ---------------------------------------------------------------------------
+//
+// Each agent reads ALPHA_* / BETA_* env vars, falling back to shared defaults.
+//
+//   ALPHA_PROVIDER   (default: openai-compatible)
+//   ALPHA_BASE_URL   (default: OPENAI_BASE_URL or http://localhost:4096/v1)
+//   ALPHA_API_KEY    (default: OPENAI_API_KEY or OPENCODE_API_KEY)
+//   ALPHA_MODEL      (default: OPENAI_MODEL)
+//
+// Same pattern for BETA_*. Set ANTHROPIC_API_KEY + BETA_PROVIDER=anthropic
+// to point beta at Anthropic while alpha stays on OpenCode.
 
-const ANTHROPIC_API_KEY = process.env["ANTHROPIC_API_KEY"];
-if (!ANTHROPIC_API_KEY) {
-  log.fatal("ANTHROPIC_API_KEY is required but not set");
-  process.exit(1);
+const ANTHROPIC_DEFAULTS = {
+  baseURL: "https://api.anthropic.com",
+  model: "claude-sonnet-4-20250514",
+};
+
+function readAgentProvider(prefix: string): ProviderConfig {
+  const env = (key: string) => process.env[`${prefix}_${key}`];
+
+  const provider = env("PROVIDER") ?? "openai-compatible";
+
+  const baseURL =
+    env("BASE_URL") ??
+    (provider === "anthropic"
+      ? ANTHROPIC_DEFAULTS.baseURL
+      : (process.env["OPENAI_BASE_URL"] ?? "http://localhost:4096/v1"));
+
+  const apiKey =
+    env("API_KEY") ??
+    (provider === "anthropic"
+      ? (process.env["ANTHROPIC_API_KEY"] ?? "")
+      : (process.env["OPENAI_API_KEY"] ??
+        process.env["OPENCODE_API_KEY"] ??
+        ""));
+
+  const model =
+    env("MODEL") ??
+    (provider === "anthropic"
+      ? ANTHROPIC_DEFAULTS.model
+      : (process.env["OPENAI_MODEL"] ?? ""));
+
+  if (!apiKey) {
+    log.fatal("{prefix}: no API key found", { prefix });
+    process.exit(1);
+  }
+  if (!model) {
+    log.fatal("{prefix}: no model specified", { prefix });
+    process.exit(1);
+  }
+
+  return { provider, baseURL, apiKey, model };
 }
 
-const OPENAI_BASE_URL =
-  process.env["OPENAI_BASE_URL"] ?? "http://localhost:4096/v1";
-const OPENAI_API_KEY =
-  process.env["OPENAI_API_KEY"] ?? process.env["OPENCODE_API_KEY"] ?? "";
-const OPENAI_MODEL = process.env["OPENAI_MODEL"] ?? "";
+const alphaProvider = readAgentProvider("ALPHA");
+const betaProvider = readAgentProvider("BETA");
+
 const DEMO_TURNS = Number(process.env["DEMO_TURNS"] ?? "10");
 const DEMO_SEED =
   process.env["DEMO_SEED"] ??
   "Hello Beta, I'm Alpha. Let's collaborate on something interesting. What should we work on?";
 
-if (!OPENAI_API_KEY) {
-  log.fatal("OPENAI_API_KEY (or OPENCODE_API_KEY) is required but not set");
-  process.exit(1);
-}
-
-if (!OPENAI_MODEL) {
-  log.fatal("OPENAI_MODEL is required but not set");
-  process.exit(1);
-}
-
+log.info("alpha: {provider} / {model}", {
+  provider: alphaProvider.provider,
+  model: alphaProvider.model,
+});
+log.info("beta: {provider} / {model}", {
+  provider: betaProvider.provider,
+  model: betaProvider.model,
+});
 log.info("Starting posix-demo with {turns} max turns", { turns: DEMO_TURNS });
 
 // ---------------------------------------------------------------------------
@@ -69,27 +114,22 @@ const sharedTransport = createInMemoryTransport();
 // Cryptographic identities
 // ---------------------------------------------------------------------------
 
-const [alphaKeyPair, betaKeyPair, systemKeyPair] = await Promise.all([
-  generateKeyPair(),
+const [alphaKeyPair, betaKeyPair] = await Promise.all([
   generateKeyPair(),
   generateKeyPair(),
 ]);
 
 const cryptoAlpha = createNodeCrypto(alphaKeyPair);
 const cryptoBeta = createNodeCrypto(betaKeyPair);
-const cryptoSystem = createNodeCrypto(systemKeyPair);
 
 const ALPHA_ADDRESS = "alpha@local.interchange";
 const BETA_ADDRESS = "beta@local.interchange";
-const SYSTEM_ADDRESS = "system@local.interchange";
 
 sharedTransport.registerAgent(ALPHA_ADDRESS, cryptoAlpha);
 sharedTransport.registerAgent(BETA_ADDRESS, cryptoBeta);
-sharedTransport.registerAgent(SYSTEM_ADDRESS, cryptoSystem);
 
 const transportAlpha = sharedTransport.getTransportForAgent(ALPHA_ADDRESS);
 const transportBeta = sharedTransport.getTransportForAgent(BETA_ADDRESS);
-const transportSystem = sharedTransport.getTransportForAgent(SYSTEM_ADDRESS);
 
 // ---------------------------------------------------------------------------
 // Storage
@@ -176,6 +216,24 @@ function makeEventLogger(label: string): (event: InferenceEvent) => void {
         break;
       }
 
+      case "inference.error":
+        log.error(
+          "[{label}] Inference error: {message} (category: {category}, status: {status})",
+          {
+            label,
+            message: event.data.error.message,
+            category: event.data.error.category,
+            status: event.data.error.statusCode ?? "n/a",
+          },
+        );
+        if (event.data.error.raw !== undefined) {
+          log.error("[{label}] Raw error body: {raw}", {
+            label,
+            raw: JSON.stringify(event.data.error.raw),
+          });
+        }
+        break;
+
       case "reactor.gate.blocked":
         log.info("[{label}] Waiting: {reason}", {
           label,
@@ -197,12 +255,7 @@ const harnessAlpha = createHarness({
   address: ALPHA_ADDRESS,
   systemPrompt:
     "You are Alpha, a collaborative agent. You work with Beta to solve problems. Be concise.",
-  provider: {
-    provider: "openai-compatible",
-    baseURL: OPENAI_BASE_URL,
-    apiKey: OPENAI_API_KEY,
-    model: OPENAI_MODEL,
-  },
+  provider: alphaProvider,
   transport: transportAlpha,
   crypto: cryptoAlpha,
   storage: storageAlpha,
@@ -214,12 +267,7 @@ const harnessBeta = createHarness({
   address: BETA_ADDRESS,
   systemPrompt:
     "You are Beta, a collaborative agent. You work with Alpha to solve problems. Be concise.",
-  provider: {
-    provider: "anthropic",
-    baseURL: "https://api.anthropic.com",
-    apiKey: ANTHROPIC_API_KEY,
-    model: "claude-sonnet-4-20250514",
-  },
+  provider: betaProvider,
   transport: transportBeta,
   crypto: cryptoBeta,
   storage: storageBeta,
@@ -251,7 +299,9 @@ harnessBeta.start();
 
 log.info("Seeding conversation: {seed}", { seed: DEMO_SEED });
 
-await transportSystem.send({
+// Send the seed from Beta to Alpha so Alpha's reply goes to Beta,
+// starting the A↔B conversation loop.
+await transportBeta.send({
   to: ALPHA_ADDRESS,
   type: "conversation.message",
   content: DEMO_SEED,

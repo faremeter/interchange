@@ -32,8 +32,10 @@ export function validateActions(
 ): ValidationResult {
   const list = Array.isArray(actions) ? actions : [actions];
 
+  // An empty action list means "no-op, keep waiting for the next event."
+  // This is valid — the reactor loop continues to waitForEvent().
   if (list.length === 0) {
-    return { ok: false, error: "Plugin returned an empty action list" };
+    return { ok: true, normalized: [] };
   }
 
   const inferActions = list.filter((a) => a.type === "infer");
@@ -103,10 +105,14 @@ export function validateActions(
 
   if (executeActions.length > 0) {
     const merged: ToolCall[] = executeActions.flatMap((a) => a.calls);
+    const allAddToHistory = executeActions.every(
+      (a) => a.addToHistory !== false,
+    );
     normalized.push({
       type: "execute_tools",
       calls: merged,
       parallel: true,
+      ...(!allAddToHistory ? { addToHistory: false } : {}),
     });
   }
 

@@ -12,8 +12,8 @@ describe("OpenAI adapter: buildRequest", () => {
 
     const req = adapter.buildRequest(messages, "gpt-4o", {});
 
-    // URL is relative (base injected by harness).
-    expect(req.url).toBe("/v1/chat/completions");
+    // URL is relative (base URL already includes /v1).
+    expect(req.url).toBe("/chat/completions");
     expect(req.headers["content-type"]).toBe("application/json");
 
     const body = JSON.parse(req.body) as Record<string, unknown>;

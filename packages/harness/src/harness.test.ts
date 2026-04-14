@@ -955,9 +955,47 @@ describe("Default plugin", () => {
     const actions = await plugin.decide(doneEvent, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
 
-    // Should send reply and signal done.
-    expect(normalized.some((a) => a.type === "done")).toBe(true);
+    // Should send reply via executeTools; done comes after tool.done.
     expect(normalized.some((a) => a.type === "execute_tools")).toBe(true);
+    expect(normalized.some((a) => a.type === "done")).toBe(false);
+  });
+
+  test("tool.done after reply returns done (not re-infer)", async () => {
+    const plugin = createDefaultPlugin("claude-test", "You are helpful.");
+    const caps = makeCapabilities();
+    const state = makeState();
+
+    // 1. Receive message to set pendingReplyTo.
+    const receiveEvent: import("@interchange/types/runtime").ReactorInboundEvent =
+      {
+        type: "message.received",
+        message: makeInboundMessage("user@test"),
+      };
+    await plugin.decide(receiveEvent, state, caps);
+
+    // 2. Inference produces text (no tools) — plugin dispatches message.send.
+    const doneEvent: import("@interchange/types/runtime").ReactorInboundEvent =
+      {
+        type: "inference.done",
+        message: {
+          role: "assistant",
+          model: "claude-test",
+          content: [{ type: "text", text: "My reply." }],
+        },
+        usage: emptyUsage(),
+      };
+    await plugin.decide(doneEvent, state, caps);
+
+    // 3. tool.done for the reply — should wait (empty), not re-infer or done.
+    const toolDone: import("@interchange/types/runtime").ReactorInboundEvent = {
+      type: "tool.done",
+      result: { callId: "harness-reply", content: "sent" },
+    };
+    const actions = await plugin.decide(toolDone, state, caps);
+    const normalized = Array.isArray(actions) ? actions : [actions];
+    expect(normalized).toEqual([]);
+    expect(normalized.some((a) => a.type === "infer")).toBe(false);
+    expect(normalized.some((a) => a.type === "done")).toBe(false);
   });
 
   test("tool.done triggers re-infer", async () => {

@@ -844,6 +844,7 @@ export type ReactorAction =
       type: "execute_tools";
       calls: ToolCall[];
       parallel?: boolean;
+      addToHistory?: boolean;
     }
   | {
       type: "suspend";
@@ -875,7 +876,11 @@ export type ReactorAction =
  */
 export type ReactorCapabilities = {
   infer(model: string, options?: InferenceOptions): ReactorAction;
-  executeTools(calls: ToolCall[], parallel?: boolean): ReactorAction;
+  executeTools(
+    calls: ToolCall[],
+    parallel?: boolean,
+    addToHistory?: boolean,
+  ): ReactorAction;
   suspend(gate: {
     type: GateType;
     gateId: string;
