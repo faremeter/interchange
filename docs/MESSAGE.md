@@ -707,6 +707,22 @@ Returns: `{ ok: true }`
 
 Returns on error: `{ error: string, code: string }`. Error codes: `not_found`, `invalid_mailbox`.
 
+**message.wait** — Block until a message matching a query arrives.
+
+Parameters:
+
+- `query`: search criteria (same shape as `message.search` query — e.g. `{ from: "agent@..." }`)
+- `timeout`: maximum seconds to wait (default: 120)
+- `mailbox`: mailbox to watch (default: `INBOX`)
+
+Checks for existing matches first via `search`. If none found, subscribes to the transport's `watch` mechanism and blocks until a matching `exists` event fires or the timeout expires. The tool respects the reactor's abort signal.
+
+Returns on success: `{ ref, from, subject, content }` — the matched message's reference, sender, subject, and text content.
+
+Returns on error: `{ error: string, code: string }`. Error codes: `timeout` (no matching message arrived within the deadline), `aborted` (reactor shut down while waiting).
+
+Use this instead of polling `message.search` in a loop. The blocking behavior is transparent to the reactor — the tool's promise simply takes longer to resolve, and the agent naturally idles until it does.
+
 ### Offering Tools
 
 Offering tools are convenience wrappers over the message transport for the common pattern of invoking another agent's offering and receiving the result. They construct the correct payload types and handle correlation.
