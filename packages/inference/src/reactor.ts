@@ -134,6 +134,55 @@ export function createReactor(config: ReactorConfig): Reactor {
     });
   }
 
+  // When the last message in history is an assistant message with tool_calls
+  // whose results haven't been appended yet, the conversation is in a
+  // transient state. Inserting a user text message (from message.received)
+  // at this point violates the provider's protocol: an assistant tool_call
+  // must be immediately followed by the corresponding tool result messages.
+  //
+  // To prevent this, we check whether the history has pending tool_calls
+  // and, if so, prioritize inference-cycle events (inference.done,
+  // inference.error, tool.done) so the cycle completes before inbound
+  // messages are interleaved. Once the tool results are in history, we
+  // revert to FIFO so inbound messages are processed promptly.
+  const CYCLE_EVENT_TYPES = new Set<ReactorInboundEvent["type"]>([
+    "inference.done",
+    "inference.error",
+    "tool.done",
+  ]);
+
+  function historyHasPendingToolCalls(): boolean {
+    if (stateManager === null) return false;
+    const messages = stateManager.getMessages();
+    if (messages.length === 0) return false;
+
+    const last = messages.at(-1);
+    if (last === undefined || last.role !== "assistant") return false;
+
+    return last.content.some((b) => b.type === "tool_call");
+  }
+
+  function dequeueNext(): ReactorInboundEvent | undefined {
+    if (queue.length === 0) return undefined;
+
+    // Always process abort immediately.
+    const abortIdx = queue.findIndex((e) => e.type === "abort");
+    if (abortIdx !== -1) {
+      return queue.splice(abortIdx, 1)[0];
+    }
+
+    // When mid-cycle (assistant tool_calls without tool results), drain
+    // inference-cycle events before anything else.
+    if (historyHasPendingToolCalls()) {
+      const idx = queue.findIndex((e) => CYCLE_EVENT_TYPES.has(e.type));
+      if (idx !== -1) {
+        return queue.splice(idx, 1)[0];
+      }
+    }
+
+    return queue.shift();
+  }
+
   const gates = createGateManager();
   const correlations = createCorrelationRegistry();
   const capabilities = createCapabilities();
@@ -351,7 +400,7 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       if (done) break;
 
-      const event = queue.shift();
+      const event = dequeueNext();
       if (event === undefined) continue;
 
       // Handle abort events: initiate shutdown regardless of plugin.
