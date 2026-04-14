@@ -115,6 +115,15 @@
         "hono",
       ],
     },
+    "packages/message-memory": {
+      "name": "@interchange/message-memory",
+      "version": "0.0.0",
+      "dependencies": {
+        "@interchange/crypto-node": "workspace:*",
+        "@interchange/log": "workspace:*",
+        "@interchange/types": "workspace:*",
+      },
+    },
     "packages/sidecar": {
       "name": "@interchange/sidecar",
       "version": "0.0.0",
@@ -345,6 +354,8 @@
     "@interchange/inference": ["@interchange/inference@workspace:packages/inference"],
 
     "@interchange/log": ["@interchange/log@workspace:packages/log"],
+
+    "@interchange/message-memory": ["@interchange/message-memory@workspace:packages/message-memory"],
 
     "@interchange/sidecar": ["@interchange/sidecar@workspace:packages/sidecar"],
 

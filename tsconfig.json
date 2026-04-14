@@ -11,6 +11,7 @@
     { "path": "packages/hub" },
     { "path": "packages/sidecar" },
     { "path": "packages/tools-posix" },
+    { "path": "packages/message-memory" },
     { "path": "apps/hub" },
     { "path": "apps/ui" }
   ]
