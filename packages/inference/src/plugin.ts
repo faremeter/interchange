@@ -62,6 +62,10 @@ export function createCapabilities(): ReactorCapabilities {
       return { type: "emit", eventType, data };
     },
 
+    reply(content: string): ReactorAction {
+      return { type: "reply", content };
+    },
+
     checkpoint(): ReactorAction {
       return { type: "checkpoint" };
     },

@@ -40,6 +40,7 @@ export function validateActions(
 
   const inferActions = list.filter((a) => a.type === "infer");
   const doneActions = list.filter((a) => a.type === "done");
+  const replyActions = list.filter((a) => a.type === "reply");
   const suspendActions = list.filter((a) => a.type === "suspend");
   const executeActions = list.filter(
     (a): a is Extract<ReactorAction, { type: "execute_tools" }> =>
@@ -59,6 +60,21 @@ export function validateActions(
 
   if (inferActions.length > 0 && doneActions.length > 0) {
     return { ok: false, error: "infer and done cannot appear together" };
+  }
+
+  if (replyActions.length > 1) {
+    return { ok: false, error: "Multiple reply actions are not allowed" };
+  }
+
+  if (replyActions.length > 0 && inferActions.length > 0) {
+    return { ok: false, error: "reply and infer cannot appear together" };
+  }
+
+  if (replyActions.length > 0 && executeActions.length > 0) {
+    return {
+      ok: false,
+      error: "reply and execute_tools cannot appear together",
+    };
   }
 
   if (suspendActions.length > 0) {
@@ -114,6 +130,10 @@ export function validateActions(
       parallel: true,
       ...(!allAddToHistory ? { addToHistory: false } : {}),
     });
+  }
+
+  for (const a of replyActions) {
+    normalized.push(a);
   }
 
   for (const a of inferActions) {

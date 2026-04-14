@@ -2,13 +2,13 @@
 //
 // Implements the decision table from INFERENCE.md § Plugin Decision Function:
 //
-//   message.received        → infer
-//   inference.done (tools)  → execute_tools
-//   tool.done               → infer (re-infer with tool results)
-//   inference.done (no tools) → send reply via message.send, then wait for next message
-//   inference.error         → log error, wait (done)
-//   abort                   → done
-//   reactor.gate.cleared    → infer (resume after gate)
+//   message.received          → infer
+//   inference.done (tools)    → execute_tools
+//   tool.done                 → infer (re-infer with tool results)
+//   inference.done (no tools) → reply (connector sends the message)
+//   inference.error           → log error, done
+//   abort                     → done
+//   reactor.gate.cleared      → infer (resume after gate)
 //
 // The plugin never throws. Inference errors are logged and the plugin returns
 // done so the reactor shuts down cleanly rather than re-trying indefinitely.
@@ -22,6 +22,7 @@ import type {
   ReactorAction,
   AssistantMessage,
   ToolCall,
+  ToolDefinition,
 } from "@interchange/types/runtime";
 
 const logger = getLogger(["interchange", "harness", "plugin"]);
@@ -53,20 +54,19 @@ function extractTextContent(message: AssistantMessage): string {
 export class DefaultPlugin implements ReactorPlugin {
   private readonly model: string;
   private readonly systemPrompt: string;
-
-  // The address to reply to for the most recent inbound message.
-  private pendingReplyTo: string | undefined = undefined;
-  private pendingSubject: string | undefined = undefined;
-  private pendingInReplyTo: string | undefined = undefined;
+  private readonly toolDefinitions: ToolDefinition[];
 
   // Track outstanding tool results so we only re-infer once per batch.
   private pendingToolResults = 0;
-  // When true, the next tool.done completes the turn instead of re-inferring.
-  private replyPending = false;
 
-  constructor(model: string, systemPrompt: string) {
+  constructor(
+    model: string,
+    systemPrompt: string,
+    toolDefinitions: ToolDefinition[] = [],
+  ) {
     this.model = model;
     this.systemPrompt = systemPrompt;
+    this.toolDefinitions = toolDefinitions;
   }
 
   async decide(
@@ -76,15 +76,9 @@ export class DefaultPlugin implements ReactorPlugin {
   ): Promise<ReactorAction | ReactorAction[]> {
     switch (event.type) {
       case "message.received": {
-        const msg = event.message;
-
-        // Record sender for the eventual reply.
-        this.pendingReplyTo = msg.headers.from;
-        this.pendingSubject = msg.headers.subject;
-        this.pendingInReplyTo = msg.headers.messageId;
-
         return capabilities.infer(this.model, {
           systemPrompt: this.systemPrompt,
+          tools: this.toolDefinitions,
         });
       }
 
@@ -95,31 +89,10 @@ export class DefaultPlugin implements ReactorPlugin {
           return capabilities.executeTools(toolCalls, true);
         }
 
-        // No tool calls: send reply and signal completion.
+        // No tool calls: send reply via the connector.
         const replyContent = extractTextContent(event.message);
-        if (replyContent.length > 0 && this.pendingReplyTo !== undefined) {
-          const sendCall: ToolCall = {
-            id: "harness-reply",
-            name: "message.send",
-            arguments: {
-              to: this.pendingReplyTo,
-              content: replyContent,
-              type: "conversation.message",
-              ...(this.pendingSubject !== undefined
-                ? { subject: this.pendingSubject }
-                : {}),
-              ...(this.pendingInReplyTo !== undefined
-                ? { inReplyTo: this.pendingInReplyTo }
-                : {}),
-            },
-          };
-          this.pendingReplyTo = undefined;
-          this.pendingSubject = undefined;
-          this.pendingInReplyTo = undefined;
-          this.replyPending = true;
-          this.pendingToolResults = 1;
-
-          return capabilities.executeTools([sendCall], false, false);
+        if (replyContent.length > 0) {
+          return capabilities.reply(replyContent);
         }
 
         return capabilities.done();
@@ -130,15 +103,10 @@ export class DefaultPlugin implements ReactorPlugin {
         if (this.pendingToolResults > 0) {
           return [];
         }
-        if (this.replyPending) {
-          this.replyPending = false;
-          // Reply sent — wait for the next inbound message rather than
-          // terminating the reactor so multi-turn conversations work.
-          return [];
-        }
         // All tool results received — re-infer with complete context.
         return capabilities.infer(this.model, {
           systemPrompt: this.systemPrompt,
+          tools: this.toolDefinitions,
         });
       }
 
@@ -155,6 +123,7 @@ export class DefaultPlugin implements ReactorPlugin {
       case "reactor.gate.cleared": {
         return capabilities.infer(this.model, {
           systemPrompt: this.systemPrompt,
+          tools: this.toolDefinitions,
         });
       }
 
@@ -168,6 +137,7 @@ export class DefaultPlugin implements ReactorPlugin {
 export function createDefaultPlugin(
   model: string,
   systemPrompt: string,
+  toolDefinitions: ToolDefinition[] = [],
 ): ReactorPlugin {
-  return new DefaultPlugin(model, systemPrompt);
+  return new DefaultPlugin(model, systemPrompt, toolDefinitions);
 }

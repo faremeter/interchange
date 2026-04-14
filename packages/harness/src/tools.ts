@@ -11,6 +11,7 @@ import type {
   ToolRunner,
   ToolCall,
   ToolResult,
+  ToolDefinition,
   SearchQuery,
   InterchangeType,
   OutboundMessage,
@@ -67,9 +68,6 @@ function makeMessageSendHandler(transport: MessageTransport): ToolHandler {
     if (typeof args["inReplyTo"] === "string") {
       outbound.inReplyTo = args["inReplyTo"];
     }
-    if (typeof args["correlationId"] === "string") {
-      outbound.correlationId = args["correlationId"];
-    }
 
     let receipt;
     try {
@@ -82,40 +80,7 @@ function makeMessageSendHandler(transport: MessageTransport): ToolHandler {
       );
     }
 
-    const result: Record<string, unknown> = { messageId: receipt.messageId };
-
-    if (typeof args["correlationId"] === "string") {
-      result["status"] = "pending";
-      result["correlationId"] = args["correlationId"];
-
-      const firstRecipient =
-        typeof to === "string"
-          ? to
-          : Array.isArray(to) && to.length > 0
-            ? String(to[0])
-            : undefined;
-
-      const marker: ToolResult["pendingMarker"] =
-        firstRecipient !== undefined
-          ? {
-              status: "pending",
-              correlationId: args["correlationId"],
-              expectedFrom: firstRecipient,
-            }
-          : {
-              status: "pending",
-              correlationId: args["correlationId"],
-            };
-
-      const toolResult: ToolResult = {
-        callId: call.id,
-        content: result,
-        pendingMarker: marker,
-      };
-      return toolResult;
-    }
-
-    return { callId: call.id, content: result };
+    return { callId: call.id, content: { messageId: receipt.messageId } };
   };
 }
 
@@ -352,10 +317,100 @@ function makeMessageReadHandler(transport: MessageTransport): ToolHandler {
 // ---------------------------------------------------------------------------
 
 export type MessageToolName =
-  | "message.send"
-  | "message.reply"
-  | "message.search"
-  | "message.read";
+  | "message_send"
+  | "message_reply"
+  | "message_search"
+  | "message_read";
+
+/**
+ * Tool definitions for the built-in message tools, suitable for passing to
+ * the inference provider so the model knows these tools exist.
+ */
+export function getMessageToolDefinitions(): ToolDefinition[] {
+  return [
+    {
+      name: "message_send",
+      description:
+        "Send a message to another agent or address. Use this to initiate conversations or send information to other agents.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          to: {
+            type: "string",
+            description: "Recipient address (e.g. agent@local.interchange)",
+          },
+          content: {
+            type: "string",
+            description: "Message text content",
+          },
+          type: {
+            type: "string",
+            description: "Message type (default: conversation.message)",
+            default: "conversation.message",
+          },
+          subject: {
+            type: "string",
+            description: "Optional subject line",
+          },
+          inReplyTo: {
+            type: "string",
+            description: "Message-ID of the message being replied to",
+          },
+        },
+        required: ["to", "content"],
+      },
+    },
+    {
+      name: "message_search",
+      description:
+        "Search for messages in a mailbox. Returns message summaries.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          mailbox: {
+            type: "string",
+            description: "Mailbox to search (default: INBOX)",
+            default: "INBOX",
+          },
+          query: {
+            type: "object",
+            description: "Search query (e.g. { from: 'agent@...' })",
+          },
+          limit: {
+            type: "number",
+            description: "Maximum results to return (default: 20)",
+            default: 20,
+          },
+        },
+      },
+    },
+    {
+      name: "message_read",
+      description: "Read a specific message by reference.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          ref: {
+            type: "object",
+            description: "Message reference { uid, mailbox }",
+            properties: {
+              uid: { type: "number" },
+              mailbox: { type: "string" },
+            },
+            required: ["uid", "mailbox"],
+          },
+          parts: {
+            type: "string",
+            description:
+              "What to fetch: 'full', 'headers', 'payload', or a MIME part path",
+            default: "payload",
+          },
+        },
+        required: ["ref"],
+      },
+    },
+  ];
+}
 
 /**
  * Build a map of message tool name → handler for the given transport.
@@ -364,10 +419,10 @@ export function buildMessageToolHandlers(
   transport: MessageTransport,
 ): Map<string, ToolHandler> {
   const handlers = new Map<string, ToolHandler>();
-  handlers.set("message.send", makeMessageSendHandler(transport));
-  handlers.set("message.reply", makeMessageReplyHandler(transport));
-  handlers.set("message.search", makeMessageSearchHandler(transport));
-  handlers.set("message.read", makeMessageReadHandler(transport));
+  handlers.set("message_send", makeMessageSendHandler(transport));
+  handlers.set("message_reply", makeMessageReplyHandler(transport));
+  handlers.set("message_search", makeMessageSearchHandler(transport));
+  handlers.set("message_read", makeMessageReadHandler(transport));
   return handlers;
 }
 

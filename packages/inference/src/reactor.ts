@@ -36,7 +36,7 @@ import { createGateManager } from "./gates";
 import { createCorrelationRegistry } from "./correlation";
 import { createStateManager } from "./state";
 import { validateActions } from "./actions";
-import { createToolResultMessage } from "./messages";
+import { createToolResultMessage, createTextMessage } from "./messages";
 import type { CorrelationValidator } from "./correlation";
 
 const logger = getLogger(["interchange", "reactor"]);
@@ -205,6 +205,13 @@ export function createReactor(config: ReactorConfig): Reactor {
 
     if (stateManager !== null) {
       stateManager.removePendingOperation(correlationId);
+
+      // Append the correlated message to conversation history so the model
+      // sees the response content when it re-infers after the gate clears.
+      const content = message.content ?? "";
+      if (content.length > 0) {
+        stateManager.appendMessage(createTextMessage(content));
+      }
     }
 
     emit({
@@ -356,6 +363,14 @@ export function createReactor(config: ReactorConfig): Reactor {
         break;
       }
 
+      // Append inbound messages to conversation history so the provider sees them.
+      if (event.type === "message.received" && stateManager !== null) {
+        const content = event.message.content ?? "";
+        if (content.length > 0) {
+          stateManager.appendMessage(createTextMessage(content));
+        }
+      }
+
       let actions;
       try {
         actions = await plugin.decide(
@@ -459,6 +474,18 @@ export function createReactor(config: ReactorConfig): Reactor {
           stateManager.setGatesSnapshot(gates.snapshot());
         }
         // Loop continues — plugin will receive the gate.cleared event later.
+        continue;
+      }
+
+      // Handle reply — emit the content for the harness/supervisor to send.
+      const replyAction = normalized.find((a) => a.type === "reply");
+      if (replyAction !== undefined && replyAction.type === "reply") {
+        emit({
+          type: "connector.reply",
+          seq: nextSeq(),
+          data: { content: replyAction.content },
+        });
+        // After replying, wait for the next inbound message.
         continue;
       }
 

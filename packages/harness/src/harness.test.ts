@@ -476,8 +476,8 @@ describe("Tool name collision detection", () => {
     };
 
     expect(() =>
-      buildCombinedRunner(messageHandlers, callerTools, ["message.send"]),
-    ).toThrow('Tool name collision: "message.send"');
+      buildCombinedRunner(messageHandlers, callerTools, ["message_send"]),
+    ).toThrow('Tool name collision: "message_send"');
   });
 
   test("buildCombinedRunner succeeds when no name collisions", () => {
@@ -510,7 +510,7 @@ describe("Tool name collision detection", () => {
 
     const call: ToolCall = {
       id: "c1",
-      name: "message.send",
+      name: "message_send",
       arguments: {
         to: "user@test",
         content: "hello",
@@ -549,19 +549,19 @@ describe("Tool name collision detection", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. Message tool: message.send
+// 4. Message tool: message_send
 // ---------------------------------------------------------------------------
 
-describe("message.send tool", () => {
+describe("message_send tool", () => {
   test("sends a conversation message and returns messageId", async () => {
     const transport = makeMockTransport();
     const handlers = buildMessageToolHandlers(transport);
-    const sendHandler = handlers.get("message.send");
+    const sendHandler = handlers.get("message_send");
     if (sendHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "s1",
-      name: "message.send",
+      name: "message_send",
       arguments: {
         to: "user@test",
         content: "Hello from agent",
@@ -586,12 +586,12 @@ describe("message.send tool", () => {
   test("returns error when 'to' is missing", async () => {
     const transport = makeMockTransport();
     const handlers = buildMessageToolHandlers(transport);
-    const sendHandler = handlers.get("message.send");
+    const sendHandler = handlers.get("message_send");
     if (sendHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "s2",
-      name: "message.send",
+      name: "message_send",
       arguments: { content: "No recipient" },
     };
 
@@ -602,12 +602,12 @@ describe("message.send tool", () => {
   test("returns error when both content and payload are provided", async () => {
     const transport = makeMockTransport();
     const handlers = buildMessageToolHandlers(transport);
-    const sendHandler = handlers.get("message.send");
+    const sendHandler = handlers.get("message_send");
     if (sendHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "s3",
-      name: "message.send",
+      name: "message_send",
       arguments: {
         to: "user@test",
         content: "text",
@@ -619,36 +619,32 @@ describe("message.send tool", () => {
     expect(result.isError).toBe(true);
   });
 
-  test("returns pending marker when correlationId is provided", async () => {
+  test("returns result without pending marker when no correlationId", async () => {
     const transport = makeMockTransport();
     const handlers = buildMessageToolHandlers(transport);
-    const sendHandler = handlers.get("message.send");
+    const sendHandler = handlers.get("message_send");
     if (sendHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "s4",
-      name: "message.send",
+      name: "message_send",
       arguments: {
         to: "peer@test",
         content: "invoke request",
         type: "offering.request",
-        correlationId: "corr-abc123",
       },
     };
 
     const result = await sendHandler(call, new AbortController().signal);
-    expect(result.pendingMarker).toBeDefined();
-    if (result.pendingMarker === undefined) throw new Error("unreachable");
-    expect(result.pendingMarker.correlationId).toBe("corr-abc123");
-    expect(result.pendingMarker.expectedFrom).toBe("peer@test");
+    expect(result.pendingMarker).toBeUndefined();
   });
 });
 
 // ---------------------------------------------------------------------------
-// 5. Message tool: message.reply
+// 5. Message tool: message_reply
 // ---------------------------------------------------------------------------
 
-describe("message.reply tool", () => {
+describe("message_reply tool", () => {
   test("fetches parent headers and sends reply with inReplyTo", async () => {
     const transport = makeMockTransport();
 
@@ -669,12 +665,12 @@ describe("message.reply tool", () => {
     transport.enqueueMessage(parentRef, parentMsg);
 
     const handlers = buildMessageToolHandlers(transport);
-    const replyHandler = handlers.get("message.reply");
+    const replyHandler = handlers.get("message_reply");
     if (replyHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "r1",
-      name: "message.reply",
+      name: "message_reply",
       arguments: {
         ref: parentRef,
         content: "This is the reply",
@@ -697,12 +693,12 @@ describe("message.reply tool", () => {
   test("returns error when ref is missing", async () => {
     const transport = makeMockTransport();
     const handlers = buildMessageToolHandlers(transport);
-    const replyHandler = handlers.get("message.reply");
+    const replyHandler = handlers.get("message_reply");
     if (replyHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "r2",
-      name: "message.reply",
+      name: "message_reply",
       arguments: { content: "no ref" },
     };
 
@@ -712,19 +708,19 @@ describe("message.reply tool", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6. Message tool: message.search
+// 6. Message tool: message_search
 // ---------------------------------------------------------------------------
 
-describe("message.search tool", () => {
+describe("message_search tool", () => {
   test("calls transport.search and returns summaries", async () => {
     const transport = makeMockTransport();
     const handlers = buildMessageToolHandlers(transport);
-    const searchHandler = handlers.get("message.search");
+    const searchHandler = handlers.get("message_search");
     if (searchHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "q1",
-      name: "message.search",
+      name: "message_search",
       arguments: {
         mailbox: "INBOX",
         query: { from: "user@test" },
@@ -741,12 +737,12 @@ describe("message.search tool", () => {
   test("defaults mailbox to INBOX when not specified", async () => {
     const transport = makeMockTransport();
     const handlers = buildMessageToolHandlers(transport);
-    const searchHandler = handlers.get("message.search");
+    const searchHandler = handlers.get("message_search");
     if (searchHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "q2",
-      name: "message.search",
+      name: "message_search",
       arguments: { query: {} },
     };
 
@@ -756,10 +752,10 @@ describe("message.search tool", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7. Message tool: message.read
+// 7. Message tool: message_read
 // ---------------------------------------------------------------------------
 
-describe("message.read tool", () => {
+describe("message_read tool", () => {
   test("fetches full message when parts='full'", async () => {
     const transport = makeMockTransport();
     const ref: MessageRef = { uid: 5, mailbox: "INBOX" };
@@ -768,12 +764,12 @@ describe("message.read tool", () => {
     transport.enqueueMessage(ref, storedMsg);
 
     const handlers = buildMessageToolHandlers(transport);
-    const readHandler = handlers.get("message.read");
+    const readHandler = handlers.get("message_read");
     if (readHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "rd1",
-      name: "message.read",
+      name: "message_read",
       arguments: { ref, parts: "full" },
     };
 
@@ -791,12 +787,12 @@ describe("message.read tool", () => {
     transport.enqueueMessage(ref, { ...msg, ref });
 
     const handlers = buildMessageToolHandlers(transport);
-    const readHandler = handlers.get("message.read");
+    const readHandler = handlers.get("message_read");
     if (readHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "rd2",
-      name: "message.read",
+      name: "message_read",
       arguments: { ref, parts: "headers" },
     };
 
@@ -809,12 +805,12 @@ describe("message.read tool", () => {
   test("returns error when ref is missing", async () => {
     const transport = makeMockTransport();
     const handlers = buildMessageToolHandlers(transport);
-    const readHandler = handlers.get("message.read");
+    const readHandler = handlers.get("message_read");
     if (readHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "rd3",
-      name: "message.read",
+      name: "message_read",
       arguments: { parts: "full" },
     };
 
@@ -858,6 +854,10 @@ describe("Default plugin", () => {
       ) {
         this.calls.push({ type: "fork", args: [mode, forkId] });
         return { type: "fork" as const, mode, forkId };
+      },
+      reply(content: string) {
+        this.calls.push({ type: "reply", args: [content] });
+        return { type: "reply" as const, content };
       },
       emit(eventType: `custom.${string}`, data: Record<string, unknown>) {
         this.calls.push({ type: "emit", args: [eventType, data] });
@@ -928,18 +928,10 @@ describe("Default plugin", () => {
     expect(normalized.some((a) => a.type === "execute_tools")).toBe(true);
   });
 
-  test("inference.done without tool calls returns done", async () => {
+  test("inference.done without tool calls returns reply action", async () => {
     const plugin = createDefaultPlugin("claude-test", "You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
-
-    // First deliver a message so pendingReplyTo is set.
-    const receiveEvent: import("@interchange/types/runtime").ReactorInboundEvent =
-      {
-        type: "message.received",
-        message: makeInboundMessage("user@test"),
-      };
-    await plugin.decide(receiveEvent, state, caps);
 
     const doneEvent: import("@interchange/types/runtime").ReactorInboundEvent =
       {
@@ -955,47 +947,11 @@ describe("Default plugin", () => {
     const actions = await plugin.decide(doneEvent, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
 
-    // Should send reply via executeTools; done comes after tool.done.
-    expect(normalized.some((a) => a.type === "execute_tools")).toBe(true);
-    expect(normalized.some((a) => a.type === "done")).toBe(false);
-  });
-
-  test("tool.done after reply returns done (not re-infer)", async () => {
-    const plugin = createDefaultPlugin("claude-test", "You are helpful.");
-    const caps = makeCapabilities();
-    const state = makeState();
-
-    // 1. Receive message to set pendingReplyTo.
-    const receiveEvent: import("@interchange/types/runtime").ReactorInboundEvent =
-      {
-        type: "message.received",
-        message: makeInboundMessage("user@test"),
-      };
-    await plugin.decide(receiveEvent, state, caps);
-
-    // 2. Inference produces text (no tools) — plugin dispatches message.send.
-    const doneEvent: import("@interchange/types/runtime").ReactorInboundEvent =
-      {
-        type: "inference.done",
-        message: {
-          role: "assistant",
-          model: "claude-test",
-          content: [{ type: "text", text: "My reply." }],
-        },
-        usage: emptyUsage(),
-      };
-    await plugin.decide(doneEvent, state, caps);
-
-    // 3. tool.done for the reply — should wait (empty), not re-infer or done.
-    const toolDone: import("@interchange/types/runtime").ReactorInboundEvent = {
-      type: "tool.done",
-      result: { callId: "harness-reply", content: "sent" },
-    };
-    const actions = await plugin.decide(toolDone, state, caps);
-    const normalized = Array.isArray(actions) ? actions : [actions];
-    expect(normalized).toEqual([]);
-    expect(normalized.some((a) => a.type === "infer")).toBe(false);
-    expect(normalized.some((a) => a.type === "done")).toBe(false);
+    expect(normalized.some((a) => a.type === "reply")).toBe(true);
+    const replyAction = normalized.find((a) => a.type === "reply");
+    if (replyAction === undefined || replyAction.type !== "reply")
+      throw new Error("unreachable");
+    expect(replyAction.content).toBe("Here is my response.");
   });
 
   test("tool.done triggers re-infer", async () => {
