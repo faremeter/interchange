@@ -211,6 +211,14 @@ Event arrives → Plugin decides → Reactor executes → Next event
 
 The reactor is a thin dispatch layer. It doesn't decide what to do — the plugin does. The reactor executes actions reliably: manages the streaming harness for inference, dispatches tool calls, handles suspension mechanics, manages fork lifecycle.
 
+### Event Ordering
+
+Events from multiple sources can land in the reactor's queue simultaneously. During an `executeInfer` call, an inbound message may arrive (via `deliver`) before the inference completes and enqueues its `inference.done` event. Naive FIFO processing would hand the `message.received` event to the plugin first, which appends a user text message to the conversation history — but the preceding assistant message contains tool calls whose results have not been appended yet. The provider rejects the next inference call because the tool call / tool result pairing is broken.
+
+The reactor enforces a priority invariant: when the last message in the conversation history is an assistant message with tool calls (meaning tool results have not yet been appended), inference-cycle events (`inference.done`, `inference.error`, `tool.done`) are dequeued before other events. This ensures the tool-call cycle always completes before inbound messages are interleaved into the history. Once tool results are in place, the reactor reverts to FIFO ordering so inbound messages are processed promptly.
+
+`abort` events are always processed immediately regardless of cycle state.
+
 ### The `emit` Action
 
 The plugin can emit custom events to session channel subscribers via the `emit` action. Custom events use a `custom.*` type namespace and carry arbitrary data. They receive sequence numbers like all other events. They are ephemeral — not persisted to the context store. Use cases: progress indicators, debug information, UI hints.
@@ -258,6 +266,12 @@ Inbound messages arrive at the reactor regardless of current state. Correlated m
 **Fork** — Create a new reactor instance to handle the message independently. The current work continues uninterrupted. Use case: a second user starts a conversation while the agent is already busy.
 
 **Ignore** — Drop the message. Use case: duplicate delivery, irrelevant system notification.
+
+### INBOX Consumption
+
+The harness consumes messages from the agent's INBOX after delivering them to the reactor. Messages that belong to the active connector thread or that are responses to agent-initiated outbound sends are fetched, delivered via `reactor.deliver()`, and then flagged as deleted and expunged from the INBOX. Unsolicited messages (new threads, untracked threads) remain in the INBOX for the agent to discover via message tools.
+
+This means messages routed through the connector or matched as agent-initiated responses are not visible to `message_search` after delivery. The message content enters the conversation history through the reactor's event processing, not through the INBOX. The model cannot poll for these messages — they arrive as `message.received` events and are appended to the history by the reactor when the event is processed.
 
 ### Correlation
 
