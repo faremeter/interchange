@@ -28,6 +28,17 @@ function buildRequest(
     body["temperature"] = options.temperature;
   }
 
+  if (options.tools !== undefined && options.tools.length > 0) {
+    body["tools"] = options.tools.map((t) => ({
+      type: "function",
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.inputSchema,
+      },
+    }));
+  }
+
   if (options.systemPrompt) {
     // Prepend a system message if provided via options (takes priority over
     // any system messages already in the history).
@@ -88,6 +99,9 @@ function toOpenAIMessage(msg: ConversationMessage): unknown[] {
     const textBlocks = msg.content.filter(
       (b): b is { type: "text"; text: string } => b.type === "text",
     );
+    const thinkingBlocks = msg.content.filter(
+      (b): b is { type: "thinking"; thinking: string } => b.type === "thinking",
+    );
     const toolCalls = msg.content.filter(
       (b): b is Extract<ContentBlock, { type: "tool_call" }> =>
         b.type === "tool_call",
@@ -100,6 +114,15 @@ function toOpenAIMessage(msg: ConversationMessage): unknown[] {
     } else {
       result["content"] = null;
     }
+
+    // Some providers (e.g. kimi) require reasoning_content on ALL assistant
+    // messages when thinking is enabled. If thinking blocks exist anywhere in
+    // the conversation, every assistant message must carry reasoning_content —
+    // even if empty for that particular turn.
+    result["reasoning_content"] =
+      thinkingBlocks.length > 0
+        ? thinkingBlocks.map((b) => b.thinking).join("")
+        : "";
 
     if (toolCalls.length > 0) {
       result["tool_calls"] = toolCalls.map((tc) => ({
@@ -190,6 +213,22 @@ function parseResponse(sseData: string): InferenceEvent[] {
   if (delta === undefined) return [];
 
   const events: InferenceEvent[] = [];
+
+  // Providers stream reasoning tokens under different field names:
+  //   - kimi (via OpenRouter): delta.reasoning
+  //   - kimi (direct): delta.reasoning_content
+  //   - DeepSeek / others: delta.reasoning_content
+  const reasoning = (delta["reasoning_content"] ?? delta["reasoning"]) as
+    | string
+    | null
+    | undefined;
+  if (typeof reasoning === "string" && reasoning.length > 0) {
+    events.push({
+      type: "inference.thinking.delta",
+      seq,
+      data: { token: reasoning, partial: EMPTY_PARTIAL },
+    });
+  }
 
   const content = delta["content"] as string | null | undefined;
   if (typeof content === "string" && content.length > 0) {
