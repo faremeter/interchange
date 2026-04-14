@@ -46,6 +46,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 
   const loggers: LoggerConfigEntry[] = [
     {
+      category: ["logtape", "meta"],
+      lowestLevel: "warning",
+      sinks: ["console"],
+    },
+    {
       category: [],
       lowestLevel: defaultLevel,
       sinks: ["console"],
