@@ -76,10 +76,9 @@ function readAgentProvider(prefix: string): ProviderConfig {
 const alphaProvider = readAgentProvider("ALPHA");
 const betaProvider = readAgentProvider("BETA");
 
-const DEMO_TURNS = Number(process.env["DEMO_TURNS"] ?? "10");
 const DEMO_SEED =
   process.env["DEMO_SEED"] ??
-  "Hello Beta, I'm Alpha. Let's collaborate on something interesting. What should we work on?";
+  "Use the message_send tool to send a message to beta@local.interchange asking: What do you want to be when you grow up? Then tell me what Beta says.";
 
 log.info("alpha: {provider} / {model}", {
   provider: alphaProvider.provider,
@@ -89,7 +88,6 @@ log.info("beta: {provider} / {model}", {
   provider: betaProvider.provider,
   model: betaProvider.model,
 });
-log.info("Starting posix-demo with {turns} max turns", { turns: DEMO_TURNS });
 
 // ---------------------------------------------------------------------------
 // Working directories
@@ -114,22 +112,27 @@ const sharedTransport = createInMemoryTransport();
 // Cryptographic identities
 // ---------------------------------------------------------------------------
 
-const [alphaKeyPair, betaKeyPair] = await Promise.all([
+const [alphaKeyPair, betaKeyPair, userKeyPair] = await Promise.all([
+  generateKeyPair(),
   generateKeyPair(),
   generateKeyPair(),
 ]);
 
 const cryptoAlpha = createNodeCrypto(alphaKeyPair);
 const cryptoBeta = createNodeCrypto(betaKeyPair);
+const cryptoUser = createNodeCrypto(userKeyPair);
 
 const ALPHA_ADDRESS = "alpha@local.interchange";
 const BETA_ADDRESS = "beta@local.interchange";
+const USER_ADDRESS = "user@local.interchange";
 
 sharedTransport.registerAgent(ALPHA_ADDRESS, cryptoAlpha);
 sharedTransport.registerAgent(BETA_ADDRESS, cryptoBeta);
+sharedTransport.registerAgent(USER_ADDRESS, cryptoUser);
 
 const transportAlpha = sharedTransport.getTransportForAgent(ALPHA_ADDRESS);
 const transportBeta = sharedTransport.getTransportForAgent(BETA_ADDRESS);
+const transportUser = sharedTransport.getTransportForAgent(USER_ADDRESS);
 
 // ---------------------------------------------------------------------------
 // Storage
@@ -148,23 +151,34 @@ const toolsAlpha = createPosixTools();
 const toolsBeta = createPosixTools();
 
 // ---------------------------------------------------------------------------
-// Turn counting
+// Shutdown coordination
 // ---------------------------------------------------------------------------
 
-let turnsRemaining = DEMO_TURNS;
 let shutdownInitiated = false;
 
-function checkTurnLimit(): void {
-  if (turnsRemaining <= 0 && !shutdownInitiated) {
-    shutdownInitiated = true;
-    log.info("Turn limit reached, shutting down");
-    // Defer shutdown slightly so the current handler finishes
-    setImmediate(() => {
-      harnessAlpha.stop();
-      harnessBeta.stop();
+// Watch the user's INBOX for Alpha's final reply.
+transportUser.watch("INBOX", (event) => {
+  if (event.type !== "exists") return;
+
+  void (async () => {
+    const msg = await transportUser.fetchFull({
+      uid: event.uid,
+      mailbox: "INBOX",
     });
-  }
-}
+    log.info("=== Reply from Alpha to User ===");
+    log.info("{content}", { content: msg.content ?? "(no content)" });
+    log.info("================================");
+
+    if (!shutdownInitiated) {
+      shutdownInitiated = true;
+      setImmediate(() => {
+        harnessAlpha.stop();
+        harnessBeta.stop();
+        clearTimeout(safetyTimer);
+      });
+    }
+  })();
+});
 
 // ---------------------------------------------------------------------------
 // Event logging
@@ -177,10 +191,6 @@ function makeEventLogger(label: string): (event: InferenceEvent) => void {
         log.info("[{label}] Thinking...", { label });
         break;
 
-      case "inference.text.delta":
-        log.debug("[{label}] > {token}", { label, token: event.data.token });
-        break;
-
       case "inference.done":
         log.info("[{label}] Done (input: {input}, output: {output} tokens)", {
           label,
@@ -189,12 +199,15 @@ function makeEventLogger(label: string): (event: InferenceEvent) => void {
         });
         break;
 
-      case "tool.start":
-        log.info("[{label}] Tool: {name}", {
+      case "tool.start": {
+        const args = JSON.stringify(event.data.call.arguments);
+        log.info("[{label}] Tool: {name}({args})", {
           label,
           name: event.data.call.name,
+          args: args.length > 200 ? args.slice(0, 200) + "..." : args,
         });
         break;
+      }
 
       case "tool.done": {
         const summary =
@@ -208,11 +221,16 @@ function makeEventLogger(label: string): (event: InferenceEvent) => void {
       case "message.received": {
         const from = event.data.message.headers.from;
         log.info("[{label}] Received message from {from}", { label, from });
-        turnsRemaining -= 1;
-        log.info("Turns remaining: {remaining}", {
-          remaining: turnsRemaining,
+        break;
+      }
+
+      case "connector.reply": {
+        const content = event.data.content;
+        log.info("[{label}] Connector reply: {content}", {
+          label,
+          content:
+            content.length > 120 ? content.slice(0, 120) + "..." : content,
         });
-        checkTurnLimit();
         break;
       }
 
@@ -234,13 +252,6 @@ function makeEventLogger(label: string): (event: InferenceEvent) => void {
         }
         break;
 
-      case "reactor.gate.blocked":
-        log.info("[{label}] Waiting: {reason}", {
-          label,
-          reason: event.data.reason,
-        });
-        break;
-
       default:
         break;
     }
@@ -253,8 +264,16 @@ function makeEventLogger(label: string): (event: InferenceEvent) => void {
 
 const harnessAlpha = createHarness({
   address: ALPHA_ADDRESS,
-  systemPrompt:
-    "You are Alpha, a collaborative agent. You work with Beta to solve problems. Be concise.",
+  systemPrompt: `You are Alpha, an agent that relays messages between the user and other agents.
+
+IMPORTANT: When the user mentions another agent by name, you MUST immediately call the message_send tool to contact that agent. Do NOT reply to the user asking what to send. Do NOT introduce yourself. Just call the tool.
+
+Example: If the user says "Ask Beta what his favorite color is", you call message_send with to="${BETA_ADDRESS}" and content="What is your favorite color?"
+
+Known agents:
+  Beta: ${BETA_ADDRESS}
+
+After you receive a response from an agent, tell the user what they said.`,
   provider: alphaProvider,
   transport: transportAlpha,
   crypto: cryptoAlpha,
@@ -266,7 +285,7 @@ const harnessAlpha = createHarness({
 const harnessBeta = createHarness({
   address: BETA_ADDRESS,
   systemPrompt:
-    "You are Beta, a collaborative agent. You work with Alpha to solve problems. Be concise.",
+    "You are Beta, a thoughtful agent. When someone asks you a question, answer honestly and with personality. Be concise but interesting.",
   provider: betaProvider,
   transport: transportBeta,
   crypto: cryptoBeta,
@@ -285,10 +304,19 @@ function shutdown(signal: string): void {
   log.info("Received {signal}, shutting down", { signal });
   harnessAlpha.stop();
   harnessBeta.stop();
+  clearTimeout(safetyTimer);
 }
 
 process.once("SIGINT", () => shutdown("SIGINT"));
 process.once("SIGTERM", () => shutdown("SIGTERM"));
+
+// Safety timeout — don't hang forever.
+const safetyTimer = setTimeout(() => {
+  if (!shutdownInitiated) {
+    log.info("Safety timeout reached, shutting down");
+    shutdown("timeout");
+  }
+}, 120_000);
 
 // ---------------------------------------------------------------------------
 // Start harnesses and seed conversation
@@ -297,15 +325,14 @@ process.once("SIGTERM", () => shutdown("SIGTERM"));
 harnessAlpha.start();
 harnessBeta.start();
 
-log.info("Seeding conversation: {seed}", { seed: DEMO_SEED });
+log.info("Sending to Alpha: {seed}", { seed: DEMO_SEED });
 
-// Send the seed from Beta to Alpha so Alpha's reply goes to Beta,
-// starting the A↔B conversation loop.
-await transportBeta.send({
+// Send from the user to Alpha's connector.
+await transportUser.send({
   to: ALPHA_ADDRESS,
   type: "conversation.message",
   content: DEMO_SEED,
-  subject: "Demo conversation",
+  subject: "User request",
 });
 
-log.info("Demo running — waiting for conversation to complete");
+log.info("Demo running — waiting for Alpha to respond to user");
