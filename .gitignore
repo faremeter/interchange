@@ -13,3 +13,5 @@ keypairs
 .eslintcache
 .DS_Store
 opencode-*.md
+dispatch/
+tmp/

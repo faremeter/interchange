@@ -11,6 +11,10 @@
     "./authz": {
       "types": "./src/authz.ts",
       "default": "./src/authz.ts"
+    },
+    "./runtime": {
+      "types": "./src/runtime.ts",
+      "default": "./src/runtime.ts"
     }
   },
   "dependencies": {
