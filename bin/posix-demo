@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPODIR=$(git rev-parse --show-toplevel)
+
+if [[ -f "$REPODIR/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$REPODIR/.env"
+    set +a
+fi
+
+exec bun run "$REPODIR/bin/posix-demo.ts" "$@"
