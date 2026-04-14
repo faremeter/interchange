@@ -163,7 +163,7 @@ When the distinction matters, this document uses the specific term. When it does
 
 The harness (described in ARCHITECTURE.md) is the agent's runtime. The inference package is a library the harness uses. The harness:
 
-- Instantiates the reactor with a plugin, context store, and provider configuration
+- Instantiates the reactor with a plugin, context store, provider configuration, and plugin policy
 - Delivers inbound messages from the message bus to the reactor
 - Routes reactor events to session channel subscribers
 - Manages the agent's credential lifecycle (the reactor requests credentials via gates; the harness fulfills them)
@@ -207,7 +207,8 @@ Event arrives → Plugin decides → Reactor executes → Next event
 - `fork` — Create a new reactor with copied context
 - `emit` — Send a custom event to session channel subscribers (see below)
 - `checkpoint` — Commit current state to the context store without suspending
-- `done` — Reactor is finished
+- `wait` — Return to the event loop without shutting down (idle until next event)
+- `done` — Reactor is finished (terminal, no further events processed)
 
 The reactor is a thin dispatch layer. It doesn't decide what to do — the plugin does. The reactor executes actions reliably: manages the streaming harness for inference, dispatches tool calls, handles suspension mechanics, manages fork lifecycle.
 
@@ -237,7 +238,7 @@ The plugin receives:
 
 - **event** — What just happened
 - **state** — The current message history, active forks, pending gates, async operations, token accounting
-- **capabilities** — What the reactor can do (infer, execute tools, fork, suspend, emit, checkpoint)
+- **capabilities** — What the reactor can do (infer, execute tools, fork, suspend, emit, checkpoint, wait, done)
 
 It returns one or more actions. Multiple actions execute concurrently where possible (parallel tool calls, fork + continue).
 
@@ -252,6 +253,7 @@ The reactor validates the action set returned by the plugin before executing:
 - **Multiple tool executions collapse** — Multiple `execute_tools` actions are merged into a single parallel batch.
 - **Suspend is exclusive** — `suspend` cannot appear alongside `infer` or `execute_tools`. You either do work or you wait.
 - **Checkpoint is composable** — `checkpoint` can appear alongside any other action (it fires before the other action executes).
+- **Wait is exclusive** — `wait` returns to the event loop immediately. It cannot appear alongside `infer` or `execute_tools`.
 
 Invalid action sets produce a `reactor.error` event with a diagnostic message. The reactor does not guess intent.
 
@@ -415,7 +417,7 @@ If this state has been checkpointed, the harness process can restart and the rea
 
 ### Shutdown
 
-When the reactor receives an `abort` event or the plugin returns `done`:
+When the reactor receives an `abort` event or the plugin returns `done` (note: `wait` does _not_ trigger shutdown — it returns to the event loop):
 
 1. The plugin receives the terminal event and returns cleanup actions
 2. In-flight inference calls are aborted (AbortSignal fires)
@@ -451,9 +453,9 @@ The core plugin is a decision function. It receives an event and returns action(
 
 - On `message.received` — Decide: infer, fork, queue, ignore. Choose the model.
 - On `inference.done` with tool calls — Decide: execute tools (which ones, sequential or parallel), or stop.
-- On `inference.done` without tool calls — Decide: done, or wait for more events.
+- On `inference.done` without tool calls — Decide: reply, wait, or done.
 - On `inference.error` — Decide: retry, compact, switch model, or fail.
-- On `tool.done` — Decide: infer again, execute more tools, or stop.
+- On `tool.done` — Decide: infer again, execute more tools, wait, or done.
 - On `reactor.gate.cleared` — Resume the suspended action, or take a different action based on the gate result.
 - On `message.received` while suspended — Decide: queue, fork, or ignore.
 
