@@ -39,8 +39,7 @@ function buildRequest(
   }
 
   return {
-    // The base URL is empty here — the harness injects it from ProviderConfig.baseURL.
-    url: "/v1/chat/completions",
+    url: "/chat/completions",
     headers: {
       "content-type": "application/json",
       authorization: "", // Filled by the harness: "Bearer <apiKey>"

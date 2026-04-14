@@ -29,11 +29,16 @@ export function createCapabilities(): ReactorCapabilities {
       };
     },
 
-    executeTools(calls: ToolCall[], parallel?: boolean): ReactorAction {
+    executeTools(
+      calls: ToolCall[],
+      parallel?: boolean,
+      addToHistory?: boolean,
+    ): ReactorAction {
       return {
         type: "execute_tools",
         calls,
         ...(parallel !== undefined ? { parallel } : {}),
+        ...(addToHistory !== undefined ? { addToHistory } : {}),
       };
     },
 

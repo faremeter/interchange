@@ -250,9 +250,12 @@ describe("validateActions", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("empty action list is invalid", () => {
+  test("empty action list is valid (no-op wait)", () => {
     const result = validateActions([]);
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.normalized).toEqual([]);
+    }
   });
 
   test("suspend alone is valid", () => {

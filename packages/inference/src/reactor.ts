@@ -278,6 +278,7 @@ export function createReactor(config: ReactorConfig): Reactor {
   async function executeTools(
     calls: ToolCall[],
     parallel: boolean,
+    addToHistory = true,
   ): Promise<void> {
     if (stateManager === null) return;
 
@@ -320,7 +321,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       }
     }
 
-    if (stateManager !== null) {
+    if (addToHistory && stateManager !== null) {
       stateManager.appendMessage(createToolResultMessage(results));
     }
 
@@ -475,7 +476,8 @@ export function createReactor(config: ReactorConfig): Reactor {
       const toolsAction = normalized.find((a) => a.type === "execute_tools");
       if (toolsAction !== undefined && toolsAction.type === "execute_tools") {
         const parallel = toolsAction.parallel !== false;
-        await executeTools(toolsAction.calls, parallel);
+        const addToHistory = toolsAction.addToHistory !== false;
+        await executeTools(toolsAction.calls, parallel, addToHistory);
         continue;
       }
     }

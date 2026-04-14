@@ -5,7 +5,7 @@
 //   message.received        → infer
 //   inference.done (tools)  → execute_tools
 //   tool.done               → infer (re-infer with tool results)
-//   inference.done (no tools) → send reply via message.send, then wait (done)
+//   inference.done (no tools) → send reply via message.send, then wait for next message
 //   inference.error         → log error, wait (done)
 //   abort                   → done
 //   reactor.gate.cleared    → infer (resume after gate)
@@ -61,6 +61,8 @@ export class DefaultPlugin implements ReactorPlugin {
 
   // Track outstanding tool results so we only re-infer once per batch.
   private pendingToolResults = 0;
+  // When true, the next tool.done completes the turn instead of re-inferring.
+  private replyPending = false;
 
   constructor(model: string, systemPrompt: string) {
     this.model = model;
@@ -114,8 +116,10 @@ export class DefaultPlugin implements ReactorPlugin {
           this.pendingReplyTo = undefined;
           this.pendingSubject = undefined;
           this.pendingInReplyTo = undefined;
+          this.replyPending = true;
+          this.pendingToolResults = 1;
 
-          return [capabilities.executeTools([sendCall]), capabilities.done()];
+          return capabilities.executeTools([sendCall], false, false);
         }
 
         return capabilities.done();
@@ -126,6 +130,12 @@ export class DefaultPlugin implements ReactorPlugin {
         if (this.pendingToolResults > 0) {
           return [];
         }
+        if (this.replyPending) {
+          this.replyPending = false;
+          // Reply sent — wait for the next inbound message rather than
+          // terminating the reactor so multi-turn conversations work.
+          return [];
+        }
         // All tool results received — re-infer with complete context.
         return capabilities.infer(this.model, {
           systemPrompt: this.systemPrompt,
@@ -133,8 +143,12 @@ export class DefaultPlugin implements ReactorPlugin {
       }
 
       case "inference.error": {
+        const statusDetail =
+          event.error.statusCode !== undefined
+            ? ` [HTTP ${event.error.statusCode}]`
+            : "";
         // eslint-disable-next-line @typescript-eslint/no-unused-expressions
-        logger.error`Inference error in default plugin: ${event.error.message} (category: ${event.error.category})`;
+        logger.error`Inference error in default plugin: ${event.error.message}${statusDetail} (category: ${event.error.category})`;
         return capabilities.done();
       }
 

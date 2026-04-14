@@ -78,6 +78,15 @@
         "postgres": "^3.4.8",
       },
     },
+    "packages/harness": {
+      "name": "@interchange/harness",
+      "version": "0.0.0",
+      "dependencies": {
+        "@interchange/inference": "workspace:*",
+        "@interchange/log": "workspace:*",
+        "@interchange/types": "workspace:*",
+      },
+    },
     "packages/hub": {
       "name": "@interchange/hub",
       "version": "0.0.0",
@@ -346,6 +355,8 @@
     "@interchange/crypto-node": ["@interchange/crypto-node@workspace:packages/crypto-node"],
 
     "@interchange/db": ["@interchange/db@workspace:packages/db"],
+
+    "@interchange/harness": ["@interchange/harness@workspace:packages/harness"],
 
     "@interchange/hub": ["@interchange/hub@workspace:packages/hub"],
 
