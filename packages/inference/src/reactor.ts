@@ -482,6 +482,11 @@ export function createReactor(config: ReactorConfig): Reactor {
         break;
       }
 
+      // Handle wait: return to the event loop without shutting down.
+      if (normalized.some((a) => a.type === "wait")) {
+        continue;
+      }
+
       // Handle suspend: register gate and continue the loop (don't block).
       const suspendAction = normalized.find((a) => a.type === "suspend");
       if (suspendAction !== undefined && suspendAction.type === "suspend") {

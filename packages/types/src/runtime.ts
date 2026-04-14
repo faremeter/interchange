@@ -875,6 +875,7 @@ export type ReactorAction =
       content: string;
     }
   | { type: "checkpoint" }
+  | { type: "wait" }
   | { type: "done" };
 
 /**
@@ -903,6 +904,7 @@ export type ReactorCapabilities = {
   ): ReactorAction;
   reply(content: string): ReactorAction;
   checkpoint(): ReactorAction;
+  wait(): ReactorAction;
   done(): ReactorAction;
 };
 

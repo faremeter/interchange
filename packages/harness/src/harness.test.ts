@@ -867,6 +867,10 @@ describe("Default plugin", () => {
         this.calls.push({ type: "checkpoint", args: [] });
         return { type: "checkpoint" as const };
       },
+      wait() {
+        this.calls.push({ type: "wait", args: [] });
+        return { type: "wait" as const };
+      },
       done() {
         this.calls.push({ type: "done", args: [] });
         return { type: "done" as const };
