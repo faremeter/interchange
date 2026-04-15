@@ -21,6 +21,9 @@ import type {
   ContextCommit,
 } from "@interchange/types/runtime";
 
+import type { ReactorConfig, Reactor } from "./reactor";
+import type { CorrelationValidator } from "./correlation";
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -131,6 +134,144 @@ function makeInboundMessage(correlationId?: string): InboundMessage {
     content: "hello",
     signatureStatus: "missing",
   };
+}
+
+// ---------------------------------------------------------------------------
+// Test harness helpers
+// ---------------------------------------------------------------------------
+
+let testSessionCounter = 0;
+
+type PluginTable = Partial<
+  Record<
+    ReactorInboundEvent["type"],
+    (
+      event: ReactorInboundEvent,
+      state: ReactorState,
+      caps: ReactorCapabilities,
+    ) =>
+      | ReactorAction
+      | ReactorAction[]
+      | Promise<ReactorAction | ReactorAction[]>
+  >
+>;
+
+function pluginFromTable(
+  table: PluginTable,
+  defaultAction: "done" | "wait" = "done",
+): ReactorPlugin {
+  return {
+    async decide(
+      event: ReactorInboundEvent,
+      state: ReactorState,
+      caps: ReactorCapabilities,
+    ): Promise<ReactorAction | ReactorAction[]> {
+      const handler = table[event.type];
+      if (handler !== undefined) {
+        return handler(event, state, caps);
+      }
+      return defaultAction === "done" ? caps.done() : caps.wait();
+    },
+  };
+}
+
+type TestReactorOverrides = {
+  plugin?: ReactorPlugin;
+  toolRunner?: ToolRunner;
+  contextStore?: ContextStore;
+  correlationValidator?: CorrelationValidator;
+  sessionId?: string;
+  gateTimeout?: number;
+  shutdownTimeoutMs?: number;
+};
+
+type TestReactorHandle = {
+  reactor: Reactor;
+  events: InferenceEvent[];
+  waitFor: (
+    type: InferenceEvent["type"],
+    timeoutMs?: number,
+  ) => Promise<InferenceEvent>;
+};
+
+function createTestReactor(
+  overrides: TestReactorOverrides = {},
+): TestReactorHandle {
+  const { events, onEvent } = collectEvents();
+  const sessionId = overrides.sessionId ?? `test-sess-${++testSessionCounter}`;
+
+  const config: ReactorConfig = {
+    sessionId,
+    plugin: overrides.plugin ?? pluginFromTable({}),
+    providerConfig: {
+      provider: "anthropic",
+      baseURL: "https://api.anthropic.com",
+      apiKey: "test",
+    },
+    toolRunner: overrides.toolRunner ?? noopToolRunner(),
+    contextStore: overrides.contextStore ?? makeContextStore(),
+    onEvent,
+    shutdownTimeoutMs: overrides.shutdownTimeoutMs ?? 100,
+    ...(overrides.correlationValidator !== undefined
+      ? { correlationValidator: overrides.correlationValidator }
+      : {}),
+    ...(overrides.gateTimeout !== undefined
+      ? { gateTimeout: overrides.gateTimeout }
+      : {}),
+  };
+
+  const reactor = createReactor(config);
+
+  function waitFor(
+    type: InferenceEvent["type"],
+    timeoutMs = 2000,
+  ): Promise<InferenceEvent> {
+    return waitForEvent(events, (e) => e.type === type, timeoutMs);
+  }
+
+  return { reactor, events, waitFor };
+}
+
+function failingContextStore(error: Error): ContextStore {
+  const fail = () => {
+    throw new Error("failingContextStore: should not be called");
+  };
+  return {
+    async load() {
+      throw error;
+    },
+    async commit() {
+      return fail();
+    },
+    async branch() {
+      return fail();
+    },
+    async log() {
+      return fail();
+    },
+    async readAt() {
+      return fail();
+    },
+  };
+}
+
+function throwingToolRunner(error: Error): ToolRunner {
+  return {
+    async run() {
+      throw error;
+    },
+  };
+}
+
+function getEvent<T extends InferenceEvent["type"]>(
+  events: InferenceEvent[],
+  type: T,
+): Extract<InferenceEvent, { type: T }> {
+  const found = events.find((e) => e.type === type);
+  if (found === undefined) {
+    throw new Error(`No event of type '${type}' found`);
+  }
+  return found as Extract<InferenceEvent, { type: T }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -887,5 +1028,88 @@ describe("createReactor — correlation", () => {
 
     expect(events.some((e) => e.type === "message.correlated")).toBe(false);
     expect(events.some((e) => e.type === "message.received")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Test harness helper validation
+// ---------------------------------------------------------------------------
+
+describe("test harness helpers", () => {
+  test("createTestReactor produces a working reactor with defaults", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => caps.done(),
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(events[0]?.type).toBe("reactor.start");
+    const done = getEvent(events, "reactor.done");
+    expect(done.type).toBe("reactor.done");
+  });
+
+  test("failingContextStore rejects on load", async () => {
+    const store = failingContextStore(new Error("disk on fire"));
+    await expect(store.load()).rejects.toThrow("disk on fire");
+  });
+
+  test("throwingToolRunner throws on run", async () => {
+    const runner = throwingToolRunner(new Error("tool exploded"));
+    const signal = new AbortController().signal;
+    await expect(
+      runner.run({ id: "c1", name: "t", arguments: {} }, signal),
+    ).rejects.toThrow("tool exploded");
+  });
+
+  test("getEvent throws when event is missing", () => {
+    const events: InferenceEvent[] = [];
+    expect(() => getEvent(events, "reactor.error")).toThrow(
+      "No event of type 'reactor.error' found",
+    );
+  });
+
+  test("pluginFromTable with wait default falls through to wait on unhandled events", async () => {
+    // Suspend produces a reactor.gate.cleared event. That event type is
+    // NOT in the table, so the defaultAction "wait" fallthrough fires.
+    // The reactor stays alive because of the fallthrough, then a second
+    // message triggers done via the table handler.
+    let messageCount = 0;
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable(
+        {
+          "message.received": (_e, _s, caps) => {
+            messageCount++;
+            if (messageCount >= 2) return caps.done();
+            return caps.suspend({
+              type: "approval",
+              gateId: "wait-test-gate",
+              timeoutMs: 50,
+            });
+          },
+          // reactor.gate.cleared is intentionally omitted from the table.
+          // The defaultAction "wait" keeps the reactor alive when it fires.
+        },
+        "wait",
+      ),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    // Wait for the gate to time out and clear. The reactor.gate.cleared
+    // event hits the fallthrough, which returns caps.wait().
+    await waitFor("reactor.gate.cleared");
+
+    // Reactor is still alive because of the wait fallthrough. Deliver
+    // another message to trigger done.
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(messageCount).toBe(2);
+    expect(events.some((e) => e.type === "reactor.gate.blocked")).toBe(true);
   });
 });
