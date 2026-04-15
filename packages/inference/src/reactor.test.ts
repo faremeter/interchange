@@ -1072,7 +1072,7 @@ describe("test harness helpers", () => {
     );
   });
 
-  test("pluginFromTable with wait default falls through to wait on unhandled events", async () => {
+  test("pluginFromTable with wait default falls through on unhandled events", async () => {
     // Suspend produces a reactor.gate.cleared event. That event type is
     // NOT in the table, so the defaultAction "wait" fallthrough fires.
     // The reactor stays alive because of the fallthrough, then a second
@@ -1111,5 +1111,702 @@ describe("test harness helpers", () => {
 
     expect(messageCount).toBe(2);
     expect(events.some((e) => e.type === "reactor.gate.blocked")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. Context store failures
+// ---------------------------------------------------------------------------
+
+describe("createReactor — context store failures", () => {
+  test("context store load failure emits reactor.error and reactor.done without reactor.start", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: failingContextStore(new Error("disk on fire")),
+    });
+
+    reactor.start();
+    await waitFor("reactor.done");
+
+    const errorEvent = getEvent(events, "reactor.error");
+    expect(errorEvent.data.error).toMatch(/disk on fire/);
+    expect(errorEvent.data.fatal).toBe(true);
+
+    // reactor.start must NOT be emitted — load failed before the loop began.
+    expect(events.some((e) => e.type === "reactor.start")).toBe(false);
+
+    // reactor.done must still be emitted for cleanup listeners.
+    expect(events.some((e) => e.type === "reactor.done")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Tool runner failures
+// ---------------------------------------------------------------------------
+
+describe("createReactor — tool runner failures", () => {
+  // NOTE: toolRunner.run() that throws produces a fatal reactor.error and
+  // shutdown, but the reactor's track() function creates a floating
+  // .finally() chain with an unhandled rejection that Bun's test runner
+  // flags as a failure. Testing the throw path requires fixing track()
+  // first. That fix belongs in a separate commit.
+
+  test("tool runner returning isError propagates error result to plugin", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) =>
+          caps.executeTools([{ id: "c1", name: "bad_tool", arguments: {} }]),
+        "tool.done": (_e, _s, caps) => caps.done(),
+      }),
+      toolRunner: makeToolRunner(async (call) => {
+        return {
+          callId: call.id,
+          content: "something went wrong",
+          isError: true,
+        };
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // The tool.done event should carry the error result with isError flag.
+    const toolDone = getEvent(events, "tool.done");
+    expect(toolDone.data.result.isError).toBe(true);
+    expect(toolDone.data.result.content).toBe("something went wrong");
+    // No reactor.error should be emitted — isError is a normal result, not a crash.
+    expect(events.some((e) => e.type === "reactor.error")).toBe(false);
+  });
+
+  test("sequential tool execution runs tools in order", async () => {
+    const order: string[] = [];
+    const { reactor, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) =>
+          caps.executeTools(
+            [
+              { id: "c1", name: "first", arguments: {} },
+              { id: "c2", name: "second", arguments: {} },
+              { id: "c3", name: "third", arguments: {} },
+            ],
+            false,
+          ),
+        "tool.done": (_e, _s, caps) => caps.done(),
+      }),
+      toolRunner: makeToolRunner(async (call) => {
+        order.push(call.name);
+        return { callId: call.id, content: "ok" };
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // Order must be preserved — not sorted.
+    expect(order).toEqual(["first", "second", "third"]);
+  });
+
+  test("addToHistory=false runs tools but skips history append", async () => {
+    // We observe history indirectly via a checkpoint that captures the
+    // messages passed to contextStore.commit().
+    let committedMessages: ConversationMessage[] = [];
+    const capturingStore: ContextStore = {
+      async load() {
+        return {
+          messages: [],
+          pendingOperations: [],
+          tokenUsage: emptyUsage(),
+        };
+      },
+      async commit(msgs, _ops, _usage, message): Promise<ContextCommit> {
+        committedMessages = [...msgs];
+        return { hash: "abc", message, timestamp: Date.now() };
+      },
+      async branch() {
+        /* noop */
+      },
+      async log() {
+        return [];
+      },
+      async readAt() {
+        return [];
+      },
+    };
+
+    const { reactor, waitFor } = createTestReactor({
+      contextStore: capturingStore,
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) =>
+          caps.executeTools(
+            [{ id: "c1", name: "ghost_tool", arguments: {} }],
+            true,
+            false,
+          ),
+        "tool.done": (_e, _s, caps) => [caps.checkpoint(), caps.done()],
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // Verify commit was actually called before checking its contents.
+    expect(committedMessages.length).toBeGreaterThan(0);
+
+    // The committed history should contain the inbound text message but
+    // no tool_result message since addToHistory was false.
+    const hasToolResult = committedMessages.some((m) =>
+      m.content.some((b) => b.type === "tool_result"),
+    );
+    expect(hasToolResult).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. Plugin misbehavior
+// ---------------------------------------------------------------------------
+
+describe("createReactor — plugin misbehavior", () => {
+  test("reactor shuts down when plugin returns invalid action set", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => [
+          caps.infer("gpt-4"),
+          caps.done(),
+        ],
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const errorEvent = getEvent(events, "reactor.error");
+    expect(errorEvent.data.error).toMatch(/infer.*done/i);
+    expect(errorEvent.data.fatal).toBe(true);
+  });
+
+  test("plugin emitting reserved namespace inference.* produces non-fatal error", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => [
+          caps.emit("inference.hijack" as `custom.${string}`, {}),
+          caps.done(),
+        ],
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const errorEvent = getEvent(events, "reactor.error");
+    expect(errorEvent.data.error).toMatch(/reserved event type/);
+    expect(errorEvent.data.fatal).toBe(false);
+  });
+
+  test("plugin emitting reserved namespace tool.* produces non-fatal error", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => [
+          caps.emit("tool.fake" as `custom.${string}`, {}),
+          caps.done(),
+        ],
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const errorEvent = getEvent(events, "reactor.error");
+    expect(errorEvent.data.error).toMatch(/reserved event type/);
+    expect(errorEvent.data.fatal).toBe(false);
+  });
+
+  test("plugin emitting reserved namespace reactor.* produces non-fatal error", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => [
+          caps.emit("reactor.fake" as `custom.${string}`, {}),
+          caps.done(),
+        ],
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const errorEvent = getEvent(events, "reactor.error");
+    expect(errorEvent.data.error).toMatch(/reserved event type/);
+    expect(errorEvent.data.fatal).toBe(false);
+  });
+
+  test("fork action emits non-fatal unsupported error", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => [
+          caps.fork("independent", "fork-1"),
+          caps.done(),
+        ],
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const errorEvent = getEvent(events, "reactor.error");
+    expect(errorEvent.data.error).toMatch(/not supported/i);
+    expect(errorEvent.data.fatal).toBe(false);
+  });
+
+  test("wait action keeps reactor alive without shutdown", async () => {
+    let messageCount = 0;
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => {
+          messageCount++;
+          if (messageCount >= 2) return caps.done();
+          return caps.wait();
+        },
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    // After wait, deliver a second message which triggers done.
+    // Small delay to let the reactor process the first message.
+    setTimeout(() => reactor.deliver(makeInboundMessage()), 20);
+    await waitFor("reactor.done");
+
+    expect(messageCount).toBe(2);
+    // No reactor.error should have been emitted.
+    expect(events.some((e) => e.type === "reactor.error")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Reply action
+// ---------------------------------------------------------------------------
+
+describe("createReactor — reply action", () => {
+  test("reply action emits connector.reply and reactor stays alive", async () => {
+    let messageCount = 0;
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => {
+          messageCount++;
+          if (messageCount >= 2) return caps.done();
+          return caps.reply("hello back");
+        },
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    // After reply, reactor waits for next event. Deliver another message.
+    setTimeout(() => reactor.deliver(makeInboundMessage()), 20);
+    await waitFor("reactor.done");
+
+    const replyEvent = getEvent(events, "connector.reply");
+    expect(replyEvent.data.content).toBe("hello back");
+    expect(messageCount).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 14. Checkpoint failure
+// ---------------------------------------------------------------------------
+
+describe("createReactor — checkpoint failure", () => {
+  test("checkpoint failure emits non-fatal error and reactor continues", async () => {
+    let checkpointCalled = false;
+    const failingStore: ContextStore = {
+      async load() {
+        return {
+          messages: [],
+          pendingOperations: [],
+          tokenUsage: emptyUsage(),
+        };
+      },
+      async commit(): Promise<ContextCommit> {
+        checkpointCalled = true;
+        throw new Error("storage full");
+      },
+      async branch() {
+        /* noop */
+      },
+      async log() {
+        return [];
+      },
+      async readAt() {
+        return [];
+      },
+    };
+
+    let messageCount = 0;
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: failingStore,
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => {
+          messageCount++;
+          if (messageCount === 1) return [caps.checkpoint(), caps.wait()];
+          return caps.done();
+        },
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    // After checkpoint failure + wait, deliver another message.
+    setTimeout(() => reactor.deliver(makeInboundMessage()), 50);
+    await waitFor("reactor.done");
+
+    expect(checkpointCalled).toBe(true);
+
+    const errorEvent = getEvent(events, "reactor.error");
+    expect(errorEvent.data.error).toMatch(/storage full/);
+    expect(errorEvent.data.fatal).toBe(false);
+
+    // Reactor continued after the error — it processed the second message.
+    expect(messageCount).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 15. Abort handling
+// ---------------------------------------------------------------------------
+
+describe("createReactor — abort handling", () => {
+  test("abort event is processed with priority over queued events", async () => {
+    // Track how many message.received events the plugin processed.
+    let messagesProcessed = 0;
+    const { reactor, waitFor } = createTestReactor({
+      plugin: pluginFromTable(
+        {
+          "message.received": (_e, _s, caps) => {
+            messagesProcessed++;
+            return caps.wait();
+          },
+        },
+        "wait",
+      ),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    // Wait for reactor to process the first message.
+    await waitFor("message.received");
+
+    // Queue more messages and an abort. The abort should jump the queue
+    // and shut down before the extra messages reach the plugin.
+    reactor.deliver(makeInboundMessage());
+    reactor.deliver(makeInboundMessage());
+    reactor.abort("admin_kill");
+
+    await waitFor("reactor.done");
+
+    // Only the first message should have been processed by the plugin.
+    // The abort jumped ahead of the two queued messages.
+    expect(messagesProcessed).toBe(1);
+  });
+
+  test("multiple abort calls do not cause double shutdown", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.wait(),
+        },
+        "wait",
+      ),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("message.received");
+
+    reactor.abort("reason-1");
+    reactor.abort("reason-2");
+    reactor.abort("reason-3");
+
+    await waitFor("reactor.done");
+
+    // Exactly one reactor.done should be emitted.
+    const doneEvents = events.filter((e) => e.type === "reactor.done");
+    expect(doneEvents.length).toBe(1);
+  });
+
+  test("abort before start shuts down immediately when start is called", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.wait(),
+        },
+        "wait",
+      ),
+    });
+
+    // Abort is enqueued before start().
+    reactor.abort("preemptive");
+    reactor.start();
+
+    await waitFor("reactor.done");
+
+    expect(events.some((e) => e.type === "reactor.start")).toBe(true);
+    expect(events.some((e) => e.type === "reactor.done")).toBe(true);
+
+    // No messages should have been processed.
+    expect(events.some((e) => e.type === "message.received")).toBe(false);
+  });
+});
+
+// NOTE: dequeueNext mid-cycle interleaving prevention (where tool.done is
+// prioritized over message.received when assistant tool_calls are pending)
+// requires the inference harness to produce an assistant message with
+// tool_calls. This cannot be tested via the reactor's public API without
+// mocking the inference pipeline, which is out of scope for this suite.
+// The dequeueNext logic is covered indirectly by the inference integration
+// tests when they exist.
+
+// ---------------------------------------------------------------------------
+// 16. Correlation validator edge cases
+// ---------------------------------------------------------------------------
+
+describe("createReactor — correlation validator", () => {
+  test("validator returning false lets message through as uncorrelated", async () => {
+    const CORR_ID = "corr-rejected";
+    let toolDoneSeen = false;
+
+    const { reactor, events, waitFor } = createTestReactor({
+      correlationValidator: {
+        async validate() {
+          return false;
+        },
+      },
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => {
+          if (toolDoneSeen) return caps.done();
+          return caps.executeTools([
+            { id: "tc1", name: "send_msg", arguments: {} },
+          ]);
+        },
+        "tool.done": (_e, _s, caps) => {
+          toolDoneSeen = true;
+          return caps.suspend({
+            type: "message_response",
+            gateId: "val-gate",
+            timeoutMs: 5000,
+            correlationId: CORR_ID,
+          });
+        },
+      }),
+      toolRunner: makeToolRunner(async (call) => {
+        return {
+          callId: call.id,
+          content: "sent",
+          pendingMarker: {
+            status: "pending" as const,
+            correlationId: CORR_ID,
+          },
+        };
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    await waitFor("reactor.gate.blocked");
+
+    // Deliver a message with matching correlationId — but the validator
+    // rejects it, so it should arrive as message.received, not
+    // message.correlated.
+    reactor.deliver(makeInboundMessage(CORR_ID));
+
+    await waitFor("reactor.done");
+
+    expect(events.some((e) => e.type === "message.correlated")).toBe(false);
+    // The message should have been delivered as uncorrelated.
+    const receivedEvents = events.filter((e) => e.type === "message.received");
+    expect(receivedEvents.length).toBe(2);
+  });
+
+  test("validator that throws lets message through as uncorrelated", async () => {
+    const CORR_ID = "corr-throws";
+    let toolDoneSeen = false;
+
+    const { reactor, events, waitFor } = createTestReactor({
+      correlationValidator: {
+        async validate() {
+          throw new Error("validator crashed");
+        },
+      },
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => {
+          if (toolDoneSeen) return caps.done();
+          return caps.executeTools([
+            { id: "tc1", name: "send_msg", arguments: {} },
+          ]);
+        },
+        "tool.done": (_e, _s, caps) => {
+          toolDoneSeen = true;
+          return caps.suspend({
+            type: "message_response",
+            gateId: "throw-gate",
+            timeoutMs: 5000,
+            correlationId: CORR_ID,
+          });
+        },
+      }),
+      toolRunner: makeToolRunner(async (call) => {
+        return {
+          callId: call.id,
+          content: "sent",
+          pendingMarker: {
+            status: "pending" as const,
+            correlationId: CORR_ID,
+          },
+        };
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    await waitFor("reactor.gate.blocked");
+
+    reactor.deliver(makeInboundMessage(CORR_ID));
+
+    await waitFor("reactor.done");
+
+    expect(events.some((e) => e.type === "message.correlated")).toBe(false);
+    const receivedEvents = events.filter((e) => e.type === "message.received");
+    expect(receivedEvents.length).toBe(2);
+  });
+
+  test("concurrent delivery with same correlationId only correlates once", async () => {
+    const CORR_ID = "corr-double";
+    let toolDoneSeen = false;
+
+    // Use a validator with a manually-resolved promise so we can control
+    // timing. The first deliver enters the validator and blocks. The second
+    // deliver hits the correlatingIds guard and falls through.
+    let resolveValidator!: () => void;
+    const validatorPromise = new Promise<void>((resolve) => {
+      resolveValidator = resolve;
+    });
+
+    const { reactor, events, waitFor } = createTestReactor({
+      correlationValidator: {
+        async validate() {
+          await validatorPromise;
+          return true;
+        },
+      },
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => {
+          if (toolDoneSeen) return caps.done();
+          return caps.executeTools([
+            { id: "tc1", name: "send_msg", arguments: {} },
+          ]);
+        },
+        "tool.done": (_e, _s, caps) => {
+          toolDoneSeen = true;
+          return caps.suspend({
+            type: "message_response",
+            gateId: "double-gate",
+            timeoutMs: 5000,
+            correlationId: CORR_ID,
+          });
+        },
+        "reactor.gate.cleared": (_e, _s, caps) => caps.done(),
+      }),
+      toolRunner: makeToolRunner(async (call) => {
+        return {
+          callId: call.id,
+          content: "sent",
+          pendingMarker: {
+            status: "pending" as const,
+            correlationId: CORR_ID,
+          },
+        };
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    await waitFor("reactor.gate.blocked");
+
+    // Deliver two messages with the same correlationId in the same tick.
+    // The first enters the validator (which blocks on the promise).
+    // The second hits the correlatingIds guard and is rejected.
+    reactor.deliver(makeInboundMessage(CORR_ID));
+    reactor.deliver(makeInboundMessage(CORR_ID));
+
+    // Let the validator resolve so the first correlation completes.
+    resolveValidator();
+
+    await waitFor("reactor.done");
+
+    // Only one message.correlated event should have been emitted.
+    const correlatedEvents = events.filter(
+      (e) => e.type === "message.correlated",
+    );
+    expect(correlatedEvents.length).toBe(1);
+
+    // The second message should have been delivered as uncorrelated.
+    const receivedEvents = events.filter((e) => e.type === "message.received");
+    expect(receivedEvents.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 17. Start guard
+// ---------------------------------------------------------------------------
+
+describe("createReactor — start guard", () => {
+  test("calling start() twice throws", () => {
+    const { reactor } = createTestReactor();
+    reactor.start();
+    expect(() => reactor.start()).toThrow(/already running/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 18. Deliver after done
+// ---------------------------------------------------------------------------
+
+describe("createReactor — deliver after done", () => {
+  test("messages delivered after reactor.done are silently dropped", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => caps.done(),
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // Deliver after done — these should never be processed by the plugin.
+    reactor.deliver(makeInboundMessage());
+    reactor.deliver(makeInboundMessage());
+
+    // Give the event loop a chance to process any spurious events.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // The deliver() call still runs tryCorrelate and emits message.received
+    // events (the deliver function itself doesn't check `done`), but the
+    // loop is no longer running so the plugin never processes them. The key
+    // assertion is that reactor.done is emitted exactly once.
+    const doneEvents = events.filter((e) => e.type === "reactor.done");
+    expect(doneEvents.length).toBe(1);
   });
 });

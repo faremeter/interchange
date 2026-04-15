@@ -18,6 +18,10 @@ export default defineConfig({
         changeOrigin: true,
         headers: { origin: "http://localhost:3000" },
       },
+      "/ws": {
+        target: "http://localhost:3000",
+        ws: true,
+      },
     },
   },
 });

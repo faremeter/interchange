@@ -207,5 +207,86 @@ export function createAgentRoutes(opencode: OpenCodeManager) {
         });
       },
     },
+    "/agents/:id/stream": {
+      GET: async (c: Context) => {
+        const id = c.req.param("id");
+        const message = c.req.query("message");
+
+        if (!message) {
+          return c.json({ error: "message query parameter required" }, 400);
+        }
+
+        // Track if we've received any messages
+        let gotMessage = false;
+
+        const stream = new ReadableStream({
+          start(controller) {
+            const encoder = new TextEncoder();
+
+            const sendEvent = (event: string, data: unknown) => {
+              // Check if controller is still valid
+              try {
+                const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+                controller.enqueue(encoder.encode(msg));
+              } catch {
+                // Controller closed, ignore
+              }
+            };
+
+            sendEvent("start", {});
+
+            // Try streaming, but fallback after timeout
+            const timeout = setTimeout(() => {
+              if (!gotMessage) {
+                // No LLM or timeout - send fallback response
+                sendEvent("message", {
+                  type: "message",
+                  text: `I received your message: "${message}". Note: No LLM is currently configured for this agent.`,
+                });
+                sendEvent("done", {});
+                try {
+                  controller.close();
+                } catch {
+                  // Already closed
+                }
+              }
+            }, 5000);
+
+            opencode
+              .sendMessageStream(id, message, (event, data) => {
+                if (event === "message" || event === "content") {
+                  gotMessage = true;
+                  clearTimeout(timeout);
+                }
+                sendEvent(event, data);
+              })
+              .catch((error) => {
+                logger.error(`Stream error: ${error}`);
+                clearTimeout(timeout);
+                if (!gotMessage) {
+                  sendEvent("message", {
+                    type: "message",
+                    text: `Error: ${error}`,
+                  });
+                }
+                sendEvent("done", {});
+                try {
+                  controller.close();
+                } catch {
+                  // Already closed
+                }
+              });
+          },
+        });
+
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+          },
+        });
+      },
+    },
   };
 }
