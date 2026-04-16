@@ -85,11 +85,11 @@ export function createStateManager(
       sessionId,
       messages: messages.map((m) => ({
         ...m,
-        content: [...m.content],
+        content: m.content.map((b) => structuredClone(b)),
       })),
-      pendingOperations: Array.from(pendingOperations.values()).map((op) => ({
-        ...op,
-      })),
+      pendingOperations: Array.from(pendingOperations.values()).map((op) =>
+        structuredClone(op),
+      ),
       activeGates: activeGatesSnapshot.map((g) => ({
         gateId: g.gateId,
         type: g.type as GateType,
