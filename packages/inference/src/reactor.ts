@@ -676,6 +676,7 @@ export function createReactor(config: ReactorConfig): Reactor {
   }
 
   function deliver(message: InboundMessage): void {
+    if (done) return;
     void (async () => {
       const correlated = await tryCorrelate(message);
       if (!correlated) {

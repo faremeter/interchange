@@ -2145,17 +2145,18 @@ describe("createReactor — deliver after done", () => {
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
-    // Deliver after done — these should never be processed by the plugin.
+    const eventsBeforeDeliver = events.length;
+
+    // Deliver after done — the done guard in deliver() should prevent
+    // any state mutation or event emission.
     reactor.deliver(makeInboundMessage());
     reactor.deliver(makeInboundMessage());
 
     // Give the event loop a chance to process any spurious events.
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    // The deliver() call still runs tryCorrelate and emits message.received
-    // events (the deliver function itself doesn't check `done`), but the
-    // loop is no longer running so the plugin never processes them. The key
-    // assertion is that reactor.done is emitted exactly once.
+    // No new events should have been emitted after reactor.done.
+    expect(events.length).toBe(eventsBeforeDeliver);
     const doneEvents = events.filter((e) => e.type === "reactor.done");
     expect(doneEvents.length).toBe(1);
   });
