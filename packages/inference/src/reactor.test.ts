@@ -2127,6 +2127,51 @@ describe("createReactor — state snapshot inspection", () => {
     expect(capturedUsage.cacheWrite).toBe(0);
     expect(capturedUsage.thinking).toBe(0);
   });
+
+  test("plugin cannot corrupt reactor state by mutating snapshot content blocks", async () => {
+    let secondSnapshot: ReactorState | undefined;
+    let messageCount = 0;
+
+    const { reactor, waitFor } = createTestReactor({
+      plugin: {
+        async decide(event, state, caps) {
+          if (event.type === "message.received") {
+            messageCount++;
+            if (messageCount === 1) {
+              // Mutate the snapshot's content block.
+              const msg = state.messages[0];
+              if (msg !== undefined) {
+                const block = msg.content[0];
+                if (block !== undefined && block.type === "text") {
+                  (block as { text: string }).text = "CORRUPTED";
+                }
+              }
+              return caps.wait();
+            }
+            // Second message: capture a fresh snapshot to verify isolation.
+            secondSnapshot = state;
+            return caps.done();
+          }
+          return caps.done();
+        },
+      },
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    // Wait for the first message to be processed, then deliver a second.
+    setTimeout(() => reactor.deliver(makeInboundMessage()), 30);
+    await waitFor("reactor.done");
+
+    if (secondSnapshot === undefined) throw new Error("unreachable");
+    const firstMsg = secondSnapshot.messages[0];
+    if (firstMsg === undefined) throw new Error("unreachable");
+    const block = firstMsg.content[0];
+    if (block === undefined || block.type !== "text")
+      throw new Error("unreachable");
+    expect(block.text).toBe("hello");
+  });
 });
 
 // ---------------------------------------------------------------------------
