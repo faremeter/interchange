@@ -391,7 +391,7 @@ describe("validateActions", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("empty action list is valid (no-op wait)", () => {
+  test("empty action list is valid (no-op)", () => {
     const result = validateActions([]);
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -405,6 +405,21 @@ describe("validateActions", () => {
       gate: { type: "approval", gateId: "g1", timeoutMs: 60000 },
     });
     expect(result.ok).toBe(true);
+  });
+
+  test("wait action is included in normalized output", () => {
+    const result = validateActions({ type: "wait" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.normalized.length).toBe(1);
+    expect(result.normalized[0]?.type).toBe("wait");
+  });
+
+  test("multiple wait actions are invalid", () => {
+    const result = validateActions([{ type: "wait" }, { type: "wait" }]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/multiple.*wait/i);
   });
 
   test("reply + infer is invalid", () => {
