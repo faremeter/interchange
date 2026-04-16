@@ -1192,7 +1192,9 @@ describe("createReactor — tool runner failures", () => {
     await waitFor("reactor.done");
 
     const errorEvent = getEvent(events, "reactor.error");
-    expect(errorEvent.data.error).toMatch(/tool exploded/);
+    expect(errorEvent.data.error).toMatch(
+      /^Internal reactor error:.*tool exploded/,
+    );
     expect(errorEvent.data.fatal).toBe(true);
   });
 
@@ -1306,6 +1308,12 @@ describe("createReactor — tool runner failures", () => {
       m.content.some((b) => b.type === "tool_result"),
     );
     expect(hasToolResult).toBe(false);
+
+    // The inbound user message should still be in history.
+    const hasUserText = committedMessages.some(
+      (m) => m.role === "user" && m.content.some((b) => b.type === "text"),
+    );
+    expect(hasUserText).toBe(true);
   });
 });
 
@@ -1376,6 +1384,25 @@ describe("createReactor — plugin misbehavior", () => {
       plugin: pluginFromTable({
         "message.received": (_e, _s, caps) => [
           caps.emit("reactor.fake" as `custom.${string}`, {}),
+          caps.done(),
+        ],
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const errorEvent = getEvent(events, "reactor.error");
+    expect(errorEvent.data.error).toMatch(/reserved event type/);
+    expect(errorEvent.data.fatal).toBe(false);
+  });
+
+  test("plugin emitting reserved namespace fork.* produces non-fatal error", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => [
+          caps.emit("fork.fake" as `custom.${string}`, {}),
           caps.done(),
         ],
       }),
