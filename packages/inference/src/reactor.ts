@@ -205,7 +205,10 @@ export function createReactor(config: ReactorConfig): Reactor {
 
   function track<T>(p: Promise<T>): Promise<T> {
     inFlight.add(p);
-    void p.finally(() => inFlight.delete(p));
+    p.then(
+      () => inFlight.delete(p),
+      () => inFlight.delete(p),
+    );
     return p;
   }
 

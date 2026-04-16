@@ -1144,11 +1144,23 @@ describe("createReactor — context store failures", () => {
 // ---------------------------------------------------------------------------
 
 describe("createReactor — tool runner failures", () => {
-  // NOTE: toolRunner.run() that throws produces a fatal reactor.error and
-  // shutdown, but the reactor's track() function creates a floating
-  // .finally() chain with an unhandled rejection that Bun's test runner
-  // flags as a failure. Testing the throw path requires fixing track()
-  // first. That fix belongs in a separate commit.
+  test("tool runner that throws triggers fatal error and shutdown", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) =>
+          caps.executeTools([{ id: "c1", name: "boom", arguments: {} }]),
+      }),
+      toolRunner: throwingToolRunner(new Error("tool exploded")),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const errorEvent = getEvent(events, "reactor.error");
+    expect(errorEvent.data.error).toMatch(/tool exploded/);
+    expect(errorEvent.data.fatal).toBe(true);
+  });
 
   test("tool runner returning isError propagates error result to plugin", async () => {
     const { reactor, events, waitFor } = createTestReactor({
