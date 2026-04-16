@@ -654,44 +654,16 @@ describe("createCorrelationRegistry", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. Reactor loop — basic message → infer → done
+// 4. Reactor loop — basic flow
 // ---------------------------------------------------------------------------
 
 describe("createReactor — basic flow", () => {
-  test("message.received → infer → inference.done → done emits reactor.done", async () => {
-    const { events, onEvent } = collectEvents();
-
-    const plugin: ReactorPlugin = {
-      async decide(
-        event: ReactorInboundEvent,
-        _state: ReactorState,
-        caps: ReactorCapabilities,
-      ): Promise<ReactorAction | ReactorAction[]> {
-        if (event.type === "message.received") {
-          return caps.done();
-        }
-        return caps.done();
-      },
-    };
-
-    const reactor = createReactor({
-      sessionId: "sess-1",
-      plugin,
-      providerConfig: {
-        provider: "anthropic",
-        baseURL: "https://api.anthropic.com",
-        apiKey: "test",
-      },
-      toolRunner: noopToolRunner(),
-      contextStore: makeContextStore(),
-      onEvent,
-      shutdownTimeoutMs: 100,
-    });
+  test("message.received → done emits reactor.done", async () => {
+    const { reactor, events, waitFor } = createTestReactor();
 
     reactor.start();
     reactor.deliver(makeInboundMessage());
-
-    await waitForEvent(events, (e) => e.type === "reactor.done");
+    await waitFor("reactor.done");
 
     const types = events.map((e) => e.type);
     expect(types).toContain("reactor.start");
@@ -700,75 +672,28 @@ describe("createReactor — basic flow", () => {
   });
 
   test("reactor.start is the first event", async () => {
-    const { events, onEvent } = collectEvents();
-
-    const plugin: ReactorPlugin = {
-      async decide(
-        event: ReactorInboundEvent,
-        _state: ReactorState,
-        caps: ReactorCapabilities,
-      ) {
-        if (event.type === "message.received") return caps.done();
-        return caps.done();
-      },
-    };
-
-    const reactor = createReactor({
-      sessionId: "sess-2",
-      plugin,
-      providerConfig: {
-        provider: "anthropic",
-        baseURL: "https://api.anthropic.com",
-        apiKey: "test",
-      },
-      toolRunner: noopToolRunner(),
-      contextStore: makeContextStore(),
-      onEvent,
-      shutdownTimeoutMs: 100,
-    });
+    const { reactor, events, waitFor } = createTestReactor();
 
     reactor.start();
     reactor.deliver(makeInboundMessage());
-
-    await waitForEvent(events, (e) => e.type === "reactor.done");
+    await waitFor("reactor.done");
 
     expect(events[0]?.type).toBe("reactor.start");
   });
 
   test("sequence numbers are monotonically increasing", async () => {
-    const { events, onEvent } = collectEvents();
-
-    const plugin: ReactorPlugin = {
-      async decide(
-        event: ReactorInboundEvent,
-        _state: ReactorState,
-        caps: ReactorCapabilities,
-      ) {
-        if (event.type === "message.received") {
-          return [caps.emit("custom.test", { x: 1 }), caps.done()];
-        }
-        return caps.done();
-      },
-    };
-
-    const reactor = createReactor({
-      sessionId: "sess-seq",
-      plugin,
-      providerConfig: {
-        provider: "anthropic",
-        baseURL: "https://api.anthropic.com",
-        apiKey: "test",
-      },
-      toolRunner: noopToolRunner(),
-      contextStore: makeContextStore(),
-      onEvent,
-      shutdownTimeoutMs: 100,
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => [
+          caps.emit("custom.test", { x: 1 }),
+          caps.done(),
+        ],
+      }),
     });
 
     reactor.start();
     reactor.deliver(makeInboundMessage());
-
-    await waitForEvent(events, (e) => e.type === "reactor.done");
+    await waitFor("reactor.done");
 
     const seqs = events.map((e) => e.seq);
     for (let i = 1; i < seqs.length; i++) {
