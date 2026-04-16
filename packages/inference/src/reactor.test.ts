@@ -82,7 +82,7 @@ function noopToolRunner(): ToolRunner {
   };
 }
 
-function collectEvents(_timeout = 2000): {
+function collectEvents(): {
   events: InferenceEvent[];
   onEvent: (e: InferenceEvent) => void;
 } {
@@ -873,7 +873,12 @@ describe("createReactor — gate lifecycle", () => {
 
     await waitForEvent(events, (e) => e.type === "reactor.done", 2000);
 
-    expect(events.some((e) => e.type === "reactor.gate.blocked")).toBe(true);
+    const blocked = events.find((e) => e.type === "reactor.gate.blocked");
+    expect(blocked).toBeDefined();
+    if (blocked?.type !== "reactor.gate.blocked")
+      throw new Error("unreachable");
+    expect(blocked.data.reason).toBe("approval");
+    expect(blocked.data.gateId).toBe("test-gate");
   });
 
   test("gate timeout fires reactor.gate.cleared with reason=timeout", async () => {
@@ -1966,7 +1971,7 @@ describe("createReactor — start guard", () => {
 // ---------------------------------------------------------------------------
 
 describe("createReactor — deliver after done", () => {
-  test("messages delivered after reactor.done are silently dropped", async () => {
+  test("reactor.done is emitted exactly once even when messages arrive after shutdown", async () => {
     const { reactor, events, waitFor } = createTestReactor({
       plugin: pluginFromTable({
         "message.received": (_e, _s, caps) => caps.done(),
