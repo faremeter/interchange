@@ -422,6 +422,59 @@ describe("validateActions", () => {
     expect(result.error).toMatch(/multiple.*wait/i);
   });
 
+  test("wait + infer is invalid", () => {
+    const result = validateActions([
+      { type: "wait" },
+      { type: "infer", model: "gpt-4" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/wait.*infer/i);
+  });
+
+  test("wait + execute_tools is invalid", () => {
+    const result = validateActions([
+      { type: "wait" },
+      {
+        type: "execute_tools",
+        calls: [{ id: "c1", name: "t", arguments: {} }],
+      },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/wait.*execute_tools/i);
+  });
+
+  test("wait + suspend is invalid", () => {
+    const result = validateActions([
+      { type: "wait" },
+      {
+        type: "suspend",
+        gate: { type: "approval", gateId: "g1", timeoutMs: 60000 },
+      },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/wait.*suspend/i);
+  });
+
+  test("wait + reply is invalid", () => {
+    const result = validateActions([
+      { type: "wait" },
+      { type: "reply", content: "hello" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/wait.*reply/i);
+  });
+
+  test("wait + done is invalid", () => {
+    const result = validateActions([{ type: "wait" }, { type: "done" }]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/wait.*done/i);
+  });
+
   test("reply + infer is invalid", () => {
     const result = validateActions([
       { type: "reply", content: "hello" },
