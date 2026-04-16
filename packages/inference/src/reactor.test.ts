@@ -407,6 +407,72 @@ describe("validateActions", () => {
     expect(result.ok).toBe(true);
   });
 
+  test("reply + infer is invalid", () => {
+    const result = validateActions([
+      { type: "reply", content: "hello" },
+      { type: "infer", model: "gpt-4" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/reply.*infer/i);
+  });
+
+  test("reply + execute_tools is invalid", () => {
+    const result = validateActions([
+      { type: "reply", content: "hello" },
+      {
+        type: "execute_tools",
+        calls: [{ id: "c1", name: "t", arguments: {} }],
+      },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/reply.*execute_tools/i);
+  });
+
+  test("multiple done actions are invalid", () => {
+    const result = validateActions([{ type: "done" }, { type: "done" }]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/multiple.*done/i);
+  });
+
+  test("multiple reply actions are invalid", () => {
+    const result = validateActions([
+      { type: "reply", content: "a" },
+      { type: "reply", content: "b" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/multiple.*reply/i);
+  });
+
+  test("multiple suspend actions are invalid", () => {
+    const result = validateActions([
+      {
+        type: "suspend",
+        gate: { type: "approval", gateId: "g1", timeoutMs: 60000 },
+      },
+      {
+        type: "suspend",
+        gate: { type: "payment", gateId: "g2", timeoutMs: 60000 },
+      },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/multiple.*suspend/i);
+  });
+
+  test("duplicate fork IDs are invalid", () => {
+    const result = validateActions([
+      { type: "fork", mode: "independent", forkId: "f1" },
+      { type: "fork", mode: "child", forkId: "f1" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/duplicate.*fork/i);
+  });
+
   test("reply + done is invalid", () => {
     const result = validateActions([
       { type: "reply", content: "goodbye" },
