@@ -7,7 +7,12 @@
 // Validation rules (INFERENCE.md § Action Validation):
 // - At most one `infer` action.
 // - At most one `done` action.
+// - At most one `reply` action.
 // - `infer` + `done` together is invalid.
+// - `reply` + `infer` together is invalid.
+// - `reply` + `execute_tools` together is invalid.
+// - `reply` + `done` together is invalid.
+// - `reply` + `suspend` together is invalid.
 // - `suspend` cannot appear alongside `infer` or `execute_tools`.
 // - `fork` is composable — may appear alongside any other action.
 // - `checkpoint` is composable — may appear alongside any other action.
@@ -75,6 +80,14 @@ export function validateActions(
       ok: false,
       error: "reply and execute_tools cannot appear together",
     };
+  }
+
+  if (replyActions.length > 0 && doneActions.length > 0) {
+    return { ok: false, error: "reply and done cannot appear together" };
+  }
+
+  if (replyActions.length > 0 && suspendActions.length > 0) {
+    return { ok: false, error: "reply and suspend cannot appear together" };
   }
 
   if (suspendActions.length > 0) {
