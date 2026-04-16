@@ -331,6 +331,16 @@ export function createReactor(config: ReactorConfig): Reactor {
           error: lastError.data.error,
           partial: lastError.data.partial,
         });
+      } else {
+        emitError("Inference runner returned without a terminal event", true);
+        enqueue({
+          type: "inference.error",
+          error: {
+            category: "fatal",
+            message: "Inference runner returned without a terminal event",
+          },
+          partial: { text: "" },
+        });
       }
     })();
 
