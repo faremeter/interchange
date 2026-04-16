@@ -16,6 +16,7 @@
 // - `suspend` cannot appear alongside `infer` or `execute_tools`.
 // - `fork` is composable — may appear alongside any other action.
 // - `checkpoint` is composable — may appear alongside any other action.
+// - At most one `wait` action.
 // - Multiple `execute_tools` are merged into a single parallel batch.
 // - `emit` is always valid and composable.
 
@@ -51,6 +52,7 @@ export function validateActions(
     (a): a is Extract<ReactorAction, { type: "execute_tools" }> =>
       a.type === "execute_tools",
   );
+  const waitActions = list.filter((a) => a.type === "wait");
   const forkActions = list.filter((a) => a.type === "fork");
   const emitActions = list.filter((a) => a.type === "emit");
   const checkpointActions = list.filter((a) => a.type === "checkpoint");
@@ -108,6 +110,10 @@ export function validateActions(
     }
   }
 
+  if (waitActions.length > 1) {
+    return { ok: false, error: "Multiple wait actions are not allowed" };
+  }
+
   // Verify fork actions have unique IDs.
   const forkIds = forkActions.map(
     (a) => (a as Extract<ReactorAction, { type: "fork" }>).forkId,
@@ -154,6 +160,10 @@ export function validateActions(
   }
 
   for (const a of suspendActions) {
+    normalized.push(a);
+  }
+
+  for (const a of waitActions) {
     normalized.push(a);
   }
 
