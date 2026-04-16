@@ -406,6 +406,29 @@ describe("validateActions", () => {
     });
     expect(result.ok).toBe(true);
   });
+
+  test("reply + done is invalid", () => {
+    const result = validateActions([
+      { type: "reply", content: "goodbye" },
+      { type: "done" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/reply.*done/i);
+  });
+
+  test("reply + suspend is invalid", () => {
+    const result = validateActions([
+      { type: "reply", content: "hang on" },
+      {
+        type: "suspend",
+        gate: { type: "approval", gateId: "g1", timeoutMs: 60000 },
+      },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/reply.*suspend/i);
+  });
 });
 
 // ---------------------------------------------------------------------------
