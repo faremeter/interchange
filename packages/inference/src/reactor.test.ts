@@ -146,31 +146,32 @@ function makeInboundMessage(correlationId?: string): InboundMessage {
 
 let testSessionCounter = 0;
 
-type PluginTable = Partial<
-  Record<
-    ReactorInboundEvent["type"],
-    (
-      event: ReactorInboundEvent,
-      state: ReactorState,
-      caps: ReactorCapabilities,
-    ) =>
-      | ReactorAction
-      | ReactorAction[]
-      | Promise<ReactorAction | ReactorAction[]>
-  >
->;
+type PluginHandler<E> = (
+  event: E,
+  state: ReactorState,
+  caps: ReactorCapabilities,
+) => ReactorAction | ReactorAction[] | Promise<ReactorAction | ReactorAction[]>;
+
+type PluginTable = {
+  [K in ReactorInboundEvent["type"]]?: PluginHandler<
+    Extract<ReactorInboundEvent, { type: K }>
+  >;
+};
 
 function pluginFromTable(
   table: PluginTable,
   defaultAction: "done" | "wait" = "done",
 ): ReactorPlugin {
   return {
-    async decide(
-      event: ReactorInboundEvent,
-      state: ReactorState,
-      caps: ReactorCapabilities,
-    ): Promise<ReactorAction | ReactorAction[]> {
-      const handler = table[event.type];
+    async decide(event, state, caps) {
+      // The cast is safe: the mapped PluginTable type guarantees that
+      // table[event.type] was constructed with a handler typed for
+      // Extract<ReactorInboundEvent, { type: typeof event.type }>.
+      // TypeScript cannot correlate the runtime key with the mapped
+      // type's per-key handler signature (correlated union problem).
+      const handler = table[event.type] as
+        | PluginHandler<typeof event>
+        | undefined;
       if (handler !== undefined) {
         return handler(event, state, caps);
       }
@@ -2227,7 +2228,6 @@ describe("createReactor — inference path", () => {
       plugin: pluginFromTable({
         "message.received": (_e, _s, caps) => caps.infer("mock-model"),
         "inference.error": (e, _s, caps) => {
-          if (e.type !== "inference.error") throw new Error("unreachable");
           capturedError = {
             category: e.error.category,
             message: e.error.message,
@@ -2265,7 +2265,6 @@ describe("createReactor — inference path", () => {
       plugin: pluginFromTable({
         "message.received": (_e, _s, caps) => caps.infer("mock-model"),
         "inference.error": (e, _s, caps) => {
-          if (e.type !== "inference.error") throw new Error("unreachable");
           capturedError = {
             category: e.error.category,
             message: e.error.message,
