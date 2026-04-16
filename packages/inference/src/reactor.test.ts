@@ -19,9 +19,13 @@ import type {
   PendingOperation,
   TokenUsage,
   ContextCommit,
+  AssistantMessage,
+  InferenceError,
+  PartialMessage,
 } from "@interchange/types/runtime";
 
 import type { ReactorConfig, Reactor } from "./reactor";
+import type { InferenceHarnessOptions } from "./harness";
 import type { CorrelationValidator } from "./correlation";
 
 // ---------------------------------------------------------------------------
@@ -180,6 +184,9 @@ type TestReactorOverrides = {
   toolRunner?: ToolRunner;
   contextStore?: ContextStore;
   correlationValidator?: CorrelationValidator;
+  inferenceRunner?: (
+    opts: InferenceHarnessOptions,
+  ) => AsyncGenerator<InferenceEvent>;
   sessionId?: string;
   gateTimeout?: number;
   shutdownTimeoutMs?: number;
@@ -214,6 +221,9 @@ function createTestReactor(
     shutdownTimeoutMs: overrides.shutdownTimeoutMs ?? 100,
     ...(overrides.correlationValidator !== undefined
       ? { correlationValidator: overrides.correlationValidator }
+      : {}),
+    ...(overrides.inferenceRunner !== undefined
+      ? { inferenceRunner: overrides.inferenceRunner }
       : {}),
     ...(overrides.gateTimeout !== undefined
       ? { gateTimeout: overrides.gateTimeout }
@@ -2197,5 +2207,143 @@ describe("createReactor — deliver after done", () => {
     expect(events.length).toBe(eventsBeforeDeliver);
     const doneEvents = events.filter((e) => e.type === "reactor.done");
     expect(doneEvents.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 21. Inference path (infer action)
+// ---------------------------------------------------------------------------
+
+function makeAssistantMessage(text: string): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    model: "mock-model",
+  };
+}
+
+function makeInferenceRunner(
+  result:
+    | { type: "done"; message: AssistantMessage; usage: TokenUsage }
+    | { type: "error"; error: InferenceError; partial: PartialMessage },
+): (opts: InferenceHarnessOptions) => AsyncGenerator<InferenceEvent> {
+  return async function* (opts) {
+    if (result.type === "done") {
+      const event: InferenceEvent = {
+        type: "inference.done",
+        seq: opts.nextSeq(),
+        data: { message: result.message, usage: result.usage },
+      };
+      yield event;
+    } else {
+      const event: InferenceEvent = {
+        type: "inference.error",
+        seq: opts.nextSeq(),
+        data: { error: result.error, partial: result.partial },
+      };
+      yield event;
+    }
+  };
+}
+
+describe("createReactor — inference path", () => {
+  test("infer action drives inference.done through to plugin and accumulates usage", async () => {
+    const inferUsage: TokenUsage = {
+      input: 100,
+      output: 50,
+      cacheRead: 10,
+      cacheWrite: 5,
+      thinking: 20,
+    };
+    const assistantMsg = makeAssistantMessage("Hello from the model");
+
+    let stateAtInferenceDone: ReactorState | undefined;
+
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => caps.infer("mock-model"),
+        "inference.done": (_e, state, caps) => {
+          stateAtInferenceDone = state;
+          return caps.done();
+        },
+      }),
+      inferenceRunner: makeInferenceRunner({
+        type: "done",
+        message: assistantMsg,
+        usage: inferUsage,
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // The emitted event stream should contain inference.done.
+    const inferDone = getEvent(events, "inference.done");
+    expect(inferDone.data.message.content[0]).toEqual({
+      type: "text",
+      text: "Hello from the model",
+    });
+    expect(inferDone.data.usage).toEqual(inferUsage);
+
+    // The plugin should have received the inference.done event with
+    // accumulated token usage visible in the state snapshot.
+    if (stateAtInferenceDone === undefined)
+      throw new Error("plugin never received inference.done");
+    expect(stateAtInferenceDone.tokenUsage).toEqual(inferUsage);
+
+    // The assistant message should have been appended to the conversation.
+    const lastMsg =
+      stateAtInferenceDone.messages[stateAtInferenceDone.messages.length - 1];
+    if (lastMsg === undefined) throw new Error("no messages in state snapshot");
+    expect(lastMsg.role).toBe("assistant");
+    expect(lastMsg.content[0]).toEqual({
+      type: "text",
+      text: "Hello from the model",
+    });
+  });
+
+  test("infer action with inference.error delivers error event to plugin", async () => {
+    const inferError: InferenceError = {
+      category: "retryable",
+      message: "rate limited",
+    };
+    const partial: PartialMessage = { text: "partial output" };
+
+    let capturedError: { category: string; message: string } | undefined;
+
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => caps.infer("mock-model"),
+        "inference.error": (e, _s, caps) => {
+          if (e.type !== "inference.error") throw new Error("unreachable");
+          capturedError = {
+            category: e.error.category,
+            message: e.error.message,
+          };
+          return caps.done();
+        },
+      }),
+      inferenceRunner: makeInferenceRunner({
+        type: "error",
+        error: inferError,
+        partial,
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // Verify the plugin received the error event with correct fields.
+    if (capturedError === undefined)
+      throw new Error("plugin never received inference.error");
+    expect(capturedError.category).toBe("retryable");
+    expect(capturedError.message).toBe("rate limited");
+
+    // The emitted event stream should contain inference.error.
+    const inferErr = getEvent(events, "inference.error");
+    expect(inferErr.data.error.category).toBe("retryable");
+    expect(inferErr.data.partial.text).toBe("partial output");
   });
 });

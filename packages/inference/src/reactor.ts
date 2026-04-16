@@ -71,6 +71,9 @@ export type ReactorConfig = {
   contextStore: ContextStore;
   correlationValidator?: CorrelationValidator;
   onEvent: (event: InferenceEvent) => void;
+  inferenceRunner?: (
+    opts: InferenceHarnessOptions,
+  ) => AsyncGenerator<InferenceEvent>;
   gateTimeout?: number;
   shutdownTimeoutMs?: number;
 };
@@ -100,6 +103,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     contextStore,
     correlationValidator,
     onEvent,
+    inferenceRunner = runInference,
     gateTimeout = DEFAULT_GATE_TIMEOUT_MS,
     shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
   } = config;
@@ -305,7 +309,7 @@ export function createReactor(config: ReactorConfig): Reactor {
         | Extract<InferenceEvent, { type: "inference.error" }>
         | undefined;
 
-      for await (const event of runInference(harnessOpts)) {
+      for await (const event of inferenceRunner(harnessOpts)) {
         emit(event);
         if (event.type === "inference.done") lastDone = event;
         else if (event.type === "inference.error") lastError = event;
