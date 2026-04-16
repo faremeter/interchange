@@ -831,50 +831,27 @@ describe("createReactor — plugin exception", () => {
 
 describe("createReactor — gate lifecycle", () => {
   test("suspend registers gate and reactor shuts down on abort", async () => {
-    const { events, onEvent } = collectEvents();
-    const plugin: ReactorPlugin = {
-      async decide(
-        event: ReactorInboundEvent,
-        _state: ReactorState,
-        caps: ReactorCapabilities,
-      ) {
-        if (event.type === "message.received") {
-          return caps.suspend({
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) =>
+          caps.suspend({
             type: "approval",
             gateId: "test-gate",
             timeoutMs: 5000,
-          });
-        }
-        if (event.type === "reactor.gate.cleared") {
-          return caps.done();
-        }
-        return caps.done();
-      },
-    };
-
-    const reactor = createReactor({
-      sessionId: "sess-gate",
-      plugin,
-      providerConfig: {
-        provider: "anthropic",
-        baseURL: "https://api.anthropic.com",
-        apiKey: "test",
-      },
-      toolRunner: noopToolRunner(),
-      contextStore: makeContextStore(),
-      onEvent,
-      shutdownTimeoutMs: 100,
+          }),
+        "reactor.gate.cleared": (_e, _s, caps) => caps.done(),
+      }),
     });
 
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    await waitForEvent(events, (e) => e.type === "reactor.gate.blocked", 2000);
+    await waitFor("reactor.gate.blocked");
 
     // Abort the reactor — gate clears with reason "shutdown".
     reactor.abort("admin_kill");
 
-    await waitForEvent(events, (e) => e.type === "reactor.done", 2000);
+    await waitFor("reactor.done");
 
     const blocked = getEvent(events, "reactor.gate.blocked");
     expect(blocked.data.reason).toBe("approval");
@@ -886,51 +863,25 @@ describe("createReactor — gate lifecycle", () => {
   });
 
   test("gate timeout fires reactor.gate.cleared with reason=timeout", async () => {
-    const { events, onEvent } = collectEvents();
-
-    const plugin: ReactorPlugin = {
-      async decide(
-        event: ReactorInboundEvent,
-        _state: ReactorState,
-        caps: ReactorCapabilities,
-      ) {
-        if (event.type === "message.received") {
-          return caps.suspend({
+    const { reactor, events, waitFor } = createTestReactor({
+      shutdownTimeoutMs: 500,
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) =>
+          caps.suspend({
             type: "approval",
             gateId: "timeout-gate",
             timeoutMs: 80,
-          });
-        }
-        if (event.type === "reactor.gate.cleared") {
-          return caps.done();
-        }
-        return caps.done();
-      },
-    };
-
-    const reactor = createReactor({
-      sessionId: "sess-timeout",
-      plugin,
-      providerConfig: {
-        provider: "anthropic",
-        baseURL: "https://api.anthropic.com",
-        apiKey: "test",
-      },
-      toolRunner: noopToolRunner(),
-      contextStore: makeContextStore(),
-      onEvent,
-      shutdownTimeoutMs: 500,
+          }),
+        "reactor.gate.cleared": (_e, _s, caps) => caps.done(),
+      }),
     });
 
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    await waitForEvent(events, (e) => e.type === "reactor.done", 3000);
+    await waitFor("reactor.done", 3000);
 
-    const cleared = events.find((e) => e.type === "reactor.gate.cleared");
-    expect(cleared).toBeDefined();
-    if (cleared?.type !== "reactor.gate.cleared")
-      throw new Error("unreachable");
+    const cleared = getEvent(events, "reactor.gate.cleared");
     expect(cleared.data.reason).toBe("timeout");
   });
 
@@ -1003,26 +954,20 @@ describe("createReactor — tool execution", () => {
 
 describe("createReactor — correlation", () => {
   test("message with matching correlationId triggers message.correlated", async () => {
-    const { events, onEvent } = collectEvents();
     const CORR_ID = "corr-xyz-123";
-
     let delivered = false;
 
+    // Multi-phase state machine: deliver → execute_tools → suspend with
+    // correlation → deliver correlated response → done. Kept as raw plugin
+    // because the `delivered` flag makes pluginFromTable awkward.
     const plugin: ReactorPlugin = {
-      async decide(
-        event: ReactorInboundEvent,
-        _state: ReactorState,
-        caps: ReactorCapabilities,
-      ) {
-        // First call: message.received from deliver() — return execute_tools
-        // which will produce a pending marker.
+      async decide(event, _state, caps) {
         if (event.type === "message.received" && !delivered) {
           delivered = true;
           return caps.executeTools([
             { id: "tc1", name: "send_message", arguments: {} },
           ]);
         }
-        // After tool.done with pending marker, suspend.
         if (event.type === "tool.done") {
           return caps.suspend({
             type: "message_response",
@@ -1038,41 +983,30 @@ describe("createReactor — correlation", () => {
       },
     };
 
-    const runner = makeToolRunner(async (call) => {
-      return {
-        callId: call.id,
-        content: "message sent",
-        pendingMarker: {
-          status: "pending" as const,
-          correlationId: CORR_ID,
-        },
-      };
-    });
-
-    const reactor = createReactor({
-      sessionId: "sess-corr",
+    const { reactor, events, waitFor } = createTestReactor({
       plugin,
-      providerConfig: {
-        provider: "anthropic",
-        baseURL: "https://api.anthropic.com",
-        apiKey: "test",
-      },
-      toolRunner: runner,
-      contextStore: makeContextStore(),
-      onEvent,
       shutdownTimeoutMs: 500,
+      toolRunner: makeToolRunner(async (call) => {
+        return {
+          callId: call.id,
+          content: "message sent",
+          pendingMarker: {
+            status: "pending" as const,
+            correlationId: CORR_ID,
+          },
+        };
+      }),
     });
 
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    // Wait for the gate to block.
-    await waitForEvent(events, (e) => e.type === "reactor.gate.blocked", 2000);
+    await waitFor("reactor.gate.blocked");
 
     // Deliver the correlated response.
     reactor.deliver(makeInboundMessage(CORR_ID));
 
-    await waitForEvent(events, (e) => e.type === "reactor.done", 3000);
+    await waitFor("reactor.done", 3000);
 
     const correlated = getEvent(events, "message.correlated");
     expect(correlated.data.correlationId).toBe(CORR_ID);
@@ -1082,39 +1016,16 @@ describe("createReactor — correlation", () => {
   });
 
   test("message with non-matching correlationId passes through uncorrelated", async () => {
-    const { events, onEvent } = collectEvents();
-
-    const plugin: ReactorPlugin = {
-      async decide(
-        event: ReactorInboundEvent,
-        _state: ReactorState,
-        caps: ReactorCapabilities,
-      ) {
-        if (event.type === "message.received") {
-          return caps.done();
-        }
-        return caps.done();
-      },
-    };
-
-    const reactor = createReactor({
-      sessionId: "sess-no-corr",
-      plugin,
-      providerConfig: {
-        provider: "anthropic",
-        baseURL: "https://api.anthropic.com",
-        apiKey: "test",
-      },
-      toolRunner: noopToolRunner(),
-      contextStore: makeContextStore(),
-      onEvent,
-      shutdownTimeoutMs: 100,
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => caps.done(),
+      }),
     });
 
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    await waitForEvent(events, (e) => e.type === "reactor.done", 2000);
+    await waitFor("reactor.done");
 
     expect(events.some((e) => e.type === "message.correlated")).toBe(false);
     expect(events.some((e) => e.type === "message.received")).toBe(true);
