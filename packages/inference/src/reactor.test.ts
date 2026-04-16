@@ -1892,7 +1892,150 @@ describe("createReactor — start guard", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 19. Deliver after done
+// 19. State snapshot inspection
+// ---------------------------------------------------------------------------
+
+describe("createReactor — state snapshot inspection", () => {
+  test("state.messages contains delivered message text", async () => {
+    let capturedMessages: ConversationMessage[] = [];
+    const { reactor, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, state, caps) => {
+          capturedMessages = state.messages;
+          return caps.done();
+        },
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(capturedMessages.length).toBe(1);
+    const last = capturedMessages.at(-1);
+    if (last === undefined) throw new Error("unreachable");
+    expect(last.role).toBe("user");
+    const textBlock = last.content.find((b) => b.type === "text");
+    if (textBlock === undefined || textBlock.type !== "text")
+      throw new Error("unreachable");
+    expect(textBlock.text).toBe("hello");
+  });
+
+  test("state.pendingOperations tracks pending markers from tools", async () => {
+    const CORR_ID = "corr-snapshot-check";
+    let capturedOps: PendingOperation[] = [];
+
+    const { reactor, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) =>
+          caps.executeTools([{ id: "tc1", name: "send_msg", arguments: {} }]),
+        "tool.done": (_e, state, caps) => {
+          capturedOps = state.pendingOperations;
+          return caps.done();
+        },
+      }),
+      toolRunner: {
+        async run(call) {
+          return {
+            callId: call.id,
+            content: "sent",
+            pendingMarker: {
+              status: "pending" as const,
+              correlationId: CORR_ID,
+            },
+          };
+        },
+      },
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(capturedOps.length).toBe(1);
+    const op = capturedOps[0];
+    if (op === undefined) throw new Error("unreachable");
+    expect(op.correlationId).toBe(CORR_ID);
+  });
+
+  test("state.activeGates reflects registered gates during suspend", async () => {
+    let gatesDuringSuspend: ReactorState["activeGates"] = [];
+    let gatesAfterCleared: ReactorState["activeGates"] = [];
+    let messageCount = 0;
+
+    const { reactor, waitFor } = createTestReactor({
+      plugin: {
+        async decide(event, state, caps) {
+          if (event.type === "message.received") {
+            messageCount++;
+            if (messageCount === 1) {
+              return caps.suspend({
+                type: "approval",
+                gateId: "snapshot-gate",
+                timeoutMs: 500,
+              });
+            }
+            // Second message arrives while gate is active.
+            gatesDuringSuspend = state.activeGates;
+            return caps.wait();
+          }
+          if (event.type === "reactor.gate.cleared") {
+            gatesAfterCleared = state.activeGates;
+            return caps.done();
+          }
+          return caps.done();
+        },
+      },
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.gate.blocked");
+
+    // Deliver a second message while the gate is active. The 500ms
+    // gate timeout is far larger than the async overhead of deliver(),
+    // so the second message.received is guaranteed to be processed
+    // before the timeout fires.
+    reactor.deliver(makeInboundMessage());
+
+    // The gate times out after 500ms, firing reactor.gate.cleared
+    // where we capture the post-clear state and return done.
+    await waitFor("reactor.done");
+
+    expect(gatesDuringSuspend.length).toBe(1);
+    const gate = gatesDuringSuspend[0];
+    if (gate === undefined) throw new Error("unreachable");
+    expect(gate.gateId).toBe("snapshot-gate");
+    expect(gate.type).toBe("approval");
+    expect(gatesAfterCleared.length).toBe(0);
+  });
+
+  test("state.tokenUsage has initial zero values without inference", async () => {
+    let capturedUsage: TokenUsage | undefined;
+    const { reactor, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, state, caps) => {
+          capturedUsage = state.tokenUsage;
+          return caps.done();
+        },
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    if (capturedUsage === undefined) throw new Error("unreachable");
+    expect(capturedUsage.input).toBe(0);
+    expect(capturedUsage.output).toBe(0);
+    expect(capturedUsage.cacheRead).toBe(0);
+    expect(capturedUsage.cacheWrite).toBe(0);
+    expect(capturedUsage.thinking).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 20. Deliver after done
 // ---------------------------------------------------------------------------
 
 describe("createReactor — deliver after done", () => {
