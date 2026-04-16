@@ -1579,16 +1579,97 @@ describe("createReactor — abort handling", () => {
   });
 });
 
-// NOTE: dequeueNext mid-cycle interleaving prevention (where tool.done is
-// prioritized over message.received when assistant tool_calls are pending)
-// requires the inference harness to produce an assistant message with
-// tool_calls. This cannot be tested via the reactor's public API without
-// mocking the inference pipeline, which is out of scope for this suite.
-// The dequeueNext logic is covered indirectly by the inference integration
-// tests when they exist.
+// ---------------------------------------------------------------------------
+// 16. Dequeue priority (mid-cycle interleaving prevention)
+// ---------------------------------------------------------------------------
+
+describe("createReactor — dequeue priority", () => {
+  test("tool.done is prioritized over message.received when tool calls are pending", async () => {
+    // Pre-seed history with an assistant message containing a tool_call
+    // block. Using addToHistory=false on executeTools keeps this as the
+    // last message, so historyHasPendingToolCalls() stays true when the
+    // loop calls dequeueNext() after tools complete.
+    const seededMessages: ConversationMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_call",
+            id: "tc-pending",
+            name: "some_tool",
+            arguments: {},
+          },
+        ],
+        model: "test-model",
+      },
+    ];
+
+    const order: string[] = [];
+
+    // Empty content prevents the reactor from appending a user text
+    // message to history, preserving the assistant tool_call as the
+    // last entry so historyHasPendingToolCalls() stays true.
+    const emptyMessage: InboundMessage = {
+      ref: { uid: 1, mailbox: "INBOX" },
+      headers: {
+        from: "test@example.com",
+        to: ["agent@example.com"],
+        date: new Date().toISOString(),
+        messageId: `msg-empty-${Math.random()}`,
+      },
+      flags: [],
+      content: "",
+      signatureStatus: "missing",
+    };
+
+    const { reactor, waitFor } = createTestReactor({
+      contextStore: makeContextStore(seededMessages),
+      plugin: {
+        async decide(event, _state, caps) {
+          order.push(event.type);
+          if (event.type === "message.received") {
+            // First message.received: run tools with addToHistory=false.
+            // Second message.received (after tool.done): shut down.
+            if (order.filter((t) => t === "message.received").length >= 2) {
+              return caps.done();
+            }
+            return caps.executeTools(
+              [{ id: "tc-pending", name: "some_tool", arguments: {} }],
+              true,
+              false,
+            );
+          }
+          if (event.type === "tool.done") {
+            return caps.wait();
+          }
+          return caps.done();
+        },
+      },
+      toolRunner: makeToolRunner(async (call) => {
+        // While the tool is running, deliver a second message. This
+        // enqueues message.received before executeTools enqueues tool.done.
+        reactor.deliver(emptyMessage);
+        return { callId: call.id, content: "ok" };
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(emptyMessage);
+    await waitFor("reactor.done");
+
+    // tool.done should appear before the second message.received in the
+    // order array, because dequeueNext prioritizes cycle events when
+    // the last history message has pending tool_calls.
+    const toolDoneIdx = order.indexOf("tool.done");
+    const secondMessageIdx = order.lastIndexOf("message.received");
+    expect(toolDoneIdx).toBeGreaterThan(-1);
+    expect(secondMessageIdx).toBeGreaterThan(-1);
+    expect(toolDoneIdx).toBeLessThan(secondMessageIdx);
+  });
+});
 
 // ---------------------------------------------------------------------------
-// 16. Correlation validator edge cases
+// 17. Correlation validator edge cases
 // ---------------------------------------------------------------------------
 
 describe("createReactor — correlation validator", () => {
@@ -1780,7 +1861,7 @@ describe("createReactor — correlation validator", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 17. Start guard
+// 18. Start guard
 // ---------------------------------------------------------------------------
 
 describe("createReactor — start guard", () => {
@@ -1792,7 +1873,7 @@ describe("createReactor — start guard", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 18. Deliver after done
+// 19. Deliver after done
 // ---------------------------------------------------------------------------
 
 describe("createReactor — deliver after done", () => {
