@@ -820,7 +820,7 @@ describe("createReactor — plugin exception", () => {
 // ---------------------------------------------------------------------------
 
 describe("createReactor — gate lifecycle", () => {
-  test("suspend blocks until gate is cleared externally", async () => {
+  test("suspend registers gate and reactor shuts down on abort", async () => {
     const { events, onEvent } = collectEvents();
     const plugin: ReactorPlugin = {
       async decide(
@@ -861,17 +861,18 @@ describe("createReactor — gate lifecycle", () => {
 
     await waitForEvent(events, (e) => e.type === "reactor.gate.blocked", 2000);
 
-    // Simulate external gate resolution.
+    // Abort the reactor — gate clears with reason "shutdown".
     reactor.abort("admin_kill");
 
     await waitForEvent(events, (e) => e.type === "reactor.done", 2000);
 
-    const blocked = events.find((e) => e.type === "reactor.gate.blocked");
-    expect(blocked).toBeDefined();
-    if (blocked?.type !== "reactor.gate.blocked")
-      throw new Error("unreachable");
+    const blocked = getEvent(events, "reactor.gate.blocked");
     expect(blocked.data.reason).toBe("approval");
     expect(blocked.data.gateId).toBe("test-gate");
+
+    const cleared = getEvent(events, "reactor.gate.cleared");
+    expect(cleared.data.gateId).toBe("test-gate");
+    expect(cleared.data.reason).toBe("shutdown");
   });
 
   test("gate timeout fires reactor.gate.cleared with reason=timeout", async () => {
@@ -922,6 +923,30 @@ describe("createReactor — gate lifecycle", () => {
       throw new Error("unreachable");
     expect(cleared.data.reason).toBe("timeout");
   });
+
+  test("gate with timeoutMs: 0 falls back to session-level gateTimeout", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      gateTimeout: 80,
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) =>
+          caps.suspend({
+            type: "approval",
+            gateId: "fallback-gate",
+            timeoutMs: 0,
+          }),
+        "reactor.gate.cleared": (_e, _s, caps) => caps.done(),
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    await waitFor("reactor.done");
+
+    const cleared = getEvent(events, "reactor.gate.cleared");
+    expect(cleared.data.reason).toBe("timeout");
+    expect(cleared.data.gateId).toBe("fallback-gate");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -930,64 +955,28 @@ describe("createReactor — gate lifecycle", () => {
 
 describe("createReactor — tool execution", () => {
   test("execute_tools dispatches tools and returns results", async () => {
-    const { events, onEvent } = collectEvents();
     const toolsRun: string[] = [];
-
-    let phase = 0;
-
-    const plugin: ReactorPlugin = {
-      async decide(
-        event: ReactorInboundEvent,
-        _state: ReactorState,
-        caps: ReactorCapabilities,
-      ) {
-        if (event.type === "message.received") {
-          phase = 1;
-          return caps.executeTools(
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) =>
+          caps.executeTools(
             [
               { id: "c1", name: "tool_a", arguments: {} },
               { id: "c2", name: "tool_b", arguments: {} },
             ],
             true,
-          );
-        }
-        if (event.type === "tool.done" && phase === 1) {
-          // Wait for both tool.done before finishing.
-          const toolDones = events.filter((e) => e.type === "tool.done");
-          if (toolDones.length >= 2) {
-            phase = 2;
-            return caps.done();
-          }
-          // Still waiting for second tool.done.
-          return caps.done();
-        }
-        return caps.done();
-      },
-    };
-
-    const runner = makeToolRunner(async (call) => {
-      toolsRun.push(call.name);
-      return { callId: call.id, content: `result-${call.name}` };
-    });
-
-    const reactor = createReactor({
-      sessionId: "sess-tools",
-      plugin,
-      providerConfig: {
-        provider: "anthropic",
-        baseURL: "https://api.anthropic.com",
-        apiKey: "test",
-      },
-      toolRunner: runner,
-      contextStore: makeContextStore(),
-      onEvent,
-      shutdownTimeoutMs: 500,
+          ),
+        "tool.done": (_e, _s, caps) => caps.done(),
+      }),
+      toolRunner: makeToolRunner(async (call) => {
+        toolsRun.push(call.name);
+        return { callId: call.id, content: `result-${call.name}` };
+      }),
     });
 
     reactor.start();
     reactor.deliver(makeInboundMessage());
-
-    await waitForEvent(events, (e) => e.type === "reactor.done", 3000);
+    await waitFor("reactor.done");
 
     expect(toolsRun.sort()).toEqual(["tool_a", "tool_b"].sort());
 
@@ -1075,7 +1064,11 @@ describe("createReactor — correlation", () => {
 
     await waitForEvent(events, (e) => e.type === "reactor.done", 3000);
 
-    expect(events.some((e) => e.type === "message.correlated")).toBe(true);
+    const correlated = getEvent(events, "message.correlated");
+    expect(correlated.data.correlationId).toBe(CORR_ID);
+    expect(correlated.data.message.headers.interchangeCorrelationId).toBe(
+      CORR_ID,
+    );
   });
 
   test("message with non-matching correlationId passes through uncorrelated", async () => {
