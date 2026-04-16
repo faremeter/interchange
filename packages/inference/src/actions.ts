@@ -13,6 +13,11 @@
 // - `reply` + `execute_tools` together is invalid.
 // - `reply` + `done` together is invalid.
 // - `reply` + `suspend` together is invalid.
+// - `wait` + `infer` together is invalid.
+// - `wait` + `execute_tools` together is invalid.
+// - `wait` + `suspend` together is invalid.
+// - `wait` + `reply` together is invalid.
+// - `wait` + `done` together is invalid.
 // - `suspend` cannot appear alongside `infer` or `execute_tools`.
 // - `fork` is composable — may appear alongside any other action.
 // - `checkpoint` is composable — may appear alongside any other action.
@@ -112,6 +117,27 @@ export function validateActions(
 
   if (waitActions.length > 1) {
     return { ok: false, error: "Multiple wait actions are not allowed" };
+  }
+
+  if (waitActions.length > 0) {
+    if (inferActions.length > 0) {
+      return { ok: false, error: "wait and infer cannot appear together" };
+    }
+    if (executeActions.length > 0) {
+      return {
+        ok: false,
+        error: "wait and execute_tools cannot appear together",
+      };
+    }
+    if (suspendActions.length > 0) {
+      return { ok: false, error: "wait and suspend cannot appear together" };
+    }
+    if (replyActions.length > 0) {
+      return { ok: false, error: "wait and reply cannot appear together" };
+    }
+    if (doneActions.length > 0) {
+      return { ok: false, error: "wait and done cannot appear together" };
+    }
   }
 
   // Verify fork actions have unique IDs.
