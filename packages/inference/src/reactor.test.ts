@@ -2346,4 +2346,40 @@ describe("createReactor — inference path", () => {
     expect(inferErr.data.error.category).toBe("retryable");
     expect(inferErr.data.partial.text).toBe("partial output");
   });
+
+  test("inference runner that yields no terminal event emits fatal error and completes", async () => {
+    let capturedError: { category: string; message: string } | undefined;
+
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => caps.infer("mock-model"),
+        "inference.error": (e, _s, caps) => {
+          if (e.type !== "inference.error") throw new Error("unreachable");
+          capturedError = {
+            category: e.error.category,
+            message: e.error.message,
+          };
+          return caps.done();
+        },
+      }),
+      inferenceRunner: async function* (_opts) {
+        // Yield nothing — violates the runner contract.
+      },
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // The reactor should have emitted a reactor.error for observability.
+    const reactorErr = getEvent(events, "reactor.error");
+    expect(reactorErr.data.fatal).toBe(true);
+    expect(reactorErr.data.error).toContain("without a terminal event");
+
+    // The plugin should have received inference.error with category "fatal".
+    if (capturedError === undefined)
+      throw new Error("plugin never received inference.error");
+    expect(capturedError.category).toBe("fatal");
+    expect(capturedError.message).toContain("without a terminal event");
+  });
 });
