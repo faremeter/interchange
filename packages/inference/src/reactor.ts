@@ -26,6 +26,7 @@ import type {
   ToolResult,
   ToolCall,
   AbortReason,
+  BeforeToolExtension,
 } from "@interchange/types/runtime";
 
 import { getLogger } from "@interchange/log";
@@ -74,6 +75,7 @@ export type ReactorConfig = {
   inferenceRunner?: (
     opts: InferenceHarnessOptions,
   ) => AsyncGenerator<InferenceEvent>;
+  beforeToolExtensions?: BeforeToolExtension[];
   gateTimeout?: number;
   shutdownTimeoutMs?: number;
 };
@@ -104,6 +106,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     correlationValidator,
     onEvent,
     inferenceRunner = runInference,
+    beforeToolExtensions = [],
     gateTimeout = DEFAULT_GATE_TIMEOUT_MS,
     shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
   } = config;
@@ -354,10 +357,39 @@ export function createReactor(config: ReactorConfig): Reactor {
     addToHistory = true,
   ): Promise<void> {
     if (stateManager === null) return;
+    const state = stateManager;
 
     const signal = operationController.signal;
 
     const runOne = async (call: ToolCall): Promise<ToolResult> => {
+      // Run before-tool extensions. First block or throw terminates the chain.
+      for (const ext of beforeToolExtensions) {
+        let blockReason: string | undefined;
+        try {
+          blockReason = await ext.beforeTool(call, state.snapshot(), signal);
+        } catch (cause) {
+          const msg = cause instanceof Error ? cause.message : String(cause);
+          emitError(
+            `BeforeToolExtension threw for ${call.name}: ${msg}`,
+            false,
+          );
+          blockReason = msg;
+        }
+        if (blockReason !== undefined) {
+          const blocked: ToolResult = {
+            callId: call.id,
+            content: blockReason,
+            isError: true,
+          };
+          emit({
+            type: "tool.done",
+            seq: nextSeq(),
+            data: { result: blocked },
+          });
+          return blocked;
+        }
+      }
+
       emit({ type: "tool.start", seq: nextSeq(), data: { call } });
       const result = await toolRunner.run(call, signal);
       emit({ type: "tool.done", seq: nextSeq(), data: { result } });
