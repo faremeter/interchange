@@ -287,11 +287,46 @@ describe("createAuditCollector", () => {
     expect(collector.pending()).toBe(0);
   });
 
-  test("throws on orphaned tool.done with no prior context", () => {
+  test("emits degraded record on orphaned tool.done with no prior context", () => {
     const collector = createAuditCollector("session-1");
 
-    expect(() => {
-      collector.onEvent(toolDone("unknown-call", "result", 1));
-    }).toThrow("Orphaned tool.done");
+    collector.onEvent(toolDone("unknown-call", "result", 1));
+
+    const records = collector.flush();
+    expect(records.length).toBe(1);
+    const r = records[0];
+    if (r === undefined) throw new Error("expected record");
+
+    expect(r.callId).toBe("unknown-call");
+    expect(r.tool).toBe("$orphaned");
+    expect(r.arguments).toEqual({});
+    expect(r.authz).toBeNull();
+    expect(r.result.content).toBe("result");
+    expect(r.sessionId).toBe("session-1");
+    expect(r.seq).toBe(1);
+  });
+
+  test("orphaned tool.done propagates isError into degraded record", () => {
+    const collector = createAuditCollector("session-1");
+
+    collector.onEvent(toolDone("orphan-err", "denied", 1, true));
+
+    const records = collector.flush();
+    expect(records.length).toBe(1);
+    const r = records[0];
+    if (r === undefined) throw new Error("expected record");
+
+    expect(r.tool).toBe("$orphaned");
+    expect(r.result.isError).toBe(true);
+    expect(r.result.content).toBe("denied");
+  });
+
+  test("orphaned tool.done does not leak into pending count", () => {
+    const collector = createAuditCollector("session-1");
+
+    collector.onEvent(toolDone("orphan-1", "result", 1));
+
+    expect(collector.pending()).toBe(0);
+    expect(collector.flush().length).toBe(1);
   });
 });
