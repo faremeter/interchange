@@ -20,8 +20,12 @@
 // (ARCHITECTURE.md § Agent Harness, INFERENCE.md § Relationship to Harness)
 
 import { getLogger } from "@interchange/log";
-import { createReactor } from "@interchange/inference";
-import type { Reactor } from "@interchange/inference";
+import {
+  createReactor,
+  createAuditCollector,
+  createAuthzExtension,
+} from "@interchange/inference";
+import type { Reactor, AuditCollector } from "@interchange/inference";
 import type {
   InboundMessage,
   InferenceEvent,
@@ -96,6 +100,27 @@ export function createHarness(config: HarnessConfig): Harness {
   );
 
   const sessionId = crypto.randomUUID();
+
+  // -------------------------------------------------------------------------
+  // Audit collector: correlates tool events with authz decisions.
+  // -------------------------------------------------------------------------
+
+  const auditStore = config.auditStore;
+  const auditCollector: AuditCollector | undefined =
+    auditStore !== undefined ? createAuditCollector(sessionId) : undefined;
+
+  const authzExtension =
+    config.authorize !== undefined
+      ? createAuthzExtension({
+          authorize: config.authorize,
+          onDecision: (d) => auditCollector?.onDecision(d),
+        })
+      : undefined;
+
+  const beforeToolExtensions = [
+    ...(authzExtension !== undefined ? [authzExtension] : []),
+    ...(config.beforeToolExtensions ?? []),
+  ];
 
   // -------------------------------------------------------------------------
   // Connector state: track which thread(s) this reactor owns.
@@ -186,7 +211,6 @@ export function createHarness(config: HarnessConfig): Harness {
       await transport.setFlags(message.ref, ["\\Deleted"]);
       await transport.expunge("INBOX");
     } catch (cause) {
-      // eslint-disable-next-line @typescript-eslint/no-unused-expressions
       logger.warn`Failed to consume message uid=${message.ref.uid} from INBOX: ${cause}`;
     }
   }
@@ -196,6 +220,10 @@ export function createHarness(config: HarnessConfig): Harness {
   // -------------------------------------------------------------------------
 
   function handleEvent(event: InferenceEvent): void {
+    if (auditCollector !== undefined) {
+      auditCollector.onEvent(event);
+    }
+
     // Track outbound sends: when a message.send or message.reply tool starts,
     // note the call ID. When it completes, extract the messageId.
     if (event.type === "tool.start") {
@@ -245,7 +273,6 @@ export function createHarness(config: HarnessConfig): Harness {
           });
           connectorLastMessageId = receipt.messageId;
         } catch (cause) {
-          // eslint-disable-next-line @typescript-eslint/no-unused-expressions
           logger.error`Failed to send connector reply: ${cause}`;
         }
       })();
@@ -259,17 +286,41 @@ export function createHarness(config: HarnessConfig): Harness {
   // Reactor
   // -------------------------------------------------------------------------
 
-  const reactor: Reactor = createReactor({
+  async function flushAudit(): Promise<void> {
+    if (auditCollector === undefined) return;
+    if (auditStore === undefined) {
+      throw new Error(
+        "auditStore must be defined when auditCollector is present",
+      );
+    }
+    const records = auditCollector.flush();
+    if (records.length > 0) {
+      await auditStore.commitAudit(records);
+    }
+  }
+
+  const reactorConfig: Parameters<typeof createReactor>[0] = {
     sessionId,
     plugin,
     providerConfig: provider,
     toolRunner: combinedRunner,
     contextStore: storage,
     onEvent: handleEvent,
-    ...(config.beforeToolExtensions !== undefined
-      ? { beforeToolExtensions: config.beforeToolExtensions }
-      : {}),
-  });
+    beforeToolExtensions,
+  };
+
+  if (auditCollector !== undefined) {
+    reactorConfig.afterCheckpoint = () => flushAudit();
+    reactorConfig.onShutdown = async () => {
+      const inflight = auditCollector.pending();
+      if (inflight > 0) {
+        logger.warn`${inflight} audit records in flight at shutdown, these tool calls will not be recorded`;
+      }
+      await flushAudit();
+    };
+  }
+
+  const reactor: Reactor = createReactor(reactorConfig);
 
   let unsubscribe: Unsubscribe | null = null;
   let started = false;
@@ -297,7 +348,6 @@ export function createHarness(config: HarnessConfig): Harness {
         try {
           message = await transport.fetchFull(ref);
         } catch (cause) {
-          // eslint-disable-next-line @typescript-eslint/no-unused-expressions
           logger.error`Failed to fetch message uid=${event.uid}: ${cause}`;
           return;
         }

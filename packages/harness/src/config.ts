@@ -2,12 +2,14 @@ import type {
   MessageTransport,
   CryptoProvider,
   ContextStore,
+  AuditStore,
   ToolRunner,
   ProviderConfig,
   InferenceEvent,
   ReactorPlugin,
   BeforeToolExtension,
 } from "@interchange/types/runtime";
+import type { AuthzCallResult } from "@interchange/inference";
 
 /**
  * Configuration passed to `createHarness`. All required fields must be
@@ -57,10 +59,28 @@ export type HarnessConfig = {
   /**
    * Extensions that run before each tool call. Return a string to block the
    * call (the string becomes the tool result), or undefined to allow it.
-   * Use `createAuthzExtension` from `@interchange/inference` to wire in
-   * grant-based authorization.
+   * When using `authorize`, the harness creates and prepends an authz
+   * extension automatically — do not also pass one here.
    */
   beforeToolExtensions?: BeforeToolExtension[];
+
+  /**
+   * Audit store for persisting tool invocation records. When provided,
+   * the harness creates an audit collector and flushes completed records
+   * at checkpoint boundaries and shutdown.
+   *
+   * Requires `authorize` to be set so the authz extension's onDecision
+   * callback can feed governance decisions to the collector.
+   */
+  auditStore?: AuditStore;
+
+  /**
+   * Authorization function for tool calls. When provided, the harness
+   * constructs an authz extension internally and prepends it to
+   * `beforeToolExtensions`. Callers should not also pass a manually
+   * constructed authz extension via `beforeToolExtensions`.
+   */
+  authorize?: (resource: string, action: string) => Promise<AuthzCallResult>;
 };
 
 export type PluginPolicy = {
@@ -95,5 +115,10 @@ export function validateConfig(config: HarnessConfig): void {
   }
   if (config.provider.baseURL.trim() === "") {
     throw new Error("HarnessConfig.provider.baseURL must not be empty");
+  }
+  if (config.auditStore !== undefined && config.authorize === undefined) {
+    throw new Error(
+      "HarnessConfig.authorize is required when auditStore is provided",
+    );
   }
 }

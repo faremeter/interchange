@@ -76,6 +76,8 @@ export type ReactorConfig = {
     opts: InferenceHarnessOptions,
   ) => AsyncGenerator<InferenceEvent>;
   beforeToolExtensions?: BeforeToolExtension[];
+  afterCheckpoint?: () => Promise<void>;
+  onShutdown?: () => Promise<void>;
   gateTimeout?: number;
   shutdownTimeoutMs?: number;
 };
@@ -107,6 +109,8 @@ export function createReactor(config: ReactorConfig): Reactor {
     onEvent,
     inferenceRunner = runInference,
     beforeToolExtensions = [],
+    afterCheckpoint,
+    onShutdown,
     gateTimeout = DEFAULT_GATE_TIMEOUT_MS,
     shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
   } = config;
@@ -243,7 +247,6 @@ export function createReactor(config: ReactorConfig): Reactor {
       try {
         valid = await correlationValidator.validate(pending, message);
       } catch (cause) {
-        // eslint-disable-next-line @typescript-eslint/no-unused-expressions
         logger.warn`Correlation validator threw for ${correlationId}: ${cause}`;
         correlatingIds.delete(correlationId);
         return false;
@@ -478,7 +481,7 @@ export function createReactor(config: ReactorConfig): Reactor {
         );
       } catch (cause) {
         const msg = cause instanceof Error ? cause.message : String(cause);
-        // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+
         logger.error`Plugin threw during decide: ${cause}`;
         emitError(`Plugin exception: ${msg}`, true);
         done = true;
@@ -631,12 +634,23 @@ export function createReactor(config: ReactorConfig): Reactor {
         "checkpoint",
       );
     } catch (cause) {
-      // eslint-disable-next-line @typescript-eslint/no-unused-expressions
       logger.error`Checkpoint failed: ${cause}`;
       emitError(
         `Checkpoint failed: ${cause instanceof Error ? cause.message : String(cause)}`,
         false,
       );
+      return;
+    }
+    if (afterCheckpoint !== undefined) {
+      try {
+        await afterCheckpoint();
+      } catch (cause) {
+        logger.error`afterCheckpoint failed: ${cause}`;
+        emitError(
+          `afterCheckpoint failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          false,
+        );
+      }
     }
   }
 
@@ -656,6 +670,18 @@ export function createReactor(config: ReactorConfig): Reactor {
         setTimeout(resolve, shutdownTimeoutMs),
       );
       await Promise.race([Promise.allSettled([...inFlight]), deadline]);
+    }
+
+    if (onShutdown !== undefined) {
+      try {
+        await onShutdown();
+      } catch (cause) {
+        logger.error`onShutdown failed: ${cause}`;
+        emitError(
+          `onShutdown failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          false,
+        );
+      }
     }
 
     emit({
@@ -685,7 +711,6 @@ export function createReactor(config: ReactorConfig): Reactor {
         initialOps = loaded.pendingOperations;
         initialUsage = loaded.tokenUsage;
       } catch (cause) {
-        // eslint-disable-next-line @typescript-eslint/no-unused-expressions
         logger.error`Context store load failed: ${cause}`;
         emitError(
           `Context store load failed: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -708,7 +733,6 @@ export function createReactor(config: ReactorConfig): Reactor {
       try {
         await loop();
       } catch (cause) {
-        // eslint-disable-next-line @typescript-eslint/no-unused-expressions
         logger.error`Reactor loop threw unexpectedly: ${cause}`;
         emitError(
           `Internal reactor error: ${cause instanceof Error ? cause.message : String(cause)}`,

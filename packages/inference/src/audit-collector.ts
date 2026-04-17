@@ -117,7 +117,7 @@ export function createAuditCollector(sessionId: string): AuditCollector {
         // Orphaned tool.done: no tool.start or authz decision was recorded.
         // Emit a degraded record rather than crashing the session — the audit
         // system is observational infrastructure and must not veto execution.
-        // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+
         logger.warn`Orphaned tool.done for callId "${result.callId}": no tool.start or authz decision was recorded`;
         completed.push({
           callId: result.callId,
