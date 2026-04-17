@@ -30,3 +30,10 @@ export type { CorrelationRegistry, CorrelationValidator } from "./correlation";
 export { createStateManager } from "./state";
 export type { ReactorStateManager } from "./state";
 export { createCapabilities } from "./plugin";
+export { createAuthzExtension } from "./authz-extension";
+export type {
+  AuthzCallResult,
+  AuthzDecision,
+  AuthzExtensionOptions,
+  AuthzMatchedGrant,
+} from "./authz-extension";
