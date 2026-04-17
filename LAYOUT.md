@@ -120,7 +120,3 @@ const harness = createHarness({
 4. Environment-specific packages depend on `types` for interfaces, never on each other.
 5. The harness depends on `types` for interfaces, `inference` and `wallet` for portable logic, and `authz` for tool policy. It does not depend on any environment-specific package.
 6. Distribution bundles depend on the harness and a specific set of environment packages. They contain no logic of their own.
-
-## Prototype
-
-The sidecar (`@interchange/sidecar`) is a deployment adapter for the prototype. It sits between the hub and OpenCode, which acts as a stand-in harness. As `@interchange/harness` and `@interchange/inference` mature, the sidecar thins out or disappears. It belongs to neither tree — it is scaffolding.

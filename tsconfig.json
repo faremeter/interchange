@@ -9,7 +9,6 @@
     { "path": "packages/db" },
     { "path": "packages/authz" },
     { "path": "packages/hub" },
-    { "path": "packages/sidecar" },
     { "path": "packages/tools-posix" },
     { "path": "packages/message-memory" },
     { "path": "packages/harness" },
