@@ -16,8 +16,10 @@
 
 import type { AuditRecord, AuditAuthz } from "@interchange/types/audit";
 import type { InferenceEvent } from "@interchange/types/runtime";
-
+import { getLogger } from "@interchange/log";
 import type { AuthzDecision } from "./authz-extension";
+
+const logger = getLogger(["interchange", "audit-collector"]);
 
 type PendingRecord = {
   callId: string;
@@ -112,9 +114,25 @@ export function createAuditCollector(sessionId: string): AuditCollector {
       // the buffered decision and the tool.done event.
       const decision = decisions.get(result.callId);
       if (decision === undefined) {
-        throw new Error(
-          `Orphaned tool.done for callId "${result.callId}": no tool.start or authz decision was recorded`,
-        );
+        // Orphaned tool.done: no tool.start or authz decision was recorded.
+        // Emit a degraded record rather than crashing the session — the audit
+        // system is observational infrastructure and must not veto execution.
+        // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+        logger.warn`Orphaned tool.done for callId "${result.callId}": no tool.start or authz decision was recorded`;
+        completed.push({
+          callId: result.callId,
+          tool: "$orphaned",
+          arguments: {},
+          authz: null,
+          result: {
+            content: coerceContent(result.content),
+            isError: result.isError === true,
+          },
+          timestamp: new Date().toISOString(),
+          sessionId,
+          seq: event.seq,
+        });
+        return;
       }
       decisions.delete(result.callId);
 
