@@ -40,6 +40,7 @@ export type AuthzCallResult = {
 };
 
 export type AuthzDecision = {
+  callId: string;
   tool: string;
   resource: string;
   action: string;
@@ -101,6 +102,7 @@ export function createAuthzExtension(
       } catch (cause) {
         const msg = cause instanceof Error ? cause.message : String(cause);
         const decision: AuthzDecision = {
+          callId: call.id,
           tool: call.name,
           resource,
           action,
@@ -121,6 +123,7 @@ export function createAuthzExtension(
         : undefined;
 
       const decision: AuthzDecision = {
+        callId: call.id,
         tool: call.name,
         resource,
         action,

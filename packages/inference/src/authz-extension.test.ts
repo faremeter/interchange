@@ -100,6 +100,7 @@ describe("createAuthzExtension", () => {
 
     expect(result).toBeUndefined();
     const d = getDecision(decisions);
+    expect(d.callId).toBe("call-1");
     expect(d.effect).toBe("allow");
     expect(d.blocked).toBe(false);
     expect(d.blockReason).toBeUndefined();
@@ -183,6 +184,7 @@ describe("createAuthzExtension", () => {
     ).rejects.toThrow("DB connection failed");
 
     const d = getDecision(decisions);
+    expect(d.callId).toBe("call-1");
     expect(d.blocked).toBe(true);
     expect(d.error).toBe("DB connection failed");
     expect(d.blockReason).toBe("Authorization failed: DB connection failed");
