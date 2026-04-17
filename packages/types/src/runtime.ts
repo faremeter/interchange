@@ -4,6 +4,8 @@
 // no ArkType schemas. Downstream runtime packages import from
 // @interchange/types/runtime.
 
+import type { AuditRecord } from "./audit";
+
 // ---------------------------------------------------------------------------
 // Cryptographic Identity (ARCHITECTURE.md § Cryptographic Identity,
 //                         IMPLEMENTATION.md § Cryptographic Identity: Key Formats)
@@ -1114,6 +1116,30 @@ export interface ContextStore {
    * inspection and rollback.
    */
   readAt(hash: string, signal?: AbortSignal): Promise<ConversationMessage[]>;
+}
+
+// ---------------------------------------------------------------------------
+// Audit Store (INTR-4 § Audit Trail)
+// ---------------------------------------------------------------------------
+
+/**
+ * Persistent store for tool invocation audit records. Separated from
+ * ContextStore so the audit capability is opt-in at the composition
+ * layer. The isogit implementation writes audit records as individual
+ * JSON files in the same git repo used for context storage.
+ */
+export interface AuditStore {
+  /**
+   * Persist a batch of audit records. Called at checkpoint boundaries
+   * with all records accumulated since the last checkpoint.
+   */
+  commitAudit(records: AuditRecord[], signal?: AbortSignal): Promise<void>;
+
+  /**
+   * Load audit records for a session. Returns all records matching
+   * the given sessionId, ordered by seq.
+   */
+  loadAudit(sessionId: string, signal?: AbortSignal): Promise<AuditRecord[]>;
 }
 
 // ---------------------------------------------------------------------------

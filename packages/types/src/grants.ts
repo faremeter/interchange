@@ -48,13 +48,17 @@ export const EvaluateRequest = type({
   action: "string",
 });
 
+export const MatchedGrant = type({
+  id: "string",
+  resource: "string",
+  action: "string",
+  effect: Effect,
+  source: Source,
+  "specificity?": "number",
+});
+export type MatchedGrant = typeof MatchedGrant.infer;
+
 export const EvaluateResult = type({
   effect: Effect,
-  matchingGrants: type({
-    id: "string",
-    resource: "string",
-    action: "string",
-    effect: Effect,
-    source: Source,
-  }).array(),
+  matchingGrants: MatchedGrant.array(),
 });
