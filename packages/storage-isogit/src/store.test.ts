@@ -10,10 +10,13 @@ import {
   listBranches,
   logHistory,
 } from "./index";
+import { IsogitStore } from "./store";
+import { initAgentRepo } from "./init";
 import type {
   ConversationMessage,
   TokenUsage,
 } from "@interchange/types/runtime";
+import type { AuditRecord } from "@interchange/types/audit";
 
 const ZERO_USAGE: TokenUsage = {
   input: 0,
@@ -235,5 +238,209 @@ describe("readAt", () => {
 
     const atFirst = await store.readAt(first.hash);
     expect(atFirst).toEqual(v1);
+  });
+});
+
+function makeAuditRecord(overrides: Partial<AuditRecord> = {}): AuditRecord {
+  return {
+    callId: "call-1",
+    tool: "bash",
+    arguments: { cmd: "ls" },
+    authz: null,
+    result: { content: "output", isError: false },
+    timestamp: "2026-04-17T00:00:00.000Z",
+    sessionId: "session-1",
+    seq: 0,
+    ...overrides,
+  };
+}
+
+async function createAuditStore(dir: string): Promise<IsogitStore> {
+  await initAgentRepo(dir);
+  return new IsogitStore(dir);
+}
+
+describe("audit store", () => {
+  test("round-trips a single audit record", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    const record = makeAuditRecord();
+    await store.commitAudit([record]);
+
+    const loaded = await store.loadAudit("session-1");
+    expect(loaded).toEqual([record]);
+  });
+
+  test("commits multiple records in a single batch", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    const records = [
+      makeAuditRecord({ callId: "c1", seq: 0 }),
+      makeAuditRecord({ callId: "c2", seq: 1 }),
+      makeAuditRecord({ callId: "c3", seq: 2 }),
+    ];
+    await store.commitAudit(records);
+
+    const loaded = await store.loadAudit("session-1");
+    expect(loaded.length).toBe(3);
+    expect(loaded.map((r) => r.callId)).toEqual(["c1", "c2", "c3"]);
+  });
+
+  test("isolates records by session", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    await store.commitAudit([
+      makeAuditRecord({ sessionId: "s1", callId: "c1", seq: 0 }),
+      makeAuditRecord({ sessionId: "s2", callId: "c2", seq: 0 }),
+    ]);
+
+    const s1 = await store.loadAudit("s1");
+    const s2 = await store.loadAudit("s2");
+    expect(s1.length).toBe(1);
+    const r1 = s1[0];
+    if (r1 === undefined) throw new Error("expected s1 record");
+    expect(r1.callId).toBe("c1");
+    expect(s2.length).toBe(1);
+    const r2 = s2[0];
+    if (r2 === undefined) throw new Error("expected s2 record");
+    expect(r2.callId).toBe("c2");
+  });
+
+  test("returns empty array for nonexistent session", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    const loaded = await store.loadAudit("no-such-session");
+    expect(loaded).toEqual([]);
+  });
+
+  test("sorts loaded records by seq", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    await store.commitAudit([
+      makeAuditRecord({ callId: "c3", seq: 5 }),
+      makeAuditRecord({ callId: "c1", seq: 1 }),
+      makeAuditRecord({ callId: "c2", seq: 3 }),
+    ]);
+
+    const loaded = await store.loadAudit("session-1");
+    expect(loaded.map((r) => r.seq)).toEqual([1, 3, 5]);
+  });
+
+  test("empty records array does not disturb existing records", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    await store.commitAudit([makeAuditRecord({ callId: "c1", seq: 0 })]);
+    await store.commitAudit([]);
+
+    const loaded = await store.loadAudit("session-1");
+    expect(loaded.length).toBe(1);
+    expect(loaded[0]?.callId).toBe("c1");
+  });
+
+  test("accumulates records across multiple commits", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    await store.commitAudit([makeAuditRecord({ callId: "c1", seq: 0 })]);
+    await store.commitAudit([makeAuditRecord({ callId: "c2", seq: 1 })]);
+
+    const loaded = await store.loadAudit("session-1");
+    expect(loaded.length).toBe(2);
+    expect(loaded.map((r) => r.callId)).toEqual(["c1", "c2"]);
+  });
+
+  test("preserves authz fields through round-trip", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    const record = makeAuditRecord({
+      authz: {
+        effect: "allow",
+        resolvedBy: {
+          id: "g1",
+          resource: "tool:bash",
+          action: "invoke",
+          effect: "allow",
+          source: "creator",
+          specificity: 1009,
+        },
+        matchingGrants: [
+          {
+            id: "g1",
+            resource: "tool:bash",
+            action: "invoke",
+            effect: "allow",
+            source: "creator",
+            specificity: 1009,
+          },
+        ],
+        blocked: false,
+      },
+    });
+    await store.commitAudit([record]);
+
+    const loaded = await store.loadAudit("session-1");
+    const r = loaded[0];
+    if (r === undefined) throw new Error("expected record");
+    expect(r.authz).toEqual(record.authz);
+  });
+
+  test("rejects corrupted audit files on load", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    await store.commitAudit([makeAuditRecord()]);
+
+    const corruptPath = path.join(dir, "audit", "session-1", "call-1.json");
+    await fs.promises.writeFile(corruptPath, JSON.stringify({ garbage: true }));
+
+    await expect(store.loadAudit("session-1")).rejects.toThrow(
+      "Invalid audit record",
+    );
+  });
+
+  test("rejects sessionId with path traversal", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    const record = makeAuditRecord({ sessionId: "../escape" });
+    await expect(store.commitAudit([record])).rejects.toThrow(
+      "unsafe characters",
+    );
+  });
+
+  test("rejects callId with path traversal", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    const record = makeAuditRecord({ callId: "../escape" });
+    await expect(store.commitAudit([record])).rejects.toThrow(
+      "unsafe characters",
+    );
+  });
+
+  test("rejects sessionId with path traversal on load", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    await expect(store.loadAudit("../escape")).rejects.toThrow(
+      "unsafe characters",
+    );
+  });
+
+  test("rejects duplicate callId within a session", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    await store.commitAudit([makeAuditRecord({ callId: "c1", seq: 0 })]);
+    await expect(
+      store.commitAudit([makeAuditRecord({ callId: "c1", seq: 1 })]),
+    ).rejects.toThrow("Duplicate audit record");
   });
 });
