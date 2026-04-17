@@ -4,6 +4,7 @@ import type {
   MessageTransport,
   CryptoProvider,
   ContextStore,
+  AuditStore,
   ToolRunner,
   InboundMessage,
   OutboundMessage,
@@ -28,6 +29,13 @@ import type {
   ToolCall,
   ToolResult,
   InferenceEvent,
+} from "@interchange/types/runtime";
+import type { AuditRecord } from "@interchange/types/audit";
+import type { AuthzCallResult } from "@interchange/inference";
+import type {
+  ReactorPlugin,
+  ReactorState,
+  ReactorCapabilities,
 } from "@interchange/types/runtime";
 
 import { createHarness } from "./harness";
@@ -1025,5 +1033,323 @@ describe("Config validation", () => {
     expect(() =>
       createHarness(makeConfig(transport, { systemPrompt: "" })),
     ).toThrow("systemPrompt");
+  });
+
+  test("throws when auditStore is provided without authorize", () => {
+    const transport = makeMockTransport();
+    const auditStore: AuditStore = {
+      async commitAudit() {
+        /* noop */
+      },
+      async loadAudit() {
+        return [];
+      },
+    };
+    expect(() => createHarness(makeConfig(transport, { auditStore }))).toThrow(
+      "authorize is required when auditStore is provided",
+    );
+  });
+
+  test("accepts auditStore with authorize", () => {
+    const transport = makeMockTransport();
+    const auditStore: AuditStore = {
+      async commitAudit() {
+        /* noop */
+      },
+      async loadAudit() {
+        return [];
+      },
+    };
+    const authorize = async (): Promise<AuthzCallResult> => ({
+      effect: "allow",
+      matchingGrants: [],
+      resolvedBy: null,
+    });
+    expect(() =>
+      createHarness(makeConfig(transport, { auditStore, authorize })),
+    ).not.toThrow();
+  });
+
+  test("accepts authorize without auditStore", () => {
+    const transport = makeMockTransport();
+    const authorize = async (): Promise<AuthzCallResult> => ({
+      effect: "allow",
+      matchingGrants: [],
+      resolvedBy: null,
+    });
+    expect(() =>
+      createHarness(makeConfig(transport, { authorize })),
+    ).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. Audit integration
+// ---------------------------------------------------------------------------
+
+describe("Audit integration", () => {
+  function makeAuditStore(): AuditStore & {
+    getCommitted(): AuditRecord[][];
+  } {
+    const committed: AuditRecord[][] = [];
+    return {
+      async commitAudit(records: AuditRecord[]) {
+        committed.push([...records]);
+      },
+      async loadAudit() {
+        return committed.flat();
+      },
+      getCommitted() {
+        return committed;
+      },
+    };
+  }
+
+  function allowAll(): Promise<AuthzCallResult> {
+    return Promise.resolve({
+      effect: "allow" as const,
+      matchingGrants: [],
+      resolvedBy: null,
+    });
+  }
+
+  function denyAll(): Promise<AuthzCallResult> {
+    return Promise.resolve({
+      effect: "deny" as const,
+      matchingGrants: [],
+      resolvedBy: null,
+    });
+  }
+
+  // A plugin that executes a single tool call on message.received,
+  // then checkpoints and shuts down on tool.done. This exercises
+  // the full audit pipeline without needing a real LLM.
+  function makeToolExecPlugin(
+    toolName: string,
+    toolArgs: Record<string, unknown>,
+  ): ReactorPlugin {
+    return {
+      async decide(
+        event: { type: string },
+        _state: ReactorState,
+        caps: ReactorCapabilities,
+      ) {
+        if (event.type === "message.received") {
+          return caps.executeTools([
+            { id: `call-${toolName}`, name: toolName, arguments: toolArgs },
+          ]);
+        }
+        if (event.type === "tool.done") {
+          return [caps.checkpoint(), caps.done()];
+        }
+        return caps.done();
+      },
+    };
+  }
+
+  function waitForDone(events: InferenceEvent[]): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const deadline = setTimeout(
+        () => reject(new Error("Timed out waiting for reactor.done")),
+        5000,
+      );
+      const check = () => {
+        if (events.some((e) => e.type === "reactor.done")) {
+          clearTimeout(deadline);
+          resolve();
+          return;
+        }
+        setTimeout(check, 10);
+      };
+      check();
+    });
+  }
+
+  test("allowed tool call produces audit record with authz and result", async () => {
+    const transport = makeMockTransport();
+    const auditStore = makeAuditStore();
+    const events: InferenceEvent[] = [];
+
+    const harness = createHarness(
+      makeConfig(transport, {
+        auditStore,
+        authorize: () => allowAll(),
+        onEvent: (e) => events.push(e),
+        plugin: makeToolExecPlugin("test_tool", { key: "value" }),
+      }),
+    );
+
+    harness.start();
+    harness.deliver(makeInboundMessage());
+    await waitForDone(events);
+
+    const records = auditStore.getCommitted().flat();
+    expect(records.length).toBe(1);
+
+    const record = records[0];
+    if (record === undefined) throw new Error("expected record");
+
+    expect(record.callId).toBe("call-test_tool");
+    expect(record.tool).toBe("test_tool");
+    expect(record.arguments).toEqual({ key: "value" });
+    expect(record.authz).not.toBeNull();
+    if (record.authz === null) throw new Error("expected authz");
+    expect(record.authz.effect).toBe("allow");
+    expect(record.authz.blocked).toBe(false);
+    expect(record.result.content).toBe("mock-result");
+    expect(record.result.isError).toBe(false);
+    expect(record.sessionId).toBeDefined();
+    // seq comes from the reactor's tool.done event; verify it matches.
+    const toolDoneEvent = events.find(
+      (e) =>
+        e.type === "tool.done" &&
+        e.data.result.callId === "call-test_tool" &&
+        !e.data.result.isError,
+    );
+    if (toolDoneEvent === undefined)
+      throw new Error("expected tool.done event");
+    expect(record.seq).toBe(toolDoneEvent.seq);
+  });
+
+  test("blocked tool call produces audit record with denied authz", async () => {
+    const transport = makeMockTransport();
+    const auditStore = makeAuditStore();
+    const events: InferenceEvent[] = [];
+
+    const harness = createHarness(
+      makeConfig(transport, {
+        auditStore,
+        authorize: () => denyAll(),
+        onEvent: (e) => events.push(e),
+        plugin: makeToolExecPlugin("secret_tool", { path: "/etc/shadow" }),
+      }),
+    );
+
+    harness.start();
+    harness.deliver(makeInboundMessage());
+    await waitForDone(events);
+
+    const records = auditStore.getCommitted().flat();
+    expect(records.length).toBe(1);
+
+    const record = records[0];
+    if (record === undefined) throw new Error("expected record");
+
+    expect(record.callId).toBe("call-secret_tool");
+    expect(record.tool).toBe("secret_tool");
+    // Blocked calls never see tool.start, so arguments are not captured.
+    expect(record.arguments).toEqual({});
+    expect(record.authz).not.toBeNull();
+    if (record.authz === null) throw new Error("expected authz");
+    expect(record.authz.effect).toBe("deny");
+    expect(record.authz.blocked).toBe(true);
+    expect(record.authz.blockReason).toBeDefined();
+    expect(record.result.isError).toBe(true);
+  });
+
+  test("audit records are flushed at shutdown for unflushed records", async () => {
+    const transport = makeMockTransport();
+    const auditStore = makeAuditStore();
+    const events: InferenceEvent[] = [];
+
+    // Plugin that executes tools but does NOT checkpoint before done.
+    // Records should still be flushed via onShutdown.
+    const plugin: ReactorPlugin = {
+      async decide(
+        event: { type: string },
+        _state: ReactorState,
+        caps: ReactorCapabilities,
+      ) {
+        if (event.type === "message.received") {
+          return caps.executeTools([
+            { id: "call-1", name: "test_tool", arguments: {} },
+          ]);
+        }
+        if (event.type === "tool.done") {
+          return caps.done();
+        }
+        return caps.done();
+      },
+    };
+
+    const harness = createHarness(
+      makeConfig(transport, {
+        auditStore,
+        authorize: () => allowAll(),
+        onEvent: (e) => events.push(e),
+        plugin,
+      }),
+    );
+
+    harness.start();
+    harness.deliver(makeInboundMessage());
+    await waitForDone(events);
+
+    // Records should have been flushed via onShutdown (no checkpoint).
+    const batches = auditStore.getCommitted();
+    expect(batches.length).toBe(1);
+    expect(batches[0]?.length).toBe(1);
+    expect(batches[0]?.[0]?.callId).toBe("call-1");
+  });
+
+  test("checkpoint then shutdown does not double-commit audit records", async () => {
+    const transport = makeMockTransport();
+    const auditStore = makeAuditStore();
+    const events: InferenceEvent[] = [];
+
+    // Plugin checkpoints before done — both afterCheckpoint and onShutdown
+    // fire. The second flush should be a no-op.
+    const harness = createHarness(
+      makeConfig(transport, {
+        auditStore,
+        authorize: () => allowAll(),
+        onEvent: (e) => events.push(e),
+        plugin: makeToolExecPlugin("test_tool", { x: 1 }),
+      }),
+    );
+
+    harness.start();
+    harness.deliver(makeInboundMessage());
+    await waitForDone(events);
+
+    // commitAudit should be called exactly once (at checkpoint).
+    // The onShutdown flush finds an empty buffer and skips.
+    const batches = auditStore.getCommitted();
+    expect(batches.length).toBe(1);
+    expect(batches[0]?.length).toBe(1);
+  });
+
+  test("authorize throwing produces blocked audit record", async () => {
+    const transport = makeMockTransport();
+    const auditStore = makeAuditStore();
+    const events: InferenceEvent[] = [];
+
+    const harness = createHarness(
+      makeConfig(transport, {
+        auditStore,
+        authorize: () => {
+          throw new Error("authz service unavailable");
+        },
+        onEvent: (e) => events.push(e),
+        plugin: makeToolExecPlugin("risky_tool", { cmd: "rm -rf /" }),
+      }),
+    );
+
+    harness.start();
+    harness.deliver(makeInboundMessage());
+    await waitForDone(events);
+
+    const records = auditStore.getCommitted().flat();
+    expect(records.length).toBe(1);
+
+    const record = records[0];
+    if (record === undefined) throw new Error("expected record");
+
+    expect(record.tool).toBe("risky_tool");
+    expect(record.authz).not.toBeNull();
+    if (record.authz === null) throw new Error("expected authz");
+    expect(record.authz.blocked).toBe(true);
+    expect(record.authz.effect).toBeNull();
+    expect(record.result.isError).toBe(true);
   });
 });

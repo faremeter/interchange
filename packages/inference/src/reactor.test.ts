@@ -190,6 +190,8 @@ type TestReactorOverrides = {
     opts: InferenceHarnessOptions,
   ) => AsyncGenerator<InferenceEvent>;
   beforeToolExtensions?: BeforeToolExtension[];
+  afterCheckpoint?: () => Promise<void>;
+  onShutdown?: () => Promise<void>;
   sessionId?: string;
   gateTimeout?: number;
   shutdownTimeoutMs?: number;
@@ -230,6 +232,12 @@ function createTestReactor(
       : {}),
     ...(overrides.beforeToolExtensions !== undefined
       ? { beforeToolExtensions: overrides.beforeToolExtensions }
+      : {}),
+    ...(overrides.afterCheckpoint !== undefined
+      ? { afterCheckpoint: overrides.afterCheckpoint }
+      : {}),
+    ...(overrides.onShutdown !== undefined
+      ? { onShutdown: overrides.onShutdown }
       : {}),
     ...(overrides.gateTimeout !== undefined
       ? { gateTimeout: overrides.gateTimeout }
@@ -2676,5 +2684,171 @@ describe("createReactor — beforeToolExtensions", () => {
       throw new Error("expected tool.done for allowed call");
     expect(allowedDone.data.result.isError).toBeUndefined();
     expect(allowedDone.data.result.content).toBe("result-read_file");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lifecycle hooks: afterCheckpoint and onShutdown
+// ---------------------------------------------------------------------------
+
+describe("createReactor — afterCheckpoint", () => {
+  test("afterCheckpoint is called after successful checkpoint", async () => {
+    let afterCheckpointCalled = false;
+
+    const { reactor, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => [caps.checkpoint(), caps.done()],
+      }),
+      afterCheckpoint: async () => {
+        afterCheckpointCalled = true;
+      },
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+    expect(afterCheckpointCalled).toBe(true);
+  });
+
+  test("afterCheckpoint is skipped when context commit fails", async () => {
+    let afterCheckpointCalled = false;
+    let commitCount = 0;
+
+    const store = makeContextStore();
+    const originalCommit = store.commit.bind(store);
+    store.commit = async (...args) => {
+      commitCount++;
+      if (commitCount === 1) {
+        throw new Error("disk full");
+      }
+      return originalCommit(...args);
+    };
+
+    const { reactor, waitFor } = createTestReactor({
+      contextStore: store,
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => [caps.checkpoint(), caps.done()],
+      }),
+      afterCheckpoint: async () => {
+        afterCheckpointCalled = true;
+      },
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+    expect(afterCheckpointCalled).toBe(false);
+  });
+
+  test("afterCheckpoint failure emits non-fatal reactor.error", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => [caps.checkpoint(), caps.done()],
+      }),
+      afterCheckpoint: async () => {
+        throw new Error("audit flush failed");
+      },
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const errors = events.filter((e) => e.type === "reactor.error");
+    const hookError = errors.find(
+      (e) =>
+        e.type === "reactor.error" && e.data.error.includes("afterCheckpoint"),
+    );
+    expect(hookError).toBeDefined();
+    if (hookError === undefined || hookError.type !== "reactor.error") {
+      throw new Error("expected reactor.error");
+    }
+    expect(hookError.data.fatal).toBe(false);
+
+    // reactor.done should still be emitted
+    const done = events.find((e) => e.type === "reactor.done");
+    expect(done).toBeDefined();
+  });
+});
+
+describe("createReactor — onShutdown", () => {
+  test("onShutdown is called before reactor.done on normal shutdown", async () => {
+    const callOrder: string[] = [];
+
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => caps.done(),
+      }),
+      onShutdown: async () => {
+        callOrder.push("onShutdown");
+      },
+    });
+
+    // Intercept reactor.done to track ordering.
+    const originalPush = events.push.bind(events);
+    events.push = (...args) => {
+      for (const e of args) {
+        if (e.type === "reactor.done") {
+          callOrder.push("reactor.done");
+        }
+      }
+      return originalPush(...args);
+    };
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(callOrder).toEqual(["onShutdown", "reactor.done"]);
+  });
+
+  test("onShutdown failure emits non-fatal reactor.error and reactor.done still fires", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => caps.done(),
+      }),
+      onShutdown: async () => {
+        throw new Error("shutdown flush failed");
+      },
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const errors = events.filter(
+      (e) => e.type === "reactor.error" && e.data.error.includes("onShutdown"),
+    );
+    expect(errors.length).toBe(1);
+    if (errors[0] === undefined || errors[0].type !== "reactor.error") {
+      throw new Error("expected reactor.error");
+    }
+    expect(errors[0].data.fatal).toBe(false);
+
+    const done = events.find((e) => e.type === "reactor.done");
+    expect(done).toBeDefined();
+  });
+
+  test("onShutdown is called on abort", async () => {
+    let shutdownCalled = false;
+
+    const { reactor, waitFor } = createTestReactor({
+      plugin: pluginFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.wait(),
+        },
+        "wait",
+      ),
+      onShutdown: async () => {
+        shutdownCalled = true;
+      },
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.start");
+    reactor.abort("test_disconnect");
+    await waitFor("reactor.done");
+    expect(shutdownCalled).toBe(true);
   });
 });
