@@ -22,6 +22,7 @@ import type {
   AssistantMessage,
   InferenceError,
   PartialMessage,
+  BeforeToolExtension,
 } from "@interchange/types/runtime";
 
 import type { ReactorConfig, Reactor } from "./reactor";
@@ -188,6 +189,7 @@ type TestReactorOverrides = {
   inferenceRunner?: (
     opts: InferenceHarnessOptions,
   ) => AsyncGenerator<InferenceEvent>;
+  beforeToolExtensions?: BeforeToolExtension[];
   sessionId?: string;
   gateTimeout?: number;
   shutdownTimeoutMs?: number;
@@ -225,6 +227,9 @@ function createTestReactor(
       : {}),
     ...(overrides.inferenceRunner !== undefined
       ? { inferenceRunner: overrides.inferenceRunner }
+      : {}),
+    ...(overrides.beforeToolExtensions !== undefined
+      ? { beforeToolExtensions: overrides.beforeToolExtensions }
       : {}),
     ...(overrides.gateTimeout !== undefined
       ? { gateTimeout: overrides.gateTimeout }
@@ -2291,5 +2296,385 @@ describe("createReactor — inference path", () => {
       throw new Error("plugin never received inference.error");
     expect(capturedError.category).toBe("fatal");
     expect(capturedError.message).toContain("without a terminal event");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BeforeToolExtension
+// ---------------------------------------------------------------------------
+
+describe("createReactor — beforeToolExtensions", () => {
+  const toolCallMsg: AssistantMessage = {
+    role: "assistant",
+    content: [
+      {
+        type: "tool_call",
+        id: "call-1",
+        name: "bash",
+        arguments: { cmd: "ls" },
+      },
+    ],
+    model: "test-model",
+  };
+
+  const inferUsage: TokenUsage = {
+    input: 10,
+    output: 5,
+    cacheRead: 0,
+    cacheWrite: 0,
+    thinking: 0,
+  };
+
+  function inferenceRunnerWithToolCall() {
+    return makeInferenceRunner({
+      type: "done",
+      message: toolCallMsg,
+      usage: inferUsage,
+    });
+  }
+
+  test("allowing extension lets the tool run normally", async () => {
+    const allowAll: BeforeToolExtension = {
+      async beforeTool() {
+        return undefined;
+      },
+    };
+
+    const toolsRun: string[] = [];
+
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => caps.infer("test-model"),
+        "inference.done": (_e, _s, caps) =>
+          caps.executeTools(
+            [{ id: "call-1", name: "bash", arguments: { cmd: "ls" } }],
+            true,
+          ),
+        "tool.done": (_e, _s, caps) => caps.done(),
+      }),
+      toolRunner: makeToolRunner(async (call) => {
+        toolsRun.push(call.name);
+        return { callId: call.id, content: "ok" };
+      }),
+      inferenceRunner: inferenceRunnerWithToolCall(),
+      beforeToolExtensions: [allowAll],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(toolsRun).toEqual(["bash"]);
+    const starts = events.filter((e) => e.type === "tool.start");
+    expect(starts.length).toBe(1);
+  });
+
+  test("blocking extension prevents tool execution", async () => {
+    const blockBash: BeforeToolExtension = {
+      async beforeTool(call) {
+        if (call.name === "bash") return "Denied by policy";
+        return undefined;
+      },
+    };
+
+    const toolsRun: string[] = [];
+
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => caps.infer("test-model"),
+        "inference.done": (_e, _s, caps) =>
+          caps.executeTools(
+            [{ id: "call-1", name: "bash", arguments: { cmd: "ls" } }],
+            true,
+          ),
+        "tool.done": (_e, _s, caps) => caps.done(),
+      }),
+      toolRunner: makeToolRunner(async (call) => {
+        toolsRun.push(call.name);
+        return { callId: call.id, content: "ok" };
+      }),
+      inferenceRunner: inferenceRunnerWithToolCall(),
+      beforeToolExtensions: [blockBash],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(toolsRun).toEqual([]);
+
+    // No tool.start for blocked tools.
+    const starts = events.filter((e) => e.type === "tool.start");
+    expect(starts.length).toBe(0);
+
+    // tool.done is emitted with isError and the block reason.
+    const doneEvents = events.filter((e) => e.type === "tool.done");
+    expect(doneEvents.length).toBeGreaterThanOrEqual(1);
+    const blocked = doneEvents[0] as Extract<
+      InferenceEvent,
+      { type: "tool.done" }
+    >;
+    expect(blocked.data.result.isError).toBe(true);
+    expect(blocked.data.result.content).toBe("Denied by policy");
+    expect(blocked.data.result.callId).toBe("call-1");
+  });
+
+  test("first blocking extension wins and subsequent extensions are not called", async () => {
+    const called: string[] = [];
+
+    const extA: BeforeToolExtension = {
+      async beforeTool() {
+        called.push("A");
+        return "Blocked by A";
+      },
+    };
+
+    const extB: BeforeToolExtension = {
+      async beforeTool() {
+        called.push("B");
+        return undefined;
+      },
+    };
+
+    const { reactor, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => caps.infer("test-model"),
+        "inference.done": (_e, _s, caps) =>
+          caps.executeTools(
+            [{ id: "call-1", name: "bash", arguments: { cmd: "ls" } }],
+            true,
+          ),
+        "tool.done": (_e, _s, caps) => caps.done(),
+      }),
+      inferenceRunner: inferenceRunnerWithToolCall(),
+      beforeToolExtensions: [extA, extB],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(called).toEqual(["A"]);
+  });
+
+  test("throwing extension is treated as a block with reactor.error", async () => {
+    const throwingExt: BeforeToolExtension = {
+      async beforeTool() {
+        throw new Error("Extension crashed");
+      },
+    };
+
+    const toolsRun: string[] = [];
+
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => caps.infer("test-model"),
+        "inference.done": (_e, _s, caps) =>
+          caps.executeTools(
+            [{ id: "call-1", name: "bash", arguments: { cmd: "ls" } }],
+            true,
+          ),
+        "tool.done": (_e, _s, caps) => caps.done(),
+      }),
+      toolRunner: makeToolRunner(async (call) => {
+        toolsRun.push(call.name);
+        return { callId: call.id, content: "ok" };
+      }),
+      inferenceRunner: inferenceRunnerWithToolCall(),
+      beforeToolExtensions: [throwingExt],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(toolsRun).toEqual([]);
+
+    const reactorErrors = events.filter((e) => e.type === "reactor.error");
+    const extError = reactorErrors.find(
+      (e) =>
+        e.type === "reactor.error" &&
+        e.data.error.includes("BeforeToolExtension threw"),
+    );
+    if (extError === undefined || extError.type !== "reactor.error")
+      throw new Error("expected reactor.error from throwing extension");
+    expect(extError.data.fatal).toBe(false);
+  });
+
+  test("throwing extension terminates chain before subsequent extensions", async () => {
+    const called: string[] = [];
+
+    const throwingExt: BeforeToolExtension = {
+      async beforeTool() {
+        called.push("thrower");
+        throw new Error("boom");
+      },
+    };
+
+    const secondExt: BeforeToolExtension = {
+      async beforeTool() {
+        called.push("second");
+        return undefined;
+      },
+    };
+
+    const { reactor, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => caps.infer("test-model"),
+        "inference.done": (_e, _s, caps) =>
+          caps.executeTools(
+            [{ id: "call-1", name: "bash", arguments: { cmd: "ls" } }],
+            true,
+          ),
+        "tool.done": (_e, _s, caps) => caps.done(),
+      }),
+      inferenceRunner: inferenceRunnerWithToolCall(),
+      beforeToolExtensions: [throwingExt, secondExt],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(called).toEqual(["thrower"]);
+  });
+
+  test("extension receives current state snapshot", async () => {
+    let capturedState: ReactorState | undefined;
+
+    const capturingExt: BeforeToolExtension = {
+      async beforeTool(_call, state) {
+        capturedState = state;
+        return undefined;
+      },
+    };
+
+    const { reactor, waitFor } = createTestReactor({
+      plugin: pluginFromTable({
+        "message.received": (_e, _s, caps) => caps.infer("test-model"),
+        "inference.done": (_e, _s, caps) =>
+          caps.executeTools(
+            [{ id: "call-1", name: "bash", arguments: { cmd: "ls" } }],
+            true,
+          ),
+        "tool.done": (_e, _s, caps) => caps.done(),
+      }),
+      inferenceRunner: inferenceRunnerWithToolCall(),
+      beforeToolExtensions: [capturingExt],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    if (capturedState === undefined)
+      throw new Error("extension was never called");
+    // State should contain the inbound message and the assistant tool_call message.
+    expect(capturedState.messages.length).toBeGreaterThanOrEqual(2);
+    expect(capturedState.sessionId).toContain("test-sess-");
+  });
+
+  test("parallel batch with one blocked and one allowed tool", async () => {
+    const blockBash: BeforeToolExtension = {
+      async beforeTool(call) {
+        if (call.name === "bash") return "Denied by policy";
+        return undefined;
+      },
+    };
+
+    const toolsRun: string[] = [];
+
+    const twoToolCallMsg: AssistantMessage = {
+      role: "assistant",
+      content: [
+        {
+          type: "tool_call",
+          id: "call-bash",
+          name: "bash",
+          arguments: { cmd: "rm -rf /" },
+        },
+        {
+          type: "tool_call",
+          id: "call-read",
+          name: "read_file",
+          arguments: { path: "/etc/hosts" },
+        },
+      ],
+      model: "test-model",
+    };
+
+    let toolDoneCount = 0;
+    const { reactor, events, waitFor } = createTestReactor({
+      plugin: pluginFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.infer("test-model"),
+          "inference.done": (_e, _s, caps) =>
+            caps.executeTools(
+              [
+                {
+                  id: "call-bash",
+                  name: "bash",
+                  arguments: { cmd: "rm -rf /" },
+                },
+                {
+                  id: "call-read",
+                  name: "read_file",
+                  arguments: { path: "/etc/hosts" },
+                },
+              ],
+              true,
+            ),
+          "tool.done": (_e, _s, caps) => {
+            toolDoneCount++;
+            if (toolDoneCount >= 2) return caps.done();
+            return caps.wait();
+          },
+        },
+        "wait",
+      ),
+      toolRunner: makeToolRunner(async (call) => {
+        toolsRun.push(call.name);
+        return { callId: call.id, content: `result-${call.name}` };
+      }),
+      inferenceRunner: makeInferenceRunner({
+        type: "done",
+        message: twoToolCallMsg,
+        usage: inferUsage,
+      }),
+      beforeToolExtensions: [blockBash],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // Only the allowed tool should have run.
+    expect(toolsRun).toEqual(["read_file"]);
+
+    // tool.start only for the allowed tool.
+    const starts = events.filter((e) => e.type === "tool.start");
+    expect(starts.length).toBe(1);
+
+    // Both tools produce tool.done events.
+    const doneEvents = events.filter((e) => e.type === "tool.done");
+    expect(doneEvents.length).toBeGreaterThanOrEqual(2);
+
+    // The blocked tool has isError.
+    const blockedDone = doneEvents.find(
+      (e) => e.type === "tool.done" && e.data.result.callId === "call-bash",
+    );
+    if (blockedDone === undefined || blockedDone.type !== "tool.done")
+      throw new Error("expected tool.done for blocked call");
+    expect(blockedDone.data.result.isError).toBe(true);
+    expect(blockedDone.data.result.content).toBe("Denied by policy");
+
+    // The allowed tool has the real result.
+    const allowedDone = doneEvents.find(
+      (e) => e.type === "tool.done" && e.data.result.callId === "call-read",
+    );
+    if (allowedDone === undefined || allowedDone.type !== "tool.done")
+      throw new Error("expected tool.done for allowed call");
+    expect(allowedDone.data.result.isError).toBeUndefined();
+    expect(allowedDone.data.result.content).toBe("result-read_file");
   });
 });
