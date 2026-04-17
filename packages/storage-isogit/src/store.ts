@@ -3,11 +3,17 @@ import path from "node:path";
 import git from "isomorphic-git";
 import type {
   ContextStore,
+  AuditStore,
   ContextCommit,
   ConversationMessage,
   PendingOperation,
   TokenUsage,
 } from "@interchange/types/runtime";
+import { type } from "arktype";
+import {
+  AuditRecord,
+  type AuditRecord as AuditRecordType,
+} from "@interchange/types/audit";
 import { AUTHOR } from "./init";
 
 const CONTEXT_FILE = "context.json";
@@ -47,14 +53,27 @@ async function readCommitLog(
   });
 }
 
+const AUDIT_DIR = "audit";
+
+const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
+
+function assertSafeSegment(value: string, label: string): void {
+  if (!SAFE_PATH_SEGMENT.test(value)) {
+    throw new Error(
+      `${label} contains unsafe characters: ${JSON.stringify(value)}`,
+    );
+  }
+}
+
 /**
- * isomorphic-git-backed implementation of ContextStore.
+ * isomorphic-git-backed implementation of ContextStore and AuditStore.
  *
- * All state is serialized into a single `context.json` file tracked by the
- * git repository at `dir`. The caller is responsible for calling
- * `initAgentRepo(dir)` before constructing this store.
+ * Context state is serialized into a single `context.json` file. Audit
+ * records are written as individual JSON files under `audit/{sessionId}/`.
+ * Both are tracked by the git repository at `dir`. The caller is
+ * responsible for calling `initAgentRepo(dir)` before constructing.
  */
-export class IsogitStore implements ContextStore {
+export class IsogitStore implements ContextStore, AuditStore {
   constructor(private readonly dir: string) {}
 
   async load(_signal?: AbortSignal): Promise<{
@@ -125,5 +144,90 @@ export class IsogitStore implements ContextStore {
     const parsed = JSON.parse(text) as unknown;
     const data = parseContextData(parsed);
     return data.messages;
+  }
+
+  async commitAudit(
+    records: AuditRecordType[],
+    _signal?: AbortSignal,
+  ): Promise<void> {
+    if (records.length === 0) return;
+
+    for (const record of records) {
+      assertSafeSegment(record.sessionId, "sessionId");
+      assertSafeSegment(record.callId, "callId");
+
+      const sessionDir = path.join(this.dir, AUDIT_DIR, record.sessionId);
+      await fs.promises.mkdir(sessionDir, { recursive: true });
+
+      const filepath = path.join(
+        AUDIT_DIR,
+        record.sessionId,
+        `${record.callId}.json`,
+      );
+      const fullPath = path.join(this.dir, filepath);
+
+      try {
+        await fs.promises.access(fullPath);
+        throw new Error(
+          `Duplicate audit record: ${record.sessionId}/${record.callId}`,
+        );
+      } catch (e) {
+        if (e instanceof Error && "code" in e && e.code === "ENOENT") {
+          // Expected: file does not exist yet.
+        } else {
+          throw e;
+        }
+      }
+
+      await fs.promises.writeFile(fullPath, JSON.stringify(record, null, 2));
+      await git.add({ fs, dir: this.dir, filepath });
+    }
+
+    const count = records.length;
+    const noun = count === 1 ? "record" : "records";
+    await git.commit({
+      fs,
+      dir: this.dir,
+      message: `Record ${count} tool audit ${noun}`,
+      author: AUTHOR,
+    });
+  }
+
+  async loadAudit(
+    sessionId: string,
+    _signal?: AbortSignal,
+  ): Promise<AuditRecordType[]> {
+    assertSafeSegment(sessionId, "sessionId");
+    const sessionDir = path.join(this.dir, AUDIT_DIR, sessionId);
+
+    let entries: string[];
+    try {
+      entries = await fs.promises.readdir(sessionDir);
+    } catch (cause) {
+      if (
+        cause instanceof Error &&
+        "code" in cause &&
+        cause.code === "ENOENT"
+      ) {
+        return [];
+      }
+      throw cause;
+    }
+
+    const records: AuditRecordType[] = [];
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) continue;
+      const fullPath = path.join(sessionDir, entry);
+      const raw = await fs.promises.readFile(fullPath, "utf-8");
+      const parsed = JSON.parse(raw) as unknown;
+      const result = AuditRecord(parsed);
+      if (result instanceof type.errors) {
+        throw new Error(`Invalid audit record in ${entry}: ${result.summary}`);
+      }
+      records.push(result);
+    }
+
+    records.sort((a, b) => a.seq - b.seq);
+    return records;
   }
 }
