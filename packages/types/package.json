@@ -12,6 +12,10 @@
       "types": "./src/authz.ts",
       "default": "./src/authz.ts"
     },
+    "./audit": {
+      "types": "./src/audit.ts",
+      "default": "./src/audit.ts"
+    },
     "./runtime": {
       "types": "./src/runtime.ts",
       "default": "./src/runtime.ts"
