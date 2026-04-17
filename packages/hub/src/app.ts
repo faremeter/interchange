@@ -26,6 +26,7 @@ import { createWsRoutes } from "./routes/ws";
 
 import { type DB, createGrantStore } from "@interchange/db";
 import type { ConditionRegistry } from "@interchange/types/authz";
+import { timeWindowEvaluator } from "@interchange/authz";
 
 export type CreateAppOpts = {
   auth: Auth;
@@ -35,7 +36,9 @@ export type CreateAppOpts = {
 export function createApp({ auth, db }: CreateAppOpts) {
   const app = new Hono<AppEnv>();
   const grantStore = createGrantStore(db);
-  const conditionRegistry: ConditionRegistry = {};
+  const conditionRegistry: ConditionRegistry = {
+    time_window: timeWindowEvaluator,
+  };
 
   app.use(
     honoLogger({
