@@ -1,4 +1,5 @@
 export { InMemoryTransport } from "./transport";
+export type { RemoteSendHandler } from "./send";
 
 /**
  * Create a fresh in-memory transport instance.

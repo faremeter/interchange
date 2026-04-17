@@ -26,19 +26,37 @@ const CONVERSATION_TYPES = new Set([
 ]);
 
 /**
+ * Callback for delivering messages to recipients not registered on this
+ * transport. The federation layer provides this to forward messages to
+ * the hub for remote routing.
+ */
+export type RemoteSendHandler = (
+  rawMessage: Uint8Array,
+  recipients: string[],
+) => Promise<void>;
+
+/**
  * Execute the send() flow:
- * 1. Validate sender/recipient registration
+ * 1. Validate sender registration, split recipients into local/remote
  * 2. Build signed content part (MIME bytes to sign)
  * 3. Sign with sender's CryptoProvider
  * 4. Assemble the complete RFC 2822 message
- * 5. Append to each recipient's INBOX and sender's Sent mailbox
- * 6. Schedule watch callbacks asynchronously via queueMicrotask
+ * 5. Append to each local recipient's INBOX and sender's Sent mailbox
+ * 6. Forward to remote recipients via onRemoteSend
+ * 7. Schedule watch callbacks asynchronously via queueMicrotask
+ *
+ * If onRemoteSend is not provided and there are remote recipients, send()
+ * throws. If onRemoteSend rejects, the error propagates — local delivery
+ * that already completed is not rolled back. This is a known limitation:
+ * partial delivery is possible when a message has both local and remote
+ * recipients and the remote leg fails.
  */
 export async function executeSend(
   senderAddress: string,
   message: OutboundMessage,
   agentMailboxes: Map<string, AgentMailboxEntry>,
   cryptoProviders: Map<string, CryptoProvider>,
+  onRemoteSend?: RemoteSendHandler,
 ): Promise<SendReceipt> {
   const senderCrypto = cryptoProviders.get(senderAddress);
   if (senderCrypto === undefined) {
@@ -52,12 +70,22 @@ export async function executeSend(
     throw new Error("OutboundMessage must have at least one recipient");
   }
 
-  for (const recipient of recipients) {
-    if (!agentMailboxes.has(recipient)) {
-      throw new Error(
-        `Recipient "${recipient}" is not registered with this transport`,
-      );
-    }
+  const ccAddressList =
+    message.cc !== undefined
+      ? Array.isArray(message.cc)
+        ? message.cc
+        : [message.cc]
+      : [];
+
+  const allAddressees = [...new Set([...recipients, ...ccAddressList])];
+  const remoteRecipients = allAddressees.filter(
+    (addr) => !agentMailboxes.has(addr),
+  );
+
+  if (remoteRecipients.length > 0 && onRemoteSend === undefined) {
+    throw new Error(
+      `Recipient "${remoteRecipients[0]}" is not registered with this transport`,
+    );
   }
 
   const isConversation = CONVERSATION_TYPES.has(message.type);
@@ -101,12 +129,7 @@ export async function executeSend(
     senderCrypto,
   );
 
-  const ccAddresses =
-    message.cc !== undefined
-      ? Array.isArray(message.cc)
-        ? message.cc
-        : [message.cc]
-      : undefined;
+  const ccAddresses = ccAddressList.length > 0 ? ccAddressList : undefined;
 
   const refs = buildReferences(message.inReplyTo, undefined);
 
@@ -148,11 +171,9 @@ export async function executeSend(
     interchangeCorrelationId: message.correlationId,
   };
 
-  // Deliver to each To and CC recipient's INBOX.
-  const allRecipients =
-    ccAddresses !== undefined ? [...recipients, ...ccAddresses] : recipients;
+  // Deliver to each local recipient's INBOX.
   const deliveredUids: { address: string; uid: number }[] = [];
-  for (const recipient of allRecipients) {
+  for (const recipient of allAddressees) {
     if (!agentMailboxes.has(recipient)) continue;
     const entry = agentMailboxes.get(recipient)!;
     const store = entry.mailboxes.get("INBOX")!;
@@ -167,9 +188,11 @@ export async function executeSend(
     appendToMailbox(sentStore, rawBytes, envelope, ["\\Seen"]);
   }
 
-  // Fire recipient watch callbacks ASYNCHRONOUSLY (per MESSAGE.md requirement).
-  // queueMicrotask ensures callbacks never run synchronously on the sender's
-  // call stack, preserving real IMAP IDLE async delivery semantics.
+  // Fire local recipient watch callbacks ASYNCHRONOUSLY (per MESSAGE.md
+  // requirement). queueMicrotask ensures callbacks never run synchronously
+  // on the sender's call stack, preserving real IMAP IDLE async delivery
+  // semantics. Scheduled before the remote send so local delivery
+  // notifications are not delayed by network latency.
   const { headers: parsedHeaders } = parseHeaderSection(rawBytes);
   const msgHeaders = buildMessageHeaders(parsedHeaders);
 
@@ -189,7 +212,15 @@ export async function executeSend(
     }
   }
 
-  return { messageId, status: "delivered" };
+  // Forward to remote recipients via federation hook.
+  if (remoteRecipients.length > 0 && onRemoteSend !== undefined) {
+    await onRemoteSend(rawBytes, remoteRecipients);
+  }
+
+  return {
+    messageId,
+    status: remoteRecipients.length > 0 ? "queued" : "delivered",
+  };
 }
 
 function buildReferences(
