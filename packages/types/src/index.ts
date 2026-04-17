@@ -15,3 +15,4 @@ export * from "./offerings";
 export * from "./models";
 export * from "./observability";
 export * from "./agent-data";
+export * from "./audit";
