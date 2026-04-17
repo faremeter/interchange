@@ -7,6 +7,9 @@
     "packages/*",
     "apps/*"
   ],
+  "catalog": {
+    "arktype": "^2.1.29"
+  },
   "scripts": {
     "check": "tsc -b --noEmit",
     "lint": "prettier -c . && eslint --cache .",

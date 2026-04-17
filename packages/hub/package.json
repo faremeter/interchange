@@ -15,7 +15,7 @@
     "@interchange/db": "workspace:*",
     "@interchange/log": "workspace:*",
     "@interchange/types": "workspace:*",
-    "arktype": "^2.1.29",
+    "arktype": "catalog:",
     "better-auth": "^1.4.18",
     "hono": "^4.11.9",
     "hono-openapi": "^1.2.0"
