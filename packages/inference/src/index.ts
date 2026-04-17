@@ -37,3 +37,5 @@ export type {
   AuthzExtensionOptions,
   AuthzMatchedGrant,
 } from "./authz-extension";
+export { createAuditCollector } from "./audit-collector";
+export type { AuditCollector } from "./audit-collector";
