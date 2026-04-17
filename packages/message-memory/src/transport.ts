@@ -27,7 +27,7 @@ import {
 } from "./mailbox";
 import { parseHeaderSection } from "./mime";
 import { buildMessageHeaders } from "./headers";
-import { executeSend } from "./send";
+import { executeSend, type RemoteSendHandler } from "./send";
 import { executeSearch } from "./search";
 import { executeThread } from "./thread";
 import {
@@ -49,6 +49,17 @@ import {
 export class InMemoryTransport implements MessageTransport {
   readonly #agentMailboxes = new Map<string, AgentMailboxEntry>();
   readonly #cryptoProviders = new Map<string, CryptoProvider>();
+  #remoteSendHandler: RemoteSendHandler | undefined;
+
+  /**
+   * Set a handler for delivering messages to recipients not registered on
+   * this transport. The federation layer calls this to wire up the websocket
+   * connection to the hub. When set, send() forwards unregistered recipients
+   * to this handler instead of throwing.
+   */
+  setRemoteSendHandler(handler: RemoteSendHandler): void {
+    this.#remoteSendHandler = handler;
+  }
 
   /**
    * Register an agent with its address and CryptoProvider. Creates the
@@ -257,6 +268,7 @@ export class InMemoryTransport implements MessageTransport {
       address,
       this.#agentMailboxes,
       this.#cryptoProviders,
+      () => this.#remoteSendHandler,
     );
   }
 }
@@ -269,15 +281,18 @@ class AgentMessageTransport implements MessageTransport {
   readonly #address: string;
   readonly #agentMailboxes: Map<string, AgentMailboxEntry>;
   readonly #cryptoProviders: Map<string, CryptoProvider>;
+  readonly #getRemoteSendHandler: () => RemoteSendHandler | undefined;
 
   constructor(
     address: string,
     agentMailboxes: Map<string, AgentMailboxEntry>,
     cryptoProviders: Map<string, CryptoProvider>,
+    getRemoteSendHandler: () => RemoteSendHandler | undefined,
   ) {
     this.#address = address;
     this.#agentMailboxes = agentMailboxes;
     this.#cryptoProviders = cryptoProviders;
+    this.#getRemoteSendHandler = getRemoteSendHandler;
   }
 
   get #entry(): AgentMailboxEntry {
@@ -307,6 +322,7 @@ class AgentMessageTransport implements MessageTransport {
       message,
       this.#agentMailboxes,
       this.#cryptoProviders,
+      this.#getRemoteSendHandler(),
     );
   }
 
