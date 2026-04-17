@@ -15,6 +15,10 @@ export default defineConfig(
     },
     rules: {
       "no-console": "error",
+      "@typescript-eslint/no-unused-expressions": [
+        "error",
+        { allowTaggedTemplates: true },
+      ],
       "@typescript-eslint/consistent-type-definitions": 0,
       "@typescript-eslint/no-unused-vars": [
         "error",

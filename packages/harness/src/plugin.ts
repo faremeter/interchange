@@ -129,7 +129,7 @@ export class DefaultPlugin implements ReactorPlugin {
           event.error.statusCode !== undefined
             ? ` [HTTP ${event.error.statusCode}]`
             : "";
-        // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+
         logger.error`Inference error in default plugin: ${event.error.message}${statusDetail} (category: ${event.error.category})`;
         return capabilities.done();
       }
