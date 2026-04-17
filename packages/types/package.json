@@ -22,6 +22,6 @@
     }
   },
   "dependencies": {
-    "arktype": "^2.1.29"
+    "arktype": "catalog:"
   }
 }

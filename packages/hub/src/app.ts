@@ -22,7 +22,6 @@ import { offeringRoutes, modelRoutes } from "./routes/offerings";
 import { observabilityRoutes } from "./routes/observability";
 import { agentDataRoutes } from "./routes/agent-data";
 import { default as sidecarRoutes } from "./routes/sidecars";
-import { createWsRoutes } from "./routes/ws";
 
 import { type DB, createGrantStore } from "@interchange/db";
 import type { ConditionRegistry } from "@interchange/types/authz";
@@ -104,9 +103,6 @@ export function createApp({ auth, db }: CreateAppOpts) {
   app.route("/api/tenants/:tenantId/agents/:agentId", agentDataRoutes);
 
   app.route("/api/sidecars", sidecarRoutes);
-
-  const wsRoutes = createWsRoutes();
-  app.get("/ws/agents/:agentId", wsRoutes["/ws/agents/:agentId"].GET);
 
   app.get(
     "/openapi.json",

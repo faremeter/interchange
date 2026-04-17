@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@interchange/types": "workspace:*",
-    "arktype": "^2.1.29",
+    "arktype": "catalog:",
     "drizzle-orm": "^0.45.1",
     "postgres": "^3.4.8"
   }
