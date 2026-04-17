@@ -6,6 +6,7 @@ import type {
   ProviderConfig,
   InferenceEvent,
   ReactorPlugin,
+  BeforeToolExtension,
 } from "@interchange/types/runtime";
 
 /**
@@ -52,6 +53,14 @@ export type HarnessConfig = {
    * event handling loop.
    */
   pluginPolicy?: PluginPolicy;
+
+  /**
+   * Extensions that run before each tool call. Return a string to block the
+   * call (the string becomes the tool result), or undefined to allow it.
+   * Use `createAuthzExtension` from `@interchange/inference` to wire in
+   * grant-based authorization.
+   */
+  beforeToolExtensions?: BeforeToolExtension[];
 };
 
 export type PluginPolicy = {

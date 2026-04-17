@@ -266,6 +266,9 @@ export function createHarness(config: HarnessConfig): Harness {
     toolRunner: combinedRunner,
     contextStore: storage,
     onEvent: handleEvent,
+    ...(config.beforeToolExtensions !== undefined
+      ? { beforeToolExtensions: config.beforeToolExtensions }
+      : {}),
   });
 
   let unsubscribe: Unsubscribe | null = null;
