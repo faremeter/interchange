@@ -5,7 +5,11 @@
 // sidecars and the hub's internal systems.
 
 import { getLogger } from "@interchange/log";
-import type { SidecarFrame, HubFrame } from "@interchange/types/sidecar";
+import type {
+  SidecarFrame,
+  HubFrame,
+  WireAttachment,
+} from "@interchange/types/sidecar";
 import type { AbortReason, HarnessConfig } from "@interchange/types/runtime";
 
 const logger = getLogger(["hub", "ws", "sidecar"]);
@@ -33,6 +37,12 @@ export type SidecarRouter = {
   sendSessionCreate(agentAddress: string, config: HarnessConfig): Promise<void>;
   sendSessionDestroy(agentAddress: string): Promise<void>;
   sendSessionAbort(agentAddress: string, reason: AbortReason): Promise<void>;
+  sendMessage(
+    agentAddress: string,
+    sessionId: string,
+    content: string,
+    attachments?: WireAttachment[],
+  ): Promise<void>;
 
   subscribeSession(
     sessionId: string,
@@ -394,6 +404,22 @@ export function createSidecarRouter(
     }));
   }
 
+  async function sendMessage(
+    agentAddress: string,
+    sessionId: string,
+    content: string,
+    attachments?: WireAttachment[],
+  ): Promise<void> {
+    await sendRequest(agentAddress, (requestId) => ({
+      type: "message.send",
+      requestId,
+      agentAddress,
+      sessionId,
+      content,
+      ...(attachments !== undefined ? { attachments } : {}),
+    }));
+  }
+
   function removeAgentAddress(ws: WsHandle, agentAddress: string): void {
     addressIndex.delete(agentAddress);
     const conn = connections.get(ws);
@@ -450,6 +476,7 @@ export function createSidecarRouter(
     sendSessionCreate,
     sendSessionDestroy,
     sendSessionAbort,
+    sendMessage,
     subscribeSession,
     getConnectedSidecars,
     getRoutableAddresses,

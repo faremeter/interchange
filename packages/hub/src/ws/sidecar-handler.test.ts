@@ -937,4 +937,128 @@ describe("SidecarRouter", () => {
       expect(received[0]).toEqual({ type: "turn.start" });
     });
   });
+
+  describe("sendMessage", () => {
+    test("dispatches frame without attachments key when none provided", async () => {
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      const promise = router.sendMessage("agent@local", "ses-1", "hello");
+      const frame = lastSent(ws);
+
+      expect(frame.type).toBe("message.send");
+      expect(frame.sessionId).toBe("ses-1");
+      expect(frame.agentAddress).toBe("agent@local");
+      expect(frame.content).toBe("hello");
+      expect(Object.prototype.hasOwnProperty.call(frame, "attachments")).toBe(
+        false,
+      );
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({ type: "session.ack", requestId: frame.requestId }),
+      );
+      await promise;
+    });
+
+    test("dispatches frame with attachments when provided", async () => {
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      const attachments = [
+        {
+          type: "image",
+          url: "https://example.com/img.png",
+          mimeType: "image/png",
+        },
+      ];
+      const promise = router.sendMessage(
+        "agent@local",
+        "ses-1",
+        "see attached",
+        attachments,
+      );
+      const frame = lastSent(ws);
+
+      expect(frame.type).toBe("message.send");
+      expect(frame.attachments).toEqual(attachments);
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({ type: "session.ack", requestId: frame.requestId }),
+      );
+      await promise;
+    });
+
+    test("rejects for unknown agent address", async () => {
+      await expect(
+        router.sendMessage("nobody@local", "ses-1", "hello"),
+      ).rejects.toThrow(/No sidecar connected/);
+    });
+
+    test("rejects on sidecar disconnect while in flight", async () => {
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      const promise = router.sendMessage("agent@local", "ses-1", "hello");
+      router.handleClose(ws);
+
+      await expect(promise).rejects.toThrow(/disconnected/);
+    });
+
+    test("session.error rejects with sidecar-provided string", async () => {
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      const promise = router.sendMessage("agent@local", "ses-dead", "hello");
+      const frame = lastSent(ws);
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "session.error",
+          requestId: frame.requestId,
+          error: "session not found",
+        }),
+      );
+
+      await expect(promise).rejects.toThrow("session not found");
+    });
+  });
 });
