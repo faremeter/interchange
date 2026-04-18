@@ -141,6 +141,19 @@ export function createSidecarRouter(
     }
 
     const addrSet = new Set(agentAddresses);
+
+    // Clean up ghost entries from other connections that previously
+    // owned addresses this sidecar is now claiming.
+    for (const addr of addrSet) {
+      const prevWs = addressIndex.get(addr);
+      if (prevWs !== undefined && prevWs !== ws) {
+        const prevConn = connections.get(prevWs);
+        if (prevConn !== undefined) {
+          prevConn.agentAddresses.delete(addr);
+        }
+      }
+    }
+
     const conn: SidecarConnection = {
       sidecarId,
       agentAddresses: addrSet,
@@ -364,7 +377,7 @@ export function createSidecarRouter(
       requestId,
       agentAddress,
     }));
-    if (addressIndex.get(agentAddress) === ws) {
+    if (ws !== undefined && addressIndex.get(agentAddress) === ws) {
       removeAgentAddress(ws, agentAddress);
     }
   }
@@ -381,14 +394,11 @@ export function createSidecarRouter(
     }));
   }
 
-  function removeAgentAddress(
-    ws: WsHandle | undefined,
-    agentAddress: string,
-  ): void {
+  function removeAgentAddress(ws: WsHandle, agentAddress: string): void {
     addressIndex.delete(agentAddress);
-    if (ws !== undefined) {
-      const conn = connections.get(ws);
-      conn?.agentAddresses.delete(agentAddress);
+    const conn = connections.get(ws);
+    if (conn !== undefined) {
+      conn.agentAddresses.delete(agentAddress);
     }
   }
 

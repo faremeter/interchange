@@ -111,6 +111,41 @@ describe("SidecarRouter", () => {
       expect(ws.closed).toBe(true);
       expect(router.getConnectedSidecars()).toEqual([]);
     });
+
+    test("re-registration by another sidecar cleans ghost from old connection", () => {
+      const ws1 = createMockWs();
+      router.handleOpen(ws1);
+      router.handleMessage(
+        ws1,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local", "other@local"],
+        }),
+      );
+
+      const ws2 = createMockWs();
+      router.handleOpen(ws2);
+      router.handleMessage(
+        ws2,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-2",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      // ws2 now owns agent@local. Closing ws1 should only remove
+      // other@local (which ws1 still owns), not agent@local.
+      router.handleClose(ws1);
+
+      expect(router.getRoutableAddresses()).toContain("agent@local");
+      expect(router.getRoutableAddresses()).not.toContain("other@local");
+      expect(router.routeMail("agent@local", "hello")).toBe(true);
+      expect(ws2.sent).toHaveLength(1);
+    });
   });
 
   describe("mail routing", () => {
