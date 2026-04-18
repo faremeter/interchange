@@ -100,7 +100,7 @@ app.post(
     const principal = c.get("principal");
     const db = c.get("db");
     const sidecarRouter = c.get("sidecarRouter");
-    const body = c.req.valid("json" as never) as typeof CreateSession.infer;
+    const body = c.req.valid("json");
 
     const row = await db.query.agent.findFirst({
       where: and(eq(agent.id, body.agentId), eq(agent.tenantId, tenant.id)),
@@ -641,7 +641,7 @@ app.post(
     const db = c.get("db");
     const sidecarRouter = c.get("sidecarRouter");
     const sessionId = c.req.param("sessionId");
-    const body = c.req.valid("json" as never) as typeof AbortBody.infer;
+    const body = c.req.valid("json");
 
     const sessionRow = await db.query.agentSession.findFirst({
       where: and(
