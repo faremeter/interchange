@@ -1,3 +1,1 @@
-ALTER TYPE agent_status ADD VALUE IF NOT EXISTS 'running';
-
-ALTER TABLE agent ADD COLUMN session_id text;
+ALTER TABLE "agent" ADD COLUMN IF NOT EXISTS "session_id" text;

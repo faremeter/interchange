@@ -412,7 +412,11 @@ const { status: fedStatus, data: fedData } = await api(
   },
   aliceCookies,
 );
-checkOrSkip("create federation trust", fedStatus, 201, fedData);
+if (fedStatus === 404) {
+  log("  SKIP federation (endpoint not implemented)");
+} else {
+  checkOrSkip("create federation trust", fedStatus, 201, fedData);
+}
 
 // -- Create providers --
 
@@ -496,7 +500,11 @@ if (githubProvider) {
     },
     aliceCookies,
   );
-  checkOrSkip("create github oauth client", oclStatus, 201, oclData);
+  if (oclStatus === 404) {
+    log("  SKIP oauth client (endpoint not implemented)");
+  } else {
+    checkOrSkip("create github oauth client", oclStatus, 201, oclData);
+  }
 }
 
 // -- Create credentials --
