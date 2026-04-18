@@ -1,5 +1,6 @@
 import { createDB } from "@interchange/db";
-import { createApp, createAuth } from "@interchange/hub";
+import { createApp, createAuth, createSidecarRouter } from "@interchange/hub";
+import { upgradeWebSocket, websocket } from "hono/bun";
 import { setup, getLogger } from "@interchange/log";
 
 await setup();
@@ -17,13 +18,50 @@ const { db } = createDB({
 const auth = createAuth(db);
 const app = createApp({ auth, db });
 
+const sidecarRouter = createSidecarRouter({
+  onAgentEvent(agentAddress, sessionId, _event) {
+    log.info("Agent event from {agentAddress} session {sessionId}", {
+      agentAddress,
+      sessionId,
+    });
+  },
+});
+
+app.get(
+  "/api/sidecars/ws",
+  upgradeWebSocket((_c) => {
+    let handle: import("@interchange/hub").WsHandle;
+    return {
+      onOpen(_evt, ws) {
+        handle = {
+          send(data: string) {
+            ws.send(data);
+          },
+          close() {
+            ws.close();
+          },
+        };
+        sidecarRouter.handleOpen(handle);
+      },
+      onMessage(evt, _ws) {
+        if (typeof evt.data === "string") {
+          sidecarRouter.handleMessage(handle, evt.data);
+        }
+      },
+      onClose(_evt, _ws) {
+        sidecarRouter.handleClose(handle);
+      },
+    };
+  }),
+);
+
 const port = Number(process.env["PORT"] ?? 3000);
 
 log.info("Starting server on port {port}", { port });
 
 export default {
   fetch: app.fetch,
+  websocket,
   port,
-  // Disable idle timeout so long-lived SSE connections are not killed.
   idleTimeout: 0,
 };
