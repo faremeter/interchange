@@ -468,6 +468,195 @@ describe("SidecarRouter", () => {
 
       expect(router.getRoutableAddresses()).not.toContain("agent@local");
     });
+
+    test("destroy preserves routing when address re-registered during await", async () => {
+      const ws1 = createMockWs();
+      router.handleOpen(ws1);
+      router.handleMessage(
+        ws1,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      // Start destroy — request is in flight
+      const promise = router.sendSessionDestroy("agent@local");
+      const frame = lastSent(ws1);
+
+      // While destroy is in flight, a new sidecar registers the same address
+      const ws2 = createMockWs();
+      router.handleOpen(ws2);
+      router.handleMessage(
+        ws2,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-2",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      // Ack the original destroy
+      router.handleMessage(
+        ws1,
+        JSON.stringify({ type: "session.ack", requestId: frame.requestId }),
+      );
+      await promise;
+
+      // The address must still be routable via the new sidecar
+      expect(router.getRoutableAddresses()).toContain("agent@local");
+      expect(router.routeMail("agent@local", "hello")).toBe(true);
+      expect(ws2.sent).toHaveLength(1);
+    });
+
+    test("failed destroy leaves address routable", async () => {
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      const promise = router.sendSessionDestroy("agent@local");
+      const frame = lastSent(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "session.error",
+          requestId: frame.requestId,
+          error: "destroy failed",
+        }),
+      );
+
+      await expect(promise).rejects.toThrow("destroy failed");
+      expect(router.getRoutableAddresses()).toContain("agent@local");
+    });
+
+    test("abort preserves routing when address re-registered during await", async () => {
+      const ws1 = createMockWs();
+      router.handleOpen(ws1);
+      router.handleMessage(
+        ws1,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      const promise = router.sendSessionAbort("agent@local", "user_disconnect");
+      const frame = lastSent(ws1);
+
+      const ws2 = createMockWs();
+      router.handleOpen(ws2);
+      router.handleMessage(
+        ws2,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-2",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      router.handleMessage(
+        ws1,
+        JSON.stringify({ type: "session.ack", requestId: frame.requestId }),
+      );
+      await promise;
+
+      expect(router.getRoutableAddresses()).toContain("agent@local");
+    });
+
+    test("closing stale sidecar after reconnect-during-destroy does not evict address", async () => {
+      const ws1 = createMockWs();
+      router.handleOpen(ws1);
+      router.handleMessage(
+        ws1,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      const promise = router.sendSessionDestroy("agent@local");
+      const frame = lastSent(ws1);
+
+      const ws2 = createMockWs();
+      router.handleOpen(ws2);
+      router.handleMessage(
+        ws2,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-2",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      router.handleMessage(
+        ws1,
+        JSON.stringify({ type: "session.ack", requestId: frame.requestId }),
+      );
+      await promise;
+
+      // Old sidecar disconnects — must not evict the new sidecar's address
+      router.handleClose(ws1);
+
+      expect(router.getRoutableAddresses()).toContain("agent@local");
+      expect(router.routeMail("agent@local", "hello")).toBe(true);
+      expect(ws2.sent).toHaveLength(1);
+    });
+
+    test("closing stale sidecar after reconnect-during-abort does not evict address", async () => {
+      const ws1 = createMockWs();
+      router.handleOpen(ws1);
+      router.handleMessage(
+        ws1,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      const promise = router.sendSessionAbort("agent@local", "user_disconnect");
+      const frame = lastSent(ws1);
+
+      const ws2 = createMockWs();
+      router.handleOpen(ws2);
+      router.handleMessage(
+        ws2,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-2",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      router.handleMessage(
+        ws1,
+        JSON.stringify({ type: "session.ack", requestId: frame.requestId }),
+      );
+      await promise;
+
+      router.handleClose(ws1);
+
+      expect(router.getRoutableAddresses()).toContain("agent@local");
+    });
   });
 
   describe("agent events", () => {
