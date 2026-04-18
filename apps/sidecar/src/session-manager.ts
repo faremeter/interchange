@@ -9,6 +9,7 @@ import { createHarness, type Harness } from "@interchange/harness";
 import type { InMemoryTransport } from "@interchange/message-memory";
 import type {
   CryptoProvider,
+  InboundMessage,
   InferenceEvent,
   HarnessConfig as AgentConfig,
 } from "@interchange/types/runtime";
@@ -39,6 +40,7 @@ export type SessionManager = {
   createSession(config: AgentConfig): string;
   destroySession(agentAddress: string): void;
   abortSession(agentAddress: string, reason: string): void;
+  deliverMessage(agentAddress: string, message: InboundMessage): void;
   hasSession(agentAddress: string): boolean;
   getAddresses(): string[];
 };
@@ -123,6 +125,14 @@ export function createSessionManager(
     logger.info`Aborted session for ${agentAddress}: ${reason}`;
   }
 
+  function deliverMessage(agentAddress: string, message: InboundMessage): void {
+    const session = sessions.get(agentAddress);
+    if (session === undefined) {
+      throw new Error(`No session exists for agent "${agentAddress}"`);
+    }
+    session.harness.deliver(message);
+  }
+
   function hasSession(agentAddress: string): boolean {
     return sessions.has(agentAddress);
   }
@@ -135,6 +145,7 @@ export function createSessionManager(
     createSession,
     destroySession,
     abortSession,
+    deliverMessage,
     hasSession,
     getAddresses,
   };

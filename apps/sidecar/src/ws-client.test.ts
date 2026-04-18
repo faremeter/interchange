@@ -8,7 +8,7 @@ import {
   type WsHandle,
 } from "@interchange/hub";
 import { createInMemoryTransport } from "@interchange/message-memory";
-import type { HarnessConfig } from "@interchange/types/runtime";
+import type { HarnessConfig, InboundMessage } from "@interchange/types/runtime";
 
 import { createWsClient } from "./ws-client";
 import type { SessionManager } from "./session-manager";
@@ -30,10 +30,13 @@ async function waitFor(
   }
 }
 
+type DeliveredMessage = { agentAddress: string; message: InboundMessage };
+
 function createMockSessionManager(): SessionManager & {
   created: HarnessConfig[];
   destroyed: string[];
   aborted: { address: string; reason: string }[];
+  delivered: DeliveredMessage[];
   addresses: string[];
   shouldThrow: string | null;
 } {
@@ -41,6 +44,7 @@ function createMockSessionManager(): SessionManager & {
     created: [] as HarnessConfig[],
     destroyed: [] as string[],
     aborted: [] as { address: string; reason: string }[],
+    delivered: [] as DeliveredMessage[],
     addresses: [] as string[],
     shouldThrow: null as string | null,
 
@@ -59,6 +63,10 @@ function createMockSessionManager(): SessionManager & {
       if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
       mock.aborted.push({ address: agentAddress, reason });
       mock.addresses = mock.addresses.filter((a) => a !== agentAddress);
+    },
+    deliverMessage(agentAddress: string, message: InboundMessage): void {
+      if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
+      mock.delivered.push({ agentAddress, message });
     },
     hasSession(agentAddress: string): boolean {
       return mock.addresses.includes(agentAddress);
@@ -482,6 +490,79 @@ describe("sidecar↔hub integration", () => {
       );
       await waitFor(
         () => !env.router.getConnectedSidecars().includes("sc-bob"),
+      );
+    }
+  });
+
+  test("hub sends message.send and sidecar delivers to session", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    sessions.addresses.push("agent-1@test.interchange");
+    const client = createWsClient({
+      hubUrl: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-msg-send",
+      token: "test-token",
+      transport,
+      sessions,
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getRoutableAddresses().includes("agent-1@test.interchange"),
+      );
+
+      await env.router.sendMessage(
+        "agent-1@test.interchange",
+        "ses_test",
+        "Hello agent",
+      );
+
+      expect(sessions.delivered).toHaveLength(1);
+      const { agentAddress, message } = sessions.delivered[0]!;
+      expect(agentAddress).toBe("agent-1@test.interchange");
+      expect(message.content).toBe("Hello agent");
+      expect(message.headers.to).toEqual(["agent-1@test.interchange"]);
+      expect(message.headers.interchangeSessionId).toBe("ses_test");
+      expect(message.signatureStatus).toBe("missing");
+      expect(message.ref.mailbox).toBe("SYNTHETIC");
+    } finally {
+      client.close();
+      await waitFor(
+        () => !env.router.getConnectedSidecars().includes("sc-msg-send"),
+      );
+    }
+  });
+
+  test("message.send returns error when no session exists", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    sessions.addresses.push("agent-1@test.interchange");
+    sessions.shouldThrow =
+      'No session exists for agent "agent-1@test.interchange"';
+    const client = createWsClient({
+      hubUrl: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-msg-err",
+      token: "test-token",
+      transport,
+      sessions,
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getRoutableAddresses().includes("agent-1@test.interchange"),
+      );
+
+      await expect(
+        env.router.sendMessage("agent-1@test.interchange", "ses_test", "Hello"),
+      ).rejects.toThrow("No session exists");
+
+      expect(sessions.delivered).toHaveLength(0);
+    } finally {
+      client.close();
+      await waitFor(
+        () => !env.router.getConnectedSidecars().includes("sc-msg-err"),
       );
     }
   });
