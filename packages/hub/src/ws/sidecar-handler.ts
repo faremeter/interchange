@@ -183,8 +183,12 @@ export function createSidecarRouter(
     if (conn === undefined) return;
 
     for (const addr of conn.agentAddresses) {
-      addressIndex.delete(addr);
-      pendingCreates.delete(addr);
+      // Only remove routing and pending state if this connection still
+      // owns the address. A reconnected sidecar may have already claimed it.
+      if (addressIndex.get(addr) === ws) {
+        addressIndex.delete(addr);
+        pendingCreates.delete(addr);
+      }
     }
     connections.delete(ws);
 
@@ -311,11 +315,11 @@ export function createSidecarRouter(
       }));
     } catch (err) {
       // Only roll back routing if no other create is still in flight
-      // for this address.
+      // for this address and this connection still owns it.
       const remaining = (pendingCreates.get(agentAddress) ?? 1) - 1;
       if (remaining <= 0) {
         pendingCreates.delete(agentAddress);
-        if (conn !== undefined) {
+        if (conn !== undefined && addressIndex.get(agentAddress) === ws) {
           conn.agentAddresses.delete(agentAddress);
           addressIndex.delete(agentAddress);
         }
@@ -352,7 +356,9 @@ export function createSidecarRouter(
       requestId,
       agentAddress,
     }));
-    removeAgentAddress(ws, agentAddress);
+    if (addressIndex.get(agentAddress) === ws) {
+      removeAgentAddress(ws, agentAddress);
+    }
   }
 
   async function sendSessionAbort(
@@ -366,7 +372,9 @@ export function createSidecarRouter(
       agentAddress,
       reason,
     }));
-    removeAgentAddress(ws, agentAddress);
+    if (addressIndex.get(agentAddress) === ws) {
+      removeAgentAddress(ws, agentAddress);
+    }
   }
 
   function removeAgentAddress(
