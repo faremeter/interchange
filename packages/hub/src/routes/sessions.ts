@@ -207,6 +207,7 @@ app.post(
 
     try {
       await sidecarRouter.sendSessionCreate(agentAddress, {
+        sessionId,
         agentId: row.id,
         tenantId: tenant.id,
         agentAddress,
