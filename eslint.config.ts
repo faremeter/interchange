@@ -42,6 +42,7 @@ export default defineConfig(
             "bin/*.ts",
             "packages/db/drizzle.config.ts",
           ],
+          maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 16,
         },
         tsconfigRootDir: import.meta.dirname,
       },
