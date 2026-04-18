@@ -60,6 +60,7 @@ export type SidecarRouterConfig = {
     sessionId: string,
     event: unknown,
   ) => void;
+  onSidecarDisconnect?: (agentAddresses: string[]) => void;
   onMailOutbound?: (rawMessage: string, recipients: string[]) => void;
   validateToken?: (sidecarId: string, token: string) => boolean;
 };
@@ -78,6 +79,7 @@ export function createSidecarRouter(
   const {
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     onAgentEvent,
+    onSidecarDisconnect,
     onMailOutbound,
     validateToken,
   } = config;
@@ -229,6 +231,10 @@ export function createSidecarRouter(
       clearTimeout(req.timer);
       pending.delete(requestId);
       req.reject(`Sidecar ${conn.sidecarId} disconnected`);
+    }
+
+    if (onSidecarDisconnect !== undefined) {
+      onSidecarDisconnect([...conn.agentAddresses]);
     }
 
     logger.info`Sidecar ${conn.sidecarId} disconnected`;

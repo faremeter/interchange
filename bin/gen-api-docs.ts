@@ -115,7 +115,12 @@ const mockAuth = {
   handler: async () => new Response("", { status: 404 }),
 };
 
-const app = createApp({ auth: mockAuth as never, db: {} as never });
+const app = createApp({
+  auth: mockAuth as never,
+  db: {} as never,
+  sidecarRouter: {} as never,
+  eventCollectors: {} as never,
+});
 const res = await app.request("/openapi.json");
 
 if (!res.ok) {

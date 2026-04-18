@@ -1,5 +1,11 @@
 import { createDB } from "@interchange/db";
-import { createApp, createAuth, createSidecarRouter } from "@interchange/hub";
+import {
+  createApp,
+  createAuth,
+  createEventCollectorRegistry,
+  createSidecarRouter,
+} from "@interchange/hub";
+import type { InferenceEvent } from "@interchange/types/runtime";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import { setup, getLogger } from "@interchange/log";
 
@@ -16,17 +22,20 @@ const { db } = createDB({
 });
 
 const auth = createAuth(db);
+const eventCollectors = createEventCollectorRegistry(db);
 
 const sidecarRouter = createSidecarRouter({
-  onAgentEvent(agentAddress, sessionId, _event) {
-    log.info("Agent event from {agentAddress} session {sessionId}", {
-      agentAddress,
-      sessionId,
-    });
+  onAgentEvent(_agentAddress, sessionId, event) {
+    eventCollectors.dispatch(sessionId, event as InferenceEvent);
+  },
+  onSidecarDisconnect(agentAddresses) {
+    for (const addr of agentAddresses) {
+      eventCollectors.abandonByAddress(addr);
+    }
   },
 });
 
-const app = createApp({ auth, db, sidecarRouter });
+const app = createApp({ auth, db, sidecarRouter, eventCollectors });
 
 app.get(
   "/api/sidecars/ws",
