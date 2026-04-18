@@ -40,8 +40,29 @@
     {
       "idx": 5,
       "version": "7",
-      "when": 1771547243788,
+      "when": 1771630000000,
       "tag": "0005_gigantic_cardiac",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1771630000001,
+      "tag": "0006_sidecar",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1771630000002,
+      "tag": "0007_agent_running_session",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1771630000003,
+      "tag": "0008_session",
       "breakpoints": true
     }
   ]

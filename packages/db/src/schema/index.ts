@@ -10,3 +10,4 @@ export * from "./credentials";
 export * from "./wallets";
 export * from "./offerings";
 export * from "./sidecar";
+export * from "./sessions";
