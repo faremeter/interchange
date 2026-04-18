@@ -214,10 +214,12 @@ const sidecarEnv: Record<string, string> = {
 console.log("Running database migrations...");
 
 try {
+  // Run drizzle-kit migrate directly — skip the generate step in
+  // bin/db-migrate which conflicts with hand-written migrations.
   const migrate = await $({
-    cwd: ROOT,
+    cwd: resolve(ROOT, "packages/db"),
     env: { ...process.env, ...migrateEnv },
-  })`bin/opsh bin/db-migrate`;
+  })`bunx drizzle-kit migrate`;
 
   for (const line of migrate.stdout.split("\n")) {
     if (line) console.log(`\x1b[90m[migrate]\x1b[0m ${line}`);
