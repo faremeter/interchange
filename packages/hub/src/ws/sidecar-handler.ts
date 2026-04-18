@@ -73,6 +73,8 @@ export function createSidecarRouter(
   const addressIndex = new Map<string, WsHandle>();
   // requestId → pending promise
   const pending = new Map<string, PendingRequest>();
+  // agentAddress → number of in-flight session.create requests
+  const pendingCreates = new Map<string, number>();
 
   let requestCounter = 0;
 
@@ -182,6 +184,7 @@ export function createSidecarRouter(
 
     for (const addr of conn.agentAddresses) {
       addressIndex.delete(addr);
+      pendingCreates.delete(addr);
     }
     connections.delete(ws);
 
@@ -295,6 +298,11 @@ export function createSidecarRouter(
       addressIndex.set(agentAddress, ws);
     }
 
+    pendingCreates.set(
+      agentAddress,
+      (pendingCreates.get(agentAddress) ?? 0) + 1,
+    );
+
     try {
       await sendRequest(agentAddress, (requestId) => ({
         type: "session.create",
@@ -302,12 +310,27 @@ export function createSidecarRouter(
         config: harnessConfig,
       }));
     } catch (err) {
-      // Rollback routing on failure.
-      if (conn !== undefined) {
-        conn.agentAddresses.delete(agentAddress);
-        addressIndex.delete(agentAddress);
+      // Only roll back routing if no other create is still in flight
+      // for this address.
+      const remaining = (pendingCreates.get(agentAddress) ?? 1) - 1;
+      if (remaining <= 0) {
+        pendingCreates.delete(agentAddress);
+        if (conn !== undefined) {
+          conn.agentAddresses.delete(agentAddress);
+          addressIndex.delete(agentAddress);
+        }
+      } else {
+        pendingCreates.set(agentAddress, remaining);
       }
       throw err;
+    }
+
+    // Successful create — decrement the counter.
+    const remaining = (pendingCreates.get(agentAddress) ?? 1) - 1;
+    if (remaining <= 0) {
+      pendingCreates.delete(agentAddress);
+    } else {
+      pendingCreates.set(agentAddress, remaining);
     }
   }
 

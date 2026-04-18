@@ -372,6 +372,79 @@ describe("SidecarRouter", () => {
       await expect(promise).rejects.toThrow(/disconnected/);
     });
 
+    test("concurrent create nack does not remove address with pending ack", async () => {
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+
+      const config = {
+        sessionId: "ses_concurrent",
+        agentId: "a1",
+        tenantId: "t1",
+        agentAddress: "race@local",
+        systemPrompt: "test",
+        tools: [],
+        toolPolicy: [],
+        providers: [
+          {
+            provider: "anthropic",
+            baseURL: "https://api.anthropic.com",
+            apiKey: "sk-test",
+          },
+        ],
+        defaultModel: "claude-sonnet-4-20250514",
+      };
+
+      // Launch two concurrent creates for the same address.
+      const sentBefore = ws.sent.length;
+      const p1 = router.sendSessionCreate("race@local", {
+        ...config,
+        sessionId: "ses_1",
+      });
+      const p2 = router.sendSessionCreate("race@local", {
+        ...config,
+        sessionId: "ses_2",
+      });
+      expect(ws.sent.length).toBe(sentBefore + 2);
+      const parsed1 = JSON.parse(ws.sent[sentBefore] as string);
+      const parsed2 = JSON.parse(ws.sent[sentBefore + 1] as string);
+
+      // Nack the first request.
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "session.error",
+          requestId: parsed1.requestId,
+          error: "first failed",
+        }),
+      );
+
+      await expect(p1).rejects.toThrow("first failed");
+
+      // The address must still be routable because p2 is still pending.
+      expect(router.getRoutableAddresses()).toContain("race@local");
+
+      // Ack the second request.
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "session.ack",
+          requestId: parsed2.requestId,
+        }),
+      );
+
+      await p2;
+      expect(router.getRoutableAddresses()).toContain("race@local");
+    });
+
     test("destroy removes agent from routing table", async () => {
       const ws = createMockWs();
       router.handleOpen(ws);
