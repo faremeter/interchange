@@ -16,7 +16,6 @@ const { db } = createDB({
 });
 
 const auth = createAuth(db);
-const app = createApp({ auth, db });
 
 const sidecarRouter = createSidecarRouter({
   onAgentEvent(agentAddress, sessionId, _event) {
@@ -26,6 +25,8 @@ const sidecarRouter = createSidecarRouter({
     });
   },
 });
+
+const app = createApp({ auth, db, sidecarRouter });
 
 app.get(
   "/api/sidecars/ws",
