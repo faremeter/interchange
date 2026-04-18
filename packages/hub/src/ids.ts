@@ -14,6 +14,7 @@ const PREFIXES = {
   wallet: "wlt_",
   transaction: "txn_",
   offering: "ofr_",
+  session: "ses_",
 } as const;
 
 type IDKind = keyof typeof PREFIXES;

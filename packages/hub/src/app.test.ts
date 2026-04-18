@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import type { DB } from "@interchange/db";
 import { createApp } from "./app";
 import type { Auth } from "./auth";
+import { createSidecarRouter } from "./ws/sidecar-handler";
 
 const mockAuth = {
   api: {
@@ -11,8 +12,9 @@ const mockAuth = {
 } as unknown as Auth;
 
 const mockDb = {} as unknown as DB["db"];
+const sidecarRouter = createSidecarRouter({});
 
-const app = createApp({ auth: mockAuth, db: mockDb });
+const app = createApp({ auth: mockAuth, db: mockDb, sidecarRouter });
 
 describe("app", () => {
   test("GET /status returns ok", async () => {

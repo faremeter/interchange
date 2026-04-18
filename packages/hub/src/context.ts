@@ -3,6 +3,7 @@ import type { ConditionRegistry, GrantStore } from "@interchange/types/authz";
 import type { Env } from "hono";
 
 import type { Auth } from "./auth";
+import type { SidecarRouter } from "./ws/sidecar-handler";
 
 export type TenantRow = {
   id: string;
@@ -30,6 +31,7 @@ export type AppEnv = Env & {
     db: DB["db"];
     grantStore: GrantStore;
     conditionRegistry: ConditionRegistry;
+    sidecarRouter: SidecarRouter;
     user: Auth["$Infer"]["Session"]["user"] | null;
     session: Auth["$Infer"]["Session"]["session"] | null;
   };

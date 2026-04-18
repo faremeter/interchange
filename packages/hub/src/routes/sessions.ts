@@ -1,5 +1,9 @@
+import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
+
+import { agent, provider } from "@interchange/db/schema";
+import { resolveCredentialRequirement } from "@interchange/db";
 import {
   CreateSession,
   SessionResponse,
@@ -8,13 +12,17 @@ import {
   MessageResponse,
   ErrorResponse,
 } from "@interchange/types";
+import type { ProviderConfig } from "@interchange/types/runtime";
 
-import type { AppEnv } from "../context";
+import type { TenantEnv } from "../context";
+import { requireGrant } from "../middleware/grant";
+import { generateId } from "../ids";
 
-const app = new Hono<AppEnv>();
+const app = new Hono<TenantEnv>();
 
 app.post(
   "/",
+  requireGrant("session:*", "create"),
   describeRoute({
     tags: ["Sessions"],
     summary: "Create a session",
@@ -33,14 +41,214 @@ app.post(
           "application/json": { schema: resolver(ErrorResponse) },
         },
       },
+      409: {
+        description: "Agent not launchable",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
     },
   }),
   validator("json", CreateSession),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenant = c.get("tenant");
+    const principal = c.get("principal");
+    const db = c.get("db");
+    const sidecarRouter = c.get("sidecarRouter");
+    const body = c.req.valid("json" as never) as {
+      agentId: string;
+      invokerCapabilities?: {
+        resource: string;
+        action: string;
+        conditions?: Record<string, unknown> | null;
+      }[];
+    };
+
+    const row = await db.query.agent.findFirst({
+      where: and(eq(agent.id, body.agentId), eq(agent.tenantId, tenant.id)),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Agent not found" } },
+        404,
+      );
+    }
+
+    if (row.status === "running") {
+      return c.json(
+        {
+          error: {
+            code: "conflict",
+            message: "Agent already has an active session",
+          },
+        },
+        409,
+      );
+    }
+
+    if (!row.systemPrompt) {
+      return c.json(
+        {
+          error: {
+            code: "not_launchable",
+            message:
+              "Agent cannot be launched without a system prompt configured",
+          },
+        },
+        409,
+      );
+    }
+
+    const agentAddress = `${row.id}@${tenant.domain}`;
+
+    const credentialRequirements = (row.credentialRequirements ?? []) as {
+      providerName: string;
+      scopes?: string[];
+      source: "tenant" | "creator" | "invoker";
+      name?: string;
+    }[];
+
+    const providers: ProviderConfig[] = [];
+    for (const req of credentialRequirements) {
+      let resolved;
+      try {
+        resolved = await resolveCredentialRequirement(
+          db,
+          tenant.id,
+          req,
+          row.principalId,
+          principal.id,
+        );
+      } catch (err) {
+        return c.json(
+          {
+            error: {
+              code: "credential_error",
+              message:
+                err instanceof Error
+                  ? err.message
+                  : "Credential resolution failed",
+            },
+          },
+          409,
+        );
+      }
+
+      if (!resolved) {
+        return c.json(
+          {
+            error: {
+              code: "credential_missing",
+              message: `No credential found for provider "${req.providerName}" (source: ${req.source})`,
+            },
+          },
+          409,
+        );
+      }
+
+      const providerRow = await db.query.provider.findFirst({
+        where: eq(provider.id, resolved.providerId),
+      });
+
+      if (!providerRow) {
+        return c.json(
+          {
+            error: {
+              code: "provider_missing",
+              message: `Provider not found for credential "${resolved.id}"`,
+            },
+          },
+          409,
+        );
+      }
+
+      const metadata = (providerRow.metadata ?? {}) as {
+        baseURL?: string;
+      };
+
+      if (!metadata.baseURL) {
+        return c.json(
+          {
+            error: {
+              code: "provider_misconfigured",
+              message: `Provider "${providerRow.name}" has no baseURL configured`,
+            },
+          },
+          409,
+        );
+      }
+
+      providers.push({
+        provider: providerRow.plugin,
+        baseURL: metadata.baseURL,
+        apiKey: resolved.secret,
+      });
+    }
+
+    const modelConfig = (row.modelConfig ?? {}) as {
+      defaultModel?: string;
+    };
+
+    if (!modelConfig.defaultModel) {
+      return c.json(
+        {
+          error: {
+            code: "not_launchable",
+            message: "Agent has no default model configured",
+          },
+        },
+        409,
+      );
+    }
+
+    const sessionId = generateId("session");
+    const now = new Date().toISOString();
+
+    try {
+      await sidecarRouter.sendSessionCreate(agentAddress, {
+        agentId: row.id,
+        tenantId: tenant.id,
+        agentAddress,
+        systemPrompt: row.systemPrompt,
+        tools: [],
+        toolPolicy: [],
+        providers,
+        defaultModel: modelConfig.defaultModel,
+      });
+    } catch (err) {
+      return c.json(
+        {
+          error: {
+            code: "sidecar_unavailable",
+            message:
+              err instanceof Error
+                ? err.message
+                : "Failed to dispatch session to sidecar",
+          },
+        },
+        502,
+      );
+    }
+
+    await db
+      .update(agent)
+      .set({ status: "running", updatedAt: new Date() })
+      .where(and(eq(agent.id, row.id), eq(agent.status, "deployed")));
+
+    return c.json(
+      {
+        id: sessionId,
+        tenantId: tenant.id,
+        agentId: row.id,
+        principalId: principal.id,
+        status: "idle" as const,
+        createdAt: now,
+        updatedAt: now,
+      },
+      201,
+    );
+  },
 );
 
 app.get(
