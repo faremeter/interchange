@@ -13,6 +13,7 @@
     { "path": "packages/message-memory" },
     { "path": "packages/harness" },
     { "path": "apps/hub" },
-    { "path": "apps/ui" }
+    { "path": "apps/ui" },
+    { "path": "apps/sidecar" }
   ]
 }
