@@ -282,7 +282,7 @@ app.patch(
   async (c) => {
     const tenantCtx = c.get("tenant");
     const principalId = c.req.param("principalId");
-    const body = c.req.valid("json" as never) as typeof UpdatePrincipal.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const [updated] = await db
@@ -388,7 +388,7 @@ inviteApp.post(
   validator("json", InviteMember),
   async (c) => {
     const tenantCtx = c.get("tenant");
-    const body = c.req.valid("json" as never) as typeof InviteMember.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const invitedUser = await db.query.user.findFirst({

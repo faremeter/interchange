@@ -145,7 +145,7 @@ app.post(
   validator("json", CreateProvider),
   async (c) => {
     const tenantCtx = c.get("tenant");
-    const body = c.req.valid("json" as never) as typeof CreateProvider.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const existing = await db.query.provider.findFirst({
@@ -265,7 +265,7 @@ app.patch(
   async (c) => {
     const tenantCtx = c.get("tenant");
     const providerId = c.req.param("providerId");
-    const body = c.req.valid("json" as never) as typeof UpdateProvider.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };

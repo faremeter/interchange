@@ -219,7 +219,7 @@ app.post(
   validator("json", CreateGrant),
   async (c) => {
     const tenantCtx = c.get("tenant");
-    const body = c.req.valid("json" as never) as typeof CreateGrant.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     if (!body.roleId && !body.principalId) {
@@ -326,7 +326,7 @@ app.patch(
   async (c) => {
     const tenantCtx = c.get("tenant");
     const grantId = c.req.param("grantId");
-    const body = c.req.valid("json" as never) as typeof UpdateGrant.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -423,7 +423,7 @@ evaluateApp.post(
   async (c) => {
     const tenantCtx = c.get("tenant");
     const principalId = c.req.param("principalId") ?? "";
-    const body = c.req.valid("json" as never) as typeof EvaluateRequest.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
     const grantStore = c.get("grantStore");
     const conditionRegistry = c.get("conditionRegistry");

@@ -110,9 +110,7 @@ app.post(
   validator("json", CreateFederationTrust),
   async (c) => {
     const tenantCtx = c.get("tenant");
-    const body = c.req.valid(
-      "json" as never,
-    ) as typeof CreateFederationTrust.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const target = await db.query.tenant.findFirst({

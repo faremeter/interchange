@@ -71,7 +71,7 @@ app.post(
       );
     }
 
-    const body = c.req.valid("json" as never) as typeof CreateTenant.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const tenantId = generateId("tenant");
@@ -321,7 +321,7 @@ app.patch(
     }
 
     const tenantId = c.req.param("tenantId");
-    const body = c.req.valid("json" as never) as typeof UpdateTenant.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const membership = await db.query.principal.findFirst({

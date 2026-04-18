@@ -124,7 +124,7 @@ app.post(
   validator("json", CreateOAuthClient),
   async (c) => {
     const tenantCtx = c.get("tenant");
-    const body = c.req.valid("json" as never) as typeof CreateOAuthClient.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const providerRow = await db.query.provider.findFirst({
@@ -258,7 +258,7 @@ app.patch(
   async (c) => {
     const tenantCtx = c.get("tenant");
     const oauthClientId = c.req.param("oauthClientId");
-    const body = c.req.valid("json" as never) as typeof UpdateOAuthClient.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
