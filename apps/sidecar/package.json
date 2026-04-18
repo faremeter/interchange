@@ -4,6 +4,7 @@
   "license": "LGPL-2.1-only",
   "type": "module",
   "dependencies": {
+    "@interchange/crypto-node": "workspace:*",
     "@interchange/harness": "workspace:*",
     "@interchange/log": "workspace:*",
     "@interchange/message-memory": "workspace:*",
