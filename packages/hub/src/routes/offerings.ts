@@ -146,7 +146,7 @@ app.post(
   validator("json", CreateOffering),
   async (c) => {
     const tenantCtx = c.get("tenant");
-    const body = c.req.valid("json" as never) as typeof CreateOffering.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const agentRow = await db.query.agent.findFirst({
@@ -262,7 +262,7 @@ app.patch(
   async (c) => {
     const tenantCtx = c.get("tenant");
     const offeringId = c.req.param("offeringId");
-    const body = c.req.valid("json" as never) as typeof UpdateOffering.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };

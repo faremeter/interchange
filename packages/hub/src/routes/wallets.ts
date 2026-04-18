@@ -123,7 +123,7 @@ app.post(
   validator("json", CreateWallet),
   async (c) => {
     const tenantCtx = c.get("tenant");
-    const body = c.req.valid("json" as never) as typeof CreateWallet.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const now = new Date();
@@ -215,7 +215,7 @@ app.patch(
   async (c) => {
     const tenantCtx = c.get("tenant");
     const walletId = c.req.param("walletId");
-    const body = c.req.valid("json" as never) as typeof UpdateWallet.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };

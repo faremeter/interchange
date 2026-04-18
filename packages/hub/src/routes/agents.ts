@@ -153,7 +153,7 @@ app.post(
   validator("json", CreateAgent),
   async (c) => {
     const tenantCtx = c.get("tenant");
-    const body = c.req.valid("json" as never) as typeof CreateAgent.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const now = new Date();
@@ -296,7 +296,7 @@ app.patch(
   async (c) => {
     const tenantCtx = c.get("tenant");
     const agentId = c.req.param("agentId");
-    const body = c.req.valid("json" as never) as typeof UpdateAgent.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const existing = await db.query.agent.findFirst({
@@ -494,7 +494,7 @@ app.post(
   async (c) => {
     const tenantCtx = c.get("tenant");
     const agentId = c.req.param("agentId");
-    const body = c.req.valid("json" as never) as typeof RollbackRequest.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const existing = await db.query.agent.findFirst({

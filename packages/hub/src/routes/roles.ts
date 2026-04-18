@@ -104,7 +104,7 @@ app.post(
   validator("json", CreateRole),
   async (c) => {
     const tenantCtx = c.get("tenant");
-    const body = c.req.valid("json" as never) as typeof CreateRole.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const now = new Date();
@@ -195,7 +195,7 @@ app.patch(
   async (c) => {
     const tenantCtx = c.get("tenant");
     const roleId = c.req.param("roleId");
-    const body = c.req.valid("json" as never) as typeof UpdateRole.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const existing = await db.query.role.findFirst({

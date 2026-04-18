@@ -144,7 +144,7 @@ app.post(
   validator("json", CreateCredential),
   async (c) => {
     const tenantCtx = c.get("tenant");
-    const body = c.req.valid("json" as never) as typeof CreateCredential.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const providerRow = await db.query.provider.findFirst({
@@ -329,7 +329,7 @@ app.patch(
   async (c) => {
     const tenantCtx = c.get("tenant");
     const credentialId = c.req.param("credentialId");
-    const body = c.req.valid("json" as never) as typeof UpdateCredential.infer;
+    const body = c.req.valid("json");
     const db = c.get("db");
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
