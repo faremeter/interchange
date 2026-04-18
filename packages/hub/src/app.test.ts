@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import type { DB } from "@interchange/db";
 import { createApp } from "./app";
 import type { Auth } from "./auth";
+import { createEventCollectorRegistry } from "./event-collector-registry";
 import { createSidecarRouter } from "./ws/sidecar-handler";
 
 const mockAuth = {
@@ -13,8 +14,14 @@ const mockAuth = {
 
 const mockDb = {} as unknown as DB["db"];
 const sidecarRouter = createSidecarRouter({});
+const eventCollectors = createEventCollectorRegistry(mockDb);
 
-const app = createApp({ auth: mockAuth, db: mockDb, sidecarRouter });
+const app = createApp({
+  auth: mockAuth,
+  db: mockDb,
+  sidecarRouter,
+  eventCollectors,
+});
 
 describe("app", () => {
   test("GET /status returns ok", async () => {

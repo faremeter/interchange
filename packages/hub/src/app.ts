@@ -27,14 +27,21 @@ import { type DB, createGrantStore } from "@interchange/db";
 import type { ConditionRegistry } from "@interchange/types/authz";
 import { timeWindowEvaluator } from "@interchange/authz";
 import type { SidecarRouter } from "./ws/sidecar-handler";
+import type { EventCollectorRegistry } from "./event-collector-registry";
 
 export type CreateAppOpts = {
   auth: Auth;
   db: DB["db"];
   sidecarRouter: SidecarRouter;
+  eventCollectors: EventCollectorRegistry;
 };
 
-export function createApp({ auth, db, sidecarRouter }: CreateAppOpts) {
+export function createApp({
+  auth,
+  db,
+  sidecarRouter,
+  eventCollectors,
+}: CreateAppOpts) {
   const app = new Hono<AppEnv>();
   const grantStore = createGrantStore(db);
   const conditionRegistry: ConditionRegistry = {
@@ -53,6 +60,7 @@ export function createApp({ auth, db, sidecarRouter }: CreateAppOpts) {
     c.set("grantStore", grantStore);
     c.set("conditionRegistry", conditionRegistry);
     c.set("sidecarRouter", sidecarRouter);
+    c.set("eventCollectors", eventCollectors);
     const result = await auth.api.getSession({
       headers: c.req.raw.headers,
     });

@@ -262,6 +262,9 @@ app.post(
       updatedAt: now,
     });
 
+    const eventCollectors = c.get("eventCollectors");
+    eventCollectors.create(sessionId, tenant.id, agentAddress);
+
     try {
       await sidecarRouter.sendSessionCreate(agentAddress, {
         sessionId,
@@ -275,6 +278,8 @@ app.post(
         defaultModel: modelConfig.defaultModel,
       });
     } catch (err) {
+      eventCollectors.abandon(sessionId);
+
       await db
         .update(agentSession)
         .set({ status: "ended", endedAt: new Date(), updatedAt: new Date() })
