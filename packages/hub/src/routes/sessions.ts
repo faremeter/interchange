@@ -36,6 +36,11 @@ const ModelConfig = type({
   defaultModel: "string",
 });
 
+const AbortBody = type({
+  "reason?":
+    "'user_disconnect' | 'wallet_exhaustion' | 'admin_kill' | 'session_timeout' | 'credential_revocation'",
+});
+
 type SessionRow = typeof agentSession.$inferSelect;
 
 // The DB tracks lifecycle state (active/ending/ended) while the API
@@ -600,6 +605,7 @@ app.get(
 
 app.post(
   "/:sessionId/abort",
+  requireGrant(idResource("session", "sessionId"), "manage"),
   describeRoute({
     tags: ["Sessions"],
     summary: "Abort current operation",
@@ -609,18 +615,97 @@ app.post(
         description: "Abort signal sent",
       },
       404: {
-        description: "Session not found",
+        description: "Session or agent not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      409: {
+        description: "Session not active",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      502: {
+        description: "Sidecar unavailable",
         content: {
           "application/json": { schema: resolver(ErrorResponse) },
         },
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  validator("json", AbortBody),
+  async (c) => {
+    const tenant = c.get("tenant");
+    const db = c.get("db");
+    const sidecarRouter = c.get("sidecarRouter");
+    const sessionId = c.req.param("sessionId");
+    const body = c.req.valid("json" as never) as typeof AbortBody.infer;
+
+    const sessionRow = await db.query.agentSession.findFirst({
+      where: and(
+        eq(agentSession.id, sessionId),
+        eq(agentSession.tenantId, tenant.id),
+      ),
+    });
+
+    if (!sessionRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Session not found" } },
+        404,
+      );
+    }
+
+    if (sessionRow.status !== "active") {
+      return c.json(
+        {
+          error: {
+            code: "conflict",
+            message: `Session is already ${sessionRow.status}`,
+          },
+        },
+        409,
+      );
+    }
+
+    const agentRow = await db.query.agent.findFirst({
+      where: and(
+        eq(agent.id, sessionRow.agentId),
+        eq(agent.tenantId, tenant.id),
+      ),
+    });
+
+    if (!agentRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Agent not found" } },
+        404,
+      );
+    }
+
+    const agentAddress = `${agentRow.id}@${tenant.domain}`;
+
+    try {
+      await sidecarRouter.sendSessionAbort(
+        agentAddress,
+        body.reason ?? "user_disconnect",
+      );
+    } catch (err) {
+      return c.json(
+        {
+          error: {
+            code: "sidecar_unavailable",
+            message:
+              err instanceof Error
+                ? err.message
+                : "Failed to reach sidecar for abort",
+          },
+        },
+        502,
+      );
+    }
+
+    return c.body(null, 204);
+  },
 );
 
 app.get(

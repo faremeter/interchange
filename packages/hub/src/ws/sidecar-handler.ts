@@ -365,16 +365,12 @@ export function createSidecarRouter(
     agentAddress: string,
     reason: AbortReason,
   ): Promise<void> {
-    const ws = addressIndex.get(agentAddress);
     await sendRequest(agentAddress, (requestId) => ({
       type: "session.abort",
       requestId,
       agentAddress,
       reason,
     }));
-    if (addressIndex.get(agentAddress) === ws) {
-      removeAgentAddress(ws, agentAddress);
-    }
   }
 
   function removeAgentAddress(
