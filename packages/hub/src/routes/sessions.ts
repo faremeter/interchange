@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import { type } from "arktype";
 
+import { streamSSE } from "hono/streaming";
 import { agent, agentSession, provider } from "@interchange/db/schema";
 import { resolveCredentialRequirement } from "@interchange/db";
 import {
@@ -739,6 +740,7 @@ app.get(
 
 app.get(
   "/:sessionId/events",
+  requireGrant(idResource("session", "sessionId"), "read"),
   describeRoute({
     tags: ["Sessions"],
     summary: "SSE event stream (fallback)",
@@ -751,13 +753,72 @@ app.get(
           "text/event-stream": {},
         },
       },
+      404: {
+        description: "Session not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      410: {
+        description: "Session ended",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenant = c.get("tenant");
+    const db = c.get("db");
+    const sidecarRouter = c.get("sidecarRouter");
+    const sessionId = c.req.param("sessionId");
+
+    const sessionRow = await db.query.agentSession.findFirst({
+      where: and(
+        eq(agentSession.id, sessionId),
+        eq(agentSession.tenantId, tenant.id),
+      ),
+    });
+
+    if (!sessionRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Session not found" } },
+        404,
+      );
+    }
+
+    if (sessionRow.status === "ended") {
+      return c.json(
+        { error: { code: "gone", message: "Session has ended" } },
+        410,
+      );
+    }
+
+    return streamSSE(c, async (stream) => {
+      const noop = () => undefined;
+
+      const unsubscribe = sidecarRouter.subscribeSession(sessionId, (event) => {
+        stream
+          .writeSSE({
+            event: "agent.event",
+            data: JSON.stringify(event),
+          })
+          .catch(noop);
+      });
+
+      const keepalive = setInterval(() => {
+        stream.write(": keepalive\n\n").catch(noop);
+      }, 30_000);
+
+      stream.onAbort(() => {
+        clearInterval(keepalive);
+        unsubscribe();
+      });
+
+      // Keep the stream open until the client disconnects.
+      await new Promise<void>(noop);
+    });
+  },
 );
 
 export { app as sessionRoutes };
