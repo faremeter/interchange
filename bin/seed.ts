@@ -288,6 +288,7 @@ const { status: a1Status, data: a1Data } = await api(
     description: "Researches topics and summarizes findings",
     systemPrompt:
       "You are a research assistant. Find and summarize information.",
+    modelConfig: { defaultModel: "gpt-4o" },
     capabilities: { research: true, summarize: true },
     credentialRequirements: [
       {
@@ -315,6 +316,7 @@ const { status: a2Status, data: a2Data } = await api(
     description: "Reviews pull requests and suggests improvements",
     systemPrompt:
       "You are a code reviewer. Analyze code for bugs and improvements.",
+    modelConfig: { defaultModel: "gpt-4o" },
     capabilities: { codeReview: true },
     credentialRequirements: [
       { providerName: "GitHub", source: "tenant", scopes: ["repo"] },
@@ -342,6 +344,7 @@ const { status: a3Status, data: a3Data } = await api(
     description: "Handles customer support tickets",
     systemPrompt:
       "You are a customer support agent. Help customers with their issues.",
+    modelConfig: { defaultModel: "gpt-4o" },
     capabilities: { ticketManagement: true, knowledgeBase: true },
     credentialRequirements: [
       {
@@ -421,7 +424,7 @@ const { status: prv1Status, data: prv1Data } = await api(
   {
     name: "OpenAI",
     plugin: "openai",
-    metadata: { defaultModel: "gpt-4" },
+    metadata: { baseURL: "https://api.openai.com/v1", defaultModel: "gpt-4o" },
   },
   aliceCookies,
 );
