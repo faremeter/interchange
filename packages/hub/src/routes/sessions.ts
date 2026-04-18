@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import { type } from "arktype";
 
-import { agent, provider } from "@interchange/db/schema";
+import { agent, agentSession, provider } from "@interchange/db/schema";
 import { resolveCredentialRequirement } from "@interchange/db";
 import {
   CreateSession,
@@ -86,12 +86,12 @@ app.post(
       );
     }
 
-    if (row.status === "running") {
+    if (row.status !== "deployed") {
       return c.json(
         {
           error: {
             code: "conflict",
-            message: "Agent already has an active session",
+            message: `Agent is not in a launchable state (status: ${row.status})`,
           },
         },
         409,
@@ -217,7 +217,17 @@ app.post(
     }
 
     const sessionId = generateId("session");
-    const now = new Date().toISOString();
+    const now = new Date();
+
+    await db.insert(agentSession).values({
+      id: sessionId,
+      tenantId: tenant.id,
+      agentId: row.id,
+      principalId: principal.id,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
 
     try {
       await sidecarRouter.sendSessionCreate(agentAddress, {
@@ -232,6 +242,11 @@ app.post(
         defaultModel: modelConfig.defaultModel,
       });
     } catch (err) {
+      await db
+        .update(agentSession)
+        .set({ status: "ended", endedAt: new Date(), updatedAt: new Date() })
+        .where(eq(agentSession.id, sessionId));
+
       return c.json(
         {
           error: {
@@ -248,7 +263,11 @@ app.post(
 
     await db
       .update(agent)
-      .set({ status: "running", updatedAt: new Date() })
+      .set({
+        status: "running",
+        sessionId,
+        updatedAt: new Date(),
+      })
       .where(and(eq(agent.id, row.id), eq(agent.status, "deployed")));
 
     return c.json(
@@ -258,8 +277,8 @@ app.post(
         agentId: row.id,
         principalId: principal.id,
         status: "idle" as const,
-        createdAt: now,
-        updatedAt: now,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
       },
       201,
     );
