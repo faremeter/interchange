@@ -538,3 +538,102 @@ describe("signature round-trip", () => {
     expect(msg.signatureStatus).toBe("valid");
   });
 });
+
+// ---------------------------------------------------------------------------
+// deliver() — federation inbound delivery
+// ---------------------------------------------------------------------------
+
+describe("deliver", () => {
+  const VALID_MESSAGE = new TextEncoder().encode(
+    [
+      "From: sender@remote",
+      "To: alpha@test.interchange",
+      "Date: Thu, 17 Apr 2026 12:00:00 +0000",
+      "Message-ID: <fed-1@remote>",
+      "Subject: Hello",
+      "Content-Type: text/plain",
+      "",
+      "Body text",
+    ].join("\r\n"),
+  );
+
+  test("delivers a well-formed message to INBOX", async () => {
+    const { transport } = await createTestTransport();
+    const alphaTransport = transport.getTransportForAgent(
+      "alpha@test.interchange",
+    );
+
+    transport.deliver("alpha@test.interchange", VALID_MESSAGE);
+
+    const refs = await alphaTransport.search("INBOX", {});
+    expect(refs).toHaveLength(1);
+    const headers = await alphaTransport.fetchHeaders(refs[0]!);
+    expect(headers.messageId).toBe("<fed-1@remote>");
+    expect(headers.from).toBe("sender@remote");
+  });
+
+  test("fires watch callback on delivery", async () => {
+    const { transport } = await createTestTransport();
+    const alphaTransport = transport.getTransportForAgent(
+      "alpha@test.interchange",
+    );
+
+    const events: MailboxEvent[] = [];
+    alphaTransport.watch("INBOX", (event) => events.push(event));
+
+    transport.deliver("alpha@test.interchange", VALID_MESSAGE);
+
+    // Watch callbacks are scheduled via queueMicrotask.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe("exists");
+  });
+
+  test("throws for unregistered agent", async () => {
+    const { transport } = await createTestTransport();
+
+    expect(() =>
+      transport.deliver("nobody@test.interchange", VALID_MESSAGE),
+    ).toThrow(/not registered/);
+  });
+
+  test("throws for missing Message-ID header", async () => {
+    const { transport } = await createTestTransport();
+    const msg = new TextEncoder().encode(
+      ["From: x@y", "Date: Thu, 17 Apr 2026 12:00:00 +0000", "", "body"].join(
+        "\r\n",
+      ),
+    );
+
+    expect(() => transport.deliver("alpha@test.interchange", msg)).toThrow(
+      /Message-ID/,
+    );
+  });
+
+  test("throws for missing From header", async () => {
+    const { transport } = await createTestTransport();
+    const msg = new TextEncoder().encode(
+      [
+        "Message-ID: <x@y>",
+        "Date: Thu, 17 Apr 2026 12:00:00 +0000",
+        "",
+        "body",
+      ].join("\r\n"),
+    );
+
+    expect(() => transport.deliver("alpha@test.interchange", msg)).toThrow(
+      /From/,
+    );
+  });
+
+  test("throws for missing Date header", async () => {
+    const { transport } = await createTestTransport();
+    const msg = new TextEncoder().encode(
+      ["From: x@y", "Message-ID: <x@y>", "", "body"].join("\r\n"),
+    );
+
+    expect(() => transport.deliver("alpha@test.interchange", msg)).toThrow(
+      /Date/,
+    );
+  });
+});
