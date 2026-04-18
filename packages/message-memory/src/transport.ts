@@ -251,6 +251,86 @@ export class InMemoryTransport implements MessageTransport {
   }
 
   // ---------------------------------------------------------------------------
+  // Inbound delivery from federation
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Deliver a signed MIME message to an agent's INBOX. Used by the
+   * federation layer when a message arrives from the hub over the
+   * websocket — the message is already assembled and signed by the
+   * originating agent, so no further processing is needed beyond
+   * envelope parsing and storage.
+   *
+   * Throws if the agent is not registered.
+   */
+  deliver(agentAddress: string, message: Uint8Array): void {
+    const entry = this.#agentMailboxes.get(agentAddress);
+    if (entry === undefined) {
+      throw new Error(
+        `Agent "${agentAddress}" is not registered — cannot deliver mail`,
+      );
+    }
+    const inbox = entry.mailboxes.get("INBOX");
+    if (inbox === undefined) {
+      throw new Error(`Agent "${agentAddress}" has no INBOX`);
+    }
+
+    const { headers } = parseHeaderSection(message);
+
+    const messageId = headers.get("message-id");
+    const from = headers.get("from");
+    const dateRaw = headers.get("date");
+    if (messageId === undefined) {
+      throw new Error("Cannot deliver message: missing Message-ID header");
+    }
+    if (from === undefined) {
+      throw new Error("Cannot deliver message: missing From header");
+    }
+    if (dateRaw === undefined) {
+      throw new Error("Cannot deliver message: missing Date header");
+    }
+
+    const msgHeaders = buildMessageHeaders(headers);
+
+    const toRaw = headers.get("to") ?? "";
+    const to = toRaw
+      ? toRaw
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+
+    const refsRaw = headers.get("references");
+    const references = refsRaw ? refsRaw.split(/\s+/).filter(Boolean) : [];
+
+    const envelope: import("./mailbox").StoredEnvelope = {
+      messageId,
+      from,
+      to,
+      subject: headers.get("subject") ?? "",
+      date: new Date(dateRaw),
+      inReplyTo: headers.get("in-reply-to"),
+      references,
+      interchangeType: headers.get("interchange-type"),
+      interchangeCorrelationId: headers.get("interchange-correlation-id"),
+    };
+
+    const uid = appendToMailbox(inbox, message, envelope, []);
+
+    const callbacks = entry.watchCallbacks.get("INBOX");
+    if (callbacks !== undefined && callbacks.size > 0) {
+      const event: import("@interchange/types/runtime").MailboxEvent = {
+        type: "exists",
+        uid,
+        headers: msgHeaders,
+      };
+      for (const cb of callbacks) {
+        queueMicrotask(() => cb(event));
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Internal: agent-scoped view
   // ---------------------------------------------------------------------------
 
