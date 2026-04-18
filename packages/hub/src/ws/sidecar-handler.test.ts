@@ -225,6 +225,7 @@ describe("SidecarRouter", () => {
       );
 
       const config = {
+        sessionId: "ses_test",
         agentId: "a1",
         tenantId: "t1",
         agentAddress: "new-agent@local",
@@ -270,6 +271,7 @@ describe("SidecarRouter", () => {
       );
 
       const config = {
+        sessionId: "ses_test",
         agentId: "a1",
         tenantId: "t1",
         agentAddress: "fail-agent@local",

@@ -71,6 +71,7 @@ function createMockSessionManager(): SessionManager & {
 }
 
 const TEST_CONFIG: HarnessConfig = {
+  sessionId: "ses_test-session-1",
   agentId: "agent-1",
   tenantId: "tenant-1",
   agentAddress: "agent-1@test.interchange",

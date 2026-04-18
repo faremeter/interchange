@@ -65,7 +65,7 @@ export function createSessionManager(
       throw new Error(`No provider configured for agent "${agentAddress}"`);
     }
 
-    const sessionId = globalThis.crypto.randomUUID();
+    const sessionId = agentConfig.sessionId;
 
     const harness = createHarness({
       address: agentAddress,

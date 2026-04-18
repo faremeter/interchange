@@ -1179,6 +1179,7 @@ export type ToolPolicy = {
  * (ARCHITECTURE.md § Agent Harness)
  */
 export type HarnessConfig = {
+  sessionId: string;
   agentId: string;
   tenantId: string;
   agentAddress: string;
