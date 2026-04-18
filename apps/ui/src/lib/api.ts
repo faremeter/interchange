@@ -39,21 +39,22 @@ export async function api<T>(
 // opaque Event object. Do not expect to extract error details from it.
 export function openStream(
   path: string,
-  onEvent: (type: string, data: unknown) => void,
-  onError?: (e: Event) => void,
+  onEvent: (event: unknown) => void,
+  opts?: { eventName?: string; onError?: (e: Event) => void },
 ): () => void {
   const es = new EventSource(path);
-  es.onmessage = (e) => {
+  const handler = (e: MessageEvent) => {
     try {
-      const { type, data } = JSON.parse(e.data) as {
-        type: string;
-        data: unknown;
-      };
-      onEvent(type, data);
+      onEvent(JSON.parse(e.data));
     } catch {
       // malformed event, ignore
     }
   };
-  if (onError) es.onerror = onError;
+  if (opts?.eventName) {
+    es.addEventListener(opts.eventName, handler);
+  } else {
+    es.onmessage = handler;
+  }
+  if (opts?.onError) es.onerror = opts.onError;
   return () => es.close();
 }

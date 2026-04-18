@@ -15,11 +15,11 @@ import { MutationError } from "@/components/mutation-error";
 import {
   agentDetailQuery,
   createGrantMutation,
+  createSessionMutation,
   deleteAgentMutation,
   deleteGrantMutation,
+  endSessionMutation,
   principalGrantsQuery,
-  startAgentMutation,
-  stopAgentMutation,
   tenantProvidersQuery,
   updateAgentMutation,
 } from "@/lib/queries/tenants";
@@ -92,21 +92,21 @@ function Row({
   );
 }
 
-// Module-level store keyed by agentId — survives React Strict Mode remounts.
+// Module-level store keyed by sessionId — survives React Strict Mode remounts.
 type ChatMessage = { role: "user" | "assistant"; content: string };
-const agentMessages = new Map<string, ChatMessage[]>();
-const agentStreaming = new Map<string, string>();
+const sessionMessages = new Map<string, ChatMessage[]>();
+const sessionStreaming = new Map<string, string>();
 
-function getMessages(agentId: string): ChatMessage[] {
-  const existing = agentMessages.get(agentId);
+function getMessages(sessionId: string): ChatMessage[] {
+  const existing = sessionMessages.get(sessionId);
   if (existing) return existing;
   const fresh: ChatMessage[] = [];
-  agentMessages.set(agentId, fresh);
+  sessionMessages.set(sessionId, fresh);
   return fresh;
 }
 
-function getStreaming(agentId: string): string {
-  return agentStreaming.get(agentId) ?? "";
+function getStreaming(sessionId: string): string {
+  return sessionStreaming.get(sessionId) ?? "";
 }
 
 export function TenantAgentDetailPage() {
@@ -130,7 +130,7 @@ export function TenantAgentDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   // Chat render trigger — the actual message data lives in module-level Maps
-  // (agentMessages / agentStreaming) so it survives React Strict Mode remounts.
+  // (sessionMessages / sessionStreaming) so it survives React Strict Mode remounts.
   const [, forceRender] = useState(0);
   const rerender = () => forceRender((n) => n + 1);
 
@@ -298,27 +298,27 @@ export function TenantAgentDetailPage() {
   });
 
   const startMut = useMutation({
-    ...startAgentMutation(tenantId, agentId, queryClient),
-    onSuccess: (data) => {
-      // Set cache directly — no invalidation. Invalidating would cycle the
-      // detail query through stale states (running→deployed→running), which
-      // triggers the SSE useEffect multiple times and loses the boot message.
-      // The agents list will pick up the status change on its next natural refetch.
-      queryClient.setQueryData(["tenants", tenantId, "agents", agentId], data);
+    ...createSessionMutation(tenantId, queryClient),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["tenants", tenantId, "agents", agentId],
+      });
     },
   });
 
   const stopMut = useMutation({
-    ...stopAgentMutation(tenantId, agentId, queryClient),
+    ...endSessionMutation(tenantId, agent?.sessionId ?? "", queryClient),
     onSuccess: () => {
+      if (agent?.sessionId) {
+        sessionMessages.delete(agent.sessionId);
+        sessionStreaming.delete(agent.sessionId);
+      }
       queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "agents"],
       });
       queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "agents", agentId],
       });
-      agentMessages.delete(agentId);
-      agentStreaming.delete(agentId);
       rerender();
     },
   });
@@ -326,55 +326,47 @@ export function TenantAgentDetailPage() {
   // Open/close the EventSource based on agent running state.
   // useEffect cleanup handles Strict Mode correctly and also reconnects
   // when navigating back to an already-running agent.
+  const sessionId = agent?.sessionId;
   useEffect(() => {
-    if (agent?.status !== "running") return;
+    if (agent?.status !== "running" || !sessionId) return;
 
     let cancelled = false;
 
+    type InferenceEvent = {
+      type: string;
+      seq: number;
+      data: Record<string, unknown>;
+    };
+
     const close = openStream(
-      `/api/tenants/${tenantId}/agents/${agentId}/events`,
-      (type, eventData) => {
+      `/api/tenants/${tenantId}/sessions/${sessionId}/events`,
+      (raw) => {
         if (cancelled) return;
-        const d = eventData as Record<string, unknown>;
-        if (type === "history.message") {
-          const h = eventData as { role: string; text: string };
-          // Only populate history once — skip if already loaded
-          if (getMessages(agentId).length === 0) {
-            getMessages(agentId).push({
-              role: h.role as "user" | "assistant",
-              content: h.text,
-            });
-            rerender();
-          } else {
-            // Append if not already present (dedup by content+role)
-            const msgs = getMessages(agentId);
-            const last = msgs[msgs.length - 1];
-            if (!last || last.content !== h.text || last.role !== h.role) {
-              msgs.push({
-                role: h.role as "user" | "assistant",
-                content: h.text,
-              });
-              rerender();
-            }
-          }
-        } else if (type === "inference.part_start") {
-          agentStreaming.set(agentId, "");
+        const event = raw as InferenceEvent;
+        if (event.type === "inference.text.delta") {
+          const token = (event.data.token as string) ?? "";
+          sessionStreaming.set(sessionId, getStreaming(sessionId) + token);
           rerender();
-        } else if (type === "inference.token") {
-          agentStreaming.set(
-            agentId,
-            getStreaming(agentId) + ((d.delta as string) ?? ""),
-          );
-          rerender();
-        } else if (type === "inference.done") {
-          const content = getStreaming(agentId);
-          agentStreaming.set(agentId, "");
-          if (content) {
-            getMessages(agentId).push({ role: "assistant", content });
+        } else if (event.type === "inference.done") {
+          // Extract text from the completed message's content blocks.
+          const msg = event.data.message as {
+            content: { type: string; text?: string }[];
+          };
+          const text = msg.content
+            .filter((b) => b.type === "text")
+            .map((b) => b.text ?? "")
+            .join("");
+          sessionStreaming.set(sessionId, "");
+          if (text) {
+            getMessages(sessionId).push({ role: "assistant", content: text });
           }
+          rerender();
+        } else if (event.type === "reactor.done") {
+          sessionStreaming.set(sessionId, "");
           rerender();
         }
       },
+      { eventName: "agent.event" },
     );
     closeStreamRef.current = close;
 
@@ -383,7 +375,7 @@ export function TenantAgentDetailPage() {
       close();
       closeStreamRef.current = null;
     };
-  }, [agent?.status, tenantId, agentId]);
+  }, [agent?.status, sessionId, tenantId]);
 
   function resetPermissionForm() {
     setPermProvider("");
@@ -413,16 +405,18 @@ export function TenantAgentDetailPage() {
 
   async function handleSendChat(e: React.FormEvent) {
     e.preventDefault();
-    if (!chatInput.trim() || isSending) return;
+    if (!chatInput.trim() || isSending || !sessionId) return;
     const userMessage = chatInput.trim();
     setChatInput("");
-    getMessages(agentId).push({ role: "user", content: userMessage });
+    getMessages(sessionId).push({ role: "user", content: userMessage });
     rerender();
     setIsSending(true);
     try {
-      await api("POST", `/api/tenants/${tenantId}/agents/${agentId}/messages`, {
-        text: userMessage,
-      });
+      await api(
+        "POST",
+        `/api/tenants/${tenantId}/sessions/${sessionId}/messages`,
+        { content: userMessage },
+      );
     } finally {
       setIsSending(false);
     }
@@ -668,7 +662,7 @@ export function TenantAgentDetailPage() {
         ) : (
           <Button
             size="sm"
-            onClick={() => startMut.mutate()}
+            onClick={() => startMut.mutate({ agentId })}
             disabled={startMut.isPending}
           >
             {startMut.isPending ? "Starting..." : "Start Agent"}
@@ -677,18 +671,19 @@ export function TenantAgentDetailPage() {
       </div>
 
       {/* Chat Section - only show when running */}
-      {agent.status === "running" && agent.kernelId && agent.sessionId && (
+      {agent.status === "running" && sessionId && (
         <div className="mt-8">
           <h3 className="text-sm font-semibold">Chat</h3>
           <div className="mt-3 flex flex-col gap-3 rounded-lg border p-4">
             {/* Messages */}
             <div className="flex h-64 flex-col gap-2 overflow-y-auto">
-              {getMessages(agentId).length === 0 && !getStreaming(agentId) ? (
+              {getMessages(sessionId).length === 0 &&
+              !getStreaming(sessionId) ? (
                 <p className="text-sm text-muted-foreground">
                   Start a conversation with the agent...
                 </p>
               ) : (
-                getMessages(agentId).map((msg, i) => (
+                getMessages(sessionId).map((msg, i) => (
                   <div
                     key={i}
                     className={`rounded p-2 text-sm ${
@@ -704,13 +699,13 @@ export function TenantAgentDetailPage() {
                   </div>
                 ))
               )}
-              {getStreaming(agentId) && (
+              {getStreaming(sessionId) && (
                 <div className="rounded p-2 text-sm mr-8 bg-primary/10">
                   <span className="font-medium">Agent:</span>{" "}
-                  {getStreaming(agentId)}
+                  {getStreaming(sessionId)}
                 </div>
               )}
-              {isSending && !getStreaming(agentId) && (
+              {isSending && !getStreaming(sessionId) && (
                 <div className="text-sm text-muted-foreground">
                   Agent is thinking...
                 </div>
