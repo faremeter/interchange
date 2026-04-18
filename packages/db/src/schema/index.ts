@@ -11,3 +11,4 @@ export * from "./wallets";
 export * from "./offerings";
 export * from "./sidecar";
 export * from "./sessions";
+export * from "./messages";

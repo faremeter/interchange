@@ -64,6 +64,13 @@
       "when": 1771630000003,
       "tag": "0008_session",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1771630000004,
+      "tag": "0009_session_messages",
+      "breakpoints": true
     }
   ]
 }
