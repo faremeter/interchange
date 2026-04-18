@@ -505,31 +505,35 @@ export function deleteAgentMutation(
   };
 }
 
-export function startAgentMutation(
-  tenantId: string,
-  agentId: string,
-  qc: QueryClient,
-) {
+type SessionResponse = {
+  id: string;
+  tenantId: string;
+  agentId: string;
+  principalId: string;
+  status: "idle" | "busy" | "retry" | "waiting_approval" | "ending" | "ended";
+  createdAt: string;
+  updatedAt: string;
+  lastActivityAt: string | null;
+};
+
+export function createSessionMutation(tenantId: string, qc: QueryClient) {
   return {
-    mutationFn: () =>
-      api<AgentResponse>(
-        "POST",
-        `/api/tenants/${tenantId}/agents/${agentId}/start`,
-      ),
+    mutationFn: (body: { agentId: string }) =>
+      api<SessionResponse>("POST", `/api/tenants/${tenantId}/sessions`, body),
     onSuccess: () => invalidate(qc, tenantId, "agents"),
   };
 }
 
-export function stopAgentMutation(
+export function endSessionMutation(
   tenantId: string,
-  agentId: string,
+  sessionId: string,
   qc: QueryClient,
 ) {
   return {
     mutationFn: () =>
-      api<AgentResponse>(
-        "POST",
-        `/api/tenants/${tenantId}/agents/${agentId}/stop`,
+      api<undefined>(
+        "DELETE",
+        `/api/tenants/${tenantId}/sessions/${sessionId}`,
       ),
     onSuccess: () => invalidate(qc, tenantId, "agents"),
   };
