@@ -695,4 +695,211 @@ describe("SidecarRouter", () => {
       expect(events[0]?.event).toEqual({ type: "turn.start" });
     });
   });
+
+  describe("session subscriptions", () => {
+    test("subscriber receives events for its session", () => {
+      const received: unknown[] = [];
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+
+      router.subscribeSession("sess-1", (event) => received.push(event));
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.event",
+          agentAddress: "agent@local",
+          sessionId: "sess-1",
+          event: { type: "turn.start" },
+        }),
+      );
+
+      expect(received).toHaveLength(1);
+      expect(received[0]).toEqual({ type: "turn.start" });
+    });
+
+    test("subscriber does not receive events for other sessions", () => {
+      const received: unknown[] = [];
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+
+      router.subscribeSession("sess-1", (event) => received.push(event));
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.event",
+          agentAddress: "agent@local",
+          sessionId: "sess-2",
+          event: { type: "turn.start" },
+        }),
+      );
+
+      expect(received).toHaveLength(0);
+    });
+
+    test("unsubscribe stops delivery", () => {
+      const received: unknown[] = [];
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+
+      const unsub = router.subscribeSession("sess-1", (event) =>
+        received.push(event),
+      );
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.event",
+          agentAddress: "agent@local",
+          sessionId: "sess-1",
+          event: { type: "turn.start" },
+        }),
+      );
+
+      unsub();
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.event",
+          agentAddress: "agent@local",
+          sessionId: "sess-1",
+          event: { type: "turn.end" },
+        }),
+      );
+
+      expect(received).toHaveLength(1);
+      expect(received[0]).toEqual({ type: "turn.start" });
+    });
+
+    test("multiple subscribers receive the same event", () => {
+      const received1: unknown[] = [];
+      const received2: unknown[] = [];
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+
+      router.subscribeSession("sess-1", (event) => received1.push(event));
+      router.subscribeSession("sess-1", (event) => received2.push(event));
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.event",
+          agentAddress: "agent@local",
+          sessionId: "sess-1",
+          event: { type: "turn.start" },
+        }),
+      );
+
+      expect(received1).toHaveLength(1);
+      expect(received2).toHaveLength(1);
+    });
+
+    test("stale unsubscribe does not evict a later subscriber", () => {
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
+      const unsub = router.subscribeSession("sess-1", () => {});
+      unsub();
+
+      const received: unknown[] = [];
+      router.subscribeSession("sess-1", (event) => received.push(event));
+
+      // Double-unsubscribe with the stale closure
+      unsub();
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.event",
+          agentAddress: "agent@local",
+          sessionId: "sess-1",
+          event: { type: "turn.start" },
+        }),
+      );
+
+      expect(received).toHaveLength(1);
+    });
+
+    test("subscriber that unsubscribes mid-dispatch does not drop later subscribers", () => {
+      const received: unknown[] = [];
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+
+      const unsub1Ref: { current: (() => void) | null } = { current: null };
+      unsub1Ref.current = router.subscribeSession("sess-1", () => {
+        unsub1Ref.current?.();
+      });
+      router.subscribeSession("sess-1", (event) => received.push(event));
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.event",
+          agentAddress: "agent@local",
+          sessionId: "sess-1",
+          event: { type: "turn.start" },
+        }),
+      );
+
+      expect(received).toHaveLength(1);
+      expect(received[0]).toEqual({ type: "turn.start" });
+    });
+  });
 });

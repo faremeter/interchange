@@ -34,6 +34,11 @@ export type SidecarRouter = {
   sendSessionDestroy(agentAddress: string): Promise<void>;
   sendSessionAbort(agentAddress: string, reason: AbortReason): Promise<void>;
 
+  subscribeSession(
+    sessionId: string,
+    callback: (event: unknown) => void,
+  ): () => void;
+
   getConnectedSidecars(): string[];
   getRoutableAddresses(): string[];
 };
@@ -75,6 +80,8 @@ export function createSidecarRouter(
   const pending = new Map<string, PendingRequest>();
   // agentAddress → number of in-flight session.create requests
   const pendingCreates = new Map<string, number>();
+  // sessionId → set of subscriber callbacks for agent events
+  const sessionSubscribers = new Map<string, Set<(event: unknown) => void>>();
 
   let requestCounter = 0;
 
@@ -100,6 +107,7 @@ export function createSidecarRouter(
         break;
       case "agent.event":
         onAgentEvent?.(frame.agentAddress, frame.sessionId, frame.event);
+        dispatchToSubscribers(frame.sessionId, frame.event);
         break;
       case "session.ack":
         resolvePending(frame.requestId);
@@ -384,6 +392,38 @@ export function createSidecarRouter(
     }
   }
 
+  function dispatchToSubscribers(sessionId: string, event: unknown): void {
+    const subs = sessionSubscribers.get(sessionId);
+    if (subs === undefined) return;
+    for (const cb of [...subs]) {
+      try {
+        cb(event);
+      } catch (err) {
+        logger.warn`Session subscriber threw: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+  }
+
+  function subscribeSession(
+    sessionId: string,
+    callback: (event: unknown) => void,
+  ): () => void {
+    let subs = sessionSubscribers.get(sessionId);
+    if (subs === undefined) {
+      subs = new Set();
+      sessionSubscribers.set(sessionId, subs);
+    }
+    subs.add(callback);
+    return () => {
+      const current = sessionSubscribers.get(sessionId);
+      if (current === undefined) return;
+      current.delete(callback);
+      if (current.size === 0) {
+        sessionSubscribers.delete(sessionId);
+      }
+    };
+  }
+
   function getConnectedSidecars(): string[] {
     return Array.from(connections.values()).map((c) => c.sidecarId);
   }
@@ -400,6 +440,7 @@ export function createSidecarRouter(
     sendSessionCreate,
     sendSessionDestroy,
     sendSessionAbort,
+    subscribeSession,
     getConnectedSidecars,
     getRoutableAddresses,
   };
