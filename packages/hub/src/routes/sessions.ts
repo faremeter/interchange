@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import { type } from "arktype";
@@ -35,6 +35,27 @@ const ProviderMetadata = type({
 const ModelConfig = type({
   defaultModel: "string",
 });
+
+type SessionRow = typeof agentSession.$inferSelect;
+
+// The DB tracks lifecycle state (active/ending/ended) while the API
+// exposes runtime state (idle/busy/retry/waiting_approval) plus the
+// terminal lifecycle states. For active sessions, real-time status
+// comes from GET /:sessionId/status; the list/get endpoints return
+// "idle" as a baseline.
+function formatSession(row: SessionRow) {
+  const status = row.status === "active" ? ("idle" as const) : row.status;
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    agentId: row.agentId,
+    principalId: row.principalId,
+    status,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    lastActivityAt: null,
+  };
+}
 
 const app = new Hono<TenantEnv>();
 
@@ -279,6 +300,7 @@ app.post(
         status: "idle" as const,
         createdAt: now.toISOString(),
         updatedAt: now.toISOString(),
+        lastActivityAt: null,
       },
       201,
     );
@@ -287,6 +309,7 @@ app.post(
 
 app.get(
   "/",
+  requireGrant("session:*", "read"),
   describeRoute({
     tags: ["Sessions"],
     summary: "List sessions in the tenant",
@@ -304,20 +327,36 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenant = c.get("tenant");
+    const principal = c.get("principal");
+    const db = c.get("db");
+    const agentId = c.req.query("agentId");
+
+    const conditions = [
+      eq(agentSession.tenantId, tenant.id),
+      eq(agentSession.principalId, principal.id),
+    ];
+    if (agentId !== undefined) {
+      conditions.push(eq(agentSession.agentId, agentId));
+    }
+
+    const rows = await db.query.agentSession.findMany({
+      where: and(...conditions),
+      orderBy: [desc(agentSession.createdAt)],
+    });
+
+    return c.json(rows.map(formatSession), 200);
+  },
 );
 
 app.get(
   "/:sessionId",
+  requireGrant(idResource("session", "sessionId"), "read"),
   describeRoute({
     tags: ["Sessions"],
     summary: "Get session metadata",
-    description:
-      "Returns session status, agent, creation time, and last activity.",
+    description: "Returns session status, agent, and creation time.",
     responses: {
       200: {
         description: "Session details",
@@ -333,11 +372,27 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenant = c.get("tenant");
+    const db = c.get("db");
+    const sessionId = c.req.param("sessionId");
+
+    const row = await db.query.agentSession.findFirst({
+      where: and(
+        eq(agentSession.id, sessionId),
+        eq(agentSession.tenantId, tenant.id),
+      ),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Session not found" } },
+        404,
+      );
+    }
+
+    return c.json(formatSession(row), 200);
+  },
 );
 
 app.delete(

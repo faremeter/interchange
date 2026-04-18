@@ -14,7 +14,7 @@ export const SessionResponse = type({
   tenantId: "string",
   agentId: "string",
   principalId: "string",
-  status: "'idle' | 'busy' | 'retry' | 'waiting_approval'",
+  status: "'idle' | 'busy' | 'retry' | 'waiting_approval' | 'ending' | 'ended'",
   "sessionToken?": "string",
   createdAt: "string",
   updatedAt: "string",
