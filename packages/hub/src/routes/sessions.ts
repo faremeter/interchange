@@ -16,7 +16,7 @@ import {
 import type { ProviderConfig } from "@interchange/types/runtime";
 
 import type { TenantEnv } from "../context";
-import { requireGrant } from "../middleware/grant";
+import { requireGrant, idResource } from "../middleware/grant";
 import { generateId } from "../ids";
 
 const CredentialRequirement = type({
@@ -342,11 +342,11 @@ app.get(
 
 app.delete(
   "/:sessionId",
+  requireGrant(idResource("session", "sessionId"), "manage"),
   describeRoute({
     tags: ["Sessions"],
     summary: "End a session",
-    description:
-      "Ends the session and expires all invoker grants associated with it.",
+    description: "Ends the session and tears down the sidecar process.",
     responses: {
       204: {
         description: "Session ended",
@@ -357,13 +357,107 @@ app.delete(
           "application/json": { schema: resolver(ErrorResponse) },
         },
       },
+      409: {
+        description: "Session already ended or ending",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      502: {
+        description: "Sidecar unavailable",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenant = c.get("tenant");
+    const db = c.get("db");
+    const sidecarRouter = c.get("sidecarRouter");
+    const sessionId = c.req.param("sessionId");
+
+    const sessionRow = await db.query.agentSession.findFirst({
+      where: and(
+        eq(agentSession.id, sessionId),
+        eq(agentSession.tenantId, tenant.id),
+      ),
+    });
+
+    if (!sessionRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Session not found" } },
+        404,
+      );
+    }
+
+    if (sessionRow.status !== "active") {
+      return c.json(
+        {
+          error: {
+            code: "conflict",
+            message: `Session is already ${sessionRow.status}`,
+          },
+        },
+        409,
+      );
+    }
+
+    const agentRow = await db.query.agent.findFirst({
+      where: and(
+        eq(agent.id, sessionRow.agentId),
+        eq(agent.tenantId, tenant.id),
+      ),
+    });
+
+    if (!agentRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Agent not found" } },
+        404,
+      );
+    }
+
+    const agentAddress = `${agentRow.id}@${tenant.domain}`;
+
+    await db
+      .update(agentSession)
+      .set({ status: "ending", updatedAt: new Date() })
+      .where(eq(agentSession.id, sessionId));
+
+    try {
+      await sidecarRouter.sendSessionDestroy(agentAddress);
+    } catch (err) {
+      await db
+        .update(agentSession)
+        .set({ status: "active", updatedAt: new Date() })
+        .where(eq(agentSession.id, sessionId));
+
+      return c.json(
+        {
+          error: {
+            code: "sidecar_unavailable",
+            message:
+              err instanceof Error
+                ? err.message
+                : "Failed to reach sidecar for session teardown",
+          },
+        },
+        502,
+      );
+    }
+
+    await db
+      .update(agent)
+      .set({ status: "deployed", sessionId: null, updatedAt: new Date() })
+      .where(and(eq(agent.id, agentRow.id), eq(agent.status, "running")));
+
+    await db
+      .update(agentSession)
+      .set({ status: "ended", endedAt: new Date(), updatedAt: new Date() })
+      .where(eq(agentSession.id, sessionId));
+
+    return c.body(null, 204);
+  },
 );
 
 app.post(
