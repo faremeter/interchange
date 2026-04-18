@@ -1,6 +1,7 @@
 import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
+import { type } from "arktype";
 
 import { agent, provider } from "@interchange/db/schema";
 import { resolveCredentialRequirement } from "@interchange/db";
@@ -17,6 +18,23 @@ import type { ProviderConfig } from "@interchange/types/runtime";
 import type { TenantEnv } from "../context";
 import { requireGrant } from "../middleware/grant";
 import { generateId } from "../ids";
+
+const CredentialRequirement = type({
+  providerName: "string",
+  "scopes?": "string[]",
+  source: "'tenant' | 'creator' | 'invoker'",
+  "name?": "string",
+});
+
+const CredentialRequirements = CredentialRequirement.array();
+
+const ProviderMetadata = type({
+  baseURL: "string",
+});
+
+const ModelConfig = type({
+  defaultModel: "string",
+});
 
 const app = new Hono<TenantEnv>();
 
@@ -55,14 +73,7 @@ app.post(
     const principal = c.get("principal");
     const db = c.get("db");
     const sidecarRouter = c.get("sidecarRouter");
-    const body = c.req.valid("json" as never) as {
-      agentId: string;
-      invokerCapabilities?: {
-        resource: string;
-        action: string;
-        conditions?: Record<string, unknown> | null;
-      }[];
-    };
+    const body = c.req.valid("json" as never) as typeof CreateSession.infer;
 
     const row = await db.query.agent.findFirst({
       where: and(eq(agent.id, body.agentId), eq(agent.tenantId, tenant.id)),
@@ -102,12 +113,21 @@ app.post(
 
     const agentAddress = `${row.id}@${tenant.domain}`;
 
-    const credentialRequirements = (row.credentialRequirements ?? []) as {
-      providerName: string;
-      scopes?: string[];
-      source: "tenant" | "creator" | "invoker";
-      name?: string;
-    }[];
+    const parsedRequirements = CredentialRequirements(
+      row.credentialRequirements ?? [],
+    );
+    if (parsedRequirements instanceof type.errors) {
+      return c.json(
+        {
+          error: {
+            code: "not_launchable",
+            message: `Invalid credential requirements: ${parsedRequirements.summary}`,
+          },
+        },
+        409,
+      );
+    }
+    const credentialRequirements = parsedRequirements;
 
     const providers: ProviderConfig[] = [];
     for (const req of credentialRequirements) {
@@ -163,16 +183,13 @@ app.post(
         );
       }
 
-      const metadata = (providerRow.metadata ?? {}) as {
-        baseURL?: string;
-      };
-
-      if (!metadata.baseURL) {
+      const metadata = ProviderMetadata(providerRow.metadata ?? {});
+      if (metadata instanceof type.errors) {
         return c.json(
           {
             error: {
               code: "provider_misconfigured",
-              message: `Provider "${providerRow.name}" has no baseURL configured`,
+              message: `Provider "${providerRow.name}" metadata is invalid: ${metadata.summary}`,
             },
           },
           409,
@@ -186,16 +203,13 @@ app.post(
       });
     }
 
-    const modelConfig = (row.modelConfig ?? {}) as {
-      defaultModel?: string;
-    };
-
-    if (!modelConfig.defaultModel) {
+    const modelConfig = ModelConfig(row.modelConfig ?? {});
+    if (modelConfig instanceof type.errors) {
       return c.json(
         {
           error: {
             code: "not_launchable",
-            message: "Agent has no default model configured",
+            message: `Agent model configuration is invalid: ${modelConfig.summary}`,
           },
         },
         409,
