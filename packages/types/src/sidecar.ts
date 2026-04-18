@@ -124,12 +124,33 @@ export type SessionAbortFrame = {
   reason: AbortReason;
 };
 
+export type WireAttachment = {
+  type: string;
+  url: string;
+  mimeType?: string;
+};
+
+/**
+ * Deliver a user message to the agent's running session. The sidecar
+ * feeds the content into the reactor. Responds with session.ack or
+ * session.error.
+ */
+export type MessageSendFrame = {
+  type: "message.send";
+  requestId: string;
+  agentAddress: string;
+  sessionId: string;
+  content: string;
+  attachments?: WireAttachment[];
+};
+
 /** All frame types the hub sends to the sidecar. */
 export type HubFrame =
   | MailInboundFrame
   | SessionCreateFrame
   | SessionDestroyFrame
-  | SessionAbortFrame;
+  | SessionAbortFrame
+  | MessageSendFrame;
 
 /** Any frame on the wire, regardless of direction. */
 export type WireFrame = SidecarFrame | HubFrame;
