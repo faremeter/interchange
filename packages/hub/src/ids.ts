@@ -15,6 +15,8 @@ const PREFIXES = {
   transaction: "txn_",
   offering: "ofr_",
   session: "ses_",
+  message: "msg_",
+  messagePart: "mpt_",
 } as const;
 
 type IDKind = keyof typeof PREFIXES;
