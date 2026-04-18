@@ -1,4 +1,4 @@
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, asc, gt, or, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import { type } from "arktype";
@@ -693,11 +693,12 @@ app.post(
 
 app.get(
   "/:sessionId/messages",
+  requireGrant(idResource("session", "sessionId"), "read"),
   describeRoute({
     tags: ["Sessions"],
     summary: "List messages in a session",
     description:
-      "Returns messages with all parts (text, reasoning, tool calls, etc.). Cursor-paginated.",
+      "Returns messages with all parts in chronological order (oldest first). Cursor-paginated using ?cursor=<messageId>&limit=<n>.",
     responses: {
       200: {
         description: "List of messages",
@@ -707,17 +708,106 @@ app.get(
           },
         },
       },
+      404: {
+        description: "Session not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenant = c.get("tenant");
+    const db = c.get("db");
+    const sessionId = c.req.param("sessionId");
+    const cursor = c.req.query("cursor");
+    const rawLimit = Number(c.req.query("limit") ?? 50);
+    const limit =
+      Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 50;
+
+    const sessionRow = await db.query.agentSession.findFirst({
+      where: and(
+        eq(agentSession.id, sessionId),
+        eq(agentSession.tenantId, tenant.id),
+      ),
+    });
+
+    if (!sessionRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Session not found" } },
+        404,
+      );
+    }
+
+    let cursorCondition;
+
+    if (cursor !== undefined) {
+      const cursorRow = await db.query.sessionMessage.findFirst({
+        where: and(
+          eq(sessionMessage.id, cursor),
+          eq(sessionMessage.sessionId, sessionId),
+        ),
+        columns: { createdAt: true },
+      });
+      if (cursorRow) {
+        cursorCondition = or(
+          gt(sessionMessage.createdAt, cursorRow.createdAt),
+          and(
+            eq(sessionMessage.createdAt, cursorRow.createdAt),
+            gt(sessionMessage.id, cursor),
+          ),
+        );
+      }
+    }
+
+    const messages = await db
+      .select()
+      .from(sessionMessage)
+      .where(and(eq(sessionMessage.sessionId, sessionId), cursorCondition))
+      .orderBy(asc(sessionMessage.createdAt), asc(sessionMessage.id))
+      .limit(limit);
+
+    const messageIds = messages.map((m) => m.id);
+
+    const parts =
+      messageIds.length > 0
+        ? await db
+            .select()
+            .from(messagePart)
+            .where(inArray(messagePart.messageId, messageIds))
+            .orderBy(asc(messagePart.ordinal))
+        : [];
+
+    const partsByMessage = new Map<string, typeof parts>();
+    for (const part of parts) {
+      let list = partsByMessage.get(part.messageId);
+      if (list === undefined) {
+        list = [];
+        partsByMessage.set(part.messageId, list);
+      }
+      list.push(part);
+    }
+
+    return c.json(
+      messages.map((m) => ({
+        id: m.id,
+        sessionId: m.sessionId,
+        role: m.role,
+        createdAt: m.createdAt.toISOString(),
+        parts: (partsByMessage.get(m.id) ?? []).map((p) => ({
+          id: p.id,
+          type: p.type,
+          content: p.content,
+          metadata: p.metadata,
+        })),
+      })),
+    );
+  },
 );
 
 app.get(
   "/:sessionId/messages/:messageId",
+  requireGrant(idResource("session", "sessionId"), "read"),
   describeRoute({
     tags: ["Sessions"],
     summary: "Get a single message",
@@ -737,11 +827,59 @@ app.get(
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenant = c.get("tenant");
+    const db = c.get("db");
+    const sessionId = c.req.param("sessionId");
+    const messageId = c.req.param("messageId");
+
+    const sessionRow = await db.query.agentSession.findFirst({
+      where: and(
+        eq(agentSession.id, sessionId),
+        eq(agentSession.tenantId, tenant.id),
+      ),
+    });
+
+    if (!sessionRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Session not found" } },
+        404,
+      );
+    }
+
+    const message = await db.query.sessionMessage.findFirst({
+      where: and(
+        eq(sessionMessage.id, messageId),
+        eq(sessionMessage.sessionId, sessionId),
+      ),
+    });
+
+    if (!message) {
+      return c.json(
+        { error: { code: "not_found", message: "Message not found" } },
+        404,
+      );
+    }
+
+    const parts = await db
+      .select()
+      .from(messagePart)
+      .where(eq(messagePart.messageId, messageId))
+      .orderBy(asc(messagePart.ordinal));
+
+    return c.json({
+      id: message.id,
+      sessionId: message.sessionId,
+      role: message.role,
+      createdAt: message.createdAt.toISOString(),
+      parts: parts.map((p) => ({
+        id: p.id,
+        type: p.type,
+        content: p.content,
+        metadata: p.metadata,
+      })),
+    });
+  },
 );
 
 app.post(
