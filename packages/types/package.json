@@ -19,6 +19,10 @@
     "./runtime": {
       "types": "./src/runtime.ts",
       "default": "./src/runtime.ts"
+    },
+    "./sidecar": {
+      "types": "./src/sidecar.ts",
+      "default": "./src/sidecar.ts"
     }
   },
   "dependencies": {
