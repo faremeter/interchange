@@ -4,7 +4,13 @@ import { describeRoute, resolver, validator } from "hono-openapi";
 import { type } from "arktype";
 
 import { streamSSE } from "hono/streaming";
-import { agent, agentSession, provider } from "@interchange/db/schema";
+import {
+  agent,
+  agentSession,
+  messagePart,
+  provider,
+  sessionMessage,
+} from "@interchange/db/schema";
 import { resolveCredentialRequirement } from "@interchange/db";
 import {
   CreateSession,
@@ -523,11 +529,12 @@ app.delete(
 
 app.post(
   "/:sessionId/messages",
+  requireGrant(idResource("session", "sessionId"), "write"),
   describeRoute({
     tags: ["Sessions"],
     summary: "Send a message to the agent",
     description:
-      "Persists the user message and returns it. The agent's response streams over the session channel (WebSocket or SSE), not in this HTTP response.",
+      "Persists the user message and dispatches it to the running agent via the sidecar. The agent's response streams over the session channel (WebSocket or SSE), not in this HTTP response.",
     responses: {
       201: {
         description: "Message sent",
@@ -541,14 +548,147 @@ app.post(
           "application/json": { schema: resolver(ErrorResponse) },
         },
       },
+      404: {
+        description: "Session not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      409: {
+        description: "Session not active",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      502: {
+        description: "Sidecar unavailable",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
     },
   }),
   validator("json", SendMessage),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenant = c.get("tenant");
+    const db = c.get("db");
+    const sidecarRouter = c.get("sidecarRouter");
+    const sessionId = c.req.param("sessionId");
+    const body = c.req.valid("json");
+
+    const sessionRow = await db.query.agentSession.findFirst({
+      where: and(
+        eq(agentSession.id, sessionId),
+        eq(agentSession.tenantId, tenant.id),
+      ),
+    });
+
+    if (!sessionRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Session not found" } },
+        404,
+      );
+    }
+
+    if (sessionRow.status !== "active") {
+      return c.json(
+        {
+          error: {
+            code: "conflict",
+            message: `Session is ${sessionRow.status}, cannot send messages`,
+          },
+        },
+        409,
+      );
+    }
+
+    const agentRow = await db.query.agent.findFirst({
+      where: and(
+        eq(agent.id, sessionRow.agentId),
+        eq(agent.tenantId, tenant.id),
+      ),
+    });
+
+    if (!agentRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Agent not found" } },
+        404,
+      );
+    }
+
+    const messageId = generateId("message");
+    const partId = generateId("messagePart");
+    const now = new Date();
+
+    await db.insert(sessionMessage).values({
+      id: messageId,
+      sessionId,
+      tenantId: tenant.id,
+      role: "user",
+      status: "pending",
+      createdAt: now,
+    });
+
+    await db.insert(messagePart).values({
+      id: partId,
+      messageId,
+      sessionId,
+      type: "text",
+      content: body.content,
+      ordinal: 0,
+    });
+
+    const agentAddress = `${agentRow.id}@${tenant.domain}`;
+
+    try {
+      await sidecarRouter.sendMessage(
+        agentAddress,
+        sessionId,
+        body.content,
+        body.attachments,
+      );
+
+      await db
+        .update(sessionMessage)
+        .set({ status: "delivered" })
+        .where(eq(sessionMessage.id, messageId));
+    } catch (err) {
+      await db
+        .update(sessionMessage)
+        .set({ status: "failed" })
+        .where(eq(sessionMessage.id, messageId));
+
+      return c.json(
+        {
+          error: {
+            code: "sidecar_unavailable",
+            message:
+              err instanceof Error
+                ? err.message
+                : "Failed to deliver message to sidecar",
+          },
+        },
+        502,
+      );
+    }
+
+    return c.json(
+      {
+        id: messageId,
+        sessionId,
+        role: "user" as const,
+        createdAt: now.toISOString(),
+        parts: [
+          {
+            id: partId,
+            type: "text" as const,
+            content: body.content,
+          },
+        ],
+      },
+      201,
+    );
+  },
 );
 
 app.get(
