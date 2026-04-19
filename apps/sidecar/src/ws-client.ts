@@ -75,9 +75,9 @@ export function createWsClient(config: WsClientConfig): WsClient {
     });
   });
 
-  function handleSessionCreate(frame: SessionCreateFrame): void {
+  async function handleSessionCreate(frame: SessionCreateFrame): Promise<void> {
     try {
-      const sessionId = sessions.createSession(frame.config);
+      const sessionId = await sessions.createSession(frame.config);
       send({ type: "session.ack", requestId: frame.requestId });
       logger.info`Acked session.create for ${frame.config.agentAddress} (session ${sessionId})`;
     } catch (err) {
@@ -136,7 +136,7 @@ export function createWsClient(config: WsClientConfig): WsClient {
     }
   }
 
-  function handleMessage(data: string): void {
+  async function handleMessage(data: string): Promise<void> {
     let frame: HubFrame;
     try {
       frame = JSON.parse(data) as HubFrame;
@@ -152,7 +152,7 @@ export function createWsClient(config: WsClientConfig): WsClient {
         break;
       }
       case "session.create":
-        handleSessionCreate(frame);
+        await handleSessionCreate(frame);
         break;
       case "session.destroy":
         handleSessionDestroy(frame);

@@ -206,6 +206,7 @@ const sidecarEnv: Record<string, string> = {
   HUB_WS_URL: hubWsURL,
   SIDECAR_ID: "dev-sidecar-1",
   SIDECAR_TOKEN: "dev-token",
+  SIDECAR_DATA_DIR: resolve(ROOT, "tmp/sidecar-data"),
   ...sidecarFileEnv,
 };
 

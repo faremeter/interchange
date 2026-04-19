@@ -25,6 +25,11 @@ if (token === undefined) {
   throw new Error("SIDECAR_TOKEN environment variable is required");
 }
 
+const dataDir = process.env["SIDECAR_DATA_DIR"];
+if (dataDir === undefined) {
+  throw new Error("SIDECAR_DATA_DIR environment variable is required");
+}
+
 const keyPair = await generateKeyPair();
 const crypto = createNodeCrypto(keyPair);
 const transport = createInMemoryTransport();
@@ -43,6 +48,7 @@ let forwardEvent: (a: string, s: string, e: InferenceEvent) => void = (
 const sessions = createSessionManager({
   transport,
   crypto,
+  dataDir,
   onEvent(agentAddress, sessionId, event) {
     forwardEvent(agentAddress, sessionId, event);
   },
