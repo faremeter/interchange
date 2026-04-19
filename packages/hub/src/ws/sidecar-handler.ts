@@ -67,6 +67,7 @@ export type SidecarRouterConfig = {
   validateToken?: (sidecarId: string, token: string) => boolean;
   lookupPublicKey?: (agentAddress: string) => Promise<string | null>;
   onAgentDeployAck?: (agentAddress: string, publicKey: string) => Promise<void>;
+  onAgentReconnected?: (agentAddress: string) => Promise<void>;
   challengeTimeoutMs?: number;
   disconnectQueueMaxSize?: number;
   disconnectQueueTTLMs?: number;
@@ -97,6 +98,7 @@ export function createSidecarRouter(
     validateToken,
     lookupPublicKey,
     onAgentDeployAck,
+    onAgentReconnected,
     disconnectQueueMaxSize = DEFAULT_DISCONNECT_QUEUE_MAX_SIZE,
     disconnectQueueTTLMs = DEFAULT_DISCONNECT_QUEUE_TTL_MS,
     pingTimeoutMs = DEFAULT_PING_TIMEOUT_MS,
@@ -218,7 +220,7 @@ export function createSidecarRouter(
         );
         break;
       case "challenge.response":
-        handleChallengeResponse(ws, frame.responses);
+        void handleChallengeResponse(ws, frame.responses);
         break;
       case "agent.deploy.ack":
         void handleDeployAck(frame.agentAddress, frame.publicKey);
@@ -418,10 +420,10 @@ export function createSidecarRouter(
     conn.send({ type: "challenge", challenges: challengeEntries });
   }
 
-  function handleChallengeResponse(
+  async function handleChallengeResponse(
     ws: WsHandle,
     responses: { address: string; signature: string }[],
-  ): void {
+  ): Promise<void> {
     const challenge = pendingChallenges.get(ws);
     if (challenge === undefined) {
       logger.warn`Received challenge.response with no pending challenge`;
@@ -487,10 +489,28 @@ export function createSidecarRouter(
       }
     }
 
-    // Add verified addresses to the routing table and flush queued messages.
+    // Add verified addresses to the routing table.
     for (const addr of verified) {
       conn.agentAddresses.add(addr);
       addressIndex.set(addr, ws);
+    }
+
+    // Notify the application layer so it can reconcile DB state (e.g.,
+    // restore agent status and event collectors) before flushing queued
+    // messages. Flushing first would cause echoed events to arrive
+    // before the collector exists.
+    if (onAgentReconnected !== undefined) {
+      for (const addr of verified) {
+        try {
+          await onAgentReconnected(addr);
+        } catch (err) {
+          logger.error`Failed to handle reconnection for ${addr}: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+    }
+
+    // Now flush queued messages that accumulated during the disconnect.
+    for (const addr of verified) {
       flushDisconnectedQueue(addr, conn);
     }
 
