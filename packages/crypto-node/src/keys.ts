@@ -2,6 +2,7 @@ import {
   generateKeyPairSync,
   createPrivateKey,
   createPublicKey,
+  verify as nodeVerify,
   type KeyObject,
 } from "node:crypto";
 import type { KeyPair } from "@interchange/types/runtime";
@@ -114,4 +115,20 @@ export function importPublicKeyBytes(rawKey: Uint8Array): KeyObject {
     format: "der",
     type: "spki",
   });
+}
+
+/**
+ * Verify a raw Ed25519 signature over arbitrary data.
+ *
+ * Unlike `verifyDetachedSignature` which expects PGP-armored input,
+ * this operates on raw bytes — suitable for challenge/response protocols
+ * where no PGP framing is involved.
+ */
+export function verifyEd25519(
+  data: Uint8Array,
+  signature: Uint8Array,
+  publicKeyBytes: Uint8Array,
+): boolean {
+  const publicKey = importPublicKeyBytes(publicKeyBytes);
+  return nodeVerify(null, data, publicKey, signature);
 }

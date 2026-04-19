@@ -1,4 +1,9 @@
+import { sign as nodeSign } from "node:crypto";
 import { describe, test, expect, beforeEach } from "bun:test";
+import {
+  generateKeyPair,
+  importPrivateKeyBytes,
+} from "@interchange/crypto-node";
 import { createSidecarRouter, type WsHandle } from "./sidecar-handler";
 
 function createMockWs(): WsHandle & { sent: string[]; closed: boolean } {
@@ -884,6 +889,247 @@ describe("SidecarRouter", () => {
       );
 
       await expect(promise).rejects.toThrow("session not found");
+    });
+  });
+
+  describe("challenge/response reconnect", () => {
+    function hexEncode(bytes: Uint8Array): string {
+      return Array.from(bytes)
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+    }
+
+    function hexDecode(hex: string): Uint8Array {
+      const bytes = new Uint8Array(hex.length / 2);
+      for (let i = 0; i < bytes.length; i++) {
+        bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+      }
+      return bytes;
+    }
+
+    function signChallenge(
+      nonce: string,
+      address: string,
+      privateKeyBytes: Uint8Array,
+    ): string {
+      const nonceBytes = hexDecode(nonce);
+      const addressBytes = new TextEncoder().encode(address);
+      const payload = new Uint8Array(nonceBytes.length + addressBytes.length);
+      payload.set(nonceBytes);
+      payload.set(addressBytes, nonceBytes.length);
+      const privateKey = importPrivateKeyBytes(privateKeyBytes);
+      const sig = nodeSign(null, payload, privateKey);
+      return hexEncode(new Uint8Array(sig));
+    }
+
+    test("reconnect issues challenge and verifies signature", async () => {
+      const kp = await generateKeyPair();
+      const publicKeyHex = hexEncode(kp.publicKey);
+
+      const router = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        lookupPublicKey: async (addr) =>
+          addr === "agent@local" ? publicKeyHex : null,
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      // Wait for async handleReconnect to complete.
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Should have received a challenge frame.
+      const challengeFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      expect(challengeFrame).toBeDefined();
+      expect(challengeFrame.challenges).toHaveLength(1);
+
+      const { address, nonce } = challengeFrame.challenges[0];
+      expect(address).toBe("agent@local");
+
+      // Sign and respond.
+      const signature = signChallenge(nonce, address, kp.privateKey);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "challenge.response",
+          responses: [{ address, signature }],
+        }),
+      );
+
+      expect(router.getRoutableAddresses()).toContain("agent@local");
+    });
+
+    test("reconnect rejects invalid signature", async () => {
+      const kp = await generateKeyPair();
+      const wrongKp = await generateKeyPair();
+      const publicKeyHex = hexEncode(kp.publicKey);
+
+      const router = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        lookupPublicKey: async (addr) =>
+          addr === "agent@local" ? publicKeyHex : null,
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const challengeFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+
+      const { address, nonce } = challengeFrame.challenges[0];
+
+      // Sign with wrong key.
+      const badSig = signChallenge(nonce, address, wrongKp.privateKey);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "challenge.response",
+          responses: [{ address, signature: badSig }],
+        }),
+      );
+
+      expect(router.getRoutableAddresses()).not.toContain("agent@local");
+
+      const failedFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge.failed");
+      expect(failedFrame).toBeDefined();
+      expect(failedFrame.address).toBe("agent@local");
+    });
+
+    test("reconnect sends challenge.failed for unknown address", async () => {
+      const router = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        lookupPublicKey: async () => null,
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["unknown@local"],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const failedFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge.failed");
+      expect(failedFrame).toBeDefined();
+      expect(failedFrame.address).toBe("unknown@local");
+      expect(failedFrame.reason).toBe("Unknown agent address");
+    });
+
+    test("partial success routes verified addresses only", async () => {
+      const kp1 = await generateKeyPair();
+      const kp2 = await generateKeyPair();
+      const wrongKp = await generateKeyPair();
+
+      const keys = new Map([
+        ["agent-a@local", hexEncode(kp1.publicKey)],
+        ["agent-b@local", hexEncode(kp2.publicKey)],
+      ]);
+
+      const router = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        lookupPublicKey: async (addr) => keys.get(addr) ?? null,
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent-a@local", "agent-b@local"],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const challengeFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      expect(challengeFrame.challenges).toHaveLength(2);
+
+      const responses = challengeFrame.challenges.map(
+        (c: { address: string; nonce: string }) => {
+          const key =
+            c.address === "agent-a@local" ? kp1.privateKey : wrongKp.privateKey;
+          return {
+            address: c.address,
+            signature: signChallenge(c.nonce, c.address, key),
+          };
+        },
+      );
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({ type: "challenge.response", responses }),
+      );
+
+      expect(router.getRoutableAddresses()).toContain("agent-a@local");
+      expect(router.getRoutableAddresses()).not.toContain("agent-b@local");
+    });
+
+    test("disconnect cleans up pending challenge", async () => {
+      const kp = await generateKeyPair();
+
+      const router = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        lookupPublicKey: async (addr) =>
+          addr === "agent@local" ? hexEncode(kp.publicKey) : null,
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Disconnect before responding.
+      router.handleClose(ws);
+
+      expect(router.getConnectedSidecars()).toEqual([]);
+      expect(router.getRoutableAddresses()).toEqual([]);
     });
   });
 });

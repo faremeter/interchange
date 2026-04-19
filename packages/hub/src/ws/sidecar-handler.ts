@@ -4,7 +4,9 @@
 // table of agentAddress → sidecar connection, and dispatches frames between
 // sidecars and the hub's internal systems.
 
+import { randomBytes } from "node:crypto";
 import { getLogger } from "@interchange/log";
+import { verifyEd25519 } from "@interchange/crypto-node";
 import type {
   SidecarFrame,
   HubFrame,
@@ -63,6 +65,8 @@ export type SidecarRouterConfig = {
   onSidecarDisconnect?: (agentAddresses: string[]) => void;
   onMailOutbound?: (rawMessage: string, recipients: string[]) => void;
   validateToken?: (sidecarId: string, token: string) => boolean;
+  lookupPublicKey?: (agentAddress: string) => Promise<string | null>;
+  challengeTimeoutMs?: number;
 };
 
 // Minimal handle so the router doesn't depend on a specific WebSocket impl.
@@ -72,16 +76,19 @@ export type WsHandle = {
 };
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_CHALLENGE_TIMEOUT_MS = 30_000;
 
 export function createSidecarRouter(
   config: SidecarRouterConfig = {},
 ): SidecarRouter {
   const {
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    challengeTimeoutMs = DEFAULT_CHALLENGE_TIMEOUT_MS,
     onAgentEvent,
     onSidecarDisconnect,
     onMailOutbound,
     validateToken,
+    lookupPublicKey,
   } = config;
 
   // ws handle → registered connection
@@ -99,6 +106,13 @@ export function createSidecarRouter(
     timer: ReturnType<typeof setTimeout>;
   };
   const pendingDeploys = new Map<string, PendingDeploy>();
+  // ws handle → pending challenge (awaiting challenge.response)
+  type PendingChallenge = {
+    sidecarId: string;
+    challenges: Map<string, { nonce: Uint8Array; publicKey: Uint8Array }>;
+    timer: ReturnType<typeof setTimeout>;
+  };
+  const pendingChallenges = new Map<WsHandle, PendingChallenge>();
   // sessionId → set of subscriber callbacks for agent events
   const sessionSubscribers = new Map<string, Set<(event: unknown) => void>>();
 
@@ -122,7 +136,15 @@ export function createSidecarRouter(
         handleRegister(ws, frame.sidecarId, frame.token, frame.agentAddresses);
         break;
       case "reconnect":
-        handleRegister(ws, frame.sidecarId, frame.token, frame.agentAddresses);
+        void handleReconnect(
+          ws,
+          frame.sidecarId,
+          frame.token,
+          frame.agentAddresses,
+        );
+        break;
+      case "challenge.response":
+        handleChallengeResponse(ws, frame.responses);
         break;
       case "agent.deploy.ack":
         resolveDeployPending(frame.agentAddress);
@@ -209,6 +231,183 @@ export function createSidecarRouter(
     logger.info`Sidecar ${sidecarId} registered with ${String(agentAddresses.length)} agents`;
   }
 
+  async function handleReconnect(
+    ws: WsHandle,
+    sidecarId: string,
+    token: string,
+    agentAddresses: string[],
+  ): Promise<void> {
+    if (validateToken !== undefined && !validateToken(sidecarId, token)) {
+      logger.warn`Rejected reconnect from sidecar ${sidecarId}: invalid token`;
+      ws.close();
+      return;
+    }
+
+    if (lookupPublicKey === undefined) {
+      logger.error`Received reconnect frame but no lookupPublicKey callback is configured`;
+      ws.close();
+      return;
+    }
+
+    // Cancel any existing pending challenge for this ws before doing
+    // async work, so concurrent reconnect frames don't race.
+    const existingChallenge = pendingChallenges.get(ws);
+    if (existingChallenge !== undefined) {
+      clearTimeout(existingChallenge.timer);
+      pendingChallenges.delete(ws);
+    }
+
+    // Register the sidecar connection immediately (with no addresses)
+    // so it can receive frames while the challenge is pending.
+    handleRegister(ws, sidecarId, token, []);
+
+    const conn = connections.get(ws);
+    if (conn === undefined) return;
+
+    // Look up stored public keys for all claimed addresses.
+    const lookups = await Promise.all(
+      agentAddresses.map(async (addr) => ({
+        address: addr,
+        publicKeyHex: await lookupPublicKey(addr),
+      })),
+    );
+
+    // If the connection was closed or superseded while we were awaiting
+    // key lookups, bail out.
+    if (!connections.has(ws)) return;
+
+    const challenges = new Map<
+      string,
+      { nonce: Uint8Array; publicKey: Uint8Array }
+    >();
+    const challengeEntries: { address: string; nonce: string }[] = [];
+
+    for (const { address, publicKeyHex } of lookups) {
+      if (publicKeyHex === null) {
+        conn.send({
+          type: "challenge.failed",
+          address,
+          reason: "Unknown agent address",
+        });
+        continue;
+      }
+
+      let publicKey: Uint8Array;
+      try {
+        publicKey = hexDecode(publicKeyHex);
+      } catch {
+        conn.send({
+          type: "challenge.failed",
+          address,
+          reason: "Stored public key is corrupt",
+        });
+        logger.error`Corrupt stored public key for ${address}`;
+        continue;
+      }
+
+      const nonce = randomBytes(32);
+      challenges.set(address, { nonce, publicKey });
+      challengeEntries.push({ address, nonce: hexEncode(nonce) });
+    }
+
+    if (challenges.size === 0) return;
+
+    // If another reconnect completed while we were building the
+    // challenge, it will have written its own entry. Don't overwrite.
+    if (pendingChallenges.has(ws)) return;
+
+    const timer = setTimeout(() => {
+      pendingChallenges.delete(ws);
+      logger.warn`Challenge timed out for sidecar ${sidecarId}`;
+    }, challengeTimeoutMs);
+
+    pendingChallenges.set(ws, {
+      sidecarId,
+      challenges,
+      timer,
+    });
+
+    conn.send({ type: "challenge", challenges: challengeEntries });
+  }
+
+  function handleChallengeResponse(
+    ws: WsHandle,
+    responses: { address: string; signature: string }[],
+  ): void {
+    const challenge = pendingChallenges.get(ws);
+    if (challenge === undefined) {
+      logger.warn`Received challenge.response with no pending challenge`;
+      return;
+    }
+
+    clearTimeout(challenge.timer);
+    pendingChallenges.delete(ws);
+
+    const conn = connections.get(ws);
+    if (conn === undefined) return;
+
+    const verified: string[] = [];
+    const responded = new Set<string>();
+
+    for (const { address, signature } of responses) {
+      responded.add(address);
+
+      const entry = challenge.challenges.get(address);
+      if (entry === undefined) {
+        conn.send({
+          type: "challenge.failed",
+          address,
+          reason: "Address was not challenged",
+        });
+        continue;
+      }
+
+      let valid = false;
+      try {
+        const nonceBytes = entry.nonce;
+        const addressBytes = new TextEncoder().encode(address);
+        const payload = new Uint8Array(nonceBytes.length + addressBytes.length);
+        payload.set(nonceBytes);
+        payload.set(addressBytes, nonceBytes.length);
+
+        const sigBytes = hexDecode(signature);
+        valid = verifyEd25519(payload, sigBytes, entry.publicKey);
+      } catch (err) {
+        logger.warn`Challenge failed for ${address}: ${err instanceof Error ? err.message : String(err)}`;
+      }
+
+      if (valid) {
+        verified.push(address);
+      } else {
+        conn.send({
+          type: "challenge.failed",
+          address,
+          reason: "Signature verification failed",
+        });
+      }
+    }
+
+    // Notify about challenged addresses that were omitted from the response.
+    for (const address of challenge.challenges.keys()) {
+      if (!responded.has(address)) {
+        conn.send({
+          type: "challenge.failed",
+          address,
+          reason: "No response provided for challenged address",
+        });
+        logger.warn`Challenge failed for ${address}: no response provided`;
+      }
+    }
+
+    // Add verified addresses to the routing table.
+    for (const addr of verified) {
+      conn.agentAddresses.add(addr);
+      addressIndex.set(addr, ws);
+    }
+
+    logger.info`Sidecar ${challenge.sidecarId} reconnected with ${String(verified.length)} verified agent(s)`;
+  }
+
   function handleMailOutbound(rawMessage: string, recipients: string[]): void {
     // Route to locally connected sidecars first.
     const unrouted: string[] = [];
@@ -256,6 +455,13 @@ export function createSidecarRouter(
       }
     }
     connections.delete(ws);
+
+    // Cancel any pending challenge for this connection.
+    const challengeReq = pendingChallenges.get(ws);
+    if (challengeReq !== undefined) {
+      clearTimeout(challengeReq.timer);
+      pendingChallenges.delete(ws);
+    }
 
     // Reject any in-flight requests that were sent to this sidecar.
     for (const [requestId, req] of pending) {
@@ -542,4 +748,24 @@ export function createSidecarRouter(
     getConnectedSidecars,
     getRoutableAddresses,
   };
+}
+
+function hexEncode(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function hexDecode(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0) {
+    throw new Error(`Hex string must have even length, got ${hex.length}`);
+  }
+  if (!/^[0-9a-fA-F]*$/.test(hex)) {
+    throw new Error("Hex string contains invalid characters");
+  }
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
 }

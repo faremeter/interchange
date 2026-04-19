@@ -2,6 +2,7 @@ export {
   generateKeyPair,
   importPrivateKeyBytes,
   importPublicKeyBytes,
+  verifyEd25519,
 } from "./keys";
 export { NodeCrypto, createNodeCrypto } from "./provider";
 export { canonicalizeText, canonicalizeBytes } from "./canonicalize";
