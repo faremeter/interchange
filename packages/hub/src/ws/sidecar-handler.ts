@@ -66,6 +66,7 @@ export type SidecarRouterConfig = {
   onMailOutbound?: (rawMessage: string, recipients: string[]) => void;
   validateToken?: (sidecarId: string, token: string) => boolean;
   lookupPublicKey?: (agentAddress: string) => Promise<string | null>;
+  onAgentDeployAck?: (agentAddress: string, publicKey: string) => Promise<void>;
   challengeTimeoutMs?: number;
 };
 
@@ -89,6 +90,7 @@ export function createSidecarRouter(
     onMailOutbound,
     validateToken,
     lookupPublicKey,
+    onAgentDeployAck,
   } = config;
 
   // ws handle → registered connection
@@ -147,7 +149,7 @@ export function createSidecarRouter(
         handleChallengeResponse(ws, frame.responses);
         break;
       case "agent.deploy.ack":
-        resolveDeployPending(frame.agentAddress);
+        void handleDeployAck(frame.agentAddress, frame.publicKey);
         break;
       case "agent.error":
         rejectDeployPending(frame.agentAddress, frame.error);
@@ -554,6 +556,29 @@ export function createSidecarRouter(
       rawMessage,
     });
     return true;
+  }
+
+  async function handleDeployAck(
+    agentAddress: string,
+    publicKey: string,
+  ): Promise<void> {
+    if (!pendingDeploys.has(agentAddress)) {
+      logger.warn`Received agent.deploy.ack for "${agentAddress}" with no pending deploy`;
+      return;
+    }
+
+    if (onAgentDeployAck !== undefined) {
+      try {
+        await onAgentDeployAck(agentAddress, publicKey);
+      } catch (err) {
+        rejectDeployPending(
+          agentAddress,
+          `Failed to store public key: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return;
+      }
+    }
+    resolveDeployPending(agentAddress);
   }
 
   function resolveDeployPending(agentAddress: string): void {
