@@ -6,6 +6,35 @@ import {
 } from "@interchange/crypto-node";
 import { createSidecarRouter, type WsHandle } from "./sidecar-handler";
 
+function hexEncode(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function hexDecode(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+function signChallenge(
+  nonce: string,
+  address: string,
+  privateKeyBytes: Uint8Array,
+): string {
+  const nonceBytes = hexDecode(nonce);
+  const addressBytes = new TextEncoder().encode(address);
+  const payload = new Uint8Array(nonceBytes.length + addressBytes.length);
+  payload.set(nonceBytes);
+  payload.set(addressBytes, nonceBytes.length);
+  const privateKey = importPrivateKeyBytes(privateKeyBytes);
+  const sig = nodeSign(null, payload, privateKey);
+  return hexEncode(new Uint8Array(sig));
+}
+
 function createMockWs(): WsHandle & { sent: string[]; closed: boolean } {
   return {
     sent: [],
@@ -1002,35 +1031,6 @@ describe("SidecarRouter", () => {
   });
 
   describe("challenge/response reconnect", () => {
-    function hexEncode(bytes: Uint8Array): string {
-      return Array.from(bytes)
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
-    }
-
-    function hexDecode(hex: string): Uint8Array {
-      const bytes = new Uint8Array(hex.length / 2);
-      for (let i = 0; i < bytes.length; i++) {
-        bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
-      }
-      return bytes;
-    }
-
-    function signChallenge(
-      nonce: string,
-      address: string,
-      privateKeyBytes: Uint8Array,
-    ): string {
-      const nonceBytes = hexDecode(nonce);
-      const addressBytes = new TextEncoder().encode(address);
-      const payload = new Uint8Array(nonceBytes.length + addressBytes.length);
-      payload.set(nonceBytes);
-      payload.set(addressBytes, nonceBytes.length);
-      const privateKey = importPrivateKeyBytes(privateKeyBytes);
-      const sig = nodeSign(null, payload, privateKey);
-      return hexEncode(new Uint8Array(sig));
-    }
-
     test("reconnect issues challenge and verifies signature", async () => {
       const kp = await generateKeyPair();
       const publicKeyHex = hexEncode(kp.publicKey);
@@ -1239,6 +1239,231 @@ describe("SidecarRouter", () => {
 
       expect(router.getConnectedSidecars()).toEqual([]);
       expect(router.getRoutableAddresses()).toEqual([]);
+    });
+  });
+
+  describe("disconnect message queuing", () => {
+    test("mail queued during disconnect is flushed on reconnect", async () => {
+      const kp = await generateKeyPair();
+      const router = createSidecarRouter({
+        requestTimeoutMs: 500,
+        async lookupPublicKey() {
+          return hexEncode(kp.publicKey);
+        },
+      });
+
+      // Initial connection with one agent.
+      const ws1 = createMockWs();
+      router.handleOpen(ws1);
+      router.handleMessage(
+        ws1,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      // Disconnect — creates a queue entry.
+      router.handleClose(ws1);
+
+      // Send mail while disconnected.
+      const queued = router.routeMail("agent@local", "queued-message");
+      expect(queued).toBe(true);
+
+      // Reconnect with challenge/response.
+      const ws2 = createMockWs();
+      router.handleOpen(ws2);
+      router.handleMessage(
+        ws2,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const challengeFrame = ws2.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+
+      const responses = challengeFrame.challenges.map(
+        (c: { address: string; nonce: string }) => ({
+          address: c.address,
+          signature: signChallenge(c.nonce, c.address, kp.privateKey),
+        }),
+      );
+
+      router.handleMessage(
+        ws2,
+        JSON.stringify({ type: "challenge.response", responses }),
+      );
+
+      // The queued mail should have been flushed to the new connection.
+      const flushed = ws2.sent
+        .map((s) => JSON.parse(s))
+        .filter((f: { type: string }) => f.type === "mail.inbound");
+      expect(flushed).toHaveLength(1);
+      expect(flushed[0].rawMessage).toBe("queued-message");
+    });
+
+    test("mail to unknown address returns false", () => {
+      expect(router.routeMail("unknown@local", "msg")).toBe(false);
+    });
+
+    test("queue evicts oldest when full", async () => {
+      const kp = await generateKeyPair();
+      const router = createSidecarRouter({
+        requestTimeoutMs: 500,
+        disconnectQueueMaxSize: 2,
+        async lookupPublicKey() {
+          return hexEncode(kp.publicKey);
+        },
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+      router.handleClose(ws);
+
+      // Queue 3 messages with max size 2 — oldest should be evicted.
+      router.routeMail("agent@local", "msg-0");
+      router.routeMail("agent@local", "msg-1");
+      router.routeMail("agent@local", "msg-2");
+
+      // Reconnect with challenge/response to flush.
+      const ws2 = createMockWs();
+      router.handleOpen(ws2);
+      router.handleMessage(
+        ws2,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const challengeFrame = ws2.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+
+      const responses = challengeFrame.challenges.map(
+        (c: { address: string; nonce: string }) => ({
+          address: c.address,
+          signature: signChallenge(c.nonce, c.address, kp.privateKey),
+        }),
+      );
+
+      router.handleMessage(
+        ws2,
+        JSON.stringify({ type: "challenge.response", responses }),
+      );
+
+      const flushed = ws2.sent
+        .map((s) => JSON.parse(s))
+        .filter((f: { type: string }) => f.type === "mail.inbound");
+
+      // Only the 2 newest messages should have been flushed.
+      expect(flushed).toHaveLength(2);
+      expect(flushed[0].rawMessage).toBe("msg-1");
+      expect(flushed[1].rawMessage).toBe("msg-2");
+    });
+
+    test("sendMessage queues when agent is disconnected", async () => {
+      const kp = await generateKeyPair();
+      const router = createSidecarRouter({
+        requestTimeoutMs: 500,
+        async lookupPublicKey() {
+          return hexEncode(kp.publicKey);
+        },
+      });
+
+      const ws1 = createMockWs();
+      router.handleOpen(ws1);
+      router.handleMessage(
+        ws1,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+      router.handleClose(ws1);
+
+      // sendMessage should not reject when agent is disconnected.
+      await router.sendMessage("agent@local", "ses-1", "hello");
+
+      // Reconnect with challenge/response.
+      const ws2 = createMockWs();
+      router.handleOpen(ws2);
+      router.handleMessage(
+        ws2,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const challengeFrame = ws2.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+
+      const responses = challengeFrame.challenges.map(
+        (c: { address: string; nonce: string }) => ({
+          address: c.address,
+          signature: signChallenge(c.nonce, c.address, kp.privateKey),
+        }),
+      );
+
+      router.handleMessage(
+        ws2,
+        JSON.stringify({ type: "challenge.response", responses }),
+      );
+
+      const flushed = ws2.sent
+        .map((s) => JSON.parse(s))
+        .filter((f: { type: string }) => f.type === "message.send");
+      expect(flushed).toHaveLength(1);
+      expect(flushed[0].content).toBe("hello");
+    });
+
+    test("sendSessionAbort rejects when agent is disconnected", async () => {
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+      router.handleClose(ws);
+
+      await expect(
+        router.sendSessionAbort("agent@local", "user_disconnect"),
+      ).rejects.toThrow("No sidecar connected");
     });
   });
 });

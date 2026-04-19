@@ -68,6 +68,8 @@ export type SidecarRouterConfig = {
   lookupPublicKey?: (agentAddress: string) => Promise<string | null>;
   onAgentDeployAck?: (agentAddress: string, publicKey: string) => Promise<void>;
   challengeTimeoutMs?: number;
+  disconnectQueueMaxSize?: number;
+  disconnectQueueTTLMs?: number;
 };
 
 // Minimal handle so the router doesn't depend on a specific WebSocket impl.
@@ -78,6 +80,8 @@ export type WsHandle = {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CHALLENGE_TIMEOUT_MS = 30_000;
+const DEFAULT_DISCONNECT_QUEUE_MAX_SIZE = 100;
+const DEFAULT_DISCONNECT_QUEUE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 export function createSidecarRouter(
   config: SidecarRouterConfig = {},
@@ -91,6 +95,8 @@ export function createSidecarRouter(
     validateToken,
     lookupPublicKey,
     onAgentDeployAck,
+    disconnectQueueMaxSize = DEFAULT_DISCONNECT_QUEUE_MAX_SIZE,
+    disconnectQueueTTLMs = DEFAULT_DISCONNECT_QUEUE_TTL_MS,
   } = config;
 
   // ws handle → registered connection
@@ -115,10 +121,48 @@ export function createSidecarRouter(
     timer: ReturnType<typeof setTimeout>;
   };
   const pendingChallenges = new Map<WsHandle, PendingChallenge>();
+  // agentAddress → queued frames for disconnected agents awaiting reconnect
+  type DisconnectedAgent = {
+    queue: HubFrame[];
+    timer: ReturnType<typeof setTimeout>;
+  };
+  const disconnectedAgents = new Map<string, DisconnectedAgent>();
   // sessionId → set of subscriber callbacks for agent events
   const sessionSubscribers = new Map<string, Set<(event: unknown) => void>>();
 
   let requestCounter = 0;
+
+  function enqueueForDisconnected(
+    agentAddress: string,
+    frame: HubFrame,
+  ): boolean {
+    const entry = disconnectedAgents.get(agentAddress);
+    if (entry === undefined) return false;
+
+    if (entry.queue.length >= disconnectQueueMaxSize) {
+      entry.queue.shift();
+    }
+    entry.queue.push(frame);
+    return true;
+  }
+
+  function flushDisconnectedQueue(
+    agentAddress: string,
+    conn: SidecarConnection,
+  ): void {
+    const entry = disconnectedAgents.get(agentAddress);
+    if (entry === undefined) return;
+
+    clearTimeout(entry.timer);
+    disconnectedAgents.delete(agentAddress);
+
+    for (const frame of entry.queue) {
+      conn.send(frame);
+    }
+    if (entry.queue.length > 0) {
+      logger.info`Flushed ${String(entry.queue.length)} queued message(s) to ${agentAddress}`;
+    }
+  }
 
   function handleOpen(_ws: WsHandle): void {
     // Connection is not usable until a register frame arrives.
@@ -228,6 +272,17 @@ export function createSidecarRouter(
     connections.set(ws, conn);
     for (const addr of addrSet) {
       addressIndex.set(addr, ws);
+      // Discard any disconnect queue — register has no identity
+      // verification, so flushing to an unverified connection is unsafe.
+      // Use reconnect with challenge/response to preserve queued messages.
+      const staleQueue = disconnectedAgents.get(addr);
+      if (staleQueue !== undefined) {
+        clearTimeout(staleQueue.timer);
+        if (staleQueue.queue.length > 0) {
+          logger.warn`Discarding ${String(staleQueue.queue.length)} queued message(s) for ${addr} on unverified register`;
+        }
+        disconnectedAgents.delete(addr);
+      }
     }
 
     logger.info`Sidecar ${sidecarId} registered with ${String(agentAddresses.length)} agents`;
@@ -401,17 +456,18 @@ export function createSidecarRouter(
       }
     }
 
-    // Add verified addresses to the routing table.
+    // Add verified addresses to the routing table and flush queued messages.
     for (const addr of verified) {
       conn.agentAddresses.add(addr);
       addressIndex.set(addr, ws);
+      flushDisconnectedQueue(addr, conn);
     }
 
     logger.info`Sidecar ${challenge.sidecarId} reconnected with ${String(verified.length)} verified agent(s)`;
   }
 
   function handleMailOutbound(rawMessage: string, recipients: string[]): void {
-    // Route to locally connected sidecars first.
+    // Route to locally connected sidecars first, then try disconnect queues.
     const unrouted: string[] = [];
     for (const recipient of recipients) {
       const targetWs = addressIndex.get(recipient);
@@ -426,6 +482,14 @@ export function createSidecarRouter(
           continue;
         }
       }
+
+      const frame: HubFrame = {
+        type: "mail.inbound",
+        agentAddress: recipient,
+        rawMessage,
+      };
+      if (enqueueForDisconnected(recipient, frame)) continue;
+
       unrouted.push(recipient);
     }
 
@@ -454,6 +518,13 @@ export function createSidecarRouter(
           pendingDeploys.delete(addr);
           deployReq.reject(`Sidecar ${conn.sidecarId} disconnected`);
         }
+
+        // Create a queue entry so messages can accumulate while the
+        // sidecar is disconnected. The entry expires after the TTL.
+        const timer = setTimeout(() => {
+          disconnectedAgents.delete(addr);
+        }, disconnectQueueTTLMs);
+        disconnectedAgents.set(addr, { queue: [], timer });
       }
     }
     connections.delete(ws);
@@ -546,16 +617,21 @@ export function createSidecarRouter(
 
   function routeMail(agentAddress: string, rawMessage: string): boolean {
     const ws = addressIndex.get(agentAddress);
-    if (ws === undefined) return false;
-    const conn = connections.get(ws);
-    if (conn === undefined) return false;
+    if (ws !== undefined) {
+      const conn = connections.get(ws);
+      if (conn !== undefined) {
+        conn.send({
+          type: "mail.inbound",
+          agentAddress,
+          rawMessage,
+        });
+        return true;
+      }
+    }
 
-    conn.send({
-      type: "mail.inbound",
-      agentAddress,
-      rawMessage,
-    });
-    return true;
+    // If the agent recently disconnected, queue for delivery on reconnect.
+    const frame: HubFrame = { type: "mail.inbound", agentAddress, rawMessage };
+    return enqueueForDisconnected(agentAddress, frame);
   }
 
   async function handleDeployAck(
@@ -702,6 +778,19 @@ export function createSidecarRouter(
     content: string,
     attachments?: WireAttachment[],
   ): Promise<void> {
+    // If the agent is disconnected, queue for delivery on reconnect.
+    if (!addressIndex.has(agentAddress)) {
+      const frame: HubFrame = {
+        type: "message.send",
+        requestId: nextRequestId(),
+        agentAddress,
+        sessionId,
+        content,
+        ...(attachments !== undefined ? { attachments } : {}),
+      };
+      if (enqueueForDisconnected(agentAddress, frame)) return;
+    }
+
     await sendRequest(agentAddress, (requestId) => ({
       type: "message.send",
       requestId,
