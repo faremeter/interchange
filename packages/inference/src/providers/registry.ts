@@ -12,6 +12,10 @@ export function registerProvider(id: string, adapter: ProviderAdapter): void {
   registry.set(id, adapter);
 }
 
+export function hasProvider(id: string): boolean {
+  return registry.has(id);
+}
+
 export function lookupProvider(id: string): ProviderAdapter {
   const adapter = registry.get(id);
   if (adapter === undefined) {
