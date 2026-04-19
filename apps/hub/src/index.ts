@@ -54,6 +54,37 @@ const sidecarRouter = createSidecarRouter({
       throw new Error(`Agent "${agentId}" not found in database`);
     }
   },
+  async onAgentReconnected(agentAddress) {
+    const agentId = parseAgentId(agentAddress);
+    const row = await db.query.agent.findFirst({
+      where: eq(agent.id, agentId),
+    });
+    if (!row) {
+      log.warn("Agent {agentAddress} reconnected but not found in database", {
+        agentAddress,
+      });
+      return;
+    }
+    if (!row.sessionId) {
+      log.warn("Agent {agentAddress} reconnected but has no active session", {
+        agentAddress,
+      });
+      return;
+    }
+    if (row.status !== "running") {
+      await db
+        .update(agent)
+        .set({ status: "running", updatedAt: new Date() })
+        .where(eq(agent.id, agentId));
+    }
+    if (!eventCollectors.has(row.sessionId)) {
+      eventCollectors.create(row.sessionId, row.tenantId, agentAddress);
+      log.info(
+        "Restored event collector for reconnected agent {agentAddress} session {sessionId}",
+        { agentAddress, sessionId: row.sessionId },
+      );
+    }
+  },
   async lookupPublicKey(agentAddress) {
     const agentId = parseAgentId(agentAddress);
     const row = await db

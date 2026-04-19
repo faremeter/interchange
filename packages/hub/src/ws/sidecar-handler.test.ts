@@ -1541,4 +1541,162 @@ describe("SidecarRouter", () => {
       expect(ws.closed).toBe(false);
     });
   });
+
+  describe("onAgentReconnected callback", () => {
+    test("fires for each verified address on reconnect", async () => {
+      const kp = await generateKeyPair();
+      const publicKeyHex = hexEncode(kp.publicKey);
+      const reconnected: string[] = [];
+
+      const router = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        lookupPublicKey: async (addr) =>
+          addr === "agent@local" ? publicKeyHex : null,
+        onAgentReconnected: async (addr) => {
+          reconnected.push(addr);
+        },
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const challengeFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      const { address, nonce } = challengeFrame.challenges[0];
+      const signature = signChallenge(nonce, address, kp.privateKey);
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "challenge.response",
+          responses: [{ address, signature }],
+        }),
+      );
+
+      // Wait for async handleChallengeResponse to complete.
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(reconnected).toEqual(["agent@local"]);
+    });
+
+    test("does not fire for unverified addresses", async () => {
+      const kp = await generateKeyPair();
+      const wrongKp = await generateKeyPair();
+      const publicKeyHex = hexEncode(kp.publicKey);
+      const reconnected: string[] = [];
+
+      const router = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        lookupPublicKey: async (addr) =>
+          addr === "agent@local" ? publicKeyHex : null,
+        onAgentReconnected: async (addr) => {
+          reconnected.push(addr);
+        },
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const challengeFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      const { address, nonce } = challengeFrame.challenges[0];
+      const signature = signChallenge(nonce, address, wrongKp.privateKey);
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "challenge.response",
+          responses: [{ address, signature }],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(reconnected).toEqual([]);
+    });
+
+    test("callback error does not prevent other addresses from reconnecting", async () => {
+      const kp1 = await generateKeyPair();
+      const kp2 = await generateKeyPair();
+      const reconnected: string[] = [];
+
+      const router = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        lookupPublicKey: async (addr) => {
+          if (addr === "agent1@local") return hexEncode(kp1.publicKey);
+          if (addr === "agent2@local") return hexEncode(kp2.publicKey);
+          return null;
+        },
+        onAgentReconnected: async (addr) => {
+          if (addr === "agent1@local") throw new Error("DB failure");
+          reconnected.push(addr);
+        },
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent1@local", "agent2@local"],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const challengeFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+
+      const responses = challengeFrame.challenges.map(
+        (c: { address: string; nonce: string }) => ({
+          address: c.address,
+          signature: signChallenge(
+            c.nonce,
+            c.address,
+            c.address === "agent1@local" ? kp1.privateKey : kp2.privateKey,
+          ),
+        }),
+      );
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({ type: "challenge.response", responses }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      // agent2 should still be reconnected despite agent1's callback failure.
+      expect(reconnected).toEqual(["agent2@local"]);
+      expect(router.getRoutableAddresses()).toContain("agent1@local");
+      expect(router.getRoutableAddresses()).toContain("agent2@local");
+    });
+  });
 });

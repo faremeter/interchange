@@ -668,6 +668,8 @@ export function TenantAgentDetailPage() {
             {startMut.isPending ? "Starting..." : "Start Agent"}
           </Button>
         )}
+        <MutationError error={startMut.error} />
+        <MutationError error={stopMut.error} />
       </div>
 
       {/* Chat Section - only show when running */}
