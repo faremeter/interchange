@@ -1,22 +1,25 @@
-// Session manager: creates and manages harness instances per agent.
+// Agent manager: creates and manages harness instances per agent.
 //
-// Each agent session gets its own harness backed by a scoped view of the
-// shared InMemoryTransport. The session manager handles session lifecycle
-// (create, destroy, abort) in response to control frames from the hub.
+// Each agent gets its own harness backed by a scoped view of the shared
+// InMemoryTransport. The manager handles agent lifecycle (deploy, undeploy,
+// abort) in response to control frames from the hub.
 
 import path from "node:path";
 import { getLogger } from "@interchange/log";
 import { createHarness, type Harness } from "@interchange/harness";
+import { createNodeCrypto } from "@interchange/crypto-node";
 import { createIsogitStore } from "@interchange/storage-isogit";
 import type { InMemoryTransport } from "@interchange/message-memory";
 import type {
-  CryptoProvider,
   InboundMessage,
   InferenceEvent,
+  KeyPair,
   HarnessConfig as AgentConfig,
 } from "@interchange/types/runtime";
 
-const logger = getLogger(["interchange", "sidecar", "sessions"]);
+import { loadOrGenerateKeyPair, hexEncode } from "./key-store";
+
+const logger = getLogger(["interchange", "sidecar", "agents"]);
 
 export type AgentSession = {
   harness: Harness;
@@ -32,7 +35,6 @@ export type SessionEventSink = (
 
 export type SessionManagerConfig = {
   transport: InMemoryTransport;
-  crypto: CryptoProvider;
   dataDir: string;
   onEvent: SessionEventSink;
 };
@@ -43,8 +45,14 @@ export function sanitizeAddress(address: string): string {
   return address.replace(/@/g, "_at_").replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
+export type CreateSessionResult = {
+  sessionId: string;
+  publicKey: string;
+  keyPair: KeyPair;
+};
+
 export type SessionManager = {
-  createSession(config: AgentConfig): Promise<string>;
+  createSession(config: AgentConfig): Promise<CreateSessionResult>;
   destroySession(agentAddress: string): void;
   abortSession(agentAddress: string, reason: string): void;
   deliverMessage(agentAddress: string, message: InboundMessage): void;
@@ -55,11 +63,13 @@ export type SessionManager = {
 export function createSessionManager(
   config: SessionManagerConfig,
 ): SessionManager {
-  const { transport, crypto, dataDir, onEvent } = config;
+  const { transport, dataDir, onEvent } = config;
   const sessions = new Map<string, AgentSession>();
   const pending = new Set<string>();
 
-  async function createSession(agentConfig: AgentConfig): Promise<string> {
+  async function createSession(
+    agentConfig: AgentConfig,
+  ): Promise<CreateSessionResult> {
     const { agentAddress } = agentConfig;
 
     if (sessions.has(agentAddress) || pending.has(agentAddress)) {
@@ -69,6 +79,17 @@ export function createSessionManager(
     pending.add(agentAddress);
 
     try {
+      // Generate or load the agent's per-agent key pair.
+      const { keyPair, isNew } = await loadOrGenerateKeyPair(
+        dataDir,
+        agentAddress,
+      );
+      const crypto = createNodeCrypto(keyPair);
+
+      if (isNew) {
+        logger.info`Generated new key pair for ${agentAddress}`;
+      }
+
       // Register the agent on the local transport so it can send/receive mail.
       transport.registerAgent(agentAddress, crypto);
       const agentTransport = transport.getTransportForAgent(agentAddress);
@@ -115,8 +136,9 @@ export function createSessionManager(
 
       harness.start();
 
-      logger.info`Created session for ${agentAddress} (session ${sessionId})`;
-      return sessionId;
+      const publicKey = hexEncode(keyPair.publicKey);
+      logger.info`Deployed agent ${agentAddress} (session ${sessionId})`;
+      return { sessionId, publicKey, keyPair };
     } finally {
       pending.delete(agentAddress);
     }
@@ -129,7 +151,7 @@ export function createSessionManager(
     }
     session.harness.stop();
     sessions.delete(agentAddress);
-    logger.info`Destroyed session for ${agentAddress}`;
+    logger.info`Undeployed agent ${agentAddress}`;
   }
 
   function abortSession(agentAddress: string, reason: string): void {
@@ -139,7 +161,7 @@ export function createSessionManager(
     }
     session.harness.stop();
     sessions.delete(agentAddress);
-    logger.info`Aborted session for ${agentAddress}: ${reason}`;
+    logger.info`Aborted agent ${agentAddress}: ${reason}`;
   }
 
   function deliverMessage(agentAddress: string, message: InboundMessage): void {

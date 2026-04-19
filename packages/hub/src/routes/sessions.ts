@@ -266,7 +266,7 @@ app.post(
     eventCollectors.create(sessionId, tenant.id, agentAddress);
 
     try {
-      await sidecarRouter.sendSessionCreate(agentAddress, {
+      await sidecarRouter.sendAgentDeploy(agentAddress, {
         sessionId,
         agentId: row.id,
         tenantId: tenant.id,
@@ -497,7 +497,7 @@ app.delete(
       .where(eq(agentSession.id, sessionId));
 
     try {
-      await sidecarRouter.sendSessionDestroy(agentAddress);
+      sidecarRouter.sendAgentUndeploy(agentAddress, "session_ended");
     } catch (err) {
       await db
         .update(agentSession)

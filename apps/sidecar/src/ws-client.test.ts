@@ -48,11 +48,18 @@ function createMockSessionManager(): SessionManager & {
     addresses: [] as string[],
     shouldThrow: null as string | null,
 
-    async createSession(config: HarnessConfig): Promise<string> {
+    async createSession(config: HarnessConfig) {
       if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
       mock.created.push(config);
       mock.addresses.push(config.agentAddress);
-      return "mock-session-id";
+      return {
+        sessionId: "mock-session-id",
+        publicKey: "deadbeef",
+        keyPair: {
+          publicKey: new Uint8Array(32),
+          privateKey: new Uint8Array(32),
+        },
+      };
     },
     destroySession(agentAddress: string): void {
       if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
@@ -198,6 +205,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "test-sidecar",
       token: "test-token",
+      dataDir: "/tmp/sidecar-test",
       transport,
       sessions,
     });
@@ -223,6 +231,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-create",
       token: "test-token",
+      dataDir: "/tmp/sidecar-test",
       transport,
       sessions,
     });
@@ -233,10 +242,7 @@ describe("sidecar↔hub integration", () => {
         env.router.getConnectedSidecars().includes("sc-create"),
       );
 
-      await env.router.sendSessionCreate(
-        "agent-1@test.interchange",
-        TEST_CONFIG,
-      );
+      await env.router.sendAgentDeploy("agent-1@test.interchange", TEST_CONFIG);
 
       expect(sessions.created).toHaveLength(1);
       expect(sessions.created[0]?.agentAddress).toBe(
@@ -258,6 +264,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-fail",
       token: "test-token",
+      dataDir: "/tmp/sidecar-test",
       transport,
       sessions,
     });
@@ -269,7 +276,7 @@ describe("sidecar↔hub integration", () => {
       );
 
       await expect(
-        env.router.sendSessionCreate("fail-agent@test", TEST_CONFIG),
+        env.router.sendAgentDeploy("fail-agent@test", TEST_CONFIG),
       ).rejects.toThrow("provider not configured");
     } finally {
       client.close();
@@ -287,6 +294,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-events",
       token: "test-token",
+      dataDir: "/tmp/sidecar-test",
       transport,
       sessions,
     });
@@ -336,6 +344,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-mail-in",
       token: "test-token",
+      dataDir: "/tmp/sidecar-test",
       transport,
       sessions,
     });
@@ -385,6 +394,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-mail-out",
       token: "test-token",
+      dataDir: "/tmp/sidecar-test",
       transport,
       sessions,
     });
@@ -438,6 +448,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-alice",
       token: "test-token",
+      dataDir: "/tmp/sidecar-test-alice",
       transport: transportA,
       sessions: sessionsA,
     });
@@ -445,6 +456,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-bob",
       token: "test-token",
+      dataDir: "/tmp/sidecar-test-bob",
       transport: transportB,
       sessions: sessionsB,
     });
@@ -502,6 +514,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-msg-send",
       token: "test-token",
+      dataDir: "/tmp/sidecar-test",
       transport,
       sessions,
     });
@@ -544,6 +557,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-msg-err",
       token: "test-token",
+      dataDir: "/tmp/sidecar-test",
       transport,
       sessions,
     });
@@ -576,6 +590,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-disconnect",
       token: "test-token",
+      dataDir: "/tmp/sidecar-test",
       transport,
       sessions,
     });

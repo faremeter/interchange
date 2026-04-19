@@ -1,6 +1,5 @@
 import { setup, getLogger } from "@interchange/log";
 import { createInMemoryTransport } from "@interchange/message-memory";
-import { createNodeCrypto, generateKeyPair } from "@interchange/crypto-node";
 import type { InferenceEvent } from "@interchange/types/runtime";
 
 import { createSessionManager } from "./session-manager";
@@ -30,8 +29,6 @@ if (dataDir === undefined) {
   throw new Error("SIDECAR_DATA_DIR environment variable is required");
 }
 
-const keyPair = await generateKeyPair();
-const crypto = createNodeCrypto(keyPair);
 const transport = createInMemoryTransport();
 
 // Break the circular dependency between session manager and ws-client:
@@ -47,7 +44,6 @@ let forwardEvent: (a: string, s: string, e: InferenceEvent) => void = (
 
 const sessions = createSessionManager({
   transport,
-  crypto,
   dataDir,
   onEvent(agentAddress, sessionId, event) {
     forwardEvent(agentAddress, sessionId, event);
@@ -58,6 +54,7 @@ const client = createWsClient({
   hubUrl,
   sidecarId,
   token,
+  dataDir,
   transport,
   sessions,
 });
