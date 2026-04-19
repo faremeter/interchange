@@ -35,11 +35,12 @@ const sidecarRouter = createSidecarRouter({
   },
 });
 
-const app = createApp({ auth, db, sidecarRouter, eventCollectors });
-
-app.get(
-  "/api/sidecars/ws",
-  upgradeWebSocket((_c) => {
+const app = createApp({
+  auth,
+  db,
+  sidecarRouter,
+  eventCollectors,
+  sidecarWsHandler: upgradeWebSocket((_c) => {
     let handle: import("@interchange/hub").WsHandle;
     return {
       onOpen(_evt, ws) {
@@ -63,7 +64,7 @@ app.get(
       },
     };
   }),
-);
+});
 
 const port = Number(process.env["PORT"] ?? 3000);
 
