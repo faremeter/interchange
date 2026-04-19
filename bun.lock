@@ -33,6 +33,7 @@
         "@interchange/harness": "workspace:*",
         "@interchange/log": "workspace:*",
         "@interchange/message-memory": "workspace:*",
+        "@interchange/storage-isogit": "workspace:*",
         "@interchange/types": "workspace:*",
       },
     },

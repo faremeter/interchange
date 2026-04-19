@@ -48,7 +48,7 @@ function createMockSessionManager(): SessionManager & {
     addresses: [] as string[],
     shouldThrow: null as string | null,
 
-    createSession(config: HarnessConfig): string {
+    async createSession(config: HarnessConfig): Promise<string> {
       if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
       mock.created.push(config);
       mock.addresses.push(config.agentAddress);
