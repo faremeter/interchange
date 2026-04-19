@@ -1,7 +1,11 @@
 export { parseSSE } from "./sse";
 export { runInference } from "./harness";
 export type { InferenceHarnessOptions } from "./harness";
-export { lookupProvider, registerProvider } from "./providers/registry";
+export {
+  hasProvider,
+  lookupProvider,
+  registerProvider,
+} from "./providers/registry";
 export type {
   ProviderAdapter,
   RequestBuilder,

@@ -7,6 +7,7 @@
 import path from "node:path";
 import { getLogger } from "@interchange/log";
 import { createHarness, type Harness } from "@interchange/harness";
+import { hasProvider } from "@interchange/inference";
 import { createNodeCrypto } from "@interchange/crypto-node";
 import { createIsogitStore } from "@interchange/storage-isogit";
 import type { InMemoryTransport } from "@interchange/message-memory";
@@ -94,9 +95,13 @@ export function createSessionManager(
       transport.registerAgent(agentAddress, crypto);
       const agentTransport = transport.getTransportForAgent(agentAddress);
 
-      const provider = agentConfig.providers[0];
+      const provider = agentConfig.providers.find((p) =>
+        hasProvider(p.provider),
+      );
       if (provider === undefined) {
-        throw new Error(`No provider configured for agent "${agentAddress}"`);
+        throw new Error(
+          `No inference provider configured for agent "${agentAddress}"`,
+        );
       }
 
       const sessionId = agentConfig.sessionId;
