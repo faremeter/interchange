@@ -288,13 +288,13 @@ const { status: a1Status, data: a1Data } = await api(
     description: "Researches topics and summarizes findings",
     systemPrompt:
       "You are a research assistant. Find and summarize information.",
-    modelConfig: { defaultModel: "gpt-4o" },
+    modelConfig: { defaultModel: "claude-sonnet-4-20250514" },
     capabilities: { research: true, summarize: true },
     credentialRequirements: [
       {
-        providerName: "OpenAI",
+        providerName: "Anthropic",
         source: "tenant",
-        scopes: ["chat", "embeddings"],
+        scopes: ["chat"],
       },
     ],
     initialGrants: [
@@ -316,7 +316,7 @@ const { status: a2Status, data: a2Data } = await api(
     description: "Reviews pull requests and suggests improvements",
     systemPrompt:
       "You are a code reviewer. Analyze code for bugs and improvements.",
-    modelConfig: { defaultModel: "gpt-4o" },
+    modelConfig: { defaultModel: "claude-sonnet-4-20250514" },
     capabilities: { codeReview: true },
     credentialRequirements: [
       { providerName: "GitHub", source: "tenant", scopes: ["repo"] },
@@ -344,7 +344,7 @@ const { status: a3Status, data: a3Data } = await api(
     description: "Handles customer support tickets",
     systemPrompt:
       "You are a customer support agent. Help customers with their issues.",
-    modelConfig: { defaultModel: "gpt-4o" },
+    modelConfig: { defaultModel: "claude-sonnet-4-20250514" },
     capabilities: { ticketManagement: true, knowledgeBase: true },
     credentialRequirements: [
       {
@@ -426,13 +426,16 @@ const { status: prv1Status, data: prv1Data } = await api(
   "POST",
   `/api/tenants/${acmeTenantId}/providers`,
   {
-    name: "OpenAI",
-    plugin: "openai",
-    metadata: { baseURL: "https://api.openai.com/v1", defaultModel: "gpt-4o" },
+    name: "Anthropic",
+    plugin: "anthropic",
+    metadata: {
+      baseURL: "https://api.anthropic.com/v1",
+      defaultModel: "claude-sonnet-4-20250514",
+    },
   },
   aliceCookies,
 );
-checkOrSkip("create openai provider", prv1Status, 201, prv1Data);
+checkOrSkip("create anthropic provider", prv1Status, 201, prv1Data);
 
 const { status: prv2Status, data: prv2Data } = await api(
   "POST",
@@ -468,7 +471,7 @@ const { data: acmeProviders } = await api(
   aliceCookies,
 );
 const providerList = acmeProviders as { data: { id: string; name: string }[] };
-const openaiProvider = providerList.data.find((p) => p.name === "OpenAI");
+const anthropicProvider = providerList.data.find((p) => p.name === "Anthropic");
 const githubProvider = providerList.data.find((p) => p.name === "GitHub");
 
 const { data: widgetProviders } = await api(
@@ -511,22 +514,21 @@ if (githubProvider) {
 
 log("Creating credentials...");
 
-if (openaiProvider) {
+if (anthropicProvider) {
   const { status: cred1Status, data: cred1Data } = await api(
     "POST",
     `/api/tenants/${acmeTenantId}/credentials`,
     {
-      name: "OpenAI API Key",
+      name: "Anthropic API Key",
       type: "api_key",
-      providerId: openaiProvider.id,
-      description: "Production OpenAI key for Research Bot",
-      secret: "sk-fake-openai-key-for-seed-data",
-      scopes: ["chat", "embeddings"],
-      metadata: { model: "gpt-4" },
+      providerId: anthropicProvider.id,
+      description: "Anthropic key for Research Bot",
+      secret: "sk-ant-fake-key-for-seed-data",
+      scopes: ["chat"],
     },
     aliceCookies,
   );
-  checkOrSkip("create openai credential", cred1Status, 201, cred1Data);
+  checkOrSkip("create anthropic credential", cred1Status, 201, cred1Data);
 }
 
 if (githubProvider) {
