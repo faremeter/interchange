@@ -1,3 +1,4 @@
+import type { Handler } from "hono";
 import { Hono } from "hono";
 import { openAPIRouteHandler } from "hono-openapi";
 
@@ -21,7 +22,7 @@ import { credentialRoutes } from "./routes/credentials";
 import { offeringRoutes, modelRoutes } from "./routes/offerings";
 import { observabilityRoutes } from "./routes/observability";
 import { agentDataRoutes } from "./routes/agent-data";
-import { default as sidecarRoutes } from "./routes/sidecars";
+import { createSidecarRoutes } from "./routes/sidecars";
 
 import { type DB, createGrantStore } from "@interchange/db";
 import type { ConditionRegistry } from "@interchange/types/authz";
@@ -34,6 +35,7 @@ export type CreateAppOpts = {
   db: DB["db"];
   sidecarRouter: SidecarRouter;
   eventCollectors: EventCollectorRegistry;
+  sidecarWsHandler?: Handler<AppEnv>;
 };
 
 export function createApp({
@@ -41,6 +43,7 @@ export function createApp({
   db,
   sidecarRouter,
   eventCollectors,
+  sidecarWsHandler,
 }: CreateAppOpts) {
   const app = new Hono<AppEnv>();
   const grantStore = createGrantStore(db);
@@ -113,7 +116,7 @@ export function createApp({
   app.route("/api/tenants/:tenantId/federation", tenantFederationRoutes);
   app.route("/api/tenants/:tenantId/agents/:agentId", agentDataRoutes);
 
-  app.route("/api/sidecars", sidecarRoutes);
+  app.route("/api/sidecars", createSidecarRoutes(sidecarWsHandler));
 
   app.get(
     "/openapi.json",
