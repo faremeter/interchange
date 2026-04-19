@@ -25,6 +25,8 @@ import { scanExistingAgents, hexEncode } from "./key-store";
 
 const logger = getLogger(["interchange", "sidecar", "ws"]);
 
+const DEFAULT_PING_INTERVAL_MS = 30_000;
+
 export type WsClientConfig = {
   hubUrl: string;
   sidecarId: string;
@@ -32,6 +34,7 @@ export type WsClientConfig = {
   dataDir: string;
   transport: InMemoryTransport;
   sessions: SessionManager;
+  pingIntervalMs?: number;
 };
 
 export type WsClient = {
@@ -41,10 +44,20 @@ export type WsClient = {
 };
 
 export function createWsClient(config: WsClientConfig): WsClient {
-  const { hubUrl, sidecarId, token, dataDir, transport, sessions } = config;
+  const {
+    hubUrl,
+    sidecarId,
+    token,
+    dataDir,
+    transport,
+    sessions,
+    pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
+  } = config;
 
   let ws: WebSocket | null = null;
   let closed = false;
+  let pingTimer: ReturnType<typeof setInterval> | null = null;
+  let lastPongAt = 0;
 
   // Per-agent key pairs loaded from disk for challenge signing.
   // Populated by scanExistingAgents on reconnect, augmented on agent.deploy.
@@ -206,6 +219,9 @@ export function createWsClient(config: WsClientConfig): WsClient {
       case "challenge":
         handleChallenge(frame);
         break;
+      case "pong":
+        lastPongAt = Date.now();
+        break;
       case "challenge.failed":
         handleChallengeFailed(frame);
         break;
@@ -236,6 +252,27 @@ export function createWsClient(config: WsClientConfig): WsClient {
 
     ws.addEventListener("open", () => {
       logger.info`Connected to hub at ${hubUrl}`;
+
+      // Start keepalive pings. Record the current time as the initial
+      // pong timestamp so the first interval check doesn't immediately
+      // declare the connection dead.
+      lastPongAt = Date.now();
+      pingTimer = setInterval(() => {
+        if (Date.now() - lastPongAt >= pingIntervalMs * 2) {
+          logger.warn`Hub pong timeout, closing connection`;
+          // Clear the timer immediately so it doesn't keep firing while
+          // the close event is pending.
+          if (pingTimer !== null) {
+            clearInterval(pingTimer);
+            pingTimer = null;
+          }
+          // Close the socket directly (not the exported close()) so the
+          // close event listener triggers reconnection.
+          ws?.close();
+          return;
+        }
+        send({ type: "ping" });
+      }, pingIntervalMs);
 
       // Scan for existing agents to determine register vs reconnect.
       void (async () => {
@@ -274,6 +311,10 @@ export function createWsClient(config: WsClientConfig): WsClient {
     ws.addEventListener("close", () => {
       logger.info`Disconnected from hub`;
       ws = null;
+      if (pingTimer !== null) {
+        clearInterval(pingTimer);
+        pingTimer = null;
+      }
       if (!closed) {
         setTimeout(() => connect(), 3000);
       }
@@ -286,6 +327,10 @@ export function createWsClient(config: WsClientConfig): WsClient {
 
   function close(): void {
     closed = true;
+    if (pingTimer !== null) {
+      clearInterval(pingTimer);
+      pingTimer = null;
+    }
     if (ws !== null) {
       ws.close();
       ws = null;

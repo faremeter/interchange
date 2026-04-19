@@ -611,4 +611,37 @@ describe("sidecar↔hub integration", () => {
       "tracked@test.interchange",
     );
   });
+
+  test("sidecar sends pings and hub responds with pongs", async () => {
+    const pingEnv = startTestServer();
+
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+
+    const client = createWsClient({
+      hubUrl: `ws://localhost:${pingEnv.server.port}/ws`,
+      sidecarId: "sc-ping",
+      token: "test-token",
+      dataDir: "/tmp/sidecar-test",
+      transport,
+      sessions,
+      pingIntervalMs: 100,
+    });
+
+    try {
+      client.connect();
+      await waitFor(() =>
+        pingEnv.router.getConnectedSidecars().includes("sc-ping"),
+      );
+
+      // Wait long enough for at least one ping/pong round trip.
+      await new Promise((r) => setTimeout(r, 250));
+
+      // The sidecar should still be connected (pongs keep it alive).
+      expect(pingEnv.router.getConnectedSidecars()).toContain("sc-ping");
+    } finally {
+      client.close();
+      pingEnv.server.stop(true);
+    }
+  });
 });

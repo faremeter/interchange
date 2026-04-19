@@ -70,6 +70,7 @@ export type SidecarRouterConfig = {
   challengeTimeoutMs?: number;
   disconnectQueueMaxSize?: number;
   disconnectQueueTTLMs?: number;
+  pingTimeoutMs?: number;
 };
 
 // Minimal handle so the router doesn't depend on a specific WebSocket impl.
@@ -81,7 +82,8 @@ export type WsHandle = {
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CHALLENGE_TIMEOUT_MS = 30_000;
 const DEFAULT_DISCONNECT_QUEUE_MAX_SIZE = 100;
-const DEFAULT_DISCONNECT_QUEUE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const DEFAULT_DISCONNECT_QUEUE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_PING_TIMEOUT_MS = 60_000;
 
 export function createSidecarRouter(
   config: SidecarRouterConfig = {},
@@ -97,6 +99,7 @@ export function createSidecarRouter(
     onAgentDeployAck,
     disconnectQueueMaxSize = DEFAULT_DISCONNECT_QUEUE_MAX_SIZE,
     disconnectQueueTTLMs = DEFAULT_DISCONNECT_QUEUE_TTL_MS,
+    pingTimeoutMs = DEFAULT_PING_TIMEOUT_MS,
   } = config;
 
   // ws handle → registered connection
@@ -129,6 +132,8 @@ export function createSidecarRouter(
   const disconnectedAgents = new Map<string, DisconnectedAgent>();
   // sessionId → set of subscriber callbacks for agent events
   const sessionSubscribers = new Map<string, Set<(event: unknown) => void>>();
+  // ws handle → liveness timer (reset on each ping from the sidecar)
+  const livenessTimers = new Map<WsHandle, ReturnType<typeof setTimeout>>();
 
   let requestCounter = 0;
 
@@ -164,8 +169,31 @@ export function createSidecarRouter(
     }
   }
 
-  function handleOpen(_ws: WsHandle): void {
+  function resetLivenessTimer(ws: WsHandle): void {
+    const existing = livenessTimers.get(ws);
+    if (existing !== undefined) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      livenessTimers.delete(ws);
+      logger.warn`Sidecar ping timeout, closing connection`;
+      ws.close();
+    }, pingTimeoutMs);
+    livenessTimers.set(ws, timer);
+  }
+
+  function handlePing(ws: WsHandle): void {
+    resetLivenessTimer(ws);
+    // Always respond with pong, even before register/reconnect completes.
+    // The sidecar's ping timer starts on open, which may fire before the
+    // async registration handshake finishes.
+    ws.send(JSON.stringify({ type: "pong" }));
+  }
+
+  function handleOpen(ws: WsHandle): void {
     // Connection is not usable until a register frame arrives.
+    // Start the liveness timer immediately — a sidecar that connects
+    // but never sends a ping will be reaped.
+    resetLivenessTimer(ws);
   }
 
   function handleMessage(ws: WsHandle, data: string): void {
@@ -197,6 +225,9 @@ export function createSidecarRouter(
         break;
       case "agent.error":
         rejectDeployPending(frame.agentAddress, frame.error);
+        break;
+      case "ping":
+        handlePing(ws);
         break;
       case "mail.outbound":
         handleMailOutbound(frame.rawMessage, frame.recipients);
@@ -528,6 +559,13 @@ export function createSidecarRouter(
       }
     }
     connections.delete(ws);
+
+    // Cancel the liveness timer for this connection.
+    const livenessTimer = livenessTimers.get(ws);
+    if (livenessTimer !== undefined) {
+      clearTimeout(livenessTimer);
+      livenessTimers.delete(ws);
+    }
 
     // Cancel any pending challenge for this connection.
     const challengeReq = pendingChallenges.get(ws);

@@ -1466,4 +1466,79 @@ describe("SidecarRouter", () => {
       ).rejects.toThrow("No sidecar connected");
     });
   });
+
+  describe("ping/pong keepalive", () => {
+    test("hub responds to ping with pong", () => {
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+
+      router.handleMessage(ws, JSON.stringify({ type: "ping" }));
+
+      const pong = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "pong");
+      expect(pong).toEqual({ type: "pong" });
+    });
+
+    test("connection closed after ping timeout", async () => {
+      const router = createSidecarRouter({
+        requestTimeoutMs: 500,
+        pingTimeoutMs: 100,
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      // Wait for the ping timeout to fire.
+      await new Promise((r) => setTimeout(r, 150));
+
+      expect(ws.closed).toBe(true);
+    });
+
+    test("ping resets the liveness timer", async () => {
+      const router = createSidecarRouter({
+        requestTimeoutMs: 500,
+        pingTimeoutMs: 100,
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+
+      // Send pings to keep the connection alive past the timeout.
+      await new Promise((r) => setTimeout(r, 60));
+      router.handleMessage(ws, JSON.stringify({ type: "ping" }));
+      await new Promise((r) => setTimeout(r, 60));
+      router.handleMessage(ws, JSON.stringify({ type: "ping" }));
+      await new Promise((r) => setTimeout(r, 60));
+
+      expect(ws.closed).toBe(false);
+    });
+  });
 });
