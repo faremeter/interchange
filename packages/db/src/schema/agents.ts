@@ -1,6 +1,7 @@
 import { jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import { principal } from "./principals";
+import { sidecar } from "./sidecar";
 import { tenant } from "./tenants";
 
 export const agent = pgTable("agent", {
@@ -26,6 +27,10 @@ export const agent = pgTable("agent", {
   })
     .notNull()
     .default("deployed"),
+  sidecarId: text("sidecar_id").references(() => sidecar.id, {
+    onDelete: "set null",
+  }),
+  publicKey: text("public_key"),
   kernelId: text("kernel_id"),
   sessionId: text("session_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
