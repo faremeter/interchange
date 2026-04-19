@@ -1,4 +1,6 @@
+import { eq } from "drizzle-orm";
 import { createDB } from "@interchange/db";
+import { agent } from "@interchange/db/schema";
 import {
   createApp,
   createAuth,
@@ -24,6 +26,14 @@ const { db } = createDB({
 const auth = createAuth(db);
 const eventCollectors = createEventCollectorRegistry(db);
 
+function parseAgentId(agentAddress: string): string {
+  const atIdx = agentAddress.indexOf("@");
+  if (atIdx === -1) {
+    throw new Error(`Invalid agent address: "${agentAddress}"`);
+  }
+  return agentAddress.substring(0, atIdx);
+}
+
 const sidecarRouter = createSidecarRouter({
   onAgentEvent(_agentAddress, sessionId, event) {
     eventCollectors.dispatch(sessionId, event as InferenceEvent);
@@ -32,6 +42,27 @@ const sidecarRouter = createSidecarRouter({
     for (const addr of agentAddresses) {
       eventCollectors.abandonByAddress(addr);
     }
+  },
+  async onAgentDeployAck(agentAddress, publicKey) {
+    const agentId = parseAgentId(agentAddress);
+    const rows = await db
+      .update(agent)
+      .set({ publicKey })
+      .where(eq(agent.id, agentId))
+      .returning({ id: agent.id });
+    if (rows.length === 0) {
+      throw new Error(`Agent "${agentId}" not found in database`);
+    }
+  },
+  async lookupPublicKey(agentAddress) {
+    const agentId = parseAgentId(agentAddress);
+    const row = await db
+      .select({ publicKey: agent.publicKey })
+      .from(agent)
+      .where(eq(agent.id, agentId))
+      .limit(1)
+      .then((rows) => rows[0]);
+    return row?.publicKey ?? null;
   },
 });
 

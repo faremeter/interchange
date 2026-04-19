@@ -301,6 +301,115 @@ describe("SidecarRouter", () => {
       expect(router.getRoutableAddresses()).toContain("new-agent@local");
     });
 
+    test("agent.deploy.ack calls onAgentDeployAck before resolving", async () => {
+      const ackCalls: { address: string; publicKey: string }[] = [];
+      const router = createSidecarRouter({
+        requestTimeoutMs: 500,
+        async onAgentDeployAck(address, publicKey) {
+          ackCalls.push({ address, publicKey });
+        },
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+
+      const config = {
+        sessionId: "ses_test",
+        agentId: "a1",
+        tenantId: "t1",
+        agentAddress: "ack-agent@local",
+        systemPrompt: "test",
+        tools: [],
+        toolPolicy: [],
+        providers: [
+          {
+            provider: "anthropic",
+            baseURL: "https://api.anthropic.com",
+            apiKey: "sk-test",
+          },
+        ],
+        defaultModel: "claude-sonnet-4-20250514",
+      };
+
+      const promise = router.sendAgentDeploy("ack-agent@local", config);
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.deploy.ack",
+          agentAddress: "ack-agent@local",
+          publicKey: "aabbccdd",
+        }),
+      );
+
+      await promise;
+      expect(ackCalls).toEqual([
+        { address: "ack-agent@local", publicKey: "aabbccdd" },
+      ]);
+    });
+
+    test("agent.deploy rejects when onAgentDeployAck fails", async () => {
+      const router = createSidecarRouter({
+        requestTimeoutMs: 500,
+        async onAgentDeployAck() {
+          throw new Error("DB write failed");
+        },
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+
+      const config = {
+        sessionId: "ses_test",
+        agentId: "a1",
+        tenantId: "t1",
+        agentAddress: "fail-ack@local",
+        systemPrompt: "test",
+        tools: [],
+        toolPolicy: [],
+        providers: [
+          {
+            provider: "anthropic",
+            baseURL: "https://api.anthropic.com",
+            apiKey: "sk-test",
+          },
+        ],
+        defaultModel: "claude-sonnet-4-20250514",
+      };
+
+      const promise = router.sendAgentDeploy("fail-ack@local", config);
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.deploy.ack",
+          agentAddress: "fail-ack@local",
+          publicKey: "aabbccdd",
+        }),
+      );
+
+      await expect(promise).rejects.toThrow("Failed to store public key");
+      expect(router.getRoutableAddresses()).not.toContain("fail-ack@local");
+    });
+
     test("agent.deploy rolls back routing on error", async () => {
       const ws = createMockWs();
       router.handleOpen(ws);
