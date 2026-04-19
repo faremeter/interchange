@@ -463,7 +463,7 @@ Returns session status, agent, creation time, and last activity.
 ### DELETE /api/tenants/:tenantId/sessions/:sessionId
 End a session
 
-Ends the session and expires all invoker-granted capabilities associated with it.
+Ends the session and expires all invoker-granted capabilities associated with it. Ending a user session does not undeploy the agent from its sidecar — the agent continues running and can still receive messages from other agents or new user sessions.
 
 204: (no content) -- Session ended
 404: ErrorResponse -- Session not found

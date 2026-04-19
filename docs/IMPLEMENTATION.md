@@ -224,13 +224,48 @@ Connections without activity or heartbeat responses for 30 seconds are terminate
 
 ### Reconnection and Durability
 
-Session channels are ephemeral — there is no built-in resume capability for token streams. If a connection drops mid-stream, those tokens are lost. However, conversation durability is guaranteed by the message bus:
+Session channels are ephemeral — there is no built-in resume capability for token streams. If a connection drops mid-stream, those tokens are lost. However, conversation durability is guaranteed through two mechanisms depending on the transport layer:
+
+**Production (IMAP transport):**
 
 1. Client reconnects and re-authenticates
-2. Client fetches any messages that arrived via IMAP while disconnected
+2. Client fetches any messages that arrived via IMAP while disconnected (using QRESYNC for efficient sync)
 3. New streaming resumes from the current point
 
-The message bus is the source of truth for conversation history. Session channels are a real-time optimization, not a replacement for IMAP. A client that loses its session connection can always recover the complete conversation from its inbox.
+The IMAP inbox is the source of truth for conversation history. Session channels are a real-time optimization, not a replacement for IMAP.
+
+**Prototype (hub-mediated sidecar transport):**
+
+1. Sidecar reconnects to the hub and proves ownership of agent addresses via signed challenge (see HARNESS_DESIGN.md)
+2. Hub reconciles: sends `agent.deploy` (with `restored: true`) for agents still active, `agent.undeploy` for agents no longer needed
+3. Hub flushes queued undelivered messages as `message.send` frames for restored agents
+4. Sidecar loads agent context from isogit and resumes operation
+
+In the prototype, the hub's database serves as the delivery queue for messages sent while the sidecar is disconnected. The sidecar's isogit repository is the source of truth for agent inference context. The hub maintains a sidecar-to-agent mapping so it knows which sidecar to route messages to for a given agent address. See HARNESS_DESIGN.md for the reconnection wire protocol.
+
+### Sidecar Agent Lifecycle Frames
+
+The sidecar WebSocket protocol includes frames for agent deployment, reconnection, and address verification.
+
+**Agent deployment:**
+
+| Direction     | Frame              | Purpose                                      |
+| ------------- | ------------------ | -------------------------------------------- |
+| Hub → Sidecar | `agent.deploy`     | Deploy an agent to the sidecar               |
+| Hub → Sidecar | `agent.undeploy`   | Remove an agent from the sidecar             |
+| Sidecar → Hub | `agent.deploy.ack` | Confirm deployment, provide agent public key |
+| Sidecar → Hub | `agent.error`      | Report deployment failure                    |
+
+**Reconnection:**
+
+| Direction     | Frame                | Purpose                                          |
+| ------------- | -------------------- | ------------------------------------------------ |
+| Sidecar → Hub | `reconnect`          | Announce agent addresses after WebSocket connect |
+| Hub → Sidecar | `challenge`          | Per-address nonces to sign                       |
+| Sidecar → Hub | `challenge.response` | Signed proofs of key ownership                   |
+| Hub → Sidecar | `challenge.failed`   | Verification failure for a specific address      |
+
+On first connection (no existing agents), the sidecar sends a `register` frame. On reconnection (agents in data directory), it sends `reconnect`. After successful challenge verification, the hub uses the same `agent.deploy` and `agent.undeploy` frames to reconcile state.
 
 ### Debug and Telemetry Streams
 

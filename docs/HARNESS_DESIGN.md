@@ -21,7 +21,7 @@ The Agent Harness uses OpenCode as the execution engine, managed by a sidecar se
 │              Sidecar (packages/sidecar/)                        │
 │  - One per machine                                              │
 │  - Spawns ONE OpenCode process                                 │
-│  - Manages sessions (agents) in OpenCode                       │
+│  - Manages agents deployed by the Hub                          │
 │  - Receives credentials from Hub (pushed at instantiation)     │
 │  - Exposes HTTP API for tool invocation                        │
 └───────────────────────────┬─────────────────────────────────────┘
@@ -30,7 +30,7 @@ The Agent Harness uses OpenCode as the execution engine, managed by a sidecar se
                             ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │              OpenCode (execution engine)                        │
-│  - Runs agents as sessions                                      │
+│  - Runs agent harnesses                                         │
 │  - Subagents are forked sessions                                │
 │  - Calls sidecar to invoke tools (credentials never exposed)    │
 └─────────────────────────────────────────────────────────────────┘
@@ -240,9 +240,141 @@ Agent → OpenCode: "call tool X with params Y"
 - Credentials scoped to specific agent, never exposed
 - OpenCode server password scoped per-session
 
+## Sidecar Reconnection Protocol
+
+The sidecar persists agent state in isogit repositories under `SIDECAR_DATA_DIR`, one repository per agent address. On restart, the sidecar scans this directory to discover agents it previously managed, then reconnects to the hub and proves ownership of each agent address.
+
+### Per-Agent Key Pairs
+
+Each agent has its own Ed25519 key pair, generated when the agent is first deployed to the sidecar and stored alongside the agent's isogit repository. The key pair persists across sidecar restarts. The public key is transmitted to the hub in the initial `agent.deploy.ack` frame so the hub can verify ownership on reconnect.
+
+Key format follows the project convention: Ed25519 in SSH format.
+
+Directory layout under `SIDECAR_DATA_DIR`:
+
+```
+SIDECAR_DATA_DIR/
+  agent-name_at_tenant_interchange_network/
+    .git/              # isogit repository (context, audit records)
+    context.json       # conversation state
+    keys/
+      id_ed25519       # agent private key
+      id_ed25519.pub   # agent public key
+```
+
+The directory name is the agent address with `@` replaced by `_at_` and non-alphanumeric characters (except `-` and `_`) replaced by `_`.
+
+### Agent Deployment vs User Sessions
+
+The sidecar manages agents, not user sessions. When the hub deploys an agent to a sidecar, the sidecar starts a harness for that agent. The harness runs continuously, receiving messages from any source — other agents, users, system signals. User sessions are a hub-side concept: the hub tracks which users are interacting with which agents and routes user messages to the agent's address accordingly, but the sidecar does not know or care about individual user sessions.
+
+The hub maintains a sidecar-to-agent mapping in its database. This mapping determines where to route messages for a given agent address. When a sidecar disconnects, the hub knows which agents are affected and queues messages for them until the sidecar reconnects.
+
+### Registration
+
+On first connection (no existing agents in `SIDECAR_DATA_DIR`), the sidecar sends a `register` frame to identify itself to the hub. The hub responds by sending `agent.deploy` frames for any agents assigned to this sidecar.
+
+| Direction     | Frame      | Fields                                           | Description                 |
+| ------------- | ---------- | ------------------------------------------------ | --------------------------- |
+| Sidecar → Hub | `register` | `sidecarId`, `token`, `agentAddresses: string[]` | Identify sidecar to the hub |
+
+On reconnection (existing agents in `SIDECAR_DATA_DIR`), the sidecar sends a `reconnect` frame instead, which triggers the challenge/response verification flow described below.
+
+### Deployment Frames
+
+**Hub to Sidecar:**
+
+| Frame            | Fields                                                                | Description                       |
+| ---------------- | --------------------------------------------------------------------- | --------------------------------- |
+| `agent.deploy`   | `agentAddress`, `agentId`, `config` (system prompt, model, providers) | Deploy an agent to this sidecar   |
+| `agent.undeploy` | `agentAddress`, `reason`                                              | Remove an agent from this sidecar |
+
+**Sidecar to Hub:**
+
+| Frame              | Fields                      | Description                            |
+| ------------------ | --------------------------- | -------------------------------------- |
+| `agent.deploy.ack` | `agentAddress`, `publicKey` | Agent deployed, here is its public key |
+| `agent.error`      | `agentAddress`, `error`     | Deployment failed                      |
+
+When the hub sends `agent.deploy`, the sidecar generates a key pair (if new) or loads the existing one, initializes the harness, and responds with `agent.deploy.ack` including the agent's public key. The hub stores this public key for reconnect verification.
+
+When the hub sends `agent.undeploy`, the sidecar tears down the harness and may clean up local state depending on the reason (e.g., permanent retirement vs temporary rebalancing).
+
+### Reconnection Flow
+
+1. Sidecar starts and scans `SIDECAR_DATA_DIR` for agent repositories
+2. For each repository with a key pair, sidecar loads the private key and records the agent address
+3. Sidecar connects to the hub via WebSocket and sends a `reconnect` frame listing agent addresses it has locally
+4. Hub generates a cryptographically random nonce (minimum 32 bytes) per address and sends a `challenge` frame
+5. Sidecar signs `nonce || agent_address` with each agent's private key and sends a `challenge.response` frame
+6. Hub verifies each signature against the stored public key for that address
+7. For each verified address that the hub still wants running, hub sends `agent.deploy` (with `restored: true`)
+8. For each verified address the hub no longer wants running, hub sends `agent.undeploy`
+9. For each failed address, hub sends a `challenge.failed` frame with the address and reason
+10. Sidecar loads isogit context for each restored agent, starts the harness, and sends `agent.deploy.ack`
+11. Hub flushes queued undelivered messages as `message.send` frames after receiving the ack
+
+This reconciliation handles all cases:
+
+- **Agent still active**: hub sends `agent.deploy` with `restored: true`, sidecar resumes
+- **Agent was undeployed while disconnected**: hub sends `agent.undeploy`, sidecar cleans up
+- **Agent unknown to hub**: hub sends `challenge.failed`, sidecar cleans up orphaned state
+- **Hub has new agents for this sidecar**: hub sends `agent.deploy` (without `restored`) after reconciliation completes
+
+### Reconnection Frames
+
+**Sidecar to Hub:**
+
+| Frame                | Fields                                           | Description                                |
+| -------------------- | ------------------------------------------------ | ------------------------------------------ |
+| `reconnect`          | `sidecarId`, `token`, `agentAddresses: string[]` | Sidecar announces addresses it has locally |
+| `challenge.response` | `responses: { address, signature }[]`            | Signed proof of key ownership per address  |
+
+**Hub to Sidecar:**
+
+| Frame              | Fields                             | Description                         |
+| ------------------ | ---------------------------------- | ----------------------------------- |
+| `challenge`        | `challenges: { address, nonce }[]` | One nonce per address to be signed  |
+| `challenge.failed` | `address`, `reason`                | Verification failed for one address |
+
+The `agent.deploy` frame includes an optional `restored: boolean` field. When `true`, the sidecar loads existing isogit context rather than initializing fresh state.
+
+### Nonce Security
+
+Nonces are single-use. The hub marks each nonce as consumed after verification and rejects any reuse. The signing surface is `nonce || agent_address` (concatenated bytes), which prevents a signature for one address from being replayed for a different address.
+
+### Partial Failure
+
+Verification is per-address. If a sidecar presents three addresses and one fails verification, the hub accepts the two verified addresses and rejects the failed one. The sidecar logs the rejection and continues serving the verified agents. A failed address does not affect other addresses on the same connection.
+
+### Hub Message Queuing
+
+While a sidecar is disconnected, the hub queues user messages in its database. These messages are not lost. On successful reconnection and address verification, the hub flushes queued messages as `message.send` frames in chronological order.
+
+The hub does not queue messages indefinitely. A configurable TTL determines when queued messages expire. When an agent is undeployed from a sidecar, the hub stops queuing and drops any remaining messages for that address.
+
+### Authority Model
+
+The sidecar's isogit repository is the source of truth for agent inference context (conversation history, pending operations, token usage). The hub's database is a delivery queue for user messages that have not yet reached the agent. On reconnect, the hub delivers queued messages to the sidecar, which incorporates them into the agent's context via the normal message handling path.
+
+### Key Rotation
+
+When an agent's key pair is rotated, the sidecar sends a `key.rotated` frame containing the agent address and the new public key. The hub stores the new key alongside the old one and begins a grace period during which both keys are accepted for challenge verification. The grace period duration is configured at the hub. After the grace period, the old key is retired and only the new key is accepted.
+
+| Direction     | Frame         | Fields                      | Description            |
+| ------------- | ------------- | --------------------------- | ---------------------- |
+| Sidecar → Hub | `key.rotated` | `agentAddress`, `publicKey` | Announce a rotated key |
+
+### Failure Paths
+
+If the hub rejects all addresses on reconnect, the sidecar logs the failure and does not serve any agents. It does not attempt fresh deployments for rejected addresses, since that would bypass the ownership proof. The operator must investigate the key mismatch.
+
+If the sidecar discovers agent repositories but has no key pairs for them (e.g., keys were deleted), it skips those agents and logs a warning. It does not generate new keys, since the hub would reject signatures from unknown keys.
+
 ## Prototype Scope
 
 - Single machine (sidecar + OpenCode + Hub)
 - Credentials pushed from Hub to sidecar at instantiation
 - Tool proxy with credentials (no OAuth refresh for prototype)
-- No persistence (sessions lost on restart)
+
+This document describes the prototype sidecar implementation. It diverges from the production architecture described in ARCHITECTURE.md in several ways: it uses REST/WebSocket for hub-sidecar communication instead of SMTP/IMAP, and it uses a simplified credential push model instead of the full bidirectional credential channel. The reconnection protocol above is designed for the prototype transport and will be adapted when the production transport is implemented.

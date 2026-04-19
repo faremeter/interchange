@@ -157,7 +157,18 @@ Every harness and every agent has its own asymmetric key pair. These keys serve 
 
 **Per-agent keys** identify the agent across its lifecycle, independent of which harness instance is running it. The agent's key pair persists across restarts and redeployments. When an agent produces content - messages, tool invocations, checkpoints - the harness signs it with the agent's key. Recipients can verify that a specific agent generated specific content, providing a chain of provenance.
 
-Key pairs are generated during initialization (harness keys at startup, agent keys at agent creation) and managed by the harness. Private keys are stored in the harness's credential store and never exposed to agents or external systems. Public keys are published to the control plane and included in the agent's discovery metadata.
+Key pairs are generated at agent creation time and managed by the harness. Private keys are stored alongside the agent's persistent data and never exposed to agents or external systems. Public keys are published to the control plane and included in the agent's discovery metadata. The control plane stores agent public keys so it can verify ownership claims when a harness reconnects after a restart.
+
+### Session Continuity
+
+Agent sessions survive harness restarts. The harness persists agent state (conversation context, pending operations, key pairs) in the agent's local storage. When the harness restarts, it discovers previously managed agents, proves ownership of each agent address by signing a cryptographic challenge with the agent's private key, and resumes operation from the persisted state.
+
+The authority model for session continuity is:
+
+- **Harness local storage is authoritative** for agent inference context — conversation history, pending operations, and token usage. This is the source of truth for what the agent knows.
+- **Control plane is a delivery queue** for user messages. Messages sent while the harness is disconnected are queued and flushed to the harness on successful reconnect. The harness incorporates delivered messages into the agent's context through the normal message handling path.
+
+The reconnection protocol requires the harness to prove it holds the private key for each agent address it claims to manage. This prevents a rogue harness from hijacking agent sessions.
 
 Signatures are attached to:
 

@@ -334,6 +334,8 @@ Every outbound message is signed with the sending agent's Ed25519 private key. T
 
 Agent public keys are published through the control plane and included in agent discovery metadata. For cross-tenant messages, public keys can additionally be published via DNS DANE/OPENPGPKEY records, providing a federated key distribution mechanism that does not require the receiving tenant to trust the sending tenant's control plane.
 
+The control plane also stores agent public keys for session management. When a harness reconnects after a restart, it proves ownership of agent addresses by signing a challenge with the agent's private key. The control plane verifies the signature against the stored public key before re-establishing the agent's sessions.
+
 ## Inbox Management (IMAP Semantics)
 
 The agent's IMAP inbox is not just a delivery endpoint. It is a queryable, stateful message store. The harness uses IMAP semantics to manage the agent's message lifecycle.

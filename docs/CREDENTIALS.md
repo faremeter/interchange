@@ -184,4 +184,4 @@ For reactive refresh (when a harness reports a 401), the same path applies: the 
 ## What This Design Does Not Cover
 
 - **Encryption at rest**: secrets are currently stored as plaintext. Envelope encryption or KMS integration is a separate concern to be addressed independently.
-- **Harness injection protocol**: the mechanism by which the control plane transmits resolved credentials to harnesses is not specified here. It depends on the harness implementation and deployment environment.
+- **Harness injection protocol**: the mechanism by which the control plane transmits resolved credentials to harnesses is not specified here. It depends on the harness implementation and deployment environment. In the prototype sidecar implementation, credentials are pushed as part of the `agent.deploy` frame — both for initial deployment and for restoration after sidecar reconnect. See HARNESS_DESIGN.md for the wire protocol.
