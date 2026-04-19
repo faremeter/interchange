@@ -1,4 +1,8 @@
-export { generateKeyPair } from "./keys";
+export {
+  generateKeyPair,
+  importPrivateKeyBytes,
+  importPublicKeyBytes,
+} from "./keys";
 export { NodeCrypto, createNodeCrypto } from "./provider";
 export { canonicalizeText, canonicalizeBytes } from "./canonicalize";
 export { createDetachedSignature } from "./sign";

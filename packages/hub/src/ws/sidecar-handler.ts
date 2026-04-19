@@ -34,8 +34,8 @@ export type SidecarRouter = {
   handleClose(ws: WsHandle): void;
 
   routeMail(agentAddress: string, rawMessage: string): boolean;
-  sendSessionCreate(agentAddress: string, config: HarnessConfig): Promise<void>;
-  sendSessionDestroy(agentAddress: string): Promise<void>;
+  sendAgentDeploy(agentAddress: string, config: HarnessConfig): Promise<void>;
+  sendAgentUndeploy(agentAddress: string, reason: string): void;
   sendSessionAbort(agentAddress: string, reason: AbortReason): Promise<void>;
   sendMessage(
     agentAddress: string,
@@ -90,8 +90,15 @@ export function createSidecarRouter(
   const addressIndex = new Map<string, WsHandle>();
   // requestId → pending promise
   const pending = new Map<string, PendingRequest>();
-  // agentAddress → number of in-flight session.create requests
-  const pendingCreates = new Map<string, number>();
+  // agentAddress → pending deploy promise (matched by agent.deploy.ack/agent.error)
+  type PendingDeploy = {
+    agentAddress: string;
+    ws: WsHandle;
+    resolve(): void;
+    reject(error: string): void;
+    timer: ReturnType<typeof setTimeout>;
+  };
+  const pendingDeploys = new Map<string, PendingDeploy>();
   // sessionId → set of subscriber callbacks for agent events
   const sessionSubscribers = new Map<string, Set<(event: unknown) => void>>();
 
@@ -113,6 +120,15 @@ export function createSidecarRouter(
     switch (frame.type) {
       case "register":
         handleRegister(ws, frame.sidecarId, frame.token, frame.agentAddresses);
+        break;
+      case "reconnect":
+        handleRegister(ws, frame.sidecarId, frame.token, frame.agentAddresses);
+        break;
+      case "agent.deploy.ack":
+        resolveDeployPending(frame.agentAddress);
+        break;
+      case "agent.error":
+        rejectDeployPending(frame.agentAddress, frame.error);
         break;
       case "mail.outbound":
         handleMailOutbound(frame.rawMessage, frame.recipients);
@@ -163,6 +179,17 @@ export function createSidecarRouter(
         if (prevConn !== undefined) {
           prevConn.agentAddresses.delete(addr);
         }
+      }
+
+      // Cancel any in-flight deploy for this address since the
+      // reconnecting sidecar is taking ownership.
+      const staleDeployReq = pendingDeploys.get(addr);
+      if (staleDeployReq !== undefined) {
+        clearTimeout(staleDeployReq.timer);
+        pendingDeploys.delete(addr);
+        staleDeployReq.reject(
+          `Sidecar ${sidecarId} reconnected and claimed address "${addr}"`,
+        );
       }
     }
 
@@ -220,7 +247,12 @@ export function createSidecarRouter(
       // owns the address. A reconnected sidecar may have already claimed it.
       if (addressIndex.get(addr) === ws) {
         addressIndex.delete(addr);
-        pendingCreates.delete(addr);
+        const deployReq = pendingDeploys.get(addr);
+        if (deployReq !== undefined && deployReq.ws === ws) {
+          clearTimeout(deployReq.timer);
+          pendingDeploys.delete(addr);
+          deployReq.reject(`Sidecar ${conn.sidecarId} disconnected`);
+        }
       }
     }
     connections.delete(ws);
@@ -318,84 +350,107 @@ export function createSidecarRouter(
     return true;
   }
 
-  async function sendSessionCreate(
+  function resolveDeployPending(agentAddress: string): void {
+    const req = pendingDeploys.get(agentAddress);
+    if (req === undefined) return;
+    clearTimeout(req.timer);
+    pendingDeploys.delete(agentAddress);
+    req.resolve();
+  }
+
+  function rejectDeployPending(agentAddress: string, error: string): void {
+    const req = pendingDeploys.get(agentAddress);
+    if (req === undefined) return;
+    clearTimeout(req.timer);
+    pendingDeploys.delete(agentAddress);
+    req.reject(error);
+  }
+
+  async function sendAgentDeploy(
     agentAddress: string,
     harnessConfig: HarnessConfig,
   ): Promise<void> {
-    // The hub knows the address from the config, so update the routing
-    // table proactively. If the sidecar nacks, we clean up.
+    if (pendingDeploys.has(agentAddress)) {
+      throw new Error(`Deploy already in progress for agent "${agentAddress}"`);
+    }
+
     const ws =
-      addressIndex.get(agentAddress) ?? findSidecarForNewSession(agentAddress);
+      addressIndex.get(agentAddress) ?? findSidecarForNewAgent(agentAddress);
 
     if (ws === undefined) {
       throw new Error(`No sidecar available for agent "${agentAddress}"`);
     }
 
-    // Update the address index so the new agent is routable immediately
-    // after ack.
     const conn = connections.get(ws);
-    if (conn !== undefined) {
-      conn.agentAddresses.add(agentAddress);
-      addressIndex.set(agentAddress, ws);
+    if (conn === undefined) {
+      throw new Error(`No sidecar connected for agent "${agentAddress}"`);
     }
 
-    pendingCreates.set(
-      agentAddress,
-      (pendingCreates.get(agentAddress) ?? 0) + 1,
-    );
+    conn.agentAddresses.add(agentAddress);
+    addressIndex.set(agentAddress, ws);
 
-    try {
-      await sendRequest(agentAddress, (requestId) => ({
-        type: "session.create",
-        requestId,
-        config: harnessConfig,
-      }));
-    } catch (err) {
-      // Only roll back routing if no other create is still in flight
-      // for this address and this connection still owns it.
-      const remaining = (pendingCreates.get(agentAddress) ?? 1) - 1;
-      if (remaining <= 0) {
-        pendingCreates.delete(agentAddress);
-        if (conn !== undefined && addressIndex.get(agentAddress) === ws) {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingDeploys.delete(agentAddress);
+        if (addressIndex.get(agentAddress) === ws) {
           conn.agentAddresses.delete(agentAddress);
           addressIndex.delete(agentAddress);
         }
-      } else {
-        pendingCreates.set(agentAddress, remaining);
-      }
-      throw err;
-    }
+        reject(
+          new Error(
+            `Deploy of "${agentAddress}" timed out after ${requestTimeoutMs}ms`,
+          ),
+        );
+      }, requestTimeoutMs);
 
-    // Successful create — decrement the counter.
-    const remaining = (pendingCreates.get(agentAddress) ?? 1) - 1;
-    if (remaining <= 0) {
-      pendingCreates.delete(agentAddress);
-    } else {
-      pendingCreates.set(agentAddress, remaining);
-    }
+      pendingDeploys.set(agentAddress, {
+        agentAddress,
+        ws,
+        resolve() {
+          resolve();
+        },
+        reject(error: string) {
+          if (addressIndex.get(agentAddress) === ws) {
+            conn.agentAddresses.delete(agentAddress);
+            addressIndex.delete(agentAddress);
+          }
+          reject(new Error(error));
+        },
+        timer,
+      });
+
+      conn.send({
+        type: "agent.deploy",
+        agentAddress,
+        agentId: harnessConfig.agentId,
+        config: harnessConfig,
+      });
+    });
   }
 
-  // When creating a session for an agent address not yet in the routing
-  // table, we need to pick a sidecar. This fallback picks the first
-  // connected sidecar.
-  function findSidecarForNewSession(
-    _agentAddress: string,
-  ): WsHandle | undefined {
+  function findSidecarForNewAgent(_agentAddress: string): WsHandle | undefined {
     const first = connections.entries().next();
     if (first.done) return undefined;
     return first.value[0];
   }
 
-  async function sendSessionDestroy(agentAddress: string): Promise<void> {
+  function sendAgentUndeploy(agentAddress: string, reason: string): void {
     const ws = addressIndex.get(agentAddress);
-    await sendRequest(agentAddress, (requestId) => ({
-      type: "session.destroy",
-      requestId,
-      agentAddress,
-    }));
-    if (ws !== undefined && addressIndex.get(agentAddress) === ws) {
-      removeAgentAddress(ws, agentAddress);
+    if (ws === undefined) {
+      throw new Error(`No sidecar connected for agent "${agentAddress}"`);
     }
+    const conn = connections.get(ws);
+    if (conn === undefined) {
+      throw new Error(`No sidecar connected for agent "${agentAddress}"`);
+    }
+
+    conn.send({
+      type: "agent.undeploy",
+      agentAddress,
+      reason,
+    });
+
+    removeAgentAddress(ws, agentAddress);
   }
 
   async function sendSessionAbort(
@@ -479,8 +534,8 @@ export function createSidecarRouter(
     handleMessage,
     handleClose,
     routeMail,
-    sendSessionCreate,
-    sendSessionDestroy,
+    sendAgentDeploy,
+    sendAgentUndeploy,
     sendSessionAbort,
     sendMessage,
     subscribeSession,
