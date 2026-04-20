@@ -166,7 +166,7 @@ Conditions are evaluated at runtime by the authorization engine. A grant with un
 | ---------------------------- | -------------------------------------------------------------------------------------------------------- |
 | Creator-granted capabilities | Grants with `source = 'creator'`, attached to the agent's principal                                      |
 | Invoker-granted capabilities | Grants with `source = 'invoker'`, attached to the agent's principal, short `expires_at` (session-scoped) |
-| Tool policy                  | Grants where `resource = 'tool:...'`                                                                     |
+| Tool-call gates              | Grants where `resource = 'tool:...'`                                                                     |
 | Wallet access                | Grants where `resource = 'wallet:...'`, `action = 'spend'`, with spending limit conditions               |
 | Credential binding           | Grants where `resource = 'credential:...'`, `action = 'use'`                                             |
 | User roles (RBAC)            | Grants attached to roles, roles assigned to user principals                                              |

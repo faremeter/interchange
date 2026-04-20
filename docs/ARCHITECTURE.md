@@ -100,7 +100,7 @@ The harness is event-driven. Incoming events - messages from other agents, tool 
 
 ### Lifecycle
 
-1. **Initialization** - Harness starts, loads the agent package (skills, system prompt, context builder, initial state, tool policy), establishes connections to inference and storage backends
+1. **Initialization** - Harness starts, loads the agent package (skills, system prompt, context builder, initial state, capability grants), establishes connections to inference and storage backends
 2. **Registration** - Harness announces the agent's presence and offerings to the control plane
 3. **Operation** - Harness enters the event loop, receiving and routing events to internal handlers
 4. **Shutdown** - Harness deregisters, flushes state, and terminates cleanly
@@ -122,7 +122,7 @@ Agents acquire capabilities from two distinct sources: the user who created the 
 
 **Invoker-granted capabilities** are provided at invocation time by the user who launches the agent. These are additional permissions the invoker delegates for the duration of the interaction - access to the invoker's data, authorization to act on the invoker's behalf with specific services, or credentials the agent needs to complete work for that particular user.
 
-**Effective capabilities** are the union of creator-granted and invoker-granted capabilities, subject to the agent's tool policy. The harness resolves the effective capability set at invocation time and enforces it throughout the session.
+**Effective capabilities** are the union of creator-granted and invoker-granted capabilities, subject to the agent's grants. The harness resolves the effective capability set at invocation time and enforces it throughout the session.
 
 This dual-authority model enables important patterns:
 
@@ -130,7 +130,7 @@ This dual-authority model enables important patterns:
 - A creator builds an agent with deployment credentials. Users invoke the agent to trigger deployments without holding deployment keys themselves.
 - An invoker grants an agent OAuth tokens to their personal accounts. The agent uses both its creator-granted infrastructure access and the invoker's personal credentials to complete a task.
 
-**Capability scoping** applies in both directions. Creator-granted capabilities can be broad but constrained by tool policy (the agent may hold database credentials but only be permitted to run read-only queries). Invoker-granted capabilities can be narrowed by the harness when an external API's permission model is coarser than what the agent needs.
+**Capability scoping** applies in both directions. Creator-granted capabilities can be broad but constrained by grants (the agent may hold database credentials but only be permitted to run read-only queries). Invoker-granted capabilities can be narrowed by the harness when an external API's permission model is coarser than what the agent needs.
 
 **Inherited capabilities** follow the same dual model when agents create other agents. The parent agent can grant its child a subset of its own creator-granted capabilities, establishing a delegation chain. Children cannot exceed their parent's authority, but they can carry capabilities that future invokers of the child would not have on their own.
 
