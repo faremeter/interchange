@@ -85,21 +85,18 @@ describe("EventCollector", () => {
     });
   });
 
-  test("reactor.start creates an assistant message row", async () => {
-    await collector.onEvent(event("reactor.start", 1, {}));
+  test("inference.start creates an assistant message row and step-start part", async () => {
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
 
-    expect(fakeDB.inserts).toHaveLength(1);
-    const insert = at(fakeDB.inserts, 0);
-    expect(insert.table).toBe("session_message");
+    const messages = fakeDB.inserts.filter(
+      (i) => i.table === "session_message",
+    );
+    expect(messages).toHaveLength(1);
+    const insert = at(messages, 0);
     expect(insert.values.role).toBe("assistant");
     expect(insert.values.status).toBe("pending");
     expect(insert.values.sessionId).toBe("ses_test");
     expect(insert.values.tenantId).toBe("tnt_test");
-  });
-
-  test("inference.start inserts a step-start part", async () => {
-    await collector.onEvent(event("reactor.start", 1, {}));
-    await collector.onEvent(event("inference.start", 2, { model: "gpt-4" }));
 
     const parts = fakeDB.inserts.filter((i) => i.table === "message_part");
     expect(parts).toHaveLength(1);
@@ -107,8 +104,14 @@ describe("EventCollector", () => {
     expect(at(parts, 0).values.metadata).toEqual({ model: "gpt-4" });
   });
 
-  test("inference.done inserts text, reasoning, and tool-call parts", async () => {
+  test("reactor.start alone does not create a message", async () => {
     await collector.onEvent(event("reactor.start", 1, {}));
+
+    expect(fakeDB.inserts).toHaveLength(0);
+  });
+
+  test("inference.done inserts text, reasoning, and tool-call parts", async () => {
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(
       event("inference.done", 5, {
         message: {
@@ -130,28 +133,30 @@ describe("EventCollector", () => {
     );
 
     const parts = fakeDB.inserts.filter((i) => i.table === "message_part");
-    // text + reasoning + tool_call + step-finish = 4 parts
-    expect(parts).toHaveLength(4);
+    // step-start + text + reasoning + tool_call + step-finish = 5 parts
+    expect(parts).toHaveLength(5);
 
-    expect(at(parts, 0).values.type).toBe("text");
-    expect(at(parts, 0).values.content).toBe("Hello world");
+    expect(at(parts, 0).values.type).toBe("step-start");
 
-    expect(at(parts, 1).values.type).toBe("reasoning");
-    expect(at(parts, 1).values.content).toBe("Let me think...");
+    expect(at(parts, 1).values.type).toBe("text");
+    expect(at(parts, 1).values.content).toBe("Hello world");
 
-    expect(at(parts, 2).values.type).toBe("tool");
-    expect(at(parts, 2).values.metadata).toEqual({
+    expect(at(parts, 2).values.type).toBe("reasoning");
+    expect(at(parts, 2).values.content).toBe("Let me think...");
+
+    expect(at(parts, 3).values.type).toBe("tool");
+    expect(at(parts, 3).values.metadata).toEqual({
       kind: "call",
       callId: "call_1",
       name: "search",
       arguments: { query: "test" },
     });
 
-    expect(at(parts, 3).values.type).toBe("step-finish");
+    expect(at(parts, 4).values.type).toBe("step-finish");
   });
 
   test("tool.done inserts a tool result part", async () => {
-    await collector.onEvent(event("reactor.start", 1, {}));
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(
       event("tool.done", 3, {
         result: {
@@ -163,9 +168,11 @@ describe("EventCollector", () => {
     );
 
     const parts = fakeDB.inserts.filter((i) => i.table === "message_part");
-    expect(parts).toHaveLength(1);
-    expect(at(parts, 0).values.type).toBe("tool");
-    expect(at(parts, 0).values.metadata).toEqual({
+    // step-start from inference.start + tool result = 2 parts
+    expect(parts).toHaveLength(2);
+    expect(at(parts, 0).values.type).toBe("step-start");
+    expect(at(parts, 1).values.type).toBe("tool");
+    expect(at(parts, 1).values.metadata).toEqual({
       kind: "result",
       callId: "call_1",
       content: "Result text",
@@ -174,7 +181,7 @@ describe("EventCollector", () => {
   });
 
   test("reactor.done marks message as delivered", async () => {
-    await collector.onEvent(event("reactor.start", 1, {}));
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(event("reactor.done", 10, {}));
 
     expect(fakeDB.updates).toHaveLength(1);
@@ -183,7 +190,7 @@ describe("EventCollector", () => {
   });
 
   test("reactor.error with fatal=true marks message as failed", async () => {
-    await collector.onEvent(event("reactor.start", 1, {}));
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(
       event("reactor.error", 10, { error: "boom", fatal: true }),
     );
@@ -194,7 +201,7 @@ describe("EventCollector", () => {
   });
 
   test("reactor.error with fatal=false does not update status", async () => {
-    await collector.onEvent(event("reactor.start", 1, {}));
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(
       event("reactor.error", 10, { error: "transient", fatal: false }),
     );
@@ -202,7 +209,7 @@ describe("EventCollector", () => {
     expect(fakeDB.updates).toHaveLength(0);
   });
 
-  test("parts before reactor.start are dropped", async () => {
+  test("parts before inference.start are dropped", async () => {
     await collector.onEvent(
       event("inference.done", 5, {
         message: {
@@ -219,8 +226,7 @@ describe("EventCollector", () => {
   });
 
   test("ordinals increment correctly across parts", async () => {
-    await collector.onEvent(event("reactor.start", 1, {}));
-    await collector.onEvent(event("inference.start", 2, { model: "gpt-4" }));
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(
       event("inference.done", 5, {
         message: {
@@ -242,7 +248,7 @@ describe("EventCollector", () => {
   });
 
   test("abandon marks pending message as failed", async () => {
-    await collector.onEvent(event("reactor.start", 1, {}));
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.abandon();
 
     expect(fakeDB.updates).toHaveLength(1);
@@ -256,7 +262,7 @@ describe("EventCollector", () => {
   });
 
   test("tool_result content blocks are skipped to avoid duplication", async () => {
-    await collector.onEvent(event("reactor.start", 1, {}));
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(
       event("inference.done", 5, {
         message: {
@@ -277,11 +283,11 @@ describe("EventCollector", () => {
 
     const parts = fakeDB.inserts.filter((i) => i.table === "message_part");
     const types = parts.map((p) => p.values.type);
-    expect(types).toEqual(["text", "step-finish"]);
+    expect(types).toEqual(["step-start", "text", "step-finish"]);
   });
 
   test("streaming deltas are not persisted", async () => {
-    await collector.onEvent(event("reactor.start", 1, {}));
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(
       event("inference.text.delta", 2, {
         token: "hi",
@@ -301,13 +307,18 @@ describe("EventCollector", () => {
     );
 
     const parts = fakeDB.inserts.filter((i) => i.table === "message_part");
-    expect(parts).toHaveLength(0);
+    // Only the step-start from inference.start; deltas are not persisted
+    expect(parts).toHaveLength(1);
+    expect(at(parts, 0).values.type).toBe("step-start");
   });
 
-  test("full reactor cycle produces correct sequence", async () => {
-    // Simulate: reactor.start -> inference turn 1 (text) ->
-    // tool call -> tool result -> inference turn 2 (text) -> reactor.done
-    await collector.onEvent(event("reactor.start", 1, {}));
+  test("full reactor cycle produces correct sequence with per-turn messages", async () => {
+    // Simulate: inference turn 1 (text + tool call) ->
+    // tool result -> inference turn 2 (text) -> reactor.done
+    //
+    // Each inference.start creates a new assistant message. The second
+    // inference.start finalizes the first message as failed (via the
+    // orphan-guard path) and starts a fresh one.
 
     // Turn 1
     await collector.onEvent(event("inference.start", 2, { model: "claude-3" }));
@@ -337,7 +348,7 @@ describe("EventCollector", () => {
       }),
     );
 
-    // Turn 2
+    // Turn 2 — inference.start finalizes turn 1's message as failed (orphan)
     await collector.onEvent(event("inference.start", 8, { model: "claude-3" }));
     await collector.onEvent(
       event("inference.done", 12, {
@@ -352,6 +363,12 @@ describe("EventCollector", () => {
 
     await collector.onEvent(event("reactor.done", 13, {}));
 
+    // Two message rows created (one per inference.start)
+    const messages = fakeDB.inserts.filter(
+      (i) => i.table === "session_message",
+    );
+    expect(messages).toHaveLength(2);
+
     const parts = fakeDB.inserts.filter((i) => i.table === "message_part");
     const types = parts.map((p) => p.values.type);
     expect(types).toEqual([
@@ -365,14 +382,15 @@ describe("EventCollector", () => {
       "step-finish", // inference turn 2 end
     ]);
 
-    // Message marked as delivered
-    expect(fakeDB.updates).toHaveLength(1);
-    expect(at(fakeDB.updates, 0).set).toEqual({ status: "delivered" });
+    // First message finalized as failed (orphan), second as delivered
+    expect(fakeDB.updates).toHaveLength(2);
+    expect(at(fakeDB.updates, 0).set).toEqual({ status: "failed" });
+    expect(at(fakeDB.updates, 1).set).toEqual({ status: "delivered" });
   });
 
-  test("second reactor.start finalizes first message as failed", async () => {
-    await collector.onEvent(event("reactor.start", 1, {}));
-    await collector.onEvent(event("reactor.start", 5, {}));
+  test("second inference.start finalizes first message as failed", async () => {
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    await collector.onEvent(event("inference.start", 5, { model: "gpt-4" }));
 
     // Two message rows created
     const messages = fakeDB.inserts.filter(
@@ -386,7 +404,7 @@ describe("EventCollector", () => {
   });
 
   test("abandon after reactor.done is a no-op", async () => {
-    await collector.onEvent(event("reactor.start", 1, {}));
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(event("reactor.done", 5, {}));
     await collector.abandon();
 
