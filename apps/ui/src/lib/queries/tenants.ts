@@ -510,7 +510,7 @@ type SessionResponse = {
   tenantId: string;
   agentId: string;
   principalId: string;
-  status: "idle" | "busy" | "retry" | "waiting_approval" | "ending" | "ended";
+  status: "idle" | "ending" | "ended";
   createdAt: string;
   updatedAt: string;
   lastActivityAt: string | null;

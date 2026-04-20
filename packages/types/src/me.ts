@@ -38,7 +38,7 @@ export const SessionSummary = type({
   tenantName: "string",
   agentId: "string",
   agentName: "string",
-  status: "'idle' | 'busy' | 'retry' | 'waiting_approval'",
+  status: "'idle' | 'ending' | 'ended'",
   createdAt: "string",
   "lastActivityAt?": "string | null",
 });
