@@ -23,6 +23,10 @@
     "./sidecar": {
       "types": "./src/sidecar.ts",
       "default": "./src/sidecar.ts"
+    },
+    "./grant-wire": {
+      "types": "./src/grant-wire.ts",
+      "default": "./src/grant-wire.ts"
     }
   },
   "dependencies": {

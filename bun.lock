@@ -29,6 +29,7 @@
       "name": "@interchange/sidecar-app",
       "version": "0.0.0",
       "dependencies": {
+        "@interchange/authz": "workspace:*",
         "@interchange/crypto-node": "workspace:*",
         "@interchange/harness": "workspace:*",
         "@interchange/log": "workspace:*",
