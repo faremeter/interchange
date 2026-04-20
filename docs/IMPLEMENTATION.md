@@ -470,7 +470,7 @@ Agent lifecycle operations are managed through versioned packages and health pro
 
 ### Agent Packages
 
-An agent package is an immutable artifact built from the agent's definition repository with resolved dependencies. It contains:
+An agent package is a git tree assembled from the agent's definition repository with resolved skill dependencies (see Agent Versioning above). It contains:
 
 - Skills and their dependencies
 - System prompt
@@ -478,7 +478,7 @@ An agent package is an immutable artifact built from the agent's definition repo
 - Initial state
 - Capability grants
 
-Packages are versioned with semantic versioning. The control plane tracks which versions are deployed, active, and available for rollback.
+Each deploy commit represents an immutable version. The control plane tracks which deploy refs are active on which sidecars, and retains historical deploy tags for rollback.
 
 ### Health Protocol
 
@@ -493,12 +493,12 @@ Health can also be reported via periodic heartbeat messages to the control plane
 
 ### Deployment Procedure
 
-1. **Package upload** - New version is uploaded to the control plane
-2. **Staging** - New version starts alongside existing version
+1. **Assembly** - Hub resolves skill dependencies and assembles the deploy tree
+2. **Pack transfer** - Hub streams the packfile to the sidecar (see Agent Deployment)
 3. **Health gate** - New version must pass health checks before receiving traffic
 4. **Traffic shift** - Registry updates discovery to point to new version
 5. **Drain** - Old version stops accepting new work, completes in-flight operations
-6. **Retirement** - Old version shuts down; package remains available for rollback
+6. **Retirement** - Old version shuts down; deploy tag remains for rollback
 
 ### Rollback
 
@@ -512,31 +512,48 @@ Rollback is fast because the previous version's package is still available and c
 
 ## Agent Versioning: Git-Backed Definitions
 
-Agent definitions are stored in git repositories, providing version control for the resources that constitute an agent.
+Agent definitions are stored in git repositories on the hub, providing version control for the resources that constitute an agent.
 
 ### Repository Contents
 
 The repository contains agent-specific resources:
 
 - Skills and skill configuration
-- System prompt
+- System prompt (`prompt.md`)
 - Context builder configuration
 - Initial state
 - Capability grants
 - Dependency references (resolved at deployment)
 
-External packages and libraries are not stored directly. Configuration files reference them, and the harness resolves these references when building the agent package for deployment.
+External skill libraries are not stored directly. Configuration files reference them, and the hub resolves these references when assembling the deploy tree.
 
-### Deployment
+### Source Composition
 
-When an agent is deployed:
+At deploy time, the hub assembles a flat tree from multiple sources via subtree merge:
 
-1. The agent definition is checked out from the repository at the specified version
-2. External dependencies are resolved and bundled into the agent package
-3. The package is deployed to the execution environment
-4. A separate worktree is initialized for the agent's working data
+- The agent's own repository provides the prompt, configuration, and agent-specific skills
+- Referenced skill library repositories are merged under `deploy/skills/<name>/` prefixes
 
-The agent's definition environment and working data worktree are distinct git contexts.
+The result is a single commit containing everything the harness needs. The sidecar receives this flat tree with no submodule metadata or external references to resolve. Provenance (which source repos and refs contributed) is recorded in the assembly commit on the hub side.
+
+How the hub discovers and resolves skill dependencies (registry format, version resolution, authentication to source repos) is not yet specified.
+
+### Skill Structure
+
+A skill is a directory within the deploy tree:
+
+```
+deploy/skills/<name>/
+  tool.json               (required: ToolDefinition schema)
+  handler.ts              (optional: executable implementation)
+  ...                     (additional assets as needed)
+```
+
+`tool.json` declares the tool's name, description, and input schema. The harness reads all `deploy/skills/*/tool.json` files at startup to build the tool list for inference calls.
+
+A skill with `tool.json` but no `handler.ts` is backed by the harness's built-in tool runner (e.g., `read_file`, `write_file`, `run_shell`). The tool name in `tool.json` maps to the internal implementation.
+
+Skills with `handler.ts` contain executable code loaded by the harness. The degree of sandboxing depends on the execution environment (see Architecture, Environment Integration). At minimum, skill handlers run in a separate isolate/process from the harness itself.
 
 ### Repository Organization
 
@@ -547,9 +564,149 @@ Repository structure is flexible:
 
 Both approaches support standard git workflows for managing agent versions.
 
+## Agent Deployment: Git Pack Transport
+
+This section specifies the design for git-based content delivery between hub and sidecar. The protocol described here is not yet implemented — the current prototype sends agent configuration inline in the `agent.deploy` frame without git-based content transfer.
+
+Deploy content travels from the hub to sidecars as git packfiles streamed over the existing WebSocket connection. State travels back from sidecars to the hub using the same mechanism. This avoids requiring sidecars to have network access to external git hosts and reuses the authenticated, encrypted channel already in place.
+
+### Wire Frames
+
+The following frames are additions to the hub-sidecar protocol:
+
+| Frame          | Direction      | Purpose                                             |
+| -------------- | -------------- | --------------------------------------------------- |
+| `pack.push`    | Either         | Chunked packfile data with sequence number          |
+| `pack.done`    | Either         | End of transfer; carries target refs and commit SHA |
+| `pack.ack`     | Receiver       | Refs accepted                                       |
+| `pack.reject`  | Receiver       | Transfer rejected (with reason code)                |
+| `sync.request` | Hub to sidecar | Request state push for a specific agent             |
+
+Each pack transfer is scoped to an `agentAddress` and carries a `transferId` for correlation. Multiple transfers for different agents can be in flight concurrently.
+
+Additionally, `ReconnectFrame` gains an optional `deployRefs` field: a mapping of agent addresses to their current deploy commit SHA. This allows the hub to determine whether a pack transfer is needed on reconnect.
+
+### Encoding and Flow Control
+
+Packfile chunks are base64-encoded within JSON frames, consistent with how mail bytes are encoded in the protocol. Each `pack.push` frame carries a bounded chunk (64 KiB before encoding) to avoid blocking the frame parser.
+
+Pack transfers share the WebSocket with live session traffic. To prevent interference:
+
+- Pack chunks are interleaved with other frames at the WebSocket message level (messages are atomic; the receiver processes each independently)
+- The sender limits unacknowledged pack data to a configurable window before pausing
+- Session-critical frames (`mail.inbound`, `message.send`, `session.abort`) are never delayed by pack transfers
+- The receiver buffers incoming chunks in memory (or a temp file for large transfers) and only unpacks atomically on `pack.done`
+
+### Rejection Reasons
+
+`pack.reject` carries a `reason` field distinguishing failure modes:
+
+| Reason              | Meaning                                          | Sender action                  |
+| ------------------- | ------------------------------------------------ | ------------------------------ |
+| `signature_invalid` | Commit signature verification failed             | Do not retry with same content |
+| `path_violation`    | Commit modifies paths outside sender's ownership | Do not retry                   |
+| `backpressure`      | Receiver is overwhelmed                          | Pause and retry after a delay  |
+| `conflict`          | Ref update conflicts with receiver state         | Reconcile before retrying      |
+| `corrupt`           | Packfile failed index verification               | Resend from scratch            |
+
+### Deploy Flow
+
+1. Hub assembles the deploy tree and produces a packfile
+2. Hub sends `pack.push` frames (chunked, interleaved with other traffic)
+3. Hub sends `pack.done` with target ref (`refs/heads/deploy`) and commit SHA
+4. Sidecar validates the packfile integrity
+5. Sidecar verifies the deploy commit signature against the hub's public key
+6. Sidecar unpacks objects into the git object store
+7. Sidecar updates `refs/heads/deploy` to the new commit
+8. Sidecar merges `deploy` into its instance branch (trivial merge)
+9. Sidecar checks out only `deploy/` paths via partial checkout (`filepaths: ["deploy/"], noUpdateHead: true`) — `state/` working-tree files are untouched because `filepaths` restricts the scope, `noUpdateHead` prevents moving the branch pointer
+10. Sidecar responds with `pack.ack`
+11. Hub sends `agent.deploy` with ephemeral config (credentials, grants, session ID)
+
+On first deploy a full packfile is sent. On subsequent deploys, if the sidecar advertises its current deploy ref in `ReconnectFrame.deployRefs`, the hub can send a thin pack containing only the delta.
+
+### State Push Flow
+
+1. Sidecar commits context/audit under `state/` on its instance branch (every commit is signed with the agent's Ed25519 key using SSH signature format)
+2. On policy trigger (see State Push Policy):
+   - Sidecar produces a packfile of new commits since last successful push
+   - Sidecar sends `pack.push` / `pack.done` with its instance ref
+3. Hub verifies commit signatures against the stored public key for that agent
+4. Hub verifies path ownership (no commits modify `deploy/` paths)
+5. Hub responds with `pack.ack` or `pack.reject`
+
+### Partial Transfer Recovery
+
+If the WebSocket disconnects mid-transfer, no git state is corrupted: the sidecar buffers chunks in memory and only unpacks on `pack.done`. On reconnect, the sidecar advertises its current deploy ref. The hub detects it is behind and initiates a fresh transfer.
+
+### Reconnect Sequencing
+
+Pack transfers are sequenced after identity verification:
+
+1. Sidecar sends `reconnect` with `agentAddresses` and `deployRefs`
+2. Hub sends `challenge` per address
+3. Sidecar sends `challenge.response` per address
+4. Hub verifies signatures — only verified agents proceed
+5. For agents whose deploy ref is behind: hub initiates pack transfer
+6. After `pack.ack`: hub sends `agent.deploy` with current credentials/grants
+
+Pack content is never sent to a sidecar that has not proved ownership of the agent's key.
+
+On first deploy (no prior key exists), the sidecar is authenticated by its registration token but cannot prove agent key ownership (the key does not exist yet). Credentials are delivered after the sidecar generates the key and returns it in `agent.deploy.ack`. The registration token and the authenticated WebSocket channel bound the trust for first-deploy; challenge/response protects all subsequent interactions.
+
+### State Push Policy
+
+The sidecar pushes state to the hub based on configurable policy:
+
+| Trigger                                          | Use Case                                 |
+| ------------------------------------------------ | ---------------------------------------- |
+| Debounced timer (e.g., 10-30s after last commit) | Limits data loss window on process crash |
+| Session end / graceful shutdown                  | Clean handoff before instance stops      |
+| Hub-initiated `sync.request`                     | On-demand observability, pre-migration   |
+| Per-audit-commit (no debounce)                   | Strict compliance requirements           |
+
+The push policy is a per-agent or per-tenant configuration concern, not a protocol-level one.
+
+**Data loss characteristics:** The debounce timer bounds data loss for process crashes (sidecar dies but disk survives — recoverable on restart). It does not bound data loss for disk loss (ephemeral container eviction). Deployments with ephemeral storage should use aggressive push policies. Deployments with durable local storage can rely on the sidecar pushing on restart.
+
+### SSH Commit Signatures
+
+State commits are signed using SSH signature format (compatible with `git verify-commit` since git 2.34). The signature is embedded in the commit object's `gpgsig` header via isomorphic-git's `onSign` callback.
+
+The signature structure:
+
+```
+-----BEGIN SSH SIGNATURE-----
+<base64 of SSHSIG binary:
+  "SSHSIG" magic (6 bytes)
+  uint32 version = 1
+  string publickey (SSH wire: "ssh-ed25519" + 32-byte key)
+  string namespace = "git"
+  string reserved = ""
+  string hash_algorithm = "sha512"
+  string signature (Ed25519 sig over prescribed hash)>
+-----END SSH SIGNATURE-----
+```
+
+State commits carry an author identity of `<agentAddress> <instance-id@interchange.local>` rather than a shared harness identity, making commits attributable in standard git tooling.
+
+### Deploy Content Integrity
+
+The deploy tree can contain executable code (`handler.ts` files in skills). This makes it the primary attack surface in the deployment path. Deploy commit signing is mandatory:
+
+- Deploy commits are signed by the hub's Ed25519 key (or an operator-delegated key)
+- The sidecar verifies the signature before unpacking
+- Unsigned or incorrectly signed deploy content is rejected
+
+The hub's signing public key is provisioned to the sidecar at registration time. A compromised hub can still push malicious code (it holds the signing key) — that threat is bounded by hub security and access controls, not by the wire protocol.
+
+### Credential Isolation
+
+The deploy tree never contains credentials. API keys, OAuth tokens, and other secrets travel in the `HarnessConfig.providers` field of the `agent.deploy` frame, which is ephemeral (not persisted to git). The `keys/` directory is excluded from git via `.gitignore`.
+
 ## Change History: Git-Backed Storage
 
-Agent-local data is stored in git repositories, providing revision control as a native capability.
+Agent-local data is stored in the same git repository as the deployed definition, providing revision control as a native capability. State lives under `state/` paths on a per-instance branch, while the deployed definition lives under `deploy/` (see Agent Deployment below).
 
 ### Storage Backends
 
@@ -563,18 +720,44 @@ The harness abstracts these differences - agents interact with the same history 
 
 ### Repository Structure
 
-Each agent has a git repository for its local data:
+Each agent instance has a single git repository:
 
 ```
-/agent-data/
-  .git/                 # Git repository
-  workspace/            # Agent's working directory
-    notes.md
-    artifacts/
-    ...
+<agent-dir>/
+  .git/
+  deploy/               # Hub-managed (read-only on sidecar)
+    prompt.md
+    config.json
+    skills/
+      <name>/
+        tool.json
+        handler.ts
+  state/                # Sidecar-managed (per-instance journal)
+    context.json
+    audit/
+      <session-id>/
+        <call-id>.json
+  keys/                 # Not tracked in git (.gitignore)
+    id_ed25519
+    id_ed25519.pub
 ```
 
-The harness initializes this repository when the agent is created and manages it throughout the agent's lifecycle.
+The `deploy/` subtree is checked out from the deploy ref. The `state/` subtree is the agent's working data. The `keys/` directory holds the agent's Ed25519 keypair and is excluded from git via `.gitignore`.
+
+### Ref Structure
+
+```
+refs/
+  heads/
+    deploy                  (latest deploy commit, hub-managed)
+  tags/
+    deploy/v1               (historical deploy versions)
+    deploy/v2
+  instances/
+    <instance-id>           (per-instance state branch)
+```
+
+The instance branch forks from the deploy ref at creation time. On redeploy, the new deploy commit is merged into the instance branch (always conflict-free due to path disjointness).
 
 ### Commit Policy
 
