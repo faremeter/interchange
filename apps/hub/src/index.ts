@@ -61,16 +61,14 @@ const sidecarRouter = createSidecarRouter({
       where: eq(agent.id, agentId),
     });
     if (!row) {
-      log.warn("Agent {agentAddress} reconnected but not found in database", {
-        agentAddress,
-      });
-      return;
+      throw new Error(
+        `Agent "${agentAddress}" reconnected but not found in database`,
+      );
     }
     if (!row.sessionId) {
-      log.warn("Agent {agentAddress} reconnected but has no active session", {
-        agentAddress,
-      });
-      return;
+      throw new Error(
+        `Agent "${agentAddress}" reconnected but has no active session`,
+      );
     }
     if (row.status !== "running") {
       await db

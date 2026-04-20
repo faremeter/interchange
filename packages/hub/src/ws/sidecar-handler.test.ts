@@ -1701,8 +1701,18 @@ describe("SidecarRouter", () => {
 
       // agent2 should still be reconnected despite agent1's callback failure.
       expect(reconnected).toEqual(["agent2@local"]);
-      expect(router.getRoutableAddresses()).toContain("agent1@local");
+      expect(router.getRoutableAddresses()).not.toContain("agent1@local");
       expect(router.getRoutableAddresses()).toContain("agent2@local");
+
+      // agent1 should receive a challenge.failed frame indicating governance rejection.
+      const failedFrames = ws.sent
+        .map((s) => JSON.parse(s))
+        .filter(
+          (f: { type: string; address?: string }) =>
+            f.type === "challenge.failed" && f.address === "agent1@local",
+        );
+      expect(failedFrames).toHaveLength(1);
+      expect(failedFrames[0].reason).toContain("governance");
     });
   });
 });
