@@ -36,6 +36,9 @@ export type ReconnectFrame = {
   sidecarId: string;
   token: string;
   agentAddresses: string[];
+  /** Maps agentAddress to the SHA of the currently applied deploy commit.
+   * Absent entries mean the agent has never received a deploy pack. */
+  deployRefs?: Record<string, string>;
 };
 
 /**
@@ -125,7 +128,11 @@ export type SidecarFrame =
   | AgentEventFrame
   | PingFrame
   | SessionAckFrame
-  | SessionErrorFrame;
+  | SessionErrorFrame
+  | PackPushFrame
+  | PackDoneFrame
+  | PackAckFrame
+  | PackRejectFrame;
 
 // ---------------------------------------------------------------------------
 // Hub → Sidecar
@@ -243,7 +250,91 @@ export type HubFrame =
   | PongFrame
   | SessionAbortFrame
   | MessageSendFrame
-  | GrantsUpdateFrame;
+  | GrantsUpdateFrame
+  | PackPushFrame
+  | PackDoneFrame
+  | PackAckFrame
+  | PackRejectFrame
+  | SyncRequestFrame;
+
+// ---------------------------------------------------------------------------
+// Pack transport (bidirectional)
+// ---------------------------------------------------------------------------
+//
+// Git pack data is streamed between hub and sidecar over the existing JSON
+// WebSocket. Chunks are base64-encoded (matching the mail convention above).
+// A transfer is a sequence of pack.push frames followed by a pack.done,
+// correlated by transferId. The receiver responds with pack.ack or pack.reject.
+//
+// Flow control: deferred. Agent deploy trees are small enough that the sender
+// can push all chunks without windowing. If this becomes a problem, a credit-
+// based mechanism can be added later.
+
+/**
+ * A chunk of git pack data. The sender splits the packfile into chunks of at
+ * most 64 KiB (before base64 encoding) and sends them in order.
+ *
+ * `seq` is monotonically increasing per transferId, starting at 0. The
+ * receiver must reject the transfer if a gap is detected.
+ */
+export type PackPushFrame = {
+  type: "pack.push";
+  agentAddress: string;
+  transferId: string;
+  seq: number;
+  data: string;
+};
+
+/**
+ * Signals the end of a pack transfer. The receiver applies the pack and
+ * updates `ref` to point at `commitSha`. If the post-apply HEAD does not
+ * match `commitSha`, the receiver must reject with reason "sha_mismatch".
+ */
+export type PackDoneFrame = {
+  type: "pack.done";
+  agentAddress: string;
+  transferId: string;
+  ref: string;
+  commitSha: string;
+};
+
+/**
+ * Receiver acknowledges successful application of a pack transfer.
+ */
+export type PackAckFrame = {
+  type: "pack.ack";
+  agentAddress: string;
+  transferId: string;
+};
+
+export type PackRejectReason =
+  | "signature_invalid"
+  | "path_violation"
+  | "conflict"
+  | "corrupt"
+  | "sha_mismatch"
+  | "timeout";
+
+/**
+ * Receiver rejects a pack transfer.
+ */
+export type PackRejectFrame = {
+  type: "pack.reject";
+  agentAddress: string;
+  transferId: string;
+  reason: PackRejectReason;
+};
+
+/**
+ * Hub requests the sidecar to push its current agent state. The sidecar
+ * responds by sending pack.push frames followed by pack.done using the
+ * same transferId.
+ */
+export type SyncRequestFrame = {
+  type: "sync.request";
+  agentAddress: string;
+  transferId: string;
+};
 
 /** Any frame on the wire, regardless of direction. */
 export type WireFrame = SidecarFrame | HubFrame;
