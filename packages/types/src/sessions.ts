@@ -41,6 +41,7 @@ export const MessageResponse = type({
   id: "string",
   sessionId: "string",
   role: "'user' | 'assistant'",
+  status: "'pending' | 'delivered' | 'failed'",
   createdAt: "string",
   parts: type({
     id: "string",

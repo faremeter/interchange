@@ -682,6 +682,7 @@ app.post(
         id: messageId,
         sessionId,
         role: "user" as const,
+        status: "delivered" as const,
         createdAt: now.toISOString(),
         parts: [
           {
@@ -798,6 +799,7 @@ app.get(
         id: m.id,
         sessionId: m.sessionId,
         role: m.role,
+        status: m.status,
         createdAt: m.createdAt.toISOString(),
         parts: (partsByMessage.get(m.id) ?? []).map((p) => ({
           id: p.id,
@@ -876,6 +878,7 @@ app.get(
       id: message.id,
       sessionId: message.sessionId,
       role: message.role,
+      status: message.status,
       createdAt: message.createdAt.toISOString(),
       parts: parts.map((p) => ({
         id: p.id,
