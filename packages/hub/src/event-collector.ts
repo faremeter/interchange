@@ -31,8 +31,10 @@ export function createEventCollector(
 ): EventCollector {
   const { db, sessionId, tenantId } = config;
 
-  // Current assistant message being accumulated. Created on reactor.start,
-  // finalized on reactor.done, reactor.error (fatal), or abandon.
+  // Current assistant message being accumulated. A new message is created
+  // on each inference.start so that each turn gets its own row with the
+  // correct timestamp. Finalized on connector.reply, reactor.done,
+  // reactor.error (fatal), or abandon.
   let currentMessageId: string | null = null;
   let ordinal = 0;
   // Prevents double-finalization when reactor.done and abandon() race.
@@ -40,10 +42,8 @@ export function createEventCollector(
 
   async function onEvent(event: InferenceEvent): Promise<void> {
     switch (event.type) {
-      case "reactor.start":
-        await handleReactorStart();
-        break;
       case "inference.start":
+        await beginAssistantMessage();
         await insertPart("step-start", null, { model: event.data.model });
         break;
       case "inference.done":
@@ -67,12 +67,13 @@ export function createEventCollector(
         }
         break;
       default:
-        // Streaming deltas, usage, and other events are not persisted.
+        // reactor.start, streaming deltas, usage, and other events are
+        // not persisted.
         break;
     }
   }
 
-  async function handleReactorStart(): Promise<void> {
+  async function beginAssistantMessage(): Promise<void> {
     // If a previous message is still pending, finalize it as failed.
     if (currentMessageId !== null && !finalized) {
       log.warn`Orphaned pending message ${currentMessageId} for session ${sessionId}`;
