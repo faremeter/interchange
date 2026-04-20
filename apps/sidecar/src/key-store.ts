@@ -7,13 +7,26 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { getLogger } from "@interchange/log";
 import { generateKeyPair } from "@interchange/crypto-node";
-import type { KeyPair } from "@interchange/types/runtime";
+import type {
+  KeyPair,
+  HarnessConfig as AgentConfig,
+} from "@interchange/types/runtime";
 import { sanitizeAddress } from "./session-manager";
+
+const logger = getLogger(["interchange", "sidecar", "keystore"]);
+
+type AgentMeta = {
+  version: 1;
+  address: string;
+  config: AgentConfig;
+};
 
 export type AgentKeyEntry = {
   address: string;
   keyPair: KeyPair;
+  config: AgentConfig;
 };
 
 /**
@@ -64,15 +77,55 @@ export async function loadOrGenerateKeyPair(
   await Promise.all([
     fs.writeFile(privPath, keyPair.privateKey, { mode: 0o600 }),
     fs.writeFile(pubPath, keyPair.publicKey),
-    fs.writeFile(metaPath, JSON.stringify({ address: agentAddress })),
+    fs.writeFile(
+      metaPath,
+      JSON.stringify({ version: 1, address: agentAddress }),
+    ),
   ]);
 
   return { keyPair, isNew: true };
 }
 
 /**
- * Scan the data directory for agent repositories that have key pairs.
- * Returns the address and key pair for each discovered agent.
+ * Persist the agent's harness config to its agent.json metadata file.
+ * Called after a session is successfully created so the sidecar can
+ * restore the session on restart.
+ */
+export async function persistAgentConfig(
+  dataDir: string,
+  agentAddress: string,
+  config: AgentConfig,
+): Promise<void> {
+  const agentDir = path.join(dataDir, sanitizeAddress(agentAddress));
+  const metaPath = path.join(agentDir, "agent.json");
+  const meta: AgentMeta = { version: 1, address: agentAddress, config };
+  await fs.writeFile(metaPath, JSON.stringify(meta));
+}
+
+/**
+ * Remove the persisted config from agent.json, leaving only the address.
+ * Called when a session is destroyed so the agent is not restored on restart.
+ */
+export async function clearAgentConfig(
+  dataDir: string,
+  agentAddress: string,
+): Promise<void> {
+  const agentDir = path.join(dataDir, sanitizeAddress(agentAddress));
+  const metaPath = path.join(agentDir, "agent.json");
+  await fs.writeFile(
+    metaPath,
+    JSON.stringify({ version: 1, address: agentAddress }),
+  );
+}
+
+/**
+ * Scan the data directory for agent repositories that have key pairs
+ * and persisted configs. Returns the address, key pair, and config for
+ * each restorable agent.
+ *
+ * Agents with key pairs but no persisted config are skipped with a
+ * warning — they exist on disk but cannot be restored without a
+ * re-deploy from the hub.
  */
 export async function scanExistingAgents(
   dataDir: string,
@@ -97,7 +150,17 @@ export async function scanExistingAgents(
       fileExists(metaPath),
     ]);
 
-    if (!privOk || !pubOk || !metaOk) continue;
+    if (!privOk || !pubOk) {
+      if (privOk || pubOk || metaOk) {
+        logger.warn`Skipping ${entry.name}: incomplete key pair (private=${String(privOk)}, public=${String(pubOk)})`;
+      }
+      continue;
+    }
+
+    if (!metaOk) {
+      logger.warn`Skipping ${entry.name}: missing agent.json`;
+      continue;
+    }
 
     const [privateKey, publicKey, metaRaw] = await Promise.all([
       fs.readFile(privPath),
@@ -105,10 +168,21 @@ export async function scanExistingAgents(
       fs.readFile(metaPath, "utf-8"),
     ]);
 
-    const meta = JSON.parse(metaRaw) as { address: string };
+    const meta = JSON.parse(metaRaw) as Partial<AgentMeta>;
+
+    if (meta.address === undefined) {
+      logger.warn`Skipping ${entry.name}: agent.json missing address field`;
+      continue;
+    }
+
+    if (meta.config === undefined) {
+      logger.warn`Skipping ${meta.address}: agent.json has no persisted config (needs re-deploy)`;
+      continue;
+    }
 
     results.push({
       address: meta.address,
+      config: meta.config,
       keyPair: {
         privateKey: new Uint8Array(privateKey),
         publicKey: new Uint8Array(publicKey),

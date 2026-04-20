@@ -21,7 +21,7 @@ import type {
 import type { InboundMessage, KeyPair } from "@interchange/types/runtime";
 
 import type { SessionManager, SessionEventSink } from "./session-manager";
-import { scanExistingAgents, hexEncode } from "./key-store";
+import { hexEncode } from "./key-store";
 
 const logger = getLogger(["interchange", "sidecar", "ws"]);
 
@@ -31,7 +31,6 @@ export type WsClientConfig = {
   hubUrl: string;
   sidecarId: string;
   token: string;
-  dataDir: string;
   transport: InMemoryTransport;
   sessions: SessionManager;
   pingIntervalMs?: number;
@@ -48,7 +47,6 @@ export function createWsClient(config: WsClientConfig): WsClient {
     hubUrl,
     sidecarId,
     token,
-    dataDir,
     transport,
     sessions,
     pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
@@ -59,8 +57,8 @@ export function createWsClient(config: WsClientConfig): WsClient {
   let pingTimer: ReturnType<typeof setInterval> | null = null;
   let lastPongAt = 0;
 
-  // Per-agent key pairs loaded from disk for challenge signing.
-  // Populated by scanExistingAgents on reconnect, augmented on agent.deploy.
+  // Per-agent key pairs for challenge signing.
+  // Populated by restoreSessions on connect, augmented on agent.deploy.
   const agentKeys = new Map<string, KeyPair>();
 
   // Outbound frames queued while disconnected.
@@ -274,31 +272,42 @@ export function createWsClient(config: WsClientConfig): WsClient {
         send({ type: "ping" });
       }, pingIntervalMs);
 
-      // Scan for existing agents to determine register vs reconnect.
+      // Restore sessions from disk before announcing to the hub.
+      // Harnesses must be running before the hub starts routing messages.
       void (async () => {
-        const existing = await scanExistingAgents(dataDir);
+        try {
+          const { restored, failed } = await sessions.restoreSessions();
 
-        if (existing.length > 0) {
-          for (const entry of existing) {
-            agentKeys.set(entry.address, entry.keyPair);
+          if (restored.length > 0) {
+            for (const entry of restored) {
+              agentKeys.set(entry.address, entry.keyPair);
+            }
+            send({
+              type: "reconnect",
+              sidecarId,
+              token,
+              agentAddresses: restored.map((e) => e.address),
+            });
+            if (failed.length > 0) {
+              logger.warn`Reconnected ${String(restored.length)} agent(s), ${String(failed.length)} failed to restore`;
+            } else {
+              logger.info`Sent reconnect with ${String(restored.length)} agent(s)`;
+            }
+          } else {
+            send({
+              type: "register",
+              sidecarId,
+              token,
+              agentAddresses: sessions.getAddresses(),
+            });
           }
-          send({
-            type: "reconnect",
-            sidecarId,
-            token,
-            agentAddresses: existing.map((e) => e.address),
-          });
-          logger.info`Sent reconnect with ${String(existing.length)} agent(s)`;
-        } else {
-          send({
-            type: "register",
-            sidecarId,
-            token,
-            agentAddresses: sessions.getAddresses(),
-          });
-        }
 
-        flush();
+          flush();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error`Session restore failed, closing connection: ${msg}`;
+          ws?.close();
+        }
       })();
     });
 
