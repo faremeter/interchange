@@ -491,32 +491,61 @@ export function createSidecarRouter(
       }
     }
 
-    // Add verified addresses to the routing table.
+    // Add verified addresses to the routing table immediately so that
+    // the onAgentReconnected callback can use sendRequest-based methods
+    // (e.g. sendGrantsUpdate). Addresses that fail governance are
+    // rolled back from the routing table afterward.
     for (const addr of verified) {
       conn.agentAddresses.add(addr);
       addressIndex.set(addr, ws);
     }
 
-    // Notify the application layer so it can reconcile DB state (e.g.,
-    // restore agent status and event collectors) before flushing queued
-    // messages. Flushing first would cause echoed events to arrive
-    // before the collector exists.
-    if (onAgentReconnected !== undefined) {
-      for (const addr of verified) {
+    const ready: string[] = [];
+    const failed: string[] = [];
+
+    for (const addr of verified) {
+      if (onAgentReconnected !== undefined) {
         try {
           await onAgentReconnected(addr);
+          ready.push(addr);
         } catch (err) {
           logger.error`Failed to handle reconnection for ${addr}: ${err instanceof Error ? err.message : String(err)}`;
+          failed.push(addr);
         }
+      } else {
+        ready.push(addr);
       }
     }
 
-    // Now flush queued messages that accumulated during the disconnect.
-    for (const addr of verified) {
+    // Roll back failed addresses from the routing table.
+    for (const addr of failed) {
+      conn.agentAddresses.delete(addr);
+      addressIndex.delete(addr);
+    }
+
+    // Flush queued messages only for ready addresses.
+    for (const addr of ready) {
       flushDisconnectedQueue(addr, conn);
     }
 
-    logger.info`Sidecar ${challenge.sidecarId} reconnected with ${String(verified.length)} verified agent(s)`;
+    // Failed addresses: reset their queue TTL so messages survive until
+    // the next reconnect attempt, and notify the sidecar.
+    for (const addr of failed) {
+      const entry = disconnectedAgents.get(addr);
+      if (entry !== undefined) {
+        clearTimeout(entry.timer);
+        entry.timer = setTimeout(() => {
+          disconnectedAgents.delete(addr);
+        }, disconnectQueueTTLMs);
+      }
+      conn.send({
+        type: "challenge.failed",
+        address: addr,
+        reason: "Reconnection rejected by governance",
+      });
+    }
+
+    logger.info`Sidecar ${challenge.sidecarId} reconnected with ${String(ready.length)} verified agent(s)${failed.length > 0 ? `, ${String(failed.length)} rejected` : ""}`;
   }
 
   function handleMailOutbound(rawMessage: string, recipients: string[]): void {
