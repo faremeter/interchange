@@ -517,6 +517,15 @@ export function createSidecarRouter(
       }
     }
 
+    // If a second reconnect arrived during the callback loop, our conn
+    // is orphaned — handleRegister already rebuilt the connection and
+    // cleared addressIndex. Bail out; the new reconnect flow will
+    // re-verify these addresses from scratch.
+    if (connections.get(ws) !== conn) {
+      logger.warn`Challenge response processing aborted: connection superseded by new reconnect`;
+      return;
+    }
+
     // Roll back failed addresses from the routing table.
     for (const addr of failed) {
       conn.agentAddresses.delete(addr);
