@@ -257,10 +257,13 @@ SIDECAR_DATA_DIR/
   agent-name_at_tenant_interchange_network/
     .git/              # isogit repository (context, audit records)
     context.json       # conversation state
+    agent.json         # persisted HarnessConfig for session restore
     keys/
       id_ed25519       # agent private key
       id_ed25519.pub   # agent public key
 ```
+
+The `agent.json` file stores the full harness configuration (system prompt, model, providers, session ID) so that the sidecar can restore agent sessions on restart without re-receiving the config from the hub.
 
 The directory name is the agent address with `@` replaced by `_at_` and non-alphanumeric characters (except `-` and `_`) replaced by `_`.
 
