@@ -1000,8 +1000,7 @@ app.get(
   describeRoute({
     tags: ["Sessions"],
     summary: "Get session status",
-    description:
-      "Returns the current session status: idle, busy, retry (with attempt info), or waiting_approval.",
+    description: "Returns the current session status: idle, ending, or ended.",
     responses: {
       200: {
         description: "Session status",
