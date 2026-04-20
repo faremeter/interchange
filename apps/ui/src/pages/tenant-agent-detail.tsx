@@ -94,8 +94,14 @@ function Row({
 
 // Module-level store keyed by sessionId — survives React Strict Mode remounts.
 type ChatMessage = { role: "user" | "assistant"; content: string };
+type AgentActivity =
+  | { type: "inferring" }
+  | { type: "tool_call"; name: string }
+  | { type: "tool_running"; name: string };
+
 const sessionMessages = new Map<string, ChatMessage[]>();
 const sessionStreaming = new Map<string, string>();
+const sessionActivity = new Map<string, AgentActivity | null>();
 
 function getMessages(sessionId: string): ChatMessage[] {
   const existing = sessionMessages.get(sessionId);
@@ -312,6 +318,7 @@ export function TenantAgentDetailPage() {
       if (agent?.sessionId) {
         sessionMessages.delete(agent.sessionId);
         sessionStreaming.delete(agent.sessionId);
+        sessionActivity.delete(agent.sessionId);
       }
       queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "agents"],
@@ -343,27 +350,61 @@ export function TenantAgentDetailPage() {
       (raw) => {
         if (cancelled) return;
         const event = raw as InferenceEvent;
-        if (event.type === "inference.text.delta") {
-          const token = (event.data.token as string) ?? "";
-          sessionStreaming.set(sessionId, getStreaming(sessionId) + token);
-          rerender();
-        } else if (event.type === "inference.done") {
-          // Extract text from the completed message's content blocks.
-          const msg = event.data.message as {
-            content: { type: string; text?: string }[];
-          };
-          const text = msg.content
-            .filter((b) => b.type === "text")
-            .map((b) => b.text ?? "")
-            .join("");
-          sessionStreaming.set(sessionId, "");
-          if (text) {
-            getMessages(sessionId).push({ role: "assistant", content: text });
+        switch (event.type) {
+          case "inference.start":
+            sessionActivity.set(sessionId, { type: "inferring" });
+            rerender();
+            break;
+          case "inference.text.delta": {
+            const token = event.data.token as string;
+            sessionStreaming.set(sessionId, getStreaming(sessionId) + token);
+            sessionActivity.set(sessionId, null);
+            rerender();
+            break;
           }
-          rerender();
-        } else if (event.type === "reactor.done") {
-          sessionStreaming.set(sessionId, "");
-          rerender();
+          case "inference.tool_call.start":
+            sessionActivity.set(sessionId, {
+              type: "tool_call",
+              name: event.data.name as string,
+            });
+            rerender();
+            break;
+          case "tool.start": {
+            const call = event.data.call as { name: string };
+            sessionActivity.set(sessionId, {
+              type: "tool_running",
+              name: call.name,
+            });
+            rerender();
+            break;
+          }
+          case "tool.done":
+            sessionActivity.set(sessionId, null);
+            rerender();
+            break;
+          case "inference.done": {
+            const msg = event.data.message as {
+              content: { type: string; text?: string }[];
+            };
+            const text = msg.content
+              .filter((b) => b.type === "text")
+              .map((b) => b.text ?? "")
+              .join("");
+            sessionStreaming.set(sessionId, "");
+            if (text) {
+              getMessages(sessionId).push({
+                role: "assistant",
+                content: text,
+              });
+            }
+            rerender();
+            break;
+          }
+          case "reactor.done":
+            sessionStreaming.set(sessionId, "");
+            sessionActivity.set(sessionId, null);
+            rerender();
+            break;
         }
       },
       { eventName: "agent.event" },
@@ -374,6 +415,7 @@ export function TenantAgentDetailPage() {
       cancelled = true;
       close();
       closeStreamRef.current = null;
+      sessionActivity.set(sessionId, null);
     };
   }, [agent?.status, sessionId, tenantId]);
 
@@ -707,11 +749,28 @@ export function TenantAgentDetailPage() {
                   {getStreaming(sessionId)}
                 </div>
               )}
-              {isSending && !getStreaming(sessionId) && (
-                <div className="text-sm text-muted-foreground">
-                  Agent is thinking...
-                </div>
-              )}
+              {(() => {
+                const activity = sessionActivity.get(sessionId) ?? null;
+                if (activity !== null) {
+                  const label =
+                    activity.type === "inferring"
+                      ? "Thinking..."
+                      : activity.type === "tool_call"
+                        ? `Calling ${activity.name}...`
+                        : `Running ${activity.name}...`;
+                  return (
+                    <div className="text-sm text-muted-foreground">{label}</div>
+                  );
+                }
+                if (isSending && !getStreaming(sessionId)) {
+                  return (
+                    <div className="text-sm text-muted-foreground">
+                      Sending...
+                    </div>
+                  );
+                }
+                return null;
+              })()}
             </div>
 
             {/* Input */}
