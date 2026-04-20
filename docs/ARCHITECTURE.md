@@ -22,11 +22,20 @@ Pre-populated data that forms part of the agent's starting context. Layered on t
 Authorization policies governing which tools the agent can invoke and under what conditions, expressed as `GrantRule` entries. The harness enforces these policies transparently via the authz engine, validating proposed actions against grants before execution. Grants are resolved by the hub at deploy time and sent to the sidecar in the deploy frame.
 
 **Versioning**
-Agent definitions are tracked in a git repository. The repository contains the agent-specific resources: skills, system prompt, context builder configuration, and initial state. External dependencies are referenced in configuration files and resolved when the agent is deployed.
+Agent definitions are tracked in git repositories on the hub. The repository contains the agent-specific resources: skills, system prompt, context builder configuration, and initial state. External skill dependencies are referenced in configuration files and resolved when the agent is deployed.
 
-When an agent is deployed, its definition is checked out from the repository into an environment separate from the agent's working data worktree. The agent operates with two distinct git contexts: one for its definition, one for its runtime working data.
+Each agent instance on a sidecar has a single git repository that contains both the deployed definition and the runtime state, separated by path:
 
-Repository organization is flexible - a single repository may contain definitions for multiple agents within a tenant, or agents may have dedicated repositories depending on operational needs.
+- `deploy/` — hub-managed content (skills, prompt, configuration). The hub assembles this tree from the agent's source repository and any referenced skill libraries via subtree merge, producing a single flat tree with no submodule metadata.
+- `state/` — sidecar-managed content (conversation context, audit records). The sidecar commits here during normal operation.
+
+Path disjointness is enforced: the hub only writes commits that modify `deploy/` paths, the sidecar only writes commits that modify `state/` paths. This guarantees conflict-free merges when the hub pushes new deploy versions to a running agent.
+
+The git DAG encodes provenance. Instance branches fork from deploy commits, so every state commit is a descendant of the deploy version that was active when it was produced. Deploy versions are tagged (`deploy/v1`, `deploy/v2`, etc.), providing stable anchors for provenance queries: "which deploy version was active when this audit record was committed" is answered by finding the most recent deploy tag that is an ancestor of the state commit.
+
+Multiple instances of the same agent share deploy history but have independent state branches (`refs/instances/<instance-id>`). On redeploy, each active instance merges the new deploy commit into its branch — always conflict-free due to path separation.
+
+Repository organization on the hub is flexible — a single repository may contain definitions for multiple agents within a tenant, or agents may have dedicated repositories depending on operational needs. The assembly step normalizes any source layout into the standard `deploy/` tree structure before pushing to sidecars.
 
 ## Agent Harness
 
@@ -159,6 +168,10 @@ Every harness and every agent has its own asymmetric key pair. These keys serve 
 
 Key pairs are generated at agent creation time and managed by the harness. Private keys are stored alongside the agent's persistent data and never exposed to agents or external systems. Public keys are published to the control plane and included in the agent's discovery metadata. The control plane stores agent public keys so it can verify ownership claims when a harness reconnects after a restart.
 
+**Commit signing** extends per-agent keys to the git layer. Every state commit (context checkpoints, audit records) is signed with the agent's Ed25519 key using SSH signature format. This means standard `git verify-commit` works with no custom tooling. The control plane verifies signatures when the sidecar pushes state, rejecting any commit not signed by the registered key. Deploy commits are signed by the hub's own key; sidecars verify deploy signatures before accepting content. See Implementation for the wire protocol details.
+
+The control plane maintains a key validity history per agent — a list of `(publicKey, validFrom, validUntil)` tuples — so that historical commits remain verifiable after key rotation. When a key is retired (due to compromise, migration, or routine rotation), the old key is retained for signature verification but no longer accepted for new pushes.
+
 ### Session Continuity
 
 Agent sessions survive harness restarts. The harness persists agent state (conversation context, pending operations, key pairs) in the agent's local storage. When the harness restarts, it discovers previously managed agents, proves ownership of each agent address by signing a cryptographic challenge with the agent's private key, and resumes operation from the persisted state.
@@ -174,7 +187,8 @@ Signatures are attached to:
 
 - Outbound messages (agent-to-agent, agent-to-human)
 - Tool invocation requests and responses
-- Change history commits (agent data checkpoints)
+- State commits (context checkpoints, audit records) — signed by the agent's key
+- Deploy commits (skill code, prompts, configuration) — signed by the hub's key
 - Registry announcements
 
 The harness verifies inbound signatures automatically. Messages with invalid or missing signatures are flagged and can be rejected according to policy. Cross-tenant messages require valid signatures as a baseline trust requirement.
@@ -385,11 +399,11 @@ Payments between agents in different tenants work through standard x402 flows. T
 
 ## Change History
 
-The harness maintains revision history for all agent-local data using git as the underlying storage mechanism.
+The harness maintains revision history for all agent-local data using git as the underlying storage mechanism. Runtime state lives under `state/` in the same repository that holds the deployed definition under `deploy/`. This unified repository means the full history — what the agent was running and what it did — is available in a single DAG.
 
 ### Automatic Tracking
 
-Any file the agent creates or modifies within its local storage is automatically tracked. The harness commits changes only on lifecycle boundaries - agent suspension, shutdown, or context window compaction. This provides a safety net ensuring no work is lost across session boundaries without cluttering history with noise during active operation.
+Any file the agent creates or modifies within `state/` is automatically tracked. The harness commits changes only on lifecycle boundaries - agent suspension, shutdown, or context window compaction. This provides a safety net ensuring no work is lost across session boundaries without cluttering history with noise during active operation.
 
 ### Named Checkpoints
 
