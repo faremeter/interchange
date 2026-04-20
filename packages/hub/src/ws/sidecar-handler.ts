@@ -13,6 +13,7 @@ import type {
   WireAttachment,
 } from "@interchange/types/sidecar";
 import type { AbortReason, HarnessConfig } from "@interchange/types/runtime";
+import type { GrantRule } from "@interchange/types/authz";
 
 const logger = getLogger(["hub", "ws", "sidecar"]);
 
@@ -45,6 +46,7 @@ export type SidecarRouter = {
     content: string,
     attachments?: WireAttachment[],
   ): Promise<void>;
+  sendGrantsUpdate(agentAddress: string, grants: GrantRule[]): Promise<void>;
 
   subscribeSession(
     sessionId: string,
@@ -907,6 +909,18 @@ export function createSidecarRouter(
     return Array.from(addressIndex.keys());
   }
 
+  async function sendGrantsUpdate(
+    agentAddress: string,
+    grants: GrantRule[],
+  ): Promise<void> {
+    await sendRequest(agentAddress, (requestId) => ({
+      type: "grants.update",
+      requestId,
+      agentAddress,
+      grants,
+    }));
+  }
+
   return {
     handleOpen,
     handleMessage,
@@ -916,6 +930,7 @@ export function createSidecarRouter(
     sendAgentUndeploy,
     sendSessionAbort,
     sendMessage,
+    sendGrantsUpdate,
     subscribeSession,
     getConnectedSidecars,
     getRoutableAddresses,

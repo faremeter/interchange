@@ -9,6 +9,7 @@ import {
 } from "@interchange/hub";
 import { createInMemoryTransport } from "@interchange/message-memory";
 import type { HarnessConfig, InboundMessage } from "@interchange/types/runtime";
+import type { GrantRule } from "@interchange/types/authz";
 
 import { createWsClient } from "./ws-client";
 import type { SessionManager } from "./session-manager";
@@ -74,6 +75,12 @@ function createMockSessionManager(): SessionManager & {
     deliverMessage(agentAddress: string, message: InboundMessage): void {
       if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
       mock.delivered.push({ agentAddress, message });
+    },
+    async updateGrants(
+      _agentAddress: string,
+      _grants: GrantRule[],
+    ): Promise<void> {
+      if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
     },
     hasSession(agentAddress: string): boolean {
       return mock.addresses.includes(agentAddress);

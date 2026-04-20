@@ -17,6 +17,7 @@ import type {
   ChallengeFailedFrame,
   SessionAbortFrame,
   MessageSendFrame,
+  GrantsUpdateFrame,
 } from "@interchange/types/sidecar";
 import type { InboundMessage, KeyPair } from "@interchange/types/runtime";
 
@@ -175,6 +176,20 @@ export function createWsClient(config: WsClientConfig): WsClient {
     }
   }
 
+  async function handleGrantsUpdate(frame: GrantsUpdateFrame): Promise<void> {
+    try {
+      await sessions.updateGrants(frame.agentAddress, frame.grants);
+      send({ type: "session.ack", requestId: frame.requestId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      send({
+        type: "session.error",
+        requestId: frame.requestId,
+        error: message,
+      });
+    }
+  }
+
   function handleMessageSend(frame: MessageSendFrame): void {
     try {
       if (frame.attachments !== undefined && frame.attachments.length > 0) {
@@ -228,6 +243,9 @@ export function createWsClient(config: WsClientConfig): WsClient {
         break;
       case "message.send":
         handleMessageSend(frame);
+        break;
+      case "grants.update":
+        await handleGrantsUpdate(frame);
         break;
       default:
         logger.warn`Unknown frame type from hub: ${(frame as { type: string }).type}`;

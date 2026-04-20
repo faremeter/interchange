@@ -12,6 +12,7 @@ import { hasProvider } from "@interchange/inference";
 import { createNodeCrypto } from "@interchange/crypto-node";
 import { createIsogitStore } from "@interchange/storage-isogit";
 import type { InMemoryTransport } from "@interchange/message-memory";
+import type { GrantRule } from "@interchange/types/authz";
 import type {
   InboundMessage,
   InferenceEvent,
@@ -34,6 +35,8 @@ export type AgentSession = {
   harness: Harness;
   agentAddress: string;
   agentId: string;
+  grants: { current: GrantRule[] };
+  config: AgentConfig;
 };
 
 export type SessionEventSink = (
@@ -70,6 +73,7 @@ export type SessionManager = {
   destroySession(agentAddress: string): void;
   abortSession(agentAddress: string, reason: string): void;
   deliverMessage(agentAddress: string, message: InboundMessage): void;
+  updateGrants(agentAddress: string, grants: GrantRule[]): Promise<void>;
   hasSession(agentAddress: string): boolean;
   getAddresses(): string[];
   restoreSessions(): Promise<RestoreResult>;
@@ -125,9 +129,13 @@ export function createSessionManager(
       const storeDir = path.join(dataDir, sanitizeAddress(agentAddress));
       const storage = await createIsogitStore(storeDir);
 
-      const { grants, principalId, tenantId } = agentConfig;
+      const { principalId, tenantId } = agentConfig;
+      const grantsRef = { current: agentConfig.grants };
       const authorize = async (resource: string, action: string) =>
-        evaluateGrants(grants, resource, action, { principalId, tenantId });
+        evaluateGrants(grantsRef.current, resource, action, {
+          principalId,
+          tenantId,
+        });
 
       const harness = createHarness({
         address: agentAddress,
@@ -159,6 +167,8 @@ export function createSessionManager(
         harness,
         agentAddress,
         agentId: agentConfig.agentId,
+        grants: grantsRef,
+        config: agentConfig,
       });
 
       harness.start();
@@ -239,11 +249,26 @@ export function createSessionManager(
     return { restored, failed };
   }
 
+  async function updateGrants(
+    agentAddress: string,
+    grants: GrantRule[],
+  ): Promise<void> {
+    const session = sessions.get(agentAddress);
+    if (session === undefined) {
+      throw new Error(`No session exists for agent "${agentAddress}"`);
+    }
+    session.grants.current = grants;
+    session.config = { ...session.config, grants };
+    await persistAgentConfig(dataDir, agentAddress, session.config);
+    logger.info`Updated grants for ${agentAddress} (${String(grants.length)} rules)`;
+  }
+
   return {
     createSession,
     destroySession,
     abortSession,
     deliverMessage,
+    updateGrants,
     hasSession,
     getAddresses,
     restoreSessions,

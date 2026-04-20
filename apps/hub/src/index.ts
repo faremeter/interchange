@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { createDB } from "@interchange/db";
+import { createDB, createGrantStore } from "@interchange/db";
 import { agent } from "@interchange/db/schema";
 import {
   createApp,
@@ -25,6 +25,7 @@ const { db } = createDB({
 
 const auth = createAuth(db);
 const eventCollectors = createEventCollectorRegistry(db);
+const grantStore = createGrantStore(db);
 
 function parseAgentId(agentAddress: string): string {
   const atIdx = agentAddress.indexOf("@");
@@ -84,6 +85,11 @@ const sidecarRouter = createSidecarRouter({
         { agentAddress, sessionId: row.sessionId },
       );
     }
+    const grants = await grantStore.collectGrants(
+      row.principalId,
+      row.tenantId,
+    );
+    await sidecarRouter.sendGrantsUpdate(agentAddress, grants);
   },
   async lookupPublicKey(agentAddress) {
     const agentId = parseAgentId(agentAddress);
