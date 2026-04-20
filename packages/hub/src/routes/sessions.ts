@@ -265,15 +265,19 @@ app.post(
     const eventCollectors = c.get("eventCollectors");
     eventCollectors.create(sessionId, tenant.id, agentAddress);
 
+    const grantStore = c.get("grantStore");
+    const grants = await grantStore.collectGrants(row.principalId, tenant.id);
+
     try {
       await sidecarRouter.sendAgentDeploy(agentAddress, {
         sessionId,
         agentId: row.id,
         tenantId: tenant.id,
+        principalId: row.principalId,
         agentAddress,
         systemPrompt: row.systemPrompt,
         tools: [],
-        toolPolicy: [],
+        grants,
         providers,
         defaultModel: modelConfig.defaultModel,
       });
