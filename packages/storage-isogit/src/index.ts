@@ -14,6 +14,8 @@ export {
 } from "./history";
 export { initAgentRepo } from "./init";
 export { applyPack } from "./pack-receive";
+export { createDeployPack } from "./pack-send";
+export { collectReachableObjects } from "./object-walk";
 
 /**
  * Initialize an agent repository at `dir` and return a store backed by that

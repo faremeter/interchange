@@ -47,6 +47,12 @@ export type SidecarRouter = {
     attachments?: WireAttachment[],
   ): Promise<void>;
   sendGrantsUpdate(agentAddress: string, grants: GrantRule[]): Promise<void>;
+  sendPack(
+    agentAddress: string,
+    pack: Uint8Array,
+    ref: string,
+    commitSha: string,
+  ): Promise<void>;
 
   subscribeSession(
     sessionId: string,
@@ -138,6 +144,17 @@ export function createSidecarRouter(
   const sessionSubscribers = new Map<string, Set<(event: unknown) => void>>();
   // ws handle → liveness timer (reset on each ping from the sidecar)
   const livenessTimers = new Map<WsHandle, ReturnType<typeof setTimeout>>();
+
+  // transferId → pending pack transfer (resolved by pack.ack, rejected by pack.reject)
+  type PendingPack = {
+    transferId: string;
+    ws: WsHandle;
+    resolve(): void;
+    reject(error: string): void;
+    timer: ReturnType<typeof setTimeout>;
+  };
+  const pendingPacks = new Map<string, PendingPack>();
+  let packCounter = 0;
 
   let requestCounter = 0;
 
@@ -245,6 +262,16 @@ export function createSidecarRouter(
         break;
       case "session.error":
         rejectPending(frame.requestId, frame.error);
+        break;
+      case "pack.ack":
+        resolvePackPending(frame.transferId);
+        break;
+      case "pack.reject":
+        rejectPackPending(frame.transferId, frame.reason);
+        break;
+      case "pack.push":
+      case "pack.done":
+        logger.warn`Unexpected ${frame.type} from sidecar (hub is not a pack receiver yet)`;
         break;
       default:
         logger.warn`Unknown frame type from sidecar: ${(frame as { type: string }).type}`;
@@ -642,6 +669,14 @@ export function createSidecarRouter(
       req.reject(`Sidecar ${conn.sidecarId} disconnected`);
     }
 
+    // Reject any in-flight pack transfers for this sidecar.
+    for (const [transferId, pack] of pendingPacks) {
+      if (pack.ws !== ws) continue;
+      clearTimeout(pack.timer);
+      pendingPacks.delete(transferId);
+      pack.reject(`Sidecar ${conn.sidecarId} disconnected`);
+    }
+
     if (onSidecarDisconnect !== undefined) {
       onSidecarDisconnect([...conn.agentAddresses]);
     }
@@ -711,6 +746,93 @@ export function createSidecarRouter(
     clearTimeout(req.timer);
     pending.delete(requestId);
     req.reject(error);
+  }
+
+  function resolvePackPending(transferId: string): void {
+    const entry = pendingPacks.get(transferId);
+    if (entry === undefined) return;
+    clearTimeout(entry.timer);
+    pendingPacks.delete(transferId);
+    entry.resolve();
+  }
+
+  function rejectPackPending(transferId: string, reason: string): void {
+    const entry = pendingPacks.get(transferId);
+    if (entry === undefined) return;
+    clearTimeout(entry.timer);
+    pendingPacks.delete(transferId);
+    entry.reject(reason);
+  }
+
+  const PACK_CHUNK_SIZE = 64 * 1024;
+  // Pack transfers may take longer than session requests due to data volume.
+  const PACK_TIMEOUT_MS = requestTimeoutMs * 4;
+
+  function sendPack(
+    agentAddress: string,
+    pack: Uint8Array,
+    ref: string,
+    commitSha: string,
+  ): Promise<void> {
+    const ws = addressIndex.get(agentAddress);
+    if (ws === undefined) {
+      return Promise.reject(
+        new Error(`No sidecar connected for agent "${agentAddress}"`),
+      );
+    }
+    const conn = connections.get(ws);
+    if (conn === undefined) {
+      return Promise.reject(
+        new Error(`No sidecar connected for agent "${agentAddress}"`),
+      );
+    }
+
+    const transferId = `pack-${++packCounter}`;
+
+    // Register pending entry before sending frames so that a synchronous
+    // pack.ack (e.g. in tests or loopback transports) resolves correctly.
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingPacks.delete(transferId);
+        reject(
+          new Error(
+            `Pack transfer ${transferId} timed out after ${PACK_TIMEOUT_MS}ms`,
+          ),
+        );
+      }, PACK_TIMEOUT_MS);
+
+      pendingPacks.set(transferId, {
+        transferId,
+        ws,
+        resolve,
+        reject(error: string) {
+          reject(new Error(`Pack rejected: ${error}`));
+        },
+        timer,
+      });
+
+      // Send chunks
+      let seq = 0;
+      for (let offset = 0; offset < pack.length; offset += PACK_CHUNK_SIZE) {
+        const chunk = pack.slice(offset, offset + PACK_CHUNK_SIZE);
+        conn.send({
+          type: "pack.push",
+          agentAddress,
+          transferId,
+          seq: seq++,
+          data: Buffer.from(chunk).toString("base64"),
+        });
+      }
+
+      // Send done
+      conn.send({
+        type: "pack.done",
+        agentAddress,
+        transferId,
+        ref,
+        commitSha,
+      });
+    });
   }
 
   function routeMail(agentAddress: string, rawMessage: string): boolean {
@@ -969,6 +1091,7 @@ export function createSidecarRouter(
     sendSessionAbort,
     sendMessage,
     sendGrantsUpdate,
+    sendPack,
     subscribeSession,
     getConnectedSidecars,
     getRoutableAddresses,

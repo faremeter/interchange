@@ -5,6 +5,7 @@ import path from "node:path";
 import git from "isomorphic-git";
 import { initAgentRepo } from "./init";
 import { applyPack } from "./pack-receive";
+import { collectReachableObjects } from "./object-walk";
 
 const tempDirs: string[] = [];
 
@@ -63,42 +64,8 @@ async function makeSourceRepo(): Promise<{
   const entry = walkResult[0];
   if (entry === undefined) throw new Error("no commit");
 
-  // Collect all objects reachable from this commit for the pack
-  const oids = await collectObjects(dir, commitSha);
+  const oids = await collectReachableObjects(dir, commitSha);
   return { dir, commitSha, oids };
-}
-
-async function collectObjects(
-  dir: string,
-  commitOid: string,
-): Promise<string[]> {
-  const oids: string[] = [commitOid];
-
-  const { object: commitObj } = await git.readObject({
-    fs,
-    dir,
-    oid: commitOid,
-  });
-  const commit = commitObj as { tree: string };
-  oids.push(commit.tree);
-
-  async function walkTree(treeOid: string): Promise<void> {
-    const { object: treeObj } = await git.readObject({
-      fs,
-      dir,
-      oid: treeOid,
-    });
-    const entries = treeObj as { oid: string; type: string }[];
-    for (const entry of entries) {
-      oids.push(entry.oid);
-      if (entry.type === "tree") {
-        await walkTree(entry.oid);
-      }
-    }
-  }
-
-  await walkTree(commit.tree);
-  return oids;
 }
 
 describe("applyPack", () => {
