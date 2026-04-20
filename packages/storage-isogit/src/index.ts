@@ -14,11 +14,13 @@ export {
 export { initAgentRepo } from "./init";
 
 /**
- * Initialize an agent repository at `dir` and return a ContextStore backed
- * by that repository. This is the primary entry point for downstream
- * consumers.
+ * Initialize an agent repository at `dir` and return a store backed by that
+ * repository. The returned object implements both ContextStore (inference
+ * state) and AuditStore (tool authorization records).
  */
-export async function createIsogitStore(dir: string): Promise<ContextStore> {
+export async function createIsogitStore(
+  dir: string,
+): Promise<ContextStore & AuditStore> {
   await initAgentRepo(dir);
   return new IsogitStore(dir);
 }

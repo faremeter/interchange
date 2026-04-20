@@ -7,12 +7,14 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { type } from "arktype";
 import { getLogger } from "@interchange/log";
 import { generateKeyPair } from "@interchange/crypto-node";
 import type {
   KeyPair,
   HarnessConfig as AgentConfig,
 } from "@interchange/types/runtime";
+import { WireGrantRule } from "@interchange/types/grant-wire";
 import { sanitizeAddress } from "./session-manager";
 
 const logger = getLogger(["interchange", "sidecar", "keystore"]);
@@ -179,6 +181,17 @@ export async function scanExistingAgents(
       logger.warn`Skipping ${meta.address}: agent.json has no persisted config (needs re-deploy)`;
       continue;
     }
+
+    // JSON round-trips turn Date objects into strings. Validate and coerce
+    // the grants array so expiresAt is a proper Date before the authz
+    // engine sees it.
+    const WireGrants = WireGrantRule.array();
+    const coerced = WireGrants(meta.config.grants);
+    if (coerced instanceof type.errors) {
+      logger.warn`Skipping ${meta.address}: invalid grants in agent.json: ${coerced.summary}`;
+      continue;
+    }
+    meta.config.grants = coerced;
 
     results.push({
       address: meta.address,

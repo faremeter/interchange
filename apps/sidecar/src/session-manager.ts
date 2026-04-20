@@ -6,6 +6,7 @@
 
 import path from "node:path";
 import { getLogger } from "@interchange/log";
+import { evaluateGrants } from "@interchange/authz";
 import { createHarness, type Harness } from "@interchange/harness";
 import { hasProvider } from "@interchange/inference";
 import { createNodeCrypto } from "@interchange/crypto-node";
@@ -124,6 +125,10 @@ export function createSessionManager(
       const storeDir = path.join(dataDir, sanitizeAddress(agentAddress));
       const storage = await createIsogitStore(storeDir);
 
+      const { grants, principalId, tenantId } = agentConfig;
+      const authorize = async (resource: string, action: string) =>
+        evaluateGrants(grants, resource, action, { principalId, tenantId });
+
       const harness = createHarness({
         address: agentAddress,
         systemPrompt: agentConfig.systemPrompt,
@@ -134,6 +139,8 @@ export function createSessionManager(
         transport: agentTransport,
         crypto,
         storage,
+        authorize,
+        auditStore: storage,
         tools: {
           async run(call) {
             return {
