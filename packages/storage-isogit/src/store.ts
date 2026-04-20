@@ -16,7 +16,7 @@ import {
 } from "@interchange/types/audit";
 import { AUTHOR } from "./init";
 
-const CONTEXT_FILE = "context.json";
+const CONTEXT_FILE = "state/context.json";
 
 type ContextData = {
   messages: ConversationMessage[];
@@ -32,7 +32,7 @@ function parseContextData(raw: unknown): ContextData {
     !Array.isArray((raw as Record<string, unknown>)["pendingOperations"]) ||
     typeof (raw as Record<string, unknown>)["tokenUsage"] !== "object"
   ) {
-    throw new Error("context.json has unexpected structure");
+    throw new Error("context data has unexpected structure");
   }
   return raw as ContextData;
 }
@@ -53,7 +53,7 @@ async function readCommitLog(
   });
 }
 
-const AUDIT_DIR = "audit";
+const AUDIT_DIR = "state/audit";
 
 const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
 
@@ -68,10 +68,10 @@ function assertSafeSegment(value: string, label: string): void {
 /**
  * isomorphic-git-backed implementation of ContextStore and AuditStore.
  *
- * Context state is serialized into a single `context.json` file. Audit
- * records are written as individual JSON files under `audit/{sessionId}/`.
- * Both are tracked by the git repository at `dir`. The caller is
- * responsible for calling `initAgentRepo(dir)` before constructing.
+ * Context state is serialized into `state/context.json`. Audit records are
+ * written as individual JSON files under `state/audit/{sessionId}/`. Both
+ * are tracked by the git repository at `dir`. The caller is responsible
+ * for calling `initAgentRepo(dir)` before constructing.
  */
 export class IsogitStore implements ContextStore, AuditStore {
   constructor(private readonly dir: string) {}

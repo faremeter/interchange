@@ -18,7 +18,7 @@ const AUTHOR = {
  */
 export async function initAgentRepo(dir: string): Promise<void> {
   await fs.promises.mkdir(dir, { recursive: true });
-  await fs.promises.mkdir(path.join(dir, "workspace"), { recursive: true });
+  await fs.promises.mkdir(path.join(dir, "state"), { recursive: true });
 
   const isAlreadyInit = await fs.promises
     .stat(path.join(dir, ".git"))
@@ -28,8 +28,9 @@ export async function initAgentRepo(dir: string): Promise<void> {
   if (!isAlreadyInit) {
     await git.init({ fs, dir, defaultBranch: "main" });
 
-    // Write an empty context so the initial commit has a real tree.
-    const contextPath = path.join(dir, "context.json");
+    await fs.promises.writeFile(path.join(dir, ".gitignore"), "keys/\n");
+
+    const contextPath = path.join(dir, "state", "context.json");
     await fs.promises.writeFile(
       contextPath,
       JSON.stringify(
@@ -49,7 +50,8 @@ export async function initAgentRepo(dir: string): Promise<void> {
       ),
     );
 
-    await git.add({ fs, dir, filepath: "context.json" });
+    await git.add({ fs, dir, filepath: ".gitignore" });
+    await git.add({ fs, dir, filepath: "state/context.json" });
     await git.commit({
       fs,
       dir,
