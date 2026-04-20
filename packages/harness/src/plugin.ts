@@ -3,12 +3,12 @@
 // Implements the decision table from INFERENCE.md § Plugin Decision Function:
 //
 //   message.received          → infer
-//   inference.done (tools)    → execute_tools
-//   tool.done                 → infer (re-infer with tool results)
-//   inference.done (no tools) → reply (connector sends the message)
-//   inference.error           → log error, done
+//   inference.done (tools)    → checkpoint + execute_tools
+//   tool.done                 → checkpoint + infer (re-infer with tool results)
+//   inference.done (no tools) → checkpoint + reply (connector sends the message)
+//   inference.error           → checkpoint + done
 //   abort                     → done
-//   reactor.gate.cleared      → infer (resume after gate)
+//   reactor.gate.cleared      → checkpoint + infer (resume after gate)
 //
 // The plugin never throws. Inference errors are logged and the plugin returns
 // done so the reactor shuts down cleanly rather than re-trying indefinitely.
@@ -90,23 +90,24 @@ export class DefaultPlugin implements ReactorPlugin {
         const toolCalls = extractToolCalls(event.message);
         if (toolCalls.length > 0) {
           this.pendingToolResults = toolCalls.length;
-          return capabilities.executeTools(toolCalls, true);
+          return [
+            capabilities.checkpoint(),
+            capabilities.executeTools(toolCalls, true),
+          ];
         }
 
         // No tool calls — the model is done reasoning for this turn.
         if (this.policy.mode === "reactive") {
-          // Reactive agent: discard any text output and wait for the next
-          // inbound event. The agent's job was to execute tools, not reply.
-          return capabilities.wait();
+          return [capabilities.checkpoint(), capabilities.wait()];
         }
 
         // Conversational agent: send reply via the connector.
         const replyContent = extractTextContent(event.message);
         if (replyContent.length > 0) {
-          return capabilities.reply(replyContent);
+          return [capabilities.checkpoint(), capabilities.reply(replyContent)];
         }
 
-        return capabilities.done();
+        return [capabilities.checkpoint(), capabilities.done()];
       }
 
       case "tool.done": {
@@ -115,13 +116,16 @@ export class DefaultPlugin implements ReactorPlugin {
           return [];
         }
         if (this.policy.mode === "reactive") {
-          return capabilities.wait();
+          return [capabilities.checkpoint(), capabilities.wait()];
         }
         // All tool results received — re-infer with complete context.
-        return capabilities.infer(this.model, {
-          systemPrompt: this.systemPrompt,
-          tools: this.toolDefinitions,
-        });
+        return [
+          capabilities.checkpoint(),
+          capabilities.infer(this.model, {
+            systemPrompt: this.systemPrompt,
+            tools: this.toolDefinitions,
+          }),
+        ];
       }
 
       case "inference.error": {
@@ -131,14 +135,17 @@ export class DefaultPlugin implements ReactorPlugin {
             : "";
 
         logger.error`Inference error in default plugin: ${event.error.message}${statusDetail} (category: ${event.error.category})`;
-        return capabilities.done();
+        return [capabilities.checkpoint(), capabilities.done()];
       }
 
       case "reactor.gate.cleared": {
-        return capabilities.infer(this.model, {
-          systemPrompt: this.systemPrompt,
-          tools: this.toolDefinitions,
-        });
+        return [
+          capabilities.checkpoint(),
+          capabilities.infer(this.model, {
+            systemPrompt: this.systemPrompt,
+            tools: this.toolDefinitions,
+          }),
+        ];
       }
 
       case "abort": {

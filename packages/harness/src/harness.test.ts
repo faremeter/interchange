@@ -33,6 +33,7 @@ import type {
 import type { AuditRecord } from "@interchange/types/audit";
 import type { AuthzCallResult } from "@interchange/inference";
 import type {
+  ReactorInboundEvent,
   ReactorPlugin,
   ReactorState,
   ReactorCapabilities,
@@ -902,7 +903,7 @@ describe("Default plugin", () => {
     const caps = makeCapabilities();
     const state = makeState();
 
-    const event: import("@interchange/types/runtime").ReactorInboundEvent = {
+    const event: ReactorInboundEvent = {
       type: "message.received",
       message: makeInboundMessage(),
     };
@@ -913,12 +914,12 @@ describe("Default plugin", () => {
     expect(normalized.some((a) => a.type === "infer")).toBe(true);
   });
 
-  test("inference.done with tool calls triggers execute_tools", async () => {
+  test("inference.done with tool calls triggers checkpoint and execute_tools", async () => {
     const plugin = createDefaultPlugin("claude-test", "You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
-    const event: import("@interchange/types/runtime").ReactorInboundEvent = {
+    const event: ReactorInboundEvent = {
       type: "inference.done",
       message: {
         role: "assistant",
@@ -937,28 +938,29 @@ describe("Default plugin", () => {
 
     const actions = await plugin.decide(event, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
+    expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
     expect(normalized.some((a) => a.type === "execute_tools")).toBe(true);
   });
 
-  test("inference.done without tool calls returns reply action", async () => {
+  test("inference.done without tool calls returns checkpoint and reply", async () => {
     const plugin = createDefaultPlugin("claude-test", "You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
-    const doneEvent: import("@interchange/types/runtime").ReactorInboundEvent =
-      {
-        type: "inference.done",
-        message: {
-          role: "assistant",
-          model: "claude-test",
-          content: [{ type: "text", text: "Here is my response." }],
-        },
-        usage: emptyUsage(),
-      };
+    const doneEvent: ReactorInboundEvent = {
+      type: "inference.done",
+      message: {
+        role: "assistant",
+        model: "claude-test",
+        content: [{ type: "text", text: "Here is my response." }],
+      },
+      usage: emptyUsage(),
+    };
 
     const actions = await plugin.decide(doneEvent, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
 
+    expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
     expect(normalized.some((a) => a.type === "reply")).toBe(true);
     const replyAction = normalized.find((a) => a.type === "reply");
     if (replyAction === undefined || replyAction.type !== "reply")
@@ -966,27 +968,28 @@ describe("Default plugin", () => {
     expect(replyAction.content).toBe("Here is my response.");
   });
 
-  test("tool.done triggers re-infer", async () => {
+  test("tool.done triggers checkpoint and re-infer", async () => {
     const plugin = createDefaultPlugin("claude-test", "You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
-    const event: import("@interchange/types/runtime").ReactorInboundEvent = {
+    const event: ReactorInboundEvent = {
       type: "tool.done",
       result: { callId: "tc1", content: "file contents" },
     };
 
     const actions = await plugin.decide(event, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
+    expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
     expect(normalized.some((a) => a.type === "infer")).toBe(true);
   });
 
-  test("inference.error returns done (not crash)", async () => {
+  test("inference.error returns checkpoint and done", async () => {
     const plugin = createDefaultPlugin("claude-test", "You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
-    const event: import("@interchange/types/runtime").ReactorInboundEvent = {
+    const event: ReactorInboundEvent = {
       type: "inference.error",
       error: {
         category: "retryable",
@@ -997,6 +1000,7 @@ describe("Default plugin", () => {
 
     const actions = await plugin.decide(event, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
+    expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
     expect(normalized.some((a) => a.type === "done")).toBe(true);
   });
 
@@ -1005,7 +1009,7 @@ describe("Default plugin", () => {
     const caps = makeCapabilities();
     const state = makeState();
 
-    const event: import("@interchange/types/runtime").ReactorInboundEvent = {
+    const event: ReactorInboundEvent = {
       type: "abort",
       reason: "user_disconnect",
     };
@@ -1013,6 +1017,98 @@ describe("Default plugin", () => {
     const actions = await plugin.decide(event, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
     expect(normalized.some((a) => a.type === "done")).toBe(true);
+  });
+
+  test("reactive mode inference.done returns checkpoint and wait", async () => {
+    const plugin = createDefaultPlugin("claude-test", "You are helpful.", [], {
+      mode: "reactive",
+    });
+    const caps = makeCapabilities();
+    const state = makeState();
+
+    const event: ReactorInboundEvent = {
+      type: "inference.done",
+      message: {
+        role: "assistant",
+        model: "claude-test",
+        content: [{ type: "text", text: "done processing" }],
+      },
+      usage: emptyUsage(),
+    };
+
+    const actions = await plugin.decide(event, state, caps);
+    const normalized = Array.isArray(actions) ? actions : [actions];
+    expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
+    expect(normalized.some((a) => a.type === "wait")).toBe(true);
+  });
+
+  test("reactive mode tool.done returns checkpoint and wait", async () => {
+    const plugin = createDefaultPlugin("claude-test", "You are helpful.", [], {
+      mode: "reactive",
+    });
+    const caps = makeCapabilities();
+    const state = makeState();
+
+    const event: ReactorInboundEvent = {
+      type: "tool.done",
+      result: { callId: "tc1", content: "result" },
+    };
+
+    const actions = await plugin.decide(event, state, caps);
+    const normalized = Array.isArray(actions) ? actions : [actions];
+    expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
+    expect(normalized.some((a) => a.type === "wait")).toBe(true);
+    expect(normalized.some((a) => a.type === "infer")).toBe(false);
+  });
+
+  test("tool.done batching waits for all results before checkpoint", async () => {
+    const plugin = createDefaultPlugin("claude-test", "You are helpful.");
+    const caps = makeCapabilities();
+    const state = makeState();
+
+    // First trigger inference.done with 2 tool calls to set pendingToolResults.
+    const inferDone: ReactorInboundEvent = {
+      type: "inference.done",
+      message: {
+        role: "assistant",
+        model: "claude-test",
+        content: [
+          {
+            type: "tool_call",
+            id: "tc1",
+            name: "read_file",
+            arguments: { path: "/a" },
+          },
+          {
+            type: "tool_call",
+            id: "tc2",
+            name: "read_file",
+            arguments: { path: "/b" },
+          },
+        ],
+      },
+      usage: emptyUsage(),
+    };
+    await plugin.decide(inferDone, state, caps);
+
+    // First tool.done — should return empty (still waiting for tc2).
+    const toolDone1: ReactorInboundEvent = {
+      type: "tool.done",
+      result: { callId: "tc1", content: "result1" },
+    };
+    const actions1 = await plugin.decide(toolDone1, state, caps);
+    const normalized1 = Array.isArray(actions1) ? actions1 : [actions1];
+    expect(normalized1).toEqual([]);
+
+    // Second tool.done — all results in, should checkpoint + infer.
+    const toolDone2: ReactorInboundEvent = {
+      type: "tool.done",
+      result: { callId: "tc2", content: "result2" },
+    };
+    const actions2 = await plugin.decide(toolDone2, state, caps);
+    const normalized2 = Array.isArray(actions2) ? actions2 : [actions2];
+    expect(normalized2.some((a) => a.type === "checkpoint")).toBe(true);
+    expect(normalized2.some((a) => a.type === "infer")).toBe(true);
   });
 });
 
