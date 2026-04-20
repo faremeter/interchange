@@ -2,6 +2,7 @@ import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import git from "isomorphic-git";
 import {
   createIsogitStore,
   currentBranch,
@@ -448,5 +449,54 @@ describe("audit store", () => {
     await expect(
       store.commitAudit([makeAuditRecord({ callId: "c1", seq: 1 })]),
     ).rejects.toThrow("Duplicate audit record");
+  });
+});
+
+describe("commit signing", () => {
+  test("commits are signed when a signer is provided", async () => {
+    const dir = await tempDir();
+    await initAgentRepo(dir);
+
+    const signer = async (payload: string) =>
+      `-----BEGIN SSH SIGNATURE-----\n${Buffer.from(payload).toString("base64").slice(0, 70)}\n-----END SSH SIGNATURE-----`;
+
+    const store = new IsogitStore(dir, signer);
+    await store.commit([], [], ZERO_USAGE, "signed commit");
+
+    const [entry] = await git.log({ fs, dir, depth: 1 });
+    if (!entry) throw new Error("no commit found");
+    const { commit } = await git.readCommit({ fs, dir, oid: entry.oid });
+    expect(commit.gpgsig).toBeDefined();
+    expect(commit.gpgsig).toContain("BEGIN SSH SIGNATURE");
+  });
+
+  test("commits are unsigned when no signer is provided", async () => {
+    const dir = await tempDir();
+    await initAgentRepo(dir);
+
+    const store = new IsogitStore(dir);
+    await store.commit([], [], ZERO_USAGE, "unsigned commit");
+
+    const [entry] = await git.log({ fs, dir, depth: 1 });
+    if (!entry) throw new Error("no commit found");
+    const { commit } = await git.readCommit({ fs, dir, oid: entry.oid });
+    expect(commit.gpgsig).toBeUndefined();
+  });
+
+  test("audit commits are signed when a signer is provided", async () => {
+    const dir = await tempDir();
+    await initAgentRepo(dir);
+
+    const signer = async (payload: string) =>
+      `-----BEGIN SSH SIGNATURE-----\n${Buffer.from(payload).toString("base64").slice(0, 70)}\n-----END SSH SIGNATURE-----`;
+
+    const store = new IsogitStore(dir, signer);
+    await store.commitAudit([makeAuditRecord()]);
+
+    const [entry] = await git.log({ fs, dir, depth: 1 });
+    if (!entry) throw new Error("no commit found");
+    const { commit } = await git.readCommit({ fs, dir, oid: entry.oid });
+    expect(commit.gpgsig).toBeDefined();
+    expect(commit.gpgsig).toContain("BEGIN SSH SIGNATURE");
   });
 });

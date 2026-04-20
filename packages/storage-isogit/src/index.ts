@@ -1,8 +1,9 @@
 import type { ContextStore, AuditStore } from "@interchange/types/runtime";
 import { initAgentRepo } from "./init";
 import { IsogitStore } from "./store";
+import type { CommitSigner } from "./signer";
 
-export type { ContextStore, AuditStore };
+export type { ContextStore, AuditStore, CommitSigner };
 export { IsogitStore };
 export {
   switchBranch,
@@ -20,7 +21,8 @@ export { initAgentRepo } from "./init";
  */
 export async function createIsogitStore(
   dir: string,
+  signer?: CommitSigner,
 ): Promise<ContextStore & AuditStore> {
   await initAgentRepo(dir);
-  return new IsogitStore(dir);
+  return new IsogitStore(dir, signer);
 }

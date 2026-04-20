@@ -15,6 +15,7 @@ import {
   type AuditRecord as AuditRecordType,
 } from "@interchange/types/audit";
 import { AUTHOR } from "./init";
+import type { CommitSigner } from "./signer";
 
 const CONTEXT_FILE = "state/context.json";
 
@@ -74,7 +75,27 @@ function assertSafeSegment(value: string, label: string): void {
  * for calling `initAgentRepo(dir)` before constructing.
  */
 export class IsogitStore implements ContextStore, AuditStore {
-  constructor(private readonly dir: string) {}
+  private readonly dir: string;
+  private readonly signer: CommitSigner | undefined;
+
+  constructor(dir: string, signer?: CommitSigner) {
+    this.dir = dir;
+    this.signer = signer;
+  }
+
+  private signingArgs(): {
+    onSign?: (args: { payload: string }) => Promise<{ signature: string }>;
+    signingKey?: string;
+  } {
+    if (!this.signer) return {};
+    const signer = this.signer;
+    return {
+      // isogit gates the signing path on a truthy signingKey and passes its
+      // value as secretKey to onSign. We set a sentinel; onSign ignores it.
+      signingKey: "sshsig",
+      onSign: async ({ payload }) => ({ signature: await signer(payload) }),
+    };
+  }
 
   async load(_signal?: AbortSignal): Promise<{
     messages: ConversationMessage[];
@@ -104,6 +125,7 @@ export class IsogitStore implements ContextStore, AuditStore {
       dir: this.dir,
       message,
       author: AUTHOR,
+      ...this.signingArgs(),
     });
 
     const entries = await git.log({ fs, dir: this.dir, depth: 2 });
@@ -190,6 +212,7 @@ export class IsogitStore implements ContextStore, AuditStore {
       dir: this.dir,
       message: `Record ${count} tool audit ${noun}`,
       author: AUTHOR,
+      ...this.signingArgs(),
     });
   }
 
