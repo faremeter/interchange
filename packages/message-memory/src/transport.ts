@@ -75,6 +75,15 @@ export class InMemoryTransport implements MessageTransport {
     this.#cryptoProviders.set(address, crypto);
   }
 
+  /**
+   * Remove an agent's mailboxes and crypto provider. Called when a session
+   * is destroyed so the address can be re-registered later.
+   */
+  unregisterAgent(address: string): void {
+    this.#agentMailboxes.delete(address);
+    this.#cryptoProviders.delete(address);
+  }
+
   // ---------------------------------------------------------------------------
   // Outbound
   // ---------------------------------------------------------------------------
