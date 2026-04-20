@@ -397,7 +397,13 @@ describe("audit store", () => {
 
     await store.commitAudit([makeAuditRecord()]);
 
-    const corruptPath = path.join(dir, "audit", "session-1", "call-1.json");
+    const corruptPath = path.join(
+      dir,
+      "state",
+      "audit",
+      "session-1",
+      "call-1.json",
+    );
     await fs.promises.writeFile(corruptPath, JSON.stringify({ garbage: true }));
 
     await expect(store.loadAudit("session-1")).rejects.toThrow(
