@@ -70,6 +70,14 @@ const sidecarRouter = createSidecarRouter({
         `Agent "${agentAddress}" reconnected but has no active session`,
       );
     }
+    // Refresh grants before creating any local state. If this fails,
+    // the address is rejected and nothing needs cleanup.
+    const grants = await grantStore.collectGrants(
+      row.principalId,
+      row.tenantId,
+    );
+    await sidecarRouter.sendGrantsUpdate(agentAddress, grants);
+
     if (row.status !== "running") {
       await db
         .update(agent)
@@ -83,11 +91,6 @@ const sidecarRouter = createSidecarRouter({
         { agentAddress, sessionId: row.sessionId },
       );
     }
-    const grants = await grantStore.collectGrants(
-      row.principalId,
-      row.tenantId,
-    );
-    await sidecarRouter.sendGrantsUpdate(agentAddress, grants);
   },
   async lookupPublicKey(agentAddress) {
     const agentId = parseAgentId(agentAddress);
