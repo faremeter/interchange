@@ -6,6 +6,7 @@ import { canonicalizeText, canonicalizeBytes } from "./canonicalize";
 import { createDetachedSignature } from "./sign";
 import { verifyDetachedSignature } from "./verify";
 import { armorEncode, armorDecode, encodeMPI, decodeMPI } from "./pgp";
+import { createSshSignature, verifySshSignature } from "./sshsig";
 
 // ---------------------------------------------------------------------------
 // Key generation
@@ -354,5 +355,115 @@ describe("createDetachedSignature / verifyDetachedSignature", () => {
     // Verify the raw reassembled signature is valid
     // Check reconstructed signature length
     expect(reassembled.length).toBe(64);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SSH Signature (SSHSIG) format
+// ---------------------------------------------------------------------------
+
+describe("createSshSignature / verifySshSignature", () => {
+  test("round-trips a signature", async () => {
+    const kp = await generateKeyPair();
+    const payload =
+      "tree abc123\nauthor Test <t@t> 1700000000 +0000\n\ncommit msg\n";
+    const sig = createSshSignature(payload, kp.privateKey, kp.publicKey);
+    const ok = verifySshSignature(payload, sig, kp.publicKey);
+    expect(ok).toBe(true);
+  });
+
+  test("returns false for wrong public key", async () => {
+    const kp1 = await generateKeyPair();
+    const kp2 = await generateKeyPair();
+    const payload = "test payload";
+    const sig = createSshSignature(payload, kp1.privateKey, kp1.publicKey);
+    const ok = verifySshSignature(payload, sig, kp2.publicKey);
+    expect(ok).toBe(false);
+  });
+
+  test("returns false for tampered payload", async () => {
+    const kp = await generateKeyPair();
+    const sig = createSshSignature("original", kp.privateKey, kp.publicKey);
+    const ok = verifySshSignature("tampered", sig, kp.publicKey);
+    expect(ok).toBe(false);
+  });
+
+  test("throws on truncated signature", () => {
+    const bad =
+      "-----BEGIN SSH SIGNATURE-----\nYQ==\n-----END SSH SIGNATURE-----";
+    expect(() =>
+      verifySshSignature("payload", bad, new Uint8Array(32)),
+    ).toThrow();
+  });
+
+  test("throws on invalid magic", () => {
+    const garbage =
+      "-----BEGIN SSH SIGNATURE-----\n" +
+      Buffer.from("BADMAG").toString("base64") +
+      "\n-----END SSH SIGNATURE-----";
+    expect(() =>
+      verifySshSignature("payload", garbage, new Uint8Array(32)),
+    ).toThrow(/magic/);
+  });
+
+  test("armor format has correct markers", async () => {
+    const kp = await generateKeyPair();
+    const sig = createSshSignature("test", kp.privateKey, kp.publicKey);
+    expect(sig).toStartWith("-----BEGIN SSH SIGNATURE-----\n");
+    expect(sig).toEndWith("\n-----END SSH SIGNATURE-----");
+  });
+
+  test("binary structure matches SSHSIG wire format", async () => {
+    const kp = await generateKeyPair();
+    const payload = "tree abc\nauthor T <t@t> 1700000000 +0000\n\nmsg\n";
+    const sig = createSshSignature(payload, kp.privateKey, kp.publicKey);
+
+    // Decode the armored signature
+    const lines = sig.split("\n");
+    const b64 = lines.slice(1, -1).join("");
+    const blob = Buffer.from(b64, "base64");
+
+    // Verify SSHSIG magic (6 bytes, no null in wire format)
+    expect(blob.subarray(0, 6).toString()).toBe("SSHSIG");
+
+    // Version = 1
+    expect(blob.readUInt32BE(6)).toBe(1);
+
+    // Public key blob: string("ssh-ed25519") + string(32-byte-key)
+    const pkLen = blob.readUInt32BE(10);
+    expect(pkLen).toBe(51); // 4 + 11 + 4 + 32
+    const pkBlob = blob.subarray(14, 14 + pkLen);
+    const ktLen = pkBlob.readUInt32BE(0);
+    expect(pkBlob.subarray(4, 4 + ktLen).toString()).toBe("ssh-ed25519");
+    const keyDataLen = pkBlob.readUInt32BE(4 + ktLen);
+    expect(keyDataLen).toBe(32);
+    expect(
+      Buffer.from(kp.publicKey).equals(pkBlob.subarray(4 + ktLen + 4)),
+    ).toBe(true);
+
+    // Namespace = "git"
+    let off = 14 + pkLen;
+    const nsLen = blob.readUInt32BE(off);
+    expect(blob.subarray(off + 4, off + 4 + nsLen).toString()).toBe("git");
+    off += 4 + nsLen;
+
+    // Reserved = empty
+    const resLen = blob.readUInt32BE(off);
+    expect(resLen).toBe(0);
+    off += 4;
+
+    // Hash algorithm = "sha512"
+    const haLen = blob.readUInt32BE(off);
+    expect(blob.subarray(off + 4, off + 4 + haLen).toString()).toBe("sha512");
+    off += 4 + haLen;
+
+    // Signature blob: string("ssh-ed25519") + string(64-byte-sig)
+    const sbLen = blob.readUInt32BE(off);
+    expect(sbLen).toBe(83); // 4 + 11 + 4 + 64
+    const sigBlob = blob.subarray(off + 4, off + 4 + sbLen);
+    const stLen = sigBlob.readUInt32BE(0);
+    expect(sigBlob.subarray(4, 4 + stLen).toString()).toBe("ssh-ed25519");
+    const rawSigLen = sigBlob.readUInt32BE(4 + stLen);
+    expect(rawSigLen).toBe(64);
   });
 });
