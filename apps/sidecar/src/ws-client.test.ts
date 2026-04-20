@@ -92,10 +92,11 @@ const TEST_CONFIG: HarnessConfig = {
   sessionId: "ses_test-session-1",
   agentId: "agent-1",
   tenantId: "tenant-1",
+  principalId: "prin_test-principal-1",
   agentAddress: "agent-1@test.interchange",
   systemPrompt: "You are a test agent",
   tools: [],
-  toolPolicy: [],
+  grants: [],
   providers: [
     {
       provider: "anthropic",

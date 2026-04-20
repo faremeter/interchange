@@ -18,11 +18,11 @@ Logic for constructing and managing the agent's context window. The context buil
 **Initial State**
 Pre-populated data that forms part of the agent's starting context. Layered on top of the system prompt and other initial context elements.
 
-**Tool Policy**
-Authorization policies governing which tools the agent can invoke and under what conditions. The harness enforces these policies transparently, validating proposed actions against policy before execution and detecting anomalous behavior such as unexpected tool invocations or unusual data access patterns.
+**Capability Grants**
+Authorization policies governing which tools the agent can invoke and under what conditions, expressed as `GrantRule` entries. The harness enforces these policies transparently via the authz engine, validating proposed actions against grants before execution. Grants are resolved by the hub at deploy time and sent to the sidecar in the deploy frame.
 
 **Versioning**
-Agent definitions are tracked in a git repository. The repository contains the agent-specific resources: skills, system prompt, context builder configuration, initial state, and tool policy. External dependencies are referenced in configuration files and resolved when the agent is deployed.
+Agent definitions are tracked in a git repository. The repository contains the agent-specific resources: skills, system prompt, context builder configuration, and initial state. External dependencies are referenced in configuration files and resolved when the agent is deployed.
 
 When an agent is deployed, its definition is checked out from the repository into an environment separate from the agent's working data worktree. The agent operates with two distinct git contexts: one for its definition, one for its runtime working data.
 

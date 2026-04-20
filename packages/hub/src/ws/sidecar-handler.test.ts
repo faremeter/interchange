@@ -297,10 +297,11 @@ describe("SidecarRouter", () => {
         sessionId: "ses_test",
         agentId: "a1",
         tenantId: "t1",
+        principalId: "prin_test",
         agentAddress: "new-agent@local",
         systemPrompt: "test",
         tools: [],
-        toolPolicy: [],
+        grants: [],
         providers: [
           {
             provider: "anthropic",
@@ -355,10 +356,11 @@ describe("SidecarRouter", () => {
         sessionId: "ses_test",
         agentId: "a1",
         tenantId: "t1",
+        principalId: "prin_test",
         agentAddress: "ack-agent@local",
         systemPrompt: "test",
         tools: [],
-        toolPolicy: [],
+        grants: [],
         providers: [
           {
             provider: "anthropic",
@@ -410,10 +412,11 @@ describe("SidecarRouter", () => {
         sessionId: "ses_test",
         agentId: "a1",
         tenantId: "t1",
+        principalId: "prin_test",
         agentAddress: "fail-ack@local",
         systemPrompt: "test",
         tools: [],
-        toolPolicy: [],
+        grants: [],
         providers: [
           {
             provider: "anthropic",
@@ -456,10 +459,11 @@ describe("SidecarRouter", () => {
         sessionId: "ses_test",
         agentId: "a1",
         tenantId: "t1",
+        principalId: "prin_test",
         agentAddress: "fail-agent@local",
         systemPrompt: "test",
         tools: [],
-        toolPolicy: [],
+        grants: [],
         providers: [
           {
             provider: "anthropic",
@@ -523,10 +527,11 @@ describe("SidecarRouter", () => {
         sessionId: "ses_test",
         agentId: "a1",
         tenantId: "t1",
+        principalId: "prin_test",
         agentAddress: "timeout@local",
         systemPrompt: "test",
         tools: [],
-        toolPolicy: [],
+        grants: [],
         providers: [
           {
             provider: "anthropic",
@@ -565,10 +570,11 @@ describe("SidecarRouter", () => {
         sessionId: "ses_test",
         agentId: "a1",
         tenantId: "t1",
+        principalId: "prin_test",
         agentAddress: "dc-agent@local",
         systemPrompt: "test",
         tools: [],
-        toolPolicy: [],
+        grants: [],
         providers: [
           {
             provider: "anthropic",

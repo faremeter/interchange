@@ -5,6 +5,7 @@
 // @interchange/types/runtime.
 
 import type { AuditRecord } from "./audit";
+import type { GrantRule } from "./authz";
 
 // ---------------------------------------------------------------------------
 // Cryptographic Identity (ARCHITECTURE.md § Cryptographic Identity,
@@ -1160,21 +1161,12 @@ export type ToolDefinition = {
 };
 
 /**
- * Authorization policy for a single tool. Controls under what conditions the
- * tool may be invoked.
- *
- * (ARCHITECTURE.md § Agent Harness › Tool Policy)
- */
-export type ToolPolicy = {
-  toolName: string;
-  allowed: boolean;
-  requiresApproval?: boolean;
-  allowedPatterns?: Record<string, unknown>[];
-};
-
-/**
  * Agent harness configuration. Assembled from the agent definition package
- * (skills, system prompt, tool policy) during harness initialization.
+ * and capability grants during harness initialization.
+ *
+ * `principalId` is the agent's principal in the hub's authorization model.
+ * The sidecar needs it to reconstruct the in-memory grant store on restart
+ * (the store's `collectGrants` filters by principal).
  *
  * (ARCHITECTURE.md § Agent Harness)
  */
@@ -1182,10 +1174,11 @@ export type HarnessConfig = {
   sessionId: string;
   agentId: string;
   tenantId: string;
+  principalId: string;
   agentAddress: string;
   systemPrompt: string;
   tools: ToolDefinition[];
-  toolPolicy: ToolPolicy[];
+  grants: GrantRule[];
   providers: ProviderConfig[];
   defaultModel: string;
   sessionChannelEnabled?: boolean;
