@@ -452,6 +452,7 @@ export function TenantAgentDetailPage() {
             rerender();
             break;
           }
+          case "connector.reply":
           case "reactor.done":
             sessionStreaming.set(sessionId, "");
             sessionActivity.set(sessionId, null);
