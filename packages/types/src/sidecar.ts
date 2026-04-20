@@ -8,6 +8,7 @@
 // efficient but JSON is simpler to debug and inspect.
 
 import type { AbortReason, HarnessConfig, InferenceEvent } from "./runtime";
+import type { GrantRule } from "./authz";
 
 // ---------------------------------------------------------------------------
 // Sidecar → Hub
@@ -220,6 +221,18 @@ export type MessageSendFrame = {
   attachments?: WireAttachment[];
 };
 
+/**
+ * Push updated grants to a running agent. The sidecar replaces the agent's
+ * grant snapshot and re-persists the config. Responds with session.ack or
+ * session.error.
+ */
+export type GrantsUpdateFrame = {
+  type: "grants.update";
+  requestId: string;
+  agentAddress: string;
+  grants: GrantRule[];
+};
+
 /** All frame types the hub sends to the sidecar. */
 export type HubFrame =
   | MailInboundFrame
@@ -229,7 +242,8 @@ export type HubFrame =
   | ChallengeFailedFrame
   | PongFrame
   | SessionAbortFrame
-  | MessageSendFrame;
+  | MessageSendFrame
+  | GrantsUpdateFrame;
 
 /** Any frame on the wire, regardless of direction. */
 export type WireFrame = SidecarFrame | HubFrame;
