@@ -91,6 +91,7 @@ function createMockSessionManager(): SessionManager & {
     async restoreSessions() {
       return { restored: [], failed: [] };
     },
+    applyDeployPack: () => Promise.resolve(),
   };
   return mock;
 }

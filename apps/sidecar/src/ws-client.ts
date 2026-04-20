@@ -18,10 +18,14 @@ import type {
   SessionAbortFrame,
   MessageSendFrame,
   GrantsUpdateFrame,
+  PackPushFrame,
+  PackDoneFrame,
+  SyncRequestFrame,
 } from "@interchange/types/sidecar";
 import type { InboundMessage, KeyPair } from "@interchange/types/runtime";
 
 import type { SessionManager, SessionEventSink } from "./session-manager";
+import { createPackReceiver } from "./pack-receiver";
 import { hexEncode } from "./key-store";
 
 const logger = getLogger(["interchange", "sidecar", "ws"]);
@@ -61,6 +65,8 @@ export function createWsClient(config: WsClientConfig): WsClient {
   // Per-agent key pairs for challenge signing.
   // Populated by restoreSessions on connect, augmented on agent.deploy.
   const agentKeys = new Map<string, KeyPair>();
+
+  const packReceiver = createPackReceiver();
 
   // Outbound frames queued while disconnected.
   const MAX_QUEUE = 1024;
@@ -208,6 +214,62 @@ export function createWsClient(config: WsClientConfig): WsClient {
     }
   }
 
+  function handlePackPush(frame: PackPushFrame): void {
+    const reason = packReceiver.handlePush(frame);
+    if (reason !== null) {
+      send({
+        type: "pack.reject",
+        agentAddress: frame.agentAddress,
+        transferId: frame.transferId,
+        reason,
+      });
+    }
+  }
+
+  async function handlePackDone(frame: PackDoneFrame): Promise<void> {
+    const result = packReceiver.handleDone(frame);
+    if (result === null) {
+      send({
+        type: "pack.reject",
+        agentAddress: frame.agentAddress,
+        transferId: frame.transferId,
+        reason: "corrupt",
+      });
+      return;
+    }
+
+    try {
+      await sessions.applyDeployPack(
+        frame.agentAddress,
+        result.pack,
+        result.ref,
+        result.commitSha,
+        frame.transferId,
+      );
+      send({
+        type: "pack.ack",
+        agentAddress: frame.agentAddress,
+        transferId: frame.transferId,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const reason = msg.startsWith("sha_mismatch")
+        ? "sha_mismatch"
+        : "corrupt";
+      logger.warn`Pack apply failed for ${frame.agentAddress}: ${msg}`;
+      send({
+        type: "pack.reject",
+        agentAddress: frame.agentAddress,
+        transferId: frame.transferId,
+        reason,
+      });
+    }
+  }
+
+  function handleSyncRequest(frame: SyncRequestFrame): void {
+    logger.warn`Received sync.request for ${frame.agentAddress} (transferId=${frame.transferId}) but state push is not implemented`;
+  }
+
   async function handleMessage(data: string): Promise<void> {
     let frame: HubFrame;
     try {
@@ -246,6 +308,19 @@ export function createWsClient(config: WsClientConfig): WsClient {
         break;
       case "grants.update":
         await handleGrantsUpdate(frame);
+        break;
+      case "pack.push":
+        handlePackPush(frame);
+        break;
+      case "pack.done":
+        await handlePackDone(frame);
+        break;
+      case "sync.request":
+        handleSyncRequest(frame);
+        break;
+      case "pack.ack":
+      case "pack.reject":
+        logger.warn`Unexpected ${frame.type} from hub (sidecar is not a pack sender yet)`;
         break;
       default:
         logger.warn`Unknown frame type from hub: ${(frame as { type: string }).type}`;
@@ -289,6 +364,9 @@ export function createWsClient(config: WsClientConfig): WsClient {
         }
         send({ type: "ping" });
       }, pingIntervalMs);
+
+      // Clear any in-flight pack transfers from the previous connection.
+      packReceiver.reset();
 
       // Restore sessions from disk before announcing to the hub.
       // Harnesses must be running before the hub starts routing messages.

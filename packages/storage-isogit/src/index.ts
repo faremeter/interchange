@@ -13,6 +13,7 @@ export {
   logHistory,
 } from "./history";
 export { initAgentRepo } from "./init";
+export { applyPack } from "./pack-receive";
 
 /**
  * Initialize an agent repository at `dir` and return a store backed by that
