@@ -57,6 +57,7 @@ export function createEventCollector(
           isError: event.data.result.isError ?? false,
         });
         break;
+      case "connector.reply":
       case "reactor.done":
         await finalizeMessage("delivered");
         break;
