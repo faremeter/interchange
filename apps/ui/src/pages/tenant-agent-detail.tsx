@@ -330,10 +330,62 @@ export function TenantAgentDetailPage() {
     },
   });
 
+  // Hydrate chat history from the hub's DB on mount/reload.
+  const sessionId = agent?.sessionId;
+  useEffect(() => {
+    if (agent?.status !== "running" || !sessionId) return;
+    if (getMessages(sessionId).length > 0) return;
+
+    let cancelled = false;
+
+    type MessagePart = { type: string; content?: string | null };
+    type MessageRow = {
+      role: "user" | "assistant";
+      status: string;
+      parts: MessagePart[];
+    };
+
+    void (async () => {
+      try {
+        const messages = await api<MessageRow[]>(
+          "GET",
+          `/api/tenants/${tenantId}/sessions/${sessionId}/messages?limit=100`,
+        );
+        if (cancelled) return;
+        if (getMessages(sessionId).length > 0) return;
+
+        const history: ChatMessage[] = [];
+        for (const msg of messages) {
+          if (msg.status !== "delivered") continue;
+          const text = msg.parts
+            .filter(
+              (p): p is MessagePart & { content: string } =>
+                p.type === "text" && typeof p.content === "string",
+            )
+            .map((p) => p.content)
+            .join("");
+          if (text) {
+            history.push({ role: msg.role, content: text });
+          }
+        }
+
+        if (history.length > 0) {
+          sessionMessages.set(sessionId, history);
+          rerender();
+        }
+      } catch {
+        // History load failed — the SSE stream will still handle live messages.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [agent?.status, sessionId, tenantId]);
+
   // Open/close the EventSource based on agent running state.
   // useEffect cleanup handles Strict Mode correctly and also reconnects
   // when navigating back to an already-running agent.
-  const sessionId = agent?.sessionId;
   useEffect(() => {
     if (agent?.status !== "running" || !sessionId) return;
 
