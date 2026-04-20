@@ -81,6 +81,9 @@ function createMockSessionManager(): SessionManager & {
     getAddresses(): string[] {
       return [...mock.addresses];
     },
+    async restoreSessions() {
+      return { restored: [], failed: [] };
+    },
   };
   return mock;
 }
@@ -205,7 +208,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "test-sidecar",
       token: "test-token",
-      dataDir: "/tmp/sidecar-test",
+
       transport,
       sessions,
     });
@@ -231,7 +234,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-create",
       token: "test-token",
-      dataDir: "/tmp/sidecar-test",
+
       transport,
       sessions,
     });
@@ -264,7 +267,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-fail",
       token: "test-token",
-      dataDir: "/tmp/sidecar-test",
+
       transport,
       sessions,
     });
@@ -294,7 +297,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-events",
       token: "test-token",
-      dataDir: "/tmp/sidecar-test",
+
       transport,
       sessions,
     });
@@ -344,7 +347,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-mail-in",
       token: "test-token",
-      dataDir: "/tmp/sidecar-test",
+
       transport,
       sessions,
     });
@@ -394,7 +397,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-mail-out",
       token: "test-token",
-      dataDir: "/tmp/sidecar-test",
+
       transport,
       sessions,
     });
@@ -448,7 +451,6 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-alice",
       token: "test-token",
-      dataDir: "/tmp/sidecar-test-alice",
       transport: transportA,
       sessions: sessionsA,
     });
@@ -456,7 +458,6 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-bob",
       token: "test-token",
-      dataDir: "/tmp/sidecar-test-bob",
       transport: transportB,
       sessions: sessionsB,
     });
@@ -514,7 +515,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-msg-send",
       token: "test-token",
-      dataDir: "/tmp/sidecar-test",
+
       transport,
       sessions,
     });
@@ -557,7 +558,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-msg-err",
       token: "test-token",
-      dataDir: "/tmp/sidecar-test",
+
       transport,
       sessions,
     });
@@ -590,7 +591,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-disconnect",
       token: "test-token",
-      dataDir: "/tmp/sidecar-test",
+
       transport,
       sessions,
     });
@@ -622,7 +623,7 @@ describe("sidecar↔hub integration", () => {
       hubUrl: `ws://localhost:${pingEnv.server.port}/ws`,
       sidecarId: "sc-ping",
       token: "test-token",
-      dataDir: "/tmp/sidecar-test",
+
       transport,
       sessions,
       pingIntervalMs: 100,

@@ -54,7 +54,6 @@ const client = createWsClient({
   hubUrl,
   sidecarId,
   token,
-  dataDir,
   transport,
   sessions,
 });

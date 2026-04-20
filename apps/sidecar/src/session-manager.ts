@@ -18,7 +18,14 @@ import type {
   HarnessConfig as AgentConfig,
 } from "@interchange/types/runtime";
 
-import { loadOrGenerateKeyPair, hexEncode } from "./key-store";
+import {
+  loadOrGenerateKeyPair,
+  hexEncode,
+  persistAgentConfig,
+  clearAgentConfig,
+  scanExistingAgents,
+  type AgentKeyEntry,
+} from "./key-store";
 
 const logger = getLogger(["interchange", "sidecar", "agents"]);
 
@@ -52,6 +59,11 @@ export type CreateSessionResult = {
   keyPair: KeyPair;
 };
 
+export type RestoreResult = {
+  restored: AgentKeyEntry[];
+  failed: string[];
+};
+
 export type SessionManager = {
   createSession(config: AgentConfig): Promise<CreateSessionResult>;
   destroySession(agentAddress: string): void;
@@ -59,6 +71,7 @@ export type SessionManager = {
   deliverMessage(agentAddress: string, message: InboundMessage): void;
   hasSession(agentAddress: string): boolean;
   getAddresses(): string[];
+  restoreSessions(): Promise<RestoreResult>;
 };
 
 export function createSessionManager(
@@ -90,6 +103,8 @@ export function createSessionManager(
       if (isNew) {
         logger.info`Generated new key pair for ${agentAddress}`;
       }
+
+      await persistAgentConfig(dataDir, agentAddress, agentConfig);
 
       // Register the agent on the local transport so it can send/receive mail.
       transport.registerAgent(agentAddress, crypto);
@@ -156,6 +171,9 @@ export function createSessionManager(
     }
     session.harness.stop();
     sessions.delete(agentAddress);
+    clearAgentConfig(dataDir, agentAddress).catch((err) => {
+      logger.warn`Failed to clear persisted config for ${agentAddress}: ${String(err)}`;
+    });
     logger.info`Undeployed agent ${agentAddress}`;
   }
 
@@ -166,6 +184,9 @@ export function createSessionManager(
     }
     session.harness.stop();
     sessions.delete(agentAddress);
+    clearAgentConfig(dataDir, agentAddress).catch((err) => {
+      logger.warn`Failed to clear persisted config for ${agentAddress}: ${String(err)}`;
+    });
     logger.info`Aborted agent ${agentAddress}: ${reason}`;
   }
 
@@ -185,6 +206,30 @@ export function createSessionManager(
     return [...sessions.keys()];
   }
 
+  async function restoreSessions(): Promise<RestoreResult> {
+    const existing = await scanExistingAgents(dataDir);
+    const restored: AgentKeyEntry[] = [];
+    const failed: string[] = [];
+
+    for (const entry of existing) {
+      if (sessions.has(entry.address)) {
+        restored.push(entry);
+        continue;
+      }
+      try {
+        await createSession(entry.config);
+        restored.push(entry);
+        logger.info`Restored session for ${entry.address}`;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error`Failed to restore session for ${entry.address}: ${msg}`;
+        failed.push(entry.address);
+      }
+    }
+
+    return { restored, failed };
+  }
+
   return {
     createSession,
     destroySession,
@@ -192,5 +237,6 @@ export function createSessionManager(
     deliverMessage,
     hasSession,
     getAddresses,
+    restoreSessions,
   };
 }
