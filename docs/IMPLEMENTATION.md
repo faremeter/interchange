@@ -65,7 +65,7 @@ Beyond authenticating message senders, the harness applies content-level safety 
 All input assembled into the agent's context uses consistent structural delimiters. System prompts and skill instructions are clearly marked as trusted. External content (messages, tool responses, user input) is framed as data with explicit boundaries. The framing format is designed to be recognizable by models and resistant to delimiter injection.
 
 **Action Validation**
-Before executing tool invocations, the harness validates the action against the agent's tool policy. Validation checks include:
+Before executing tool invocations, the harness evaluates the action against the agent's grants (`GrantRule` entries where `resource` matches `tool:*`). Validation checks include:
 
 - Is this tool permitted for this agent?
 - Does the invocation match expected patterns?
@@ -237,8 +237,8 @@ The IMAP inbox is the source of truth for conversation history. Session channels
 **Prototype (hub-mediated sidecar transport):**
 
 1. Sidecar reconnects to the hub and proves ownership of agent addresses via signed challenge (see HARNESS_DESIGN.md)
-2. Hub reconciles: sends `agent.deploy` (with `restored: true`) for agents still active, `agent.undeploy` for agents no longer needed
-3. Hub flushes queued undelivered messages as `message.send` frames for restored agents
+2. Hub refreshes grants via `grants.update` frame — the sidecar must have current grants before processing any messages
+3. Hub flushes queued undelivered messages as `message.send` frames for verified agents
 4. Sidecar loads agent context from isogit and resumes operation
 
 In the prototype, the hub's database serves as the delivery queue for messages sent while the sidecar is disconnected. The sidecar's isogit repository is the source of truth for agent inference context. The hub maintains a sidecar-to-agent mapping so it knows which sidecar to route messages to for a given agent address. See HARNESS_DESIGN.md for the reconnection wire protocol.
@@ -265,7 +265,13 @@ The sidecar WebSocket protocol includes frames for agent deployment, reconnectio
 | Sidecar → Hub | `challenge.response` | Signed proofs of key ownership                   |
 | Hub → Sidecar | `challenge.failed`   | Verification failure for a specific address      |
 
-On first connection (no existing agents), the sidecar sends a `register` frame. On reconnection (agents in data directory), it sends `reconnect`. After successful challenge verification, the hub uses the same `agent.deploy` and `agent.undeploy` frames to reconcile state.
+**Grant management:**
+
+| Direction     | Frame           | Purpose                                              |
+| ------------- | --------------- | ---------------------------------------------------- |
+| Hub → Sidecar | `grants.update` | Push updated grants to a running agent (request/ack) |
+
+On first connection (no existing agents), the sidecar sends a `register` frame. On reconnection (agents in data directory), it sends `reconnect`. After successful challenge verification, verified addresses are provisionally added to the routing table so the `grants.update` round-trip can reach the sidecar. If grant refresh fails, the address is rolled back from the routing table and its queued messages are preserved for the next reconnect attempt.
 
 ### Debug and Telemetry Streams
 
@@ -470,7 +476,7 @@ An agent package is an immutable artifact built from the agent's definition repo
 - System prompt
 - Context builder configuration
 - Initial state
-- Tool policy
+- Capability grants
 
 Packages are versioned with semantic versioning. The control plane tracks which versions are deployed, active, and available for rollback.
 
@@ -516,7 +522,7 @@ The repository contains agent-specific resources:
 - System prompt
 - Context builder configuration
 - Initial state
-- Tool policy
+- Capability grants
 - Dependency references (resolved at deployment)
 
 External packages and libraries are not stored directly. Configuration files reference them, and the harness resolves these references when building the agent package for deployment.

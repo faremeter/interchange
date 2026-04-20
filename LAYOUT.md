@@ -9,7 +9,7 @@ Consumed by both the control plane and the agent runtime. Pure logic and type de
 | Package              | Purpose                                                                                                                                                                                                              |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@interchange/types` | ArkType schemas, API contract, event protocol types, and all runtime interfaces (`ContextStore`, `CryptoProvider`, `MessageTransport`, `ToolRunner`, `WalletBackend`). The stability contract between the two trees. |
-| `@interchange/authz` | Grant evaluation engine. Pattern matching, specificity ordering, condition evaluation. The hub uses it for API authorization; the harness uses it for tool policy enforcement.                                       |
+| `@interchange/authz` | Grant evaluation engine. Pattern matching, specificity ordering, condition evaluation. The hub uses it for API authorization; the harness uses it for tool-call gate enforcement.                                    |
 | `@interchange/log`   | Logging abstraction.                                                                                                                                                                                                 |
 
 Breaking changes to shared foundation packages cascade into both trees. These packages carry the strictest versioning discipline.
@@ -118,5 +118,5 @@ const harness = createHarness({
 2. `hub-*` packages never depend on agent runtime packages.
 3. Both trees depend on the shared foundation (`types`, `authz`, `log`).
 4. Environment-specific packages depend on `types` for interfaces, never on each other.
-5. The harness depends on `types` for interfaces, `inference` and `wallet` for portable logic, and `authz` for tool policy. It does not depend on any environment-specific package.
+5. The harness depends on `types` for interfaces, `inference` and `wallet` for portable logic, and `authz` for grant evaluation. It does not depend on any environment-specific package.
 6. Distribution bundles depend on the harness and a specific set of environment packages. They contain no logic of their own.
