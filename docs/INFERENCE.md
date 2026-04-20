@@ -25,8 +25,7 @@ This inverts the typical approach where each provider implements the full stream
 **Day-one providers:**
 
 - **Anthropic** — Messages API with streaming, extended thinking, prompt caching
-- **OpenAI-compatible** — Covers OpenAI, OpenRouter, and self-hosted endpoints (Ollama, vLLM)
-- **OpenCode Go/Zen** — OpenCode's inference backends
+- **OpenAI-compatible** — Covers OpenAI, OpenRouter, OpenCode Go/Zen, and self-hosted endpoints (Ollama, vLLM)
 
 ### Provider Registry
 
@@ -85,6 +84,8 @@ tool.done                 — Tool execution completed
 message.received          — Inbound message arrived (from human, agent, system)
 message.queued            — Inbound message queued for later processing
 message.correlated        — Inbound message matched to pending outbound
+
+connector.reply           — Agent reply sent to the conversation (turn complete)
 
 reactor.start             — Reactor initialized
 reactor.gate.blocked      — Reactor suspended (reason, gate type)

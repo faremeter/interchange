@@ -436,7 +436,7 @@ Returns the agent's exposed offerings with pricing metadata.
 ### POST /api/tenants/:tenantId/sessions
 Create a session
 
-Creates a new session with the specified agent. Returns a session ID and session token (JWT for WebSocket authentication). Invoker-granted capabilities become grants with source 'invoker' scoped to the session lifetime.
+Creates a new session with the specified agent. Deploys the agent to a sidecar if not already running. Invoker-granted capabilities become grants with source 'invoker' scoped to the session lifetime.
 
 Body: CreateSession
 
@@ -463,10 +463,12 @@ Returns session status, agent, creation time, and last activity.
 ### DELETE /api/tenants/:tenantId/sessions/:sessionId
 End a session
 
-Ends the session and expires all invoker-granted capabilities associated with it. Ending a user session does not undeploy the agent from its sidecar — the agent continues running and can still receive messages from other agents or new user sessions.
+Ends the session and undeploys the agent from its sidecar.
 
 204: (no content) -- Session ended
 404: ErrorResponse -- Session not found
+409: ErrorResponse -- Session already ending or ended
+502: ErrorResponse -- Sidecar unavailable for undeploy
 
 ### POST /api/tenants/:tenantId/sessions/:sessionId/messages
 Send a message to the agent
@@ -504,9 +506,9 @@ Aborts the agent's current inference or tool execution.
 ### GET /api/tenants/:tenantId/sessions/:sessionId/status
 Get session status
 
-Returns the current session status: idle, busy, retry (with attempt info), or waiting_approval.
+Not yet implemented (returns 501).
 
-200: SessionStatus -- Session status
+501: ErrorResponse -- Not implemented
 404: ErrorResponse -- Session not found
 
 ### GET /api/tenants/:tenantId/sessions/:sessionId/events
@@ -848,7 +850,7 @@ Source: packages/types/src/principals.ts
 Source: packages/types/src/observability.ts
 
 ### MessageResponse
-`{ createdAt: string, id: string, parts: { id: string, type: "file" | "patch" | "reasoning" | "snapshot" | "step-finish" | "step-start" | "text" | "tool", content?: string | null, metadata?: { [string]: unknown } | null }[], role: "assistant" | "user", sessionId: string }`
+`{ createdAt: string, id: string, parts: { id: string, type: "file" | "patch" | "reasoning" | "snapshot" | "step-finish" | "step-start" | "text" | "tool", content?: string | null, metadata?: { [string]: unknown } | null }[], role: "assistant" | "user", sessionId: string, status: "pending" | "delivered" | "failed" }`
 Source: packages/types/src/sessions.ts
 
 ### MetricsResponse
@@ -884,7 +886,7 @@ Source: packages/types/src/agents.ts
 Source: packages/types/src/sessions.ts
 
 ### SessionResponse
-`{ agentId: string, createdAt: string, id: string, principalId: string, status: "busy" | "idle" | "retry" | "waiting_approval", tenantId: string, updatedAt: string, lastActivityAt?: string | null, sessionToken?: string }`
+`{ agentId: string, createdAt: string, id: string, principalId: string, status: string, tenantId: string, updatedAt: string, lastActivityAt?: string | null }`
 Source: packages/types/src/sessions.ts
 
 ### SessionStatus

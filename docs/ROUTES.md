@@ -120,36 +120,30 @@ This "fire-and-forget via REST, stream via channel" pattern matches the architec
 
 The session channel is a real-time overlay for interactive use cases. It is not fully expressible in the OpenAPI spec, so the protocol details are documented here.
 
-### WebSocket
+### SSE Event Stream
 
-Primary transport at `wss://.../api/tenants/:tenantId/sessions/:sessionId/stream`.
+The current implementation uses Server-Sent Events at `GET .../api/tenants/:tenantId/sessions/:sessionId/events`. Client-to-server messages use the REST `POST .../messages` endpoint.
 
-Authentication: The client sends the session token (JWT from session creation) in the first message after connection.
-
-Message format: JSON objects with a `type` field and `data` payload.
+Event format: JSON objects with a `type` field and `data` payload.
 
 ```json
 {"type": "inference.start", "data": {"model": "claude-sonnet-4-20250514"}}
-{"type": "inference.token", "data": {"token": "Hello", "seq": 1}}
-{"type": "inference.done", "data": {"seq": 42, "messageId": "msg_abc123"}}
-{"type": "user.message", "data": {"content": "What's the weather?"}}
-{"type": "tool.start", "data": {"toolId": "web_search", "callId": "call_xyz"}}
-{"type": "tool.result", "data": {"callId": "call_xyz", "output": "..."}}
-{"type": "approval.requested", "data": {"approvalId": "apr_xyz", "action": "..."}}
-{"type": "debug.state", "data": {"contextTokens": 4096}}
-{"type": "system.ping", "data": {"ts": 1699999999}}
-{"type": "system.pong", "data": {"ts": 1699999999}}
+{"type": "inference.text.delta", "data": {"token": "Hello"}}
+{"type": "inference.thinking.delta", "data": {"token": "Let me think..."}}
+{"type": "inference.tool_call.start", "data": {"name": "web_search", "callId": "call_xyz"}}
+{"type": "inference.done", "data": {"message": {...}, "usage": {...}}}
+{"type": "tool.start", "data": {"callId": "call_xyz"}}
+{"type": "tool.done", "data": {"result": {"callId": "call_xyz", "content": "..."}}}
+{"type": "connector.reply", "data": {}}
+{"type": "reactor.done", "data": {}}
+{"type": "reactor.error", "data": {"error": "...", "fatal": true}}
 ```
 
-Heartbeats: Both sides send `system.ping`/`system.pong` every 30 seconds. Connections without activity for 30 seconds are terminated.
+Reconnection: Session channels are ephemeral. On disconnect, the client reconnects and fetches missed messages via the REST `GET .../messages` endpoint. No token-level resume -- tokens are ephemeral previews of content that is persisted as complete messages.
 
-Reconnection: Session channels are ephemeral. On disconnect, the client reconnects, re-authenticates, and fetches missed messages via the REST endpoint. No token-level resume -- tokens are ephemeral previews of content that is persisted as complete messages.
+### WebSocket Session Channel (Future)
 
-### SSE Fallback
-
-For clients that cannot use WebSocket (some embedded environments, restrictive firewalls): `GET .../api/tenants/:tenantId/sessions/:sessionId/events`.
-
-Same event types as WebSocket, server-to-client only. Client-to-server messages use the REST `POST .../messages` endpoint.
+The architecture specifies a WebSocket session channel at `wss://.../api/tenants/:tenantId/sessions/:sessionId/stream` with JWT authentication. This is not yet implemented. The SSE endpoint serves all current user-facing streaming needs.
 
 ### Debug and Telemetry Streams
 
