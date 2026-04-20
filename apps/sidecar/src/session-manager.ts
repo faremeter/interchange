@@ -171,6 +171,7 @@ export function createSessionManager(
     }
     session.harness.stop();
     sessions.delete(agentAddress);
+    transport.unregisterAgent(agentAddress);
     clearAgentConfig(dataDir, agentAddress).catch((err) => {
       logger.warn`Failed to clear persisted config for ${agentAddress}: ${String(err)}`;
     });
@@ -184,6 +185,7 @@ export function createSessionManager(
     }
     session.harness.stop();
     sessions.delete(agentAddress);
+    transport.unregisterAgent(agentAddress);
     clearAgentConfig(dataDir, agentAddress).catch((err) => {
       logger.warn`Failed to clear persisted config for ${agentAddress}: ${String(err)}`;
     });
