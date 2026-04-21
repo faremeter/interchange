@@ -92,6 +92,12 @@ function createMockSessionManager(): SessionManager & {
       return { restored: [], failed: [] };
     },
     applyDeployPack: () => Promise.resolve(),
+    createStatePack: () =>
+      Promise.resolve({
+        pack: new Uint8Array([1, 2, 3]),
+        commitSha: "abc123",
+        ref: "refs/heads/main",
+      }),
   };
   return mock;
 }

@@ -26,6 +26,7 @@ export type PackReceiver = {
   } | null;
   hasTransfer(transferId: string): boolean;
   cancel(transferId: string): void;
+  cancelByAgent(agentAddress: string): void;
   reset(): void;
 };
 
@@ -98,6 +99,13 @@ export function createPackReceiver(): PackReceiver {
     }
   }
 
+  function cancelByAgent(agentAddress: string): void {
+    const transferId = agentTransfers.get(agentAddress);
+    if (transferId !== undefined) {
+      cleanup(transferId, agentAddress);
+    }
+  }
+
   function cleanup(transferId: string, agentAddress: string): void {
     transfers.delete(transferId);
     if (agentTransfers.get(agentAddress) === transferId) {
@@ -110,5 +118,5 @@ export function createPackReceiver(): PackReceiver {
     agentTransfers.clear();
   }
 
-  return { handlePush, handleDone, hasTransfer, cancel, reset };
+  return { handlePush, handleDone, hasTransfer, cancel, cancelByAgent, reset };
 }

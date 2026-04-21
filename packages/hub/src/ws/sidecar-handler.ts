@@ -7,11 +7,14 @@
 import { randomBytes } from "node:crypto";
 import { getLogger } from "@interchange/log";
 import { verifyEd25519 } from "@interchange/crypto-node";
-import { chunkPack } from "@interchange/pack-transport";
+import { chunkPack, createPackReceiver } from "@interchange/pack-transport";
+import type { PackRejectReason } from "@interchange/types/sidecar";
 import type {
   SidecarFrame,
   HubFrame,
   WireAttachment,
+  PackPushFrame,
+  PackDoneFrame,
 } from "@interchange/types/sidecar";
 import type { AbortReason, HarnessConfig } from "@interchange/types/runtime";
 import type { GrantRule } from "@interchange/types/authz";
@@ -54,6 +57,7 @@ export type SidecarRouter = {
     ref: string,
     commitSha: string,
   ): Promise<void>;
+  sendSyncRequest(agentAddress: string): void;
 
   subscribeSession(
     sessionId: string,
@@ -81,6 +85,14 @@ export type SidecarRouterConfig = {
   disconnectQueueMaxSize?: number;
   disconnectQueueTTLMs?: number;
   pingTimeoutMs?: number;
+  onStatePackReceived?: (
+    agentAddress: string,
+    pack: Uint8Array,
+    ref: string,
+    commitSha: string,
+  ) => Promise<
+    { accepted: true } | { accepted: false; reason: PackRejectReason }
+  >;
 };
 
 // Minimal handle so the router doesn't depend on a specific WebSocket impl.
@@ -111,6 +123,7 @@ export function createSidecarRouter(
     disconnectQueueMaxSize = DEFAULT_DISCONNECT_QUEUE_MAX_SIZE,
     disconnectQueueTTLMs = DEFAULT_DISCONNECT_QUEUE_TTL_MS,
     pingTimeoutMs = DEFAULT_PING_TIMEOUT_MS,
+    onStatePackReceived,
   } = config;
 
   // ws handle → registered connection
@@ -156,6 +169,9 @@ export function createSidecarRouter(
   };
   const pendingPacks = new Map<string, PendingPack>();
   let packCounter = 0;
+
+  // Receives state packs pushed from sidecars.
+  const statePackReceiver = createPackReceiver();
 
   let requestCounter = 0;
 
@@ -271,8 +287,10 @@ export function createSidecarRouter(
         rejectPackPending(frame.transferId, frame.reason);
         break;
       case "pack.push":
+        handleStatePackPush(ws, frame);
+        break;
       case "pack.done":
-        logger.warn`Unexpected ${frame.type} from sidecar (hub is not a pack receiver yet)`;
+        void handleStatePackDone(ws, frame);
         break;
       default:
         logger.warn`Unknown frame type from sidecar: ${(frame as { type: string }).type}`;
@@ -678,6 +696,11 @@ export function createSidecarRouter(
       pack.reject(`Sidecar ${conn.sidecarId} disconnected`);
     }
 
+    // Cancel any in-flight inbound state transfers from this sidecar.
+    for (const addr of conn.agentAddresses) {
+      statePackReceiver.cancelByAgent(addr);
+    }
+
     if (onSidecarDisconnect !== undefined) {
       onSidecarDisconnect([...conn.agentAddresses]);
     }
@@ -763,6 +786,83 @@ export function createSidecarRouter(
     clearTimeout(entry.timer);
     pendingPacks.delete(transferId);
     entry.reject(reason);
+  }
+
+  function handleStatePackPush(ws: WsHandle, frame: PackPushFrame): void {
+    const conn = connections.get(ws);
+    if (conn === undefined) return;
+    if (!conn.agentAddresses.has(frame.agentAddress)) {
+      logger.warn`Received pack.push for unrouted agent ${frame.agentAddress}`;
+      return;
+    }
+
+    const reason = statePackReceiver.handlePush(frame);
+    if (reason !== null) {
+      conn.send({
+        type: "pack.reject",
+        agentAddress: frame.agentAddress,
+        transferId: frame.transferId,
+        reason,
+      });
+    }
+  }
+
+  async function handleStatePackDone(
+    ws: WsHandle,
+    frame: PackDoneFrame,
+  ): Promise<void> {
+    const conn = connections.get(ws);
+    if (conn === undefined) return;
+    if (!conn.agentAddresses.has(frame.agentAddress)) {
+      logger.warn`Received pack.done for unrouted agent ${frame.agentAddress}`;
+      return;
+    }
+
+    const result = statePackReceiver.handleDone(frame);
+    if (result === null) {
+      conn.send({
+        type: "pack.reject",
+        agentAddress: frame.agentAddress,
+        transferId: frame.transferId,
+        reason: "corrupt",
+      });
+      return;
+    }
+
+    if (onStatePackReceived === undefined) {
+      conn.send({
+        type: "pack.ack",
+        agentAddress: frame.agentAddress,
+        transferId: frame.transferId,
+      });
+      return;
+    }
+
+    const verdict = await onStatePackReceived(
+      frame.agentAddress,
+      result.pack,
+      result.ref,
+      result.commitSha,
+    );
+
+    // Connection may have closed during async verification.
+    const currentConn = connections.get(ws);
+    if (currentConn === undefined) return;
+
+    if (verdict.accepted) {
+      currentConn.send({
+        type: "pack.ack",
+        agentAddress: frame.agentAddress,
+        transferId: frame.transferId,
+      });
+    } else {
+      currentConn.send({
+        type: "pack.reject",
+        agentAddress: frame.agentAddress,
+        transferId: frame.transferId,
+        reason: verdict.reason,
+      });
+    }
   }
 
   // Pack transfers may take longer than session requests due to data volume.
@@ -1079,6 +1179,24 @@ export function createSidecarRouter(
     }));
   }
 
+  function sendSyncRequest(agentAddress: string): void {
+    const ws = addressIndex.get(agentAddress);
+    if (ws === undefined) {
+      throw new Error(`No sidecar connected for agent "${agentAddress}"`);
+    }
+    const conn = connections.get(ws);
+    if (conn === undefined) {
+      throw new Error(`No sidecar connected for agent "${agentAddress}"`);
+    }
+
+    const transferId = `sync-${++packCounter}`;
+    conn.send({
+      type: "sync.request",
+      agentAddress,
+      transferId,
+    });
+  }
+
   return {
     handleOpen,
     handleMessage,
@@ -1090,6 +1208,7 @@ export function createSidecarRouter(
     sendMessage,
     sendGrantsUpdate,
     sendPack,
+    sendSyncRequest,
     subscribeSession,
     getConnectedSidecars,
     getRoutableAddresses,
