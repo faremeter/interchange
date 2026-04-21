@@ -686,11 +686,15 @@ export function createSidecarRouter(
         }
 
         // Create a queue entry so messages can accumulate while the
-        // sidecar is disconnected. The entry expires after the TTL.
-        const timer = setTimeout(() => {
-          disconnectedAgents.delete(addr);
-        }, disconnectQueueTTLMs);
-        disconnectedAgents.set(addr, { queue: [], timer });
+        // sidecar is disconnected. Skip if the agent is being undeployed
+        // or has a pending session start — there is no point queuing
+        // messages for an agent being torn down or one that never started.
+        if (!pendingUndeploys.has(addr) && !pendingSessionStarts.has(addr)) {
+          const timer = setTimeout(() => {
+            disconnectedAgents.delete(addr);
+          }, disconnectQueueTTLMs);
+          disconnectedAgents.set(addr, { queue: [], timer });
+        }
       }
     }
     connections.delete(ws);
@@ -1212,6 +1216,7 @@ export function createSidecarRouter(
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         pendingSessionStarts.delete(agentAddress);
+        removeAgentAddress(ws, agentAddress);
         reject(
           new Error(
             `Session start for "${agentAddress}" timed out after ${requestTimeoutMs}ms`,
@@ -1226,6 +1231,7 @@ export function createSidecarRouter(
           resolve();
         },
         reject(error: string) {
+          removeAgentAddress(ws, agentAddress);
           reject(new Error(error));
         },
         timer,

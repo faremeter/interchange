@@ -319,6 +319,81 @@ describe("sidecar↔hub integration", () => {
     }
   });
 
+  test("session.start starts the harness", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const client = createWsClient({
+      hubUrl: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-start",
+      token: "test-token",
+      transport,
+      sessions,
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getConnectedSidecars().includes("sc-start"),
+      );
+
+      await env.router.sendAgentDeploy(
+        "start-agent@test.interchange",
+        TEST_CONFIG,
+      );
+      expect(sessions.started).toHaveLength(0);
+
+      await env.router.sendSessionStart("start-agent@test.interchange");
+      expect(sessions.started).toHaveLength(1);
+      expect(sessions.started[0]).toBe("start-agent@test.interchange");
+    } finally {
+      client.close();
+      await waitFor(
+        () => !env.router.getConnectedSidecars().includes("sc-start"),
+      );
+    }
+  });
+
+  test("session.start failure removes agent from routing table", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const client = createWsClient({
+      hubUrl: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-start-fail",
+      token: "test-token",
+      transport,
+      sessions,
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getConnectedSidecars().includes("sc-start-fail"),
+      );
+
+      await env.router.sendAgentDeploy(
+        "start-fail@test.interchange",
+        TEST_CONFIG,
+      );
+
+      // Make startSession throw on the next call.
+      sessions.shouldThrow = "deploy tree missing";
+
+      await expect(
+        env.router.sendSessionStart("start-fail@test.interchange"),
+      ).rejects.toThrow("deploy tree missing");
+
+      // Failed session start should remove the agent from routing.
+      expect(env.router.getRoutableAddresses()).not.toContain(
+        "start-fail@test.interchange",
+      );
+    } finally {
+      client.close();
+      await waitFor(
+        () => !env.router.getConnectedSidecars().includes("sc-start-fail"),
+      );
+    }
+  });
+
   test("sidecar forwards agent events to hub", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
