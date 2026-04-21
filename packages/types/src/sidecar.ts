@@ -117,6 +117,26 @@ export type SessionErrorFrame = {
   error: string;
 };
 
+/**
+ * Acknowledges that the inference session has started for a provisioned
+ * agent. Sent in response to a session.start frame after the harness is
+ * running.
+ */
+export type SessionStartAckFrame = {
+  type: "session.start.ack";
+  agentAddress: string;
+};
+
+/**
+ * Acknowledges that an agent has been fully undeployed: harness stopped,
+ * state pushed (best-effort), and directory deleted.
+ */
+export type AgentUndeployAckFrame = {
+  type: "agent.undeploy.ack";
+  agentAddress: string;
+  statePushed: boolean;
+};
+
 /** All frame types the sidecar sends to the hub. */
 export type SidecarFrame =
   | RegisterFrame
@@ -129,6 +149,8 @@ export type SidecarFrame =
   | PingFrame
   | SessionAckFrame
   | SessionErrorFrame
+  | SessionStartAckFrame
+  | AgentUndeployAckFrame
   | PackPushFrame
   | PackDoneFrame
   | PackAckFrame
@@ -163,12 +185,24 @@ export type AgentDeployFrame = {
 };
 
 /**
- * Remove an agent from this sidecar. The sidecar tears down the harness.
+ * Remove an agent from this sidecar. The sidecar tears down the harness,
+ * pushes state to the hub (best-effort), deletes the agent directory, and
+ * responds with agent.undeploy.ack.
  */
 export type AgentUndeployFrame = {
   type: "agent.undeploy";
   agentAddress: string;
   reason: string;
+};
+
+/**
+ * Start the inference session for a provisioned agent. Sent after the
+ * deploy pack has been applied so the harness can read deploy-tree tools
+ * and prompt from disk.
+ */
+export type SessionStartFrame = {
+  type: "session.start";
+  agentAddress: string;
 };
 
 /**
@@ -245,6 +279,7 @@ export type HubFrame =
   | MailInboundFrame
   | AgentDeployFrame
   | AgentUndeployFrame
+  | SessionStartFrame
   | ChallengeFrame
   | ChallengeFailedFrame
   | PongFrame
