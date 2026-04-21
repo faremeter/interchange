@@ -16,6 +16,7 @@ import type {
   ChallengeFrame,
   ChallengeFailedFrame,
   SessionAbortFrame,
+  SessionStartFrame,
   MessageSendFrame,
   GrantsUpdateFrame,
   PackPushFrame,
@@ -70,6 +71,10 @@ export function createWsClient(config: WsClientConfig): WsClient {
 
   const packReceiver = createPackReceiver();
 
+  // Serialize frame processing so async handlers (deploy, undeploy, abort)
+  // cannot race against each other.
+  let messageQueue: Promise<void> = Promise.resolve();
+
   // Outbound frames queued while disconnected.
   const MAX_QUEUE = 1024;
   const queue: SidecarFrame[] = [];
@@ -108,14 +113,14 @@ export function createWsClient(config: WsClientConfig): WsClient {
 
   async function handleAgentDeploy(frame: AgentDeployFrame): Promise<void> {
     try {
-      const result = await sessions.createSession(frame.config);
+      const result = await sessions.provisionAgent(frame.config);
       agentKeys.set(frame.agentAddress, result.keyPair);
       send({
         type: "agent.deploy.ack",
         agentAddress: frame.agentAddress,
         publicKey: result.publicKey,
       });
-      logger.info`Deployed agent ${frame.agentAddress} (session ${result.sessionId})`;
+      logger.info`Provisioned agent ${frame.agentAddress}`;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       send({
@@ -126,15 +131,84 @@ export function createWsClient(config: WsClientConfig): WsClient {
     }
   }
 
-  function handleAgentUndeploy(frame: AgentUndeployFrame): void {
+  async function handleSessionStart(frame: SessionStartFrame): Promise<void> {
     try {
-      sessions.destroySession(frame.agentAddress);
-      agentKeys.delete(frame.agentAddress);
-      logger.info`Undeployed agent ${frame.agentAddress}: ${frame.reason}`;
+      await sessions.startSession(frame.agentAddress);
+      send({
+        type: "session.start.ack",
+        agentAddress: frame.agentAddress,
+      });
+      logger.info`Started session for ${frame.agentAddress}`;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      send({
+        type: "agent.error",
+        agentAddress: frame.agentAddress,
+        error: message,
+      });
+    }
+  }
+
+  async function handleAgentUndeploy(frame: AgentUndeployFrame): Promise<void> {
+    let statePushed = false;
+
+    // Stop the harness first.
+    try {
+      await sessions.destroySession(frame.agentAddress);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.warn`Failed to undeploy ${frame.agentAddress}: ${msg}`;
+      logger.warn`Failed to stop session for ${frame.agentAddress}: ${msg}`;
     }
+
+    // Best-effort state push to the hub before deleting the directory.
+    // statePushed reflects whether we sent the pack frames, not whether
+    // the hub acknowledged them. We intentionally skip waiting for
+    // pack.ack here to avoid blocking the undeploy on a round-trip that
+    // may never complete if the hub is shutting down.
+    try {
+      const { pack, commitSha, ref } = await sessions.createStatePack(
+        frame.agentAddress,
+      );
+
+      for (const chunk of chunkPack(pack)) {
+        send({
+          type: "pack.push",
+          agentAddress: frame.agentAddress,
+          transferId: `undeploy-${frame.agentAddress}`,
+          seq: chunk.seq,
+          data: chunk.data,
+        });
+      }
+      send({
+        type: "pack.done",
+        agentAddress: frame.agentAddress,
+        transferId: `undeploy-${frame.agentAddress}`,
+        ref,
+        commitSha,
+      });
+
+      statePushed = true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn`State push failed for ${frame.agentAddress}: ${msg}`;
+    }
+
+    // Delete the agent directory.
+    try {
+      await sessions.deleteAgentDir(frame.agentAddress);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn`Failed to delete agent directory for ${frame.agentAddress}: ${msg}`;
+    }
+
+    agentKeys.delete(frame.agentAddress);
+
+    send({
+      type: "agent.undeploy.ack",
+      agentAddress: frame.agentAddress,
+      statePushed,
+    });
+    logger.info`Undeployed agent ${frame.agentAddress}: ${frame.reason}`;
   }
 
   function handleChallenge(frame: ChallengeFrame): void {
@@ -170,9 +244,9 @@ export function createWsClient(config: WsClientConfig): WsClient {
     logger.warn`Challenge failed for ${frame.address}: ${frame.reason}`;
   }
 
-  function handleSessionAbort(frame: SessionAbortFrame): void {
+  async function handleSessionAbort(frame: SessionAbortFrame): Promise<void> {
     try {
-      sessions.abortSession(frame.agentAddress, frame.reason);
+      await sessions.abortSession(frame.agentAddress, frame.reason);
       send({ type: "session.ack", requestId: frame.requestId });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -280,8 +354,6 @@ export function createWsClient(config: WsClientConfig): WsClient {
       const { pack, commitSha, ref } =
         await sessions.createStatePack(agentAddress);
 
-      // Register pending entry before sending frames so that a synchronous
-      // pack.ack (e.g. in tests or loopback transports) resolves correctly.
       const ackPromise = new Promise<void>((resolve, reject) => {
         pendingStatePacks.set(transferId, {
           resolve,
@@ -356,8 +428,11 @@ export function createWsClient(config: WsClientConfig): WsClient {
       case "agent.deploy":
         await handleAgentDeploy(frame);
         break;
+      case "session.start":
+        await handleSessionStart(frame);
+        break;
       case "agent.undeploy":
-        handleAgentUndeploy(frame);
+        await handleAgentUndeploy(frame);
         break;
       case "challenge":
         handleChallenge(frame);
@@ -369,7 +444,7 @@ export function createWsClient(config: WsClientConfig): WsClient {
         handleChallengeFailed(frame);
         break;
       case "session.abort":
-        handleSessionAbort(frame);
+        await handleSessionAbort(frame);
         break;
       case "message.send":
         handleMessageSend(frame);
@@ -414,36 +489,26 @@ export function createWsClient(config: WsClientConfig): WsClient {
     ws.addEventListener("open", () => {
       logger.info`Connected to hub at ${hubUrl}`;
 
-      // Start keepalive pings. Record the current time as the initial
-      // pong timestamp so the first interval check doesn't immediately
-      // declare the connection dead.
       lastPongAt = Date.now();
       pingTimer = setInterval(() => {
         if (Date.now() - lastPongAt >= pingIntervalMs * 2) {
           logger.warn`Hub pong timeout, closing connection`;
-          // Clear the timer immediately so it doesn't keep firing while
-          // the close event is pending.
           if (pingTimer !== null) {
             clearInterval(pingTimer);
             pingTimer = null;
           }
-          // Close the socket directly (not the exported close()) so the
-          // close event listener triggers reconnection.
           ws?.close();
           return;
         }
         send({ type: "ping" });
       }, pingIntervalMs);
 
-      // Clear any in-flight pack transfers from the previous connection.
       packReceiver.reset();
       for (const [id, entry] of pendingStatePacks) {
         pendingStatePacks.delete(id);
         entry.reject("Connection lost");
       }
 
-      // Restore sessions from disk before announcing to the hub.
-      // Harnesses must be running before the hub starts routing messages.
       void (async () => {
         try {
           const { restored, failed } = await sessions.restoreSessions();
@@ -483,7 +548,7 @@ export function createWsClient(config: WsClientConfig): WsClient {
 
     ws.addEventListener("message", (event) => {
       if (typeof event.data === "string") {
-        void handleMessage(event.data);
+        messageQueue = messageQueue.then(() => handleMessage(event.data));
       }
     });
 
