@@ -25,6 +25,7 @@ import {
 } from "@interchange/hub";
 import { createDeployPack } from "@interchange/storage-isogit";
 import type { HarnessConfig } from "@interchange/types/runtime";
+import { sanitizeAddress } from "../../apps/sidecar/src/session-manager";
 import type { Subprocess } from "bun";
 
 // ---------------------------------------------------------------------------
@@ -38,7 +39,11 @@ async function waitFor(
   const start = Date.now();
   while (!(await predicate())) {
     if (Date.now() - start > timeoutMs) {
-      throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+      const ctx =
+        sidecarStderr.length > 0
+          ? `\nsidecar stderr:\n${sidecarStderr.slice(-20).join("")}`
+          : "";
+      throw new Error(`waitFor timed out after ${timeoutMs}ms${ctx}`);
     }
     await new Promise((r) => setTimeout(r, 50));
   }
@@ -60,8 +65,14 @@ async function makeTempDir(prefix: string): Promise<string> {
 // deploy-tree tools through to inference.
 // ---------------------------------------------------------------------------
 
+type InferenceTool = {
+  name: string;
+  description?: string;
+  input_schema?: Record<string, unknown>;
+};
+
 type InferenceRequest = {
-  tools?: { name: string }[];
+  tools?: InferenceTool[];
 };
 
 function startMockInference(): {
@@ -144,7 +155,7 @@ type HubEnv = {
   router: SidecarRouter;
   agentEvents: { addr: string; sid: string; event: unknown }[];
   deployAcks: Map<string, string>;
-  statePacks: { agentAddress: string; commitSha: string }[];
+  statePacks: { agentAddress: string; ref: string; commitSha: string }[];
 };
 
 function startHub(): HubEnv {
@@ -160,8 +171,8 @@ function startHub(): HubEnv {
     async onAgentDeployAck(agentAddress, publicKey) {
       deployAcks.set(agentAddress, publicKey);
     },
-    async onStatePackReceived(agentAddress, _pack, _ref, commitSha) {
-      statePacks.push({ agentAddress, commitSha });
+    async onStatePackReceived(agentAddress, _pack, ref, commitSha) {
+      statePacks.push({ agentAddress, ref, commitSha });
       return { accepted: true };
     },
   });
@@ -254,6 +265,8 @@ let hub: HubEnv;
 let inference: ReturnType<typeof startMockInference>;
 let sidecarProc: Subprocess;
 let sidecarDataDir: string;
+const sidecarStderr: string[] = [];
+let firstDeployPublicKey: string;
 
 const AGENT_ADDRESS = "test-agent@integration.interchange";
 const SIDECAR_ID = "sc-integration-1";
@@ -278,6 +291,19 @@ beforeAll(async () => {
     stdout: "pipe",
     stderr: "pipe",
   });
+
+  // Drain stderr into a rolling buffer for diagnostics on timeout.
+  const stderr = sidecarProc.stderr as ReadableStream<Uint8Array>;
+  (async () => {
+    const reader = stderr.getReader();
+    const decoder = new TextDecoder();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sidecarStderr.push(decoder.decode(value));
+      if (sidecarStderr.length > 50) sidecarStderr.shift();
+    }
+  })();
 
   // Wait for the sidecar to register with the hub.
   await waitFor(() => hub.router.getConnectedSidecars().length > 0);
@@ -328,6 +354,7 @@ describe("deploy flow integration", () => {
     if (publicKey === undefined) throw new Error("unreachable");
     expect(typeof publicKey).toBe("string");
     expect(publicKey.length).toBeGreaterThan(0);
+    firstDeployPublicKey = publicKey;
   });
 
   test("push deploy pack with prompt and skills", async () => {
@@ -361,10 +388,7 @@ describe("deploy flow integration", () => {
     );
 
     // Verify the deploy tree landed on the sidecar's disk.
-    const agentDir = path.join(
-      sidecarDataDir,
-      AGENT_ADDRESS.replace(/@/g, "_at_").replace(/[^a-zA-Z0-9_-]/g, "_"),
-    );
+    const agentDir = path.join(sidecarDataDir, sanitizeAddress(AGENT_ADDRESS));
 
     await waitFor(async () => {
       try {
@@ -394,9 +418,10 @@ describe("deploy flow integration", () => {
     // before the pack arrived. Undeploy and re-deploy so the new session reads
     // the deploy tree (prompt + skills) from disk.
     //
-    // Both frames travel over the same WS connection, so the sidecar processes
-    // the undeploy before the deploy. sendAgentDeploy awaits the deploy ack,
-    // which confirms the new session is running.
+    // Clear the ack entry so we can detect when the second deploy ack arrives.
+    // sendAgentDeploy awaits an ack internally, so by the time it resolves the
+    // sidecar has processed both the undeploy and the deploy.
+    hub.deployAcks.delete(AGENT_ADDRESS);
     hub.router.sendAgentUndeploy(AGENT_ADDRESS, "redeploy");
 
     const config: HarnessConfig = {
@@ -420,13 +445,18 @@ describe("deploy flow integration", () => {
 
     await hub.router.sendAgentDeploy(AGENT_ADDRESS, config);
 
-    // Verify the second deploy ack was received.
+    // The ack entry was cleared before undeploy, so its presence confirms
+    // this is a fresh ack from the second deploy, not a stale leftover.
+    // A new deploy should produce a new key pair — the agent is a new instance.
     const publicKey = hub.deployAcks.get(AGENT_ADDRESS);
     expect(publicKey).toBeDefined();
+    if (publicKey === undefined) throw new Error("unreachable");
+    expect(publicKey).not.toBe(firstDeployPublicKey);
   });
 
   test("send message and verify inference receives deploy tools", async () => {
     const requestsBefore = inference.requests.length;
+    const eventsBefore = hub.agentEvents.length;
 
     // Send a user message to the deployed agent.
     await hub.router.sendMessage(
@@ -440,16 +470,34 @@ describe("deploy flow integration", () => {
 
     const req = inference.requests[inference.requests.length - 1];
     if (req === undefined) throw new Error("unreachable");
-    const toolNames = (req.tools ?? []).map((t) => t.name);
+    const tools = req.tools ?? [];
+    const toolNames = tools.map((t) => t.name);
 
     // The inference request should include both the built-in message tools
     // and the deploy-tree "greet" tool.
     expect(toolNames).toContain("greet");
     expect(toolNames).toContain("message_send");
 
-    // Wait for agent events to arrive at the hub (inference.done).
-    await waitFor(() => hub.agentEvents.length > 0);
-    expect(hub.agentEvents.length).toBeGreaterThan(0);
+    // Verify the full tool definition survived the pipeline intact.
+    const greetTool = tools.find((t) => t.name === "greet");
+    expect(greetTool).toBeDefined();
+    if (greetTool === undefined) throw new Error("unreachable");
+    expect(greetTool.description).toBe("Greet someone by name");
+    expect(greetTool.input_schema).toEqual({
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Name to greet" },
+      },
+      required: ["name"],
+    });
+
+    // Wait for agent events to arrive at the hub.
+    await waitFor(() => hub.agentEvents.length > eventsBefore);
+
+    const lastEvent = hub.agentEvents[hub.agentEvents.length - 1];
+    if (lastEvent === undefined) throw new Error("unreachable");
+    expect(lastEvent.addr).toBe(AGENT_ADDRESS);
+    expect(lastEvent.sid).toBe("ses_integration-2");
   });
 
   test("sync request triggers state push", async () => {
@@ -460,7 +508,10 @@ describe("deploy flow integration", () => {
     await waitFor(() => hub.statePacks.length > packCountBefore);
 
     const last = hub.statePacks[hub.statePacks.length - 1];
-    expect(last?.agentAddress).toBe(AGENT_ADDRESS);
+    if (last === undefined) throw new Error("unreachable");
+    expect(last.agentAddress).toBe(AGENT_ADDRESS);
+    expect(last.ref).toMatch(/^refs\//);
+    expect(last.commitSha).toMatch(/^[0-9a-f]{40}$/);
     expect(hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
   });
 });
