@@ -6,6 +6,7 @@ import {
   createApp,
   createAuth,
   createEventCollectorRegistry,
+  createSessionService,
   createSidecarRouter,
 } from "@interchange/hub";
 import type { InferenceEvent } from "@interchange/types/runtime";
@@ -116,10 +117,16 @@ const sidecarRouter = createSidecarRouter({
   },
 });
 
+const sessionService = createSessionService({
+  sidecarRouter,
+  agentRepoStore,
+});
+
 const app = createApp({
   auth,
   db,
   sidecarRouter,
+  sessionService,
   eventCollectors,
   sidecarWsHandler: upgradeWebSocket((_c) => {
     let handle: import("@interchange/hub").WsHandle;

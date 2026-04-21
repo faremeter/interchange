@@ -21,6 +21,7 @@ import {
   ErrorResponse,
 } from "@interchange/types";
 import type { ProviderConfig } from "@interchange/types/runtime";
+import { SessionLaunchError } from "../session-service";
 
 import type { TenantEnv } from "../context";
 import { requireGrant, idResource } from "../middleware/grant";
@@ -105,7 +106,7 @@ app.post(
     const tenant = c.get("tenant");
     const principal = c.get("principal");
     const db = c.get("db");
-    const sidecarRouter = c.get("sidecarRouter");
+    const sessionService = c.get("sessionService");
     const body = c.req.valid("json");
 
     const row = await db.query.agent.findFirst({
@@ -268,18 +269,31 @@ app.post(
     const grantStore = c.get("grantStore");
     const grants = await grantStore.collectGrants(row.principalId, tenant.id);
 
+    const skills = (row.skills ?? []) as {
+      name: string;
+      definition: Record<string, unknown>;
+    }[];
+
     try {
-      await sidecarRouter.sendAgentDeploy(agentAddress, {
-        sessionId,
-        agentId: row.id,
-        tenantId: tenant.id,
-        principalId: row.principalId,
+      await sessionService.launchSession({
         agentAddress,
-        systemPrompt: row.systemPrompt,
-        tools: [],
-        grants,
-        providers,
-        defaultModel: modelConfig.defaultModel,
+        agentId: row.id,
+        config: {
+          sessionId,
+          agentId: row.id,
+          tenantId: tenant.id,
+          principalId: row.principalId,
+          agentAddress,
+          systemPrompt: row.systemPrompt,
+          tools: [],
+          grants,
+          providers,
+          defaultModel: modelConfig.defaultModel,
+        },
+        deployContent: {
+          systemPrompt: row.systemPrompt,
+          skills,
+        },
       });
     } catch (err) {
       eventCollectors.abandon(sessionId);
@@ -288,6 +302,15 @@ app.post(
         .update(agentSession)
         .set({ status: "ended", endedAt: new Date(), updatedAt: new Date() })
         .where(eq(agentSession.id, sessionId));
+
+      const leaked = err instanceof SessionLaunchError && err.leakedAgent;
+
+      if (leaked) {
+        await db
+          .update(agent)
+          .set({ status: "error", updatedAt: new Date() })
+          .where(eq(agent.id, row.id));
+      }
 
       return c.json(
         {
@@ -450,7 +473,7 @@ app.delete(
   async (c) => {
     const tenant = c.get("tenant");
     const db = c.get("db");
-    const sidecarRouter = c.get("sidecarRouter");
+    const sessionService = c.get("sessionService");
     const sessionId = c.req.param("sessionId");
 
     const sessionRow = await db.query.agentSession.findFirst({
@@ -501,7 +524,7 @@ app.delete(
       .where(eq(agentSession.id, sessionId));
 
     try {
-      sidecarRouter.sendAgentUndeploy(agentAddress, "session_ended");
+      await sessionService.endSession(agentAddress, "session_ended");
     } catch (err) {
       await db
         .update(agentSession)
