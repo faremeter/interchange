@@ -23,6 +23,7 @@ import { hasProvider } from "@interchange/inference";
 import { createNodeCrypto } from "@interchange/crypto-node";
 import {
   createIsogitStore,
+  initAgentRepo,
   applyPack,
   createDeployPack,
   currentBranch,
@@ -146,6 +147,8 @@ export function createSessionManager(
         logger.info`Generated new key pair for ${agentAddress}`;
       }
 
+      const storeDir = path.join(dataDir, sanitizeAddress(agentAddress));
+      await initAgentRepo(storeDir);
       await persistAgentConfig(dataDir, agentAddress, agentConfig);
 
       provisioned.set(agentAddress, { config: agentConfig, keyPair });
@@ -238,7 +241,13 @@ export function createSessionManager(
       harness.start();
       logger.info`Started session for ${agentAddress} (session ${sessionId})`;
     } catch (err) {
-      transport.unregisterAgent(agentAddress);
+      sessions.delete(agentAddress);
+      try {
+        transport.unregisterAgent(agentAddress);
+      } catch (cleanupErr) {
+        // Best-effort cleanup; don't mask the original error.
+        logger.error`Failed to unregister transport for ${agentAddress}: ${String(cleanupErr)}`;
+      }
       provisioned.set(agentAddress, entry);
       throw err;
     }
@@ -264,6 +273,11 @@ export function createSessionManager(
     agentAddress: string,
     reason: string,
   ): Promise<void> {
+    if (provisioned.has(agentAddress)) {
+      provisioned.delete(agentAddress);
+      logger.info`Aborted provisioned agent ${agentAddress}: ${reason}`;
+      return;
+    }
     const session = sessions.get(agentAddress);
     if (session === undefined) {
       throw new Error(`No session exists for agent "${agentAddress}"`);

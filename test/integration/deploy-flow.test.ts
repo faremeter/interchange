@@ -1,8 +1,9 @@
-// Integration test: full deploy flow from hub to sidecar.
+// Integration test: full three-phase deploy flow from hub to sidecar.
 //
 // Spins up a real WS server (hub side), spawns a real sidecar subprocess,
-// deploys an agent, pushes a deploy pack with a prompt and skills, sends a
-// message, and verifies that inference sees the deploy-tree tools.
+// and exercises the complete agent lifecycle:
+//
+//   provision → pack delivery → session start → message → sync → undeploy
 //
 // This test exercises the complete pack transport pipeline:
 //   source repo → createDeployPack → WS frames → applyPack → readDeployTree
@@ -266,7 +267,6 @@ let inference: ReturnType<typeof startMockInference>;
 let sidecarProc: Subprocess;
 let sidecarDataDir: string;
 const sidecarStderr: string[] = [];
-let firstDeployPublicKey: string;
 
 const AGENT_ADDRESS = "test-agent@integration.interchange";
 const SIDECAR_ID = "sc-integration-1";
@@ -326,7 +326,7 @@ describe("deploy flow integration", () => {
     expect(hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
   });
 
-  test("deploy agent to sidecar", async () => {
+  test("provision agent on sidecar", async () => {
     const config: HarnessConfig = {
       sessionId: "ses_integration-1",
       agentId: "agent-integration",
@@ -348,13 +348,11 @@ describe("deploy flow integration", () => {
 
     await hub.router.sendAgentDeploy(AGENT_ADDRESS, config);
 
-    // Verify deploy ack was received with a public key.
     const publicKey = hub.deployAcks.get(AGENT_ADDRESS);
     expect(publicKey).toBeDefined();
     if (publicKey === undefined) throw new Error("unreachable");
     expect(typeof publicKey).toBe("string");
     expect(publicKey.length).toBeGreaterThan(0);
-    firstDeployPublicKey = publicKey;
   });
 
   test("push deploy pack with prompt and skills", async () => {
@@ -413,59 +411,23 @@ describe("deploy flow integration", () => {
     expect(tool.name).toBe("greet");
   });
 
-  test("redeploy agent to pick up deploy tree", async () => {
-    // The deploy pack was applied to disk but the running session was created
-    // before the pack arrived. Undeploy and re-deploy so the new session reads
-    // the deploy tree (prompt + skills) from disk.
-    //
-    // Clear the ack entry so we can detect when the second deploy ack arrives.
-    // sendAgentDeploy awaits an ack internally, so by the time it resolves the
-    // sidecar has processed both the undeploy and the deploy.
-    hub.deployAcks.delete(AGENT_ADDRESS);
-    hub.router.sendAgentUndeploy(AGENT_ADDRESS, "redeploy");
+  test("start session reads deploy tree", async () => {
+    await hub.router.sendSessionStart(AGENT_ADDRESS);
 
-    const config: HarnessConfig = {
-      sessionId: "ses_integration-2",
-      agentId: "agent-integration",
-      tenantId: "tenant-1",
-      principalId: "prin_integration-1",
-      agentAddress: AGENT_ADDRESS,
-      systemPrompt: "Fallback prompt (should be overridden by deploy tree)",
-      tools: [],
-      grants: [],
-      providers: [
-        {
-          provider: "anthropic",
-          baseURL: `http://localhost:${inference.server.port}`,
-          apiKey: "sk-mock",
-        },
-      ],
-      defaultModel: "mock-model",
-    };
-
-    await hub.router.sendAgentDeploy(AGENT_ADDRESS, config);
-
-    // The ack entry was cleared before undeploy, so its presence confirms
-    // this is a fresh ack from the second deploy, not a stale leftover.
-    // A new deploy should produce a new key pair — the agent is a new instance.
-    const publicKey = hub.deployAcks.get(AGENT_ADDRESS);
-    expect(publicKey).toBeDefined();
-    if (publicKey === undefined) throw new Error("unreachable");
-    expect(publicKey).not.toBe(firstDeployPublicKey);
+    // The agent should now be routable.
+    expect(hub.router.getRoutableAddresses()).toContain(AGENT_ADDRESS);
   });
 
   test("send message and verify inference receives deploy tools", async () => {
     const requestsBefore = inference.requests.length;
     const eventsBefore = hub.agentEvents.length;
 
-    // Send a user message to the deployed agent.
     await hub.router.sendMessage(
       AGENT_ADDRESS,
-      "ses_integration-2",
+      "ses_integration-1",
       "Hello, please greet Alice.",
     );
 
-    // Wait for the mock inference server to receive a request.
     await waitFor(() => inference.requests.length > requestsBefore);
 
     const req = inference.requests[inference.requests.length - 1];
@@ -473,12 +435,9 @@ describe("deploy flow integration", () => {
     const tools = req.tools ?? [];
     const toolNames = tools.map((t) => t.name);
 
-    // The inference request should include both the built-in message tools
-    // and the deploy-tree "greet" tool.
     expect(toolNames).toContain("greet");
     expect(toolNames).toContain("message_send");
 
-    // Verify the full tool definition survived the pipeline intact.
     const greetTool = tools.find((t) => t.name === "greet");
     expect(greetTool).toBeDefined();
     if (greetTool === undefined) throw new Error("unreachable");
@@ -491,20 +450,18 @@ describe("deploy flow integration", () => {
       required: ["name"],
     });
 
-    // Wait for agent events to arrive at the hub.
     await waitFor(() => hub.agentEvents.length > eventsBefore);
 
     const lastEvent = hub.agentEvents[hub.agentEvents.length - 1];
     if (lastEvent === undefined) throw new Error("unreachable");
     expect(lastEvent.addr).toBe(AGENT_ADDRESS);
-    expect(lastEvent.sid).toBe("ses_integration-2");
+    expect(lastEvent.sid).toBe("ses_integration-1");
   });
 
   test("sync request triggers state push", async () => {
     const packCountBefore = hub.statePacks.length;
     hub.router.sendSyncRequest(AGENT_ADDRESS);
 
-    // Wait for the hub to receive the state pack from the sidecar.
     await waitFor(() => hub.statePacks.length > packCountBefore);
 
     const last = hub.statePacks[hub.statePacks.length - 1];
@@ -513,5 +470,21 @@ describe("deploy flow integration", () => {
     expect(last.ref).toMatch(/^refs\//);
     expect(last.commitSha).toMatch(/^[0-9a-f]{40}$/);
     expect(hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+  });
+
+  test("undeploy agent", async () => {
+    await hub.router.sendAgentUndeploy(AGENT_ADDRESS, "test_complete");
+
+    // Agent should no longer be routable after ack.
+    expect(hub.router.getRoutableAddresses()).not.toContain(AGENT_ADDRESS);
+
+    // The ack is sent after deleteAgentDir completes, so the directory
+    // is already gone by the time the promise resolves.
+    const agentDir = path.join(sidecarDataDir, sanitizeAddress(AGENT_ADDRESS));
+    const dirExists = await fs.promises
+      .access(agentDir)
+      .then(() => true)
+      .catch(() => false);
+    expect(dirExists).toBe(false);
   });
 });

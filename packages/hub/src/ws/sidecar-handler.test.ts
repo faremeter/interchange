@@ -567,6 +567,31 @@ describe("SidecarRouter", () => {
       ).rejects.toThrow(/No sidecar connected/);
     });
 
+    test("disconnect during undeploy does not queue messages", async () => {
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["undeploy-dc@local"],
+        }),
+      );
+
+      // Start an undeploy but disconnect before the ack arrives.
+      const promise = router.sendAgentUndeploy("undeploy-dc@local", "teardown");
+      router.handleClose(ws);
+      await expect(promise).rejects.toThrow(/disconnected/);
+
+      // The address should not be in the disconnect queue, so sending
+      // a message should fail immediately rather than being queued.
+      await expect(
+        router.sendMessage("undeploy-dc@local", "s1", "hello"),
+      ).rejects.toThrow(/No sidecar connected/);
+    });
+
     test("disconnect rejects pending deploy", async () => {
       const ws = createMockWs();
       router.handleOpen(ws);
