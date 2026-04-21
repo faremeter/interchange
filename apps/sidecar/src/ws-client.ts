@@ -25,7 +25,7 @@ import type {
 import type { InboundMessage, KeyPair } from "@interchange/types/runtime";
 
 import type { SessionManager, SessionEventSink } from "./session-manager";
-import { createPackReceiver } from "./pack-receiver";
+import { createPackReceiver } from "@interchange/pack-transport";
 import { hexEncode } from "./key-store";
 
 const logger = getLogger(["interchange", "sidecar", "ws"]);

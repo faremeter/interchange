@@ -34,6 +34,7 @@
         "@interchange/harness": "workspace:*",
         "@interchange/log": "workspace:*",
         "@interchange/message-memory": "workspace:*",
+        "@interchange/pack-transport": "workspace:*",
         "@interchange/storage-isogit": "workspace:*",
         "@interchange/types": "workspace:*",
       },
@@ -109,6 +110,7 @@
         "@interchange/authz": "workspace:*",
         "@interchange/db": "workspace:*",
         "@interchange/log": "workspace:*",
+        "@interchange/pack-transport": "workspace:*",
         "@interchange/types": "workspace:*",
         "arktype": "catalog:",
         "better-auth": "^1.4.18",
@@ -144,6 +146,13 @@
       "dependencies": {
         "@interchange/crypto-node": "workspace:*",
         "@interchange/log": "workspace:*",
+        "@interchange/types": "workspace:*",
+      },
+    },
+    "packages/pack-transport": {
+      "name": "@interchange/pack-transport",
+      "version": "0.0.0",
+      "dependencies": {
         "@interchange/types": "workspace:*",
       },
     },
@@ -376,6 +385,8 @@
     "@interchange/log": ["@interchange/log@workspace:packages/log"],
 
     "@interchange/message-memory": ["@interchange/message-memory@workspace:packages/message-memory"],
+
+    "@interchange/pack-transport": ["@interchange/pack-transport@workspace:packages/pack-transport"],
 
     "@interchange/sidecar-app": ["@interchange/sidecar-app@workspace:apps/sidecar"],
 
