@@ -3,7 +3,14 @@
 // Each agent gets its own harness backed by a scoped view of the shared
 // InMemoryTransport. The manager handles agent lifecycle (deploy, undeploy,
 // abort) in response to control frames from the hub.
+//
+// Deploy is a two-phase operation: provisionAgent sets up disk state (keys,
+// repo, config) without starting inference, and startSession reads the
+// deploy tree and launches the harness. This separation lets the hub push
+// a deploy pack between the two phases so tools are available at session
+// start.
 
+import fs from "node:fs";
 import path from "node:path";
 import { getLogger } from "@interchange/log";
 import { evaluateGrants } from "@interchange/authz";
@@ -33,7 +40,6 @@ import {
   loadOrGenerateKeyPair,
   hexEncode,
   persistAgentConfig,
-  clearAgentConfig,
   scanExistingAgents,
   type AgentKeyEntry,
 } from "./key-store";
@@ -66,8 +72,7 @@ export function sanitizeAddress(address: string): string {
   return address.replace(/@/g, "_at_").replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-export type CreateSessionResult = {
-  sessionId: string;
+export type ProvisionResult = {
   publicKey: string;
   keyPair: KeyPair;
 };
@@ -78,12 +83,14 @@ export type RestoreResult = {
 };
 
 export type SessionManager = {
-  createSession(config: AgentConfig): Promise<CreateSessionResult>;
-  destroySession(agentAddress: string): void;
-  abortSession(agentAddress: string, reason: string): void;
+  provisionAgent(config: AgentConfig): Promise<ProvisionResult>;
+  startSession(agentAddress: string): Promise<void>;
+  destroySession(agentAddress: string): Promise<void>;
+  abortSession(agentAddress: string, reason: string): Promise<void>;
   deliverMessage(agentAddress: string, message: InboundMessage): void;
   updateGrants(agentAddress: string, grants: GrantRule[]): Promise<void>;
   hasSession(agentAddress: string): boolean;
+  isProvisioned(agentAddress: string): boolean;
   getAddresses(): string[];
   restoreSessions(): Promise<RestoreResult>;
   applyDeployPack(
@@ -96,6 +103,14 @@ export type SessionManager = {
   createStatePack(
     agentAddress: string,
   ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }>;
+  deleteAgentDir(agentAddress: string): Promise<void>;
+};
+
+// Agents that have been provisioned but not yet started. Holds the config
+// needed to create the harness once startSession is called.
+type ProvisionedAgent = {
+  config: AgentConfig;
+  keyPair: KeyPair;
 };
 
 export function createSessionManager(
@@ -103,26 +118,29 @@ export function createSessionManager(
 ): SessionManager {
   const { transport, dataDir, onEvent } = config;
   const sessions = new Map<string, AgentSession>();
+  const provisioned = new Map<string, ProvisionedAgent>();
   const pending = new Set<string>();
 
-  async function createSession(
+  async function provisionAgent(
     agentConfig: AgentConfig,
-  ): Promise<CreateSessionResult> {
+  ): Promise<ProvisionResult> {
     const { agentAddress } = agentConfig;
 
-    if (sessions.has(agentAddress) || pending.has(agentAddress)) {
-      throw new Error(`Session already exists for agent "${agentAddress}"`);
+    if (
+      sessions.has(agentAddress) ||
+      provisioned.has(agentAddress) ||
+      pending.has(agentAddress)
+    ) {
+      throw new Error(`Agent already exists for address "${agentAddress}"`);
     }
 
     pending.add(agentAddress);
 
     try {
-      // Generate or load the agent's per-agent key pair.
       const { keyPair, isNew } = await loadOrGenerateKeyPair(
         dataDir,
         agentAddress,
       );
-      const crypto = createNodeCrypto(keyPair);
 
       if (isNew) {
         logger.info`Generated new key pair for ${agentAddress}`;
@@ -130,28 +148,47 @@ export function createSessionManager(
 
       await persistAgentConfig(dataDir, agentAddress, agentConfig);
 
-      // Register the agent on the local transport so it can send/receive mail.
+      provisioned.set(agentAddress, { config: agentConfig, keyPair });
+
+      const publicKey = hexEncode(keyPair.publicKey);
+      logger.info`Provisioned agent ${agentAddress}`;
+      return { publicKey, keyPair };
+    } finally {
+      pending.delete(agentAddress);
+    }
+  }
+
+  async function startSession(agentAddress: string): Promise<void> {
+    const entry = provisioned.get(agentAddress);
+    if (entry === undefined) {
+      throw new Error(`No provisioned agent for address "${agentAddress}"`);
+    }
+    if (sessions.has(agentAddress)) {
+      throw new Error(`Session already running for agent "${agentAddress}"`);
+    }
+
+    const { config: agentConfig, keyPair } = entry;
+
+    const provider = agentConfig.providers.find((p) => hasProvider(p.provider));
+    if (provider === undefined) {
+      throw new Error(
+        `No inference provider configured for agent "${agentAddress}"`,
+      );
+    }
+
+    provisioned.delete(agentAddress);
+
+    try {
+      const crypto = createNodeCrypto(keyPair);
+
       transport.registerAgent(agentAddress, crypto);
       const agentTransport = transport.getTransportForAgent(agentAddress);
-
-      const provider = agentConfig.providers.find((p) =>
-        hasProvider(p.provider),
-      );
-      if (provider === undefined) {
-        throw new Error(
-          `No inference provider configured for agent "${agentAddress}"`,
-        );
-      }
 
       const sessionId = agentConfig.sessionId;
 
       const storeDir = path.join(dataDir, sanitizeAddress(agentAddress));
       const storage = await createIsogitStore(storeDir);
 
-      // Read tool definitions and prompt from the deploy tree if a deploy
-      // pack has previously been applied. When no deploy tree exists (first
-      // deploy before any pack arrives), falls back to HarnessConfig values.
-      // A subsequent deploy pack takes effect on the next session restart.
       const deployTree = await readDeployTree(storeDir);
       const systemPrompt = deployTree.systemPrompt ?? agentConfig.systemPrompt;
 
@@ -199,16 +236,20 @@ export function createSessionManager(
       });
 
       harness.start();
-
-      const publicKey = hexEncode(keyPair.publicKey);
-      logger.info`Deployed agent ${agentAddress} (session ${sessionId})`;
-      return { sessionId, publicKey, keyPair };
-    } finally {
-      pending.delete(agentAddress);
+      logger.info`Started session for ${agentAddress} (session ${sessionId})`;
+    } catch (err) {
+      transport.unregisterAgent(agentAddress);
+      provisioned.set(agentAddress, entry);
+      throw err;
     }
   }
 
-  function destroySession(agentAddress: string): void {
+  async function destroySession(agentAddress: string): Promise<void> {
+    if (provisioned.has(agentAddress)) {
+      provisioned.delete(agentAddress);
+      logger.info`Removed provisioned agent ${agentAddress}`;
+      return;
+    }
     const session = sessions.get(agentAddress);
     if (session === undefined) {
       throw new Error(`No session exists for agent "${agentAddress}"`);
@@ -216,13 +257,13 @@ export function createSessionManager(
     session.harness.stop();
     sessions.delete(agentAddress);
     transport.unregisterAgent(agentAddress);
-    clearAgentConfig(dataDir, agentAddress).catch((err) => {
-      logger.warn`Failed to clear persisted config for ${agentAddress}: ${String(err)}`;
-    });
-    logger.info`Undeployed agent ${agentAddress}`;
+    logger.info`Stopped session for ${agentAddress}`;
   }
 
-  function abortSession(agentAddress: string, reason: string): void {
+  async function abortSession(
+    agentAddress: string,
+    reason: string,
+  ): Promise<void> {
     const session = sessions.get(agentAddress);
     if (session === undefined) {
       throw new Error(`No session exists for agent "${agentAddress}"`);
@@ -230,9 +271,6 @@ export function createSessionManager(
     session.harness.stop();
     sessions.delete(agentAddress);
     transport.unregisterAgent(agentAddress);
-    clearAgentConfig(dataDir, agentAddress).catch((err) => {
-      logger.warn`Failed to clear persisted config for ${agentAddress}: ${String(err)}`;
-    });
     logger.info`Aborted agent ${agentAddress}: ${reason}`;
   }
 
@@ -246,6 +284,10 @@ export function createSessionManager(
 
   function hasSession(agentAddress: string): boolean {
     return sessions.has(agentAddress);
+  }
+
+  function isProvisioned(agentAddress: string): boolean {
+    return provisioned.has(agentAddress);
   }
 
   function getAddresses(): string[] {
@@ -263,7 +305,8 @@ export function createSessionManager(
         continue;
       }
       try {
-        await createSession(entry.config);
+        await provisionAgent(entry.config);
+        await startSession(entry.address);
         restored.push(entry);
         logger.info`Restored session for ${entry.address}`;
       } catch (err) {
@@ -305,11 +348,6 @@ export function createSessionManager(
   async function createStatePack(
     agentAddress: string,
   ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }> {
-    const session = sessions.get(agentAddress);
-    if (session === undefined) {
-      throw new Error(`No session exists for agent "${agentAddress}"`);
-    }
-
     const dir = path.join(dataDir, sanitizeAddress(agentAddress));
     const branch = await currentBranch(dir);
     const ref = `refs/heads/${branch}`;
@@ -317,16 +355,25 @@ export function createSessionManager(
     return { pack, commitSha, ref };
   }
 
+  async function deleteAgentDir(agentAddress: string): Promise<void> {
+    const agentDir = path.join(dataDir, sanitizeAddress(agentAddress));
+    await fs.promises.rm(agentDir, { recursive: true });
+    logger.info`Deleted agent directory for ${agentAddress}`;
+  }
+
   return {
-    createSession,
+    provisionAgent,
+    startSession,
     destroySession,
     abortSession,
     deliverMessage,
     updateGrants,
     hasSession,
+    isProvisioned,
     getAddresses,
     restoreSessions,
     applyDeployPack,
     createStatePack,
+    deleteAgentDir,
   };
 }

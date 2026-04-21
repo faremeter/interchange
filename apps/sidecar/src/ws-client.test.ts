@@ -34,27 +34,30 @@ async function waitFor(
 type DeliveredMessage = { agentAddress: string; message: InboundMessage };
 
 function createMockSessionManager(): SessionManager & {
-  created: HarnessConfig[];
+  provisioned: HarnessConfig[];
+  started: string[];
   destroyed: string[];
   aborted: { address: string; reason: string }[];
   delivered: DeliveredMessage[];
   addresses: string[];
+  provisionedAddresses: string[];
   shouldThrow: string | null;
 } {
   const mock = {
-    created: [] as HarnessConfig[],
+    provisioned: [] as HarnessConfig[],
+    started: [] as string[],
     destroyed: [] as string[],
     aborted: [] as { address: string; reason: string }[],
     delivered: [] as DeliveredMessage[],
     addresses: [] as string[],
+    provisionedAddresses: [] as string[],
     shouldThrow: null as string | null,
 
-    async createSession(config: HarnessConfig) {
+    async provisionAgent(config: HarnessConfig) {
       if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
-      mock.created.push(config);
-      mock.addresses.push(config.agentAddress);
+      mock.provisioned.push(config);
+      mock.provisionedAddresses.push(config.agentAddress);
       return {
-        sessionId: "mock-session-id",
         publicKey: "deadbeef",
         keyPair: {
           publicKey: new Uint8Array(32),
@@ -62,12 +65,20 @@ function createMockSessionManager(): SessionManager & {
         },
       };
     },
-    destroySession(agentAddress: string): void {
+    async startSession(agentAddress: string): Promise<void> {
+      if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
+      mock.started.push(agentAddress);
+      mock.provisionedAddresses = mock.provisionedAddresses.filter(
+        (a) => a !== agentAddress,
+      );
+      mock.addresses.push(agentAddress);
+    },
+    async destroySession(agentAddress: string): Promise<void> {
       if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
       mock.destroyed.push(agentAddress);
       mock.addresses = mock.addresses.filter((a) => a !== agentAddress);
     },
-    abortSession(agentAddress: string, reason: string): void {
+    async abortSession(agentAddress: string, reason: string): Promise<void> {
       if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
       mock.aborted.push({ address: agentAddress, reason });
       mock.addresses = mock.addresses.filter((a) => a !== agentAddress);
@@ -85,6 +96,9 @@ function createMockSessionManager(): SessionManager & {
     hasSession(agentAddress: string): boolean {
       return mock.addresses.includes(agentAddress);
     },
+    isProvisioned(agentAddress: string): boolean {
+      return mock.provisionedAddresses.includes(agentAddress);
+    },
     getAddresses(): string[] {
       return [...mock.addresses];
     },
@@ -98,6 +112,7 @@ function createMockSessionManager(): SessionManager & {
         commitSha: "abc123",
         ref: "refs/heads/main",
       }),
+    deleteAgentDir: () => Promise.resolve(),
   };
   return mock;
 }
@@ -262,8 +277,8 @@ describe("sidecar↔hub integration", () => {
 
       await env.router.sendAgentDeploy("agent-1@test.interchange", TEST_CONFIG);
 
-      expect(sessions.created).toHaveLength(1);
-      expect(sessions.created[0]?.agentAddress).toBe(
+      expect(sessions.provisioned).toHaveLength(1);
+      expect(sessions.provisioned[0]?.agentAddress).toBe(
         "agent-1@test.interchange",
       );
     } finally {

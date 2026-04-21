@@ -489,7 +489,7 @@ describe("SidecarRouter", () => {
       expect(router.getRoutableAddresses()).not.toContain("fail-agent@local");
     });
 
-    test("agent.undeploy sends frame and removes routing", () => {
+    test("agent.undeploy sends frame and removes routing after ack", async () => {
       const ws = createMockWs();
       router.handleOpen(ws);
       router.handleMessage(
@@ -502,11 +502,25 @@ describe("SidecarRouter", () => {
         }),
       );
 
-      router.sendAgentUndeploy("agent@local", "session_ended");
+      const promise = router.sendAgentUndeploy("agent@local", "session_ended");
       const frame = lastSent(ws);
       expect(frame.type).toBe("agent.undeploy");
       expect(frame.agentAddress).toBe("agent@local");
       expect(frame.reason).toBe("session_ended");
+
+      // Routing persists until the ack arrives.
+      expect(router.getRoutableAddresses()).toContain("agent@local");
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.undeploy.ack",
+          agentAddress: "agent@local",
+          statePushed: true,
+        }),
+      );
+
+      await promise;
       expect(router.getRoutableAddresses()).not.toContain("agent@local");
     });
 
@@ -547,10 +561,10 @@ describe("SidecarRouter", () => {
       ).rejects.toThrow(/timed out/);
     });
 
-    test("undeploy to unknown agent throws immediately", () => {
-      expect(() => router.sendAgentUndeploy("unknown@local", "gone")).toThrow(
-        /No sidecar connected/,
-      );
+    test("undeploy to unknown agent rejects immediately", async () => {
+      await expect(
+        router.sendAgentUndeploy("unknown@local", "gone"),
+      ).rejects.toThrow(/No sidecar connected/);
     });
 
     test("disconnect rejects pending deploy", async () => {
