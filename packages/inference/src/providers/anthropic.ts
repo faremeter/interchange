@@ -50,12 +50,20 @@ function buildRequest(
     };
   }
 
+  if (options.tools !== undefined && options.tools.length > 0) {
+    body["tools"] = options.tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.inputSchema,
+    }));
+  }
+
   if (options.temperature !== undefined) {
     body["temperature"] = options.temperature;
   }
 
   return {
-    url: "https://api.anthropic.com/v1/messages",
+    url: "/v1/messages",
     headers: {
       "content-type": "application/json",
       "x-api-key": "", // Filled by the harness from ProviderConfig.apiKey

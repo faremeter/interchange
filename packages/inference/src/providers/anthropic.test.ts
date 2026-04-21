@@ -16,7 +16,7 @@ describe("Anthropic adapter: buildRequest", () => {
       {},
     );
 
-    expect(req.url).toBe("https://api.anthropic.com/v1/messages");
+    expect(req.url).toBe("/v1/messages");
     expect(req.headers["content-type"]).toBe("application/json");
     expect(req.headers["anthropic-version"]).toBe("2023-06-01");
 
@@ -100,6 +100,62 @@ describe("Anthropic adapter: buildRequest", () => {
     expect(block?.["type"]).toBe("tool_use");
     expect(block?.["id"]).toBe("toolu_01");
     expect(block?.["name"]).toBe("read_file");
+  });
+
+  test("serializes tool definitions with Anthropic wire format", () => {
+    const messages: ConversationMessage[] = [
+      { role: "user", content: [{ type: "text", text: "Hi." }] },
+    ];
+
+    const req = adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {
+      tools: [
+        {
+          name: "greet",
+          description: "Greet someone",
+          inputSchema: {
+            type: "object",
+            properties: { name: { type: "string" } },
+          },
+        },
+      ],
+    });
+    const body = JSON.parse(req.body) as Record<string, unknown>;
+    const tools = body["tools"] as Record<string, unknown>[];
+    expect(tools).toHaveLength(1);
+    expect(tools[0]?.["name"]).toBe("greet");
+    expect(tools[0]?.["description"]).toBe("Greet someone");
+    // Anthropic uses input_schema, not inputSchema.
+    expect(tools[0]?.["input_schema"]).toEqual({
+      type: "object",
+      properties: { name: { type: "string" } },
+    });
+    expect(tools[0]?.["inputSchema"]).toBeUndefined();
+  });
+
+  test("omits tools key when tools array is empty", () => {
+    const messages: ConversationMessage[] = [
+      { role: "user", content: [{ type: "text", text: "Hi." }] },
+    ];
+
+    const req = adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {
+      tools: [],
+    });
+    const body = JSON.parse(req.body) as Record<string, unknown>;
+    expect("tools" in body).toBe(false);
+  });
+
+  test("omits tools key when tools is undefined", () => {
+    const messages: ConversationMessage[] = [
+      { role: "user", content: [{ type: "text", text: "Hi." }] },
+    ];
+
+    const req = adapter.buildRequest(
+      messages,
+      "claude-3-5-sonnet-20241022",
+      {},
+    );
+    const body = JSON.parse(req.body) as Record<string, unknown>;
+    expect("tools" in body).toBe(false);
   });
 
   test("uses max_tokens from options", () => {
