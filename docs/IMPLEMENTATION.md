@@ -249,12 +249,19 @@ The sidecar WebSocket protocol includes frames for agent deployment, reconnectio
 
 **Agent deployment:**
 
-| Direction     | Frame              | Purpose                                      |
-| ------------- | ------------------ | -------------------------------------------- |
-| Hub → Sidecar | `agent.deploy`     | Deploy an agent to the sidecar               |
-| Hub → Sidecar | `agent.undeploy`   | Remove an agent from the sidecar             |
-| Sidecar → Hub | `agent.deploy.ack` | Confirm deployment, provide agent public key |
-| Sidecar → Hub | `agent.error`      | Report deployment failure                    |
+| Direction     | Frame                | Purpose                                                |
+| ------------- | -------------------- | ------------------------------------------------------ |
+| Hub → Sidecar | `agent.deploy`       | Provision an agent (keys, directory, ephemeral config) |
+| Sidecar → Hub | `agent.deploy.ack`   | Confirm provisioning, provide agent public key         |
+| Hub → Sidecar | `session.start`      | Start the inference harness for a provisioned agent    |
+| Sidecar → Hub | `session.start.ack`  | Confirm the harness is running                         |
+| Hub → Sidecar | `agent.undeploy`     | Remove an agent from the sidecar                       |
+| Sidecar → Hub | `agent.undeploy.ack` | Confirm teardown (includes state push status)          |
+| Sidecar → Hub | `agent.error`        | Report a failure at any stage                          |
+
+Agent deployment is a three-phase operation: provision, pack delivery, session start. The hub sends `agent.deploy` to provision the agent (generate keys, create directory, persist config). After receiving `agent.deploy.ack` with the agent's public key, the hub streams the deploy tree via pack frames. After `pack.ack`, the hub sends `session.start` to start the inference harness. This ordering ensures the deploy tree (prompt, skills) is on disk before the harness reads it.
+
+Undeploy is an acknowledged operation. The sidecar stops the harness, pushes state to the hub (best-effort), deletes the agent directory, and responds with `agent.undeploy.ack`. The `statePushed` field indicates whether the state push was attempted. The hub defers routing table cleanup until the ack arrives.
 
 **Reconnection:**
 
@@ -493,12 +500,14 @@ Health can also be reported via periodic heartbeat messages to the control plane
 
 ### Deployment Procedure
 
-1. **Assembly** - Hub resolves skill dependencies and assembles the deploy tree
-2. **Pack transfer** - Hub streams the packfile to the sidecar (see Agent Deployment)
-3. **Health gate** - New version must pass health checks before receiving traffic
-4. **Traffic shift** - Registry updates discovery to point to new version
-5. **Drain** - Old version stops accepting new work, completes in-flight operations
-6. **Retirement** - Old version shuts down; deploy tag remains for rollback
+1. **Provision** - Hub sends `agent.deploy` with ephemeral config; sidecar creates directory, keys, and returns the public key
+2. **Assembly** - Hub resolves skill dependencies and assembles the deploy tree
+3. **Pack transfer** - Hub streams the packfile to the sidecar (see Agent Deployment)
+4. **Session start** - Hub sends `session.start`; sidecar reads deploy tree and starts the harness
+5. **Health gate** - New version must pass health checks before receiving traffic
+6. **Traffic shift** - Registry updates discovery to point to new version
+7. **Drain** - Old version stops accepting new work, completes in-flight operations
+8. **Retirement** - Old version shuts down; deploy tag remains for rollback
 
 ### Rollback
 
@@ -566,8 +575,6 @@ Both approaches support standard git workflows for managing agent versions.
 
 ## Agent Deployment: Git Pack Transport
 
-This section specifies the design for git-based content delivery between hub and sidecar. The protocol described here is not yet implemented — the current prototype sends agent configuration inline in the `agent.deploy` frame without git-based content transfer.
-
 Deploy content travels from the hub to sidecars as git packfiles streamed over the existing WebSocket connection. State travels back from sidecars to the hub using the same mechanism. This avoids requiring sidecars to have network access to external git hosts and reuses the authenticated, encrypted channel already in place.
 
 ### Wire Frames
@@ -611,19 +618,51 @@ Pack transfers share the WebSocket with live session traffic. To prevent interfe
 
 ### Deploy Flow
 
-1. Hub assembles the deploy tree and produces a packfile
-2. Hub sends `pack.push` frames (chunked, interleaved with other traffic)
-3. Hub sends `pack.done` with target ref (`refs/heads/deploy`) and commit SHA
-4. Sidecar validates the packfile integrity
-5. Sidecar verifies the deploy commit signature against the hub's public key
-6. Sidecar unpacks objects into the git object store
-7. Sidecar updates `refs/heads/deploy` to the new commit
-8. Sidecar merges `deploy` into its instance branch (trivial merge)
-9. Sidecar checks out only `deploy/` paths via partial checkout (`filepaths: ["deploy/"], noUpdateHead: true`) — `state/` working-tree files are untouched because `filepaths` restricts the scope, `noUpdateHead` prevents moving the branch pointer
-10. Sidecar responds with `pack.ack`
-11. Hub sends `agent.deploy` with ephemeral config (credentials, grants, session ID)
+Deployment is a three-phase operation: provision, pack delivery, session start.
+
+**Phase 1: Provision**
+
+1. Hub sends `agent.deploy` with ephemeral config (credentials, grants, providers, session ID)
+2. Sidecar creates the agent directory, generates an Ed25519 key pair, and persists the config
+3. Sidecar responds with `agent.deploy.ack` containing the agent's public key (hex-encoded)
+4. Hub stores the public key for future challenge/response verification
+
+The sidecar is now provisioned but not running. It can receive pack data.
+
+**Phase 2: Pack delivery**
+
+5. Hub assembles the deploy tree and produces a packfile
+6. Hub sends `pack.push` frames (chunked, interleaved with other traffic)
+7. Hub sends `pack.done` with target ref (`refs/heads/deploy`) and commit SHA
+8. Sidecar validates the packfile integrity
+9. Sidecar verifies the deploy commit signature against the hub's public key
+10. Sidecar unpacks objects into the git object store
+11. Sidecar updates `refs/heads/deploy` to the new commit
+12. Sidecar merges `deploy` into its instance branch (trivial merge)
+13. Sidecar checks out only `deploy/` paths via partial checkout (`filepaths: ["deploy/"], noUpdateHead: true`) — `state/` working-tree files are untouched because `filepaths` restricts the scope, `noUpdateHead` prevents moving the branch pointer
+14. Sidecar responds with `pack.ack`
+
+**Phase 3: Session start**
+
+15. Hub sends `session.start`
+16. Sidecar reads the deploy tree from disk (prompt, skills/tools)
+17. Sidecar creates the inference harness with the deploy tree and ephemeral config
+18. Sidecar starts the harness and responds with `session.start.ack`
+
+The agent is now running and can receive messages.
 
 On first deploy a full packfile is sent. On subsequent deploys, if the sidecar advertises its current deploy ref in `ReconnectFrame.deployRefs`, the hub can send a thin pack containing only the delta.
+
+### Undeploy Flow
+
+1. Hub sends `agent.undeploy` with a reason string
+2. Sidecar stops the inference harness (or removes the agent from the provisioned set if session has not started)
+3. Sidecar pushes state to the hub via `pack.push`/`pack.done` (best-effort — the `statePushed` field in the ack indicates whether this was attempted, not whether the hub confirmed receipt)
+4. Sidecar deletes the agent directory
+5. Sidecar responds with `agent.undeploy.ack`
+6. Hub removes the agent from the routing table
+
+If the sidecar disconnects before sending the ack, the hub removes the agent from the routing table on disconnect. If `startSession` fails, the agent remains provisioned and can be retried or undeployed.
 
 ### State Push Flow
 
@@ -647,12 +686,14 @@ Pack transfers are sequenced after identity verification:
 2. Hub sends `challenge` per address
 3. Sidecar sends `challenge.response` per address
 4. Hub verifies signatures — only verified agents proceed
-5. For agents whose deploy ref is behind: hub initiates pack transfer
-6. After `pack.ack`: hub sends `agent.deploy` with current credentials/grants
+5. Hub sends `grants.update` per verified agent (sidecar must have current grants before processing messages)
+6. For agents whose deploy ref is behind: hub initiates pack transfer, waits for `pack.ack`
+7. Hub sends `session.start` per agent
+8. After `session.start.ack`: hub flushes queued messages
 
 Pack content is never sent to a sidecar that has not proved ownership of the agent's key.
 
-On first deploy (no prior key exists), the sidecar is authenticated by its registration token but cannot prove agent key ownership (the key does not exist yet). Credentials are delivered after the sidecar generates the key and returns it in `agent.deploy.ack`. The registration token and the authenticated WebSocket channel bound the trust for first-deploy; challenge/response protects all subsequent interactions.
+On first deploy (no prior key exists), the sidecar is authenticated by its registration token but cannot prove agent key ownership (the key does not exist yet). The hub sends `agent.deploy` to provision the agent, and the sidecar generates the key and returns it in `agent.deploy.ack`. The registration token and the authenticated WebSocket channel bound the trust for first-deploy; challenge/response protects all subsequent interactions.
 
 ### State Push Policy
 
