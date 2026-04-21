@@ -485,7 +485,9 @@ describe("Tool name collision detection", () => {
     };
 
     expect(() =>
-      buildCombinedRunner(messageHandlers, callerTools, ["message_send"]),
+      buildCombinedRunner(messageHandlers, callerTools, [
+        { name: "message_send", description: "test", inputSchema: {} },
+      ]),
     ).toThrow('Tool name collision: "message_send"');
   });
 
@@ -500,8 +502,8 @@ describe("Tool name collision detection", () => {
 
     expect(() =>
       buildCombinedRunner(messageHandlers, callerTools, [
-        "read_file",
-        "write_file",
+        { name: "read_file", description: "test", inputSchema: {} },
+        { name: "write_file", description: "test", inputSchema: {} },
       ]),
     ).not.toThrow();
   });

@@ -9,3 +9,6 @@ export { createDefaultPlugin, DefaultPlugin } from "./plugin";
 
 export { buildMessageToolHandlers, buildCombinedRunner } from "./tools";
 export type { MessageToolName } from "./tools";
+
+export { readDeployTree } from "./deploy-tree";
+export type { DeployTree } from "./deploy-tree";

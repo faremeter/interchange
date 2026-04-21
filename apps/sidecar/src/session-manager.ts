@@ -7,7 +7,11 @@
 import path from "node:path";
 import { getLogger } from "@interchange/log";
 import { evaluateGrants } from "@interchange/authz";
-import { createHarness, type Harness } from "@interchange/harness";
+import {
+  createHarness,
+  readDeployTree,
+  type Harness,
+} from "@interchange/harness";
 import { hasProvider } from "@interchange/inference";
 import { createNodeCrypto } from "@interchange/crypto-node";
 import {
@@ -144,6 +148,13 @@ export function createSessionManager(
       const storeDir = path.join(dataDir, sanitizeAddress(agentAddress));
       const storage = await createIsogitStore(storeDir);
 
+      // Read tool definitions and prompt from the deploy tree if a deploy
+      // pack has previously been applied. When no deploy tree exists (first
+      // deploy before any pack arrives), falls back to HarnessConfig values.
+      // A subsequent deploy pack takes effect on the next session restart.
+      const deployTree = await readDeployTree(storeDir);
+      const systemPrompt = deployTree.systemPrompt ?? agentConfig.systemPrompt;
+
       const { principalId, tenantId } = agentConfig;
       const grantsRef = { current: agentConfig.grants };
       const authorize = async (resource: string, action: string) =>
@@ -154,7 +165,7 @@ export function createSessionManager(
 
       const harness = createHarness({
         address: agentAddress,
-        systemPrompt: agentConfig.systemPrompt,
+        systemPrompt,
         provider: {
           ...provider,
           model: agentConfig.defaultModel,
@@ -164,11 +175,12 @@ export function createSessionManager(
         storage,
         authorize,
         auditStore: storage,
+        deployTools: deployTree.tools,
         tools: {
           async run(call) {
             return {
               callId: call.id,
-              content: `Tool "${call.name}" is not available on this sidecar`,
+              content: `Tool "${call.name}" is defined in the deploy pack but handler execution is not yet supported`,
               isError: true,
             };
           },

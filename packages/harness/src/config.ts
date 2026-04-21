@@ -4,6 +4,7 @@ import type {
   ContextStore,
   AuditStore,
   ToolRunner,
+  ToolDefinition,
   ProviderConfig,
   InferenceEvent,
   ReactorPlugin,
@@ -81,6 +82,13 @@ export type HarnessConfig = {
    * constructed authz extension via `beforeToolExtensions`.
    */
   authorize?: (resource: string, action: string) => Promise<AuthzCallResult>;
+
+  /**
+   * Tool definitions from the deploy tree. These are checked for name
+   * collisions with the harness's built-in message tools and included
+   * in the plugin's tool list for inference calls.
+   */
+  deployTools?: ToolDefinition[];
 };
 
 export type PluginPolicy = {
