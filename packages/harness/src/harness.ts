@@ -70,6 +70,8 @@ export function createHarness(config: HarnessConfig): Harness {
 
   const { transport, storage, provider, tools, onEvent } = config;
 
+  const deployToolDefs = config.deployTools ?? [];
+
   let plugin: ReactorPlugin;
   if (config.plugin !== undefined) {
     plugin = config.plugin;
@@ -82,7 +84,7 @@ export function createHarness(config: HarnessConfig): Harness {
     plugin = createDefaultPlugin(
       provider.model,
       config.systemPrompt,
-      getMessageToolDefinitions(),
+      [...getMessageToolDefinitions(), ...deployToolDefs],
       config.pluginPolicy ?? {},
     );
   }
@@ -91,12 +93,10 @@ export function createHarness(config: HarnessConfig): Harness {
   // detection happens here at construction time — startup fails loudly.
   const messageHandlers = buildMessageToolHandlers(transport);
 
-  const callerToolNames = (config as { toolNames?: string[] }).toolNames ?? [];
-
   const combinedRunner = buildCombinedRunner(
     messageHandlers,
     tools,
-    callerToolNames,
+    deployToolDefs,
   );
 
   const sessionId = crypto.randomUUID();

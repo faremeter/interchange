@@ -558,13 +558,13 @@ export function buildMessageToolHandlers(
 export function buildCombinedRunner(
   messageHandlers: Map<string, ToolHandler>,
   callerTools: ToolRunner,
-  callerToolNames: string[],
+  callerToolDefs: ToolDefinition[],
 ): ToolRunner {
   // Check for collisions at startup.
-  for (const name of callerToolNames) {
-    if (messageHandlers.has(name)) {
+  for (const def of callerToolDefs) {
+    if (messageHandlers.has(def.name)) {
       throw new Error(
-        `Tool name collision: "${name}" is registered by both the message tools and the caller-provided ToolRunner`,
+        `Tool name collision: "${def.name}" is registered by both the message tools and the caller-provided ToolRunner`,
       );
     }
   }
