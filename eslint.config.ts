@@ -41,6 +41,7 @@ export default defineConfig(
             "apps/ui/vite.config.ts",
             "bin/*.ts",
             "packages/db/drizzle.config.ts",
+            "test/integration/*.ts",
           ],
           maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 16,
         },
