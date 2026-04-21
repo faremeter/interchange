@@ -1,12 +1,14 @@
-// Integration test: full three-phase deploy flow from hub to sidecar.
+// Integration test: full deploy lifecycle through SessionService.
 //
 // Spins up a real WS server (hub side), spawns a real sidecar subprocess,
-// and exercises the complete agent lifecycle:
+// and exercises the complete agent lifecycle orchestrated by SessionService:
 //
-//   provision → pack delivery → session start → message → sync → undeploy
+//   launchSession (write → pack → provision → deliver → start)
+//     → message → sync → endSession
 //
-// This test exercises the complete pack transport pipeline:
-//   source repo → createDeployPack → WS frames → applyPack → readDeployTree
+// The gap this test fills: nobody else tests that AgentRepoStore.writeDeployTree
+// → createDeployPack → sendPack produces a packfile the sidecar actually
+// accepts and materializes correctly.
 //
 // Inference is mocked by a tiny HTTP server that echoes the tools it receives,
 // so we can assert the model saw the correct tool definitions without calling
@@ -18,32 +20,41 @@ import os from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
-import git from "isomorphic-git";
 import {
+  createAgentRepoStore,
+  createSessionService,
   createSidecarRouter,
   type SidecarRouter,
+  type SessionService,
   type WsHandle,
 } from "@interchange/hub";
-import { createDeployPack } from "@interchange/storage-isogit";
 import type { HarnessConfig } from "@interchange/types/runtime";
 import { sanitizeAddress } from "../../apps/sidecar/src/session-manager";
 import type { Subprocess } from "bun";
+import git from "isomorphic-git";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+function parseAgentId(agentAddress: string): string {
+  const atIdx = agentAddress.indexOf("@");
+  if (atIdx === -1) {
+    throw new Error(`Invalid agent address: "${agentAddress}"`);
+  }
+  return agentAddress.substring(0, atIdx);
+}
+
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 10_000,
+  opts: { timeoutMs?: number; diagnostics?: () => string } = {},
 ): Promise<void> {
+  const { timeoutMs = 10_000, diagnostics } = opts;
   const start = Date.now();
   while (!(await predicate())) {
     if (Date.now() - start > timeoutMs) {
-      const ctx =
-        sidecarStderr.length > 0
-          ? `\nsidecar stderr:\n${sidecarStderr.slice(-20).join("")}`
-          : "";
+      const diag = diagnostics?.();
+      const ctx = diag ? `\n${diag}` : "";
       throw new Error(`waitFor timed out after ${timeoutMs}ms${ctx}`);
     }
     await new Promise((r) => setTimeout(r, 50));
@@ -148,21 +159,26 @@ function startMockInference(): {
 }
 
 // ---------------------------------------------------------------------------
-// Hub WS server (in-process)
+// Hub WS server (in-process) with real AgentRepoStore and SessionService
 // ---------------------------------------------------------------------------
 
 type HubEnv = {
   server: ReturnType<typeof Bun.serve>;
   router: SidecarRouter;
+  sessionService: SessionService;
   agentEvents: { addr: string; sid: string; event: unknown }[];
   deployAcks: Map<string, string>;
   statePacks: { agentAddress: string; ref: string; commitSha: string }[];
+  hubDataDir: string;
 };
 
-function startHub(): HubEnv {
+async function startHub(): Promise<HubEnv> {
   const agentEvents: HubEnv["agentEvents"] = [];
   const deployAcks = new Map<string, string>();
   const statePacks: HubEnv["statePacks"] = [];
+
+  const hubDataDir = await makeTempDir("hub-data-");
+  const agentRepoStore = createAgentRepoStore({ dataDir: hubDataDir });
 
   const router = createSidecarRouter({
     requestTimeoutMs: 10_000,
@@ -172,10 +188,17 @@ function startHub(): HubEnv {
     async onAgentDeployAck(agentAddress, publicKey) {
       deployAcks.set(agentAddress, publicKey);
     },
-    async onStatePackReceived(agentAddress, _pack, ref, commitSha) {
+    async onStatePackReceived(agentAddress, pack, ref, commitSha) {
+      const agentId = parseAgentId(agentAddress);
+      await agentRepoStore.receiveStatePack(agentId, pack, ref, commitSha);
       statePacks.push({ agentAddress, ref, commitSha });
       return { accepted: true };
     },
+  });
+
+  const sessionService = createSessionService({
+    sidecarRouter: router,
+    agentRepoStore,
   });
 
   const app = new Hono();
@@ -213,49 +236,15 @@ function startHub(): HubEnv {
     port: 0,
   });
 
-  return { server, router, agentEvents, deployAcks, statePacks };
-}
-
-// ---------------------------------------------------------------------------
-// Source repo builder: creates a git repo with deploy content
-// ---------------------------------------------------------------------------
-
-async function createSourceRepo(
-  promptText: string,
-  skills: { name: string; definition: Record<string, unknown> }[],
-): Promise<{ dir: string; ref: string }> {
-  const dir = await makeTempDir("deploy-source-");
-  await git.init({ fs, dir, defaultBranch: "main" });
-
-  // deploy/prompt.md
-  const promptDir = path.join(dir, "deploy");
-  await fs.promises.mkdir(promptDir, { recursive: true });
-  await fs.promises.writeFile(path.join(promptDir, "prompt.md"), promptText);
-  await git.add({ fs, dir, filepath: "deploy/prompt.md" });
-
-  // deploy/skills/<name>/tool.json
-  for (const skill of skills) {
-    const skillDir = path.join(dir, "deploy", "skills", skill.name);
-    await fs.promises.mkdir(skillDir, { recursive: true });
-    await fs.promises.writeFile(
-      path.join(skillDir, "tool.json"),
-      JSON.stringify(skill.definition, null, 2),
-    );
-    await git.add({
-      fs,
-      dir,
-      filepath: `deploy/skills/${skill.name}/tool.json`,
-    });
-  }
-
-  await git.commit({
-    fs,
-    dir,
-    message: "Initial deploy content",
-    author: { name: "Test", email: "test@test.dev" },
-  });
-
-  return { dir, ref: "refs/heads/main" };
+  return {
+    server,
+    router,
+    sessionService,
+    agentEvents,
+    deployAcks,
+    statePacks,
+    hubDataDir,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -268,12 +257,34 @@ let sidecarProc: Subprocess;
 let sidecarDataDir: string;
 const sidecarStderr: string[] = [];
 
+function sidecarDiagnostics(): string {
+  if (sidecarStderr.length === 0) return "";
+  return `sidecar stderr:\n${sidecarStderr.slice(-20).join("")}`;
+}
+
 const AGENT_ADDRESS = "test-agent@integration.interchange";
+const AGENT_ID = "test-agent";
+const SESSION_ID = "ses_integration-1";
 const SIDECAR_ID = "sc-integration-1";
 const TOKEN = "test-token";
 
+const GREET_SKILL = {
+  name: "greet",
+  definition: {
+    name: "greet",
+    description: "Greet someone by name",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Name to greet" },
+      },
+      required: ["name"],
+    },
+  },
+};
+
 beforeAll(async () => {
-  hub = startHub();
+  hub = await startHub();
   inference = startMockInference();
   sidecarDataDir = await makeTempDir("sidecar-data-");
 
@@ -282,7 +293,9 @@ beforeAll(async () => {
   sidecarProc = Bun.spawn(["bun", "run", "apps/sidecar/src/main.ts"], {
     cwd: path.resolve(import.meta.dir, "../.."),
     env: {
-      ...process.env,
+      PATH: process.env["PATH"],
+      HOME: process.env["HOME"],
+      TMPDIR: process.env["TMPDIR"],
       HUB_WS_URL: `ws://localhost:${hubPort}/ws`,
       SIDECAR_ID,
       SIDECAR_TOKEN: TOKEN,
@@ -306,7 +319,9 @@ beforeAll(async () => {
   })();
 
   // Wait for the sidecar to register with the hub.
-  await waitFor(() => hub.router.getConnectedSidecars().length > 0);
+  await waitFor(() => hub.router.getConnectedSidecars().length > 0, {
+    diagnostics: sidecarDiagnostics,
+  });
 });
 
 afterAll(async () => {
@@ -326,10 +341,10 @@ describe("deploy flow integration", () => {
     expect(hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
   });
 
-  test("provision agent on sidecar", async () => {
+  test("launchSession writes, packs, provisions, delivers, and starts", async () => {
     const config: HarnessConfig = {
-      sessionId: "ses_integration-1",
-      agentId: "agent-integration",
+      sessionId: SESSION_ID,
+      agentId: AGENT_ID,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: AGENT_ADDRESS,
@@ -346,56 +361,40 @@ describe("deploy flow integration", () => {
       defaultModel: "mock-model",
     };
 
-    await hub.router.sendAgentDeploy(AGENT_ADDRESS, config);
+    await hub.sessionService.launchSession({
+      agentAddress: AGENT_ADDRESS,
+      agentId: AGENT_ID,
+      config,
+      deployContent: {
+        systemPrompt:
+          "You are an integration test agent. Use the greet tool when asked.",
+        skills: [GREET_SKILL],
+      },
+    });
 
+    // The deploy ack should have arrived (provision phase completed).
     const publicKey = hub.deployAcks.get(AGENT_ADDRESS);
     expect(publicKey).toBeDefined();
     if (publicKey === undefined) throw new Error("unreachable");
-    expect(typeof publicKey).toBe("string");
     expect(publicKey.length).toBeGreaterThan(0);
-  });
 
-  test("push deploy pack with prompt and skills", async () => {
-    const source = await createSourceRepo(
-      "You are an integration test agent. Use the greet tool when asked.",
-      [
-        {
-          name: "greet",
-          definition: {
-            name: "greet",
-            description: "Greet someone by name",
-            inputSchema: {
-              type: "object",
-              properties: {
-                name: { type: "string", description: "Name to greet" },
-              },
-              required: ["name"],
-            },
-          },
-        },
-      ],
-    );
+    // The agent should now be routable (session start completed).
+    expect(hub.router.getRoutableAddresses()).toContain(AGENT_ADDRESS);
 
-    const { pack, commitSha } = await createDeployPack(source.dir, source.ref);
-
-    await hub.router.sendPack(
-      AGENT_ADDRESS,
-      pack,
-      "refs/heads/deploy",
-      commitSha,
-    );
-
-    // Verify the deploy tree landed on the sidecar's disk.
+    // The deploy tree should have landed on the sidecar's disk.
     const agentDir = path.join(sidecarDataDir, sanitizeAddress(AGENT_ADDRESS));
 
-    await waitFor(async () => {
-      try {
-        await fs.promises.access(path.join(agentDir, "deploy", "prompt.md"));
-        return true;
-      } catch {
-        return false;
-      }
-    });
+    await waitFor(
+      async () => {
+        try {
+          await fs.promises.access(path.join(agentDir, "deploy", "prompt.md"));
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { diagnostics: sidecarDiagnostics },
+    );
 
     const prompt = await fs.promises.readFile(
       path.join(agentDir, "deploy", "prompt.md"),
@@ -411,26 +410,21 @@ describe("deploy flow integration", () => {
     expect(tool.name).toBe("greet");
   });
 
-  test("start session reads deploy tree", async () => {
-    await hub.router.sendSessionStart(AGENT_ADDRESS);
-
-    // The agent should now be routable.
-    expect(hub.router.getRoutableAddresses()).toContain(AGENT_ADDRESS);
-  });
-
   test("send message and verify inference receives deploy tools", async () => {
     const requestsBefore = inference.requests.length;
     const eventsBefore = hub.agentEvents.length;
 
     await hub.router.sendMessage(
       AGENT_ADDRESS,
-      "ses_integration-1",
+      SESSION_ID,
       "Hello, please greet Alice.",
     );
 
-    await waitFor(() => inference.requests.length > requestsBefore);
+    await waitFor(() => inference.requests.length > requestsBefore, {
+      diagnostics: sidecarDiagnostics,
+    });
 
-    const req = inference.requests[inference.requests.length - 1];
+    const req = inference.requests[requestsBefore];
     if (req === undefined) throw new Error("unreachable");
     const tools = req.tools ?? [];
     const toolNames = tools.map((t) => t.name);
@@ -450,19 +444,28 @@ describe("deploy flow integration", () => {
       required: ["name"],
     });
 
-    await waitFor(() => hub.agentEvents.length > eventsBefore);
+    await waitFor(() => hub.agentEvents.length > eventsBefore, {
+      diagnostics: sidecarDiagnostics,
+    });
 
-    const lastEvent = hub.agentEvents[hub.agentEvents.length - 1];
-    if (lastEvent === undefined) throw new Error("unreachable");
-    expect(lastEvent.addr).toBe(AGENT_ADDRESS);
-    expect(lastEvent.sid).toBe("ses_integration-1");
+    const firstEvent = hub.agentEvents[eventsBefore];
+    if (firstEvent === undefined) throw new Error("unreachable");
+    expect(firstEvent.addr).toBe(AGENT_ADDRESS);
+    expect(firstEvent.sid).toBe(SESSION_ID);
+
+    // The first event from a reactor turn is message.received, followed
+    // by inference events. Verify it is a known reactor event type.
+    const payload = firstEvent.event as { type: string };
+    expect(payload.type).toBe("message.received");
   });
 
-  test("sync request triggers state push", async () => {
+  test("sync request triggers state push to hub repo", async () => {
     const packCountBefore = hub.statePacks.length;
     hub.router.sendSyncRequest(AGENT_ADDRESS);
 
-    await waitFor(() => hub.statePacks.length > packCountBefore);
+    await waitFor(() => hub.statePacks.length > packCountBefore, {
+      diagnostics: sidecarDiagnostics,
+    });
 
     const last = hub.statePacks[hub.statePacks.length - 1];
     if (last === undefined) throw new Error("unreachable");
@@ -470,10 +473,31 @@ describe("deploy flow integration", () => {
     expect(last.ref).toMatch(/^refs\//);
     expect(last.commitSha).toMatch(/^[0-9a-f]{40}$/);
     expect(hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+
+    // Verify the pack was actually persisted in the hub's git repo.
+    const hubAgentDir = path.join(
+      hub.hubDataDir,
+      "agents",
+      parseAgentId(AGENT_ADDRESS),
+    );
+    const resolvedSha = await git.resolveRef({
+      fs,
+      dir: hubAgentDir,
+      ref: last.ref,
+    });
+    expect(resolvedSha).toBe(last.commitSha);
+
+    // Verify the commit object is readable (pack was properly indexed).
+    const { commit } = await git.readCommit({
+      fs,
+      dir: hubAgentDir,
+      oid: last.commitSha,
+    });
+    expect(commit.tree).toMatch(/^[0-9a-f]{40}$/);
   });
 
-  test("undeploy agent", async () => {
-    await hub.router.sendAgentUndeploy(AGENT_ADDRESS, "test_complete");
+  test("endSession undeploys agent and cleans up sidecar", async () => {
+    await hub.sessionService.endSession(AGENT_ADDRESS, "test_complete");
 
     // Agent should no longer be routable after ack.
     expect(hub.router.getRoutableAddresses()).not.toContain(AGENT_ADDRESS);
