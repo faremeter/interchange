@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { createDB, createGrantStore } from "@interchange/db";
 import { agent } from "@interchange/db/schema";
 import {
+  createAgentRepoStore,
   createApp,
   createAuth,
   createEventCollectorRegistry,
@@ -26,6 +27,12 @@ const { db } = createDB({
 const auth = createAuth(db);
 const eventCollectors = createEventCollectorRegistry(db);
 const grantStore = createGrantStore(db);
+
+const hubDataDir = process.env["HUB_DATA_DIR"];
+if (!hubDataDir) {
+  throw new Error("HUB_DATA_DIR environment variable is required");
+}
+const agentRepoStore = createAgentRepoStore({ dataDir: hubDataDir });
 
 function parseAgentId(agentAddress: string): string {
   const atIdx = agentAddress.indexOf("@");
@@ -91,6 +98,11 @@ const sidecarRouter = createSidecarRouter({
         { agentAddress, sessionId: row.sessionId },
       );
     }
+  },
+  async onStatePackReceived(agentAddress, pack, ref, commitSha) {
+    const agentId = parseAgentId(agentAddress);
+    await agentRepoStore.receiveStatePack(agentId, pack, ref, commitSha);
+    return { accepted: true };
   },
   async lookupPublicKey(agentAddress) {
     const agentId = parseAgentId(agentAddress);

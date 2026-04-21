@@ -7,58 +7,83 @@ const AUTHOR = {
   email: "harness@interchange.local",
 };
 
+async function isGitRepo(dir: string): Promise<boolean> {
+  return fs.promises
+    .stat(path.join(dir, ".git"))
+    .then(() => true)
+    .catch(() => false);
+}
+
 /**
- * Ensure the agent data directory exists as an initialized git repository
- * with the expected subdirectories. Idempotent: safe to call on a directory
- * that already contains a git repo.
+ * Initialize a git repository with a .gitignore and an empty initial commit.
+ * Idempotent: safe to call on a directory that already contains a git repo.
  *
- * On first call the repo gets an initial empty commit so that HEAD resolves
- * to a real ref immediately — isomorphic-git requires at least one commit
- * before branching operations work.
+ * Used by the hub for repos that don't need sidecar-specific scaffolding.
+ * isomorphic-git requires at least one commit before branching operations
+ * work, so the initial commit is always created.
+ */
+export async function initRepo(dir: string): Promise<void> {
+  await fs.promises.mkdir(dir, { recursive: true });
+
+  if (await isGitRepo(dir)) return;
+
+  await git.init({ fs, dir, defaultBranch: "main" });
+
+  await fs.promises.writeFile(path.join(dir, ".gitignore"), "keys/\n");
+  await git.add({ fs, dir, filepath: ".gitignore" });
+  await git.commit({
+    fs,
+    dir,
+    message: "Initialize repository",
+    author: AUTHOR,
+  });
+}
+
+/**
+ * Initialize a sidecar-side agent repository with the state/ directory
+ * structure. Creates a single initial commit containing .gitignore and
+ * state/context.json.
+ *
+ * Idempotent: safe to call on a directory that already contains a git repo.
  */
 export async function initAgentRepo(dir: string): Promise<void> {
   await fs.promises.mkdir(dir, { recursive: true });
   await fs.promises.mkdir(path.join(dir, "state"), { recursive: true });
 
-  const isAlreadyInit = await fs.promises
-    .stat(path.join(dir, ".git"))
-    .then(() => true)
-    .catch(() => false);
+  if (await isGitRepo(dir)) return;
 
-  if (!isAlreadyInit) {
-    await git.init({ fs, dir, defaultBranch: "main" });
+  await git.init({ fs, dir, defaultBranch: "main" });
 
-    await fs.promises.writeFile(path.join(dir, ".gitignore"), "keys/\n");
+  await fs.promises.writeFile(path.join(dir, ".gitignore"), "keys/\n");
+  await git.add({ fs, dir, filepath: ".gitignore" });
 
-    const contextPath = path.join(dir, "state", "context.json");
-    await fs.promises.writeFile(
-      contextPath,
-      JSON.stringify(
-        {
-          messages: [],
-          pendingOperations: [],
-          tokenUsage: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            thinking: 0,
-          },
+  const contextPath = path.join(dir, "state", "context.json");
+  await fs.promises.writeFile(
+    contextPath,
+    JSON.stringify(
+      {
+        messages: [],
+        pendingOperations: [],
+        tokenUsage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          thinking: 0,
         },
-        null,
-        2,
-      ),
-    );
+      },
+      null,
+      2,
+    ),
+  );
 
-    await git.add({ fs, dir, filepath: ".gitignore" });
-    await git.add({ fs, dir, filepath: "state/context.json" });
-    await git.commit({
-      fs,
-      dir,
-      message: "Initialize agent repository",
-      author: AUTHOR,
-    });
-  }
+  await git.add({ fs, dir, filepath: "state/context.json" });
+  await git.commit({
+    fs,
+    dir,
+    message: "Initialize agent repository",
+    author: AUTHOR,
+  });
 }
 
 export { AUTHOR };

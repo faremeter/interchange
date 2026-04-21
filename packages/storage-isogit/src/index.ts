@@ -12,8 +12,8 @@ export {
   listBranches,
   logHistory,
 } from "./history";
-export { initAgentRepo } from "./init";
-export { applyPack } from "./pack-receive";
+export { initRepo, initAgentRepo } from "./init";
+export { applyPack, receivePackObjects } from "./pack-receive";
 export { createDeployPack } from "./pack-send";
 export { collectReachableObjects } from "./object-walk";
 

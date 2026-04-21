@@ -86,6 +86,52 @@ async function writeTreeEntries(
 }
 
 /**
+ * Index a packfile and update a ref without materializing the working tree.
+ *
+ * Used by the hub to store state packs from sidecars where only the git
+ * object history matters, not the working-tree files.
+ */
+export async function receivePackObjects(
+  dir: string,
+  pack: Uint8Array,
+  ref: string,
+  expectedSha: string,
+  transferId: string,
+): Promise<void> {
+  if (!SAFE_PATH_SEGMENT.test(transferId)) {
+    throw new Error(
+      `transferId contains unsafe characters: ${JSON.stringify(transferId)}`,
+    );
+  }
+
+  const packDir = path.join(dir, ".git", "objects", "pack");
+  await fs.promises.mkdir(packDir, { recursive: true });
+
+  const filename = `pack-recv-${transferId}.pack`;
+  const filepath = path.join(".git", "objects", "pack", filename);
+  const fullPath = path.join(dir, filepath);
+
+  await fs.promises.writeFile(fullPath, pack);
+
+  try {
+    const { oids } = await git.indexPack({ fs, dir, filepath });
+
+    if (!oids.includes(expectedSha)) {
+      throw new Error(
+        `sha_mismatch: expected commit ${expectedSha} not found in pack`,
+      );
+    }
+
+    await git.writeRef({ fs, dir, ref, value: expectedSha, force: true });
+  } catch (err) {
+    await fs.promises.rm(fullPath, { force: true });
+    const idxPath = fullPath.replace(/\.pack$/, ".idx");
+    await fs.promises.rm(idxPath, { force: true });
+    throw err;
+  }
+}
+
+/**
  * Apply a git packfile to a repository, check out the working tree, and
  * update the ref.
  *
