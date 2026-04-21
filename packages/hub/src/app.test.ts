@@ -3,6 +3,7 @@ import type { DB } from "@interchange/db";
 import { createApp } from "./app";
 import type { Auth } from "./auth";
 import { createEventCollectorRegistry } from "./event-collector-registry";
+import type { SessionService } from "./session-service";
 import { createSidecarRouter } from "./ws/sidecar-handler";
 
 const mockAuth = {
@@ -14,12 +15,14 @@ const mockAuth = {
 
 const mockDb = {} as unknown as DB["db"];
 const sidecarRouter = createSidecarRouter({});
+const sessionService = {} as unknown as SessionService;
 const eventCollectors = createEventCollectorRegistry(mockDb);
 
 const app = createApp({
   auth: mockAuth,
   db: mockDb,
   sidecarRouter,
+  sessionService,
   eventCollectors,
 });
 

@@ -4,6 +4,7 @@ import type { Env } from "hono";
 
 import type { Auth } from "./auth";
 import type { EventCollectorRegistry } from "./event-collector-registry";
+import type { SessionService } from "./session-service";
 import type { SidecarRouter } from "./ws/sidecar-handler";
 
 export type TenantRow = {
@@ -33,6 +34,7 @@ export type AppEnv = Env & {
     grantStore: GrantStore;
     conditionRegistry: ConditionRegistry;
     sidecarRouter: SidecarRouter;
+    sessionService: SessionService;
     eventCollectors: EventCollectorRegistry;
     user: Auth["$Infer"]["Session"]["user"] | null;
     session: Auth["$Infer"]["Session"]["session"] | null;

@@ -27,6 +27,7 @@ import { createSidecarRoutes } from "./routes/sidecars";
 import { type DB, createGrantStore } from "@interchange/db";
 import type { ConditionRegistry } from "@interchange/types/authz";
 import { timeWindowEvaluator } from "@interchange/authz";
+import type { SessionService } from "./session-service";
 import type { SidecarRouter } from "./ws/sidecar-handler";
 import type { EventCollectorRegistry } from "./event-collector-registry";
 
@@ -34,6 +35,7 @@ export type CreateAppOpts = {
   auth: Auth;
   db: DB["db"];
   sidecarRouter: SidecarRouter;
+  sessionService: SessionService;
   eventCollectors: EventCollectorRegistry;
   sidecarWsHandler?: Handler<AppEnv>;
 };
@@ -42,6 +44,7 @@ export function createApp({
   auth,
   db,
   sidecarRouter,
+  sessionService,
   eventCollectors,
   sidecarWsHandler,
 }: CreateAppOpts) {
@@ -63,6 +66,7 @@ export function createApp({
     c.set("grantStore", grantStore);
     c.set("conditionRegistry", conditionRegistry);
     c.set("sidecarRouter", sidecarRouter);
+    c.set("sessionService", sessionService);
     c.set("eventCollectors", eventCollectors);
     const result = await auth.api.getSession({
       headers: c.req.raw.headers,

@@ -4,6 +4,11 @@ export {
   type DeployContent,
 } from "./agent-repo";
 export { createAuth, type Auth } from "./auth";
+export {
+  createSessionService,
+  SessionLaunchError,
+  type SessionService,
+} from "./session-service";
 export { createApp, type App, type CreateAppOpts } from "./app";
 export type { AppEnv, TenantEnv, TenantRow, PrincipalRow } from "./context";
 export {
