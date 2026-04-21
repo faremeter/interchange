@@ -7,6 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { getLogger } from "@interchange/log";
 import { verifyEd25519 } from "@interchange/crypto-node";
+import { chunkPack } from "@interchange/pack-transport";
 import type {
   SidecarFrame,
   HubFrame,
@@ -764,7 +765,6 @@ export function createSidecarRouter(
     entry.reject(reason);
   }
 
-  const PACK_CHUNK_SIZE = 64 * 1024;
   // Pack transfers may take longer than session requests due to data volume.
   const PACK_TIMEOUT_MS = requestTimeoutMs * 4;
 
@@ -812,15 +812,13 @@ export function createSidecarRouter(
       });
 
       // Send chunks
-      let seq = 0;
-      for (let offset = 0; offset < pack.length; offset += PACK_CHUNK_SIZE) {
-        const chunk = pack.slice(offset, offset + PACK_CHUNK_SIZE);
+      for (const chunk of chunkPack(pack)) {
         conn.send({
           type: "pack.push",
           agentAddress,
           transferId,
-          seq: seq++,
-          data: Buffer.from(chunk).toString("base64"),
+          seq: chunk.seq,
+          data: chunk.data,
         });
       }
 

@@ -1,0 +1,15 @@
+{
+  "name": "@interchange/pack-transport",
+  "version": "0.0.0",
+  "license": "LGPL-2.1-only",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "@interchange/types": "workspace:*"
+  }
+}

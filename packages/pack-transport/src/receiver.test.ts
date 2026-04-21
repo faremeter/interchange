@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { createPackReceiver } from "./pack-receiver";
+import { createPackReceiver } from "./receiver";
 import type { PackPushFrame, PackDoneFrame } from "@interchange/types/sidecar";
 
 function makePush(overrides: Partial<PackPushFrame> = {}): PackPushFrame {
