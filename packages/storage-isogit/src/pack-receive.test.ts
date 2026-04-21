@@ -92,7 +92,7 @@ describe("applyPack", () => {
     expect(resolved).toBe(source.commitSha);
   });
 
-  test("cleans up temp files after success", async () => {
+  test("retains pack and index in objects/pack after success", async () => {
     const source = await makeSourceRepo();
     const pack = await createPackFromRepo(source.dir, source.oids);
 
@@ -110,12 +110,238 @@ describe("applyPack", () => {
     const packPath = path.join(
       targetDir,
       ".git",
+      "objects",
+      "pack",
       "pack-recv-cleanup-test.pack",
     );
-    const idxPath = path.join(targetDir, ".git", "pack-recv-cleanup-test.idx");
+    const idxPath = path.join(
+      targetDir,
+      ".git",
+      "objects",
+      "pack",
+      "pack-recv-cleanup-test.idx",
+    );
 
-    await expect(fs.promises.access(packPath)).rejects.toThrow();
-    await expect(fs.promises.access(idxPath)).rejects.toThrow();
+    // Pack and index are retained so git can read objects from them.
+    await fs.promises.access(packPath);
+    await fs.promises.access(idxPath);
+  });
+
+  test("checks out files to the working tree", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    await applyPack(
+      targetDir,
+      pack,
+      "refs/heads/deploy",
+      source.commitSha,
+      "checkout-test",
+    );
+
+    const content = await fs.promises.readFile(
+      path.join(targetDir, "deploy", "prompt.txt"),
+      "utf-8",
+    );
+    expect(content).toBe("You are a helpful agent.");
+  });
+
+  test("preserves executable mode on checked-out files", async () => {
+    const sourceDir = await tempDir();
+    await git.init({ fs, dir: sourceDir, defaultBranch: "main" });
+
+    const scriptPath = path.join(sourceDir, "deploy", "run.sh");
+    await fs.promises.mkdir(path.join(sourceDir, "deploy"), {
+      recursive: true,
+    });
+    await fs.promises.writeFile(scriptPath, "#!/bin/sh\necho hello\n", {
+      mode: 0o755,
+    });
+    await git.add({ fs, dir: sourceDir, filepath: "deploy/run.sh" });
+
+    const commitSha = await git.commit({
+      fs,
+      dir: sourceDir,
+      message: "Add executable script",
+      author: { name: "Test", email: "test@test.dev" },
+    });
+
+    const oids = await collectReachableObjects(sourceDir, commitSha);
+    const pack = await createPackFromRepo(sourceDir, oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    await applyPack(
+      targetDir,
+      pack,
+      "refs/heads/deploy",
+      commitSha,
+      "exec-test",
+    );
+
+    const stat = await fs.promises.stat(
+      path.join(targetDir, "deploy", "run.sh"),
+    );
+    const isExecutable = (stat.mode & 0o111) !== 0;
+    expect(isExecutable).toBe(true);
+  });
+
+  test("removes stale files when a second deploy drops content", async () => {
+    // First commit: two skills (greet + farewell).
+    const sourceDir = await tempDir();
+    await git.init({ fs, dir: sourceDir, defaultBranch: "main" });
+
+    const greetDir = path.join(sourceDir, "deploy", "skills", "greet");
+    const farewellDir = path.join(sourceDir, "deploy", "skills", "farewell");
+    await fs.promises.mkdir(greetDir, { recursive: true });
+    await fs.promises.mkdir(farewellDir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(greetDir, "tool.json"),
+      '{"name":"greet"}',
+    );
+    await fs.promises.writeFile(
+      path.join(farewellDir, "tool.json"),
+      '{"name":"farewell"}',
+    );
+    await git.add({
+      fs,
+      dir: sourceDir,
+      filepath: "deploy/skills/greet/tool.json",
+    });
+    await git.add({
+      fs,
+      dir: sourceDir,
+      filepath: "deploy/skills/farewell/tool.json",
+    });
+    const sha1 = await git.commit({
+      fs,
+      dir: sourceDir,
+      message: "Two skills",
+      author: { name: "Test", email: "test@test.dev" },
+    });
+
+    const oids1 = await collectReachableObjects(sourceDir, sha1);
+    const pack1 = await createPackFromRepo(sourceDir, oids1);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    await applyPack(targetDir, pack1, "refs/heads/deploy", sha1, "deploy-v1");
+
+    // Verify both skills exist after first deploy.
+    await fs.promises.access(
+      path.join(targetDir, "deploy", "skills", "farewell", "tool.json"),
+    );
+
+    // Second commit: remove farewell, keep greet.
+    await fs.promises.rm(farewellDir, { recursive: true });
+    await git.remove({
+      fs,
+      dir: sourceDir,
+      filepath: "deploy/skills/farewell/tool.json",
+    });
+    const sha2 = await git.commit({
+      fs,
+      dir: sourceDir,
+      message: "Remove farewell",
+      author: { name: "Test", email: "test@test.dev" },
+    });
+
+    const oids2 = await collectReachableObjects(sourceDir, sha2);
+    const pack2 = await createPackFromRepo(sourceDir, oids2);
+
+    await applyPack(targetDir, pack2, "refs/heads/deploy", sha2, "deploy-v2");
+
+    // Greet should still exist.
+    const greetContent = await fs.promises.readFile(
+      path.join(targetDir, "deploy", "skills", "greet", "tool.json"),
+      "utf-8",
+    );
+    expect(greetContent).toBe('{"name":"greet"}');
+
+    // Farewell should be gone — stale files must not linger.
+    const farewellExists = await fs.promises
+      .access(path.join(targetDir, "deploy", "skills", "farewell", "tool.json"))
+      .then(() => true)
+      .catch(() => false);
+    expect(farewellExists).toBe(false);
+  });
+
+  test("removes stale top-level directories absent from new tree", async () => {
+    // First commit: deploy/ and config/ at the top level.
+    const sourceDir = await tempDir();
+    await git.init({ fs, dir: sourceDir, defaultBranch: "main" });
+
+    await fs.promises.mkdir(path.join(sourceDir, "deploy"), {
+      recursive: true,
+    });
+    await fs.promises.mkdir(path.join(sourceDir, "config"), {
+      recursive: true,
+    });
+    await fs.promises.writeFile(
+      path.join(sourceDir, "deploy", "prompt.md"),
+      "hello",
+    );
+    await fs.promises.writeFile(
+      path.join(sourceDir, "config", "settings.json"),
+      "{}",
+    );
+    await git.add({ fs, dir: sourceDir, filepath: "deploy/prompt.md" });
+    await git.add({ fs, dir: sourceDir, filepath: "config/settings.json" });
+    const sha1 = await git.commit({
+      fs,
+      dir: sourceDir,
+      message: "Deploy and config",
+      author: { name: "Test", email: "test@test.dev" },
+    });
+
+    const oids1 = await collectReachableObjects(sourceDir, sha1);
+    const pack1 = await createPackFromRepo(sourceDir, oids1);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    await applyPack(targetDir, pack1, "refs/heads/deploy", sha1, "tld-v1");
+
+    // Verify both top-level dirs exist.
+    await fs.promises.access(path.join(targetDir, "config", "settings.json"));
+
+    // Second commit: remove config/ entirely.
+    await fs.promises.rm(path.join(sourceDir, "config"), { recursive: true });
+    await git.remove({
+      fs,
+      dir: sourceDir,
+      filepath: "config/settings.json",
+    });
+    const sha2 = await git.commit({
+      fs,
+      dir: sourceDir,
+      message: "Remove config",
+      author: { name: "Test", email: "test@test.dev" },
+    });
+
+    const oids2 = await collectReachableObjects(sourceDir, sha2);
+    const pack2 = await createPackFromRepo(sourceDir, oids2);
+
+    await applyPack(targetDir, pack2, "refs/heads/deploy", sha2, "tld-v2");
+
+    // deploy/ should still exist.
+    const promptContent = await fs.promises.readFile(
+      path.join(targetDir, "deploy", "prompt.md"),
+      "utf-8",
+    );
+    expect(promptContent).toBe("hello");
+
+    // config/ should be gone.
+    const configExists = await fs.promises
+      .access(path.join(targetDir, "config"))
+      .then(() => true)
+      .catch(() => false);
+    expect(configExists).toBe(false);
   });
 
   test("throws on sha mismatch", async () => {
@@ -136,30 +362,38 @@ describe("applyPack", () => {
     ).rejects.toThrow("sha_mismatch");
   });
 
-  test("cleans up temp files after failure", async () => {
+  test("cleans up pack files after failure", async () => {
     const targetDir = await tempDir();
     await initAgentRepo(targetDir);
 
     // Write garbage as a pack — indexPack will fail
     const garbagePack = new Uint8Array([1, 2, 3, 4]);
 
-    try {
-      await applyPack(
+    await expect(
+      applyPack(
         targetDir,
         garbagePack,
         "refs/heads/deploy",
         "abc123",
         "fail-cleanup",
-      );
-    } catch {
-      // Expected to throw
-    }
+      ),
+    ).rejects.toThrow();
 
     const packPath = path.join(
       targetDir,
       ".git",
+      "objects",
+      "pack",
       "pack-recv-fail-cleanup.pack",
     );
+    const idxPath = path.join(
+      targetDir,
+      ".git",
+      "objects",
+      "pack",
+      "pack-recv-fail-cleanup.idx",
+    );
     await expect(fs.promises.access(packPath)).rejects.toThrow();
+    await expect(fs.promises.access(idxPath)).rejects.toThrow();
   });
 });
