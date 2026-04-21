@@ -10,7 +10,12 @@ import { evaluateGrants } from "@interchange/authz";
 import { createHarness, type Harness } from "@interchange/harness";
 import { hasProvider } from "@interchange/inference";
 import { createNodeCrypto } from "@interchange/crypto-node";
-import { createIsogitStore, applyPack } from "@interchange/storage-isogit";
+import {
+  createIsogitStore,
+  applyPack,
+  createDeployPack,
+  currentBranch,
+} from "@interchange/storage-isogit";
 import type { InMemoryTransport } from "@interchange/message-memory";
 import type { GrantRule } from "@interchange/types/authz";
 import type {
@@ -84,6 +89,9 @@ export type SessionManager = {
     commitSha: string,
     transferId: string,
   ): Promise<void>;
+  createStatePack(
+    agentAddress: string,
+  ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }>;
 };
 
 export function createSessionManager(
@@ -282,6 +290,21 @@ export function createSessionManager(
     logger.info`Applied deploy pack for ${agentAddress} at ${commitSha.slice(0, 8)}`;
   }
 
+  async function createStatePack(
+    agentAddress: string,
+  ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }> {
+    const session = sessions.get(agentAddress);
+    if (session === undefined) {
+      throw new Error(`No session exists for agent "${agentAddress}"`);
+    }
+
+    const dir = path.join(dataDir, sanitizeAddress(agentAddress));
+    const branch = await currentBranch(dir);
+    const ref = `refs/heads/${branch}`;
+    const { pack, commitSha } = await createDeployPack(dir, ref);
+    return { pack, commitSha, ref };
+  }
+
   return {
     createSession,
     destroySession,
@@ -292,5 +315,6 @@ export function createSessionManager(
     getAddresses,
     restoreSessions,
     applyDeployPack,
+    createStatePack,
   };
 }

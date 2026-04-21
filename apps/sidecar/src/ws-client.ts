@@ -20,12 +20,14 @@ import type {
   GrantsUpdateFrame,
   PackPushFrame,
   PackDoneFrame,
+  PackAckFrame,
+  PackRejectFrame,
   SyncRequestFrame,
 } from "@interchange/types/sidecar";
 import type { InboundMessage, KeyPair } from "@interchange/types/runtime";
 
 import type { SessionManager, SessionEventSink } from "./session-manager";
-import { createPackReceiver } from "@interchange/pack-transport";
+import { createPackReceiver, chunkPack } from "@interchange/pack-transport";
 import { hexEncode } from "./key-store";
 
 const logger = getLogger(["interchange", "sidecar", "ws"]);
@@ -266,8 +268,74 @@ export function createWsClient(config: WsClientConfig): WsClient {
     }
   }
 
-  function handleSyncRequest(frame: SyncRequestFrame): void {
-    logger.warn`Received sync.request for ${frame.agentAddress} (transferId=${frame.transferId}) but state push is not implemented`;
+  // Tracks outbound state pack transfers (sidecar → hub).
+  const pendingStatePacks = new Map<
+    string,
+    { resolve(): void; reject(error: string): void }
+  >();
+
+  async function handleSyncRequest(frame: SyncRequestFrame): Promise<void> {
+    const { agentAddress, transferId } = frame;
+    try {
+      const { pack, commitSha, ref } =
+        await sessions.createStatePack(agentAddress);
+
+      // Register pending entry before sending frames so that a synchronous
+      // pack.ack (e.g. in tests or loopback transports) resolves correctly.
+      const ackPromise = new Promise<void>((resolve, reject) => {
+        pendingStatePacks.set(transferId, {
+          resolve,
+          reject(error: string) {
+            reject(new Error(error));
+          },
+        });
+      });
+
+      for (const chunk of chunkPack(pack)) {
+        send({
+          type: "pack.push",
+          agentAddress,
+          transferId,
+          seq: chunk.seq,
+          data: chunk.data,
+        });
+      }
+
+      send({
+        type: "pack.done",
+        agentAddress,
+        transferId,
+        ref,
+        commitSha,
+      });
+
+      await ackPromise;
+
+      logger.info`State push complete for ${agentAddress} (${commitSha.slice(0, 8)})`;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn`State push failed for ${agentAddress}: ${msg}`;
+    }
+  }
+
+  function handlePackAck(frame: PackAckFrame): void {
+    const entry = pendingStatePacks.get(frame.transferId);
+    if (entry === undefined) {
+      logger.warn`Received pack.ack for unknown transferId ${frame.transferId}`;
+      return;
+    }
+    pendingStatePacks.delete(frame.transferId);
+    entry.resolve();
+  }
+
+  function handlePackReject(frame: PackRejectFrame): void {
+    const entry = pendingStatePacks.get(frame.transferId);
+    if (entry === undefined) {
+      logger.warn`Received pack.reject for unknown transferId ${frame.transferId}`;
+      return;
+    }
+    pendingStatePacks.delete(frame.transferId);
+    entry.reject(`Pack rejected by hub: ${frame.reason}`);
   }
 
   async function handleMessage(data: string): Promise<void> {
@@ -316,11 +384,13 @@ export function createWsClient(config: WsClientConfig): WsClient {
         await handlePackDone(frame);
         break;
       case "sync.request":
-        handleSyncRequest(frame);
+        void handleSyncRequest(frame);
         break;
       case "pack.ack":
+        handlePackAck(frame);
+        break;
       case "pack.reject":
-        logger.warn`Unexpected ${frame.type} from hub (sidecar is not a pack sender yet)`;
+        handlePackReject(frame);
         break;
       default:
         logger.warn`Unknown frame type from hub: ${(frame as { type: string }).type}`;
@@ -367,6 +437,10 @@ export function createWsClient(config: WsClientConfig): WsClient {
 
       // Clear any in-flight pack transfers from the previous connection.
       packReceiver.reset();
+      for (const [id, entry] of pendingStatePacks) {
+        pendingStatePacks.delete(id);
+        entry.reject("Connection lost");
+      }
 
       // Restore sessions from disk before announcing to the hub.
       // Harnesses must be running before the hub starts routing messages.
