@@ -1774,4 +1774,62 @@ describe("SidecarRouter", () => {
       expect(failedFrames[0].reason).toContain("governance");
     });
   });
+
+  describe("configuration guards", () => {
+    test("sendAgentDeploy without hub key throws without mutating routing table", async () => {
+      const router = createSidecarRouter({
+        requestTimeoutMs: 500,
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+
+      await expect(
+        router.sendAgentDeploy("new-agent@local", {
+          agentId: "a1",
+          agentAddress: "new-agent@local",
+          sessionId: "s1",
+          principalId: "p1",
+          tenantId: "t1",
+          systemPrompt: "test",
+          tools: [],
+          grants: [],
+          providers: [
+            { provider: "test", apiKey: "k", baseURL: "http://localhost" },
+          ],
+          defaultModel: "m",
+        }),
+      ).rejects.toThrow("Hub signing key is required");
+
+      expect(router.getRoutableAddresses()).not.toContain("new-agent@local");
+    });
+
+    test("throws when only lookupDeployRef is provided without onDeployRefStale", () => {
+      expect(() =>
+        createSidecarRouter({
+          requestTimeoutMs: 500,
+          lookupDeployRef: async () => null,
+        }),
+      ).toThrow("lookupDeployRef and onDeployRefStale must both be provided");
+    });
+
+    test("throws when only onDeployRefStale is provided without lookupDeployRef", () => {
+      expect(() =>
+        createSidecarRouter({
+          requestTimeoutMs: 500,
+          // eslint-disable-next-line @typescript-eslint/no-empty-function
+          onDeployRefStale: async () => {},
+        }),
+      ).toThrow("lookupDeployRef and onDeployRefStale must both be provided");
+    });
+  });
 });

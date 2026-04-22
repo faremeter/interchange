@@ -125,7 +125,7 @@ type ProvisionedAgent = {
   keyPair: KeyPair;
 };
 
-function buildToolDispatch(deployTools: DeployToolInfo[]): ToolRunner {
+export function buildToolDispatch(deployTools: DeployToolInfo[]): ToolRunner {
   const posixTools = createPosixTools();
   const posixNames = new Set(posixTools.definitions.map((d) => d.name));
   const handlerIndex = new Set(
