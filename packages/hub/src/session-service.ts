@@ -1,5 +1,11 @@
 import { getLogger } from "@interchange/log";
-import type { HarnessConfig } from "@interchange/types/runtime";
+import {
+  assembleMessage,
+  assembleSignedContent,
+  createDetachedSignatureFromProvider,
+  type MessageHeaders,
+} from "@interchange/message-memory/compose";
+import type { CryptoProvider, HarnessConfig } from "@interchange/types/runtime";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { SidecarRouter } from "./ws/sidecar-handler";
 
@@ -40,9 +46,28 @@ export type SessionService = {
   }): Promise<void>;
 
   /**
+   * Compose a signed RFC 2822 message from the user and deliver it to the
+   * agent via the mail transport. Throws if the agent is unreachable.
+   */
+  sendUserMessage(params: UserMessageParams): Promise<void>;
+
+  /**
    * Undeploy an agent and wait for the sidecar to acknowledge.
    */
   endSession(agentAddress: string, reason: string): Promise<void>;
+};
+
+export type UserMessageParams = {
+  agentAddress: string;
+  from: string;
+  messageId: string;
+  date: Date;
+  content: string;
+  inReplyTo?: string;
+  references?: string[];
+  sessionId: string;
+  tenantId: string;
+  cryptoProvider: CryptoProvider;
 };
 
 export function createSessionService(deps: {
@@ -111,6 +136,60 @@ export function createSessionService(deps: {
     }
   }
 
+  async function sendUserMessage(params: UserMessageParams): Promise<void> {
+    const {
+      agentAddress,
+      from,
+      messageId,
+      date,
+      content,
+      inReplyTo,
+      references,
+      sessionId,
+      tenantId,
+      cryptoProvider,
+    } = params;
+
+    const headers: MessageHeaders = {
+      from,
+      to: [agentAddress],
+      cc: undefined,
+      date,
+      messageId,
+      subject: undefined,
+      inReplyTo,
+      references,
+      mimeVersion: "1.0",
+      interchangeType: "conversation.message",
+      interchangeCorrelationId: undefined,
+      interchangeTenantId: tenantId,
+      interchangeAgentId: undefined,
+      interchangeSessionId: sessionId,
+      interchangeOfferingId: undefined,
+      interchangeSchemaVersion: undefined,
+      traceparent: undefined,
+      tracestate: undefined,
+    };
+
+    const signedContent = assembleSignedContent({
+      kind: "conversation",
+      text: content,
+    });
+    const signature = await createDetachedSignatureFromProvider(
+      signedContent,
+      cryptoProvider,
+    );
+    const rawMessage = assembleMessage(headers, signedContent, signature);
+    const base64 = Buffer.from(rawMessage).toString("base64");
+
+    const delivered = sidecarRouter.routeMail(agentAddress, base64);
+    if (!delivered) {
+      throw new Error(
+        `Failed to deliver message to ${agentAddress}: agent is unreachable`,
+      );
+    }
+  }
+
   async function endSession(
     agentAddress: string,
     reason: string,
@@ -118,5 +197,5 @@ export function createSessionService(deps: {
     await sidecarRouter.sendAgentUndeploy(agentAddress, reason);
   }
 
-  return { launchSession, endSession };
+  return { launchSession, sendUserMessage, endSession };
 }

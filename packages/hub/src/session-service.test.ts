@@ -1,12 +1,19 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import type { HarnessConfig } from "@interchange/types/runtime";
+import type { CryptoProvider, HarnessConfig } from "@interchange/types/runtime";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
-import { createSessionService, SessionLaunchError } from "./session-service";
+import {
+  createSessionService,
+  SessionLaunchError,
+  type UserMessageParams,
+} from "./session-service";
 import type { SidecarRouter } from "./ws/sidecar-handler";
 
 type Call = { method: string; args: unknown[] };
 
-function createMockRouter(): SidecarRouter & { calls: Call[] } {
+function createMockRouter(): SidecarRouter & {
+  calls: Call[];
+  routeMailResult: boolean;
+} {
   const calls: Call[] = [];
   const track =
     (method: string) =>
@@ -15,12 +22,16 @@ function createMockRouter(): SidecarRouter & { calls: Call[] } {
       return Promise.resolve();
     };
 
-  return {
+  const mock = {
     calls,
+    routeMailResult: true,
     handleOpen: track("handleOpen") as SidecarRouter["handleOpen"],
     handleMessage: track("handleMessage") as SidecarRouter["handleMessage"],
     handleClose: track("handleClose") as SidecarRouter["handleClose"],
-    routeMail: (() => true) as SidecarRouter["routeMail"],
+    routeMail(agentAddress: string, rawMessage: string): boolean {
+      calls.push({ method: "routeMail", args: [agentAddress, rawMessage] });
+      return mock.routeMailResult;
+    },
     sendAgentDeploy: track(
       "sendAgentDeploy",
     ) as SidecarRouter["sendAgentDeploy"],
@@ -46,6 +57,7 @@ function createMockRouter(): SidecarRouter & { calls: Call[] } {
     getConnectedSidecars: () => [],
     getRoutableAddresses: () => [],
   };
+  return mock;
 }
 
 function createMockRepoStore(): AgentRepoStore & { calls: Call[] } {
@@ -279,5 +291,121 @@ describe("SessionService", () => {
     if (call === undefined) throw new Error("unreachable");
     expect(call.method).toBe("sendAgentUndeploy");
     expect(call.args).toEqual([AGENT_ADDRESS, "test_end"]);
+  });
+
+  // --- sendUserMessage tests ---
+
+  function mockCryptoProvider(): CryptoProvider {
+    const fakeSig = new Uint8Array(64);
+    fakeSig.fill(0xab);
+    return {
+      sign: async (_data: Uint8Array) => fakeSig,
+      verify: async () => true,
+      getPublicKey: () => new Uint8Array(32),
+    };
+  }
+
+  function userMessageParams(
+    overrides?: Partial<UserMessageParams>,
+  ): UserMessageParams {
+    return {
+      agentAddress: AGENT_ADDRESS,
+      from: "user@test.local",
+      messageId: "<msg-1@test.local>",
+      date: new Date("2026-01-15T12:00:00Z"),
+      content: "Hello agent",
+      sessionId: "ses-1",
+      tenantId: "tenant-1",
+      cryptoProvider: mockCryptoProvider(),
+      ...overrides,
+    };
+  }
+
+  test("sendUserMessage calls routeMail with base64 MIME", async () => {
+    const service = createSessionService({
+      sidecarRouter: router,
+      agentRepoStore: repoStore,
+    });
+
+    await service.sendUserMessage(userMessageParams());
+
+    const mailCalls = router.calls.filter((c) => c.method === "routeMail");
+    expect(mailCalls.length).toBe(1);
+    const call = mailCalls[0];
+    if (call === undefined) throw new Error("unreachable");
+    expect(call.args[0]).toBe(AGENT_ADDRESS);
+
+    const base64Body = call.args[1] as string;
+    const decoded = Buffer.from(base64Body, "base64").toString("utf-8");
+    expect(decoded).toContain("From: user@test.local");
+    expect(decoded).toContain(`To: ${AGENT_ADDRESS}`);
+    expect(decoded).toContain("Message-ID: <msg-1@test.local>");
+    expect(decoded).toContain("Interchange-Session-ID: ses-1");
+    expect(decoded).toContain("Interchange-Tenant-ID: tenant-1");
+    expect(decoded).toContain("Hello agent");
+  });
+
+  test("sendUserMessage includes threading headers", async () => {
+    const service = createSessionService({
+      sidecarRouter: router,
+      agentRepoStore: repoStore,
+    });
+
+    await service.sendUserMessage(
+      userMessageParams({
+        inReplyTo: "<prev@test.local>",
+        references: ["<root@test.local>", "<prev@test.local>"],
+      }),
+    );
+
+    const call = router.calls.find((c) => c.method === "routeMail");
+    if (call === undefined) throw new Error("unreachable");
+
+    const decoded = Buffer.from(call.args[1] as string, "base64").toString(
+      "utf-8",
+    );
+    expect(decoded).toContain("In-Reply-To: <prev@test.local>");
+    expect(decoded).toContain(
+      "References: <root@test.local> <prev@test.local>",
+    );
+  });
+
+  test("sendUserMessage throws when agent is unreachable", async () => {
+    router.routeMailResult = false;
+
+    const service = createSessionService({
+      sidecarRouter: router,
+      agentRepoStore: repoStore,
+    });
+
+    const err = await service
+      .sendUserMessage(userMessageParams())
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("unreachable");
+  });
+
+  test("sendUserMessage propagates signing failure", async () => {
+    const badProvider: CryptoProvider = {
+      sign: async () => {
+        throw new Error("signing failed");
+      },
+      verify: async () => true,
+      getPublicKey: () => new Uint8Array(32),
+    };
+
+    const service = createSessionService({
+      sidecarRouter: router,
+      agentRepoStore: repoStore,
+    });
+
+    const err = await service
+      .sendUserMessage(userMessageParams({ cryptoProvider: badProvider }))
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe("signing failed");
+    expect(router.calls.filter((c) => c.method === "routeMail").length).toBe(0);
   });
 });
