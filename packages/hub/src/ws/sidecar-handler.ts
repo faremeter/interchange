@@ -58,6 +58,7 @@ export type SidecarRouter = {
     sessionId: string,
     callback: (event: unknown) => void,
   ): () => void;
+  dispatchSessionEvent(sessionId: string, event: unknown): void;
 
   getConnectedSidecars(): string[];
   getRoutableAddresses(): string[];
@@ -1390,6 +1391,7 @@ export function createSidecarRouter(
     sendPack,
     sendSyncRequest,
     subscribeSession,
+    dispatchSessionEvent: dispatchToSubscribers,
     getConnectedSidecars,
     getRoutableAddresses,
   };

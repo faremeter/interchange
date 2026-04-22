@@ -491,6 +491,7 @@ app.delete(
     const tenant = c.get("tenant");
     const db = c.get("db");
     const sessionService = c.get("sessionService");
+    const sidecarRouter = c.get("sidecarRouter");
     const sessionId = c.req.param("sessionId");
 
     const sessionRow = await db.query.agentSession.findFirst({
@@ -573,6 +574,10 @@ app.delete(
       .update(agentSession)
       .set({ status: "ended", endedAt: new Date(), updatedAt: new Date() })
       .where(eq(agentSession.id, sessionId));
+
+    sidecarRouter.dispatchSessionEvent(sessionId, {
+      type: "session.ended",
+    });
 
     return c.body(null, 204);
   },

@@ -60,6 +60,8 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 
+const sessionEndedEvent = type({ type: "'session.ended'" });
+
 function StatusBadge({ status }: { status: string }) {
   const variant =
     status === "deployed"
@@ -412,6 +414,14 @@ export function TenantAgentDetailPage() {
       `/api/tenants/${tenantId}/sessions/${sessionId}/events`,
       (raw) => {
         if (cancelled) return;
+
+        if (!(sessionEndedEvent(raw) instanceof type.errors)) {
+          queryClient.invalidateQueries({
+            queryKey: ["tenants", tenantId, "agents", agentId],
+          });
+          return;
+        }
+
         const validated = InferenceEvent(raw);
         if (validated instanceof type.errors) return;
         const event: ValidInferenceEvent = validated as ValidInferenceEvent;
