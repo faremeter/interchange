@@ -9,7 +9,12 @@ import {
   verifySshSignature,
 } from "@interchange/crypto-node";
 import { initAgentRepo } from "./init";
-import { applyPack, type CommitVerifier } from "./pack-receive";
+import {
+  applyPack,
+  receivePackObjects,
+  type CommitVerifier,
+  type TreeValidator,
+} from "./pack-receive";
 import { collectReachableObjects } from "./object-walk";
 
 const tempDirs: string[] = [];
@@ -533,6 +538,116 @@ describe("applyPack signature verification", () => {
       fs,
       dir: targetDir,
       ref: "refs/heads/deploy",
+    });
+    expect(resolved).toBe(source.commitSha);
+  });
+});
+
+async function makeRepoWithPaths(
+  paths: { filepath: string; content: string }[],
+): Promise<{
+  dir: string;
+  commitSha: string;
+  oids: string[];
+}> {
+  const dir = await tempDir();
+  await git.init({ fs, dir, defaultBranch: "main" });
+
+  for (const { filepath, content } of paths) {
+    const fullPath = path.join(dir, filepath);
+    await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
+    await fs.promises.writeFile(fullPath, content);
+    await git.add({ fs, dir, filepath });
+  }
+
+  const commitSha = await git.commit({
+    fs,
+    dir,
+    message: "Test tree",
+    author: { name: "Test", email: "test@test.dev" },
+  });
+
+  const oids = await collectReachableObjects(dir, commitSha);
+  return { dir, commitSha, oids };
+}
+
+describe("receivePackObjects tree validation", () => {
+  test("accepts a state-only tree when validator requires state", async () => {
+    const source = await makeRepoWithPaths([
+      { filepath: "state/context.json", content: "{}" },
+    ]);
+    const pack = await createPackFromRepo(source.dir, source.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const validator: TreeValidator = (paths) =>
+      paths.every((p) => p === "state");
+
+    await receivePackObjects(
+      targetDir,
+      pack,
+      "refs/heads/state",
+      source.commitSha,
+      "state-ok",
+      validator,
+    );
+
+    const resolved = await git.resolveRef({
+      fs,
+      dir: targetDir,
+      ref: "refs/heads/state",
+    });
+    expect(resolved).toBe(source.commitSha);
+  });
+
+  test("rejects a tree with deploy/ when validator requires state only", async () => {
+    const source = await makeRepoWithPaths([
+      { filepath: "state/context.json", content: "{}" },
+      { filepath: "deploy/prompt.md", content: "evil" },
+    ]);
+    const pack = await createPackFromRepo(source.dir, source.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const validator: TreeValidator = (paths) =>
+      paths.every((p) => p === "state");
+
+    await expect(
+      receivePackObjects(
+        targetDir,
+        pack,
+        "refs/heads/state",
+        source.commitSha,
+        "state-bad",
+        validator,
+      ),
+    ).rejects.toThrow("path_violation");
+  });
+
+  test("accepts any tree when no validator is provided", async () => {
+    const source = await makeRepoWithPaths([
+      { filepath: "state/context.json", content: "{}" },
+      { filepath: "deploy/prompt.md", content: "anything" },
+    ]);
+    const pack = await createPackFromRepo(source.dir, source.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    await receivePackObjects(
+      targetDir,
+      pack,
+      "refs/heads/mixed",
+      source.commitSha,
+      "no-validate",
+    );
+
+    const resolved = await git.resolveRef({
+      fs,
+      dir: targetDir,
+      ref: "refs/heads/mixed",
     });
     expect(resolved).toBe(source.commitSha);
   });

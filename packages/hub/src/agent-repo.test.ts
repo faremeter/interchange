@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 import { generateKeyPair } from "@interchange/crypto-node";
+import { createDeployPack } from "@interchange/storage-isogit";
 import { createAgentRepoStore } from "./agent-repo";
 import type { KeyPair } from "@interchange/types/runtime";
 
@@ -184,7 +185,6 @@ describe("AgentRepoStore", () => {
       author: { name: "test", email: "test@test" },
     });
 
-    const { createDeployPack } = await import("@interchange/storage-isogit");
     const { pack } = await createDeployPack(sourceDir, "refs/heads/main");
 
     const stateRef = "refs/instances/test-instance";
@@ -197,6 +197,89 @@ describe("AgentRepoStore", () => {
       ref: stateRef,
     });
     expect(resolved).toBe(stateCommit);
+  });
+
+  test("receiveStatePack accepts packs with .gitignore alongside state", async () => {
+    const dataDir = await makeTempDir("agent-repo-gitignore-");
+    const store = createAgentRepoStore({ dataDir, signingKey });
+
+    await store.writeDeployTree("agent-gi", {
+      systemPrompt: "Gitignore test.",
+      skills: [],
+    });
+
+    const sourceDir = await makeTempDir("gitignore-source-");
+    await git.init({ fs, dir: sourceDir, defaultBranch: "main" });
+    await fs.promises.writeFile(path.join(sourceDir, ".gitignore"), "keys/\n");
+    await fs.promises.mkdir(path.join(sourceDir, "state"), { recursive: true });
+    await fs.promises.writeFile(
+      path.join(sourceDir, "state", "context.json"),
+      "{}",
+    );
+    await git.add({ fs, dir: sourceDir, filepath: ".gitignore" });
+    await git.add({ fs, dir: sourceDir, filepath: "state/context.json" });
+    const stateCommit = await git.commit({
+      fs,
+      dir: sourceDir,
+      message: "State with gitignore",
+      author: { name: "test", email: "test@test" },
+    });
+
+    const { pack } = await createDeployPack(sourceDir, "refs/heads/main");
+    const stateRef = "refs/instances/gi-test";
+    await store.receiveStatePack("agent-gi", pack, stateRef, stateCommit);
+
+    const repoDir = path.join(dataDir, "agents", "agent-gi");
+    const resolved = await git.resolveRef({
+      fs,
+      dir: repoDir,
+      ref: stateRef,
+    });
+    expect(resolved).toBe(stateCommit);
+  });
+
+  test("receiveStatePack rejects packs with paths outside state/", async () => {
+    const dataDir = await makeTempDir("agent-repo-confined-");
+    const store = createAgentRepoStore({ dataDir, signingKey });
+
+    await store.writeDeployTree("agent-confined", {
+      systemPrompt: "Confinement test.",
+      skills: [],
+    });
+
+    const sourceDir = await makeTempDir("confined-source-");
+    await git.init({ fs, dir: sourceDir, defaultBranch: "main" });
+    await fs.promises.mkdir(path.join(sourceDir, "state"), { recursive: true });
+    await fs.promises.mkdir(path.join(sourceDir, "deploy"), {
+      recursive: true,
+    });
+    await fs.promises.writeFile(
+      path.join(sourceDir, "state", "context.json"),
+      "{}",
+    );
+    await fs.promises.writeFile(
+      path.join(sourceDir, "deploy", "prompt.md"),
+      "evil",
+    );
+    await git.add({ fs, dir: sourceDir, filepath: "state/context.json" });
+    await git.add({ fs, dir: sourceDir, filepath: "deploy/prompt.md" });
+    const badCommit = await git.commit({
+      fs,
+      dir: sourceDir,
+      message: "Escaped confinement",
+      author: { name: "test", email: "test@test" },
+    });
+
+    const { pack } = await createDeployPack(sourceDir, "refs/heads/main");
+
+    await expect(
+      store.receiveStatePack(
+        "agent-confined",
+        pack,
+        "refs/instances/test",
+        badCommit,
+      ),
+    ).rejects.toThrow("path_violation");
   });
 
   test("writeDeployTree is idempotent on the repo", async () => {
