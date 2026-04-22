@@ -10,6 +10,7 @@
     { "path": "packages/authz" },
     { "path": "packages/hub" },
     { "path": "packages/tools-posix" },
+    { "path": "packages/mime" },
     { "path": "packages/message-memory" },
     { "path": "packages/pack-transport" },
     { "path": "packages/harness" },

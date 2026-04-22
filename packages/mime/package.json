@@ -1,5 +1,5 @@
 {
-  "name": "@interchange/message-memory",
+  "name": "@interchange/mime",
   "version": "0.0.0",
   "license": "LGPL-2.1-only",
   "type": "module",
@@ -11,8 +11,6 @@
   },
   "dependencies": {
     "@interchange/crypto-node": "workspace:*",
-    "@interchange/log": "workspace:*",
-    "@interchange/mime": "workspace:*",
     "@interchange/types": "workspace:*"
   }
 }

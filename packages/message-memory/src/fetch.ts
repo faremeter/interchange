@@ -17,7 +17,7 @@ import {
   extractBoundary,
   parseMultipart,
   extractPartByPath,
-} from "./mime";
+} from "@interchange/mime";
 import { buildMessageHeaders } from "./headers";
 import { verifyDetachedSignature } from "@interchange/crypto-node";
 

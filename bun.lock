@@ -111,7 +111,7 @@
         "@interchange/crypto-node": "workspace:*",
         "@interchange/db": "workspace:*",
         "@interchange/log": "workspace:*",
-        "@interchange/message-memory": "workspace:*",
+        "@interchange/mime": "workspace:*",
         "@interchange/pack-transport": "workspace:*",
         "@interchange/types": "workspace:*",
         "arktype": "catalog:",
@@ -148,6 +148,15 @@
       "dependencies": {
         "@interchange/crypto-node": "workspace:*",
         "@interchange/log": "workspace:*",
+        "@interchange/mime": "workspace:*",
+        "@interchange/types": "workspace:*",
+      },
+    },
+    "packages/mime": {
+      "name": "@interchange/mime",
+      "version": "0.0.0",
+      "dependencies": {
+        "@interchange/crypto-node": "workspace:*",
         "@interchange/types": "workspace:*",
       },
     },
@@ -387,6 +396,8 @@
     "@interchange/log": ["@interchange/log@workspace:packages/log"],
 
     "@interchange/message-memory": ["@interchange/message-memory@workspace:packages/message-memory"],
+
+    "@interchange/mime": ["@interchange/mime@workspace:packages/mime"],
 
     "@interchange/pack-transport": ["@interchange/pack-transport@workspace:packages/pack-transport"],
 

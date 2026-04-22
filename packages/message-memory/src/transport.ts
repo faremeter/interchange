@@ -25,7 +25,7 @@ import {
   appendToMailbox,
   type AgentMailboxEntry,
 } from "./mailbox";
-import { parseHeaderSection } from "./mime";
+import { parseHeaderSection } from "@interchange/mime";
 import { buildMessageHeaders } from "./headers";
 import { executeSend, type RemoteSendHandler } from "./send";
 import { executeSearch } from "./search";
