@@ -1,11 +1,14 @@
-// Runtime interface definitions for the Interchange agent harness.
+// Runtime definitions for the Interchange agent harness.
 //
-// These are pure TypeScript structural contracts — no implementations,
-// no ArkType schemas. Downstream runtime packages import from
-// @interchange/types/runtime.
+// Wire-facing data types (AbortReason, ProviderConfig, ToolDefinition,
+// HarnessConfig) are arktype validators so they can be composed into
+// WebSocket frame validators and used for runtime validation at parse
+// boundaries. Behavioral interfaces (ContextStore, MessageTransport,
+// ToolRunner, etc.) remain plain TypeScript.
 
+import { type } from "arktype";
 import type { AuditRecord } from "./audit";
-import type { GrantRule } from "./authz";
+import { WireGrantRule } from "./grant-wire";
 
 // ---------------------------------------------------------------------------
 // Cryptographic Identity (ARCHITECTURE.md § Cryptographic Identity,
@@ -1009,12 +1012,14 @@ export interface MessageRoutingExtension {
  *
  * (INFERENCE.md § Abort Handling › Abort Reasons)
  */
-export type AbortReason =
-  | "user_disconnect"
-  | "wallet_exhaustion"
-  | "admin_kill"
-  | "session_timeout"
-  | "credential_revocation";
+export const AbortReason = type.enumerated(
+  "user_disconnect",
+  "wallet_exhaustion",
+  "admin_kill",
+  "session_timeout",
+  "credential_revocation",
+);
+export type AbortReason = typeof AbortReason.infer;
 
 // ---------------------------------------------------------------------------
 // Provider Configuration (INFERENCE.md § Providers)
@@ -1029,12 +1034,13 @@ export type AbortReason =
  *
  * (INFERENCE.md § Providers)
  */
-export type ProviderConfig = {
-  provider: "anthropic" | "openai" | "openai-compatible" | "opencode" | string;
-  baseURL: string;
-  apiKey: string;
-  model?: string;
-};
+export const ProviderConfig = type({
+  provider: "string",
+  baseURL: "string",
+  apiKey: "string",
+  "model?": "string",
+});
+export type ProviderConfig = typeof ProviderConfig.infer;
 
 /**
  * Options for a single inference call. Override the defaults from the agent
@@ -1154,11 +1160,12 @@ export interface AuditStore {
  *
  * (ARCHITECTURE.md § Agent Harness › Tools)
  */
-export type ToolDefinition = {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-};
+export const ToolDefinition = type({
+  name: "string",
+  description: "string",
+  inputSchema: "Record<string, unknown>",
+});
+export type ToolDefinition = typeof ToolDefinition.infer;
 
 /**
  * Agent harness configuration. Assembled from the agent definition package
@@ -1168,18 +1175,23 @@ export type ToolDefinition = {
  * The sidecar needs it to reconstruct the in-memory grant store on restart
  * (the store's `collectGrants` filters by principal).
  *
+ * `grants` uses `WireGrantRule` because this type arrives over JSON where
+ * `GrantRule.expiresAt` is serialized as a string. The wire validator
+ * coerces strings back to Date instances.
+ *
  * (ARCHITECTURE.md § Agent Harness)
  */
-export type HarnessConfig = {
-  sessionId: string;
-  agentId: string;
-  tenantId: string;
-  principalId: string;
-  agentAddress: string;
-  systemPrompt: string;
-  tools: ToolDefinition[];
-  grants: GrantRule[];
-  providers: ProviderConfig[];
-  defaultModel: string;
-  sessionChannelEnabled?: boolean;
-};
+export const HarnessConfig = type({
+  sessionId: "string",
+  agentId: "string",
+  tenantId: "string",
+  principalId: "string",
+  agentAddress: "string",
+  systemPrompt: "string",
+  tools: ToolDefinition.array(),
+  grants: WireGrantRule.array(),
+  providers: ProviderConfig.array(),
+  defaultModel: "string",
+  "sessionChannelEnabled?": "boolean",
+});
+export type HarnessConfig = typeof HarnessConfig.infer;
