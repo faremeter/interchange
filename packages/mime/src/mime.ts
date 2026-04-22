@@ -344,6 +344,21 @@ export function assembleSignedContent(
 // MIME parsing (for fetchHeaders, fetchStructure, fetchPart, fetchFull)
 // ---------------------------------------------------------------------------
 
+const CRLF_CRLF = new Uint8Array([0x0d, 0x0a, 0x0d, 0x0a]);
+const LF_LF = new Uint8Array([0x0a, 0x0a]);
+
+function findByteSequence(haystack: Uint8Array, needle: Uint8Array): number {
+  if (needle.length === 0) return 0;
+  const limit = haystack.length - needle.length;
+  outer: for (let i = 0; i <= limit; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
 /**
  * Parse the header section of a raw RFC 2822 message.
  * Returns a map of lowercase header names to their values, and the
@@ -378,21 +393,6 @@ export function parseHeaderSection(raw: Uint8Array): {
   parseHeaders(headerText, headers);
 
   return { headers, bodyOffset };
-}
-
-const CRLF_CRLF = new Uint8Array([0x0d, 0x0a, 0x0d, 0x0a]);
-const LF_LF = new Uint8Array([0x0a, 0x0a]);
-
-function findByteSequence(haystack: Uint8Array, needle: Uint8Array): number {
-  if (needle.length === 0) return 0;
-  const limit = haystack.length - needle.length;
-  outer: for (let i = 0; i <= limit; i++) {
-    for (let j = 0; j < needle.length; j++) {
-      if (haystack[i + j] !== needle[j]) continue outer;
-    }
-    return i;
-  }
-  return -1;
 }
 
 function parseHeaders(headerSection: string, out: Map<string, string>): void {
