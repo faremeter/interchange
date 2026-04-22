@@ -9,9 +9,14 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ToolDefinition } from "@interchange/types/runtime";
 
+export type DeployToolInfo = {
+  definition: ToolDefinition;
+  hasHandler: boolean;
+};
+
 export type DeployTree = {
   systemPrompt: string | undefined;
-  tools: ToolDefinition[];
+  tools: DeployToolInfo[];
 };
 
 /**
@@ -35,7 +40,7 @@ export async function readDeployTree(dir: string): Promise<DeployTree> {
     }
   }
 
-  const tools: ToolDefinition[] = [];
+  const tools: DeployToolInfo[] = [];
 
   let skillDirs: string[];
   try {
@@ -107,10 +112,24 @@ export async function readDeployTree(dir: string): Promise<DeployTree> {
       );
     }
 
+    const handlerPath = path.join(skillsDir, skillName, "handler.ts");
+    let hasHandler = false;
+    try {
+      const stat = await fs.promises.stat(handlerPath);
+      hasHandler = stat.isFile();
+    } catch (e) {
+      if (!(e instanceof Error && "code" in e && e.code === "ENOENT")) {
+        throw e;
+      }
+    }
+
     tools.push({
-      name: obj["name"] as string,
-      description: obj["description"] as string,
-      inputSchema: obj["inputSchema"] as Record<string, unknown>,
+      definition: {
+        name: obj["name"] as string,
+        description: obj["description"] as string,
+        inputSchema: obj["inputSchema"] as Record<string, unknown>,
+      },
+      hasHandler,
     });
   }
 
