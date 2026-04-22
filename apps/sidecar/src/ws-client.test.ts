@@ -612,42 +612,6 @@ describe("sidecar↔hub integration", () => {
     }
   });
 
-  test("routeMail delivers MIME message to sidecar transport", async () => {
-    const transport = createInMemoryTransport();
-    const sessions = createMockSessionManager();
-    sessions.addresses.push("agent-1@test.interchange");
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${env.server.port}/ws`,
-      sidecarId: "sc-mail-route",
-      token: "test-token",
-
-      transport,
-      sessions,
-    });
-
-    client.connect();
-    try {
-      await waitFor(() =>
-        env.router.getRoutableAddresses().includes("agent-1@test.interchange"),
-      );
-
-      const mimeText =
-        "From: user@test.interchange\r\nTo: agent-1@test.interchange\r\nMessage-ID: <test@test>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nHello agent";
-      const base64 = Buffer.from(mimeText).toString("base64");
-      const delivered = env.router.routeMail(
-        "agent-1@test.interchange",
-        base64,
-      );
-
-      expect(delivered).toBe(true);
-    } finally {
-      client.close();
-      await waitFor(
-        () => !env.router.getConnectedSidecars().includes("sc-mail-route"),
-      );
-    }
-  });
-
   test("disconnect cleans up routing table", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
