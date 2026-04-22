@@ -1069,10 +1069,12 @@ app.post(
 
 app.get(
   "/:sessionId/status",
+  requireGrant(idResource("session", "sessionId"), "read"),
   describeRoute({
     tags: ["Sessions"],
     summary: "Get session status",
-    description: "Returns the current session status: idle, ending, or ended.",
+    description:
+      "Returns the runtime operational status of an active session: idle, busy, or waiting_approval. Returns 404 for ended sessions.",
     responses: {
       200: {
         description: "Session status",
@@ -1081,18 +1083,43 @@ app.get(
         },
       },
       404: {
-        description: "Session not found",
+        description: "Session not found or ended",
         content: {
           "application/json": { schema: resolver(ErrorResponse) },
         },
       },
     },
   }),
-  (c) =>
-    c.json(
-      { error: { code: "not_implemented", message: "Not implemented" } },
-      501,
-    ),
+  async (c) => {
+    const tenant = c.get("tenant");
+    const db = c.get("db");
+    const eventCollectors = c.get("eventCollectors");
+    const sessionId = c.req.param("sessionId");
+
+    const sessionRow = await db.query.agentSession.findFirst({
+      where: and(
+        eq(agentSession.id, sessionId),
+        eq(agentSession.tenantId, tenant.id),
+      ),
+    });
+
+    if (!sessionRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Session not found" } },
+        404,
+      );
+    }
+
+    if (sessionRow.status !== "active") {
+      return c.json(
+        { error: { code: "not_found", message: "Session has ended" } },
+        404,
+      );
+    }
+
+    const status = eventCollectors.getStatus(sessionId);
+    return c.json(status ?? { status: "idle" });
+  },
 );
 
 app.get(

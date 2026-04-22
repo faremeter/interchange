@@ -26,6 +26,7 @@ export const SessionResponse = type({
 export const SessionStatus = type({
   status: "'idle' | 'busy' | 'waiting_approval'",
 });
+export type SessionStatus = typeof SessionStatus.infer;
 
 export const SendMessage = type({
   content: "string",
