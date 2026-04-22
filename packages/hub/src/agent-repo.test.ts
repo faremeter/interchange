@@ -238,6 +238,38 @@ describe("AgentRepoStore", () => {
     expect(resolved).toBe(stateCommit);
   });
 
+  test("receiveStatePack rejects packs with only .gitignore and no state/", async () => {
+    const dataDir = await makeTempDir("agent-repo-gitignore-only-");
+    const store = createAgentRepoStore({ dataDir, signingKey });
+
+    await store.writeDeployTree("agent-gio", {
+      systemPrompt: "Gitignore-only test.",
+      skills: [],
+    });
+
+    const sourceDir = await makeTempDir("gitignore-only-source-");
+    await git.init({ fs, dir: sourceDir, defaultBranch: "main" });
+    await fs.promises.writeFile(path.join(sourceDir, ".gitignore"), "keys/\n");
+    await git.add({ fs, dir: sourceDir, filepath: ".gitignore" });
+    const badCommit = await git.commit({
+      fs,
+      dir: sourceDir,
+      message: "Only gitignore",
+      author: { name: "test", email: "test@test" },
+    });
+
+    const { pack } = await createDeployPack(sourceDir, "refs/heads/main");
+
+    await expect(
+      store.receiveStatePack(
+        "agent-gio",
+        pack,
+        "refs/instances/test",
+        badCommit,
+      ),
+    ).rejects.toThrow("path_violation");
+  });
+
   test("receiveStatePack rejects packs with paths outside state/", async () => {
     const dataDir = await makeTempDir("agent-repo-confined-");
     const store = createAgentRepoStore({ dataDir, signingKey });
