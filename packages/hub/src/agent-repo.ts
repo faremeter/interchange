@@ -174,8 +174,15 @@ export function createAgentRepoStore(config: {
   ): Promise<void> {
     const dir = await ensureRepo(agentId);
     const transferId = crypto.randomUUID().replace(/-/g, "");
-    await receivePackObjects(dir, pack, ref, commitSha, transferId, (paths) =>
-      paths.every((p) => p === "state" || p === ".gitignore"),
+    await receivePackObjects(
+      dir,
+      pack,
+      ref,
+      commitSha,
+      transferId,
+      (paths) =>
+        paths.includes("state") &&
+        paths.every((p) => p === "state" || p === ".gitignore"),
     );
   }
 
