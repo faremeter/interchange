@@ -429,7 +429,7 @@ const { status: prv1Status, data: prv1Data } = await api(
     name: "Anthropic",
     plugin: "anthropic",
     metadata: {
-      baseURL: "https://api.anthropic.com/v1",
+      baseURL: "https://api.anthropic.com",
       defaultModel: "claude-sonnet-4-20250514",
     },
   },
