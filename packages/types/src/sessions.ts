@@ -20,11 +20,11 @@ export const SessionResponse = type({
   "lastActivityAt?": "string | null",
 });
 
+// Runtime operational status of an active session. The harness retries
+// internally and does not surface retry state to the hub, so the retry
+// variant is omitted until the event protocol supports it.
 export const SessionStatus = type({
-  status: "'idle' | 'busy' | 'retry' | 'waiting_approval'",
-  "retryAttempt?": "number",
-  "retryMessage?": "string",
-  "retryNextAt?": "string",
+  status: "'idle' | 'busy' | 'waiting_approval'",
 });
 
 export const SendMessage = type({
