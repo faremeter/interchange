@@ -1082,6 +1082,10 @@ export function createSidecarRouter(
     agentAddress: string,
     harnessConfig: HarnessConfig,
   ): Promise<void> {
+    if (hubPublicKeyHex === undefined) {
+      throw new Error("Hub signing key is required for agent deployment");
+    }
+
     if (pendingDeploys.has(agentAddress)) {
       throw new Error(`Deploy already in progress for agent "${agentAddress}"`);
     }
@@ -1131,9 +1135,6 @@ export function createSidecarRouter(
         timer,
       });
 
-      if (hubPublicKeyHex === undefined) {
-        throw new Error("Hub signing key is required for agent deployment");
-      }
       conn.send({
         type: "agent.deploy",
         agentAddress,

@@ -608,6 +608,9 @@ function base64ToUint8Array(base64: string): Uint8Array {
 }
 
 function hexDecode(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0) {
+    throw new Error(`hexDecode: odd-length input (${hex.length} chars)`);
+  }
   const bytes = new Uint8Array(hex.length / 2);
   for (let i = 0; i < bytes.length; i++) {
     bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
