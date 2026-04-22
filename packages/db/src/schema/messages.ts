@@ -12,6 +12,7 @@ export const sessionMessage = pgTable("session_message", {
     .notNull()
     .references(() => tenant.id, { onDelete: "cascade" }),
   role: text("role", { enum: ["user", "assistant"] }).notNull(),
+  from: text("from").notNull(),
   status: text("status", { enum: ["pending", "delivered", "failed"] })
     .notNull()
     .default("pending"),

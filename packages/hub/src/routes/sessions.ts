@@ -672,11 +672,18 @@ app.post(
     const partId = generateId("messagePart");
     const now = new Date();
 
+    const agentAddress = `${agentRow.id}@${tenant.domain}`;
+    const user = c.get("user");
+    const fromAddr = `${principal.refId}@${tenant.domain}`;
+    const from = user?.name ? `"${user.name}" <${fromAddr}>` : fromAddr;
+    const mimeMessageId = `<${messageId}@${tenant.domain}>`;
+
     await db.insert(sessionMessage).values({
       id: messageId,
       sessionId,
       tenantId: tenant.id,
       role: "user",
+      from,
       status: "pending",
       createdAt: now,
     });
@@ -689,10 +696,6 @@ app.post(
       content: body.content,
       ordinal: 0,
     });
-
-    const agentAddress = `${agentRow.id}@${tenant.domain}`;
-    const from = `${principal.refId}@${tenant.domain}`;
-    const mimeMessageId = `<${messageId}@${tenant.domain}>`;
 
     const priorMessages = await db
       .select({ id: sessionMessage.id })
@@ -756,6 +759,7 @@ app.post(
         role: "user" as const,
         status: "delivered" as const,
         createdAt: now.toISOString(),
+        from,
         parts: [
           {
             id: partId,
@@ -873,6 +877,7 @@ app.get(
         role: m.role,
         status: m.status,
         createdAt: m.createdAt.toISOString(),
+        from: m.from,
         parts: (partsByMessage.get(m.id) ?? []).map((p) => ({
           id: p.id,
           type: p.type,
@@ -952,6 +957,7 @@ app.get(
       role: message.role,
       status: message.status,
       createdAt: message.createdAt.toISOString(),
+      from: message.from,
       parts: parts.map((p) => ({
         id: p.id,
         type: p.type,

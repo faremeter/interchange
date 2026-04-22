@@ -43,6 +43,7 @@ export const MessageResponse = type({
   role: "'user' | 'assistant'",
   status: "'pending' | 'delivered' | 'failed'",
   createdAt: "string",
+  from: "string",
   parts: type({
     id: "string",
     type: "'text' | 'reasoning' | 'tool' | 'file' | 'step-start' | 'step-finish' | 'snapshot' | 'patch'",
