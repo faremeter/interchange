@@ -1,9 +1,11 @@
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
+import { generateKeyPair } from "@interchange/crypto-node";
 import { createAgentRepoStore } from "./agent-repo";
+import type { KeyPair } from "@interchange/types/runtime";
 
 const tempDirs: string[] = [];
 
@@ -12,6 +14,12 @@ async function makeTempDir(prefix: string): Promise<string> {
   tempDirs.push(d);
   return d;
 }
+
+let signingKey: KeyPair;
+
+beforeAll(async () => {
+  signingKey = await generateKeyPair();
+});
 
 afterAll(async () => {
   for (const d of tempDirs.splice(0)) {
@@ -24,7 +32,7 @@ afterAll(async () => {
 describe("AgentRepoStore", () => {
   test("writeDeployTree creates a commit with prompt and skills", async () => {
     const dataDir = await makeTempDir("agent-repo-");
-    const store = createAgentRepoStore({ dataDir });
+    const store = createAgentRepoStore({ dataDir, signingKey });
 
     const { commitSha } = await store.writeDeployTree("agent-1", {
       systemPrompt: "You are a test agent.",
@@ -66,7 +74,7 @@ describe("AgentRepoStore", () => {
 
   test("writeDeployTree removes stale skills from the index", async () => {
     const dataDir = await makeTempDir("agent-repo-stale-");
-    const store = createAgentRepoStore({ dataDir });
+    const store = createAgentRepoStore({ dataDir, signingKey });
 
     await store.writeDeployTree("agent-stale", {
       systemPrompt: "V1",
@@ -114,7 +122,7 @@ describe("AgentRepoStore", () => {
 
   test("writeDeployTree does not advance refs/heads/main", async () => {
     const dataDir = await makeTempDir("agent-repo-ref-");
-    const store = createAgentRepoStore({ dataDir });
+    const store = createAgentRepoStore({ dataDir, signingKey });
 
     await store.writeDeployTree("agent-ref", {
       systemPrompt: "Ref test.",
@@ -137,7 +145,7 @@ describe("AgentRepoStore", () => {
 
   test("createDeployPack produces a valid packfile", async () => {
     const dataDir = await makeTempDir("agent-repo-pack-");
-    const store = createAgentRepoStore({ dataDir });
+    const store = createAgentRepoStore({ dataDir, signingKey });
 
     await store.writeDeployTree("agent-2", {
       systemPrompt: "Pack test.",
@@ -154,7 +162,7 @@ describe("AgentRepoStore", () => {
 
   test("receiveStatePack indexes objects and updates ref", async () => {
     const dataDir = await makeTempDir("agent-repo-state-");
-    const store = createAgentRepoStore({ dataDir });
+    const store = createAgentRepoStore({ dataDir, signingKey });
 
     await store.writeDeployTree("agent-3", {
       systemPrompt: "State test.",
@@ -193,7 +201,7 @@ describe("AgentRepoStore", () => {
 
   test("writeDeployTree is idempotent on the repo", async () => {
     const dataDir = await makeTempDir("agent-repo-idem-");
-    const store = createAgentRepoStore({ dataDir });
+    const store = createAgentRepoStore({ dataDir, signingKey });
 
     const first = await store.writeDeployTree("agent-4", {
       systemPrompt: "Version 1",
@@ -222,7 +230,7 @@ describe("AgentRepoStore", () => {
 
   test("hub repo does not contain state/ scaffolding", async () => {
     const dataDir = await makeTempDir("agent-repo-nostate-");
-    const store = createAgentRepoStore({ dataDir });
+    const store = createAgentRepoStore({ dataDir, signingKey });
 
     await store.writeDeployTree("agent-5", {
       systemPrompt: "No state test.",
@@ -239,7 +247,7 @@ describe("AgentRepoStore", () => {
 
   test("rejects agent IDs with path traversal characters", () => {
     const dataDir = "/tmp/never-created";
-    const store = createAgentRepoStore({ dataDir });
+    const store = createAgentRepoStore({ dataDir, signingKey });
 
     expect(() =>
       store.writeDeployTree("../../evil", {

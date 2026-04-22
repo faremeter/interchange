@@ -27,6 +27,7 @@ import {
   applyPack,
   createDeployPack,
   currentBranch,
+  type CommitVerifier,
 } from "@interchange/storage-isogit";
 import type { InMemoryTransport } from "@interchange/message-memory";
 import type { GrantRule } from "@interchange/types/authz";
@@ -100,6 +101,7 @@ export type SessionManager = {
     ref: string,
     commitSha: string,
     transferId: string,
+    verifyCommit?: CommitVerifier,
   ): Promise<void>;
   createStatePack(
     agentAddress: string,
@@ -353,9 +355,10 @@ export function createSessionManager(
     ref: string,
     commitSha: string,
     transferId: string,
+    verifyCommit?: CommitVerifier,
   ): Promise<void> {
     const dir = path.join(dataDir, sanitizeAddress(agentAddress));
-    await applyPack(dir, pack, ref, commitSha, transferId);
+    await applyPack(dir, pack, ref, commitSha, transferId, verifyCommit);
     logger.info`Applied deploy pack for ${agentAddress} at ${commitSha.slice(0, 8)}`;
   }
 

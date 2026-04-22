@@ -174,6 +174,7 @@ function startTestServer(): TestEnv {
 
   const router = createSidecarRouter({
     requestTimeoutMs: 5000,
+    hubPublicKey: "a".repeat(64),
     onAgentEvent(addr, sid, event) {
       agentEvents.push({ addr, sid, event });
     },

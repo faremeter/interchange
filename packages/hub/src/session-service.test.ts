@@ -83,6 +83,9 @@ function createMockRepoStore(): AgentRepoStore & { calls: Call[] } {
     ) {
       calls.push({ method: "receiveStatePack", args: [agentId] });
     },
+    getSigningPublicKey() {
+      return new Uint8Array(32);
+    },
   };
 }
 

@@ -2,6 +2,45 @@ import fs from "node:fs";
 import path from "node:path";
 import git from "isomorphic-git";
 
+/**
+ * Verifies the signature embedded in a git commit object.
+ *
+ * Callers bind this to their verification implementation (e.g.
+ * verifySshSignature with the hub's public key). The storage layer does
+ * not own key material.
+ *
+ * Returns true when the signature is valid. Should throw on malformed
+ * input and return false on cryptographic failure.
+ */
+export type CommitVerifier = (payload: string, signature: string) => boolean;
+
+/**
+ * Strip the gpgsig header from a raw git commit object, producing the
+ * payload that was originally signed.
+ *
+ * isomorphic-git's readCommit().payload uses withoutSignature() which is
+ * hardcoded to look for PGP armor markers. SSH signatures use different
+ * markers, so the built-in reconstruction is wrong. This function works
+ * with any signature format by parsing the header structure directly.
+ */
+function stripGpgsig(raw: string): string {
+  const gpgsigIdx = raw.indexOf("\ngpgsig ");
+  if (gpgsigIdx === -1) return raw;
+
+  // The gpgsig header spans from "\ngpgsig " to the next header line that
+  // does not start with a space. Continuation lines in git headers are
+  // indented with a single leading space.
+  let endIdx = gpgsigIdx + 1;
+  while (endIdx < raw.length) {
+    const nlIdx = raw.indexOf("\n", endIdx);
+    if (nlIdx === -1) break;
+    endIdx = nlIdx + 1;
+    if (endIdx < raw.length && raw[endIdx] !== " ") break;
+  }
+
+  return raw.substring(0, gpgsigIdx) + "\n" + raw.substring(endIdx);
+}
+
 const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
 
 type TreeEntry = {
@@ -141,6 +180,12 @@ export async function receivePackObjects(
  * The ref is written last so it never points at a commit whose working tree
  * has not been materialized.
  *
+ * When `verifyCommit` is provided, the commit's embedded signature is
+ * verified before the working tree is materialized. Throws with a message
+ * prefixed by `"signature_unsigned"` if the commit has no signature, or
+ * `"signature_invalid"` if verification fails. Only omit `verifyCommit`
+ * for state packs that follow their own signing model.
+ *
  * Throws if the expected commit is not found in the pack.
  *
  * The caller is responsible for ensuring `dir` is an initialized git repo.
@@ -151,6 +196,7 @@ export async function applyPack(
   ref: string,
   expectedSha: string,
   transferId: string,
+  verifyCommit?: CommitVerifier,
 ): Promise<void> {
   if (!SAFE_PATH_SEGMENT.test(transferId)) {
     throw new Error(
@@ -174,6 +220,36 @@ export async function applyPack(
       throw new Error(
         `sha_mismatch: expected commit ${expectedSha} not found in pack`,
       );
+    }
+
+    if (verifyCommit !== undefined) {
+      const { commit } = await git.readCommit({
+        fs,
+        dir,
+        oid: expectedSha,
+      });
+      if (commit.gpgsig === undefined) {
+        throw new Error(
+          `signature_unsigned: commit ${expectedSha} has no signature`,
+        );
+      }
+
+      // Reconstruct the signing payload from the raw object bytes.
+      // readCommit().payload is unreliable for SSH signatures because
+      // isogit's withoutSignature() only handles PGP armor markers.
+      const { object: rawBytes } = (await git.readObject({
+        fs,
+        dir,
+        oid: expectedSha,
+        format: "content",
+      })) as { object: Uint8Array };
+      const payload = stripGpgsig(new TextDecoder().decode(rawBytes));
+
+      if (!verifyCommit(payload, commit.gpgsig)) {
+        throw new Error(
+          `signature_invalid: commit ${expectedSha} signature verification failed`,
+        );
+      }
     }
 
     await checkoutTree(dir, expectedSha, ref);
