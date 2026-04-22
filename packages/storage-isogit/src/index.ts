@@ -4,7 +4,7 @@ import { IsogitStore } from "./store";
 import type { CommitSigner } from "./signer";
 
 export type { ContextStore, AuditStore, CommitSigner };
-export type { CommitVerifier } from "./pack-receive";
+export type { CommitVerifier, TreeValidator } from "./pack-receive";
 export { IsogitStore };
 export {
   switchBranch,

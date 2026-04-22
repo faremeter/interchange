@@ -117,7 +117,19 @@ const sidecarRouter = createSidecarRouter({
   },
   async onStatePackReceived(agentAddress, pack, ref, commitSha) {
     const agentId = parseAgentId(agentAddress);
-    await agentRepoStore.receiveStatePack(agentId, pack, ref, commitSha);
+    try {
+      await agentRepoStore.receiveStatePack(agentId, pack, ref, commitSha);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.startsWith("path_violation")) {
+        log.warn("State pack rejected for {agentAddress}: {msg}", {
+          agentAddress,
+          msg,
+        });
+        return { accepted: false, reason: "path_violation" as const };
+      }
+      throw err;
+    }
     return { accepted: true };
   },
   async lookupPublicKey(agentAddress) {

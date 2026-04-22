@@ -15,6 +15,14 @@ import git from "isomorphic-git";
 export type CommitVerifier = (payload: string, signature: string) => boolean;
 
 /**
+ * Validates the top-level directory names in a commit's tree.
+ *
+ * Callers bind this to their policy (e.g. state packs must only contain
+ * entries named "state"). Returns true when the tree is acceptable.
+ */
+export type TreeValidator = (topLevelPaths: string[]) => boolean;
+
+/**
  * Strip the gpgsig header from a raw git commit object, producing the
  * payload that was originally signed.
  *
@@ -129,6 +137,10 @@ async function writeTreeEntries(
  *
  * Used by the hub to store state packs from sidecars where only the git
  * object history matters, not the working-tree files.
+ *
+ * When `validateTree` is provided, the commit's top-level tree entries
+ * are checked after indexing but before the ref is promoted. Throws with
+ * a `"path_violation"` prefix if the validator rejects the tree.
  */
 export async function receivePackObjects(
   dir: string,
@@ -136,6 +148,7 @@ export async function receivePackObjects(
   ref: string,
   expectedSha: string,
   transferId: string,
+  validateTree?: TreeValidator,
 ): Promise<void> {
   if (!SAFE_PATH_SEGMENT.test(transferId)) {
     throw new Error(
@@ -159,6 +172,25 @@ export async function receivePackObjects(
       throw new Error(
         `sha_mismatch: expected commit ${expectedSha} not found in pack`,
       );
+    }
+
+    if (validateTree !== undefined) {
+      const { commit } = await git.readCommit({
+        fs,
+        dir,
+        oid: expectedSha,
+      });
+      const { tree } = await git.readTree({
+        fs,
+        dir,
+        oid: commit.tree,
+      });
+      const topLevelPaths = tree.map((e) => e.path);
+      if (!validateTree(topLevelPaths)) {
+        throw new Error(
+          `path_violation: commit ${expectedSha} tree contains disallowed paths: ${topLevelPaths.join(", ")}`,
+        );
+      }
     }
 
     await git.writeRef({ fs, dir, ref, value: expectedSha, force: true });
