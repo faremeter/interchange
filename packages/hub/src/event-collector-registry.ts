@@ -40,7 +40,12 @@ export function createEventCollectorRegistry(
       abandon(sessionId);
     }
 
-    const collector = createEventCollector({ db, sessionId, tenantId });
+    const collector = createEventCollector({
+      db,
+      sessionId,
+      tenantId,
+      agentAddress,
+    });
     collectors.set(sessionId, collector);
     statuses.set(sessionId, { status: "idle" });
     addressToSession.set(agentAddress, sessionId);

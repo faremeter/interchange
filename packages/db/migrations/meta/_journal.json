@@ -78,6 +78,13 @@
       "when": 1771630000005,
       "tag": "0010_agent_sidecar_pubkey",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1776890951476,
+      "tag": "0011_session_message_from",
+      "breakpoints": true
     }
   ]
 }

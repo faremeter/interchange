@@ -24,12 +24,13 @@ export type EventCollectorConfig = {
   db: DB["db"];
   sessionId: string;
   tenantId: string;
+  agentAddress: string;
 };
 
 export function createEventCollector(
   config: EventCollectorConfig,
 ): EventCollector {
-  const { db, sessionId, tenantId } = config;
+  const { db, sessionId, tenantId, agentAddress } = config;
 
   // Current assistant message being accumulated. A new message is created
   // on each inference.start so that each turn gets its own row with the
@@ -89,6 +90,7 @@ export function createEventCollector(
       sessionId,
       tenantId,
       role: "assistant",
+      from: agentAddress,
       status: "pending",
       createdAt: new Date(),
     });

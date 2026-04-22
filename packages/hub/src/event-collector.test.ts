@@ -82,6 +82,7 @@ describe("EventCollector", () => {
       db: fakeDB.db,
       sessionId: "ses_test",
       tenantId: "tnt_test",
+      agentAddress: "agt_test@test.localhost",
     });
   });
 
