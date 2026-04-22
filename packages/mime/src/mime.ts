@@ -353,25 +353,46 @@ export function parseHeaderSection(raw: Uint8Array): {
   headers: Map<string, string>;
   bodyOffset: number;
 } {
-  const text = new TextDecoder("utf-8", { fatal: false }).decode(raw);
   const headers = new Map<string, string>();
 
-  // Headers end at the first blank line (CRLF CRLF or LF LF).
-  let bodyOffset = text.length;
-  const crlfIdx = text.indexOf("\r\n\r\n");
-  const lfIdx = text.indexOf("\n\n");
+  // Search for the blank line separator in byte space so the returned
+  // offset is valid for Uint8Array.slice() even when headers contain
+  // multi-byte UTF-8 characters.
+  const crlfIdx = findByteSequence(raw, CRLF_CRLF);
+  const lfIdx = findByteSequence(raw, LF_LF);
+
+  let bodyOffset = raw.length;
+  let headerEnd = raw.length;
 
   if (crlfIdx !== -1 && (lfIdx === -1 || crlfIdx <= lfIdx)) {
+    headerEnd = crlfIdx;
     bodyOffset = crlfIdx + 4;
-    parseHeaders(text.slice(0, crlfIdx), headers);
   } else if (lfIdx !== -1) {
+    headerEnd = lfIdx;
     bodyOffset = lfIdx + 2;
-    parseHeaders(text.slice(0, lfIdx), headers);
-  } else {
-    parseHeaders(text, headers);
   }
 
+  const headerText = new TextDecoder("utf-8", { fatal: false }).decode(
+    raw.subarray(0, headerEnd),
+  );
+  parseHeaders(headerText, headers);
+
   return { headers, bodyOffset };
+}
+
+const CRLF_CRLF = new Uint8Array([0x0d, 0x0a, 0x0d, 0x0a]);
+const LF_LF = new Uint8Array([0x0a, 0x0a]);
+
+function findByteSequence(haystack: Uint8Array, needle: Uint8Array): number {
+  if (needle.length === 0) return 0;
+  const limit = haystack.length - needle.length;
+  outer: for (let i = 0; i <= limit; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
 }
 
 function parseHeaders(headerSection: string, out: Map<string, string>): void {

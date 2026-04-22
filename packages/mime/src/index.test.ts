@@ -248,6 +248,14 @@ describe("parseHeaderSection", () => {
     expect(headers.has("content-type")).toBe(true);
     expect(headers.has("Content-Type")).toBe(false);
   });
+
+  test("bodyOffset is byte-accurate with multi-byte UTF-8 headers", () => {
+    // "é" is 2 bytes in UTF-8 but 1 JS character — the offset must be
+    // computed in byte space, not character space.
+    const raw = enc.encode("Subject: héllo\r\n\r\nBody here");
+    const { bodyOffset } = parseHeaderSection(raw);
+    expect(dec.decode(raw.slice(bodyOffset))).toBe("Body here");
+  });
 });
 
 // ---------------------------------------------------------------------------
