@@ -10,6 +10,11 @@ import {
   grantEffects,
   grantSources,
 } from "@interchange/types";
+import { type } from "arktype";
+import {
+  InferenceEvent,
+  type InferenceEvent as ValidInferenceEvent,
+} from "@interchange/types/runtime";
 
 import { MutationError } from "@/components/mutation-error";
 import {
@@ -92,8 +97,19 @@ function Row({
   );
 }
 
+function parseFromHeader(from: string): string {
+  const match = from.match(/^"(.+)"\s+<.+>$/);
+  if (match && match[1]) return match[1];
+  const local = from.split("@")[0];
+  return local ?? from;
+}
+
 // Module-level store keyed by sessionId — survives React Strict Mode remounts.
-type ChatMessage = { role: "user" | "assistant"; content: string };
+type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+  from: string;
+};
 type AgentActivity =
   | { type: "inferring" }
   | { type: "tool_call"; name: string }
@@ -341,6 +357,7 @@ export function TenantAgentDetailPage() {
     type MessagePart = { type: string; content?: string | null };
     type MessageRow = {
       role: "user" | "assistant";
+      from: string;
       status: string;
       parts: MessagePart[];
     };
@@ -365,7 +382,7 @@ export function TenantAgentDetailPage() {
             .map((p) => p.content)
             .join("");
           if (text) {
-            history.push({ role: msg.role, content: text });
+            history.push({ role: msg.role, content: text, from: msg.from });
           }
         }
 
@@ -391,62 +408,69 @@ export function TenantAgentDetailPage() {
 
     let cancelled = false;
 
-    type InferenceEvent = {
-      type: string;
-      seq: number;
-      data: Record<string, unknown>;
-    };
-
     const close = openStream(
       `/api/tenants/${tenantId}/sessions/${sessionId}/events`,
       (raw) => {
         if (cancelled) return;
-        const event = raw as InferenceEvent;
+        const validated = InferenceEvent(raw);
+        if (validated instanceof type.errors) return;
+        const event: ValidInferenceEvent = validated as ValidInferenceEvent;
         switch (event.type) {
           case "inference.start":
             sessionActivity.set(sessionId, { type: "inferring" });
             rerender();
             break;
-          case "inference.text.delta": {
-            const token = event.data.token as string;
-            sessionStreaming.set(sessionId, getStreaming(sessionId) + token);
+          case "inference.text.delta":
+            sessionStreaming.set(
+              sessionId,
+              getStreaming(sessionId) + event.data.token,
+            );
             sessionActivity.set(sessionId, null);
             rerender();
             break;
-          }
           case "inference.tool_call.start":
             sessionActivity.set(sessionId, {
               type: "tool_call",
-              name: event.data.name as string,
+              name: event.data.name,
             });
             rerender();
             break;
-          case "tool.start": {
-            const call = event.data.call as { name: string };
+          case "tool.start":
             sessionActivity.set(sessionId, {
               type: "tool_running",
-              name: call.name,
+              name: event.data.call.name,
             });
             rerender();
             break;
-          }
           case "tool.done":
             sessionActivity.set(sessionId, null);
             rerender();
             break;
           case "inference.done": {
-            const msg = event.data.message as {
-              content: { type: string; text?: string }[];
-            };
-            const text = msg.content
-              .filter((b) => b.type === "text")
-              .map((b) => b.text ?? "")
+            const text = event.data.message.content
+              .filter(
+                (b): b is typeof b & { type: "text" } => b.type === "text",
+              )
+              .map((b) => b.text)
               .join("");
             sessionStreaming.set(sessionId, "");
             if (text) {
               getMessages(sessionId).push({
                 role: "assistant",
                 content: text,
+                from: `${agentId}@agent`,
+              });
+            }
+            rerender();
+            break;
+          }
+          case "message.received": {
+            const inbound = event.data.message;
+            if (inbound.content) {
+              getMessages(sessionId).push({
+                role: "user",
+                content: inbound.content,
+                from: inbound.headers.from,
               });
             }
             rerender();
@@ -503,8 +527,6 @@ export function TenantAgentDetailPage() {
     if (!chatInput.trim() || isSending || !sessionId) return;
     const userMessage = chatInput.trim();
     setChatInput("");
-    getMessages(sessionId).push({ role: "user", content: userMessage });
-    rerender();
     setIsSending(true);
     try {
       await api(
@@ -789,9 +811,14 @@ export function TenantAgentDetailPage() {
                         : "mr-8 bg-primary/10"
                     }`}
                   >
-                    <span className="font-medium">
-                      {msg.role === "user" ? "You" : "Agent"}:
-                    </span>{" "}
+                    {(() => {
+                      const label =
+                        msg.role === "assistant"
+                          ? "Agent"
+                          : parseFromHeader(msg.from);
+                      if (!label) return null;
+                      return <span className="font-medium">{label}: </span>;
+                    })()}
                     {msg.content}
                   </div>
                 ))
