@@ -4,7 +4,7 @@ import {
   assembleSignedContent,
   createDetachedSignatureFromProvider,
   type MessageHeaders,
-} from "@interchange/message-memory/compose";
+} from "@interchange/mime";
 import type { CryptoProvider, HarnessConfig } from "@interchange/types/runtime";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { SidecarRouter } from "./ws/sidecar-handler";

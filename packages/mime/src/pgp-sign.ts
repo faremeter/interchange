@@ -1,11 +1,11 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- binary MPI encoding with bounds checks */
 /**
- * PGP/MIME signing helpers for the in-memory transport.
+ * PGP/MIME signing via CryptoProvider.
  *
  * createDetachedSignature in @interchange/crypto-node takes raw private key
- * bytes, but the in-memory transport only holds a CryptoProvider (which does
- * not expose private key bytes). This module reimplements the PGP packet
- * construction using CryptoProvider.sign() on the correct hash input.
+ * bytes, but callers that only hold a CryptoProvider (which does not expose
+ * private key bytes) need this alternative. This module reimplements the PGP
+ * packet construction using CryptoProvider.sign() on the correct hash input.
  *
  * CryptoProvider.sign(data) calls Node's crypto.sign(null, data, privateKey),
  * which invokes Ed25519 and internally hashes the data with SHA-512. This is

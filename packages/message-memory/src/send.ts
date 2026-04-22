@@ -12,12 +12,12 @@ import {
   assembleMessage,
   generateMessageId,
   parseHeaderSection,
+  createDetachedSignatureFromProvider,
   type MessageHeaders as MimeMessageHeaders,
   type ConversationContent,
   type StructuredContent,
-} from "./mime";
+} from "@interchange/mime";
 import { buildMessageHeaders } from "./headers";
-import { createDetachedSignatureFromProvider } from "./pgp-sign";
 
 const CONVERSATION_TYPES = new Set([
   "conversation.message",

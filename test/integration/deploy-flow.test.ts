@@ -35,7 +35,7 @@ import {
   assembleMessage,
   createDetachedSignatureFromProvider,
   type MessageHeaders,
-} from "@interchange/message-memory/compose";
+} from "@interchange/mime";
 import { generateKeyPair, createNodeCrypto } from "@interchange/crypto-node";
 import type { Subprocess } from "bun";
 import git from "isomorphic-git";

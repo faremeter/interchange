@@ -15,7 +15,7 @@
     "@interchange/crypto-node": "workspace:*",
     "@interchange/db": "workspace:*",
     "@interchange/log": "workspace:*",
-    "@interchange/message-memory": "workspace:*",
+    "@interchange/mime": "workspace:*",
     "@interchange/pack-transport": "workspace:*",
     "@interchange/types": "workspace:*",
     "arktype": "catalog:",

@@ -1,6 +1,6 @@
 import type { SearchQuery, MessageRef } from "@interchange/types/runtime";
 import type { MailboxStore, StoredMessage } from "./mailbox";
-import { parseHeaderSection } from "./mime";
+import { parseHeaderSection } from "@interchange/mime";
 
 /**
  * Execute an IMAP SEARCH-equivalent query over an in-memory mailbox.
