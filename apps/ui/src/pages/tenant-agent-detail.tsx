@@ -161,6 +161,8 @@ export function TenantAgentDetailPage() {
   const [chatInput, setChatInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const closeStreamRef = useRef<(() => void) | null>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const chatPinnedRef = useRef(true);
 
   // Edit form state
   const [editName, setEditName] = useState("");
@@ -616,6 +618,18 @@ export function TenantAgentDetailPage() {
     return providers.some((p) => p.name.toLowerCase() === value.toLowerCase());
   }
 
+  useEffect(() => {
+    chatPinnedRef.current = true;
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (agent?.status !== "running") return;
+    const el = chatScrollRef.current;
+    if (el && chatPinnedRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  });
+
   if (agentLoading) {
     return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
   }
@@ -805,7 +819,15 @@ export function TenantAgentDetailPage() {
           <h3 className="text-sm font-semibold">Chat</h3>
           <div className="mt-3 flex flex-col gap-3 rounded-lg border p-4">
             {/* Messages */}
-            <div className="flex h-64 flex-col gap-2 overflow-y-auto">
+            <div
+              ref={chatScrollRef}
+              onScroll={(e) => {
+                const el = e.currentTarget;
+                chatPinnedRef.current =
+                  el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+              }}
+              className="flex h-64 flex-col gap-2 overflow-y-auto"
+            >
               {getMessages(sessionId).length === 0 &&
               !getStreaming(sessionId) ? (
                 <p className="text-sm text-muted-foreground">
