@@ -6,7 +6,7 @@
 
 import type { DB } from "@interchange/db";
 import type { InferenceEvent } from "@interchange/types/runtime";
-type SessionStatus = { status: "idle" | "busy" | "waiting_approval" };
+import type { SessionStatus } from "@interchange/types";
 import { getLogger } from "@interchange/log";
 
 import { createEventCollector, type EventCollector } from "./event-collector";
@@ -68,8 +68,10 @@ export function createEventCollectorRegistry(
       case "reactor.gate.cleared":
         return { status: "busy" };
       case "reactor.done":
-      case "reactor.error":
         return { status: "idle" };
+      case "reactor.error":
+        if (event.data.fatal) return { status: "idle" };
+        return null;
       default:
         return null;
     }

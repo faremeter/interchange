@@ -506,10 +506,10 @@ Aborts the agent's current inference or tool execution.
 ### GET /api/tenants/:tenantId/sessions/:sessionId/status
 Get session status
 
-Not yet implemented (returns 501).
+Returns the runtime operational status of an active session: idle, busy, or waiting_approval. Returns 404 for sessions that are ending, ended, or do not exist.
 
-501: ErrorResponse -- Not implemented
-404: ErrorResponse -- Session not found
+200: SessionStatus
+404: ErrorResponse -- Session not found or ended
 
 ### GET /api/tenants/:tenantId/sessions/:sessionId/events
 SSE event stream (fallback)
@@ -890,7 +890,7 @@ Source: packages/types/src/sessions.ts
 Source: packages/types/src/sessions.ts
 
 ### SessionStatus
-`{ status: "busy" | "idle" | "retry" | "waiting_approval", retryAttempt?: number, retryMessage?: string, retryNextAt?: string }`
+`{ status: "busy" | "idle" | "waiting_approval" }`
 Source: packages/types/src/sessions.ts
 
 ### SessionSummary
