@@ -10,26 +10,23 @@ import path from "node:path";
 import { type } from "arktype";
 import { getLogger } from "@interchange/log";
 import { generateKeyPair } from "@interchange/crypto-node";
-import type {
-  KeyPair,
-  HarnessConfig as AgentConfig,
-} from "@interchange/types/runtime";
-import { WireGrantRule } from "@interchange/types/grant-wire";
+import { type KeyPair, HarnessConfig } from "@interchange/types/runtime";
 import { sanitizeAddress } from "./session-manager";
 
 const logger = getLogger(["interchange", "sidecar", "keystore"]);
 
-type AgentMeta = {
-  version: 1;
-  address: string;
-  config: AgentConfig;
-  hubPublicKey?: string;
-};
+const AgentMeta = type({
+  version: "1",
+  address: "string",
+  config: HarnessConfig,
+  "hubPublicKey?": "string",
+});
+type AgentMeta = typeof AgentMeta.infer;
 
 export type AgentKeyEntry = {
   address: string;
   keyPair: KeyPair;
-  config: AgentConfig;
+  config: HarnessConfig;
   hubPublicKey?: string;
 };
 
@@ -101,7 +98,7 @@ export async function loadOrGenerateKeyPair(
 export async function persistAgentConfig(
   dataDir: string,
   agentAddress: string,
-  config: AgentConfig,
+  config: HarnessConfig,
   hubPublicKey?: string,
 ): Promise<void> {
   const agentDir = path.join(dataDir, sanitizeAddress(agentAddress));
@@ -199,28 +196,12 @@ export async function scanExistingAgents(
       fs.readFile(metaPath, "utf-8"),
     ]);
 
-    const meta = JSON.parse(metaRaw) as Partial<AgentMeta>;
-
-    if (meta.address === undefined) {
-      logger.warn`Skipping ${entry.name}: agent.json missing address field`;
+    const parsed: unknown = JSON.parse(metaRaw);
+    const meta = AgentMeta(parsed);
+    if (meta instanceof type.errors) {
+      logger.warn`Skipping ${entry.name}: invalid agent.json: ${meta.summary}`;
       continue;
     }
-
-    if (meta.config === undefined) {
-      logger.warn`Skipping ${meta.address}: agent.json has no persisted config (needs re-deploy)`;
-      continue;
-    }
-
-    // JSON round-trips turn Date objects into strings. Validate and coerce
-    // the grants array so expiresAt is a proper Date before the authz
-    // engine sees it.
-    const WireGrants = WireGrantRule.array();
-    const coerced = WireGrants(meta.config.grants);
-    if (coerced instanceof type.errors) {
-      logger.warn`Skipping ${meta.address}: invalid grants in agent.json: ${coerced.summary}`;
-      continue;
-    }
-    meta.config.grants = coerced;
 
     const agentEntry: AgentKeyEntry = {
       address: meta.address,
