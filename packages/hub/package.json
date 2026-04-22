@@ -12,6 +12,7 @@
   "dependencies": {
     "@hono/standard-validator": "^0.2.2",
     "@interchange/authz": "workspace:*",
+    "@interchange/crypto-node": "workspace:*",
     "@interchange/db": "workspace:*",
     "@interchange/log": "workspace:*",
     "@interchange/message-memory": "workspace:*",

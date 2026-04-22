@@ -12,6 +12,7 @@ import {
   sessionMessage,
 } from "@interchange/db/schema";
 import { resolveCredentialRequirement } from "@interchange/db";
+import { generateKeyPair, createNodeCrypto } from "@interchange/crypto-node";
 import {
   CreateSession,
   SessionResponse,
@@ -20,12 +21,25 @@ import {
   MessageResponse,
   ErrorResponse,
 } from "@interchange/types";
-import type { ProviderConfig } from "@interchange/types/runtime";
+import type {
+  CryptoProvider,
+  ProviderConfig,
+} from "@interchange/types/runtime";
 import { SessionLaunchError } from "../session-service";
 
 import type { TenantEnv } from "../context";
 import { requireGrant, idResource } from "../middleware/grant";
 import { generateId } from "../ids";
+
+const sessionKeyCache = new Map<string, Promise<CryptoProvider>>();
+
+function getSessionCryptoProvider(sessionId: string): Promise<CryptoProvider> {
+  let pending = sessionKeyCache.get(sessionId);
+  if (pending !== undefined) return pending;
+  pending = generateKeyPair().then((kp) => createNodeCrypto(kp));
+  sessionKeyCache.set(sessionId, pending);
+  return pending;
+}
 
 const CredentialRequirement = type({
   providerName: "string",
@@ -545,6 +559,8 @@ app.delete(
       );
     }
 
+    sessionKeyCache.delete(sessionId);
+
     await db
       .update(agent)
       .set({ status: "deployed", sessionId: null, updatedAt: new Date() })
@@ -604,7 +620,8 @@ app.post(
   async (c) => {
     const tenant = c.get("tenant");
     const db = c.get("db");
-    const sidecarRouter = c.get("sidecarRouter");
+    const sessionService = c.get("sessionService");
+    const principal = c.get("principal");
     const sessionId = c.req.param("sessionId");
     const body = c.req.valid("json");
 
@@ -671,14 +688,39 @@ app.post(
     });
 
     const agentAddress = `${agentRow.id}@${tenant.domain}`;
+    const from = `${principal.refId}@${tenant.domain}`;
+    const mimeMessageId = `<${messageId}@${tenant.domain}>`;
+
+    const priorMessages = await db
+      .select({ id: sessionMessage.id })
+      .from(sessionMessage)
+      .where(
+        and(
+          eq(sessionMessage.sessionId, sessionId),
+          eq(sessionMessage.role, "user"),
+          eq(sessionMessage.status, "delivered"),
+        ),
+      )
+      .orderBy(asc(sessionMessage.createdAt), asc(sessionMessage.id));
+
+    const priorIds = priorMessages.map((m) => `<${m.id}@${tenant.domain}>`);
+    const lastId = priorIds[priorIds.length - 1];
+
+    const cryptoProvider = await getSessionCryptoProvider(sessionId);
 
     try {
-      await sidecarRouter.sendMessage(
+      await sessionService.sendUserMessage({
         agentAddress,
+        from,
+        messageId: mimeMessageId,
+        date: now,
+        content: body.content,
+        ...(lastId !== undefined ? { inReplyTo: lastId } : {}),
+        ...(priorIds.length > 0 ? { references: priorIds } : {}),
         sessionId,
-        body.content,
-        body.attachments,
-      );
+        tenantId: tenant.id,
+        cryptoProvider,
+      });
 
       await db
         .update(sessionMessage)

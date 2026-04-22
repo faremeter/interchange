@@ -12,7 +12,6 @@ import type {
   PackRejectReason,
   SidecarFrame,
   HubFrame,
-  WireAttachment,
   PackPushFrame,
   PackDoneFrame,
 } from "@interchange/types/sidecar";
@@ -45,12 +44,6 @@ export type SidecarRouter = {
   sendAgentUndeploy(agentAddress: string, reason: string): Promise<void>;
   sendSessionStart(agentAddress: string): Promise<void>;
   sendSessionAbort(agentAddress: string, reason: AbortReason): Promise<void>;
-  sendMessage(
-    agentAddress: string,
-    sessionId: string,
-    content: string,
-    attachments?: WireAttachment[],
-  ): Promise<void>;
   sendGrantsUpdate(agentAddress: string, grants: GrantRule[]): Promise<void>;
   sendPack(
     agentAddress: string,
@@ -1256,35 +1249,6 @@ export function createSidecarRouter(
     }));
   }
 
-  async function sendMessage(
-    agentAddress: string,
-    sessionId: string,
-    content: string,
-    attachments?: WireAttachment[],
-  ): Promise<void> {
-    // If the agent is disconnected, queue for delivery on reconnect.
-    if (!addressIndex.has(agentAddress)) {
-      const frame: HubFrame = {
-        type: "message.send",
-        requestId: nextRequestId(),
-        agentAddress,
-        sessionId,
-        content,
-        ...(attachments !== undefined ? { attachments } : {}),
-      };
-      if (enqueueForDisconnected(agentAddress, frame)) return;
-    }
-
-    await sendRequest(agentAddress, (requestId) => ({
-      type: "message.send",
-      requestId,
-      agentAddress,
-      sessionId,
-      content,
-      ...(attachments !== undefined ? { attachments } : {}),
-    }));
-  }
-
   function removeAgentAddress(ws: WsHandle, agentAddress: string): void {
     addressIndex.delete(agentAddress);
     const conn = connections.get(ws);
@@ -1372,7 +1336,6 @@ export function createSidecarRouter(
     sendAgentUndeploy,
     sendSessionStart,
     sendSessionAbort,
-    sendMessage,
     sendGrantsUpdate,
     sendPack,
     sendSyncRequest,

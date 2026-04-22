@@ -30,6 +30,13 @@ import {
 } from "@interchange/hub";
 import type { HarnessConfig } from "@interchange/types/runtime";
 import { sanitizeAddress } from "../../apps/sidecar/src/session-manager";
+import {
+  assembleSignedContent,
+  assembleMessage,
+  createDetachedSignatureFromProvider,
+  type MessageHeaders,
+} from "@interchange/message-memory/compose";
+import { generateKeyPair, createNodeCrypto } from "@interchange/crypto-node";
 import type { Subprocess } from "bun";
 import git from "isomorphic-git";
 
@@ -414,11 +421,39 @@ describe("deploy flow integration", () => {
     const requestsBefore = inference.requests.length;
     const eventsBefore = hub.agentEvents.length;
 
-    await hub.router.sendMessage(
-      AGENT_ADDRESS,
-      SESSION_ID,
-      "Hello, please greet Alice.",
+    const keyPair = await generateKeyPair();
+    const crypto = createNodeCrypto(keyPair);
+    const headers: MessageHeaders = {
+      from: "user@integration.interchange",
+      to: [AGENT_ADDRESS],
+      cc: undefined,
+      date: new Date(),
+      messageId: "<test-msg-1@integration.interchange>",
+      subject: undefined,
+      inReplyTo: undefined,
+      references: undefined,
+      mimeVersion: "1.0",
+      interchangeType: "conversation.message",
+      interchangeCorrelationId: undefined,
+      interchangeTenantId: undefined,
+      interchangeAgentId: undefined,
+      interchangeSessionId: SESSION_ID,
+      interchangeOfferingId: undefined,
+      interchangeSchemaVersion: undefined,
+      traceparent: undefined,
+      tracestate: undefined,
+    };
+    const signedContent = assembleSignedContent({
+      kind: "conversation",
+      text: "Hello, please greet Alice.",
+    });
+    const signature = await createDetachedSignatureFromProvider(
+      signedContent,
+      crypto,
     );
+    const rawMessage = assembleMessage(headers, signedContent, signature);
+    const base64 = Buffer.from(rawMessage).toString("base64");
+    hub.router.routeMail(AGENT_ADDRESS, base64);
 
     await waitFor(() => inference.requests.length > requestsBefore, {
       diagnostics: sidecarDiagnostics,

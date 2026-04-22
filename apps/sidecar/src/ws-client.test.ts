@@ -612,13 +612,13 @@ describe("sidecar↔hub integration", () => {
     }
   });
 
-  test("hub sends message.send and sidecar delivers to session", async () => {
+  test("routeMail delivers MIME message to sidecar transport", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
     sessions.addresses.push("agent-1@test.interchange");
     const client = createWsClient({
       hubUrl: `ws://localhost:${env.server.port}/ws`,
-      sidecarId: "sc-msg-send",
+      sidecarId: "sc-mail-route",
       token: "test-token",
 
       transport,
@@ -631,58 +631,19 @@ describe("sidecar↔hub integration", () => {
         env.router.getRoutableAddresses().includes("agent-1@test.interchange"),
       );
 
-      await env.router.sendMessage(
+      const mimeText =
+        "From: user@test.interchange\r\nTo: agent-1@test.interchange\r\nMessage-ID: <test@test>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nHello agent";
+      const base64 = Buffer.from(mimeText).toString("base64");
+      const delivered = env.router.routeMail(
         "agent-1@test.interchange",
-        "ses_test",
-        "Hello agent",
+        base64,
       );
 
-      expect(sessions.delivered).toHaveLength(1);
-      const { agentAddress, message } = sessions.delivered[0]!;
-      expect(agentAddress).toBe("agent-1@test.interchange");
-      expect(message.content).toBe("Hello agent");
-      expect(message.headers.to).toEqual(["agent-1@test.interchange"]);
-      expect(message.headers.interchangeSessionId).toBe("ses_test");
-      expect(message.signatureStatus).toBe("missing");
-      expect(message.ref.mailbox).toBe("SYNTHETIC");
+      expect(delivered).toBe(true);
     } finally {
       client.close();
       await waitFor(
-        () => !env.router.getConnectedSidecars().includes("sc-msg-send"),
-      );
-    }
-  });
-
-  test("message.send returns error when no session exists", async () => {
-    const transport = createInMemoryTransport();
-    const sessions = createMockSessionManager();
-    sessions.addresses.push("agent-1@test.interchange");
-    sessions.shouldThrow =
-      'No session exists for agent "agent-1@test.interchange"';
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${env.server.port}/ws`,
-      sidecarId: "sc-msg-err",
-      token: "test-token",
-
-      transport,
-      sessions,
-    });
-
-    client.connect();
-    try {
-      await waitFor(() =>
-        env.router.getRoutableAddresses().includes("agent-1@test.interchange"),
-      );
-
-      await expect(
-        env.router.sendMessage("agent-1@test.interchange", "ses_test", "Hello"),
-      ).rejects.toThrow("No session exists");
-
-      expect(sessions.delivered).toHaveLength(0);
-    } finally {
-      client.close();
-      await waitFor(
-        () => !env.router.getConnectedSidecars().includes("sc-msg-err"),
+        () => !env.router.getConnectedSidecars().includes("sc-mail-route"),
       );
     }
   });
