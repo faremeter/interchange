@@ -6,6 +6,7 @@
 
 import type { DB } from "@interchange/db";
 import type { InferenceEvent } from "@interchange/types/runtime";
+type SessionStatus = { status: "idle" | "busy" | "waiting_approval" };
 import { getLogger } from "@interchange/log";
 
 import { createEventCollector, type EventCollector } from "./event-collector";
@@ -18,12 +19,14 @@ export type EventCollectorRegistry = {
   abandon(sessionId: string): void;
   abandonByAddress(agentAddress: string): void;
   has(sessionId: string): boolean;
+  getStatus(sessionId: string): SessionStatus | undefined;
 };
 
 export function createEventCollectorRegistry(
   db: DB["db"],
 ): EventCollectorRegistry {
   const collectors = new Map<string, EventCollector>();
+  const statuses = new Map<string, SessionStatus>();
   const addressToSession = new Map<string, string>();
   const sessionToAddress = new Map<string, string>();
 
@@ -39,12 +42,14 @@ export function createEventCollectorRegistry(
 
     const collector = createEventCollector({ db, sessionId, tenantId });
     collectors.set(sessionId, collector);
+    statuses.set(sessionId, { status: "idle" });
     addressToSession.set(agentAddress, sessionId);
     sessionToAddress.set(sessionId, agentAddress);
   }
 
   function removeSession(sessionId: string): void {
     collectors.delete(sessionId);
+    statuses.delete(sessionId);
     const addr = sessionToAddress.get(sessionId);
     if (addr !== undefined) {
       addressToSession.delete(addr);
@@ -52,10 +57,33 @@ export function createEventCollectorRegistry(
     }
   }
 
+  function deriveStatus(event: InferenceEvent): SessionStatus | null {
+    switch (event.type) {
+      case "reactor.start":
+        return { status: "busy" };
+      case "reactor.gate.blocked":
+        if (event.data.reason === "approval")
+          return { status: "waiting_approval" };
+        return null;
+      case "reactor.gate.cleared":
+        return { status: "busy" };
+      case "reactor.done":
+      case "reactor.error":
+        return { status: "idle" };
+      default:
+        return null;
+    }
+  }
+
   function dispatch(sessionId: string, event: InferenceEvent): void {
     const collector = collectors.get(sessionId);
     if (collector === undefined) {
       return;
+    }
+
+    const derived = deriveStatus(event);
+    if (derived !== null) {
+      statuses.set(sessionId, derived);
     }
 
     const isTerminal =
@@ -95,5 +123,9 @@ export function createEventCollectorRegistry(
     return collectors.has(sessionId);
   }
 
-  return { create, dispatch, abandon, abandonByAddress, has };
+  function getStatus(sessionId: string): SessionStatus | undefined {
+    return statuses.get(sessionId);
+  }
+
+  return { create, dispatch, abandon, abandonByAddress, has, getStatus };
 }
