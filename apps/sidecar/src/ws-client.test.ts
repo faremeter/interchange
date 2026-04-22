@@ -647,6 +647,308 @@ describe("sidecar↔hub integration", () => {
     );
   });
 
+  test("pack.reject sent when applyDeployPack throws signature_invalid", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const client = createWsClient({
+      hubUrl: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-pack-reject",
+      token: "test-token",
+      transport,
+      sessions,
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getConnectedSidecars().includes("sc-pack-reject"),
+      );
+
+      await env.router.sendAgentDeploy(
+        "pack-agent@test.interchange",
+        TEST_CONFIG,
+      );
+
+      sessions.applyDeployPack = () => {
+        throw new Error("signature_invalid: bad signature");
+      };
+
+      await expect(
+        env.router.sendPack(
+          "pack-agent@test.interchange",
+          new Uint8Array([1, 2, 3]),
+          "refs/heads/deploy",
+          "a".repeat(40),
+        ),
+      ).rejects.toThrow("Pack rejected: signature_invalid");
+    } finally {
+      client.close();
+      await waitFor(
+        () => !env.router.getConnectedSidecars().includes("sc-pack-reject"),
+      );
+    }
+  });
+
+  test("signature_unsigned errors also map to pack.reject signature_invalid", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const client = createWsClient({
+      hubUrl: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-pack-unsigned",
+      token: "test-token",
+      transport,
+      sessions,
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getConnectedSidecars().includes("sc-pack-unsigned"),
+      );
+
+      await env.router.sendAgentDeploy(
+        "unsigned-agent@test.interchange",
+        TEST_CONFIG,
+      );
+
+      sessions.applyDeployPack = () => {
+        throw new Error("signature_unsigned: no signature found");
+      };
+
+      await expect(
+        env.router.sendPack(
+          "unsigned-agent@test.interchange",
+          new Uint8Array([1, 2, 3]),
+          "refs/heads/deploy",
+          "a".repeat(40),
+        ),
+      ).rejects.toThrow("Pack rejected: signature_invalid");
+    } finally {
+      client.close();
+      await waitFor(
+        () => !env.router.getConnectedSidecars().includes("sc-pack-unsigned"),
+      );
+    }
+  });
+
+  test("malformed hubPublicKey in deploy frame sends agent.error", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+
+    // Stand up a hub router with an odd-length hex key to trigger hexDecode.
+    const badRouter = createSidecarRouter({
+      requestTimeoutMs: 5000,
+      hubPublicKey: "abc", // odd length — hexDecode should throw
+      onAgentEvent: () => undefined,
+      onMailOutbound: () => undefined,
+    });
+
+    const badApp = new Hono();
+    badApp.get(
+      "/ws",
+      upgradeWebSocket((_c) => {
+        let handle: WsHandle;
+        return {
+          onOpen(_evt, ws) {
+            handle = {
+              send(data: string) {
+                ws.send(data);
+              },
+              close() {
+                ws.close();
+              },
+            };
+            badRouter.handleOpen(handle);
+          },
+          onMessage(evt, _ws) {
+            if (typeof evt.data === "string") {
+              badRouter.handleMessage(handle, evt.data);
+            }
+          },
+          onClose(_evt, _ws) {
+            badRouter.handleClose(handle);
+          },
+        };
+      }),
+    );
+
+    const badServer = Bun.serve({
+      fetch: badApp.fetch,
+      websocket,
+      port: 0,
+    });
+
+    const client = createWsClient({
+      hubUrl: `ws://localhost:${badServer.port}/ws`,
+      sidecarId: "sc-bad-hex",
+      token: "test-token",
+      transport,
+      sessions,
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        badRouter.getConnectedSidecars().includes("sc-bad-hex"),
+      );
+
+      // Deploy should fail because hexDecode throws on the odd-length key.
+      await expect(
+        badRouter.sendAgentDeploy("bad-hex@test.interchange", TEST_CONFIG),
+      ).rejects.toThrow("odd-length");
+    } finally {
+      client.close();
+      badServer.stop(true);
+    }
+  });
+
+  test("reconnect restores hubPublicKey into hubKeys map", async () => {
+    const { generateKeyPair, createSshSignature } = await import(
+      "@interchange/crypto-node"
+    );
+
+    // Agent keypair — used for challenge/response signing.
+    const agentKp = await generateKeyPair();
+    // Hub keypair — the key whose public half the sidecar stores to verify
+    // deploy commit signatures. Distinct from the agent keypair.
+    const hubKp = await generateKeyPair();
+    const fakeAddress = "restored@test.interchange";
+
+    function hexEncode(bytes: Uint8Array): string {
+      return Array.from(bytes)
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+    }
+
+    const agentPublicKeyHex = hexEncode(agentKp.publicKey);
+    const hubPublicKeyHex = hexEncode(hubKp.publicKey);
+
+    // Stand up a hub that supports reconnect (lookupPublicKey configured).
+    const reconnectRouter = createSidecarRouter({
+      requestTimeoutMs: 5000,
+      challengeTimeoutMs: 5000,
+      hubPublicKey: hubPublicKeyHex,
+      onAgentEvent: () => undefined,
+      onMailOutbound: () => undefined,
+      lookupPublicKey: async (addr) =>
+        addr === fakeAddress ? agentPublicKeyHex : null,
+    });
+
+    const reconnectApp = new Hono();
+    reconnectApp.get(
+      "/ws",
+      upgradeWebSocket((_c) => {
+        let handle: WsHandle;
+        return {
+          onOpen(_evt, ws) {
+            handle = {
+              send(data: string) {
+                ws.send(data);
+              },
+              close() {
+                ws.close();
+              },
+            };
+            reconnectRouter.handleOpen(handle);
+          },
+          onMessage(evt, _ws) {
+            if (typeof evt.data === "string") {
+              reconnectRouter.handleMessage(handle, evt.data);
+            }
+          },
+          onClose(_evt, _ws) {
+            reconnectRouter.handleClose(handle);
+          },
+        };
+      }),
+    );
+
+    const reconnectServer = Bun.serve({
+      fetch: reconnectApp.fetch,
+      websocket,
+      port: 0,
+    });
+
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+
+    sessions.addresses.push(fakeAddress);
+    sessions.restoreSessions = async () => ({
+      restored: [
+        {
+          address: fakeAddress,
+          keyPair: agentKp,
+          config: { ...TEST_CONFIG, agentAddress: fakeAddress },
+          hubPublicKey: hubPublicKeyHex,
+        },
+      ],
+      failed: [],
+    });
+    sessions.getDeployRef = async () => "a".repeat(40);
+
+    const client = createWsClient({
+      hubUrl: `ws://localhost:${reconnectServer.port}/ws`,
+      sidecarId: "sc-restore-key",
+      token: "test-token",
+      transport,
+      sessions,
+    });
+
+    client.connect();
+    try {
+      await waitFor(
+        () => reconnectRouter.getRoutableAddresses().includes(fakeAddress),
+        5000,
+      );
+
+      // Capture the verifyCommit callback to prove the correct hub key
+      // was restored — not just any key.
+      let capturedVerifyCommit: ((p: string, s: string) => boolean) | undefined;
+      sessions.applyDeployPack = async (
+        _addr: string,
+        _pack: Uint8Array,
+        _ref: string,
+        _sha: string,
+        _tid: string,
+        verifyCommit?: (payload: string, signature: string) => boolean,
+      ) => {
+        capturedVerifyCommit = verifyCommit;
+      };
+
+      await reconnectRouter.sendPack(
+        fakeAddress,
+        new Uint8Array([1, 2, 3]),
+        "refs/heads/deploy",
+        "b".repeat(40),
+      );
+
+      expect(capturedVerifyCommit).toBeFunction();
+
+      // Create a real signature with the hub's private key and verify
+      // it round-trips through the restored verifyCommit callback.
+      const payload = "tree abc\nauthor t <t@t> 0 +0000\n\ntest\n";
+      const sig = createSshSignature(
+        payload,
+        hubKp.privateKey,
+        hubKp.publicKey,
+      );
+      expect(capturedVerifyCommit!(payload, sig)).toBe(true);
+
+      // A signature from a different key must fail, proving the callback
+      // is bound to the specific hub key that was restored.
+      const wrongKp = await generateKeyPair();
+      const wrongSig = createSshSignature(
+        payload,
+        wrongKp.privateKey,
+        wrongKp.publicKey,
+      );
+      expect(capturedVerifyCommit!(payload, wrongSig)).toBe(false);
+    } finally {
+      client.close();
+      reconnectServer.stop(true);
+    }
+  });
+
   test("sidecar sends pings and hub responds with pongs", async () => {
     const pingEnv = startTestServer();
 
