@@ -121,6 +121,10 @@ export function createWsClient(config: WsClientConfig): WsClient {
       const result = await sessions.provisionAgent(frame.config);
       agentKeys.set(frame.agentAddress, result.keyPair);
       hubKeys.set(frame.agentAddress, hexDecode(frame.hubPublicKey));
+      await sessions.persistHubPublicKey(
+        frame.agentAddress,
+        frame.hubPublicKey,
+      );
       send({
         type: "agent.deploy.ack",
         agentAddress: frame.agentAddress,
@@ -511,14 +515,23 @@ export function createWsClient(config: WsClientConfig): WsClient {
           const { restored, failed } = await sessions.restoreSessions();
 
           if (restored.length > 0) {
+            const deployRefs: Record<string, string> = {};
             for (const entry of restored) {
               agentKeys.set(entry.address, entry.keyPair);
+              if (entry.hubPublicKey !== undefined) {
+                hubKeys.set(entry.address, hexDecode(entry.hubPublicKey));
+              }
+              const ref = await sessions.getDeployRef(entry.address);
+              if (ref !== null) {
+                deployRefs[entry.address] = ref;
+              }
             }
             send({
               type: "reconnect",
               sidecarId,
               token,
               agentAddresses: restored.map((e) => e.address),
+              deployRefs,
             });
             if (failed.length > 0) {
               logger.warn`Reconnected ${String(restored.length)} agent(s), ${String(failed.length)} failed to restore`;

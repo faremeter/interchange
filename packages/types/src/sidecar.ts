@@ -173,15 +173,13 @@ export type MailInboundFrame = {
 
 /**
  * Deploy an agent to this sidecar. The sidecar initializes a harness from
- * the config. When `restored` is true, the sidecar loads existing context
- * from its local isogit repository rather than starting fresh.
+ * the config.
  */
 export type AgentDeployFrame = {
   type: "agent.deploy";
   agentAddress: string;
   agentId: string;
   config: HarnessConfig;
-  restored?: boolean;
   /** Hex-encoded 32-byte Ed25519 public key the hub uses to sign deploy
    * commits. The sidecar must verify pack commits against this key. */
   hubPublicKey: string;
