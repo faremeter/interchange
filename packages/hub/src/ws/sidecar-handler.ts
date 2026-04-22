@@ -8,12 +8,13 @@ import { randomBytes } from "node:crypto";
 import { getLogger } from "@interchange/log";
 import { verifyEd25519 } from "@interchange/crypto-node";
 import { chunkPack, createPackReceiver } from "@interchange/pack-transport";
-import type {
-  PackRejectReason,
+import { type } from "arktype";
+import {
   SidecarFrame,
-  HubFrame,
-  PackPushFrame,
-  PackDoneFrame,
+  type PackRejectReason,
+  type HubFrame,
+  type PackPushFrame,
+  type PackDoneFrame,
 } from "@interchange/types/sidecar";
 import type { AbortReason, HarnessConfig } from "@interchange/types/runtime";
 import type { GrantRule } from "@interchange/types/authz";
@@ -264,13 +265,19 @@ export function createSidecarRouter(
   }
 
   function handleMessage(ws: WsHandle, data: string): void {
-    let frame: SidecarFrame;
+    let raw: unknown;
     try {
-      frame = JSON.parse(data) as SidecarFrame;
+      raw = JSON.parse(data) as unknown;
     } catch {
       logger.warn`Unparseable frame from sidecar connection`;
       return;
     }
+    const validated = SidecarFrame(raw);
+    if (validated instanceof type.errors) {
+      logger.warn`Invalid sidecar frame: ${validated.summary}`;
+      return;
+    }
+    const frame = validated;
 
     switch (frame.type) {
       case "register":
