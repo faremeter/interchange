@@ -53,6 +53,7 @@ function createMockRouter(): SidecarRouter & {
     ) as SidecarRouter["sendSyncRequest"],
     subscribeSession: (() => () =>
       undefined) as SidecarRouter["subscribeSession"],
+    dispatchSessionEvent: () => undefined,
     getConnectedSidecars: () => [],
     getRoutableAddresses: () => [],
   };
