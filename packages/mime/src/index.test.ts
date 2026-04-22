@@ -1,0 +1,517 @@
+import { describe, test, expect } from "bun:test";
+import {
+  generateKeyPair,
+  createNodeCrypto,
+  verifyDetachedSignature,
+} from "@interchange/crypto-node";
+import {
+  assembleSignedContent,
+  assembleMessage,
+  createDetachedSignatureFromProvider,
+  formatRFC2822Date,
+  generateMessageId,
+  parseHeaderSection,
+  parseMimePart,
+  parseMultipart,
+  extractBoundary,
+  extractPartByPath,
+  type MessageHeaders,
+} from "./index";
+
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+
+function defined<T>(value: T | undefined | null): T {
+  expect(value).toBeDefined();
+  return value as T;
+}
+
+function makeHeaders(overrides?: Partial<MessageHeaders>): MessageHeaders {
+  return {
+    from: "alice@test.interchange",
+    to: ["bob@test.interchange"],
+    cc: undefined,
+    date: new Date("2026-04-21T12:00:00Z"),
+    messageId: "<test-1@test.interchange>",
+    subject: undefined,
+    inReplyTo: undefined,
+    references: undefined,
+    mimeVersion: "1.0",
+    interchangeType: undefined,
+    interchangeCorrelationId: undefined,
+    interchangeTenantId: undefined,
+    interchangeAgentId: undefined,
+    interchangeSessionId: undefined,
+    interchangeOfferingId: undefined,
+    interchangeSchemaVersion: undefined,
+    traceparent: undefined,
+    tracestate: undefined,
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// generateMessageId
+// ---------------------------------------------------------------------------
+
+describe("generateMessageId", () => {
+  test("extracts domain from address", () => {
+    const id = generateMessageId("alice@example.com");
+    expect(id).toMatch(/^<[0-9a-f-]+@example\.com>$/);
+  });
+
+  test("uses local when address has no domain", () => {
+    const id = generateMessageId("alice");
+    expect(id).toMatch(/^<[0-9a-f-]+@local>$/);
+  });
+
+  test("produces unique IDs", () => {
+    const a = generateMessageId("x@y");
+    const b = generateMessageId("x@y");
+    expect(a).not.toBe(b);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatRFC2822Date
+// ---------------------------------------------------------------------------
+
+describe("formatRFC2822Date", () => {
+  test("formats a known date correctly", () => {
+    const date = new Date("2026-04-21T14:30:05Z");
+    expect(formatRFC2822Date(date)).toBe("Tue, 21 Apr 2026 14:30:05 +0000");
+  });
+
+  test("zero-pads single-digit day and time components", () => {
+    const date = new Date("2026-01-05T03:04:09Z");
+    expect(formatRFC2822Date(date)).toBe("Mon, 05 Jan 2026 03:04:09 +0000");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// assembleSignedContent — conversation
+// ---------------------------------------------------------------------------
+
+describe("assembleSignedContent", () => {
+  test("conversation produces text/plain with CRLF", () => {
+    const bytes = assembleSignedContent({
+      kind: "conversation",
+      text: "Hello\nWorld",
+    });
+    const text = dec.decode(bytes);
+    expect(text).toContain("Content-Type: text/plain; charset=utf-8\r\n");
+    expect(text).toContain("Content-Transfer-Encoding: 7bit\r\n");
+    expect(text).toContain("\r\nHello\r\nWorld");
+  });
+
+  test("conversation strips trailing whitespace per line", () => {
+    const bytes = assembleSignedContent({
+      kind: "conversation",
+      text: "Hello   \nWorld\t",
+    });
+    const text = dec.decode(bytes);
+    expect(text).toContain("\r\nHello\r\nWorld");
+    expect(text).not.toContain("Hello   ");
+  });
+
+  test("structured produces multipart/mixed with JSON part", () => {
+    const bytes = assembleSignedContent({
+      kind: "structured",
+      json: { action: "deploy" },
+    });
+    const text = dec.decode(bytes);
+    expect(text).toContain("Content-Type: multipart/mixed;");
+    expect(text).toContain(
+      "Content-Type: application/vnd.interchange+json; charset=utf-8",
+    );
+    expect(text).toContain('{"action":"deploy"}');
+  });
+
+  test("structured includes optional summary as text/plain part", () => {
+    const bytes = assembleSignedContent({
+      kind: "structured",
+      json: { x: 1 },
+      summary: "A summary",
+    });
+    const text = dec.decode(bytes);
+    const plainMatches = text.match(
+      /Content-Type: text\/plain; charset=utf-8/g,
+    );
+    expect(plainMatches).toHaveLength(1);
+    expect(text).toContain("A summary");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// assembleMessage
+// ---------------------------------------------------------------------------
+
+describe("assembleMessage", () => {
+  test("produces multipart/signed with correct headers", () => {
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text: "test",
+    });
+    const fakeSig = enc.encode("FAKE-SIGNATURE");
+    const msg = assembleMessage(makeHeaders(), content, fakeSig);
+    const text = dec.decode(msg);
+
+    expect(text).toContain("From: alice@test.interchange\r\n");
+    expect(text).toContain("To: bob@test.interchange\r\n");
+    expect(text).toContain("Message-ID: <test-1@test.interchange>\r\n");
+    expect(text).toContain("MIME-Version: 1.0\r\n");
+    expect(text).toContain(
+      'multipart/signed; protocol="application/pgp-signature"',
+    );
+    expect(text).toContain("micalg=pgp-sha512");
+  });
+
+  test("includes optional headers when provided", () => {
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text: "test",
+    });
+    const headers = makeHeaders({
+      subject: "Test Subject",
+      cc: ["charlie@test.interchange"],
+      inReplyTo: "<prev@test.interchange>",
+      references: ["<first@test.interchange>", "<prev@test.interchange>"],
+      interchangeType: "conversation.message",
+      interchangeSessionId: "sess-123",
+    });
+    const msg = assembleMessage(headers, content, enc.encode("SIG"));
+    const text = dec.decode(msg);
+
+    expect(text).toContain("Subject: Test Subject\r\n");
+    expect(text).toContain("Cc: charlie@test.interchange\r\n");
+    expect(text).toContain("In-Reply-To: <prev@test.interchange>\r\n");
+    expect(text).toContain(
+      "References: <first@test.interchange> <prev@test.interchange>\r\n",
+    );
+    expect(text).toContain("Interchange-Type: conversation.message\r\n");
+    expect(text).toContain("Interchange-Session-ID: sess-123\r\n");
+  });
+
+  test("body has exactly two multipart/signed parts", () => {
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text: "test",
+    });
+    const msg = assembleMessage(makeHeaders(), content, enc.encode("FAKE-SIG"));
+    const { headers, bodyOffset } = parseHeaderSection(msg);
+    const ct = defined(headers.get("content-type"));
+    const boundary = defined(extractBoundary(ct));
+    const body = msg.slice(bodyOffset);
+    const parts = parseMultipart(body, boundary);
+    expect(parts).toHaveLength(2);
+
+    const sigPart = parseMimePart(defined(parts[1]));
+    expect(sigPart.contentType).toBe("application/pgp-signature");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseHeaderSection
+// ---------------------------------------------------------------------------
+
+describe("parseHeaderSection", () => {
+  test("parses CRLF-terminated headers", () => {
+    const raw = enc.encode("From: alice@test\r\nTo: bob@test\r\n\r\nBody here");
+    const { headers, bodyOffset } = parseHeaderSection(raw);
+    expect(headers.get("from")).toBe("alice@test");
+    expect(headers.get("to")).toBe("bob@test");
+    expect(dec.decode(raw.slice(bodyOffset))).toBe("Body here");
+  });
+
+  test("parses LF-terminated headers", () => {
+    const raw = enc.encode("From: alice@test\nTo: bob@test\n\nBody");
+    const { headers, bodyOffset } = parseHeaderSection(raw);
+    expect(headers.get("from")).toBe("alice@test");
+    expect(dec.decode(raw.slice(bodyOffset))).toBe("Body");
+  });
+
+  test("unfolds continuation lines", () => {
+    const raw = enc.encode("References: <a@test>\r\n <b@test>\r\n\r\nBody");
+    const { headers } = parseHeaderSection(raw);
+    expect(headers.get("references")).toBe("<a@test> <b@test>");
+  });
+
+  test("keeps first value for repeated headers", () => {
+    const raw = enc.encode("Received: first\r\nReceived: second\r\n\r\nBody");
+    const { headers } = parseHeaderSection(raw);
+    expect(headers.get("received")).toBe("first");
+  });
+
+  test("lowercases header names", () => {
+    const raw = enc.encode("Content-Type: text/plain\r\n\r\n");
+    const { headers } = parseHeaderSection(raw);
+    expect(headers.has("content-type")).toBe(true);
+    expect(headers.has("Content-Type")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractBoundary
+// ---------------------------------------------------------------------------
+
+describe("extractBoundary", () => {
+  test("extracts quoted boundary", () => {
+    const ct = 'multipart/signed; boundary="----=_Part_abc123"';
+    expect(extractBoundary(ct)).toBe("----=_Part_abc123");
+  });
+
+  test("extracts unquoted boundary", () => {
+    const ct = "multipart/mixed; boundary=simple_boundary";
+    expect(extractBoundary(ct)).toBe("simple_boundary");
+  });
+
+  test("returns undefined when no boundary", () => {
+    expect(extractBoundary("text/plain")).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseMultipart
+// ---------------------------------------------------------------------------
+
+describe("parseMultipart", () => {
+  test("splits two parts correctly", () => {
+    const body = enc.encode(
+      [
+        "--boundary",
+        "Content-Type: text/plain",
+        "",
+        "Part one",
+        "--boundary",
+        "Content-Type: text/html",
+        "",
+        "<p>Part two</p>",
+        "--boundary--",
+      ].join("\r\n"),
+    );
+    const parts = parseMultipart(body, "boundary");
+    expect(parts).toHaveLength(2);
+    expect(dec.decode(defined(parts[0]))).toContain("Part one");
+    expect(dec.decode(defined(parts[1]))).toContain("<p>Part two</p>");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseMimePart
+// ---------------------------------------------------------------------------
+
+describe("parseMimePart", () => {
+  test("separates headers from body", () => {
+    const raw = enc.encode("Content-Type: text/plain\r\n\r\nThe body text");
+    const part = parseMimePart(raw);
+    expect(part.contentType).toBe("text/plain");
+    expect(dec.decode(part.body)).toBe("The body text");
+  });
+
+  test("defaults to application/octet-stream", () => {
+    const raw = enc.encode("X-Custom: value\r\n\r\ndata");
+    const part = parseMimePart(raw);
+    expect(part.contentType).toBe("application/octet-stream");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractPartByPath
+// ---------------------------------------------------------------------------
+
+describe("extractPartByPath", () => {
+  test("extracts parts from an assembled message", () => {
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text: "Hello world",
+    });
+    const msg = assembleMessage(makeHeaders(), content, enc.encode("SIG"));
+
+    const part1 = extractPartByPath(msg, "1");
+    expect(dec.decode(part1)).toContain("Hello world");
+
+    const part2 = extractPartByPath(msg, "2");
+    const sigPart = parseMimePart(part2);
+    expect(sigPart.contentType).toBe("application/pgp-signature");
+  });
+
+  test("throws on invalid path segment", () => {
+    const msg = assembleMessage(
+      makeHeaders(),
+      assembleSignedContent({ kind: "conversation", text: "x" }),
+      enc.encode("SIG"),
+    );
+    expect(() => extractPartByPath(msg, "0")).toThrow(/Invalid part path/);
+    expect(() => extractPartByPath(msg, "abc")).toThrow(/Invalid part path/);
+  });
+
+  test("throws when part index exceeds part count", () => {
+    const msg = assembleMessage(
+      makeHeaders(),
+      assembleSignedContent({ kind: "conversation", text: "x" }),
+      enc.encode("SIG"),
+    );
+    expect(() => extractPartByPath(msg, "5")).toThrow(/does not exist/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createDetachedSignatureFromProvider — round-trip with verify
+// ---------------------------------------------------------------------------
+
+describe("createDetachedSignatureFromProvider", () => {
+  test("signature verifies against the signed content", async () => {
+    const kp = await generateKeyPair();
+    const provider = createNodeCrypto(kp);
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text: "Round-trip test",
+    });
+
+    const sig = await createDetachedSignatureFromProvider(content, provider);
+    const valid = await verifyDetachedSignature(
+      content,
+      sig,
+      provider.getPublicKey(),
+    );
+    expect(valid).toBe(true);
+  });
+
+  test("signature is ASCII-armored", async () => {
+    const kp = await generateKeyPair();
+    const provider = createNodeCrypto(kp);
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text: "test",
+    });
+
+    const sig = await createDetachedSignatureFromProvider(content, provider);
+    const text = dec.decode(sig);
+    expect(text).toContain("-----BEGIN PGP SIGNATURE-----");
+    expect(text).toContain("-----END PGP SIGNATURE-----");
+  });
+
+  test("verification fails with wrong public key", async () => {
+    const kp1 = await generateKeyPair();
+    const kp2 = await generateKeyPair();
+    const provider = createNodeCrypto(kp1);
+    const wrongKey = createNodeCrypto(kp2);
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text: "test",
+    });
+
+    const sig = await createDetachedSignatureFromProvider(content, provider);
+    const valid = await verifyDetachedSignature(
+      content,
+      sig,
+      wrongKey.getPublicKey(),
+    );
+    expect(valid).toBe(false);
+  });
+
+  test("verification fails with tampered content", async () => {
+    const kp = await generateKeyPair();
+    const provider = createNodeCrypto(kp);
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text: "original",
+    });
+
+    const sig = await createDetachedSignatureFromProvider(content, provider);
+    const tampered = assembleSignedContent({
+      kind: "conversation",
+      text: "modified",
+    });
+    const valid = await verifyDetachedSignature(
+      tampered,
+      sig,
+      provider.getPublicKey(),
+    );
+    expect(valid).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Full round-trip: assemble → parse → verify
+// ---------------------------------------------------------------------------
+
+describe("assemble then parse round-trip", () => {
+  test("conversation message survives assemble/parse cycle", async () => {
+    const kp = await generateKeyPair();
+    const provider = createNodeCrypto(kp);
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text: "Hello from the round-trip test",
+    });
+    const sig = await createDetachedSignatureFromProvider(content, provider);
+    const msg = assembleMessage(
+      makeHeaders({ interchangeType: "conversation.message" }),
+      content,
+      sig,
+    );
+
+    const { headers, bodyOffset } = parseHeaderSection(msg);
+    expect(headers.get("from")).toBe("alice@test.interchange");
+    expect(headers.get("interchange-type")).toBe("conversation.message");
+
+    const ct = defined(headers.get("content-type"));
+    expect(ct).toContain("multipart/signed");
+    const boundary = defined(extractBoundary(ct));
+
+    const body = msg.slice(bodyOffset);
+    const parts = parseMultipart(body, boundary);
+    expect(parts).toHaveLength(2);
+
+    const signedPart = defined(parts[0]);
+    const sigPart = parseMimePart(defined(parts[1]));
+    expect(sigPart.contentType).toBe("application/pgp-signature");
+
+    const valid = await verifyDetachedSignature(
+      signedPart,
+      sigPart.body,
+      provider.getPublicKey(),
+    );
+    expect(valid).toBe(true);
+
+    const parsed = parseMimePart(signedPart);
+    expect(parsed.contentType).toContain("text/plain");
+    expect(dec.decode(parsed.body)).toContain("Hello from the round-trip test");
+  });
+
+  test("structured message survives assemble/parse cycle", async () => {
+    const kp = await generateKeyPair();
+    const provider = createNodeCrypto(kp);
+    const payload = { action: "deploy", target: "prod" };
+    const content = assembleSignedContent({
+      kind: "structured",
+      json: payload,
+      summary: "Deploying to prod",
+    });
+    const sig = await createDetachedSignatureFromProvider(content, provider);
+    const msg = assembleMessage(makeHeaders(), content, sig);
+
+    const { headers, bodyOffset } = parseHeaderSection(msg);
+    const outerBoundary = defined(
+      extractBoundary(defined(headers.get("content-type"))),
+    );
+    const outerParts = parseMultipart(msg.slice(bodyOffset), outerBoundary);
+    expect(outerParts).toHaveLength(2);
+
+    const signedPart = defined(outerParts[0]);
+    const innerParsed = parseMimePart(signedPart);
+    expect(innerParsed.contentType).toContain("multipart/mixed");
+
+    const innerBoundary = defined(extractBoundary(innerParsed.contentType));
+    const innerParts = parseMultipart(innerParsed.body, innerBoundary);
+    expect(innerParts).toHaveLength(2);
+
+    const jsonPart = parseMimePart(defined(innerParts[0]));
+    expect(jsonPart.contentType).toContain("application/vnd.interchange+json");
+    const parsed = JSON.parse(dec.decode(jsonPart.body));
+    expect(parsed).toEqual(payload);
+
+    const summaryPart = parseMimePart(defined(innerParts[1]));
+    expect(dec.decode(summaryPart.body)).toContain("Deploying to prod");
+  });
+});
