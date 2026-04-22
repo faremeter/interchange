@@ -8,11 +8,16 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import { type } from "arktype";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
-type CursorData = { t: string; id: string };
+const CursorData = type({
+  t: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+  id: "string",
+});
+type CursorData = typeof CursorData.infer;
 
 function encodeCursor(createdAt: Date, id: string): string {
   const data: CursorData = { t: createdAt.toISOString(), id };
@@ -22,9 +27,9 @@ function encodeCursor(createdAt: Date, id: string): string {
 function decodeCursor(cursor: string): CursorData | null {
   try {
     const json = Buffer.from(cursor, "base64url").toString();
-    const data = JSON.parse(json) as CursorData;
-    if (typeof data.t !== "string" || typeof data.id !== "string") return null;
-    if (Number.isNaN(Date.parse(data.t))) return null;
+    const parsed: unknown = JSON.parse(json);
+    const data = CursorData(parsed);
+    if (data instanceof type.errors) return null;
     return data;
   } catch {
     return null;

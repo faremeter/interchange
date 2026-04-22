@@ -551,7 +551,7 @@ export interface ToolRunner {
 }
 
 // ---------------------------------------------------------------------------
-// Inference Event Protocol (INFERENCE.md § Event Protocol)
+// Inference Event Building Blocks (INFERENCE.md § Event Protocol)
 // ---------------------------------------------------------------------------
 
 /**
@@ -883,9 +883,9 @@ export const InferenceEvent = type({
 // validator because the `custom.*` variant uses a regex pattern which
 // arktype infers as `string`. A bare `string` in the discriminant position
 // prevents TypeScript from narrowing the union in switch statements.
-// The manually defined type uses `custom.${string}` template literals
-// and `Record<string, never>` for empty data payloads, preserving the
-// narrowing behavior that downstream code relies on.
+// The manually defined type uses a `custom.${string}` template literal
+// for that variant, preserving the narrowing behavior downstream code
+// relies on.
 export type InferenceEvent =
   | { type: "inference.start"; seq: number; data: { model: string } }
   | {
