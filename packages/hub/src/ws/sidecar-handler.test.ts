@@ -738,13 +738,17 @@ describe("SidecarRouter", () => {
           type: "agent.event",
           agentAddress: "agent@local",
           sessionId: "sess-1",
-          event: { type: "turn.start" },
+          event: { type: "reactor.start", seq: 0, data: {} },
         }),
       );
 
       expect(events).toHaveLength(1);
       expect(events[0]?.addr).toBe("agent@local");
-      expect(events[0]?.event).toEqual({ type: "turn.start" });
+      expect(events[0]?.event).toEqual({
+        type: "reactor.start",
+        seq: 0,
+        data: {},
+      });
     });
   });
 
@@ -771,12 +775,12 @@ describe("SidecarRouter", () => {
           type: "agent.event",
           agentAddress: "agent@local",
           sessionId: "sess-1",
-          event: { type: "turn.start" },
+          event: { type: "reactor.start", seq: 0, data: {} },
         }),
       );
 
       expect(received).toHaveLength(1);
-      expect(received[0]).toEqual({ type: "turn.start" });
+      expect(received[0]).toEqual({ type: "reactor.start", seq: 0, data: {} });
     });
 
     test("subscriber does not receive events for other sessions", () => {
@@ -801,7 +805,7 @@ describe("SidecarRouter", () => {
           type: "agent.event",
           agentAddress: "agent@local",
           sessionId: "sess-2",
-          event: { type: "turn.start" },
+          event: { type: "reactor.start", seq: 0, data: {} },
         }),
       );
 
@@ -832,7 +836,7 @@ describe("SidecarRouter", () => {
           type: "agent.event",
           agentAddress: "agent@local",
           sessionId: "sess-1",
-          event: { type: "turn.start" },
+          event: { type: "reactor.start", seq: 0, data: {} },
         }),
       );
 
@@ -844,12 +848,12 @@ describe("SidecarRouter", () => {
           type: "agent.event",
           agentAddress: "agent@local",
           sessionId: "sess-1",
-          event: { type: "turn.end" },
+          event: { type: "reactor.end", seq: 1, data: {} },
         }),
       );
 
       expect(received).toHaveLength(1);
-      expect(received[0]).toEqual({ type: "turn.start" });
+      expect(received[0]).toEqual({ type: "reactor.start", seq: 0, data: {} });
     });
 
     test("multiple subscribers receive the same event", () => {
@@ -876,7 +880,7 @@ describe("SidecarRouter", () => {
           type: "agent.event",
           agentAddress: "agent@local",
           sessionId: "sess-1",
-          event: { type: "turn.start" },
+          event: { type: "reactor.start", seq: 0, data: {} },
         }),
       );
 
@@ -913,7 +917,7 @@ describe("SidecarRouter", () => {
           type: "agent.event",
           agentAddress: "agent@local",
           sessionId: "sess-1",
-          event: { type: "turn.start" },
+          event: { type: "reactor.start", seq: 0, data: {} },
         }),
       );
 
@@ -946,12 +950,12 @@ describe("SidecarRouter", () => {
           type: "agent.event",
           agentAddress: "agent@local",
           sessionId: "sess-1",
-          event: { type: "turn.start" },
+          event: { type: "reactor.start", seq: 0, data: {} },
         }),
       );
 
       expect(received).toHaveLength(1);
-      expect(received[0]).toEqual({ type: "turn.start" });
+      expect(received[0]).toEqual({ type: "reactor.start", seq: 0, data: {} });
     });
   });
 

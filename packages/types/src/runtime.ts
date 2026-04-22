@@ -829,7 +829,7 @@ export const InferenceEvent = type({
   .or({
     type: "'reactor.start'",
     seq: "number",
-    data: type.keywords.object,
+    data: "object",
   })
   .or({
     type: "'reactor.gate.blocked'",
@@ -847,7 +847,7 @@ export const InferenceEvent = type({
   .or({
     type: "'reactor.done'",
     seq: "number",
-    data: type.keywords.object,
+    data: "object",
   })
   .or({
     type: "'reactor.error'",
@@ -879,7 +879,132 @@ export const InferenceEvent = type({
     seq: "number",
     data: "Record<string, unknown>",
   });
-export type InferenceEvent = typeof InferenceEvent.infer;
+// The TypeScript type is defined manually rather than inferred from the
+// validator because the `custom.*` variant uses a regex pattern which
+// arktype infers as `string`. A bare `string` in the discriminant position
+// prevents TypeScript from narrowing the union in switch statements.
+// The manually defined type uses `custom.${string}` template literals
+// and `Record<string, never>` for empty data payloads, preserving the
+// narrowing behavior that downstream code relies on.
+export type InferenceEvent =
+  | { type: "inference.start"; seq: number; data: { model: string } }
+  | {
+      type: "inference.thinking.delta";
+      seq: number;
+      data: { token: string; partial: PartialMessage };
+    }
+  | {
+      type: "inference.text.delta";
+      seq: number;
+      data: { token: string; partial: PartialMessage };
+    }
+  | {
+      type: "inference.tool_call.start";
+      seq: number;
+      data: { callId: string; name: string; partial: PartialMessage };
+    }
+  | {
+      type: "inference.tool_call.delta";
+      seq: number;
+      data: {
+        callId: string;
+        argumentFragment: string;
+        partial: PartialMessage;
+      };
+    }
+  | {
+      type: "inference.tool_call.end";
+      seq: number;
+      data: {
+        callId: string;
+        name: string;
+        arguments: Record<string, unknown>;
+        partial: PartialMessage;
+      };
+    }
+  | {
+      type: "inference.usage";
+      seq: number;
+      data: { usage: TokenUsage };
+    }
+  | {
+      type: "inference.done";
+      seq: number;
+      data: { message: AssistantMessage; usage: TokenUsage };
+    }
+  | {
+      type: "inference.error";
+      seq: number;
+      data: { error: InferenceError; partial: PartialMessage };
+    }
+  | { type: "tool.start"; seq: number; data: { call: ToolCall } }
+  | {
+      type: "tool.update";
+      seq: number;
+      data: { callId: string; partial: string };
+    }
+  | { type: "tool.done"; seq: number; data: { result: ToolResult } }
+  | {
+      type: "message.received";
+      seq: number;
+      data: { message: InboundMessage };
+    }
+  | {
+      type: "message.queued";
+      seq: number;
+      data: { message: InboundMessage };
+    }
+  | {
+      type: "message.correlated";
+      seq: number;
+      data: { message: InboundMessage; correlationId: string };
+    }
+  | {
+      type: "connector.reply";
+      seq: number;
+      data: { content: string };
+    }
+  | { type: "reactor.start"; seq: number; data: Record<string, never> }
+  | {
+      type: "reactor.gate.blocked";
+      seq: number;
+      data: { reason: GateType; gateId: string };
+    }
+  | {
+      type: "reactor.gate.cleared";
+      seq: number;
+      data: {
+        gateId: string;
+        reason: "resolved" | "timeout" | "shutdown";
+      };
+    }
+  | { type: "reactor.done"; seq: number; data: Record<string, never> }
+  | {
+      type: "reactor.error";
+      seq: number;
+      data: { error: string; fatal: boolean };
+    }
+  | {
+      type: "fork.created";
+      seq: number;
+      data: { forkId: string; parentId: string; mode: ForkMode };
+    }
+  | {
+      type: "fork.done";
+      seq: number;
+      data: { forkId: string; result?: unknown };
+    }
+  | {
+      type: "fork.error";
+      seq: number;
+      data: { forkId: string; error: string };
+    }
+  | { type: "fork.aborted"; seq: number; data: { forkId: string } }
+  | {
+      type: `custom.${string}`;
+      seq: number;
+      data: Record<string, unknown>;
+    };
 
 /**
  * A pending async operation registered in the reactor's async state.

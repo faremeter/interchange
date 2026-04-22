@@ -11,21 +11,22 @@ import {
   verifySshSignature,
 } from "@interchange/crypto-node";
 import type { InMemoryTransport } from "@interchange/message-memory";
-import type {
+import { type } from "arktype";
+import {
   HubFrame,
-  SidecarFrame,
-  AgentDeployFrame,
-  AgentUndeployFrame,
-  ChallengeFrame,
-  ChallengeFailedFrame,
-  SessionAbortFrame,
-  SessionStartFrame,
-  GrantsUpdateFrame,
-  PackPushFrame,
-  PackDoneFrame,
-  PackAckFrame,
-  PackRejectFrame,
-  SyncRequestFrame,
+  type SidecarFrame,
+  type AgentDeployFrame,
+  type AgentUndeployFrame,
+  type ChallengeFrame,
+  type ChallengeFailedFrame,
+  type SessionAbortFrame,
+  type SessionStartFrame,
+  type GrantsUpdateFrame,
+  type PackPushFrame,
+  type PackDoneFrame,
+  type PackAckFrame,
+  type PackRejectFrame,
+  type SyncRequestFrame,
 } from "@interchange/types/sidecar";
 import type { KeyPair } from "@interchange/types/runtime";
 
@@ -415,13 +416,19 @@ export function createWsClient(config: WsClientConfig): WsClient {
   }
 
   async function handleMessage(data: string): Promise<void> {
-    let frame: HubFrame;
+    let raw: unknown;
     try {
-      frame = JSON.parse(data) as HubFrame;
+      raw = JSON.parse(data) as unknown;
     } catch {
       logger.warn`Received unparseable frame from hub`;
       return;
     }
+    const validated = HubFrame(raw);
+    if (validated instanceof type.errors) {
+      logger.warn`Invalid hub frame: ${validated.summary}`;
+      return;
+    }
+    const frame = validated;
 
     switch (frame.type) {
       case "mail.inbound": {
