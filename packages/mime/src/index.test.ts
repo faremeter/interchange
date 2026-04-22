@@ -104,14 +104,32 @@ describe("assembleSignedContent", () => {
     expect(text).toContain("\r\nHello\r\nWorld");
   });
 
-  test("conversation strips trailing whitespace per line", () => {
+  test("conversation strips trailing whitespace but preserves leading", () => {
     const bytes = assembleSignedContent({
       kind: "conversation",
-      text: "Hello   \nWorld\t",
+      text: "  leading   \nindented   ",
     });
     const text = dec.decode(bytes);
-    expect(text).toContain("\r\nHello\r\nWorld");
-    expect(text).not.toContain("Hello   ");
+    expect(text).toContain("\r\n  leading\r\nindented");
+  });
+
+  test("conversation with empty text produces headers only", () => {
+    const bytes = assembleSignedContent({
+      kind: "conversation",
+      text: "",
+    });
+    const text = dec.decode(bytes);
+    expect(text).toMatch(/Content-Transfer-Encoding: 7bit\r\n\r\n$/);
+  });
+
+  test("conversation normalizes CRLF input without doubling", () => {
+    const bytes = assembleSignedContent({
+      kind: "conversation",
+      text: "line1\r\nline2",
+    });
+    const text = dec.decode(bytes);
+    expect(text).toContain("line1\r\nline2");
+    expect(text).not.toContain("line1\r\n\r\nline2");
   });
 
   test("structured produces multipart/mixed with JSON part", () => {
@@ -125,6 +143,16 @@ describe("assembleSignedContent", () => {
       "Content-Type: application/vnd.interchange+json; charset=utf-8",
     );
     expect(text).toContain('{"action":"deploy"}');
+  });
+
+  test("structured without summary produces only the JSON part", () => {
+    const bytes = assembleSignedContent({
+      kind: "structured",
+      json: { x: 1 },
+    });
+    const text = dec.decode(bytes);
+    expect(text).toContain('{"x":1}');
+    expect(text).not.toContain("Content-Type: text/plain");
   });
 
   test("structured includes optional summary as text/plain part", () => {
@@ -249,12 +277,44 @@ describe("parseHeaderSection", () => {
     expect(headers.has("Content-Type")).toBe(false);
   });
 
-  test("bodyOffset is byte-accurate with multi-byte UTF-8 headers", () => {
-    // "é" is 2 bytes in UTF-8 but 1 JS character — the offset must be
-    // computed in byte space, not character space.
+  test("bodyOffset is byte-accurate with 2-byte UTF-8 characters", () => {
     const raw = enc.encode("Subject: héllo\r\n\r\nBody here");
     const { bodyOffset } = parseHeaderSection(raw);
     expect(dec.decode(raw.slice(bodyOffset))).toBe("Body here");
+  });
+
+  test("bodyOffset is byte-accurate with 3-byte UTF-8 characters", () => {
+    const raw = enc.encode("Subject: \u20ACuro\r\n\r\nBody here");
+    const { bodyOffset } = parseHeaderSection(raw);
+    expect(dec.decode(raw.slice(bodyOffset))).toBe("Body here");
+  });
+
+  test("bodyOffset is byte-accurate with 4-byte UTF-8 characters", () => {
+    const raw = enc.encode("Subject: \u{1F600}face\r\n\r\nBody here");
+    const { bodyOffset } = parseHeaderSection(raw);
+    expect(dec.decode(raw.slice(bodyOffset))).toBe("Body here");
+  });
+
+  test("no separator treats entire input as headers", () => {
+    const raw = enc.encode("From: alice\r\nTo: bob");
+    const { headers, bodyOffset } = parseHeaderSection(raw);
+    expect(bodyOffset).toBe(raw.length);
+    expect(dec.decode(raw.slice(bodyOffset))).toBe("");
+    expect(headers.get("from")).toBe("alice");
+  });
+
+  test("empty input returns empty headers and zero offset", () => {
+    const raw = enc.encode("");
+    const { headers, bodyOffset } = parseHeaderSection(raw);
+    expect(bodyOffset).toBe(0);
+    expect(headers.size).toBe(0);
+  });
+
+  test("separator-only input returns empty headers", () => {
+    const raw = enc.encode("\r\n\r\n");
+    const { headers, bodyOffset } = parseHeaderSection(raw);
+    expect(bodyOffset).toBe(4);
+    expect(headers.size).toBe(0);
   });
 });
 
@@ -301,6 +361,18 @@ describe("parseMultipart", () => {
     expect(parts).toHaveLength(2);
     expect(dec.decode(defined(parts[0]))).toContain("Part one");
     expect(dec.decode(defined(parts[1]))).toContain("<p>Part two</p>");
+  });
+
+  test("handles LF-only line endings", () => {
+    const body = enc.encode(
+      "--boundary\nContent-Type: text/plain\n\nPart one\n--boundary\nContent-Type: text/html\n\n<p>Part two</p>\n--boundary--\n",
+    );
+    const parts = parseMultipart(body, "boundary");
+    expect(parts).toHaveLength(2);
+    const p1 = parseMimePart(defined(parts[0]));
+    const p2 = parseMimePart(defined(parts[1]));
+    expect(dec.decode(p1.body)).toContain("Part one");
+    expect(dec.decode(p2.body)).toContain("<p>Part two</p>");
   });
 });
 
@@ -360,6 +432,11 @@ describe("extractPartByPath", () => {
       enc.encode("SIG"),
     );
     expect(() => extractPartByPath(msg, "5")).toThrow(/does not exist/);
+  });
+
+  test("throws when indexing into a non-multipart message", () => {
+    const raw = enc.encode("Content-Type: text/plain\r\n\r\nJust a body");
+    expect(() => extractPartByPath(raw, "1")).toThrow(/non-multipart/);
   });
 });
 
