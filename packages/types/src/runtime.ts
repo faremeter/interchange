@@ -502,11 +502,12 @@ export interface MessageTransport {
  *
  * (INFERENCE.md § Message Format › Content Types)
  */
-export type ToolCall = {
-  id: string;
-  name: string;
-  arguments: Record<string, unknown>;
-};
+export const ToolCall = type({
+  id: "string",
+  name: "string",
+  arguments: "Record<string, unknown>",
+});
+export type ToolCall = typeof ToolCall.infer;
 
 /**
  * Result of a tool execution. `content` is text or structured data the model
@@ -519,17 +520,18 @@ export type ToolCall = {
  *
  * (INFERENCE.md § Tool Execution Semantics)
  */
-export type ToolResult = {
-  callId: string;
-  content: string | Record<string, unknown>;
-  detail?: unknown;
-  isError?: boolean;
-  pendingMarker?: {
-    status: "pending";
-    correlationId: string;
-    expectedFrom?: string;
-  };
-};
+export const ToolResult = type({
+  callId: "string",
+  content: "string | Record<string, unknown>",
+  "detail?": "unknown",
+  "isError?": "boolean",
+  "pendingMarker?": {
+    status: "'pending'",
+    correlationId: "string",
+    "expectedFrom?": "string",
+  },
+});
+export type ToolResult = typeof ToolResult.infer;
 
 /**
  * The tool runner interface. The harness implements this; the reactor calls
@@ -559,15 +561,16 @@ export interface ToolRunner {
  *
  * (INFERENCE.md § Event Protocol › Partial State)
  */
-export type PartialMessage = {
-  text: string;
-  thinking?: string;
-  toolCalls?: {
-    id: string;
-    name: string;
-    partialArguments: string;
-  }[];
-};
+export const PartialMessage = type({
+  text: "string",
+  "thinking?": "string",
+  "toolCalls?": type({
+    id: "string",
+    name: "string",
+    partialArguments: "string",
+  }).array(),
+});
+export type PartialMessage = typeof PartialMessage.infer;
 
 /**
  * Token usage for a single inference call. Cache read/write counts are
@@ -575,135 +578,14 @@ export type PartialMessage = {
  *
  * (INFERENCE.md § Token Accounting)
  */
-export type TokenUsage = {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  thinking: number;
-};
-
-/**
- * A single event in the inference event protocol. Every event carries a
- * monotonic session-scoped sequence number.
- *
- * Event types are namespaced: `inference.*`, `tool.*`, `reactor.*`,
- * `fork.*`, `message.*`, `custom.*`.
- *
- * (INFERENCE.md § Event Protocol)
- */
-export type InferenceEvent =
-  | { type: "inference.start"; seq: number; data: { model: string } }
-  | {
-      type: "inference.thinking.delta";
-      seq: number;
-      data: { token: string; partial: PartialMessage };
-    }
-  | {
-      type: "inference.text.delta";
-      seq: number;
-      data: { token: string; partial: PartialMessage };
-    }
-  | {
-      type: "inference.tool_call.start";
-      seq: number;
-      data: { callId: string; name: string; partial: PartialMessage };
-    }
-  | {
-      type: "inference.tool_call.delta";
-      seq: number;
-      data: {
-        callId: string;
-        argumentFragment: string;
-        partial: PartialMessage;
-      };
-    }
-  | {
-      type: "inference.tool_call.end";
-      seq: number;
-      data: {
-        callId: string;
-        name: string;
-        arguments: Record<string, unknown>;
-        partial: PartialMessage;
-      };
-    }
-  | {
-      type: "inference.usage";
-      seq: number;
-      data: { usage: TokenUsage };
-    }
-  | {
-      type: "inference.done";
-      seq: number;
-      data: { message: AssistantMessage; usage: TokenUsage };
-    }
-  | {
-      type: "inference.error";
-      seq: number;
-      data: { error: InferenceError; partial: PartialMessage };
-    }
-  | { type: "tool.start"; seq: number; data: { call: ToolCall } }
-  | {
-      type: "tool.update";
-      seq: number;
-      data: { callId: string; partial: string };
-    }
-  | { type: "tool.done"; seq: number; data: { result: ToolResult } }
-  | {
-      type: "message.received";
-      seq: number;
-      data: { message: InboundMessage };
-    }
-  | {
-      type: "message.queued";
-      seq: number;
-      data: { message: InboundMessage };
-    }
-  | {
-      type: "message.correlated";
-      seq: number;
-      data: { message: InboundMessage; correlationId: string };
-    }
-  | {
-      type: "connector.reply";
-      seq: number;
-      data: { content: string };
-    }
-  | { type: "reactor.start"; seq: number; data: Record<string, never> }
-  | {
-      type: "reactor.gate.blocked";
-      seq: number;
-      data: { reason: GateType; gateId: string };
-    }
-  | {
-      type: "reactor.gate.cleared";
-      seq: number;
-      data: { gateId: string; reason: "resolved" | "timeout" | "shutdown" };
-    }
-  | { type: "reactor.done"; seq: number; data: Record<string, never> }
-  | {
-      type: "reactor.error";
-      seq: number;
-      data: { error: string; fatal: boolean };
-    }
-  | {
-      type: "fork.created";
-      seq: number;
-      data: { forkId: string; parentId: string; mode: ForkMode };
-    }
-  | {
-      type: "fork.done";
-      seq: number;
-      data: { forkId: string; result?: unknown };
-    }
-  | { type: "fork.error"; seq: number; data: { forkId: string; error: string } }
-  | { type: "fork.aborted"; seq: number; data: { forkId: string } }
-  | {
-      type: `custom.${string}`;
-      seq: number;
-      data: Record<string, unknown>;
-    };
+export const TokenUsage = type({
+  input: "number",
+  output: "number",
+  cacheRead: "number",
+  cacheWrite: "number",
+  thinking: "number",
+});
+export type TokenUsage = typeof TokenUsage.infer;
 
 // ---------------------------------------------------------------------------
 // Internal Message Format (INFERENCE.md § Message Format)
@@ -714,31 +596,38 @@ export type InferenceEvent =
  *
  * (INFERENCE.md § Message Format › Content Types)
  */
-export type ContentBlock =
-  | { type: "text"; text: string }
-  | {
-      type: "thinking";
-      thinking: string;
-      signature?: string;
-      redacted?: boolean;
-    }
-  | { type: "image"; mimeType: string; data: string }
-  | {
-      type: "tool_call";
-      id: string;
-      name: string;
-      arguments: Record<string, unknown>;
-    }
-  | {
-      type: "tool_result";
-      callId: string;
-      content: (
-        | { type: "text"; text: string }
-        | { type: "image"; mimeType: string; data: string }
-      )[];
-      detail?: unknown;
-      isError?: boolean;
-    };
+const TextBlock = type({ type: "'text'", text: "string" });
+const ImageBlock = type({
+  type: "'image'",
+  mimeType: "string",
+  data: "string",
+});
+
+const ThinkingBlock = type({
+  type: "'thinking'",
+  thinking: "string",
+  "signature?": "string",
+  "redacted?": "boolean",
+});
+const ToolCallBlock = type({
+  type: "'tool_call'",
+  id: "string",
+  name: "string",
+  arguments: "Record<string, unknown>",
+});
+const ToolResultBlock = type({
+  type: "'tool_result'",
+  callId: "string",
+  content: TextBlock.or(ImageBlock).array(),
+  "detail?": "unknown",
+  "isError?": "boolean",
+});
+
+export const ContentBlock = TextBlock.or(ThinkingBlock)
+  .or(ImageBlock)
+  .or(ToolCallBlock)
+  .or(ToolResultBlock);
+export type ContentBlock = typeof ContentBlock.infer;
 
 /**
  * A message in the internal conversation history. The `model` field records
@@ -758,11 +647,12 @@ export type ConversationMessage = {
  * A completed assistant message returned in `inference.done`. Distinct type
  * from ConversationMessage to make the inference boundary explicit.
  */
-export type AssistantMessage = {
-  role: "assistant";
-  content: ContentBlock[];
-  model: string;
-};
+export const AssistantMessage = type({
+  role: "'assistant'",
+  content: ContentBlock.array(),
+  model: "string",
+});
+export type AssistantMessage = typeof AssistantMessage.infer;
 
 // ---------------------------------------------------------------------------
 // Error Classification (INFERENCE.md § Error Classification)
@@ -774,18 +664,20 @@ export type AssistantMessage = {
  *
  * (INFERENCE.md § Error Classification)
  */
-export type InferenceError = {
-  category:
-    | "retryable"
-    | "context_overflow"
-    | "credential_failure"
-    | "quota_exhausted"
-    | "fatal"
-    | "aborted";
-  message: string;
-  statusCode?: number;
-  raw?: unknown;
-};
+export const InferenceError = type({
+  category: type.enumerated(
+    "retryable",
+    "context_overflow",
+    "credential_failure",
+    "quota_exhausted",
+    "fatal",
+    "aborted",
+  ),
+  message: "string",
+  "statusCode?": "number",
+  "raw?": "unknown",
+});
+export type InferenceError = typeof InferenceError.infer;
 
 // ---------------------------------------------------------------------------
 // Agent Reactor (INFERENCE.md § Agent Reactor)
@@ -796,13 +688,15 @@ export type InferenceError = {
  *
  * (INFERENCE.md § Gates)
  */
-export type GateType =
-  | "approval"
-  | "payment"
-  | "credential"
-  | "budget"
-  | "child_completion"
-  | "message_response";
+export const GateType = type.enumerated(
+  "approval",
+  "payment",
+  "credential",
+  "budget",
+  "child_completion",
+  "message_response",
+);
+export type GateType = typeof GateType.infer;
 
 /**
  * Fork mode. `independent` creates a divergent reactor with its own context.
@@ -810,7 +704,182 @@ export type GateType =
  *
  * (INFERENCE.md § Forking)
  */
-export type ForkMode = "independent" | "child";
+export const ForkMode = type.enumerated("independent", "child");
+export type ForkMode = typeof ForkMode.infer;
+
+// ---------------------------------------------------------------------------
+// Inference Event Protocol (INFERENCE.md § Event Protocol)
+// ---------------------------------------------------------------------------
+
+/**
+ * Wire-safe representation of InboundMessage for use in InferenceEvent
+ * variants. The runtime InboundMessage type contains Uint8Array fields
+ * (MessageAttachment.data) that cannot survive JSON serialization, so the
+ * wire validator uses `unknown` for attachment data and accepts whatever
+ * JSON.parse produces.
+ */
+const WireInboundMessage = type({
+  ref: { uid: "number", mailbox: "string" },
+  headers: "Record<string, unknown>",
+  flags: "string[]",
+  "content?": "string",
+  "payload?": "object",
+  "attachments?": "unknown[]",
+  signatureStatus: type.enumerated("valid", "invalid", "unknown", "missing"),
+});
+
+/**
+ * A single event in the inference event protocol. Every event carries a
+ * monotonic session-scoped sequence number.
+ *
+ * Event types are namespaced: `inference.*`, `tool.*`, `reactor.*`,
+ * `fork.*`, `message.*`, `custom.*`.
+ *
+ * (INFERENCE.md § Event Protocol)
+ */
+export const InferenceEvent = type({
+  type: "'inference.start'",
+  seq: "number",
+  data: { model: "string" },
+})
+  .or({
+    type: "'inference.thinking.delta'",
+    seq: "number",
+    data: { token: "string", partial: PartialMessage },
+  })
+  .or({
+    type: "'inference.text.delta'",
+    seq: "number",
+    data: { token: "string", partial: PartialMessage },
+  })
+  .or({
+    type: "'inference.tool_call.start'",
+    seq: "number",
+    data: { callId: "string", name: "string", partial: PartialMessage },
+  })
+  .or({
+    type: "'inference.tool_call.delta'",
+    seq: "number",
+    data: {
+      callId: "string",
+      argumentFragment: "string",
+      partial: PartialMessage,
+    },
+  })
+  .or({
+    type: "'inference.tool_call.end'",
+    seq: "number",
+    data: {
+      callId: "string",
+      name: "string",
+      arguments: "Record<string, unknown>",
+      partial: PartialMessage,
+    },
+  })
+  .or({
+    type: "'inference.usage'",
+    seq: "number",
+    data: { usage: TokenUsage },
+  })
+  .or({
+    type: "'inference.done'",
+    seq: "number",
+    data: { message: AssistantMessage, usage: TokenUsage },
+  })
+  .or({
+    type: "'inference.error'",
+    seq: "number",
+    data: { error: InferenceError, partial: PartialMessage },
+  })
+  .or({
+    type: "'tool.start'",
+    seq: "number",
+    data: { call: ToolCall },
+  })
+  .or({
+    type: "'tool.update'",
+    seq: "number",
+    data: { callId: "string", partial: "string" },
+  })
+  .or({
+    type: "'tool.done'",
+    seq: "number",
+    data: { result: ToolResult },
+  })
+  .or({
+    type: "'message.received'",
+    seq: "number",
+    data: { message: WireInboundMessage },
+  })
+  .or({
+    type: "'message.queued'",
+    seq: "number",
+    data: { message: WireInboundMessage },
+  })
+  .or({
+    type: "'message.correlated'",
+    seq: "number",
+    data: { message: WireInboundMessage, correlationId: "string" },
+  })
+  .or({
+    type: "'connector.reply'",
+    seq: "number",
+    data: { content: "string" },
+  })
+  .or({
+    type: "'reactor.start'",
+    seq: "number",
+    data: type.keywords.object,
+  })
+  .or({
+    type: "'reactor.gate.blocked'",
+    seq: "number",
+    data: { reason: GateType, gateId: "string" },
+  })
+  .or({
+    type: "'reactor.gate.cleared'",
+    seq: "number",
+    data: {
+      gateId: "string",
+      reason: type.enumerated("resolved", "timeout", "shutdown"),
+    },
+  })
+  .or({
+    type: "'reactor.done'",
+    seq: "number",
+    data: type.keywords.object,
+  })
+  .or({
+    type: "'reactor.error'",
+    seq: "number",
+    data: { error: "string", fatal: "boolean" },
+  })
+  .or({
+    type: "'fork.created'",
+    seq: "number",
+    data: { forkId: "string", parentId: "string", mode: ForkMode },
+  })
+  .or({
+    type: "'fork.done'",
+    seq: "number",
+    data: { forkId: "string", "result?": "unknown" },
+  })
+  .or({
+    type: "'fork.error'",
+    seq: "number",
+    data: { forkId: "string", error: "string" },
+  })
+  .or({
+    type: "'fork.aborted'",
+    seq: "number",
+    data: { forkId: "string" },
+  })
+  .or({
+    type: /^custom\./,
+    seq: "number",
+    data: "Record<string, unknown>",
+  });
+export type InferenceEvent = typeof InferenceEvent.infer;
 
 /**
  * A pending async operation registered in the reactor's async state.
