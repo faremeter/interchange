@@ -11,4 +11,4 @@ export { buildMessageToolHandlers, buildCombinedRunner } from "./tools";
 export type { MessageToolName } from "./tools";
 
 export { readDeployTree } from "./deploy-tree";
-export type { DeployTree } from "./deploy-tree";
+export type { DeployTree, DeployToolInfo } from "./deploy-tree";

@@ -11,6 +11,7 @@
     "@interchange/message-memory": "workspace:*",
     "@interchange/pack-transport": "workspace:*",
     "@interchange/storage-isogit": "workspace:*",
+    "@interchange/tools-posix": "workspace:*",
     "@interchange/types": "workspace:*"
   }
 }

@@ -62,8 +62,55 @@ describe("readDeployTree", () => {
     expect(result.tools).toHaveLength(1);
     const tool = result.tools[0];
     if (tool === undefined) throw new Error("unreachable");
-    expect(tool.name).toBe("read_file");
-    expect(tool.description).toBe("Read a file from disk");
+    expect(tool.definition.name).toBe("read_file");
+    expect(tool.definition.description).toBe("Read a file from disk");
+    expect(tool.hasHandler).toBe(false);
+  });
+
+  test("detects handler.ts in skill directory", async () => {
+    const dir = await tempDir();
+    const skillDir = path.join(dir, "deploy", "skills", "custom");
+    await fs.promises.mkdir(skillDir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(skillDir, "tool.json"),
+      JSON.stringify({
+        name: "custom_tool",
+        description: "A custom tool",
+        inputSchema: { type: "object", properties: {} },
+      }),
+    );
+    await fs.promises.writeFile(
+      path.join(skillDir, "handler.ts"),
+      "export default function() {}",
+    );
+
+    const result = await readDeployTree(dir);
+    expect(result.tools).toHaveLength(1);
+    const tool = result.tools[0];
+    if (tool === undefined) throw new Error("unreachable");
+    expect(tool.definition.name).toBe("custom_tool");
+    expect(tool.hasHandler).toBe(true);
+  });
+
+  test("ignores directory named handler.ts", async () => {
+    const dir = await tempDir();
+    const skillDir = path.join(dir, "deploy", "skills", "dirhandler");
+    await fs.promises.mkdir(skillDir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(skillDir, "tool.json"),
+      JSON.stringify({
+        name: "dir_handler_tool",
+        description: "Tool with directory named handler.ts",
+        inputSchema: { type: "object", properties: {} },
+      }),
+    );
+    await fs.promises.mkdir(path.join(skillDir, "handler.ts"));
+
+    const result = await readDeployTree(dir);
+    expect(result.tools).toHaveLength(1);
+    const tool = result.tools[0];
+    if (tool === undefined) throw new Error("unreachable");
+    expect(tool.hasHandler).toBe(false);
   });
 
   test("throws on malformed tool.json", async () => {

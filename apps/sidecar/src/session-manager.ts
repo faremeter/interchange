@@ -19,7 +19,9 @@ import {
   createHarness,
   readDeployTree,
   type Harness,
+  type DeployToolInfo,
 } from "@interchange/harness";
+import { createPosixTools } from "@interchange/tools-posix";
 import { hasProvider } from "@interchange/inference";
 import { createNodeCrypto } from "@interchange/crypto-node";
 import {
@@ -36,6 +38,7 @@ import type {
   InboundMessage,
   InferenceEvent,
   KeyPair,
+  ToolRunner,
   HarnessConfig as AgentConfig,
 } from "@interchange/types/runtime";
 
@@ -121,6 +124,45 @@ type ProvisionedAgent = {
   config: AgentConfig;
   keyPair: KeyPair;
 };
+
+function buildToolDispatch(deployTools: DeployToolInfo[]): ToolRunner {
+  const posixTools = createPosixTools();
+  const posixNames = new Set(posixTools.definitions.map((d) => d.name));
+  const handlerIndex = new Set(
+    deployTools.filter((t) => t.hasHandler).map((t) => t.definition.name),
+  );
+  const deployNames = new Set(deployTools.map((t) => t.definition.name));
+
+  return {
+    async run(call, signal) {
+      if (handlerIndex.has(call.name)) {
+        return {
+          callId: call.id,
+          content: `Tool "${call.name}" has a handler.ts but custom handler execution is not yet implemented`,
+          isError: true,
+        };
+      }
+
+      if (posixNames.has(call.name)) {
+        return posixTools.run(call, signal);
+      }
+
+      if (deployNames.has(call.name)) {
+        return {
+          callId: call.id,
+          content: `Tool "${call.name}" is declared in the deploy tree but has no handler and does not match a built-in tool`,
+          isError: true,
+        };
+      }
+
+      return {
+        callId: call.id,
+        content: `Unknown tool: "${call.name}"`,
+        isError: true,
+      };
+    },
+  };
+}
 
 export function createSessionManager(
   config: SessionManagerConfig,
@@ -211,6 +253,9 @@ export function createSessionManager(
           tenantId,
         });
 
+      const deployToolDefs = deployTree.tools.map((t) => t.definition);
+      const toolDispatch = buildToolDispatch(deployTree.tools);
+
       const harness = createHarness({
         address: agentAddress,
         systemPrompt,
@@ -223,16 +268,8 @@ export function createSessionManager(
         storage,
         authorize,
         auditStore: storage,
-        deployTools: deployTree.tools,
-        tools: {
-          async run(call) {
-            return {
-              callId: call.id,
-              content: `Tool "${call.name}" is defined in the deploy pack but handler execution is not yet supported`,
-              isError: true,
-            };
-          },
-        },
+        deployTools: deployToolDefs,
+        tools: toolDispatch,
         onEvent(event: InferenceEvent) {
           onEvent(agentAddress, sessionId, event);
         },
