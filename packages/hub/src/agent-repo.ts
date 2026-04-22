@@ -52,6 +52,9 @@ export type AgentRepoStore = {
     commitSha: string,
   ): Promise<void>;
 
+  /** Resolve the current deploy ref SHA, or null if no deploy exists. */
+  getDeployRef(agentId: string): Promise<string | null>;
+
   /** Raw 32-byte Ed25519 public key used to sign deploy commits. */
   getSigningPublicKey(): Uint8Array;
 };
@@ -186,10 +189,28 @@ export function createAgentRepoStore(config: {
     );
   }
 
+  async function getDeployRef(agentId: string): Promise<string | null> {
+    const dir = repoDir(agentId);
+    try {
+      return await git.resolveRef({ fs, dir, ref: DEPLOY_REF });
+    } catch (err: unknown) {
+      if (
+        typeof err === "object" &&
+        err !== null &&
+        "code" in err &&
+        (err as { code: string }).code === "NotFoundError"
+      ) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
   return {
     writeDeployTree,
     createDeployPack: makeDeployPack,
     receiveStatePack,
+    getDeployRef,
     getSigningPublicKey: () => signingKey.publicKey,
   };
 }

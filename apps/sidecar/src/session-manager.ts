@@ -12,6 +12,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import git from "isomorphic-git";
 import { getLogger } from "@interchange/log";
 import { evaluateGrants } from "@interchange/authz";
 import {
@@ -107,6 +108,11 @@ export type SessionManager = {
     agentAddress: string,
   ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }>;
   deleteAgentDir(agentAddress: string): Promise<void>;
+  getDeployRef(agentAddress: string): Promise<string | null>;
+  persistHubPublicKey(
+    agentAddress: string,
+    hubPublicKey: string,
+  ): Promise<void>;
 };
 
 // Agents that have been provisioned but not yet started. Holds the config
@@ -378,6 +384,38 @@ export function createSessionManager(
     logger.info`Deleted agent directory for ${agentAddress}`;
   }
 
+  async function persistHubPublicKey(
+    agentAddress: string,
+    hubPublicKey: string,
+  ): Promise<void> {
+    const session = sessions.get(agentAddress);
+    const prov = provisioned.get(agentAddress);
+    const config = session?.config ?? prov?.config;
+    if (config === undefined) {
+      throw new Error(
+        `Cannot persist hub key: no config for "${agentAddress}"`,
+      );
+    }
+    await persistAgentConfig(dataDir, agentAddress, config, hubPublicKey);
+  }
+
+  async function getDeployRef(agentAddress: string): Promise<string | null> {
+    const dir = path.join(dataDir, sanitizeAddress(agentAddress));
+    try {
+      return await git.resolveRef({ fs, dir, ref: "refs/heads/deploy" });
+    } catch (err: unknown) {
+      if (
+        typeof err === "object" &&
+        err !== null &&
+        "code" in err &&
+        (err as { code: string }).code === "NotFoundError"
+      ) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
   return {
     provisionAgent,
     startSession,
@@ -392,5 +430,7 @@ export function createSessionManager(
     applyDeployPack,
     createStatePack,
     deleteAgentDir,
+    getDeployRef,
+    persistHubPublicKey,
   };
 }

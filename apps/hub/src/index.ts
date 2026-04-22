@@ -132,6 +132,17 @@ const sidecarRouter = createSidecarRouter({
     }
     return { accepted: true };
   },
+  async lookupDeployRef(agentAddress) {
+    const agentId = parseAgentId(agentAddress);
+    return agentRepoStore.getDeployRef(agentId);
+  },
+  async onDeployRefStale(agentAddress) {
+    const agentId = parseAgentId(agentAddress);
+    const { pack, commitSha, ref } =
+      await agentRepoStore.createDeployPack(agentId);
+    await sidecarRouter.sendPack(agentAddress, pack, ref, commitSha);
+    log.info("Re-deployed stale agent {agentAddress}", { agentAddress });
+  },
   async lookupPublicKey(agentAddress) {
     const agentId = parseAgentId(agentAddress);
     const row = await db

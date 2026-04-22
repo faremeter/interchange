@@ -86,6 +86,7 @@ function createMockRepoStore(): AgentRepoStore & { calls: Call[] } {
     getSigningPublicKey() {
       return new Uint8Array(32);
     },
+    getDeployRef: (_agentId: string) => Promise.resolve(null),
   };
 }
 

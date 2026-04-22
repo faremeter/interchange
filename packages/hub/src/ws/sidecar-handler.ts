@@ -78,6 +78,8 @@ export type SidecarRouterConfig = {
   lookupPublicKey?: (agentAddress: string) => Promise<string | null>;
   onAgentDeployAck?: (agentAddress: string, publicKey: string) => Promise<void>;
   onAgentReconnected?: (agentAddress: string) => Promise<void>;
+  lookupDeployRef?: (agentAddress: string) => Promise<string | null>;
+  onDeployRefStale?: (agentAddress: string) => Promise<void>;
   challengeTimeoutMs?: number;
   disconnectQueueMaxSize?: number;
   disconnectQueueTTLMs?: number;
@@ -118,11 +120,19 @@ export function createSidecarRouter(
     lookupPublicKey,
     onAgentDeployAck,
     onAgentReconnected,
+    lookupDeployRef,
+    onDeployRefStale,
     disconnectQueueMaxSize = DEFAULT_DISCONNECT_QUEUE_MAX_SIZE,
     disconnectQueueTTLMs = DEFAULT_DISCONNECT_QUEUE_TTL_MS,
     pingTimeoutMs = DEFAULT_PING_TIMEOUT_MS,
     onStatePackReceived,
   } = config;
+
+  if ((lookupDeployRef === undefined) !== (onDeployRefStale === undefined)) {
+    throw new Error(
+      "lookupDeployRef and onDeployRefStale must both be provided or both omitted",
+    );
+  }
 
   // ws handle → registered connection
   const connections = new Map<WsHandle, SidecarConnection>();
@@ -143,6 +153,7 @@ export function createSidecarRouter(
   type PendingChallenge = {
     sidecarId: string;
     challenges: Map<string, { nonce: Uint8Array; publicKey: Uint8Array }>;
+    deployRefs: Record<string, string>;
     timer: ReturnType<typeof setTimeout>;
   };
   const pendingChallenges = new Map<WsHandle, PendingChallenge>();
@@ -271,6 +282,7 @@ export function createSidecarRouter(
           frame.sidecarId,
           frame.token,
           frame.agentAddresses,
+          frame.deployRefs ?? {},
         );
         break;
       case "challenge.response":
@@ -400,6 +412,7 @@ export function createSidecarRouter(
     sidecarId: string,
     token: string,
     agentAddresses: string[],
+    deployRefs: Record<string, string> = {},
   ): Promise<void> {
     if (validateToken !== undefined && !validateToken(sidecarId, token)) {
       logger.warn`Rejected reconnect from sidecar ${sidecarId}: invalid token`;
@@ -488,6 +501,7 @@ export function createSidecarRouter(
     pendingChallenges.set(ws, {
       sidecarId,
       challenges,
+      deployRefs,
       timer,
     });
 
@@ -607,6 +621,26 @@ export function createSidecarRouter(
     // Flush queued messages only for ready addresses.
     for (const addr of ready) {
       flushDisconnectedQueue(addr, conn);
+    }
+
+    // Re-deploy agents whose deploy ref is stale or absent. Fire-and-forget
+    // so reconnect completion is not blocked on pack transfer.
+    if (lookupDeployRef !== undefined && onDeployRefStale !== undefined) {
+      for (const addr of ready) {
+        void (async () => {
+          try {
+            const hubRef = await lookupDeployRef(addr);
+            if (hubRef === null) return;
+            const sidecarRef = challenge.deployRefs[addr];
+            if (sidecarRef === hubRef) return;
+
+            logger.info`Re-deploying ${addr}: sidecar ref ${sidecarRef ?? "(none)"} != hub ref ${hubRef.slice(0, 8)}`;
+            await onDeployRefStale(addr);
+          } catch (err) {
+            logger.error`Failed to re-deploy ${addr} after reconnect: ${err instanceof Error ? err.message : String(err)}`;
+          }
+        })();
+      }
     }
 
     // Failed addresses: reset their queue TTL so messages survive until

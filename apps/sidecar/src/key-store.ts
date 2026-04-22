@@ -23,12 +23,14 @@ type AgentMeta = {
   version: 1;
   address: string;
   config: AgentConfig;
+  hubPublicKey?: string;
 };
 
 export type AgentKeyEntry = {
   address: string;
   keyPair: KeyPair;
   config: AgentConfig;
+  hubPublicKey?: string;
 };
 
 /**
@@ -92,15 +94,42 @@ export async function loadOrGenerateKeyPair(
  * Persist the agent's harness config to its agent.json metadata file.
  * Called after a session is successfully created so the sidecar can
  * restore the session on restart.
+ *
+ * Reads the existing file first to preserve fields not explicitly
+ * provided (e.g. hubPublicKey written by a prior call).
  */
 export async function persistAgentConfig(
   dataDir: string,
   agentAddress: string,
   config: AgentConfig,
+  hubPublicKey?: string,
 ): Promise<void> {
   const agentDir = path.join(dataDir, sanitizeAddress(agentAddress));
   const metaPath = path.join(agentDir, "agent.json");
+
+  let existing: Partial<AgentMeta> = {};
+  try {
+    const raw = await fs.readFile(metaPath, "utf-8");
+    existing = JSON.parse(raw) as Partial<AgentMeta>;
+  } catch (err: unknown) {
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      "code" in err &&
+      (err as { code: string }).code === "ENOENT"
+    ) {
+      // File doesn't exist yet — start fresh.
+    } else {
+      throw err;
+    }
+  }
+
   const meta: AgentMeta = { version: 1, address: agentAddress, config };
+  if (hubPublicKey !== undefined) {
+    meta.hubPublicKey = hubPublicKey;
+  } else if (existing.hubPublicKey !== undefined) {
+    meta.hubPublicKey = existing.hubPublicKey;
+  }
   await fs.writeFile(metaPath, JSON.stringify(meta));
 }
 
@@ -193,14 +222,18 @@ export async function scanExistingAgents(
     }
     meta.config.grants = coerced;
 
-    results.push({
+    const agentEntry: AgentKeyEntry = {
       address: meta.address,
       config: meta.config,
       keyPair: {
         privateKey: new Uint8Array(privateKey),
         publicKey: new Uint8Array(publicKey),
       },
-    });
+    };
+    if (meta.hubPublicKey !== undefined) {
+      agentEntry.hubPublicKey = meta.hubPublicKey;
+    }
+    results.push(agentEntry);
   }
 
   return results;

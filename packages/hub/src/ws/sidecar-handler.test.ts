@@ -1136,6 +1136,209 @@ describe("SidecarRouter", () => {
       expect(router.getRoutableAddresses()).not.toContain("agent-b@local");
     });
 
+    test("reconnect with stale deployRef triggers onDeployRefStale", async () => {
+      const kp = await generateKeyPair();
+      const publicKeyHex = hexEncode(kp.publicKey);
+      const staleAddresses: string[] = [];
+
+      const router = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        lookupPublicKey: async (addr) =>
+          addr === "agent@local" ? publicKeyHex : null,
+        lookupDeployRef: async () => "aaaa",
+        onDeployRefStale: async (addr) => {
+          staleAddresses.push(addr);
+        },
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+          deployRefs: { "agent@local": "bbbb" },
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const challengeFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      const { address, nonce } = challengeFrame.challenges[0];
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "challenge.response",
+          responses: [
+            {
+              address,
+              signature: signChallenge(nonce, address, kp.privateKey),
+            },
+          ],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(staleAddresses).toContain("agent@local");
+    });
+
+    test("reconnect with matching deployRef skips onDeployRefStale", async () => {
+      const kp = await generateKeyPair();
+      const publicKeyHex = hexEncode(kp.publicKey);
+      const staleAddresses: string[] = [];
+
+      const router = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        lookupPublicKey: async (addr) =>
+          addr === "agent@local" ? publicKeyHex : null,
+        lookupDeployRef: async () => "aaaa",
+        onDeployRefStale: async (addr) => {
+          staleAddresses.push(addr);
+        },
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+          deployRefs: { "agent@local": "aaaa" },
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const challengeFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      const { address, nonce } = challengeFrame.challenges[0];
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "challenge.response",
+          responses: [
+            {
+              address,
+              signature: signChallenge(nonce, address, kp.privateKey),
+            },
+          ],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(staleAddresses).toEqual([]);
+    });
+
+    test("reconnect with absent deployRef triggers onDeployRefStale", async () => {
+      const kp = await generateKeyPair();
+      const publicKeyHex = hexEncode(kp.publicKey);
+      const staleAddresses: string[] = [];
+
+      const router = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        lookupPublicKey: async (addr) =>
+          addr === "agent@local" ? publicKeyHex : null,
+        lookupDeployRef: async () => "aaaa",
+        onDeployRefStale: async (addr) => {
+          staleAddresses.push(addr);
+        },
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const challengeFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      const { address, nonce } = challengeFrame.challenges[0];
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "challenge.response",
+          responses: [
+            {
+              address,
+              signature: signChallenge(nonce, address, kp.privateKey),
+            },
+          ],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(staleAddresses).toContain("agent@local");
+    });
+
+    test("reconnect skips re-deploy when hub has no deploy ref", async () => {
+      const kp = await generateKeyPair();
+      const publicKeyHex = hexEncode(kp.publicKey);
+      const staleAddresses: string[] = [];
+
+      const router = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        lookupPublicKey: async (addr) =>
+          addr === "agent@local" ? publicKeyHex : null,
+        lookupDeployRef: async () => null,
+        onDeployRefStale: async (addr) => {
+          staleAddresses.push(addr);
+        },
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+          deployRefs: { "agent@local": "bbbb" },
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const challengeFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      const { address, nonce } = challengeFrame.challenges[0];
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "challenge.response",
+          responses: [
+            {
+              address,
+              signature: signChallenge(nonce, address, kp.privateKey),
+            },
+          ],
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(staleAddresses).toEqual([]);
+    });
+
     test("disconnect cleans up pending challenge", async () => {
       const kp = await generateKeyPair();
 
