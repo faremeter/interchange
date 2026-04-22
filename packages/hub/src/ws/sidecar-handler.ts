@@ -64,6 +64,9 @@ export type SidecarRouter = {
 
 export type SidecarRouterConfig = {
   requestTimeoutMs?: number;
+  /** Hex-encoded 32-byte Ed25519 public key for signing deploy commits.
+   * Included in agent.deploy frames so sidecars can verify pack signatures. */
+  hubPublicKey?: string;
   onAgentEvent?: (
     agentAddress: string,
     sessionId: string,
@@ -107,6 +110,7 @@ export function createSidecarRouter(
   const {
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     challengeTimeoutMs = DEFAULT_CHALLENGE_TIMEOUT_MS,
+    hubPublicKey: hubPublicKeyHex,
     onAgentEvent,
     onSidecarDisconnect,
     onMailOutbound,
@@ -1127,11 +1131,15 @@ export function createSidecarRouter(
         timer,
       });
 
+      if (hubPublicKeyHex === undefined) {
+        throw new Error("Hub signing key is required for agent deployment");
+      }
       conn.send({
         type: "agent.deploy",
         agentAddress,
         agentId: harnessConfig.agentId,
         config: harnessConfig,
+        hubPublicKey: hubPublicKeyHex,
       });
     });
   }

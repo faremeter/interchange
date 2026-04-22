@@ -20,6 +20,7 @@
       "name": "@interchange/hub-app",
       "version": "0.0.0",
       "dependencies": {
+        "@interchange/crypto-node": "workspace:*",
         "@interchange/db": "workspace:*",
         "@interchange/hub": "workspace:*",
         "@interchange/log": "workspace:*",

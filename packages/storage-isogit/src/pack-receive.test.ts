@@ -3,8 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
+import {
+  generateKeyPair,
+  createSshSignature,
+  verifySshSignature,
+} from "@interchange/crypto-node";
 import { initAgentRepo } from "./init";
-import { applyPack } from "./pack-receive";
+import { applyPack, type CommitVerifier } from "./pack-receive";
 import { collectReachableObjects } from "./object-walk";
 
 const tempDirs: string[] = [];
@@ -395,5 +400,140 @@ describe("applyPack", () => {
     );
     await expect(fs.promises.access(packPath)).rejects.toThrow();
     await expect(fs.promises.access(idxPath)).rejects.toThrow();
+  });
+});
+
+async function makeSignedSourceRepo(keyPair: {
+  privateKey: Uint8Array;
+  publicKey: Uint8Array;
+}): Promise<{
+  dir: string;
+  commitSha: string;
+  oids: string[];
+}> {
+  const dir = await tempDir();
+  await git.init({ fs, dir, defaultBranch: "main" });
+
+  const filePath = path.join(dir, "deploy", "prompt.txt");
+  await fs.promises.mkdir(path.join(dir, "deploy"), { recursive: true });
+  await fs.promises.writeFile(filePath, "You are a helpful agent.");
+  await git.add({ fs, dir, filepath: "deploy/prompt.txt" });
+
+  const commitSha = await git.commit({
+    fs,
+    dir,
+    message: "Signed deploy",
+    author: { name: "Test", email: "test@test.dev" },
+    signingKey: "sshsig",
+    onSign: async ({ payload }) => ({
+      signature: createSshSignature(
+        payload,
+        keyPair.privateKey,
+        keyPair.publicKey,
+      ),
+    }),
+  });
+
+  const oids = await collectReachableObjects(dir, commitSha);
+  return { dir, commitSha, oids };
+}
+
+describe("applyPack signature verification", () => {
+  test("accepts a correctly signed pack", async () => {
+    const keyPair = await generateKeyPair();
+    const source = await makeSignedSourceRepo(keyPair);
+    const pack = await createPackFromRepo(source.dir, source.oids);
+
+    const verifier: CommitVerifier = (payload, signature) =>
+      verifySshSignature(payload, signature, keyPair.publicKey);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    await applyPack(
+      targetDir,
+      pack,
+      "refs/heads/deploy",
+      source.commitSha,
+      "signed-ok",
+      verifier,
+    );
+
+    const resolved = await git.resolveRef({
+      fs,
+      dir: targetDir,
+      ref: "refs/heads/deploy",
+    });
+    expect(resolved).toBe(source.commitSha);
+  });
+
+  test("rejects a pack signed with the wrong key", async () => {
+    const signerKey = await generateKeyPair();
+    const verifierKey = await generateKeyPair();
+    const source = await makeSignedSourceRepo(signerKey);
+    const pack = await createPackFromRepo(source.dir, source.oids);
+
+    const verifier: CommitVerifier = (payload, signature) =>
+      verifySshSignature(payload, signature, verifierKey.publicKey);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    await expect(
+      applyPack(
+        targetDir,
+        pack,
+        "refs/heads/deploy",
+        source.commitSha,
+        "wrong-key",
+        verifier,
+      ),
+    ).rejects.toThrow("signature_invalid");
+  });
+
+  test("rejects an unsigned commit when verifier is provided", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+
+    const keyPair = await generateKeyPair();
+    const verifier: CommitVerifier = (payload, signature) =>
+      verifySshSignature(payload, signature, keyPair.publicKey);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    await expect(
+      applyPack(
+        targetDir,
+        pack,
+        "refs/heads/deploy",
+        source.commitSha,
+        "unsigned",
+        verifier,
+      ),
+    ).rejects.toThrow("signature_unsigned");
+  });
+
+  test("skips verification when no verifier is provided", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    await applyPack(
+      targetDir,
+      pack,
+      "refs/heads/deploy",
+      source.commitSha,
+      "no-verify",
+    );
+
+    const resolved = await git.resolveRef({
+      fs,
+      dir: targetDir,
+      ref: "refs/heads/deploy",
+    });
+    expect(resolved).toBe(source.commitSha);
   });
 });

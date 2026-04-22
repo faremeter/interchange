@@ -182,6 +182,9 @@ export type AgentDeployFrame = {
   agentId: string;
   config: HarnessConfig;
   restored?: boolean;
+  /** Hex-encoded 32-byte Ed25519 public key the hub uses to sign deploy
+   * commits. The sidecar must verify pack commits against this key. */
+  hubPublicKey: string;
 };
 
 /**

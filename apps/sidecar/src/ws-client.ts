@@ -6,7 +6,10 @@
 
 import { sign as nodeSign } from "node:crypto";
 import { getLogger } from "@interchange/log";
-import { importPrivateKeyBytes } from "@interchange/crypto-node";
+import {
+  importPrivateKeyBytes,
+  verifySshSignature,
+} from "@interchange/crypto-node";
 import type { InMemoryTransport } from "@interchange/message-memory";
 import type {
   HubFrame,
@@ -68,6 +71,9 @@ export function createWsClient(config: WsClientConfig): WsClient {
   // Populated by restoreSessions on connect, augmented on agent.deploy.
   const agentKeys = new Map<string, KeyPair>();
 
+  // Hub's signing public key per agent, for deploy commit verification.
+  const hubKeys = new Map<string, Uint8Array>();
+
   const packReceiver = createPackReceiver();
 
   // Serialize frame processing so async handlers (deploy, undeploy, abort)
@@ -114,6 +120,7 @@ export function createWsClient(config: WsClientConfig): WsClient {
     try {
       const result = await sessions.provisionAgent(frame.config);
       agentKeys.set(frame.agentAddress, result.keyPair);
+      hubKeys.set(frame.agentAddress, hexDecode(frame.hubPublicKey));
       send({
         type: "agent.deploy.ack",
         agentAddress: frame.agentAddress,
@@ -201,6 +208,7 @@ export function createWsClient(config: WsClientConfig): WsClient {
     }
 
     agentKeys.delete(frame.agentAddress);
+    hubKeys.delete(frame.agentAddress);
 
     send({
       type: "agent.undeploy.ack",
@@ -296,12 +304,20 @@ export function createWsClient(config: WsClientConfig): WsClient {
     }
 
     try {
+      const hubKey = hubKeys.get(frame.agentAddress);
+      if (hubKey === undefined) {
+        throw new Error("signature_invalid: no hub public key for agent");
+      }
+      const verifyCommit = (payload: string, signature: string) =>
+        verifySshSignature(payload, signature, hubKey);
+
       await sessions.applyDeployPack(
         frame.agentAddress,
         result.pack,
         result.ref,
         result.commitSha,
         frame.transferId,
+        verifyCommit,
       );
       send({
         type: "pack.ack",
@@ -312,7 +328,10 @@ export function createWsClient(config: WsClientConfig): WsClient {
       const msg = err instanceof Error ? err.message : String(err);
       const reason = msg.startsWith("sha_mismatch")
         ? "sha_mismatch"
-        : "corrupt";
+        : msg.startsWith("signature_invalid") ||
+            msg.startsWith("signature_unsigned")
+          ? "signature_invalid"
+          : "corrupt";
       logger.warn`Pack apply failed for ${frame.agentAddress}: ${msg}`;
       send({
         type: "pack.reject",

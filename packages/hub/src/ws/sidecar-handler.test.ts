@@ -57,8 +57,13 @@ function lastSent(ws: ReturnType<typeof createMockWs>) {
 describe("SidecarRouter", () => {
   let router: ReturnType<typeof createSidecarRouter>;
 
+  const TEST_HUB_KEY = "a".repeat(64);
+
   beforeEach(() => {
-    router = createSidecarRouter({ requestTimeoutMs: 500 });
+    router = createSidecarRouter({
+      requestTimeoutMs: 500,
+      hubPublicKey: TEST_HUB_KEY,
+    });
   });
 
   describe("registration", () => {
@@ -335,6 +340,7 @@ describe("SidecarRouter", () => {
       const ackCalls: { address: string; publicKey: string }[] = [];
       const router = createSidecarRouter({
         requestTimeoutMs: 500,
+        hubPublicKey: TEST_HUB_KEY,
         async onAgentDeployAck(address, publicKey) {
           ackCalls.push({ address, publicKey });
         },
@@ -391,6 +397,7 @@ describe("SidecarRouter", () => {
     test("agent.deploy rejects when onAgentDeployAck fails", async () => {
       const router = createSidecarRouter({
         requestTimeoutMs: 500,
+        hubPublicKey: TEST_HUB_KEY,
         async onAgentDeployAck() {
           throw new Error("DB write failed");
         },

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import git from "isomorphic-git";
+import { createSshSignature } from "@interchange/crypto-node";
 import {
   initRepo,
   createDeployPack,
@@ -50,12 +51,16 @@ export type AgentRepoStore = {
     ref: string,
     commitSha: string,
   ): Promise<void>;
+
+  /** Raw 32-byte Ed25519 public key used to sign deploy commits. */
+  getSigningPublicKey(): Uint8Array;
 };
 
 export function createAgentRepoStore(config: {
   dataDir: string;
+  signingKey: { privateKey: Uint8Array; publicKey: Uint8Array };
 }): AgentRepoStore {
-  const { dataDir } = config;
+  const { dataDir, signingKey } = config;
 
   function validateAgentId(agentId: string): void {
     if (!SAFE_AGENT_ID.test(agentId)) {
@@ -140,6 +145,14 @@ export function createAgentRepoStore(config: {
       author: AUTHOR,
       parent,
       ref: DEPLOY_REF,
+      signingKey: "sshsig",
+      onSign: async ({ payload }) => ({
+        signature: createSshSignature(
+          payload,
+          signingKey.privateKey,
+          signingKey.publicKey,
+        ),
+      }),
     });
 
     return { commitSha };
@@ -168,5 +181,6 @@ export function createAgentRepoStore(config: {
     writeDeployTree,
     createDeployPack: makeDeployPack,
     receiveStatePack,
+    getSigningPublicKey: () => signingKey.publicKey,
   };
 }

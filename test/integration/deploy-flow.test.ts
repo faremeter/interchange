@@ -185,10 +185,21 @@ async function startHub(): Promise<HubEnv> {
   const statePacks: HubEnv["statePacks"] = [];
 
   const hubDataDir = await makeTempDir("hub-data-");
-  const agentRepoStore = createAgentRepoStore({ dataDir: hubDataDir });
+  const hubSigningKey = await generateKeyPair();
+  const agentRepoStore = createAgentRepoStore({
+    dataDir: hubDataDir,
+    signingKey: hubSigningKey,
+  });
+
+  function hexEncode(bytes: Uint8Array): string {
+    return Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  }
 
   const router = createSidecarRouter({
     requestTimeoutMs: 10_000,
+    hubPublicKey: hexEncode(hubSigningKey.publicKey),
     onAgentEvent(addr, sid, event) {
       agentEvents.push({ addr, sid, event });
     },

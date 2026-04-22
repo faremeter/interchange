@@ -9,6 +9,7 @@ import {
   createSessionService,
   createSidecarRouter,
 } from "@interchange/hub";
+import { generateKeyPair } from "@interchange/crypto-node";
 import type { InferenceEvent } from "@interchange/types/runtime";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import { setup, getLogger } from "@interchange/log";
@@ -33,7 +34,20 @@ const hubDataDir = process.env["HUB_DATA_DIR"];
 if (!hubDataDir) {
   throw new Error("HUB_DATA_DIR environment variable is required");
 }
-const agentRepoStore = createAgentRepoStore({ dataDir: hubDataDir });
+
+const hubSigningKey = await generateKeyPair();
+log.info("Generated hub deploy signing key");
+
+function hexEncode(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+const agentRepoStore = createAgentRepoStore({
+  dataDir: hubDataDir,
+  signingKey: hubSigningKey,
+});
 
 function parseAgentId(agentAddress: string): string {
   const atIdx = agentAddress.indexOf("@");
@@ -44,6 +58,7 @@ function parseAgentId(agentAddress: string): string {
 }
 
 const sidecarRouter = createSidecarRouter({
+  hubPublicKey: hexEncode(hubSigningKey.publicKey),
   onAgentEvent(_agentAddress, sessionId, event) {
     eventCollectors.dispatch(sessionId, event as InferenceEvent);
   },
