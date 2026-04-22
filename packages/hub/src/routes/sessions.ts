@@ -31,6 +31,9 @@ import type { TenantEnv } from "../context";
 import { requireGrant, idResource } from "../middleware/grant";
 import { generateId } from "../ids";
 
+// XXX - Entries are removed when a session is explicitly deleted via the
+// DELETE handler, but not when a sidecar disconnects unexpectedly. A
+// future sidecar-disconnect hook should evict stale entries.
 const sessionKeyCache = new Map<string, Promise<CryptoProvider>>();
 
 function getSessionCryptoProvider(sessionId: string): Promise<CryptoProvider> {
