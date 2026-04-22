@@ -44,7 +44,7 @@ type CredentialRequirement = {
   name?: string;
 };
 
-type AgentResponse = {
+export type AgentResponse = {
   id: string;
   tenantId: string;
   principalId: string;
@@ -190,6 +190,22 @@ export function agentDetailQuery(tenantId: string, agentId: string) {
     queryKey: ["tenants", tenantId, "agents", agentId],
     queryFn: () =>
       api<AgentResponse>("GET", `/api/tenants/${tenantId}/agents/${agentId}`),
+  });
+}
+
+export type SessionStatusResponse = {
+  status: "idle" | "busy" | "waiting_approval";
+};
+
+export function sessionStatusQuery(tenantId: string, sessionId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "sessions", sessionId, "status"],
+    queryFn: () =>
+      api<SessionStatusResponse>(
+        "GET",
+        `/api/tenants/${tenantId}/sessions/${sessionId}/status`,
+      ),
+    refetchInterval: 3000,
   });
 }
 

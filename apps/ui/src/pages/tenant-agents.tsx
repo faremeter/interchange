@@ -5,7 +5,13 @@ import { Plus } from "lucide-react";
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
-import { createAgentMutation, tenantAgentsQuery } from "@/lib/queries/tenants";
+import {
+  createAgentMutation,
+  sessionStatusQuery,
+  tenantAgentsQuery,
+  type AgentResponse,
+  type SessionStatusResponse,
+} from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,19 +33,118 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-function StatusBadge({ status }: { status: string }) {
-  const variant =
-    status === "deployed"
-      ? "secondary"
-      : status === "error"
-        ? "destructive"
-        : "outline";
-  return <Badge variant={variant}>{status}</Badge>;
+type AgentLifecycleStatus = AgentResponse["status"];
+
+const statusDisplay: Record<
+  AgentLifecycleStatus | SessionStatusResponse["status"],
+  {
+    label: string;
+    variant: "default" | "secondary" | "destructive" | "outline" | "warning";
+  }
+> = {
+  deployed: { label: "deployed", variant: "secondary" },
+  stopped: { label: "stopped", variant: "secondary" },
+  updating: { label: "updating", variant: "outline" },
+  error: { label: "error", variant: "destructive" },
+  running: { label: "running", variant: "outline" },
+  idle: { label: "idle", variant: "outline" },
+  busy: { label: "busy", variant: "default" },
+  waiting_approval: { label: "waiting approval", variant: "warning" },
+};
+
+function StatusBadge({
+  lifecycleStatus,
+  runtimeStatus,
+}: {
+  lifecycleStatus: AgentLifecycleStatus;
+  runtimeStatus?: SessionStatusResponse["status"];
+}) {
+  const key =
+    lifecycleStatus === "running" && runtimeStatus
+      ? runtimeStatus
+      : lifecycleStatus;
+  const display = statusDisplay[key];
+  return <Badge variant={display.variant}>{display.label}</Badge>;
+}
+
+const noopStatusQuery = {
+  queryKey: ["sessions", "status", "noop"],
+  queryFn: () => Promise.resolve({ status: "idle" as const }),
+  enabled: false,
+};
+
+function useRuntimeStatus(
+  tenantId: string,
+  status: AgentLifecycleStatus,
+  sessionId: string | null,
+): SessionStatusResponse | undefined {
+  const canPoll = status === "running" && sessionId !== null;
+
+  const { data } = useQuery(
+    canPoll ? sessionStatusQuery(tenantId, sessionId) : noopStatusQuery,
+  );
+
+  return canPoll ? data : undefined;
+}
+
+function AgentRow({
+  agent,
+  tenantId,
+}: {
+  agent: {
+    id: string;
+    name: string;
+    description: string | null;
+    status: AgentLifecycleStatus;
+    sessionId: string | null;
+    currentVersion: string;
+    createdAt: string;
+  };
+  tenantId: string;
+}) {
+  const navigate = useNavigate();
+  const sessionStatus = useRuntimeStatus(
+    tenantId,
+    agent.status,
+    agent.sessionId,
+  );
+
+  return (
+    <TableRow
+      className="cursor-pointer"
+      onClick={() =>
+        navigate({
+          to: "/tenants/$tenantId/agents/$agentId",
+          params: { tenantId, agentId: agent.id },
+        })
+      }
+    >
+      <TableCell>
+        <div className="font-medium">{agent.name}</div>
+        {agent.description && (
+          <div className="text-xs text-muted-foreground">
+            {agent.description}
+          </div>
+        )}
+      </TableCell>
+      <TableCell>
+        <StatusBadge
+          lifecycleStatus={agent.status}
+          runtimeStatus={sessionStatus?.status}
+        />
+      </TableCell>
+      <TableCell className="font-mono text-xs text-muted-foreground">
+        v{agent.currentVersion}
+      </TableCell>
+      <TableCell className="text-muted-foreground">
+        {new Date(agent.createdAt).toLocaleDateString()}
+      </TableCell>
+    </TableRow>
+  );
 }
 
 export function TenantAgentsPage() {
   const { tenantId } = useParams({ strict: false }) as { tenantId: string };
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: agents, isLoading } = useQuery(tenantAgentsQuery(tenantId));
 
@@ -92,34 +197,7 @@ export function TenantAgentsPage() {
             </TableHeader>
             <TableBody>
               {agents?.map((a) => (
-                <TableRow
-                  key={a.id}
-                  className="cursor-pointer"
-                  onClick={() =>
-                    navigate({
-                      to: "/tenants/$tenantId/agents/$agentId",
-                      params: { tenantId, agentId: a.id },
-                    })
-                  }
-                >
-                  <TableCell>
-                    <div className="font-medium">{a.name}</div>
-                    {a.description && (
-                      <div className="text-xs text-muted-foreground">
-                        {a.description}
-                      </div>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <StatusBadge status={a.status} />
-                  </TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
-                    v{a.currentVersion}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {new Date(a.createdAt).toLocaleDateString()}
-                  </TableCell>
-                </TableRow>
+                <AgentRow key={a.id} agent={a} tenantId={tenantId} />
               ))}
             </TableBody>
           </Table>
