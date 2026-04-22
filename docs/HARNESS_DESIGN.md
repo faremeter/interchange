@@ -126,24 +126,25 @@ When the WebSocket connection to the hub opens, the sidecar scans `SIDECAR_DATA_
 
 After self-restoration, the sidecar connects to the hub and proves ownership of each agent address:
 
-1. Sidecar sends a `reconnect` frame listing the addresses it restored
+1. Sidecar sends a `reconnect` frame listing the addresses it restored and their current deploy commit SHAs (`deployRefs`)
 2. Hub generates a 32-byte random nonce per address and sends a `challenge` frame
 3. Sidecar signs `nonce || agent_address` (concatenated bytes) with each agent's private key and sends a `challenge.response` frame
 4. Hub verifies each signature against the stored public key for that address
 5. Verified addresses are provisionally added to the routing table (required so the `grants.update` request/ack round-trip can reach the sidecar)
 6. Hub sends `grants.update` with current grants for each verified address
-7. On success, the address remains in the routing table and queued messages are flushed
-8. On failure (grant refresh rejected or timed out), the address is rolled back from the routing table — its queue is preserved for the next reconnect attempt and the sidecar receives `challenge.failed`
-9. For addresses that fail cryptographic verification, hub sends `challenge.failed` with the address and reason
+7. Hub compares each agent's advertised deploy ref against its own. For agents whose ref is stale or absent, the hub creates and sends a fresh deploy pack (fire-and-forget, does not block reconnect completion)
+8. On grant refresh success, the address remains in the routing table and queued messages are flushed
+9. On failure (grant refresh rejected or timed out), the address is rolled back from the routing table — its queue is preserved for the next reconnect attempt and the sidecar receives `challenge.failed`
+10. For addresses that fail cryptographic verification, hub sends `challenge.failed` with the address and reason
 
 ### Reconnection Frames
 
 **Sidecar to Hub:**
 
-| Frame                | Fields                                           | Description                                |
-| -------------------- | ------------------------------------------------ | ------------------------------------------ |
-| `reconnect`          | `sidecarId`, `token`, `agentAddresses: string[]` | Sidecar announces addresses it has locally |
-| `challenge.response` | `responses: { address, signature }[]`            | Signed proof of key ownership per address  |
+| Frame                | Fields                                                                                  | Description                                         |
+| -------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `reconnect`          | `sidecarId`, `token`, `agentAddresses: string[]`, `deployRefs?: Record<string, string>` | Sidecar announces addresses and current deploy SHAs |
+| `challenge.response` | `responses: { address, signature }[]`                                                   | Signed proof of key ownership per address           |
 
 **Hub to Sidecar:**
 
