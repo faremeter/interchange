@@ -101,7 +101,7 @@ export type PingFrame = {
 };
 
 /**
- * Acknowledges a request from the hub (message.send, session.abort).
+ * Acknowledges a request from the hub (session.abort, grants.update).
  */
 export type SessionAckFrame = {
   type: "session.ack";
@@ -235,31 +235,12 @@ export type SessionAbortFrame = {
   reason: AbortReason;
 };
 
-export type WireAttachment = {
-  type: string;
-  url: string;
-  mimeType?: string;
-};
-
 /**
  * Keepalive pong sent by the hub in response to a ping frame.
  * If the sidecar stops receiving pongs, it considers the hub dead.
  */
 export type PongFrame = {
   type: "pong";
-};
-
-/**
- * Deliver a user message to the agent. The sidecar feeds the content into
- * the harness. Responds with session.ack or session.error.
- */
-export type MessageSendFrame = {
-  type: "message.send";
-  requestId: string;
-  agentAddress: string;
-  sessionId: string;
-  content: string;
-  attachments?: WireAttachment[];
 };
 
 /**
@@ -284,7 +265,6 @@ export type HubFrame =
   | ChallengeFailedFrame
   | PongFrame
   | SessionAbortFrame
-  | MessageSendFrame
   | GrantsUpdateFrame
   | PackPushFrame
   | PackDoneFrame

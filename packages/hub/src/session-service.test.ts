@@ -44,7 +44,6 @@ function createMockRouter(): SidecarRouter & {
     sendSessionAbort: track(
       "sendSessionAbort",
     ) as SidecarRouter["sendSessionAbort"],
-    sendMessage: track("sendMessage") as SidecarRouter["sendMessage"],
     sendGrantsUpdate: track(
       "sendGrantsUpdate",
     ) as SidecarRouter["sendGrantsUpdate"],

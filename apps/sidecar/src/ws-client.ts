@@ -17,7 +17,6 @@ import type {
   ChallengeFailedFrame,
   SessionAbortFrame,
   SessionStartFrame,
-  MessageSendFrame,
   GrantsUpdateFrame,
   PackPushFrame,
   PackDoneFrame,
@@ -25,7 +24,7 @@ import type {
   PackRejectFrame,
   SyncRequestFrame,
 } from "@interchange/types/sidecar";
-import type { InboundMessage, KeyPair } from "@interchange/types/runtime";
+import type { KeyPair } from "@interchange/types/runtime";
 
 import type { SessionManager, SessionEventSink } from "./session-manager";
 import { createPackReceiver, chunkPack } from "@interchange/pack-transport";
@@ -272,24 +271,6 @@ export function createWsClient(config: WsClientConfig): WsClient {
     }
   }
 
-  function handleMessageSend(frame: MessageSendFrame): void {
-    try {
-      if (frame.attachments !== undefined && frame.attachments.length > 0) {
-        logger.warn`Dropping ${String(frame.attachments.length)} attachment(s) from message.send for ${frame.agentAddress}: URL-to-bytes fetch not implemented`;
-      }
-      const inbound = buildInboundMessage(frame);
-      sessions.deliverMessage(frame.agentAddress, inbound);
-      send({ type: "session.ack", requestId: frame.requestId });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      send({
-        type: "session.error",
-        requestId: frame.requestId,
-        error: message,
-      });
-    }
-  }
-
   function handlePackPush(frame: PackPushFrame): void {
     const reason = packReceiver.handlePush(frame);
     if (reason !== null) {
@@ -445,9 +426,6 @@ export function createWsClient(config: WsClientConfig): WsClient {
         break;
       case "session.abort":
         await handleSessionAbort(frame);
-        break;
-      case "message.send":
-        handleMessageSend(frame);
         break;
       case "grants.update":
         await handleGrantsUpdate(frame);
@@ -616,22 +594,4 @@ function hexDecode(hex: string): Uint8Array {
     bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
   }
   return bytes;
-}
-
-// Synthesize an InboundMessage from a hub message.send frame.
-function buildInboundMessage(frame: MessageSendFrame): InboundMessage {
-  return {
-    ref: { uid: 0, mailbox: "SYNTHETIC" },
-    headers: {
-      from: "user@hub",
-      to: [frame.agentAddress],
-      date: new Date().toISOString(),
-      messageId: `<${crypto.randomUUID()}@hub>`,
-      subject: "User message",
-      interchangeSessionId: frame.sessionId,
-    },
-    flags: [],
-    content: frame.content,
-    signatureStatus: "missing",
-  };
 }

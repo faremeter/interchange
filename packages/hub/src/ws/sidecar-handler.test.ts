@@ -585,11 +585,8 @@ describe("SidecarRouter", () => {
       router.handleClose(ws);
       await expect(promise).rejects.toThrow(/disconnected/);
 
-      // The address should not be in the disconnect queue, so sending
-      // a message should fail immediately rather than being queued.
-      await expect(
-        router.sendMessage("undeploy-dc@local", "s1", "hello"),
-      ).rejects.toThrow(/No sidecar connected/);
+      // The address should not be routable after undeploy + disconnect.
+      expect(router.getRoutableAddresses()).not.toContain("undeploy-dc@local");
     });
 
     test("disconnect rejects pending deploy", async () => {
@@ -951,130 +948,6 @@ describe("SidecarRouter", () => {
     });
   });
 
-  describe("sendMessage", () => {
-    test("dispatches frame without attachments key when none provided", async () => {
-      const ws = createMockWs();
-      router.handleOpen(ws);
-      router.handleMessage(
-        ws,
-        JSON.stringify({
-          type: "register",
-          sidecarId: "sc-1",
-          token: "tok",
-          agentAddresses: ["agent@local"],
-        }),
-      );
-
-      const promise = router.sendMessage("agent@local", "ses-1", "hello");
-      const frame = lastSent(ws);
-
-      expect(frame.type).toBe("message.send");
-      expect(frame.sessionId).toBe("ses-1");
-      expect(frame.agentAddress).toBe("agent@local");
-      expect(frame.content).toBe("hello");
-      expect(Object.prototype.hasOwnProperty.call(frame, "attachments")).toBe(
-        false,
-      );
-
-      router.handleMessage(
-        ws,
-        JSON.stringify({ type: "session.ack", requestId: frame.requestId }),
-      );
-      await promise;
-    });
-
-    test("dispatches frame with attachments when provided", async () => {
-      const ws = createMockWs();
-      router.handleOpen(ws);
-      router.handleMessage(
-        ws,
-        JSON.stringify({
-          type: "register",
-          sidecarId: "sc-1",
-          token: "tok",
-          agentAddresses: ["agent@local"],
-        }),
-      );
-
-      const attachments = [
-        {
-          type: "image",
-          url: "https://example.com/img.png",
-          mimeType: "image/png",
-        },
-      ];
-      const promise = router.sendMessage(
-        "agent@local",
-        "ses-1",
-        "see attached",
-        attachments,
-      );
-      const frame = lastSent(ws);
-
-      expect(frame.type).toBe("message.send");
-      expect(frame.attachments).toEqual(attachments);
-
-      router.handleMessage(
-        ws,
-        JSON.stringify({ type: "session.ack", requestId: frame.requestId }),
-      );
-      await promise;
-    });
-
-    test("rejects for unknown agent address", async () => {
-      await expect(
-        router.sendMessage("nobody@local", "ses-1", "hello"),
-      ).rejects.toThrow(/No sidecar connected/);
-    });
-
-    test("rejects on sidecar disconnect while in flight", async () => {
-      const ws = createMockWs();
-      router.handleOpen(ws);
-      router.handleMessage(
-        ws,
-        JSON.stringify({
-          type: "register",
-          sidecarId: "sc-1",
-          token: "tok",
-          agentAddresses: ["agent@local"],
-        }),
-      );
-
-      const promise = router.sendMessage("agent@local", "ses-1", "hello");
-      router.handleClose(ws);
-
-      await expect(promise).rejects.toThrow(/disconnected/);
-    });
-
-    test("session.error rejects with sidecar-provided string", async () => {
-      const ws = createMockWs();
-      router.handleOpen(ws);
-      router.handleMessage(
-        ws,
-        JSON.stringify({
-          type: "register",
-          sidecarId: "sc-1",
-          token: "tok",
-          agentAddresses: ["agent@local"],
-        }),
-      );
-
-      const promise = router.sendMessage("agent@local", "ses-dead", "hello");
-      const frame = lastSent(ws);
-
-      router.handleMessage(
-        ws,
-        JSON.stringify({
-          type: "session.error",
-          requestId: frame.requestId,
-          error: "session not found",
-        }),
-      );
-
-      await expect(promise).rejects.toThrow("session not found");
-    });
-  });
-
   describe("challenge/response reconnect", () => {
     test("reconnect issues challenge and verifies signature", async () => {
       const kp = await generateKeyPair();
@@ -1427,69 +1300,6 @@ describe("SidecarRouter", () => {
       expect(flushed).toHaveLength(2);
       expect(flushed[0].rawMessage).toBe("msg-1");
       expect(flushed[1].rawMessage).toBe("msg-2");
-    });
-
-    test("sendMessage queues when agent is disconnected", async () => {
-      const kp = await generateKeyPair();
-      const router = createSidecarRouter({
-        requestTimeoutMs: 500,
-        async lookupPublicKey() {
-          return hexEncode(kp.publicKey);
-        },
-      });
-
-      const ws1 = createMockWs();
-      router.handleOpen(ws1);
-      router.handleMessage(
-        ws1,
-        JSON.stringify({
-          type: "register",
-          sidecarId: "sc-1",
-          token: "tok",
-          agentAddresses: ["agent@local"],
-        }),
-      );
-      router.handleClose(ws1);
-
-      // sendMessage should not reject when agent is disconnected.
-      await router.sendMessage("agent@local", "ses-1", "hello");
-
-      // Reconnect with challenge/response.
-      const ws2 = createMockWs();
-      router.handleOpen(ws2);
-      router.handleMessage(
-        ws2,
-        JSON.stringify({
-          type: "reconnect",
-          sidecarId: "sc-1",
-          token: "tok",
-          agentAddresses: ["agent@local"],
-        }),
-      );
-
-      await new Promise((r) => setTimeout(r, 50));
-
-      const challengeFrame = ws2.sent
-        .map((s) => JSON.parse(s))
-        .find((f: { type: string }) => f.type === "challenge");
-
-      const responses = challengeFrame.challenges.map(
-        (c: { address: string; nonce: string }) => ({
-          address: c.address,
-          signature: signChallenge(c.nonce, c.address, kp.privateKey),
-        }),
-      );
-
-      router.handleMessage(
-        ws2,
-        JSON.stringify({ type: "challenge.response", responses }),
-      );
-
-      const flushed = ws2.sent
-        .map((s) => JSON.parse(s))
-        .filter((f: { type: string }) => f.type === "message.send");
-      expect(flushed).toHaveLength(1);
-      expect(flushed[0].content).toBe("hello");
     });
 
     test("sendSessionAbort rejects when agent is disconnected", async () => {
