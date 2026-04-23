@@ -14,7 +14,7 @@ import { roleRoutes, roleAssignRoutes } from "./routes/roles";
 import { grantRoutes, evaluateRoutes } from "./routes/grants";
 import { agentRoutes } from "./routes/agents";
 import { instanceRoutes } from "./routes/instances";
-import { sessionRoutes } from "./routes/sessions";
+
 import { approvalRoutes } from "./routes/approvals";
 import { walletRoutes } from "./routes/wallets";
 import { providerRoutes } from "./routes/providers";
@@ -111,7 +111,7 @@ export function createApp({
   );
   app.route("/api/tenants/:tenantId/agents/definitions", agentRoutes);
   app.route("/api/tenants/:tenantId/agents/instances", instanceRoutes);
-  app.route("/api/tenants/:tenantId/sessions", sessionRoutes);
+
   app.route("/api/tenants/:tenantId/approvals", approvalRoutes);
   app.route("/api/tenants/:tenantId/wallets", walletRoutes);
   app.route("/api/tenants/:tenantId/providers", providerRoutes);
