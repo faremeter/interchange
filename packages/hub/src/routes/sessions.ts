@@ -6,6 +6,7 @@ import { type } from "arktype";
 import { streamSSE } from "hono/streaming";
 import {
   agent,
+  agentInstance,
   agentSession,
   messagePart,
   provider,
@@ -268,6 +269,7 @@ app.post(
     }
 
     const sessionId = generateId("session");
+    const instanceId = generateId("instance");
     const now = new Date();
 
     await db.insert(agentSession).values({
@@ -276,6 +278,20 @@ app.post(
       agentId: row.id,
       principalId: principal.id,
       status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // Create the instance row before launching so that sidecar handler
+    // callbacks (onAgentDeployAck, onAgentReconnected) can find it by
+    // address when the sidecar responds.
+    await db.insert(agentInstance).values({
+      id: instanceId,
+      agentId: row.id,
+      tenantId: tenant.id,
+      principalId: row.principalId,
+      address: agentAddress,
+      status: "deployed",
       createdAt: now,
       updatedAt: now,
     });
@@ -315,18 +331,33 @@ app.post(
     } catch (err) {
       eventCollectors.abandon(sessionId);
 
+      const failedAt = new Date();
+
       await db
         .update(agentSession)
-        .set({ status: "ended", endedAt: new Date(), updatedAt: new Date() })
+        .set({ status: "ended", endedAt: failedAt, updatedAt: failedAt })
         .where(eq(agentSession.id, sessionId));
 
       const leaked = err instanceof SessionLaunchError && err.leakedAgent;
 
       if (leaked) {
+        // The agent process escaped onto a sidecar — mark both tables
+        // as errored so operators can see the leaked instance.
+        await db
+          .update(agentInstance)
+          .set({ status: "error", updatedAt: failedAt })
+          .where(eq(agentInstance.id, instanceId));
+
+        // Dual-write: keep agent table in sync until routes are migrated
         await db
           .update(agent)
-          .set({ status: "error", updatedAt: new Date() })
+          .set({ status: "error", updatedAt: failedAt })
           .where(eq(agent.id, row.id));
+      } else {
+        // Clean launch failure — the sidecar never started. Remove
+        // the instance row so the unique address constraint does not
+        // block a subsequent launch attempt for this agent.
+        await db.delete(agentInstance).where(eq(agentInstance.id, instanceId));
       }
 
       return c.json(
@@ -343,12 +374,20 @@ app.post(
       );
     }
 
+    const launchedAt = new Date();
+
+    await db
+      .update(agentInstance)
+      .set({ status: "running", updatedAt: launchedAt })
+      .where(eq(agentInstance.id, instanceId));
+
+    // Dual-write: keep agent table in sync until routes are migrated
     await db
       .update(agent)
       .set({
         status: "running",
         sessionId,
-        updatedAt: new Date(),
+        updatedAt: launchedAt,
       })
       .where(and(eq(agent.id, row.id), eq(agent.status, "deployed")));
 
@@ -565,14 +604,22 @@ app.delete(
 
     sessionKeyCache.delete(sessionId);
 
+    const endedAt = new Date();
+
+    await db
+      .update(agentInstance)
+      .set({ status: "stopped", updatedAt: endedAt, endedAt })
+      .where(eq(agentInstance.address, agentAddress));
+
+    // Dual-write: keep agent table in sync until routes are migrated
     await db
       .update(agent)
-      .set({ status: "deployed", sessionId: null, updatedAt: new Date() })
+      .set({ status: "deployed", sessionId: null, updatedAt: endedAt })
       .where(and(eq(agent.id, agentRow.id), eq(agent.status, "running")));
 
     await db
       .update(agentSession)
-      .set({ status: "ended", endedAt: new Date(), updatedAt: new Date() })
+      .set({ status: "ended", endedAt, updatedAt: endedAt })
       .where(eq(agentSession.id, sessionId));
 
     sidecarRouter.dispatchSessionEvent(sessionId, {
