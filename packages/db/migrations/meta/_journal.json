@@ -92,6 +92,13 @@
       "when": 1776909616212,
       "tag": "0012_agent_instance",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1776917900630,
+      "tag": "0013_instance_session_id",
+      "breakpoints": true
     }
   ]
 }

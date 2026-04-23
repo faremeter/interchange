@@ -291,6 +291,7 @@ app.post(
       tenantId: tenant.id,
       principalId: row.principalId,
       address: agentAddress,
+      sessionId,
       status: "deployed",
       createdAt: now,
       updatedAt: now,
@@ -608,7 +609,7 @@ app.delete(
 
     await db
       .update(agentInstance)
-      .set({ status: "stopped", updatedAt: endedAt, endedAt })
+      .set({ status: "stopped", sessionId: null, updatedAt: endedAt, endedAt })
       .where(eq(agentInstance.address, agentAddress));
 
     // Dual-write: keep agent table in sync until routes are migrated
