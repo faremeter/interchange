@@ -1,7 +1,6 @@
 import { jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import { principal } from "./principals";
-import { sidecar } from "./sidecar";
 import { tenant } from "./tenants";
 
 export const agent = pgTable("agent", {
@@ -23,16 +22,10 @@ export const agent = pgTable("agent", {
   credentialRequirements: jsonb("credential_requirements"),
   currentVersion: text("current_version").notNull().default("1"),
   status: text("status", {
-    enum: ["deployed", "stopped", "updating", "error", "running"],
+    enum: ["deployed", "stopped"],
   })
     .notNull()
     .default("deployed"),
-  sidecarId: text("sidecar_id").references(() => sidecar.id, {
-    onDelete: "set null",
-  }),
-  publicKey: text("public_key"),
-  kernelId: text("kernel_id"),
-  sessionId: text("session_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
