@@ -311,7 +311,7 @@ app.post(
     });
 
     const eventCollectors = c.get("eventCollectors");
-    eventCollectors.create(sessionId, tenant.id, agentAddress);
+    eventCollectors.create(agentAddress, tenant.id, sessionId);
 
     const grantStore = c.get("grantStore");
     const grants = await grantStore.collectGrants(row.principalId, tenant.id);
@@ -343,7 +343,7 @@ app.post(
         },
       });
     } catch (err) {
-      eventCollectors.abandon(sessionId);
+      eventCollectors.abandon(agentAddress);
 
       const failedAt = new Date();
 
@@ -619,7 +619,7 @@ app.delete(
       .set({ status: "ended", endedAt, updatedAt: endedAt })
       .where(eq(agentSession.id, sessionId));
 
-    sidecarRouter.dispatchSessionEvent(sessionId, {
+    sidecarRouter.dispatchAgentEvent(agentAddress, {
       type: "session.ended",
     });
 
@@ -1172,7 +1172,8 @@ app.get(
       );
     }
 
-    const status = eventCollectors.getStatus(sessionId);
+    const agentAddress = `${sessionRow.agentId}@${tenant.domain}`;
+    const status = eventCollectors.getStatus(agentAddress);
     return c.json(status ?? { status: "idle" });
   },
 );
@@ -1236,14 +1237,18 @@ app.get(
     return streamSSE(c, async (stream) => {
       const noop = () => undefined;
 
-      const unsubscribe = sidecarRouter.subscribeSession(sessionId, (event) => {
-        stream
-          .writeSSE({
-            event: "agent.event",
-            data: JSON.stringify(event),
-          })
-          .catch(noop);
-      });
+      const agentAddress = `${sessionRow.agentId}@${tenant.domain}`;
+      const unsubscribe = sidecarRouter.subscribeAgent(
+        agentAddress,
+        (event) => {
+          stream
+            .writeSSE({
+              event: "agent.event",
+              data: JSON.stringify(event),
+            })
+            .catch(noop);
+        },
+      );
 
       const keepalive = setInterval(() => {
         stream.write(": keepalive\n\n").catch(noop);

@@ -54,11 +54,11 @@ export type SidecarRouter = {
   ): Promise<void>;
   sendSyncRequest(agentAddress: string): void;
 
-  subscribeSession(
-    sessionId: string,
+  subscribeAgent(
+    agentAddress: string,
     callback: (event: unknown) => void,
   ): () => void;
-  dispatchSessionEvent(sessionId: string, event: unknown): void;
+  dispatchAgentEvent(agentAddress: string, event: unknown): void;
 
   getConnectedSidecars(): string[];
   getRoutableAddresses(): string[];
@@ -165,8 +165,8 @@ export function createSidecarRouter(
     timer: ReturnType<typeof setTimeout>;
   };
   const disconnectedAgents = new Map<string, DisconnectedAgent>();
-  // sessionId → set of subscriber callbacks for agent events
-  const sessionSubscribers = new Map<string, Set<(event: unknown) => void>>();
+  // agentAddress → set of subscriber callbacks for agent events
+  const agentSubscribers = new Map<string, Set<(event: unknown) => void>>();
   // ws handle → liveness timer (reset on each ping from the sidecar)
   const livenessTimers = new Map<WsHandle, ReturnType<typeof setTimeout>>();
 
@@ -318,7 +318,7 @@ export function createSidecarRouter(
         break;
       case "agent.event":
         onAgentEvent?.(frame.agentAddress, frame.sessionId, frame.event);
-        dispatchToSubscribers(frame.sessionId, frame.event);
+        dispatchToSubscribers(frame.agentAddress, frame.event);
         break;
       case "session.ack":
         resolvePending(frame.requestId);
@@ -1308,34 +1308,34 @@ export function createSidecarRouter(
     }
   }
 
-  function dispatchToSubscribers(sessionId: string, event: unknown): void {
-    const subs = sessionSubscribers.get(sessionId);
+  function dispatchToSubscribers(agentAddress: string, event: unknown): void {
+    const subs = agentSubscribers.get(agentAddress);
     if (subs === undefined) return;
     for (const cb of [...subs]) {
       try {
         cb(event);
       } catch (err) {
-        logger.warn`Session subscriber threw: ${err instanceof Error ? err.message : String(err)}`;
+        logger.warn`Agent subscriber threw: ${err instanceof Error ? err.message : String(err)}`;
       }
     }
   }
 
-  function subscribeSession(
-    sessionId: string,
+  function subscribeAgent(
+    agentAddress: string,
     callback: (event: unknown) => void,
   ): () => void {
-    let subs = sessionSubscribers.get(sessionId);
+    let subs = agentSubscribers.get(agentAddress);
     if (subs === undefined) {
       subs = new Set();
-      sessionSubscribers.set(sessionId, subs);
+      agentSubscribers.set(agentAddress, subs);
     }
     subs.add(callback);
     return () => {
-      const current = sessionSubscribers.get(sessionId);
+      const current = agentSubscribers.get(agentAddress);
       if (current === undefined) return;
       current.delete(callback);
       if (current.size === 0) {
-        sessionSubscribers.delete(sessionId);
+        agentSubscribers.delete(agentAddress);
       }
     };
   }
@@ -1390,8 +1390,8 @@ export function createSidecarRouter(
     sendGrantsUpdate,
     sendPack,
     sendSyncRequest,
-    subscribeSession,
-    dispatchSessionEvent: dispatchToSubscribers,
+    subscribeAgent,
+    dispatchAgentEvent: dispatchToSubscribers,
     getConnectedSidecars,
     getRoutableAddresses,
   };

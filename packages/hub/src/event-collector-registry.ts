@@ -1,8 +1,8 @@
-// Registry of active event collectors, keyed by sessionId.
+// Registry of active event collectors, keyed by agent address.
 //
-// The hub creates a collector when a session starts and removes it when the
-// session ends or the sidecar disconnects. The onAgentEvent callback looks
-// up the collector by sessionId and dispatches the event.
+// The hub creates a collector when an instance starts and removes it when the
+// instance ends or the sidecar disconnects. The onAgentEvent callback looks
+// up the collector by agent address and dispatches the event.
 
 import type { DB } from "@interchange/db";
 import type { InferenceEvent } from "@interchange/types/runtime";
@@ -14,12 +14,11 @@ import { createEventCollector, type EventCollector } from "./event-collector";
 const log = getLogger(["hub", "event-collector-registry"]);
 
 export type EventCollectorRegistry = {
-  create(sessionId: string, tenantId: string, agentAddress: string): void;
-  dispatch(sessionId: string, event: InferenceEvent): void;
-  abandon(sessionId: string): void;
-  abandonByAddress(agentAddress: string): void;
-  has(sessionId: string): boolean;
-  getStatus(sessionId: string): SessionStatus | undefined;
+  create(agentAddress: string, tenantId: string, sessionId: string): void;
+  dispatch(agentAddress: string, event: InferenceEvent): void;
+  abandon(agentAddress: string): void;
+  has(agentAddress: string): boolean;
+  getStatus(agentAddress: string): SessionStatus | undefined;
 };
 
 export function createEventCollectorRegistry(
@@ -27,17 +26,15 @@ export function createEventCollectorRegistry(
 ): EventCollectorRegistry {
   const collectors = new Map<string, EventCollector>();
   const statuses = new Map<string, SessionStatus>();
-  const addressToSession = new Map<string, string>();
-  const sessionToAddress = new Map<string, string>();
 
   function create(
-    sessionId: string,
-    tenantId: string,
     agentAddress: string,
+    tenantId: string,
+    sessionId: string,
   ): void {
-    if (collectors.has(sessionId)) {
-      log.warn`Collector already exists for session ${sessionId}, replacing`;
-      abandon(sessionId);
+    if (collectors.has(agentAddress)) {
+      log.warn`Collector already exists for ${agentAddress}, replacing`;
+      abandon(agentAddress);
     }
 
     const collector = createEventCollector({
@@ -46,20 +43,13 @@ export function createEventCollectorRegistry(
       tenantId,
       agentAddress,
     });
-    collectors.set(sessionId, collector);
-    statuses.set(sessionId, { status: "idle" });
-    addressToSession.set(agentAddress, sessionId);
-    sessionToAddress.set(sessionId, agentAddress);
+    collectors.set(agentAddress, collector);
+    statuses.set(agentAddress, { status: "idle" });
   }
 
-  function removeSession(sessionId: string): void {
-    collectors.delete(sessionId);
-    statuses.delete(sessionId);
-    const addr = sessionToAddress.get(sessionId);
-    if (addr !== undefined) {
-      addressToSession.delete(addr);
-      sessionToAddress.delete(sessionId);
-    }
+  function removeCollector(agentAddress: string): void {
+    collectors.delete(agentAddress);
+    statuses.delete(agentAddress);
   }
 
   function deriveStatus(event: InferenceEvent): SessionStatus | null {
@@ -82,15 +72,15 @@ export function createEventCollectorRegistry(
     }
   }
 
-  function dispatch(sessionId: string, event: InferenceEvent): void {
-    const collector = collectors.get(sessionId);
+  function dispatch(agentAddress: string, event: InferenceEvent): void {
+    const collector = collectors.get(agentAddress);
     if (collector === undefined) {
       return;
     }
 
     const derived = deriveStatus(event);
     if (derived !== null) {
-      statuses.set(sessionId, derived);
+      statuses.set(agentAddress, derived);
     }
 
     const isTerminal =
@@ -100,39 +90,33 @@ export function createEventCollectorRegistry(
     collector
       .onEvent(event)
       .catch((err: unknown) => {
-        log.warn`Failed to persist event ${event.type} seq=${String(event.seq)} for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`;
+        log.warn`Failed to persist event ${event.type} seq=${String(event.seq)} for ${agentAddress}: ${err instanceof Error ? err.message : String(err)}`;
       })
       .finally(() => {
         if (isTerminal) {
-          removeSession(sessionId);
+          removeCollector(agentAddress);
         }
       });
   }
 
-  function abandon(sessionId: string): void {
-    const collector = collectors.get(sessionId);
+  function abandon(agentAddress: string): void {
+    const collector = collectors.get(agentAddress);
     if (collector === undefined) return;
 
     collector.abandon().catch((err: unknown) => {
-      log.warn`Failed to abandon collector for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`;
+      log.warn`Failed to abandon collector for ${agentAddress}: ${err instanceof Error ? err.message : String(err)}`;
     });
 
-    removeSession(sessionId);
+    removeCollector(agentAddress);
   }
 
-  function abandonByAddress(agentAddress: string): void {
-    const sessionId = addressToSession.get(agentAddress);
-    if (sessionId === undefined) return;
-    abandon(sessionId);
+  function has(agentAddress: string): boolean {
+    return collectors.has(agentAddress);
   }
 
-  function has(sessionId: string): boolean {
-    return collectors.has(sessionId);
+  function getStatus(agentAddress: string): SessionStatus | undefined {
+    return statuses.get(agentAddress);
   }
 
-  function getStatus(sessionId: string): SessionStatus | undefined {
-    return statuses.get(sessionId);
-  }
-
-  return { create, dispatch, abandon, abandonByAddress, has, getStatus };
+  return { create, dispatch, abandon, has, getStatus };
 }
