@@ -1,5 +1,6 @@
 import { integer, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
+import { agentInstance } from "./instances";
 import { agentSession } from "./sessions";
 import { tenant } from "./tenants";
 
@@ -8,6 +9,9 @@ export const sessionMessage = pgTable("session_message", {
   sessionId: text("session_id")
     .notNull()
     .references(() => agentSession.id, { onDelete: "cascade" }),
+  instanceId: text("instance_id").references(() => agentInstance.id, {
+    onDelete: "cascade",
+  }),
   tenantId: text("tenant_id")
     .notNull()
     .references(() => tenant.id, { onDelete: "cascade" }),

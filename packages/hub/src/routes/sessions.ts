@@ -311,7 +311,7 @@ app.post(
     });
 
     const eventCollectors = c.get("eventCollectors");
-    eventCollectors.create(agentAddress, tenant.id, sessionId);
+    eventCollectors.create(agentAddress, tenant.id, sessionId, instanceId);
 
     const grantStore = c.get("grantStore");
     const grants = await grantStore.collectGrants(row.principalId, tenant.id);
