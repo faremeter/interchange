@@ -62,6 +62,7 @@ export type AgentResponse = {
 export type AgentInstanceResponse = {
   id: string;
   agentId: string;
+  agentName: string;
   tenantId: string;
   address: string;
   status: "deployed" | "running" | "updating" | "error" | "stopped";

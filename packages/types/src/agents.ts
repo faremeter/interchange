@@ -89,6 +89,7 @@ export const CreateAgentInstance = type({
 export const AgentInstanceResponse = type({
   id: "string",
   agentId: "string",
+  agentName: "string",
   tenantId: "string",
   address: "string",
   status: AgentInstanceStatusType,
