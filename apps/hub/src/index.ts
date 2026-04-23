@@ -114,7 +114,12 @@ const sidecarRouter = createSidecarRouter({
         .where(eq(agentInstance.id, instance.id));
     }
     if (!eventCollectors.has(agentAddress)) {
-      eventCollectors.create(agentAddress, instance.tenantId, sessionId);
+      eventCollectors.create(
+        agentAddress,
+        instance.tenantId,
+        sessionId,
+        instance.id,
+      );
       log.info(
         "Restored event collector for reconnected agent {agentAddress}",
         { agentAddress },

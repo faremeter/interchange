@@ -81,6 +81,7 @@ describe("EventCollector", () => {
     collector = createEventCollector({
       db: fakeDB.db,
       sessionId: "ses_test",
+      instanceId: "ins_test",
       tenantId: "tnt_test",
       agentAddress: "agt_test@test.localhost",
     });

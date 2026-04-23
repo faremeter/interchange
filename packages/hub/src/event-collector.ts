@@ -23,6 +23,7 @@ export type EventCollector = {
 export type EventCollectorConfig = {
   db: DB["db"];
   sessionId: string;
+  instanceId: string;
   tenantId: string;
   agentAddress: string;
 };
@@ -30,7 +31,7 @@ export type EventCollectorConfig = {
 export function createEventCollector(
   config: EventCollectorConfig,
 ): EventCollector {
-  const { db, sessionId, tenantId, agentAddress } = config;
+  const { db, sessionId, instanceId, tenantId, agentAddress } = config;
 
   // Current assistant message being accumulated. A new message is created
   // on each inference.start so that each turn gets its own row with the
@@ -88,6 +89,7 @@ export function createEventCollector(
     await db.insert(sessionMessage).values({
       id: currentMessageId,
       sessionId,
+      instanceId,
       tenantId,
       role: "assistant",
       from: agentAddress,

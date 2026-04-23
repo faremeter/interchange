@@ -14,7 +14,12 @@ import { createEventCollector, type EventCollector } from "./event-collector";
 const log = getLogger(["hub", "event-collector-registry"]);
 
 export type EventCollectorRegistry = {
-  create(agentAddress: string, tenantId: string, sessionId: string): void;
+  create(
+    agentAddress: string,
+    tenantId: string,
+    sessionId: string,
+    instanceId: string,
+  ): void;
   dispatch(agentAddress: string, event: InferenceEvent): void;
   abandon(agentAddress: string): void;
   has(agentAddress: string): boolean;
@@ -31,6 +36,7 @@ export function createEventCollectorRegistry(
     agentAddress: string,
     tenantId: string,
     sessionId: string,
+    instanceId: string,
   ): void {
     if (collectors.has(agentAddress)) {
       log.warn`Collector already exists for ${agentAddress}, replacing`;
@@ -40,6 +46,7 @@ export function createEventCollectorRegistry(
     const collector = createEventCollector({
       db,
       sessionId,
+      instanceId,
       tenantId,
       agentAddress,
     });
