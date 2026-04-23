@@ -7,10 +7,8 @@ import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
 import {
   createAgentMutation,
-  sessionStatusQuery,
   tenantAgentsQuery,
   type AgentResponse,
-  type SessionStatusResponse,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,58 +31,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-type AgentLifecycleStatus = AgentResponse["status"];
-
-const statusDisplay: Record<
-  AgentLifecycleStatus | SessionStatusResponse["status"],
-  {
-    label: string;
-    variant: "default" | "secondary" | "destructive" | "outline" | "warning";
-  }
-> = {
-  deployed: { label: "deployed", variant: "secondary" },
-  stopped: { label: "stopped", variant: "secondary" },
-  updating: { label: "updating", variant: "outline" },
-  error: { label: "error", variant: "destructive" },
-  running: { label: "running", variant: "outline" },
-  idle: { label: "idle", variant: "outline" },
-  busy: { label: "busy", variant: "default" },
-  waiting_approval: { label: "waiting approval", variant: "warning" },
-};
-
-function StatusBadge({
-  lifecycleStatus,
-  runtimeStatus,
-}: {
-  lifecycleStatus: AgentLifecycleStatus;
-  runtimeStatus?: SessionStatusResponse["status"];
-}) {
-  const key =
-    lifecycleStatus === "running" && runtimeStatus
-      ? runtimeStatus
-      : lifecycleStatus;
-  const display = statusDisplay[key];
-  return <Badge variant={display.variant}>{display.label}</Badge>;
-}
-
-const noopStatusQuery = {
-  queryKey: ["sessions", "status", "noop"],
-  queryFn: () => Promise.resolve({ status: "idle" as const }),
-  enabled: false,
-};
-
-function useRuntimeStatus(
-  tenantId: string,
-  status: AgentLifecycleStatus,
-  sessionId: string | null,
-): SessionStatusResponse | undefined {
-  const canPoll = status === "running" && sessionId !== null;
-
-  const { data } = useQuery(
-    canPoll ? sessionStatusQuery(tenantId, sessionId) : noopStatusQuery,
-  );
-
-  return canPoll ? data : undefined;
+function StatusBadge({ status }: { status: AgentResponse["status"] }) {
+  const variant = status === "deployed" ? "secondary" : "outline";
+  return <Badge variant={variant}>{status}</Badge>;
 }
 
 function AgentRow({
@@ -95,19 +44,13 @@ function AgentRow({
     id: string;
     name: string;
     description: string | null;
-    status: AgentLifecycleStatus;
-    sessionId: string | null;
+    status: AgentResponse["status"];
     currentVersion: string;
     createdAt: string;
   };
   tenantId: string;
 }) {
   const navigate = useNavigate();
-  const sessionStatus = useRuntimeStatus(
-    tenantId,
-    agent.status,
-    agent.sessionId,
-  );
 
   return (
     <TableRow
@@ -128,10 +71,7 @@ function AgentRow({
         )}
       </TableCell>
       <TableCell>
-        <StatusBadge
-          lifecycleStatus={agent.status}
-          runtimeStatus={sessionStatus?.status}
-        />
+        <StatusBadge status={agent.status} />
       </TableCell>
       <TableCell className="font-mono text-xs text-muted-foreground">
         v{agent.currentVersion}
@@ -162,7 +102,9 @@ export function TenantAgentsPage() {
   const createMut = useMutation({
     ...createAgentMutation(tenantId, queryClient),
     onSuccess: () => {
-      createAgentMutation(tenantId, queryClient).onSuccess();
+      queryClient.invalidateQueries({
+        queryKey: ["tenants", tenantId, "agents"],
+      });
       setCreateOpen(false);
       resetCreateForm();
     },
