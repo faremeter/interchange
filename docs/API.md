@@ -677,6 +677,8 @@ Returns all spans in a trace across agent boundaries.
 
 ## Agent Data
 
+These endpoints are an operator inspection surface — platform tooling and human users inspecting agent state through the control plane. An agent could be granted access to these endpoints via capability grants, but the typical consumer is an operator, not the agent itself. These endpoints inspect the state of the agent's currently active instance on the sidecar.
+
 ### GET /api/tenants/:tenantId/agents/definitions/:agentId/data
 List files in agent working directory
 
