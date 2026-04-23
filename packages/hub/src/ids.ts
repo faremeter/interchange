@@ -14,6 +14,7 @@ const PREFIXES = {
   wallet: "wlt_",
   transaction: "txn_",
   offering: "ofr_",
+  instance: "ins_",
   session: "ses_",
   message: "msg_",
   messagePart: "mpt_",
