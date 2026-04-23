@@ -9,6 +9,7 @@ export const credentialRequirementSources = [
 export type CredentialRequirementSource =
   (typeof credentialRequirementSources)[number];
 
+// XXX - deprecated, remove when formatAgent cast is cleaned up in commit 2
 export const agentStatuses = [
   "deployed",
   "stopped",
@@ -18,8 +19,21 @@ export const agentStatuses = [
 ] as const;
 export type AgentStatus = (typeof agentStatuses)[number];
 
+export const agentDefinitionStatuses = ["deployed", "stopped"] as const;
+export type AgentDefinitionStatus = (typeof agentDefinitionStatuses)[number];
+
+export const agentInstanceStatuses = [
+  "deployed",
+  "running",
+  "updating",
+  "error",
+  "stopped",
+] as const;
+export type AgentInstanceStatus = (typeof agentInstanceStatuses)[number];
+
 const CredReqSource = type.enumerated(...credentialRequirementSources);
-const AgentStatusType = type.enumerated(...agentStatuses);
+const AgentDefinitionStatusType = type.enumerated(...agentDefinitionStatuses);
+const AgentInstanceStatusType = type.enumerated(...agentInstanceStatuses);
 const Effect = type.enumerated(...grantEffects);
 
 export const CredentialRequirement = type({
@@ -71,14 +85,29 @@ export const AgentResponse = type({
   "initialState?": "Record<string, unknown>",
   "modelConfig?": "Record<string, unknown>",
   currentVersion: "string",
-  status: AgentStatusType,
-  "kernelId?": "string | null",
-  "sessionId?": "string | null",
+  status: AgentDefinitionStatusType,
   "capabilities?": "Record<string, unknown>",
   "credentialRequirements?": CredentialRequirement.array(),
-  "initialResponse?": "string | null",
   createdAt: "string",
   updatedAt: "string",
+});
+
+export const CreateAgentInstance = type({
+  agentId: "string",
+});
+
+export const AgentInstanceResponse = type({
+  id: "string",
+  agentId: "string",
+  tenantId: "string",
+  address: "string",
+  status: AgentInstanceStatusType,
+  "publicKey?": "string | null",
+  "kernelId?": "string | null",
+  "sidecarId?": "string | null",
+  createdAt: "string",
+  updatedAt: "string",
+  "endedAt?": "string | null",
 });
 
 export const AgentVersion = type({
