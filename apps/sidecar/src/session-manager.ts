@@ -23,7 +23,7 @@ import {
 } from "@interchange/harness";
 import { createPosixTools } from "@interchange/tools-posix";
 import { hasProvider } from "@interchange/inference";
-import { createNodeCrypto } from "@interchange/crypto-node";
+import { createNodeCrypto, createSshSignature } from "@interchange/crypto-node";
 import {
   createIsogitStore,
   initAgentRepo,
@@ -240,7 +240,9 @@ export function createSessionManager(
       const sessionId = agentConfig.sessionId;
 
       const storeDir = path.join(dataDir, sanitizeAddress(agentAddress));
-      const storage = await createIsogitStore(storeDir);
+      const signer = async (payload: string) =>
+        createSshSignature(payload, keyPair.privateKey, keyPair.publicKey);
+      const storage = await createIsogitStore(storeDir, signer);
 
       const deployTree = await readDeployTree(storeDir);
       const systemPrompt = deployTree.systemPrompt ?? agentConfig.systemPrompt;
