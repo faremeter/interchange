@@ -251,9 +251,21 @@ export function createWsClient(config: WsClientConfig): WsClient {
     send({ type: "challenge.response", responses });
   }
 
-  function handleChallengeFailed(frame: ChallengeFailedFrame): void {
+  async function handleChallengeFailed(
+    frame: ChallengeFailedFrame,
+  ): Promise<void> {
     agentKeys.delete(frame.address);
-    logger.warn`Challenge failed for ${frame.address}: ${frame.reason}`;
+    hubKeys.delete(frame.address);
+
+    // The hub rejected this agent during reconnect — tear it down so
+    // the address is freed for future deploys.
+    try {
+      await sessions.destroySession(frame.address);
+    } catch {
+      // Ignore — the agent may not have a running session.
+    }
+
+    logger.warn`Challenge failed for ${frame.address}, agent torn down: ${frame.reason}`;
   }
 
   async function handleSessionAbort(frame: SessionAbortFrame): Promise<void> {
@@ -452,7 +464,7 @@ export function createWsClient(config: WsClientConfig): WsClient {
         lastPongAt = Date.now();
         break;
       case "challenge.failed":
-        handleChallengeFailed(frame);
+        await handleChallengeFailed(frame);
         break;
       case "session.abort":
         await handleSessionAbort(frame);
