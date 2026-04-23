@@ -64,10 +64,14 @@ const AbortBody = type({
     "'user_disconnect' | 'wallet_exhaustion' | 'admin_kill' | 'session_timeout' | 'credential_revocation'",
 });
 
-function formatInstance(row: typeof agentInstance.$inferSelect) {
+function formatInstance(
+  row: typeof agentInstance.$inferSelect,
+  agentName: string,
+) {
   return {
     id: row.id,
     agentId: row.agentId,
+    agentName,
     tenantId: row.tenantId,
     address: row.address,
     status: row.status,
@@ -443,7 +447,7 @@ app.post(
         .returning(),
     );
 
-    return c.json(formatInstance(launched), 201);
+    return c.json(formatInstance(launched, row.name), 201);
   },
 );
 
@@ -507,16 +511,21 @@ app.get(
       );
     }
 
-    const rows = await db.query.agentInstance.findMany({
-      where: and(...conditions),
-      orderBy: pageOrder(agentInstance.createdAt, agentInstance.id),
-      limit,
-    });
+    const rows = await db
+      .select({
+        instance: agentInstance,
+        agentName: agent.name,
+      })
+      .from(agentInstance)
+      .innerJoin(agent, eq(agentInstance.agentId, agent.id))
+      .where(and(...conditions))
+      .orderBy(...pageOrder(agentInstance.createdAt, agentInstance.id))
+      .limit(limit);
 
     return c.json(
       paginatedResponse(
-        rows.map((r) => formatInstance(r)),
-        rows,
+        rows.map((r) => formatInstance(r.instance, r.agentName)),
+        rows.map((r) => r.instance),
         limit,
       ),
     );
@@ -552,12 +561,20 @@ app.get(
     const eventCollectors = c.get("eventCollectors");
     const instanceId = c.req.param("instanceId");
 
-    const row = await db.query.agentInstance.findFirst({
-      where: and(
-        eq(agentInstance.id, instanceId),
-        eq(agentInstance.tenantId, tenantCtx.id),
-      ),
-    });
+    const [row] = await db
+      .select({
+        instance: agentInstance,
+        agentName: agent.name,
+      })
+      .from(agentInstance)
+      .innerJoin(agent, eq(agentInstance.agentId, agent.id))
+      .where(
+        and(
+          eq(agentInstance.id, instanceId),
+          eq(agentInstance.tenantId, tenantCtx.id),
+        ),
+      )
+      .limit(1);
 
     if (!row) {
       return c.json(
@@ -566,10 +583,13 @@ app.get(
       );
     }
 
-    const result = formatInstance(row) as Record<string, unknown>;
+    const result = formatInstance(row.instance, row.agentName) as Record<
+      string,
+      unknown
+    >;
 
     // Enrich with runtime status from the event collector if available.
-    const runtimeStatus = eventCollectors.getStatus(row.address);
+    const runtimeStatus = eventCollectors.getStatus(row.instance.address);
     if (runtimeStatus !== undefined) {
       result["runtimeStatus"] = runtimeStatus.status;
     }
