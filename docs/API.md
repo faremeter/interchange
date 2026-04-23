@@ -434,13 +434,13 @@ Returns the agent's exposed offerings with pricing metadata.
 ### POST /api/tenants/:tenantId/agents/instances
 Deploy an agent instance
 
-Creates a new running instance of the specified agent definition. Resolves credentials, provisions the agent on a sidecar, and starts the agent. At most one running instance per agent is permitted.
+Creates a new running instance of the specified agent definition. Resolves credentials, provisions the agent on a sidecar, and starts the agent. Multiple concurrent instances of the same definition are permitted.
 
 Body: CreateAgentInstance
 
 201: AgentInstanceResponse -- Instance deployed
 404: ErrorResponse -- Agent definition not found
-409: ErrorResponse -- Agent not launchable or already has an active instance
+409: ErrorResponse -- Agent not launchable
 502: ErrorResponse -- Sidecar unavailable
 
 ### GET /api/tenants/:tenantId/agents/instances
@@ -730,7 +730,7 @@ Restores the agent's working directory to the state at the specified commit.
 Source: packages/types/src/agents.ts
 
 ### AgentInstanceResponse
-`{ id: string, agentId: string, tenantId: string, address: string, status: "deployed" | "running" | "updating" | "error" | "stopped", createdAt: string, updatedAt: string, publicKey?: string | null, kernelId?: string | null, sidecarId?: string | null, endedAt?: string | null, runtimeStatus?: "idle" | "busy" | "waiting_approval" }`
+`{ id: string, agentId: string, agentName: string, tenantId: string, address: string, status: "deployed" | "running" | "updating" | "error" | "stopped", createdAt: string, updatedAt: string, publicKey?: string | null, kernelId?: string | null, sidecarId?: string | null, endedAt?: string | null, runtimeStatus?: "idle" | "busy" | "waiting_approval" }`
 Source: packages/types/src/agents.ts
 
 ### AgentResponse
