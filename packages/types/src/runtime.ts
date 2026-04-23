@@ -1074,7 +1074,7 @@ export type ReactorAction =
       type: "reply";
       content: string;
     }
-  | { type: "checkpoint" }
+  | { type: "checkpoint"; message: string }
   | { type: "wait" }
   | { type: "done" };
 
@@ -1103,7 +1103,7 @@ export type ReactorCapabilities = {
     data: Record<string, unknown>,
   ): ReactorAction;
   reply(content: string): ReactorAction;
-  checkpoint(): ReactorAction;
+  checkpoint(message?: string): ReactorAction;
   wait(): ReactorAction;
   done(): ReactorAction;
 };

@@ -874,9 +874,12 @@ describe("Default plugin", () => {
         this.calls.push({ type: "emit", args: [eventType, data] });
         return { type: "emit" as const, eventType, data };
       },
-      checkpoint() {
-        this.calls.push({ type: "checkpoint", args: [] });
-        return { type: "checkpoint" as const };
+      checkpoint(message?: string) {
+        this.calls.push({ type: "checkpoint", args: [message] });
+        return {
+          type: "checkpoint" as const,
+          message: message ?? "checkpoint",
+        };
       },
       wait() {
         this.calls.push({ type: "wait", args: [] });

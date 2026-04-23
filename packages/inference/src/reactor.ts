@@ -27,6 +27,7 @@ import type {
   ToolCall,
   AbortReason,
   BeforeToolExtension,
+  ReactorAction,
 } from "@interchange/types/runtime";
 
 import { getLogger } from "@interchange/log";
@@ -500,8 +501,12 @@ export function createReactor(config: ReactorConfig): Reactor {
       const normalized = validation.normalized;
 
       // Checkpoint fires before everything else.
-      if (normalized.some((a) => a.type === "checkpoint")) {
-        await executeCheckpoint();
+      const checkpointAction = normalized.find(
+        (a): a is Extract<ReactorAction, { type: "checkpoint" }> =>
+          a.type === "checkpoint",
+      );
+      if (checkpointAction !== undefined) {
+        await executeCheckpoint(checkpointAction.message);
       }
 
       // Emit custom events (validated type namespace).
@@ -624,14 +629,14 @@ export function createReactor(config: ReactorConfig): Reactor {
     });
   }
 
-  async function executeCheckpoint(): Promise<void> {
+  async function executeCheckpoint(message: string): Promise<void> {
     if (stateManager === null) return;
     try {
       await contextStore.commit(
         stateManager.getMessages(),
         stateManager.getPendingOperations(),
         stateManager.getTokenUsage(),
-        "checkpoint",
+        message,
       );
     } catch (cause) {
       logger.error`Checkpoint failed: ${cause}`;

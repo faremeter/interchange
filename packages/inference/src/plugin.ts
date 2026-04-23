@@ -66,8 +66,8 @@ export function createCapabilities(): ReactorCapabilities {
       return { type: "reply", content };
     },
 
-    checkpoint(): ReactorAction {
-      return { type: "checkpoint" };
+    checkpoint(message?: string): ReactorAction {
+      return { type: "checkpoint", message: message ?? "checkpoint" };
     },
 
     wait(): ReactorAction {
