@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { createDB, createGrantStore } from "@interchange/db";
 import { agent, agentInstance } from "@interchange/db/schema";
 import {
@@ -59,10 +59,13 @@ function parseAgentId(agentAddress: string): string {
 
 async function requireInstance(agentAddress: string) {
   const row = await db.query.agentInstance.findFirst({
-    where: eq(agentInstance.address, agentAddress),
+    where: and(
+      eq(agentInstance.address, agentAddress),
+      isNull(agentInstance.endedAt),
+    ),
   });
   if (!row) {
-    throw new Error(`No agent instance found for address "${agentAddress}"`);
+    throw new Error(`No active instance found for address "${agentAddress}"`);
   }
   return row;
 }
@@ -116,8 +119,8 @@ const sidecarRouter = createSidecarRouter({
         .set({ status: "running", updatedAt: now })
         .where(eq(agentInstance.id, instance.id));
     }
-    // Dual-write: always sync agent table since instance and agent
-    // status can diverge during the migration
+    // Dual-write: sync agent table if its status has diverged from
+    // the instance during the migration
     const agentRow = await db.query.agent.findFirst({
       where: eq(agent.id, instance.agentId),
     });
@@ -172,7 +175,12 @@ const sidecarRouter = createSidecarRouter({
     const row = await db
       .select({ publicKey: agentInstance.publicKey })
       .from(agentInstance)
-      .where(eq(agentInstance.address, agentAddress))
+      .where(
+        and(
+          eq(agentInstance.address, agentAddress),
+          isNull(agentInstance.endedAt),
+        ),
+      )
       .limit(1)
       .then((rows) => rows[0]);
     if (!row) {

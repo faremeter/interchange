@@ -1,4 +1,4 @@
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, isNull, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
@@ -134,9 +134,22 @@ app.get(
       limit,
     });
 
+    const agentIds = rows.map((r) => r.id);
+    const instances =
+      agentIds.length > 0
+        ? await db.query.agentInstance.findMany({
+            where: and(
+              inArray(agentInstance.agentId, agentIds),
+              eq(agentInstance.tenantId, tenantCtx.id),
+              isNull(agentInstance.endedAt),
+            ),
+          })
+        : [];
+    const instanceByAgent = new Map(instances.map((i) => [i.agentId, i]));
+
     return c.json(
       paginatedResponse(
-        rows.map((r) => formatAgent(r)),
+        rows.map((r) => formatAgent(r, instanceByAgent.get(r.id))),
         rows,
         limit,
       ),
@@ -426,16 +439,33 @@ app.delete(
       );
     }
 
+    const retiredAt = new Date();
+
     // Deactivate agent principal
     await db
       .update(principal)
-      .set({ status: "deactivated", updatedAt: new Date() })
+      .set({ status: "deactivated", updatedAt: retiredAt })
       .where(eq(principal.id, existing.principalId));
+
+    // TODO: This is DB-only — it does not signal the sidecar to stop
+    // or end the agentSession. A running sidecar will continue until
+    // it disconnects naturally. Add sidecar teardown coordination.
+    await db
+      .update(agentInstance)
+      .set({
+        status: "stopped",
+        sessionId: null,
+        updatedAt: retiredAt,
+        endedAt: retiredAt,
+      })
+      .where(
+        and(eq(agentInstance.agentId, agentId), isNull(agentInstance.endedAt)),
+      );
 
     // Set agent status to stopped
     await db
       .update(agent)
-      .set({ status: "stopped", updatedAt: new Date() })
+      .set({ status: "stopped", sessionId: null, updatedAt: retiredAt })
       .where(eq(agent.id, agentId));
 
     return c.body(null, 204);
