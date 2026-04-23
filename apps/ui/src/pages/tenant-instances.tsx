@@ -45,20 +45,7 @@ function InstanceRow({
         })
       }
     >
-      <TableCell>
-        <span
-          className="font-medium text-primary hover:underline"
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate({
-              to: "/tenants/$tenantId/agents/$agentId",
-              params: { tenantId, agentId: instance.agentId },
-            });
-          }}
-        >
-          {instance.agentName}
-        </span>
-      </TableCell>
+      <TableCell className="font-medium">{instance.agentName}</TableCell>
       <TableCell>
         <StatusBadge status={instance.status} />
       </TableCell>

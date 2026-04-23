@@ -165,7 +165,8 @@ app.post(
       );
     }
 
-    const agentAddress = `${row.id}@${tenant.domain}`;
+    const instanceId = generateId("instance");
+    const agentAddress = `${instanceId}@${tenant.domain}`;
 
     const parsedRequirements = CredentialRequirements(
       row.credentialRequirements ?? [],
@@ -312,32 +313,12 @@ app.post(
     }
 
     // Invoker-sourced grants are ephemeral — they expire when the instance
-    // is torn down via agent.undeploy. This relies on the single-instance
-    // invariant (at most one running instance per agent) enforced below.
+    // is torn down via agent.undeploy.
     // TODO: record invokerPrincipalId for audit trail (INTR-21 follow-up)
     const grants = [...nonInvokerGrants, ...invokerRequirements];
 
     const sessionId = generateId("session");
-    const instanceId = generateId("instance");
     const now = new Date();
-
-    const existing = await db.query.agentInstance.findFirst({
-      where: and(
-        eq(agentInstance.address, agentAddress),
-        inArray(agentInstance.status, ["running", "updating"]),
-      ),
-    });
-    if (existing) {
-      return c.json(
-        {
-          error: {
-            code: "conflict",
-            message: `Agent already has an active instance (${existing.id})`,
-          },
-        },
-        409,
-      );
-    }
 
     // Create a transitional agentSession row to satisfy the FK on
     // agentInstance.sessionId and the message tables. This coupling
@@ -351,15 +332,6 @@ app.post(
       createdAt: now,
       updatedAt: now,
     });
-
-    await db
-      .delete(agentInstance)
-      .where(
-        and(
-          eq(agentInstance.address, agentAddress),
-          inArray(agentInstance.status, ["stopped", "error", "deployed"]),
-        ),
-      );
 
     await db.insert(agentInstance).values({
       id: instanceId,
