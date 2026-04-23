@@ -13,6 +13,7 @@ import {
   sessionMessage,
 } from "@interchange/db/schema";
 import { resolveCredentialRequirement } from "@interchange/db";
+import { evaluateGrants } from "@interchange/authz";
 
 import { generateKeyPair, createNodeCrypto } from "@interchange/crypto-node";
 import {
@@ -265,6 +266,53 @@ app.post(
       );
     }
 
+    const grantStore = c.get("grantStore");
+    const agentGrants = await grantStore.collectGrants(
+      row.principalId,
+      tenant.id,
+    );
+    const nonInvokerGrants = agentGrants.filter((g) => g.source !== "invoker");
+    const invokerRequirements = agentGrants.filter(
+      (g) => g.source === "invoker",
+    );
+
+    if (invokerRequirements.length > 0) {
+      // Collect the invoking user's grants once (not per-requirement).
+      const invokerGrants = await grantStore.collectGrants(
+        principal.id,
+        tenant.id,
+      );
+      // Only system/role/creator grants can be delegated. Invoker-sourced
+      // grants cannot be transitively re-delegated — this prevents
+      // privilege escalation through delegation chains.
+      const delegatable = invokerGrants.filter((g) => g.source !== "invoker");
+
+      for (const req of invokerRequirements) {
+        const result = await evaluateGrants(
+          delegatable,
+          req.resource,
+          req.action,
+        );
+        if (result.effect !== "allow") {
+          return c.json(
+            {
+              error: {
+                code: "insufficient_grants",
+                message: `Invoker lacks authority for ${req.resource}/${req.action}`,
+              },
+            },
+            403,
+          );
+        }
+      }
+    }
+
+    // Invoker-sourced grants are ephemeral — they expire when the instance
+    // is torn down via agent.undeploy. This relies on the single-instance
+    // invariant (at most one running instance per agent) enforced below.
+    // TODO: record invokerPrincipalId for audit trail (INTR-21 follow-up)
+    const grants = [...nonInvokerGrants, ...invokerRequirements];
+
     const sessionId = generateId("session");
     const instanceId = generateId("instance");
     const now = new Date();
@@ -323,9 +371,6 @@ app.post(
 
     const eventCollectors = c.get("eventCollectors");
     eventCollectors.create(agentAddress, tenant.id, sessionId, instanceId);
-
-    const grantStore = c.get("grantStore");
-    const grants = await grantStore.collectGrants(row.principalId, tenant.id);
 
     const skills = (row.skills ?? []) as {
       name: string;
