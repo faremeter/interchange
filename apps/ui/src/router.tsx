@@ -22,6 +22,8 @@ import { TenantCredentialsPage } from "@/pages/tenant-credentials";
 import { TenantCredentialDetailPage } from "@/pages/tenant-credential-detail";
 import { TenantWalletsPage } from "@/pages/tenant-wallets";
 import { TenantWalletDetailPage } from "@/pages/tenant-wallet-detail";
+import { TenantInstancesPage } from "@/pages/tenant-instances";
+import { TenantInstanceDetailPage } from "@/pages/tenant-instance-detail";
 import { TenantOfferingsPage } from "@/pages/tenant-offerings";
 import { TenantOfferingDetailPage } from "@/pages/tenant-offering-detail";
 
@@ -69,6 +71,18 @@ const tenantAgentDetailRoute = createRoute({
   getParentRoute: () => authedRoute,
   path: "/tenants/$tenantId/agents/$agentId",
   component: TenantAgentDetailPage,
+});
+
+const tenantInstancesRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/instances",
+  component: TenantInstancesPage,
+});
+
+const tenantInstanceDetailRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/instances/$instanceId",
+  component: TenantInstanceDetailPage,
 });
 
 const tenantPrincipalsRoute = createRoute({
@@ -150,6 +164,8 @@ const routeTree = rootRoute.addChildren([
     tenantRoute,
     tenantAgentsRoute,
     tenantAgentDetailRoute,
+    tenantInstancesRoute,
+    tenantInstanceDetailRoute,
     tenantPrincipalsRoute,
     tenantPrincipalDetailRoute,
     tenantRolesRoute,

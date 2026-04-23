@@ -1,4 +1,4 @@
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useLocation, useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
 import { tenantDetailQuery } from "@/lib/queries/tenants";
@@ -6,6 +6,7 @@ import { tenantDetailQuery } from "@/lib/queries/tenants";
 const NAV_ITEMS = [
   { label: "Overview", path: "" },
   { label: "Agents", path: "/agents" },
+  { label: "Instances", path: "/instances" },
   { label: "Members", path: "/principals" },
   { label: "Roles", path: "/roles" },
   { label: "Grants", path: "/grants" },
@@ -18,7 +19,8 @@ export function TenantNav() {
   const { tenantId } = useParams({ strict: false }) as { tenantId: string };
   const { data: tenant } = useQuery(tenantDetailQuery(tenantId));
 
-  const currentPath = window.location.pathname;
+  const location = useLocation();
+  const currentPath = location.pathname;
 
   return (
     <div className="mb-6">
@@ -35,7 +37,8 @@ export function TenantNav() {
       <nav className="mt-3 flex gap-1 border-b">
         {NAV_ITEMS.map((item) => {
           const to = `/tenants/${tenantId}${item.path}`;
-          const isActive = currentPath === to;
+          const isActive =
+            item.path === "" ? currentPath === to : currentPath.startsWith(to);
           return (
             <Link
               key={item.path}

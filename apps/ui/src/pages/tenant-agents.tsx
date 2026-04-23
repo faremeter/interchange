@@ -31,9 +31,15 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
+const DEFINITION_STATUS_LABEL: Record<string, string> = {
+  deployed: "active",
+  stopped: "retired",
+};
+
 function StatusBadge({ status }: { status: AgentResponse["status"] }) {
+  const label = DEFINITION_STATUS_LABEL[status] ?? status;
   const variant = status === "deployed" ? "secondary" : "outline";
-  return <Badge variant={variant}>{status}</Badge>;
+  return <Badge variant={variant}>{label}</Badge>;
 }
 
 function AgentRow({
