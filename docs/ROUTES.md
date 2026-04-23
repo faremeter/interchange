@@ -4,13 +4,13 @@ Design philosophy and conventions for the Interchange control plane REST API. Th
 
 ## Scope
 
-This API is the control plane's HTTP interface for human users and client applications (web, mobile). Clients authenticate, discover agents, start sessions, send messages, manage wallets, and observe system state through this API.
+This API is the control plane's HTTP interface for human users and client applications (web, mobile). Clients authenticate, discover agents, deploy instances, send messages, manage wallets, and observe system state through this API.
 
 This API is not:
 
 - **The harness's internal API.** Harnesses talk to the control plane via a separate persistent connection.
 - **Agent-to-agent communication.** That goes through SMTP/IMAP.
-- **The session channel protocol.** That uses WebSocket with an SSE fallback (documented below since WebSocket semantics are not fully expressible in OpenAPI).
+- **The instance channel protocol.** That uses WebSocket with an SSE fallback (documented below since WebSocket semantics are not fully expressible in OpenAPI).
 
 ## Path Structure
 
@@ -31,11 +31,11 @@ Tenant context is encoded in the URL, not in a header. This was a deliberate cho
 
 The tradeoff is longer URLs. `/api/tenants/tnt_abc/agents/agt_xyz` is more verbose than `/api/agents/agt_xyz`. This is acceptable -- IDs are globally unique and URLs are for machines, not humans.
 
-### Why sessions are tenant-scoped, not agent-scoped
+### Why agent definitions and instances are separate route groups
 
-Sessions are created _for_ an agent, but they are owned by the tenant. A session is a conversation between a principal and an agent, within a tenant context. The agent ID is a property of the session (specified at creation, filterable on list), not a path component.
+Agent definitions (`/agents/definitions`) and agent instances (`/agents/instances`) are sibling route groups under the tenant's `/agents` namespace rather than instances being nested under definitions (`/agents/definitions/:agentId/instances`).
 
-Putting sessions under agents (`/api/tenants/:tenantId/agents/:agentId/sessions`) would mean listing all sessions in a tenant requires knowing all agent IDs first. It also creates awkward paths when an agent is retired but its sessions are still queryable for history. Sessions belong alongside wallets, credentials, and approvals as first-class tenant resources.
+Nesting would mean listing all instances in a tenant requires knowing all agent IDs first. It also creates awkward paths when an agent definition is retired but its historical instances are still queryable. Instances are first-class tenant resources alongside wallets, credentials, and approvals.
 
 ### Why cross-tenant reads are separate endpoints
 
@@ -43,7 +43,7 @@ A user who belongs to multiple tenants needs dashboard views: "all my agents acr
 
 This is clearer for clients: `/api/me/agents` is a different operation from `/api/tenants/:tenantId/agents`. The former aggregates across tenants and tags each result with `tenantId`. The latter is scoped to one tenant. No mode-switching, no ambiguity about what "list agents" means in a given context.
 
-Only resources that benefit from cross-tenant aggregation have `/api/me/...` endpoints: agents, sessions, and approvals. These are the "dashboard" resources -- what's running, what's active, what needs my attention.
+Only resources that benefit from cross-tenant aggregation have `/api/me/...` endpoints: agents, instances, and approvals. These are the "dashboard" resources -- what's running, what's active, what needs my attention.
 
 ## Conventions
 
@@ -64,7 +64,8 @@ All IDs are globally unique with typed prefixes:
 - `agt_` -- agent
 - `rol_` -- role
 - `ofr_` -- offering
-- `ses_` -- session
+- `ins_` -- instance
+- `ses_` -- session (internal, not exposed in the API)
 - `msg_` -- message
 - `wal_` -- wallet
 - `crd_` -- credential
@@ -104,25 +105,25 @@ This means the grant endpoints (`/api/tenants/:tenantId/grants`) are the univers
 
 ## Approvals as First-Class Resources
 
-When an agent encounters a capability grant with `effect: "ask"`, execution blocks and an approval request is created. These approvals are not buried inside session state. They are top-level resources under `/api/tenants/:tenantId/approvals` with their own cross-tenant view at `/api/me/approvals`.
+When an agent encounters a capability grant with `effect: "ask"`, execution blocks and an approval request is created. These approvals are not buried inside instance state. They are top-level resources under `/api/tenants/:tenantId/approvals` with their own cross-tenant view at `/api/me/approvals`.
 
-This design supports mobile clients that need notification-driven approval flows. A user gets a push notification, opens the app, sees the pending approval with full context (what action, which agent, which session), and approves or rejects. The approval flow is independent of the session UI.
+This design supports mobile clients that need notification-driven approval flows. A user gets a push notification, opens the app, sees the pending approval with full context (what action, which agent, which instance), and approves or rejects. The approval flow is independent of the instance UI.
 
 When a user approves with `scope: "always"`, the system creates a persistent capability grant so the agent won't need to ask again for the same operation. This is the bridge between interactive approval and long-term authorization policy.
 
 ## Messages and Streaming
 
-`POST .../sessions/:sessionId/messages` persists the user's message and returns. The agent's response does not come back in the HTTP response. Instead, it streams over the session channel (WebSocket or SSE).
+`POST .../agents/instances/:instanceId/messages` persists the user's message and returns. The agent's response does not come back in the HTTP response. Instead, it streams over the instance channel (WebSocket or SSE).
 
 This "fire-and-forget via REST, stream via channel" pattern matches the architecture's "persist first, stream second" principle. The durable record (message in the database) is always ahead of or equal to the stream. If the client disconnects, nothing is lost -- they catch up by fetching messages via the REST endpoint.
 
-## Session Channel Protocol
+## Instance Channel Protocol
 
-The session channel is a real-time overlay for interactive use cases. It is not fully expressible in the OpenAPI spec, so the protocol details are documented here.
+The instance channel is a real-time overlay for interactive use cases. It is not fully expressible in the OpenAPI spec, so the protocol details are documented here.
 
 ### SSE Event Stream
 
-The current implementation uses Server-Sent Events at `GET .../api/tenants/:tenantId/sessions/:sessionId/events`. Client-to-server messages use the REST `POST .../messages` endpoint.
+The current implementation uses Server-Sent Events at `GET .../api/tenants/:tenantId/agents/instances/:instanceId/events`. Client-to-server messages use the REST `POST .../messages` endpoint.
 
 Event format: JSON objects with a `type` field and `data` payload.
 
@@ -139,12 +140,12 @@ Event format: JSON objects with a `type` field and `data` payload.
 {"type": "reactor.error", "data": {"error": "...", "fatal": true}}
 ```
 
-Reconnection: Session channels are ephemeral. On disconnect, the client reconnects and fetches missed messages via the REST `GET .../messages` endpoint. No token-level resume -- tokens are ephemeral previews of content that is persisted as complete messages.
+Reconnection: Instance channels are ephemeral. On disconnect, the client reconnects and fetches missed messages via the REST `GET .../messages` endpoint. No token-level resume -- tokens are ephemeral previews of content that is persisted as complete messages.
 
-### WebSocket Session Channel (Future)
+### WebSocket Instance Channel (Future)
 
-The architecture specifies a WebSocket session channel at `wss://.../api/tenants/:tenantId/sessions/:sessionId/stream` with JWT authentication. This is not yet implemented. The SSE endpoint serves all current user-facing streaming needs.
+The architecture specifies a WebSocket instance channel at `wss://.../api/tenants/:tenantId/agents/instances/:instanceId/stream` with JWT authentication. This is not yet implemented. The SSE endpoint serves all current user-facing streaming needs.
 
 ### Debug and Telemetry Streams
 
-Debug and telemetry data (state inspection, trace output, log tailing) flows only over the session channel. It is not part of the durable message record. Requires explicit authorization -- not all clients are permitted to attach debuggers to agents.
+Debug and telemetry data (state inspection, trace output, log tailing) flows only over the instance channel. It is not part of the durable message record. Requires explicit authorization -- not all clients are permitted to attach debuggers to agents.

@@ -82,7 +82,7 @@ Agents subscribe to message buses with different topologies:
 Messages are routed through the Interchange network with delivery guarantees and observability. The message bus uses SMTP/IMAP as its wire protocol (see Implementation), but Interchange clients are not email clients — they are purpose-built for Interchange message semantics, structured payloads, and conversation threading.
 
 **Session Channels**
-Session channels provide an optional real-time overlay on top of the message bus. The message bus (SMTP/IMAP) is always the canonical, durable transport for conversations — every complete message lands in the recipient's inbox regardless of whether a session channel is open. Session channels add real-time streaming for clients that want to see tokens as they arrive rather than waiting for complete messages.
+Session channels provide an optional real-time overlay on top of the message bus. Session channels are a protocol-layer concept — the streaming transport between client and harness — distinct from the instance lifecycle exposed in the API. The message bus (SMTP/IMAP) is always the canonical, durable transport for conversations — every complete message lands in the recipient's inbox regardless of whether a session channel is open. Session channels add real-time streaming for clients that want to see tokens as they arrive rather than waiting for complete messages.
 
 When a client has a session channel open:
 
@@ -131,7 +131,7 @@ Agents acquire capabilities from two distinct sources: the user who created the 
 
 **Invoker-granted capabilities** are provided at invocation time by the user who launches the agent. These are additional permissions the invoker delegates for the duration of the interaction - access to the invoker's data, authorization to act on the invoker's behalf with specific services, or credentials the agent needs to complete work for that particular user.
 
-**Effective capabilities** are the union of creator-granted and invoker-granted capabilities, subject to the agent's grants. The harness resolves the effective capability set at invocation time and enforces it throughout the session.
+**Effective capabilities** are the union of creator-granted and invoker-granted capabilities, subject to the agent's grants. The harness resolves the effective capability set at invocation time and enforces it throughout the instance lifetime.
 
 This dual-authority model enables important patterns:
 
@@ -143,7 +143,7 @@ This dual-authority model enables important patterns:
 
 **Inherited capabilities** follow the same dual model when agents create other agents. The parent agent can grant its child a subset of its own creator-granted capabilities, establishing a delegation chain. Children cannot exceed their parent's authority, but they can carry capabilities that future invokers of the child would not have on their own.
 
-The harness manages the lifecycle of all delegated credentials - renewal, revocation, and expiry. When a creator revokes a capability from an agent, the harness immediately stops exercising that capability regardless of in-flight work. Invoker-granted capabilities expire when the invocation session ends unless explicitly persisted.
+The harness manages the lifecycle of all delegated credentials - renewal, revocation, and expiry. When a creator revokes a capability from an agent, the harness immediately stops exercising that capability regardless of in-flight work. Invoker-granted capabilities expire when the instance ends unless explicitly persisted.
 
 Authorization grants are part of the agent's auditable state. The harness logs what was granted, by whom (creator vs. invoker), when, and tracks all usage of delegated credentials.
 
@@ -172,16 +172,16 @@ Key pairs are generated at agent creation time and managed by the harness. Priva
 
 The control plane maintains a key validity history per agent — a list of `(publicKey, validFrom, validUntil)` tuples — so that historical commits remain verifiable after key rotation. When a key is retired (due to compromise, migration, or routine rotation), the old key is retained for signature verification but no longer accepted for new pushes.
 
-### Session Continuity
+### Instance Continuity
 
-Agent sessions survive harness restarts. The harness persists agent state (conversation context, pending operations, key pairs) in the agent's local storage. When the harness restarts, it discovers previously managed agents, proves ownership of each agent address by signing a cryptographic challenge with the agent's private key, and resumes operation from the persisted state.
+Agent instances survive harness restarts. The harness persists agent state (conversation context, pending operations, key pairs) in the agent's local storage. When the harness restarts, it discovers previously managed agents, proves ownership of each agent address by signing a cryptographic challenge with the agent's private key, and resumes operation from the persisted state.
 
-The authority model for session continuity is:
+The authority model for instance continuity is:
 
 - **Harness local storage is authoritative** for agent inference context — conversation history, pending operations, and token usage. This is the source of truth for what the agent knows.
 - **Control plane is a delivery queue** for user messages. Messages sent while the harness is disconnected are queued and flushed to the harness on successful reconnect. The harness incorporates delivered messages into the agent's context through the normal message handling path.
 
-The reconnection protocol requires the harness to prove it holds the private key for each agent address it claims to manage. This prevents a rogue harness from hijacking agent sessions.
+The reconnection protocol requires the harness to prove it holds the private key for each agent address it claims to manage. This prevents a rogue harness from hijacking agent instances.
 
 Signatures are attached to:
 
@@ -273,19 +273,19 @@ The control plane stores API keys, OAuth tokens, and other credentials that agen
 **Message Bus Management**
 The control plane manages the message bus infrastructure for each tenant. It configures routing rules, manages distribution lists, enforces rate limits, and handles cross-tenant federation for messaging. The message bus itself may be implemented as a separate service, but the control plane provides the configuration and policy layer.
 
-**Session Routing**
-For agents that support session channels, the control plane brokers connections between clients and harnesses. In production deployments, clients do not connect directly to harnesses — they connect to the control plane, which routes session traffic to the appropriate harness. This keeps harnesses from needing public addresses and enables NAT traversal for harnesses running on mobile, embedded, or firewalled networks. Harnesses maintain a persistent outbound connection to the control plane; session traffic tunnels through this connection when a client requests a session.
+**Instance Channel Routing**
+For agents that support session channels, the control plane brokers connections between clients and harnesses. In production deployments, clients do not connect directly to harnesses — they connect to the control plane, which routes channel traffic to the appropriate harness. This keeps harnesses from needing public addresses and enables NAT traversal for harnesses running on mobile, embedded, or firewalled networks. Harnesses maintain a persistent outbound connection to the control plane; channel traffic tunnels through this connection when a client connects to an instance.
 
-Session channels are optional. Agents that do not require real-time streaming (background processors, batch workers, agent-to-agent workflows) operate purely through the message bus and do not expose session endpoints.
+Session channels are optional. Agents that do not require real-time streaming (background processors, batch workers, agent-to-agent workflows) operate purely through the message bus and do not expose streaming endpoints.
 
-Session establishment flow:
+Instance deployment and channel attachment flow:
 
-1. Client authenticates with the control plane, specifying the target agent
-2. Control plane validates the client's identity and authorization, and confirms the agent supports sessions
-3. Control plane issues a session token scoped to the agent and the client's invoker-granted capabilities
-4. Client opens a session channel to the control plane
-5. Control plane routes the session to the harness hosting the agent
-6. Harness validates the session token and binds capabilities for the session duration
+1. Client authenticates with the control plane and requests an instance of the target agent via `POST /agents/instances`
+2. Control plane validates the client's identity and authorization, resolves credentials, and deploys the agent to a sidecar
+3. Control plane returns the running instance with its address and public key
+4. Client opens a session channel to the instance's SSE endpoint (`GET /agents/instances/:instanceId/events`)
+5. Control plane routes the channel to the harness hosting the agent
+6. Harness binds capabilities for the instance duration
 
 In development environments, clients may connect directly to a locally-running harness, bypassing the control plane for convenience.
 
@@ -403,7 +403,7 @@ The harness maintains revision history for all agent-local data using git as the
 
 ### Automatic Tracking
 
-Any file the agent creates or modifies within `state/` is automatically tracked. The harness commits changes only on lifecycle boundaries - agent suspension, shutdown, or context window compaction. This provides a safety net ensuring no work is lost across session boundaries without cluttering history with noise during active operation.
+Any file the agent creates or modifies within `state/` is automatically tracked. The harness commits changes only on lifecycle boundaries - agent suspension, shutdown, or context window compaction. This provides a safety net ensuring no work is lost across instance boundaries without cluttering history with noise during active operation.
 
 ### Named Checkpoints
 

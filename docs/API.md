@@ -7,7 +7,7 @@
 | GET | /api/me | Get current user profile |
 | GET | /api/me/principals | List principals across all tenants |
 | GET | /api/me/agents | List agents across all tenants |
-| GET | /api/me/sessions | List sessions across all tenants |
+| GET | /api/me/instances | List instances across all tenants |
 | GET | /api/me/approvals | List pending approvals across all tenants |
 | POST | /api/tenants | Create a tenant |
 | GET | /api/tenants/:tenantId | Get tenant details |
@@ -34,25 +34,23 @@
 | PATCH | /api/tenants/:tenantId/grants/:grantId | Update a grant |
 | DELETE | /api/tenants/:tenantId/grants/:grantId | Revoke a grant |
 | POST | /api/tenants/:tenantId/principals/:principalId/evaluate | Evaluate grants for a principal |
-| GET | /api/tenants/:tenantId/agents | List agents in the tenant |
-| POST | /api/tenants/:tenantId/agents | Create an agent |
-| GET | /api/tenants/:tenantId/agents/:agentId | Get agent details |
-| PATCH | /api/tenants/:tenantId/agents/:agentId | Update agent definition |
-| DELETE | /api/tenants/:tenantId/agents/:agentId | Retire an agent |
-| GET | /api/tenants/:tenantId/agents/:agentId/versions | List agent versions |
-| POST | /api/tenants/:tenantId/agents/:agentId/rollback | Rollback to a previous version |
-| GET | /api/tenants/:tenantId/agents/:agentId/health | Get agent health status |
-| GET | /api/tenants/:tenantId/agents/:agentId/offerings | List agent offerings |
-| POST | /api/tenants/:tenantId/sessions | Create a session |
-| GET | /api/tenants/:tenantId/sessions | List sessions in the tenant |
-| GET | /api/tenants/:tenantId/sessions/:sessionId | Get session metadata |
-| DELETE | /api/tenants/:tenantId/sessions/:sessionId | End a session |
-| POST | /api/tenants/:tenantId/sessions/:sessionId/messages | Send a message to the agent |
-| GET | /api/tenants/:tenantId/sessions/:sessionId/messages | List messages in a session |
-| GET | /api/tenants/:tenantId/sessions/:sessionId/messages/:messageId | Get a single message |
-| POST | /api/tenants/:tenantId/sessions/:sessionId/abort | Abort current operation |
-| GET | /api/tenants/:tenantId/sessions/:sessionId/status | Get session status |
-| GET | /api/tenants/:tenantId/sessions/:sessionId/events | SSE event stream (fallback) |
+| GET | /api/tenants/:tenantId/agents/definitions | List agent definitions |
+| POST | /api/tenants/:tenantId/agents/definitions | Create an agent definition |
+| GET | /api/tenants/:tenantId/agents/definitions/:agentId | Get agent definition details |
+| PATCH | /api/tenants/:tenantId/agents/definitions/:agentId | Update agent definition |
+| DELETE | /api/tenants/:tenantId/agents/definitions/:agentId | Retire an agent |
+| GET | /api/tenants/:tenantId/agents/definitions/:agentId/versions | List agent versions |
+| POST | /api/tenants/:tenantId/agents/definitions/:agentId/rollback | Rollback to a previous version |
+| GET | /api/tenants/:tenantId/agents/definitions/:agentId/health | Get agent health status |
+| GET | /api/tenants/:tenantId/agents/definitions/:agentId/offerings | List agent offerings |
+| POST | /api/tenants/:tenantId/agents/instances | Deploy an agent instance |
+| GET | /api/tenants/:tenantId/agents/instances | List agent instances |
+| GET | /api/tenants/:tenantId/agents/instances/:instanceId | Get instance detail |
+| DELETE | /api/tenants/:tenantId/agents/instances/:instanceId | Stop an instance |
+| POST | /api/tenants/:tenantId/agents/instances/:instanceId/messages | Send a message to the agent |
+| GET | /api/tenants/:tenantId/agents/instances/:instanceId/messages | List messages for an instance |
+| POST | /api/tenants/:tenantId/agents/instances/:instanceId/abort | Abort current operation |
+| GET | /api/tenants/:tenantId/agents/instances/:instanceId/events | SSE event stream |
 | GET | /api/tenants/:tenantId/approvals | List pending approvals in the tenant |
 | GET | /api/tenants/:tenantId/approvals/:approvalId | Get approval details |
 | POST | /api/tenants/:tenantId/approvals/:approvalId/approve | Approve an action |
@@ -70,16 +68,16 @@
 | DELETE | /api/tenants/:tenantId/credentials/:credentialId | Revoke a credential |
 | GET | /api/tenants/:tenantId/offerings | Search offerings |
 | GET | /api/tenants/:tenantId/offerings/:offeringId | Get offering details |
-| GET | /api/tenants/:tenantId/agents/:agentId/logs | Get agent logs |
-| GET | /api/tenants/:tenantId/agents/:agentId/metrics | Get agent metrics |
+| GET | /api/tenants/:tenantId/agents/definitions/:agentId/logs | Get agent logs |
+| GET | /api/tenants/:tenantId/agents/definitions/:agentId/metrics | Get agent metrics |
 | GET | /api/tenants/:tenantId/traces | Query distributed traces |
 | GET | /api/tenants/:tenantId/traces/:traceId | Get a full trace |
-| GET | /api/tenants/:tenantId/agents/:agentId/data | List files in agent working directory |
-| GET | /api/tenants/:tenantId/agents/:agentId/data/* | Read a file from agent storage |
-| GET | /api/tenants/:tenantId/agents/:agentId/history | List commits and checkpoints |
-| GET | /api/tenants/:tenantId/agents/:agentId/history/:ref | Show changes in a commit |
-| GET | /api/tenants/:tenantId/agents/:agentId/branches | List branches |
-| POST | /api/tenants/:tenantId/agents/:agentId/history/:ref/restore | Restore agent data to a previous state |
+| GET | /api/tenants/:tenantId/agents/definitions/:agentId/data | List files in agent working directory |
+| GET | /api/tenants/:tenantId/agents/definitions/:agentId/data/* | Read a file from agent storage |
+| GET | /api/tenants/:tenantId/agents/definitions/:agentId/history | List commits and checkpoints |
+| GET | /api/tenants/:tenantId/agents/definitions/:agentId/history/:ref | Show changes in a commit |
+| GET | /api/tenants/:tenantId/agents/definitions/:agentId/branches | List branches |
+| POST | /api/tenants/:tenantId/agents/definitions/:agentId/history/:ref/restore | Restore agent data to a previous state |
 
 ## User
 
@@ -104,12 +102,12 @@ Aggregates agents from all tenants the user belongs to. Each result is tagged wi
 
 200: AgentSummary[] -- Agents across tenants
 
-### GET /api/me/sessions
-List sessions across all tenants
+### GET /api/me/instances
+List instances across all tenants
 
-Aggregates active sessions from all tenants the user belongs to. Each result is tagged with tenantId.
+Aggregates running agent instances from all tenants the user belongs to. Each result is tagged with tenantId.
 
-200: SessionSummary[] -- Sessions across tenants
+200: InstanceSummary[] -- Instances across tenants
 
 ### GET /api/me/approvals
 List pending approvals across all tenants
@@ -352,61 +350,61 @@ Body: EvaluateRequest
 200: EvaluateResult -- Evaluation result
 404: ErrorResponse -- Principal not found
 
-## Agents
+## Agent Definitions
 
-### GET /api/tenants/:tenantId/agents
-List agents in the tenant
+### GET /api/tenants/:tenantId/agents/definitions
+List agent definitions
 
 Filterable by offering and status.
 
-Query: offering?, status?: deployed|stopped|updating|error
+Query: offering?, status?: deployed|stopped
 
-200: AgentResponse[] -- List of agents
+200: AgentResponse[] -- List of agent definitions
 
-### POST /api/tenants/:tenantId/agents
-Create an agent
+### POST /api/tenants/:tenantId/agents/definitions
+Create an agent definition
 
-Creates an agent and its corresponding principal. Accepts the agent definition and optional initial capability grants for the agent's principal.
+Creates an agent definition and its corresponding principal. Accepts the definition and optional initial capability grants for the agent's principal.
 
 Body: CreateAgent
 
 201: AgentResponse -- Agent created
 400: ErrorResponse -- Validation error
 
-### GET /api/tenants/:tenantId/agents/:agentId
-Get agent details
+### GET /api/tenants/:tenantId/agents/definitions/:agentId
+Get agent definition details
 
-Returns the agent definition, status, health, offerings, and principal ID.
+Returns the agent definition, status, capabilities, and principal ID.
 
 200: AgentResponse -- Agent details
 404: ErrorResponse -- Agent not found
 
-### PATCH /api/tenants/:tenantId/agents/:agentId
+### PATCH /api/tenants/:tenantId/agents/definitions/:agentId
 Update agent definition
 
-Updates the agent definition and creates a new version. The new version is deployed alongside the current version until health checks pass.
+Updates the agent definition and creates a new version. Running instances are not automatically updated; redeploy to pick up the new version.
 
 Body: UpdateAgent
 
 200: AgentResponse -- Agent updated
 400: ErrorResponse -- Validation error
 
-### DELETE /api/tenants/:tenantId/agents/:agentId
+### DELETE /api/tenants/:tenantId/agents/definitions/:agentId
 Retire an agent
 
-Deactivates the agent's principal and begins graceful shutdown. In-flight work is drained before the agent stops.
+Deactivates the agent's principal and stops any running instances.
 
 204: (no content) -- Agent retirement initiated
 404: ErrorResponse -- Agent not found
 
-### GET /api/tenants/:tenantId/agents/:agentId/versions
+### GET /api/tenants/:tenantId/agents/definitions/:agentId/versions
 List agent versions
 
 Lists all versions with their deployment status.
 
 200: AgentVersion[] -- List of versions
 
-### POST /api/tenants/:tenantId/agents/:agentId/rollback
+### POST /api/tenants/:tenantId/agents/definitions/:agentId/rollback
 Rollback to a previous version
 
 Shifts traffic back to the specified version. The current version is stopped.
@@ -416,7 +414,7 @@ Body: RollbackRequest
 200: AgentResponse -- Rollback initiated
 400: ErrorResponse -- Invalid version
 
-### GET /api/tenants/:tenantId/agents/:agentId/health
+### GET /api/tenants/:tenantId/agents/definitions/:agentId/health
 Get agent health status
 
 Returns liveness and readiness status.
@@ -424,99 +422,95 @@ Returns liveness and readiness status.
 200: AgentHealth -- Health status
 404: ErrorResponse -- Agent not found
 
-### GET /api/tenants/:tenantId/agents/:agentId/offerings
+### GET /api/tenants/:tenantId/agents/definitions/:agentId/offerings
 List agent offerings
 
 Returns the agent's exposed offerings with pricing metadata.
 
 200: Offering[] -- List of offerings
 
-## Sessions
+## Instances
 
-### POST /api/tenants/:tenantId/sessions
-Create a session
+### POST /api/tenants/:tenantId/agents/instances
+Deploy an agent instance
 
-Creates a new session with the specified agent. Deploys the agent to a sidecar if not already running. Invoker-granted capabilities become grants with source 'invoker' scoped to the session lifetime.
+Creates a new running instance of the specified agent definition. Resolves credentials, provisions the agent on a sidecar, and starts the agent. At most one running instance per agent is permitted.
 
-Body: CreateSession
+Body: CreateAgentInstance
 
-201: SessionResponse -- Session created
-404: ErrorResponse -- Agent not found
+201: AgentInstanceResponse -- Instance deployed
+404: ErrorResponse -- Agent definition not found
+409: ErrorResponse -- Agent not launchable or already has an active instance
+502: ErrorResponse -- Sidecar unavailable
 
-### GET /api/tenants/:tenantId/sessions
-List sessions in the tenant
+### GET /api/tenants/:tenantId/agents/instances
+List agent instances
 
-Lists the caller's sessions within this tenant. Filterable by agentId.
+Lists agent instances in the tenant. Filterable by agentId and status.
 
-Query: agentId?
+Query: agentId?, status?: deployed|running|updating|error|stopped
 
-200: SessionResponse[] -- List of sessions
+200: AgentInstanceResponse[] -- List of instances
 
-### GET /api/tenants/:tenantId/sessions/:sessionId
-Get session metadata
+### GET /api/tenants/:tenantId/agents/instances/:instanceId
+Get instance detail
 
-Returns session status, agent, creation time, and last activity.
+Returns instance runtime state including status, public key, sidecar assignment, and runtime status (idle, busy, waiting_approval) when available.
 
-200: SessionResponse -- Session details
-404: ErrorResponse -- Session not found
+200: AgentInstanceResponse -- Instance detail
+404: ErrorResponse -- Instance not found
 
-### DELETE /api/tenants/:tenantId/sessions/:sessionId
-End a session
+### DELETE /api/tenants/:tenantId/agents/instances/:instanceId
+Stop an instance
 
-Ends the session and undeploys the agent from its sidecar.
+Stops the running instance and undeploys the agent from the sidecar.
 
-204: (no content) -- Session ended
-404: ErrorResponse -- Session not found
-409: ErrorResponse -- Session already ending or ended
-502: ErrorResponse -- Sidecar unavailable for undeploy
+204: (no content) -- Instance stopped
+404: ErrorResponse -- Instance not found
+409: ErrorResponse -- Instance already stopped
+502: ErrorResponse -- Sidecar unavailable
 
-### POST /api/tenants/:tenantId/sessions/:sessionId/messages
+### POST /api/tenants/:tenantId/agents/instances/:instanceId/messages
 Send a message to the agent
 
-Persists the user message and returns it. The agent's response streams over the session channel (WebSocket or SSE), not in this HTTP response.
+Persists the user message and dispatches it to the running agent. The agent's response streams over the instance SSE channel, not in this HTTP response.
 
 Body: SendMessage
 
 201: MessageResponse -- Message sent
 400: ErrorResponse -- Validation error
+404: ErrorResponse -- Instance not found
+409: ErrorResponse -- Instance not running
+502: ErrorResponse -- Sidecar unavailable
 
-### GET /api/tenants/:tenantId/sessions/:sessionId/messages
-List messages in a session
+### GET /api/tenants/:tenantId/agents/instances/:instanceId/messages
+List messages for an instance
 
-Returns messages with all parts (text, reasoning, tool calls, etc.). Cursor-paginated.
+Returns messages with all parts (text, reasoning, tool calls, etc.). Cursor-paginated. Only includes messages created during this instance's lifetime.
+
+Query: cursor?, limit?
 
 200: MessageResponse[] -- List of messages
+404: ErrorResponse -- Instance not found
 
-### GET /api/tenants/:tenantId/sessions/:sessionId/messages/:messageId
-Get a single message
-
-Returns a message with all its parts.
-
-200: MessageResponse -- Message details
-404: ErrorResponse -- Message not found
-
-### POST /api/tenants/:tenantId/sessions/:sessionId/abort
+### POST /api/tenants/:tenantId/agents/instances/:instanceId/abort
 Abort current operation
 
 Aborts the agent's current inference or tool execution.
 
 204: (no content) -- Abort signal sent
-404: ErrorResponse -- Session not found
+404: ErrorResponse -- Instance not found
+409: ErrorResponse -- Instance not running
+502: ErrorResponse -- Sidecar unavailable
 
-### GET /api/tenants/:tenantId/sessions/:sessionId/status
-Get session status
+### GET /api/tenants/:tenantId/agents/instances/:instanceId/events
+SSE event stream
 
-Returns the runtime operational status of an active session: idle, busy, or waiting_approval. Returns 404 for sessions that are ending, ended, or do not exist.
-
-200: SessionStatus
-404: ErrorResponse -- Session not found or ended
-
-### GET /api/tenants/:tenantId/sessions/:sessionId/events
-SSE event stream (fallback)
-
-Server-Sent Events stream for clients that cannot use WebSocket. Same event types as the WebSocket session channel. Server-to-client only; use POST .../messages for client-to-server.
+Server-Sent Events stream for agent events. Server-to-client only; use POST .../messages for client-to-server messaging.
 
 200: SSE stream -- SSE event stream
+404: ErrorResponse -- Instance not found
+410: ErrorResponse -- Instance stopped
 
 ## Approvals
 
@@ -530,7 +524,7 @@ Returns pending approval requests for the authenticated user within this tenant.
 ### GET /api/tenants/:tenantId/approvals/:approvalId
 Get approval details
 
-Returns the proposed action, context, originating agent, and session.
+Returns the proposed action, context, originating agent, and instance.
 
 200: ApprovalResponse -- Approval details
 404: ErrorResponse -- Approval not found
@@ -646,7 +640,7 @@ Revoke a credential
 
 ## Observability
 
-### GET /api/tenants/:tenantId/agents/:agentId/logs
+### GET /api/tenants/:tenantId/agents/definitions/:agentId/logs
 Get agent logs
 
 Structured logs for an agent. Filterable by level and time range.
@@ -656,7 +650,7 @@ Query: level?: debug|info|warn|error, startTime?, endTime?
 200: LogEntry[] -- Log entries
 404: ErrorResponse -- Agent not found
 
-### GET /api/tenants/:tenantId/agents/:agentId/metrics
+### GET /api/tenants/:tenantId/agents/definitions/:agentId/metrics
 Get agent metrics
 
 Returns throughput, latency, error rates, token usage, and cost metrics.
@@ -667,9 +661,9 @@ Returns throughput, latency, error rates, token usage, and cost metrics.
 ### GET /api/tenants/:tenantId/traces
 Query distributed traces
 
-Searches traces within the tenant. Filterable by agent, session, time range, and trace ID.
+Searches traces within the tenant. Filterable by agent, instance, time range, and trace ID.
 
-Query: agentId?, sessionId?, traceId?, startTime?, endTime?
+Query: agentId?, instanceId?, traceId?, startTime?, endTime?
 
 200: SpanResponse[] -- List of traces
 
@@ -683,13 +677,13 @@ Returns all spans in a trace across agent boundaries.
 
 ## Agent Data
 
-### GET /api/tenants/:tenantId/agents/:agentId/data
+### GET /api/tenants/:tenantId/agents/definitions/:agentId/data
 List files in agent working directory
 
 200: FileEntry[] -- File listing
 404: ErrorResponse -- Agent not found
 
-### GET /api/tenants/:tenantId/agents/:agentId/data/*
+### GET /api/tenants/:tenantId/agents/definitions/:agentId/data/*
 Read a file from agent storage
 
 Reads a file by path from the agent's local storage.
@@ -697,14 +691,14 @@ Reads a file by path from the agent's local storage.
 200: FileContent -- File content
 404: ErrorResponse -- File or agent not found
 
-### GET /api/tenants/:tenantId/agents/:agentId/history
+### GET /api/tenants/:tenantId/agents/definitions/:agentId/history
 List commits and checkpoints
 
 Returns the agent's change history with commit messages and timestamps.
 
 200: HistoryEntry[] -- History entries
 
-### GET /api/tenants/:tenantId/agents/:agentId/history/:ref
+### GET /api/tenants/:tenantId/agents/definitions/:agentId/history/:ref
 Show changes in a commit
 
 Returns the files changed in a specific commit with additions/deletions counts.
@@ -712,14 +706,14 @@ Returns the files changed in a specific commit with additions/deletions counts.
 200: CommitDetail -- Commit details
 404: ErrorResponse -- Commit not found
 
-### GET /api/tenants/:tenantId/agents/:agentId/branches
+### GET /api/tenants/:tenantId/agents/definitions/:agentId/branches
 List branches
 
 Lists branches in the agent's data repository.
 
 200: BranchInfo[] -- List of branches
 
-### POST /api/tenants/:tenantId/agents/:agentId/history/:ref/restore
+### POST /api/tenants/:tenantId/agents/definitions/:agentId/history/:ref/restore
 Restore agent data to a previous state
 
 Restores the agent's working directory to the state at the specified commit.
@@ -733,12 +727,16 @@ Restores the agent's working directory to the state at the specified commit.
 `{ liveness: "ok" | "unhealthy", readiness: "not_ready" | "ok" | "unhealthy", lastCheckedAt?: string | null }`
 Source: packages/types/src/agents.ts
 
+### AgentInstanceResponse
+`{ id: string, agentId: string, tenantId: string, address: string, status: "deployed" | "running" | "updating" | "error" | "stopped", createdAt: string, updatedAt: string, publicKey?: string | null, kernelId?: string | null, sidecarId?: string | null, endedAt?: string | null, runtimeStatus?: "idle" | "busy" | "waiting_approval" }`
+Source: packages/types/src/agents.ts
+
 ### AgentResponse
-`{ createdAt: string, currentVersion: string, id: string, name: string, principalId: string, status: "deployed" | "error" | "stopped" | "updating", tenantId: string, updatedAt: string, capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, description?: string | null, initialState?: { [string]: unknown }, harnessId?: string | null, modelConfig?: { [string]: unknown }, skills?: { [string]: unknown }, systemPrompt?: string | null }`
+`{ createdAt: string, currentVersion: string, id: string, name: string, principalId: string, status: "deployed" | "stopped", tenantId: string, updatedAt: string, capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, description?: string | null, initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, skills?: { [string]: unknown }, systemPrompt?: string | null }`
 Source: packages/types/src/agents.ts
 
 ### AgentSummary
-`{ id: string, name: string, status: "deployed" | "error" | "stopped" | "updating", tenantId: string, tenantName: string, description?: string | null }`
+`{ id: string, name: string, status: "deployed" | "stopped", tenantId: string, tenantName: string, description?: string | null }`
 Source: packages/types/src/me.ts
 
 ### AgentVersion
@@ -749,9 +747,13 @@ Source: packages/types/src/agents.ts
 `{ action: string, agentId: string, createdAt: string, id: string, principalId: string, resource: string, sessionId: string, status: "approved" | "pending" | "rejected", tenantId: string, context?: { [string]: unknown } | null, resolvedAt?: string | null }`
 Source: packages/types/src/approvals.ts
 
+Note: `sessionId` is an internal FK to the session channel. The approval was created during an instance's execution; the instance ID can be resolved via the session relationship.
+
 ### ApprovalSummary
 `{ action: string, agentId: string, agentName: string, createdAt: string, id: string, resource: string, sessionId: string, tenantId: string, tenantName: string }`
 Source: packages/types/src/me.ts
+
+Note: `sessionId` is an internal FK, as with ApprovalResponse above.
 
 ### ApproveAction
 `{ scope: "always" | "once" }`
@@ -793,9 +795,9 @@ Source: packages/types/src/grants.ts
 `{ name: string, description?: string }`
 Source: packages/types/src/roles.ts
 
-### CreateSession
-`{ agentId: string, invokerCapabilities?: { action: string, resource: string, conditions?: { [string]: unknown } | null }[] }`
-Source: packages/types/src/sessions.ts
+### CreateAgentInstance
+`{ agentId: string }`
+Source: packages/types/src/agents.ts
 
 ### CreateTenant
 `{ name: string, slug: string, parentId?: string | null }`
@@ -853,6 +855,8 @@ Source: packages/types/src/observability.ts
 `{ createdAt: string, id: string, parts: { id: string, type: "file" | "patch" | "reasoning" | "snapshot" | "step-finish" | "step-start" | "text" | "tool", content?: string | null, metadata?: { [string]: unknown } | null }[], role: "assistant" | "user", sessionId: string, status: "pending" | "delivered" | "failed" }`
 Source: packages/types/src/sessions.ts
 
+Note: `sessionId` refers to the internal session channel identifier, not the removed session API resource. This field is retained for backward compatibility with the underlying message storage model.
+
 ### MetricsResponse
 `{ agentId: string, avgLatencyMs?: number, cost?: string, errorRate?: number, messageCount?: number, tokenUsage?: { input?: number, output?: number, total?: number } }`
 Source: packages/types/src/observability.ts
@@ -885,16 +889,8 @@ Source: packages/types/src/agents.ts
 `{ content: string, attachments?: { type: string, url: string, mimeType?: string }[] }`
 Source: packages/types/src/sessions.ts
 
-### SessionResponse
-`{ agentId: string, createdAt: string, id: string, principalId: string, status: string, tenantId: string, updatedAt: string, lastActivityAt?: string | null }`
-Source: packages/types/src/sessions.ts
-
-### SessionStatus
-`{ status: "busy" | "idle" | "waiting_approval" }`
-Source: packages/types/src/sessions.ts
-
-### SessionSummary
-`{ agentId: string, agentName: string, createdAt: string, id: string, status: "busy" | "idle" | "retry" | "waiting_approval", tenantId: string, tenantName: string, lastActivityAt?: string | null }`
+### InstanceSummary
+`{ id: string, agentId: string, agentName: string, address: string, status: "deployed" | "running" | "updating" | "error" | "stopped", tenantId: string, tenantName: string, createdAt: string }`
 Source: packages/types/src/me.ts
 
 ### SpanResponse
