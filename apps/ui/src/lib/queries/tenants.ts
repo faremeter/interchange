@@ -211,11 +211,11 @@ export function agentDetailQuery(tenantId: string, agentId: string) {
 
 export function tenantInstancesQuery(tenantId: string) {
   return queryOptions({
-    queryKey: ["tenants", tenantId, "instances"],
+    queryKey: ["tenants", tenantId, "instances", { status: "running" }],
     queryFn: async () => {
       const res = await api<{ data: AgentInstanceResponse[] }>(
         "GET",
-        `/api/tenants/${tenantId}/agents/instances`,
+        `/api/tenants/${tenantId}/agents/instances?status=running`,
       );
       return res.data;
     },
