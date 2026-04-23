@@ -94,23 +94,12 @@ const sidecarRouter = createSidecarRouter({
   async onAgentReconnected(agentAddress) {
     const instance = await requireInstance(agentAddress);
 
-    // TODO(INTR-19 commit 3): sessionId lives on agent.sessionId until
-    // sessions dissolve into instance-scoped connections. For now, read
-    // it from the agent row since agentSession references agentId, not
-    // instanceId, and there may be ambiguity with multiple instances.
-    const agentRow = await db.query.agent.findFirst({
-      where: eq(agent.id, instance.agentId),
-    });
-    if (!agentRow) {
-      throw new Error(
-        `Agent definition for instance "${agentAddress}" not found`,
-      );
-    }
-    if (!agentRow.sessionId) {
+    if (!instance.sessionId) {
       throw new Error(
         `Agent "${agentAddress}" reconnected but has no active session`,
       );
     }
+    const sessionId = instance.sessionId;
 
     // Refresh grants before creating any local state. If this fails,
     // the address is rejected and nothing needs cleanup.
@@ -129,21 +118,25 @@ const sidecarRouter = createSidecarRouter({
     }
     // Dual-write: always sync agent table since instance and agent
     // status can diverge during the migration
-    if (agentRow.status !== "running") {
+    const agentRow = await db.query.agent.findFirst({
+      where: eq(agent.id, instance.agentId),
+    });
+    if (!agentRow) {
+      log.warn(
+        "Agent definition missing for instance {agentAddress}, skipping dual-write",
+        { agentAddress },
+      );
+    } else if (agentRow.status !== "running") {
       await db
         .update(agent)
         .set({ status: "running", updatedAt: now })
         .where(eq(agent.id, instance.agentId));
     }
-    if (!eventCollectors.has(agentRow.sessionId)) {
-      eventCollectors.create(
-        agentRow.sessionId,
-        instance.tenantId,
-        agentAddress,
-      );
+    if (!eventCollectors.has(sessionId)) {
+      eventCollectors.create(sessionId, instance.tenantId, agentAddress);
       log.info(
         "Restored event collector for reconnected agent {agentAddress} session {sessionId}",
-        { agentAddress, sessionId: agentRow.sessionId },
+        { agentAddress, sessionId },
       );
     }
   },

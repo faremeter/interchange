@@ -1,6 +1,7 @@
 import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import { agent, agentVersion } from "./agents";
+import { agentSession } from "./sessions";
 import { principal } from "./principals";
 import { sidecar } from "./sidecar";
 import { tenant } from "./tenants";
@@ -18,6 +19,7 @@ export const agentInstance = pgTable("agent_instance", {
     .references(() => principal.id),
   address: text("address").notNull().unique(),
   versionId: text("version_id").references(() => agentVersion.id),
+  sessionId: text("session_id").references(() => agentSession.id),
   status: text("status", {
     enum: ["deployed", "running", "updating", "error", "stopped"],
   })
