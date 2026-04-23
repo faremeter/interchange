@@ -23,13 +23,13 @@ The choice of SMTP/IMAP is pragmatic: we get a global, federated message bus wit
 
 ### Agent Addressing
 
-Each agent has an SMTP address that serves as its network identifier:
+Each agent instance has an SMTP address that serves as its network identifier:
 
 ```
-agent-name@domain.interchange.network
+instance-id@domain.interchange.network
 ```
 
-The local part identifies the agent; the domain identifies the tenant. Tenant boundaries map directly to SMTP domains, providing natural isolation and federation semantics.
+The local part identifies the instance; the domain identifies the tenant. Tenant boundaries map directly to SMTP domains, providing natural isolation and federation semantics. Multiple instances of the same agent definition each receive their own address.
 
 ### Message Transport
 
