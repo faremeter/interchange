@@ -20,7 +20,7 @@
 // - `wait` + `done` together is invalid.
 // - `suspend` cannot appear alongside `infer` or `execute_tools`.
 // - `fork` is composable — may appear alongside any other action.
-// - `checkpoint` is composable — may appear alongside any other action.
+// - At most one `checkpoint` action; composable with any other action.
 // - At most one `wait` action.
 // - Multiple `execute_tools` are merged into a single parallel batch.
 // - `emit` is always valid and composable.
@@ -61,6 +61,13 @@ export function validateActions(
   const forkActions = list.filter((a) => a.type === "fork");
   const emitActions = list.filter((a) => a.type === "emit");
   const checkpointActions = list.filter((a) => a.type === "checkpoint");
+
+  if (checkpointActions.length > 1) {
+    return {
+      ok: false,
+      error: "Multiple checkpoint actions are not allowed",
+    };
+  }
 
   if (inferActions.length > 1) {
     return { ok: false, error: "Multiple infer actions are not allowed" };

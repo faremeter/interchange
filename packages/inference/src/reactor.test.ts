@@ -325,10 +325,33 @@ describe("validateActions", () => {
 
   test("checkpoint + infer is valid (composable)", () => {
     const result = validateActions([
-      { type: "checkpoint" },
+      { type: "checkpoint", message: "checkpoint" },
       { type: "infer", model: "gpt-4" },
     ]);
     expect(result.ok).toBe(true);
+  });
+
+  test("checkpoint message is preserved in normalized output", () => {
+    const result = validateActions({
+      type: "checkpoint",
+      message: "before tool call",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    const cp = result.normalized.find((a) => a.type === "checkpoint");
+    expect(cp).toBeDefined();
+    if (cp?.type !== "checkpoint") throw new Error("unreachable");
+    expect(cp.message).toBe("before tool call");
+  });
+
+  test("multiple checkpoint actions are rejected", () => {
+    const result = validateActions([
+      { type: "checkpoint", message: "first" },
+      { type: "checkpoint", message: "second" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/multiple checkpoint/i);
   });
 
   test("emit + infer is valid", () => {

@@ -253,7 +253,7 @@ The reactor validates the action set returned by the plugin before executing:
 - **Fork is composable** — `fork` can appear alongside `infer` or `execute_tools` (fork happens concurrently).
 - **Multiple tool executions collapse** — Multiple `execute_tools` actions are merged into a single parallel batch.
 - **Suspend is exclusive** — `suspend` cannot appear alongside `infer` or `execute_tools`. You either do work or you wait.
-- **Checkpoint is composable** — `checkpoint` can appear alongside any other action (it fires before the other action executes).
+- **Checkpoint is composable** — At most one `checkpoint` per action set; it can appear alongside any other action (it fires before the other action executes). The checkpoint carries a `message` string used as the git commit message.
 - **Wait is exclusive** — `wait` returns to the event loop immediately. It cannot appear alongside `infer` or `execute_tools`.
 
 Invalid action sets produce a `reactor.error` event with a diagnostic message. The reactor does not guess intent.
