@@ -1,4 +1,4 @@
-import { eq, and, isNull, inArray } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
@@ -33,12 +33,7 @@ import {
   pageParameters,
 } from "../pagination";
 
-type InstanceRow = typeof agentInstance.$inferSelect;
-
-function formatAgent(
-  row: typeof agent.$inferSelect,
-  instance?: InstanceRow | null,
-) {
+function formatAgent(row: typeof agent.$inferSelect) {
   return {
     id: row.id,
     tenantId: row.tenantId,
@@ -51,14 +46,7 @@ function formatAgent(
     initialState: (row.initialState as Record<string, unknown>) ?? undefined,
     modelConfig: (row.modelConfig as Record<string, unknown>) ?? undefined,
     currentVersion: row.currentVersion,
-    status: (instance ? instance.status : row.status) as
-      | "deployed"
-      | "stopped"
-      | "updating"
-      | "error"
-      | "running",
-    kernelId: instance?.kernelId ?? null,
-    sessionId: instance?.sessionId ?? null,
+    status: row.status,
     capabilities: (row.capabilities as Record<string, unknown>) ?? undefined,
     credentialRequirements:
       (row.credentialRequirements as
@@ -129,22 +117,9 @@ app.get(
       limit,
     });
 
-    const agentIds = rows.map((r) => r.id);
-    const instances =
-      agentIds.length > 0
-        ? await db.query.agentInstance.findMany({
-            where: and(
-              inArray(agentInstance.agentId, agentIds),
-              eq(agentInstance.tenantId, tenantCtx.id),
-              isNull(agentInstance.endedAt),
-            ),
-          })
-        : [];
-    const instanceByAgent = new Map(instances.map((i) => [i.agentId, i]));
-
     return c.json(
       paginatedResponse(
-        rows.map((r) => formatAgent(r, instanceByAgent.get(r.id))),
+        rows.map((r) => formatAgent(r)),
         rows,
         limit,
       ),
@@ -290,15 +265,7 @@ app.get(
       );
     }
 
-    const instance = await db.query.agentInstance.findFirst({
-      where: and(
-        eq(agentInstance.agentId, agentId),
-        eq(agentInstance.tenantId, tenantCtx.id),
-        isNull(agentInstance.endedAt),
-      ),
-    });
-
-    return c.json(formatAgent(row, instance));
+    return c.json(formatAgent(row));
   },
 );
 
