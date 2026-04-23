@@ -31,9 +31,7 @@ Each agent instance on a sidecar has a single git repository that contains both 
 
 Path disjointness is enforced: the hub only writes commits that modify `deploy/` paths, the sidecar only writes commits that modify `state/` paths. This guarantees conflict-free merges when the hub pushes new deploy versions to a running agent.
 
-The git DAG encodes provenance. Instance branches fork from deploy commits, so every state commit is a descendant of the deploy version that was active when it was produced. Deploy versions are tagged (`deploy/v1`, `deploy/v2`, etc.), providing stable anchors for provenance queries: "which deploy version was active when this audit record was committed" is answered by finding the most recent deploy tag that is an ancestor of the state commit.
-
-Multiple instances of the same agent share deploy history but have independent state branches (`refs/instances/<instance-id>`). On redeploy, each active instance merges the new deploy commit into its branch — always conflict-free due to path separation.
+The git DAG encodes provenance. State commits on the sidecar descend from the initial repository commit, and the `refs/heads/deploy` ref tracks the latest deploy version received from the hub. On redeploy, the sidecar force-checks-out the new deploy tree — path disjointness between `deploy/` and `state/` makes merge unnecessary and the simpler operation is correct.
 
 Repository organization on the hub is flexible — a single repository may contain definitions for multiple agents within a tenant, or agents may have dedicated repositories depending on operational needs. The assembly step normalizes any source layout into the standard `deploy/` tree structure before pushing to sidecars.
 
@@ -52,7 +50,7 @@ The harness manages the connection to the agent's model backend - whether a loca
 The harness exposes a standardized interface for invoking tools, whether local or remote. Local tools run within the agent's runtime - file system access, code execution, network requests, or custom tools registered by the operator. Remote tools are discovered through the control plane and invoke offerings exposed by other agents or services on the Interchange network. From the agent's perspective, local and remote tools share the same interface; the harness handles protocol negotiation, request routing, and wallet-based payment transparently. All tool invocations are subject to authorization policies.
 
 **Local Data**
-The harness provides access to persistent storage scoped to the agent. This includes working memory, cached artifacts, and any other state the agent accumulates during operation. Data is isolated per-agent unless explicitly shared. Credentials are managed separately by the harness and not exposed as agent-accessible data. All mutable local data is version-controlled, providing change history and recovery capabilities.
+The harness manages persistent state on behalf of the agent. Conversation context, pending operations, and audit records are stored in a git repository under `state/` — but this is an implementation detail invisible to the agent. The agent interacts with the outside world exclusively through tools and messages; it has no direct access to the storage layer, the git history, or any harness metadata. Data is isolated per-agent. Credentials and authorization grants are managed by the harness and explicitly hidden from the agent (see Trust Boundary below).
 
 **Environment Integration**
 Separate harness implementations exist for each execution environment:
@@ -157,6 +155,18 @@ Each harness runs in its own isolated context. The degree of isolation depends o
 - Audit logging for all external interactions
 - Alternate identity tracking for external services
 - Content safety boundaries between trusted and untrusted input
+
+### Trust Boundary
+
+The harness is a security boundary between the agent (untrusted code) and the platform. The agent sees tool definitions, tool results, messages, and inference responses. It does not see:
+
+- **Grant rules** — The agent never learns what actions are allowed, denied, or require approval. Exposing policy would let the agent reason about circumventing restrictions. When a tool call is blocked, the agent receives a generic refusal, not the grant rule that triggered it.
+- **Private keys** — The agent's Ed25519 key pair is managed by the harness and used for signing on the agent's behalf. The agent cannot access, export, or influence key material.
+- **Audit records** — Tool invocation audit records are written by the harness to the git storage layer. The agent has no read or write access to audit data.
+- **Storage internals** — The harness persists conversation context and audit records in a git repository under `state/`. The agent has no access to the git layer, the filesystem, or any harness metadata. The agent cannot create checkpoints, branches, or inspect its own history.
+- **Authorization decisions** — The agent receives the outcome of a tool call (result or refusal), never the authorization evaluation that produced it (which grants matched, what effect was applied, which principal was evaluated).
+
+This separation is fundamental to the security model. The harness enforces policy precisely because the agent cannot observe or influence the enforcement mechanism.
 
 ### Cryptographic Identity
 
@@ -399,30 +409,10 @@ Payments between agents in different tenants work through standard x402 flows. T
 
 ## Change History
 
-The harness maintains revision history for all agent-local data using git as the underlying storage mechanism. Runtime state lives under `state/` in the same repository that holds the deployed definition under `deploy/`. This unified repository means the full history — what the agent was running and what it did — is available in a single DAG.
+Runtime state lives under `state/` in the same repository that holds the deployed definition under `deploy/`. This unified repository means the full history — what the agent was running and what it did — is available in a single DAG.
 
-### Automatic Tracking
+The harness checkpoints conversation context (`state/context.json`) at inference and tool cycle boundaries — after each inference completion, after tool results arrive, and on shutdown. Audit records (`state/audit/`) are committed separately after each checkpoint and on shutdown. The agent has no awareness of or control over when checkpoints occur (see Trust Boundary).
 
-Any file the agent creates or modifies within `state/` is automatically tracked. The harness commits changes only on lifecycle boundaries - agent suspension, shutdown, or context window compaction. This provides a safety net ensuring no work is lost across instance boundaries without cluttering history with noise during active operation.
+### Operator Inspection
 
-### Named Checkpoints
-
-Agents can create explicit checkpoints with descriptive messages. These serve as meaningful waypoints in the agent's work history - before attempting a risky operation, after completing a milestone, or when switching between tasks. Agent-controlled checkpoints are the primary mechanism for building useful, readable change history.
-
-### Branching
-
-Agents can create branches to explore alternatives without affecting the main line of work:
-
-- _Experimentation_ - Try an approach; merge if successful, discard if not
-- _Parallel tasks_ - Work on multiple independent tasks with isolated state
-- _Rollback_ - Return to a known-good state if something goes wrong
-
-### Worktrees
-
-For agents that need simultaneous access to multiple states (e.g., comparing versions, running parallel experiments), the harness supports worktrees - independent working directories sharing the same history.
-
-### History Access
-
-Agents can query their change history: what files changed, when, and the content at any previous point. This supports debugging ("what did I change that broke this?") and learning ("how did I solve this last time?").
-
-The harness exposes revision control through the standard tool interface. Agents invoke history operations the same way they invoke any other tool; the harness handles git operations transparently.
+The control plane exposes the agent's change history to operators through the Agent Data API. Operators can list files, read content, browse commit history, and inspect individual commits. This provides visibility into what the agent was doing and when, useful for debugging, auditing, and incident response. The agent itself cannot access this history — it is a platform-level inspection surface, not an agent-facing capability.
