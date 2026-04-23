@@ -51,15 +51,27 @@ export type AgentResponse = {
   name: string;
   description: string | null;
   systemPrompt: string | null;
-  status: "deployed" | "stopped" | "updating" | "error" | "running";
+  status: "deployed" | "stopped";
   currentVersion: string;
-  kernelId: string | null;
-  sessionId: string | null;
   capabilities: Record<string, unknown> | null;
   credentialRequirements?: CredentialRequirement[];
-  initialResponse?: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type AgentInstanceResponse = {
+  id: string;
+  agentId: string;
+  tenantId: string;
+  address: string;
+  status: "deployed" | "running" | "updating" | "error" | "stopped";
+  publicKey: string | null;
+  kernelId: string | null;
+  sidecarId: string | null;
+  runtimeStatus?: "idle" | "busy" | "waiting_approval";
+  createdAt: string;
+  updatedAt: string;
+  endedAt: string | null;
 };
 
 type GrantResponse = {
@@ -178,7 +190,7 @@ export function tenantAgentsQuery(tenantId: string) {
     queryFn: async () => {
       const res = await api<{ data: AgentResponse[] }>(
         "GET",
-        `/api/tenants/${tenantId}/agents`,
+        `/api/tenants/${tenantId}/agents/definitions`,
       );
       return res.data;
     },
@@ -189,21 +201,33 @@ export function agentDetailQuery(tenantId: string, agentId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "agents", agentId],
     queryFn: () =>
-      api<AgentResponse>("GET", `/api/tenants/${tenantId}/agents/${agentId}`),
+      api<AgentResponse>(
+        "GET",
+        `/api/tenants/${tenantId}/agents/definitions/${agentId}`,
+      ),
   });
 }
 
-export type SessionStatusResponse = {
-  status: "idle" | "busy" | "waiting_approval";
-};
-
-export function sessionStatusQuery(tenantId: string, sessionId: string) {
+export function agentInstancesQuery(tenantId: string, agentId: string) {
   return queryOptions({
-    queryKey: ["tenants", tenantId, "sessions", sessionId, "status"],
-    queryFn: () =>
-      api<SessionStatusResponse>(
+    queryKey: ["tenants", tenantId, "instances", { agentId }],
+    queryFn: async () => {
+      const res = await api<{ data: AgentInstanceResponse[] }>(
         "GET",
-        `/api/tenants/${tenantId}/sessions/${sessionId}/status`,
+        `/api/tenants/${tenantId}/agents/instances?agentId=${agentId}&status=running`,
+      );
+      return res.data;
+    },
+  });
+}
+
+export function instanceDetailQuery(tenantId: string, instanceId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "instances", instanceId],
+    queryFn: () =>
+      api<AgentInstanceResponse>(
+        "GET",
+        `/api/tenants/${tenantId}/agents/instances/${instanceId}`,
       ),
     refetchInterval: 3000,
   });
@@ -488,7 +512,11 @@ type UpdateAgentBody = {
 export function createAgentMutation(tenantId: string, qc: QueryClient) {
   return {
     mutationFn: (body: CreateAgentBody) =>
-      api<AgentResponse>("POST", `/api/tenants/${tenantId}/agents`, body),
+      api<AgentResponse>(
+        "POST",
+        `/api/tenants/${tenantId}/agents/definitions`,
+        body,
+      ),
     onSuccess: () => invalidate(qc, tenantId, "agents"),
   };
 }
@@ -502,7 +530,7 @@ export function updateAgentMutation(
     mutationFn: (body: UpdateAgentBody) =>
       api<AgentResponse>(
         "PATCH",
-        `/api/tenants/${tenantId}/agents/${agentId}`,
+        `/api/tenants/${tenantId}/agents/definitions/${agentId}`,
         body,
       ),
     onSuccess: () => invalidate(qc, tenantId, "agents"),
@@ -516,42 +544,40 @@ export function deleteAgentMutation(
 ) {
   return {
     mutationFn: () =>
-      api<undefined>("DELETE", `/api/tenants/${tenantId}/agents/${agentId}`),
-    onSuccess: () => invalidate(qc, tenantId, "agents"),
-  };
-}
-
-type SessionResponse = {
-  id: string;
-  tenantId: string;
-  agentId: string;
-  principalId: string;
-  status: "idle" | "ending" | "ended";
-  createdAt: string;
-  updatedAt: string;
-  lastActivityAt: string | null;
-};
-
-export function createSessionMutation(tenantId: string, qc: QueryClient) {
-  return {
-    mutationFn: (body: { agentId: string }) =>
-      api<SessionResponse>("POST", `/api/tenants/${tenantId}/sessions`, body),
-    onSuccess: () => invalidate(qc, tenantId, "agents"),
-  };
-}
-
-export function endSessionMutation(
-  tenantId: string,
-  sessionId: string,
-  qc: QueryClient,
-) {
-  return {
-    mutationFn: () =>
       api<undefined>(
         "DELETE",
-        `/api/tenants/${tenantId}/sessions/${sessionId}`,
+        `/api/tenants/${tenantId}/agents/definitions/${agentId}`,
       ),
     onSuccess: () => invalidate(qc, tenantId, "agents"),
+  };
+}
+
+export function deployInstanceMutation(tenantId: string, qc: QueryClient) {
+  return {
+    mutationFn: (body: { agentId: string }) =>
+      api<AgentInstanceResponse>(
+        "POST",
+        `/api/tenants/${tenantId}/agents/instances`,
+        body,
+      ),
+    onSuccess: () => {
+      invalidate(qc, tenantId, "instances");
+      invalidate(qc, tenantId, "agents");
+    },
+  };
+}
+
+export function stopInstanceMutation(tenantId: string, qc: QueryClient) {
+  return {
+    mutationFn: (instanceId: string) =>
+      api<undefined>(
+        "DELETE",
+        `/api/tenants/${tenantId}/agents/instances/${instanceId}`,
+      ),
+    onSuccess: () => {
+      invalidate(qc, tenantId, "instances");
+      invalidate(qc, tenantId, "agents");
+    },
   };
 }
 
