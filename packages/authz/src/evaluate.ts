@@ -52,6 +52,7 @@ export async function evaluateGrants(
   const matching: MatchedGrant[] = [];
 
   for (const g of grants) {
+    if (g.expiresAt !== null && g.expiresAt < now) continue;
     if (!matchPattern(g.resource, resource)) continue;
     if (!matchPattern(g.action, action)) continue;
 

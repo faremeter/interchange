@@ -207,7 +207,7 @@ describe("evaluateGrants", () => {
     expect(result.resolvedBy?.id).toBe("g3");
   });
 
-  test("expired grants are excluded by collectGrants, not evaluateGrants", async () => {
+  test("grant with null expiresAt is always evaluated", async () => {
     const grants = [grant({ resource: "*", action: "read", effect: "allow" })];
 
     const result = await evaluateGrants(grants, "agent:*", "read");
@@ -865,5 +865,72 @@ describe("authorize with in-memory store", () => {
 
     expect(capturedPrincipal).toBe("prn_check");
     expect(capturedTenant).toBe("tnt_check");
+  });
+});
+
+describe("evaluateGrants — expiry", () => {
+  test("expired grant is skipped", async () => {
+    const past = new Date(Date.now() - 60_000);
+    const grants = [
+      grant({
+        resource: "tool:bash",
+        action: "invoke",
+        effect: "allow",
+        expiresAt: past,
+      }),
+    ];
+
+    const result = await evaluateGrants(grants, "tool:bash", "invoke");
+    expect(result.effect).toBeNull();
+  });
+
+  test("non-expired grant is evaluated normally", async () => {
+    const future = new Date(Date.now() + 60_000);
+    const grants = [
+      grant({
+        resource: "tool:bash",
+        action: "invoke",
+        effect: "allow",
+        expiresAt: future,
+      }),
+    ];
+
+    const result = await evaluateGrants(grants, "tool:bash", "invoke");
+    expect(result.effect).toBe("allow");
+  });
+
+  test("expired deny does not override a live allow", async () => {
+    const past = new Date(Date.now() - 60_000);
+    const grants = [
+      grant({
+        resource: "tool:bash",
+        action: "invoke",
+        effect: "allow",
+        expiresAt: null,
+      }),
+      grant({
+        resource: "tool:bash",
+        action: "invoke",
+        effect: "deny",
+        expiresAt: past,
+      }),
+    ];
+
+    const result = await evaluateGrants(grants, "tool:bash", "invoke");
+    expect(result.effect).toBe("allow");
+  });
+
+  test("null expiresAt is treated as never-expiring", async () => {
+    const grants = [
+      grant({
+        resource: "tool:bash",
+        action: "invoke",
+        effect: "allow",
+        expiresAt: null,
+      }),
+    ];
+
+    const result = await evaluateGrants(grants, "tool:bash", "invoke");
+    expect(result.effect).toBe("allow");
   });
 });
