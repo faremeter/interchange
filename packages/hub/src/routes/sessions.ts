@@ -1,4 +1,4 @@
-import { eq, and, desc, asc, gt, or, inArray } from "drizzle-orm";
+import { eq, and, desc, asc, gt, or, inArray, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import { type } from "arktype";
@@ -281,6 +281,19 @@ app.post(
       createdAt: now,
       updatedAt: now,
     });
+
+    // Remove any prior terminal or orphaned instance for this address
+    // so the unique constraint does not block relaunching the same
+    // agent. Covers stopped (clean end), error (leaked agent), and
+    // deployed (hub crashed before launch completed).
+    await db
+      .delete(agentInstance)
+      .where(
+        and(
+          eq(agentInstance.address, agentAddress),
+          inArray(agentInstance.status, ["stopped", "error", "deployed"]),
+        ),
+      );
 
     // Create the instance row before launching so that sidecar handler
     // callbacks (onAgentDeployAck, onAgentReconnected) can find it by
@@ -610,7 +623,12 @@ app.delete(
     await db
       .update(agentInstance)
       .set({ status: "stopped", sessionId: null, updatedAt: endedAt, endedAt })
-      .where(eq(agentInstance.address, agentAddress));
+      .where(
+        and(
+          eq(agentInstance.address, agentAddress),
+          isNull(agentInstance.endedAt),
+        ),
+      );
 
     // Dual-write: keep agent table in sync until routes are migrated
     await db
