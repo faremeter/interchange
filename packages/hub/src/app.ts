@@ -108,7 +108,7 @@ export function createApp({
     "/api/tenants/:tenantId/principals/:principalId/evaluate",
     evaluateRoutes,
   );
-  app.route("/api/tenants/:tenantId/agents", agentRoutes);
+  app.route("/api/tenants/:tenantId/agents/definitions", agentRoutes);
   app.route("/api/tenants/:tenantId/sessions", sessionRoutes);
   app.route("/api/tenants/:tenantId/approvals", approvalRoutes);
   app.route("/api/tenants/:tenantId/wallets", walletRoutes);

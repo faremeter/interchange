@@ -9,16 +9,6 @@ export const credentialRequirementSources = [
 export type CredentialRequirementSource =
   (typeof credentialRequirementSources)[number];
 
-// XXX - deprecated, remove when formatAgent cast is cleaned up in commit 2
-export const agentStatuses = [
-  "deployed",
-  "stopped",
-  "updating",
-  "error",
-  "running",
-] as const;
-export type AgentStatus = (typeof agentStatuses)[number];
-
 export const agentDefinitionStatuses = ["deployed", "stopped"] as const;
 export type AgentDefinitionStatus = (typeof agentDefinitionStatuses)[number];
 
