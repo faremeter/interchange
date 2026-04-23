@@ -361,12 +361,6 @@ app.post(
           .update(agentInstance)
           .set({ status: "error", updatedAt: failedAt })
           .where(eq(agentInstance.id, instanceId));
-
-        // Dual-write: keep agent table in sync until routes are migrated
-        await db
-          .update(agent)
-          .set({ status: "error", updatedAt: failedAt })
-          .where(eq(agent.id, row.id));
       } else {
         // Clean launch failure — the sidecar never started. Remove
         // the instance row so the unique address constraint does not
@@ -394,16 +388,6 @@ app.post(
       .update(agentInstance)
       .set({ status: "running", updatedAt: launchedAt })
       .where(eq(agentInstance.id, instanceId));
-
-    // Dual-write: keep agent table in sync until routes are migrated
-    await db
-      .update(agent)
-      .set({
-        status: "running",
-        sessionId,
-        updatedAt: launchedAt,
-      })
-      .where(and(eq(agent.id, row.id), eq(agent.status, "deployed")));
 
     return c.json(
       {
@@ -629,12 +613,6 @@ app.delete(
           isNull(agentInstance.endedAt),
         ),
       );
-
-    // Dual-write: keep agent table in sync until routes are migrated
-    await db
-      .update(agent)
-      .set({ status: "deployed", sessionId: null, updatedAt: endedAt })
-      .where(and(eq(agent.id, agentRow.id), eq(agent.status, "running")));
 
     await db
       .update(agentSession)

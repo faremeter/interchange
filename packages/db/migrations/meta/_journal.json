@@ -99,6 +99,13 @@
       "when": 1776917900630,
       "tag": "0013_instance_session_id",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1776921400366,
+      "tag": "0014_drop_agent_runtime_columns",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,6 @@
 import { eq, and, isNull } from "drizzle-orm";
 import { createDB, createGrantStore } from "@interchange/db";
-import { agent, agentInstance } from "@interchange/db/schema";
+import { agentInstance } from "@interchange/db/schema";
 import {
   createAgentRepoStore,
   createApp,
@@ -87,12 +87,6 @@ const sidecarRouter = createSidecarRouter({
       .update(agentInstance)
       .set({ publicKey })
       .where(eq(agentInstance.id, instance.id));
-
-    // Dual-write: keep agent table in sync until routes are migrated
-    await db
-      .update(agent)
-      .set({ publicKey })
-      .where(eq(agent.id, instance.agentId));
   },
   async onAgentReconnected(agentAddress) {
     const instance = await requireInstance(agentAddress);
@@ -118,22 +112,6 @@ const sidecarRouter = createSidecarRouter({
         .update(agentInstance)
         .set({ status: "running", updatedAt: now })
         .where(eq(agentInstance.id, instance.id));
-    }
-    // Dual-write: sync agent table if its status has diverged from
-    // the instance during the migration
-    const agentRow = await db.query.agent.findFirst({
-      where: eq(agent.id, instance.agentId),
-    });
-    if (!agentRow) {
-      log.warn(
-        "Agent definition missing for instance {agentAddress}, skipping dual-write",
-        { agentAddress },
-      );
-    } else if (agentRow.status !== "running") {
-      await db
-        .update(agent)
-        .set({ status: "running", updatedAt: now })
-        .where(eq(agent.id, instance.agentId));
     }
     if (!eventCollectors.has(sessionId)) {
       eventCollectors.create(sessionId, instance.tenantId, agentAddress);

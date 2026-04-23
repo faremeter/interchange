@@ -57,8 +57,8 @@ function formatAgent(
       | "updating"
       | "error"
       | "running",
-    kernelId: instance ? instance.kernelId : (row.kernelId ?? null),
-    sessionId: instance ? instance.sessionId : (row.sessionId ?? null),
+    kernelId: instance?.kernelId ?? null,
+    sessionId: instance?.sessionId ?? null,
     capabilities: (row.capabilities as Record<string, unknown>) ?? undefined,
     credentialRequirements:
       (row.credentialRequirements as
@@ -90,7 +90,7 @@ app.get(
         in: "query",
         schema: {
           type: "string",
-          enum: ["deployed", "stopped", "updating", "error"],
+          enum: ["deployed", "stopped"],
         },
       },
       ...pageParameters,
@@ -116,12 +116,7 @@ app.get(
     });
 
     const conditions = [eq(agent.tenantId, tenantCtx.id)];
-    if (
-      status === "deployed" ||
-      status === "stopped" ||
-      status === "updating" ||
-      status === "error"
-    ) {
+    if (status === "deployed" || status === "stopped") {
       conditions.push(eq(agent.status, status));
     }
     if (cursor) {
@@ -465,7 +460,7 @@ app.delete(
     // Set agent status to stopped
     await db
       .update(agent)
-      .set({ status: "stopped", sessionId: null, updatedAt: retiredAt })
+      .set({ status: "stopped", updatedAt: retiredAt })
       .where(eq(agent.id, agentId));
 
     return c.body(null, 204);
