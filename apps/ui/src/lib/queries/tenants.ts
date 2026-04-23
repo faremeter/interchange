@@ -209,13 +209,26 @@ export function agentDetailQuery(tenantId: string, agentId: string) {
   });
 }
 
-export function agentInstancesQuery(tenantId: string, agentId: string) {
+export function tenantInstancesQuery(tenantId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "instances"],
+    queryFn: async () => {
+      const res = await api<{ data: AgentInstanceResponse[] }>(
+        "GET",
+        `/api/tenants/${tenantId}/agents/instances`,
+      );
+      return res.data;
+    },
+  });
+}
+
+export function agentAllInstancesQuery(tenantId: string, agentId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "instances", { agentId }],
     queryFn: async () => {
       const res = await api<{ data: AgentInstanceResponse[] }>(
         "GET",
-        `/api/tenants/${tenantId}/agents/instances?agentId=${agentId}&status=running`,
+        `/api/tenants/${tenantId}/agents/instances?agentId=${agentId}`,
       );
       return res.data;
     },
