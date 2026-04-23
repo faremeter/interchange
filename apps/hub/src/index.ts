@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { createDB, createGrantStore } from "@interchange/db";
-import { agent } from "@interchange/db/schema";
+import { agent, agentInstance } from "@interchange/db/schema";
 import {
   createAgentRepoStore,
   createApp,
@@ -57,6 +57,16 @@ function parseAgentId(agentAddress: string): string {
   return agentAddress.substring(0, atIdx);
 }
 
+async function requireInstance(agentAddress: string) {
+  const row = await db.query.agentInstance.findFirst({
+    where: eq(agentInstance.address, agentAddress),
+  });
+  if (!row) {
+    throw new Error(`No agent instance found for address "${agentAddress}"`);
+  }
+  return row;
+}
+
 const sidecarRouter = createSidecarRouter({
   hubPublicKey: hexEncode(hubSigningKey.publicKey),
   onAgentEvent(_agentAddress, sessionId, event) {
@@ -68,50 +78,72 @@ const sidecarRouter = createSidecarRouter({
     }
   },
   async onAgentDeployAck(agentAddress, publicKey) {
-    const agentId = parseAgentId(agentAddress);
-    const rows = await db
+    const instance = await requireInstance(agentAddress);
+
+    await db
+      .update(agentInstance)
+      .set({ publicKey })
+      .where(eq(agentInstance.id, instance.id));
+
+    // Dual-write: keep agent table in sync until routes are migrated
+    await db
       .update(agent)
       .set({ publicKey })
-      .where(eq(agent.id, agentId))
-      .returning({ id: agent.id });
-    if (rows.length === 0) {
-      throw new Error(`Agent "${agentId}" not found in database`);
-    }
+      .where(eq(agent.id, instance.agentId));
   },
   async onAgentReconnected(agentAddress) {
-    const agentId = parseAgentId(agentAddress);
-    const row = await db.query.agent.findFirst({
-      where: eq(agent.id, agentId),
+    const instance = await requireInstance(agentAddress);
+
+    // TODO(INTR-19 commit 3): sessionId lives on agent.sessionId until
+    // sessions dissolve into instance-scoped connections. For now, read
+    // it from the agent row since agentSession references agentId, not
+    // instanceId, and there may be ambiguity with multiple instances.
+    const agentRow = await db.query.agent.findFirst({
+      where: eq(agent.id, instance.agentId),
     });
-    if (!row) {
+    if (!agentRow) {
       throw new Error(
-        `Agent "${agentAddress}" reconnected but not found in database`,
+        `Agent definition for instance "${agentAddress}" not found`,
       );
     }
-    if (!row.sessionId) {
+    if (!agentRow.sessionId) {
       throw new Error(
         `Agent "${agentAddress}" reconnected but has no active session`,
       );
     }
+
     // Refresh grants before creating any local state. If this fails,
     // the address is rejected and nothing needs cleanup.
     const grants = await grantStore.collectGrants(
-      row.principalId,
-      row.tenantId,
+      instance.principalId,
+      instance.tenantId,
     );
     await sidecarRouter.sendGrantsUpdate(agentAddress, grants);
 
-    if (row.status !== "running") {
+    const now = new Date();
+    if (instance.status !== "running") {
+      await db
+        .update(agentInstance)
+        .set({ status: "running", updatedAt: now })
+        .where(eq(agentInstance.id, instance.id));
+    }
+    // Dual-write: always sync agent table since instance and agent
+    // status can diverge during the migration
+    if (agentRow.status !== "running") {
       await db
         .update(agent)
-        .set({ status: "running", updatedAt: new Date() })
-        .where(eq(agent.id, agentId));
+        .set({ status: "running", updatedAt: now })
+        .where(eq(agent.id, instance.agentId));
     }
-    if (!eventCollectors.has(row.sessionId)) {
-      eventCollectors.create(row.sessionId, row.tenantId, agentAddress);
+    if (!eventCollectors.has(agentRow.sessionId)) {
+      eventCollectors.create(
+        agentRow.sessionId,
+        instance.tenantId,
+        agentAddress,
+      );
       log.info(
         "Restored event collector for reconnected agent {agentAddress} session {sessionId}",
-        { agentAddress, sessionId: row.sessionId },
+        { agentAddress, sessionId: agentRow.sessionId },
       );
     }
   },
@@ -144,14 +176,16 @@ const sidecarRouter = createSidecarRouter({
     log.info("Re-deployed stale agent {agentAddress}", { agentAddress });
   },
   async lookupPublicKey(agentAddress) {
-    const agentId = parseAgentId(agentAddress);
     const row = await db
-      .select({ publicKey: agent.publicKey })
-      .from(agent)
-      .where(eq(agent.id, agentId))
+      .select({ publicKey: agentInstance.publicKey })
+      .from(agentInstance)
+      .where(eq(agentInstance.address, agentAddress))
       .limit(1)
       .then((rows) => rows[0]);
-    return row?.publicKey ?? null;
+    if (!row) {
+      return null;
+    }
+    return row.publicKey;
   },
 });
 
