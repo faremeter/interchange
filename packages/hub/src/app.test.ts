@@ -70,7 +70,7 @@ describe("app", () => {
       "Roles",
       "Grants",
       "Agents",
-      "Sessions",
+      "Instances",
       "Approvals",
       "Wallets",
       "Credentials",
