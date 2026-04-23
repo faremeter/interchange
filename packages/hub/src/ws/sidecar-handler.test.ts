@@ -767,7 +767,7 @@ describe("SidecarRouter", () => {
         }),
       );
 
-      router.subscribeSession("sess-1", (event) => received.push(event));
+      router.subscribeAgent("agent@local", (event) => received.push(event));
 
       router.handleMessage(
         ws,
@@ -783,7 +783,7 @@ describe("SidecarRouter", () => {
       expect(received[0]).toEqual({ type: "reactor.start", seq: 0, data: {} });
     });
 
-    test("subscriber does not receive events for other sessions", () => {
+    test("subscriber does not receive events for other agents", () => {
       const received: unknown[] = [];
       const ws = createMockWs();
       router.handleOpen(ws);
@@ -797,13 +797,13 @@ describe("SidecarRouter", () => {
         }),
       );
 
-      router.subscribeSession("sess-1", (event) => received.push(event));
+      router.subscribeAgent("agent@local", (event) => received.push(event));
 
       router.handleMessage(
         ws,
         JSON.stringify({
           type: "agent.event",
-          agentAddress: "agent@local",
+          agentAddress: "other-agent@local",
           sessionId: "sess-2",
           event: { type: "reactor.start", seq: 0, data: {} },
         }),
@@ -826,7 +826,7 @@ describe("SidecarRouter", () => {
         }),
       );
 
-      const unsub = router.subscribeSession("sess-1", (event) =>
+      const unsub = router.subscribeAgent("agent@local", (event) =>
         received.push(event),
       );
 
@@ -871,8 +871,8 @@ describe("SidecarRouter", () => {
         }),
       );
 
-      router.subscribeSession("sess-1", (event) => received1.push(event));
-      router.subscribeSession("sess-1", (event) => received2.push(event));
+      router.subscribeAgent("agent@local", (event) => received1.push(event));
+      router.subscribeAgent("agent@local", (event) => received2.push(event));
 
       router.handleMessage(
         ws,
@@ -902,11 +902,11 @@ describe("SidecarRouter", () => {
       );
 
       // eslint-disable-next-line @typescript-eslint/no-empty-function
-      const unsub = router.subscribeSession("sess-1", () => {});
+      const unsub = router.subscribeAgent("agent@local", () => {});
       unsub();
 
       const received: unknown[] = [];
-      router.subscribeSession("sess-1", (event) => received.push(event));
+      router.subscribeAgent("agent@local", (event) => received.push(event));
 
       // Double-unsubscribe with the stale closure
       unsub();
@@ -939,10 +939,10 @@ describe("SidecarRouter", () => {
       );
 
       const unsub1Ref: { current: (() => void) | null } = { current: null };
-      unsub1Ref.current = router.subscribeSession("sess-1", () => {
+      unsub1Ref.current = router.subscribeAgent("agent@local", () => {
         unsub1Ref.current?.();
       });
-      router.subscribeSession("sess-1", (event) => received.push(event));
+      router.subscribeAgent("agent@local", (event) => received.push(event));
 
       router.handleMessage(
         ws,

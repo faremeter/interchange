@@ -72,12 +72,12 @@ async function requireInstance(agentAddress: string) {
 
 const sidecarRouter = createSidecarRouter({
   hubPublicKey: hexEncode(hubSigningKey.publicKey),
-  onAgentEvent(_agentAddress, sessionId, event) {
-    eventCollectors.dispatch(sessionId, event as InferenceEvent);
+  onAgentEvent(agentAddress, _sessionId, event) {
+    eventCollectors.dispatch(agentAddress, event as InferenceEvent);
   },
   onSidecarDisconnect(agentAddresses) {
     for (const addr of agentAddresses) {
-      eventCollectors.abandonByAddress(addr);
+      eventCollectors.abandon(addr);
     }
   },
   async onAgentDeployAck(agentAddress, publicKey) {
@@ -113,11 +113,11 @@ const sidecarRouter = createSidecarRouter({
         .set({ status: "running", updatedAt: now })
         .where(eq(agentInstance.id, instance.id));
     }
-    if (!eventCollectors.has(sessionId)) {
-      eventCollectors.create(sessionId, instance.tenantId, agentAddress);
+    if (!eventCollectors.has(agentAddress)) {
+      eventCollectors.create(agentAddress, instance.tenantId, sessionId);
       log.info(
-        "Restored event collector for reconnected agent {agentAddress} session {sessionId}",
-        { agentAddress, sessionId },
+        "Restored event collector for reconnected agent {agentAddress}",
+        { agentAddress },
       );
     }
   },
