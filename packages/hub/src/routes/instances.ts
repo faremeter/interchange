@@ -353,8 +353,7 @@ app.post(
 
       if (req.source === "tenant") {
         // XXX: Unconditionally materializes tenant-sourced grants. This
-        // should derive from role membership instead — see
-        // tmp/GRANTS-REDESIGN.md for the intended approach.
+        // should derive from role membership on the agent definition.
         grantRows.push({
           id: generateId("grant"),
           tenantId: tenant.id,
