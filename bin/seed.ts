@@ -282,7 +282,7 @@ log("Creating agents in Acme...");
 
 const { status: a1Status, data: a1Data } = await api(
   "POST",
-  `/api/tenants/${acmeTenantId}/agents`,
+  `/api/tenants/${acmeTenantId}/agents/definitions`,
   {
     name: "Research Bot",
     description: "Researches topics and summarizes findings",
@@ -297,9 +297,19 @@ const { status: a1Status, data: a1Data } = await api(
         scopes: ["chat"],
       },
     ],
-    initialGrants: [
-      { resource: "documents:*", action: "read", effect: "allow" },
-      { resource: "documents:*", action: "write", effect: "ask" },
+    grantRequirements: [
+      {
+        resource: "documents:*",
+        action: "read",
+        effect: "allow",
+        source: "tenant",
+      },
+      {
+        resource: "documents:*",
+        action: "write",
+        effect: "ask",
+        source: "tenant",
+      },
     ],
   },
   aliceCookies,
@@ -310,7 +320,7 @@ if (researchBotId) log(`  Research Bot ID: ${researchBotId}`);
 
 const { status: a2Status, data: a2Data } = await api(
   "POST",
-  `/api/tenants/${acmeTenantId}/agents`,
+  `/api/tenants/${acmeTenantId}/agents/definitions`,
   {
     name: "Code Review Bot",
     description: "Reviews pull requests and suggests improvements",
@@ -319,11 +329,22 @@ const { status: a2Status, data: a2Data } = await api(
     modelConfig: { defaultModel: "claude-sonnet-4-20250514" },
     capabilities: { codeReview: true },
     credentialRequirements: [
+      { providerName: "Anthropic", source: "tenant", scopes: ["chat"] },
       { providerName: "GitHub", source: "tenant", scopes: ["repo"] },
     ],
-    initialGrants: [
-      { resource: "repos:*", action: "read", effect: "allow" },
-      { resource: "repos:*", action: "comment", effect: "allow" },
+    grantRequirements: [
+      {
+        resource: "repos:*",
+        action: "read",
+        effect: "allow",
+        source: "tenant",
+      },
+      {
+        resource: "repos:*",
+        action: "comment",
+        effect: "allow",
+        source: "tenant",
+      },
     ],
   },
   aliceCookies,
@@ -338,7 +359,7 @@ log("Creating agent in Widgets...");
 
 const { status: a3Status, data: a3Data } = await api(
   "POST",
-  `/api/tenants/${widgetsTenantId}/agents`,
+  `/api/tenants/${widgetsTenantId}/agents/definitions`,
   {
     name: "Customer Support Bot",
     description: "Handles customer support tickets",
@@ -347,16 +368,27 @@ const { status: a3Status, data: a3Data } = await api(
     modelConfig: { defaultModel: "claude-sonnet-4-20250514" },
     capabilities: { ticketManagement: true, knowledgeBase: true },
     credentialRequirements: [
+      { providerName: "Anthropic", source: "tenant", scopes: ["chat"] },
       {
         providerName: "Stripe",
         source: "tenant",
         scopes: ["charges:read", "refunds:write"],
       },
     ],
-    initialGrants: [
-      { resource: "tickets:*", action: "*", effect: "allow" },
-      { resource: "billing:*", action: "read", effect: "allow" },
-      { resource: "billing:*", action: "refund", effect: "ask" },
+    grantRequirements: [
+      { resource: "tickets:*", action: "*", effect: "allow", source: "tenant" },
+      {
+        resource: "billing:*",
+        action: "read",
+        effect: "allow",
+        source: "tenant",
+      },
+      {
+        resource: "billing:*",
+        action: "refund",
+        effect: "ask",
+        source: "tenant",
+      },
     ],
   },
   aliceCookies,
@@ -447,6 +479,7 @@ const { status: prv2Status, data: prv2Data } = await api(
     tokenUrl: "https://github.com/login/oauth/access_token",
     userInfoUrl: "https://api.github.com/user",
     scopes: ["repo", "read:user"],
+    metadata: { baseURL: "https://api.github.com" },
   },
   aliceCookies,
 );
@@ -458,6 +491,7 @@ const { status: prv3Status, data: prv3Data } = await api(
   {
     name: "Stripe",
     plugin: "stripe",
+    metadata: { baseURL: "https://api.stripe.com" },
   },
   aliceCookies,
 );
@@ -602,7 +636,7 @@ log("Creating offerings...");
 // Get agent IDs from listing if we didn't just create them
 const { data: acmeAgents } = await api(
   "GET",
-  `/api/tenants/${acmeTenantId}/agents`,
+  `/api/tenants/${acmeTenantId}/agents/definitions`,
   undefined,
   aliceCookies,
 );
@@ -612,7 +646,7 @@ const codeReviewBot = agentList.find((a) => a.name === "Code Review Bot");
 
 const { data: widgetAgents } = await api(
   "GET",
-  `/api/tenants/${widgetsTenantId}/agents`,
+  `/api/tenants/${widgetsTenantId}/agents/definitions`,
   undefined,
   aliceCookies,
 );
