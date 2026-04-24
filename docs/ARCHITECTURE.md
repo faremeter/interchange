@@ -4,7 +4,11 @@ _Architecture_
 
 ## Agent Composition
 
-A deployed agent consists of the following components:
+### Agent Definition
+
+An agent definition is a blueprint — the catalog entry that describes what an agent can do, what it needs, and how it should behave. Definitions are pure data with no runtime state, no principal, and no address. They declare requirements; the control plane resolves those requirements when an agent is launched.
+
+A definition contains:
 
 **Skills**
 Executable capabilities that define what the agent can do. Skills are executed by the local harness, which handles interaction with the local environment on behalf of the skill.
@@ -18,13 +22,38 @@ Logic for constructing and managing the agent's context window. The context buil
 **Initial State**
 Pre-populated data that forms part of the agent's starting context. Layered on top of the system prompt and other initial context elements.
 
-**Capability Grants**
-Authorization policies governing which tools the agent can invoke and under what conditions, expressed as `GrantRule` entries. The harness enforces these policies transparently via the authz engine, validating proposed actions against grants before execution. Grants are resolved by the hub at deploy time and sent to the sidecar in the deploy frame.
+**Grant Requirements**
+Authorization requirements declaring which capabilities the agent needs and where each should come from. Each requirement specifies a resource, action, and source — one of `tenant`, `creator`, or `invoker`. The definition does not carry live grants; it carries a requirements manifest that the control plane resolves at launch time. See Authorization Delegation below.
 
-**Versioning**
-Agent definitions are tracked in git repositories on the hub. The repository contains the agent-specific resources: skills, system prompt, context builder configuration, and initial state. External skill dependencies are referenced in configuration files and resolved when the agent is deployed.
+**Credential Requirements**
+External service credentials the agent needs, declared with a source annotation indicating whether the tenant, definition creator, or invoker should provide them. See CREDENTIALS.md for the resolution model.
 
-Each agent instance on a sidecar has a single git repository that contains both the deployed definition and the runtime state, separated by path:
+**Version History**
+Definitions are tracked in git repositories on the hub. The repository contains the agent-specific resources: skills, system prompt, context builder configuration, and initial state. External skill dependencies are referenced in configuration files and resolved when the agent is deployed.
+
+**Update Policy**
+The definition declares how updates to it affect running agents — auto-redeploy, notify-only, staged, or manual.
+
+**Creator Reference**
+The definition stores a `creatorPrincipalId` identifying the principal of the definition author. Creator-sourced grant and credential requirements resolve against this principal. Ownership can be transferred to another principal if the original creator leaves the organization.
+
+### Agent at Launch
+
+When an agent is launched from a definition, the control plane creates a new runtime entity with its own identity and state. Each launched agent is independent — agents from the same definition do not share principals, addresses, or keys.
+
+An agent gains at launch:
+
+- **Principal** — A new principal is created for the agent. All grants are materialized on this principal.
+- **Address** — An SMTP address (`ins_xxxxx@tenant.interchange.network`) for receiving messages.
+- **Key pair** — An Ed25519 key pair for cryptographic identity and content signing.
+- **Materialized grants** — The control plane resolves the definition's grant requirements against the appropriate sources (tenant policies, creator's grants, invoker's grants) and materializes the effective grant set on the agent's principal.
+- **Resolved credentials** — The control plane resolves the definition's credential requirements and provisions the agent with the credentials it needs.
+- **Inbox** — The agent's SMTP mailbox for durable message delivery.
+- **Effective offerings** — The set of offerings the agent can actually provide, determined by which credentials and grants were successfully resolved.
+
+### Repository Layout
+
+Each agent on a sidecar has a single git repository that contains both the deployed definition and the runtime state, separated by path:
 
 - `deploy/` — hub-managed content (skills, prompt, configuration). The hub assembles this tree from the agent's source repository and any referenced skill libraries via subtree merge, producing a single flat tree with no submodule metadata.
 - `state/` — sidecar-managed content (conversation context, audit records). The sidecar commits here during normal operation.
@@ -37,7 +66,7 @@ Repository organization on the hub is flexible — a single repository may conta
 
 ## Agent Harness
 
-The agent harness is the core runtime component deployed for each agent instance. It acts as the glue layer that binds together all the capabilities an agent needs to operate autonomously within the Interchange ecosystem.
+The agent harness is the core runtime component deployed for each agent. It acts as the glue layer that binds together all the capabilities an agent needs to operate autonomously within the Interchange ecosystem.
 
 ### Responsibilities
 
@@ -107,7 +136,7 @@ The harness is event-driven. Incoming events - messages from other agents, tool 
 
 ### Lifecycle
 
-1. **Initialization** - Harness starts, loads the agent package (skills, system prompt, context builder, initial state, capability grants), establishes connections to inference and storage backends
+1. **Initialization** - Harness starts, loads the agent package (skills, system prompt, context builder, initial state, materialized grants), establishes connections to inference and storage backends
 2. **Registration** - Harness announces the agent's presence and offerings to the control plane
 3. **Operation** - Harness enters the event loop, receiving and routing events to internal handlers
 4. **Shutdown** - Harness deregisters, flushes state, and terminates cleanly
@@ -123,27 +152,30 @@ When an agent is updated or retired, the harness drains in-flight work before sh
 
 ### Authorization Delegation
 
-Agents acquire capabilities from two distinct sources: the user who created the agent, and the user who invokes it. These two authority domains combine to determine what the agent can actually do at runtime.
+Agents acquire capabilities from three sources: the tenant's organizational policies, the definition author (creator), and the user who launches the agent (invoker). These three authority domains combine to determine what the agent can actually do at runtime.
 
-**Creator-granted capabilities** are bound to the agent at creation time and persist for the agent's lifetime. The creator defines what the agent is authorized to do - access to external services, API credentials, scoped authorization tokens, privileged operations. These capabilities travel with the agent regardless of who later invokes it. This is analogous to the setuid model in UNIX: the agent runs with capabilities granted by its creator, not limited to what the invoking user could do themselves. A creator can build an agent that performs privileged operations on behalf of users who lack direct access to those operations.
+**Tenant-granted capabilities** come from organizational policies in the tenant hierarchy. These are baseline permissions that the tenant allows for agents of this type — resource access, network policies, spending limits. Tenant grants are resolved by walking up the tenant hierarchy, with child tenants able to add restrictions but not remove them.
 
-**Invoker-granted capabilities** are provided at invocation time by the user who launches the agent. These are additional permissions the invoker delegates for the duration of the interaction - access to the invoker's data, authorization to act on the invoker's behalf with specific services, or credentials the agent needs to complete work for that particular user.
+**Creator-granted capabilities** are delegated by the definition author. The creator is the principal who authored the agent definition. Their authority is a persistent property of the definition — analogous to the setuid model in UNIX. The agent runs with capabilities granted by its creator, not limited to what the invoking user could do themselves. A creator can build an agent that performs privileged operations on behalf of users who lack direct access to those operations. These capabilities travel with the definition regardless of who later launches agents from it.
 
-**Effective capabilities** are the union of creator-granted and invoker-granted capabilities, subject to the agent's grants. The harness resolves the effective capability set at invocation time and enforces it throughout the instance lifetime.
+**Invoker-granted capabilities** are provided at launch time by the user who creates the agent. These are additional permissions the invoker delegates for the duration of the agent's lifetime — access to the invoker's data, authorization to act on the invoker's behalf with specific services, or credentials the agent needs to complete work for that particular user.
 
-This dual-authority model enables important patterns:
+**Effective capabilities** are the union of tenant, creator, and invoker grants, materialized on the agent's principal. The control plane resolves all grant requirements at launch time and ships the effective grant set to the harness in the deploy frame. The harness enforces these materialized grants throughout the agent's lifetime. See AUTH.md for the resolution algorithm.
 
-- A creator builds an agent with access to a production database. Users invoke the agent to query data they couldn't access directly - the agent mediates access according to its own logic and policy.
+This three-source model enables important patterns:
+
+- A creator builds an agent with access to a production database. Users invoke the agent to query data they couldn't access directly — the agent mediates access according to its own logic and policy.
 - A creator builds an agent with deployment credentials. Users invoke the agent to trigger deployments without holding deployment keys themselves.
 - An invoker grants an agent OAuth tokens to their personal accounts. The agent uses both its creator-granted infrastructure access and the invoker's personal credentials to complete a task.
+- A tenant policy grants all agents in the tenant access to a shared logging service. Individual definitions don't need to declare this requirement.
 
-**Capability scoping** applies in both directions. Creator-granted capabilities can be broad but constrained by grants (the agent may hold database credentials but only be permitted to run read-only queries). Invoker-granted capabilities can be narrowed by the harness when an external API's permission model is coarser than what the agent needs.
+**Capability scoping** applies across all three sources. Creator-granted capabilities can be broad but constrained by grants (the agent may hold database credentials but only be permitted to run read-only queries). Invoker-granted capabilities can be narrowed by the harness when an external API's permission model is coarser than what the agent needs. Tenant policies set the outer boundary that neither creator nor invoker grants can exceed.
 
-**Inherited capabilities** follow the same dual model when agents create other agents. The parent agent can grant its child a subset of its own creator-granted capabilities, establishing a delegation chain. Children cannot exceed their parent's authority, but they can carry capabilities that future invokers of the child would not have on their own.
+**Inherited capabilities** apply when agents create other agents. The parent agent can grant its child a subset of its own creator-sourced capabilities, establishing a delegation chain. Children cannot exceed their parent's authority, but they can carry creator-sourced capabilities that future invokers of the child would not have on their own.
 
-The harness manages the lifecycle of all delegated credentials - renewal, revocation, and expiry. When a creator revokes a capability from an agent, the harness immediately stops exercising that capability regardless of in-flight work. Invoker-granted capabilities expire when the instance ends unless explicitly persisted.
+**Grant revocation** is policy-driven with a default of fail-secure. If the creator's grants are revoked after agents have been launched with creator-sourced grants, running agents lose the affected grants immediately — the control plane pushes a grants update to the harness. Tenants can configure grace periods or notification-only behavior for specific grant types. Invoker-granted capabilities expire when the agent stops unless explicitly persisted.
 
-Authorization grants are part of the agent's auditable state. The harness logs what was granted, by whom (creator vs. invoker), when, and tracks all usage of delegated credentials.
+Authorization grants are part of the agent's auditable state. The harness logs what was granted, by whom (tenant, creator, or invoker), when, and tracks all usage of delegated credentials.
 
 ### Isolation Model
 
@@ -174,24 +206,24 @@ Every harness and every agent has its own asymmetric key pair. These keys serve 
 
 **Per-harness keys** identify the runtime instance. The harness signs system-level messages (health reports, registration announcements, telemetry) with its key. This allows other components to verify that a message originated from a specific harness instance, not just a specific agent.
 
-**Per-agent keys** identify the agent across its lifecycle, independent of which harness instance is running it. The agent's key pair persists across restarts and redeployments. When an agent produces content - messages, tool invocations, checkpoints - the harness signs it with the agent's key. Recipients can verify that a specific agent generated specific content, providing a chain of provenance.
+**Per-agent keys** identify the agent across its lifecycle, independent of which harness instance is running it. The agent's key pair is generated at launch and persists for the agent's lifetime. When an agent produces content — messages, tool invocations, checkpoints — the harness signs it with the agent's key. Recipients can verify that a specific agent generated specific content, providing a chain of provenance.
 
-Key pairs are generated at agent creation time and managed by the harness. Private keys are stored alongside the agent's persistent data and never exposed to agents or external systems. Public keys are published to the control plane and included in the agent's discovery metadata. The control plane stores agent public keys so it can verify ownership claims when a harness reconnects after a restart.
+Key pairs are generated at agent launch time and managed by the harness. Private keys are stored alongside the agent's persistent data and never exposed to agents or external systems. Public keys are published to the control plane and included in the agent's discovery metadata. The control plane stores agent public keys so it can verify ownership claims when a harness reconnects after a restart.
 
 **Commit signing** extends per-agent keys to the git layer. Every state commit (context checkpoints, audit records) is signed with the agent's Ed25519 key using SSH signature format. This means standard `git verify-commit` works with no custom tooling. The control plane verifies signatures when the sidecar pushes state, rejecting any commit not signed by the registered key. Deploy commits are signed by the hub's own key; sidecars verify deploy signatures before accepting content. See Implementation for the wire protocol details.
 
 The control plane maintains a key validity history per agent — a list of `(publicKey, validFrom, validUntil)` tuples — so that historical commits remain verifiable after key rotation. When a key is retired (due to compromise, migration, or routine rotation), the old key is retained for signature verification but no longer accepted for new pushes.
 
-### Instance Continuity
+### Agent Continuity
 
-Agent instances survive harness restarts. The harness persists agent state (conversation context, pending operations, key pairs) in the agent's local storage. When the harness restarts, it discovers previously managed agents, proves ownership of each agent address by signing a cryptographic challenge with the agent's private key, and resumes operation from the persisted state.
+Agents survive harness restarts. The harness persists agent state (conversation context, pending operations, key pairs) in the agent's local storage. When the harness restarts, it discovers previously managed agents, proves ownership of each agent address by signing a cryptographic challenge with the agent's private key, and resumes operation from the persisted state. Continuity refers to a single agent surviving its own harness restart, not portability across agents from the same definition.
 
-The authority model for instance continuity is:
+The authority model for agent continuity is:
 
 - **Harness local storage is authoritative** for agent inference context — conversation history, pending operations, and token usage. This is the source of truth for what the agent knows.
 - **Control plane is a delivery queue** for user messages. Messages sent while the harness is disconnected are queued and flushed to the harness on successful reconnect. The harness incorporates delivered messages into the agent's context through the normal message handling path.
 
-The reconnection protocol requires the harness to prove it holds the private key for each agent address it claims to manage. This prevents a rogue harness from hijacking agent instances.
+The reconnection protocol requires the harness to prove it holds the private key for each agent address it claims to manage. This prevents a rogue harness from hijacking agents.
 
 Signatures are attached to:
 
@@ -265,17 +297,20 @@ The control plane is the central orchestration and management layer for Intercha
 **Harness Management**
 The control plane tracks all available harnesses within a tenant. Harnesses can be provisioned directly by the control plane (spinning up containers, VMs, or workers as needed) or registered externally (an operator brings their own compute and registers it with the control plane). The control plane maintains a pool of available harness capacity and assigns agents to harnesses based on resource requirements, affinity rules, and availability.
 
+**Definition Management**
+The control plane manages agent definitions — creating, versioning, and retiring blueprints. Definitions are catalog entries that describe what an agent can do. The control plane tracks version history, supports rollback to previous versions, and enforces update policies that govern how definition changes affect running agents.
+
 **Agent Lifecycle**
-The control plane launches agents onto harnesses. When an agent is deployed, the control plane selects an appropriate harness, transfers the agent package, and instructs the harness to initialize the agent. The control plane tracks which agents are running on which harnesses, handles redeployment when harnesses fail, and coordinates graceful shutdown during updates or retirement.
+The control plane launches agents from definitions onto harnesses. When an agent is launched, the control plane selects an appropriate harness, resolves the definition's grant and credential requirements, transfers the agent package with materialized grants, and instructs the harness to initialize the agent. The control plane tracks which agents are running on which harnesses, handles redeployment when harnesses fail, and coordinates graceful shutdown during updates or retirement.
 
 **Discovery**
-The control plane is the source of truth for agent discovery. It maintains the registry of agents and their offerings within each tenant. Other agents and external callers query the control plane to find agents that provide specific offerings. The control plane also handles federation — publishing selected agents to other tenants and incorporating federated entries from trusted tenants into local discovery results.
+The control plane is the source of truth for discovery. It maintains a two-tier registry within each tenant: agent definitions as catalog entries (potential offerings that can be launched on demand) and running agents as live providers (immediately invocable with agent address and health status). The offerings endpoint returns both tiers, tagged with availability. The control plane also handles federation — publishing selected definitions and agents to other tenants and incorporating federated entries from trusted tenants into local discovery results.
 
 **Health Monitoring**
 The control plane continuously monitors harness and agent health. It polls health endpoints, processes heartbeat messages, and maintains the operational status of all components. Unhealthy agents are removed from discovery. Unhealthy harnesses trigger agent migration to healthy harnesses. Health data feeds into the observability layer for dashboards and alerting.
 
 **Authorization Distribution**
-The control plane manages how authority flows to agents via harnesses. Creator-granted capabilities are bound to agent definitions stored in the control plane. When an agent launches, the control plane provisions the harness with the credentials and authorization tokens the agent is permitted to use. The control plane also handles credential lifecycle — renewal, rotation, and revocation — pushing updates to harnesses as needed.
+The control plane manages how authority flows to agents via harnesses. Agent definitions declare grant requirements with source annotations (tenant, creator, invoker). When an agent is launched, the control plane resolves each requirement against the appropriate source — tenant policies, the definition creator's grants, or the invoker's grants — validates that the source has the authority to delegate, and materializes the effective grant set on the agent's principal. The harness receives the materialized grants in the deploy frame and enforces them at runtime.
 
 **Credential Storage**
 The control plane stores API keys, OAuth tokens, and other credentials that agents need to access external services. Operators configure integrations at the tenant or agent level; the control plane securely stores credentials and distributes them to harnesses at agent launch time. Agents never access credentials directly; the harness retrieves them from the control plane and injects them into outbound requests.
@@ -283,19 +318,19 @@ The control plane stores API keys, OAuth tokens, and other credentials that agen
 **Message Bus Management**
 The control plane manages the message bus infrastructure for each tenant. It configures routing rules, manages distribution lists, enforces rate limits, and handles cross-tenant federation for messaging. The message bus itself may be implemented as a separate service, but the control plane provides the configuration and policy layer.
 
-**Instance Channel Routing**
-For agents that support session channels, the control plane brokers connections between clients and harnesses. In production deployments, clients do not connect directly to harnesses — they connect to the control plane, which routes channel traffic to the appropriate harness. This keeps harnesses from needing public addresses and enables NAT traversal for harnesses running on mobile, embedded, or firewalled networks. Harnesses maintain a persistent outbound connection to the control plane; channel traffic tunnels through this connection when a client connects to an instance.
+**Channel Routing**
+For agents that support session channels, the control plane brokers connections between clients and harnesses. In production deployments, clients do not connect directly to harnesses — they connect to the control plane, which routes channel traffic to the appropriate harness. This keeps harnesses from needing public addresses and enables NAT traversal for harnesses running on mobile, embedded, or firewalled networks. Harnesses maintain a persistent outbound connection to the control plane; channel traffic tunnels through this connection when a client connects to an agent.
 
 Session channels are optional. Agents that do not require real-time streaming (background processors, batch workers, agent-to-agent workflows) operate purely through the message bus and do not expose streaming endpoints.
 
-Instance deployment and channel attachment flow:
+Agent launch and channel attachment flow:
 
-1. Client authenticates with the control plane and requests an instance of the target agent via `POST /agents/instances`
-2. Control plane validates the client's identity and authorization, resolves credentials, and deploys the agent to a sidecar
-3. Control plane returns the running instance with its address and public key
-4. Client opens a session channel to the instance's SSE endpoint (`GET /agents/instances/:instanceId/events`)
+1. Client authenticates with the control plane and launches an agent from a definition via `POST /agents/instances`
+2. Control plane validates the client's identity and authorization, resolves grant and credential requirements, and deploys the agent to a sidecar
+3. Control plane returns the running agent with its address and public key
+4. Client opens a session channel to the agent's SSE endpoint (`GET /agents/instances/:instanceId/events`)
 5. Control plane routes the channel to the harness hosting the agent
-6. Harness binds capabilities for the instance duration
+6. Harness enforces the materialized grants for the agent's lifetime
 
 In development environments, clients may connect directly to a locally-running harness, bypassing the control plane for convenience.
 
@@ -349,7 +384,7 @@ Wallets are tenant resources managed through the control plane:
 
 Agents never hold wallet keys or direct access to funds. Wallet access is a capability granted through the authorization model:
 
-**Creator-granted wallet access** — The agent is configured with access to operational wallets at creation time. For example, an agent might have spending authority from a tenant's API-costs wallet to pay for external services it uses.
+**Creator-granted wallet access** — The definition declares wallet access as a grant requirement with `source: "creator"`. At launch, the control plane resolves this against the creator's authority and materializes the wallet grant on the agent's principal. For example, an agent might have spending authority from a tenant's API-costs wallet to pay for external services it uses.
 
 **Invoker-granted wallet access** — A user grants the agent temporary access to their wallet for a session. For example, a user might authorize an agent to make purchases on their behalf.
 
