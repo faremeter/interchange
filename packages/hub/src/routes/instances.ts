@@ -165,6 +165,23 @@ app.post(
       );
     }
 
+    // Legacy launch path requires a definition principal. Definitions created
+    // after the three-source model migration have no principalId — the full
+    // launch flow with per-instance principals is implemented separately.
+    const definitionPrincipalId = row.principalId;
+    if (!definitionPrincipalId) {
+      return c.json(
+        {
+          error: {
+            code: "not_launchable",
+            message:
+              "This definition requires the updated instance launch flow",
+          },
+        },
+        409,
+      );
+    }
+
     const instanceId = generateId("instance");
     const agentAddress = `${instanceId}@${tenant.domain}`;
 
@@ -192,7 +209,7 @@ app.post(
           db,
           tenant.id,
           req,
-          row.principalId,
+          definitionPrincipalId,
           principal.id,
         );
       } catch (err) {
@@ -273,7 +290,7 @@ app.post(
 
     const grantStore = c.get("grantStore");
     const agentGrants = await grantStore.collectGrants(
-      row.principalId,
+      definitionPrincipalId,
       tenant.id,
     );
     const nonInvokerGrants = agentGrants.filter((g) => g.source !== "invoker");
@@ -337,7 +354,7 @@ app.post(
       id: instanceId,
       agentId: row.id,
       tenantId: tenant.id,
-      principalId: row.principalId,
+      principalId: definitionPrincipalId,
       address: agentAddress,
       sessionId,
       status: "deployed",
@@ -361,7 +378,7 @@ app.post(
           sessionId,
           agentId: row.id,
           tenantId: tenant.id,
-          principalId: row.principalId,
+          principalId: definitionPrincipalId,
           agentAddress,
           systemPrompt: row.systemPrompt,
           tools: [],
