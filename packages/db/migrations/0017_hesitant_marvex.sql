@@ -1,0 +1,1 @@
+ALTER TABLE "agent" ALTER COLUMN "principal_id" DROP NOT NULL;

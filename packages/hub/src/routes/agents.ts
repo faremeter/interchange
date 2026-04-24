@@ -7,7 +7,6 @@ import {
   agentInstance,
   agentVersion,
   principal,
-  grant,
 } from "@interchange/db/schema";
 import {
   CreateAgent,
@@ -37,7 +36,7 @@ function formatAgent(row: typeof agent.$inferSelect) {
   return {
     id: row.id,
     tenantId: row.tenantId,
-    principalId: row.principalId,
+    creatorPrincipalId: row.creatorPrincipalId ?? undefined,
     name: row.name,
     description: row.description ?? null,
     systemPrompt: row.systemPrompt ?? null,
@@ -55,6 +54,16 @@ function formatAgent(row: typeof agent.$inferSelect) {
             scopes?: string[];
             source: string;
             name?: string;
+          }[]
+        | null) ?? undefined,
+    grantRequirements:
+      (row.grantRequirements as
+        | {
+            resource: string;
+            action: string;
+            effect?: string;
+            source: string;
+            conditions?: Record<string, unknown> | null;
           }[]
         | null) ?? undefined,
     createdAt: ts(row.createdAt),
@@ -134,7 +143,7 @@ app.post(
     tags: ["Agents"],
     summary: "Create an agent",
     description:
-      "Creates an agent and its corresponding principal. Accepts the agent definition and optional initial grants for the agent's principal.",
+      "Creates an agent definition. Grant requirements are stored as a manifest and resolved at instance launch time.",
     responses: {
       201: {
         description: "Agent created",
@@ -153,23 +162,12 @@ app.post(
   validator("json", CreateAgent),
   async (c) => {
     const tenantCtx = c.get("tenant");
+    const creatorPrincipal = c.get("principal");
     const body = c.req.valid("json");
     const db = c.get("db");
 
     const now = new Date();
     const agentId = generateId("agent");
-    const principalId = generateId("principal");
-
-    // Create the agent's principal first
-    await db.insert(principal).values({
-      id: principalId,
-      tenantId: tenantCtx.id,
-      kind: "agent",
-      refId: agentId,
-      status: "active",
-      createdAt: now,
-      updatedAt: now,
-    });
 
     const agentRow = first(
       await db
@@ -177,7 +175,7 @@ app.post(
         .values({
           id: agentId,
           tenantId: tenantCtx.id,
-          principalId,
+          creatorPrincipalId: creatorPrincipal.id,
           name: body.name,
           description: body.description ?? null,
           systemPrompt: body.systemPrompt ?? null,
@@ -187,6 +185,7 @@ app.post(
           modelConfig: body.modelConfig ?? null,
           capabilities: body.capabilities ?? null,
           credentialRequirements: body.credentialRequirements ?? null,
+          grantRequirements: body.grantRequirements ?? null,
           currentVersion: "1",
           status: "deployed",
           createdAt: now,
@@ -204,24 +203,6 @@ app.post(
       createdAt: now,
     });
 
-    // Create initial grants for the agent's principal
-    if (body.initialGrants) {
-      for (const g of body.initialGrants) {
-        await db.insert(grant).values({
-          id: generateId("grant"),
-          tenantId: tenantCtx.id,
-          principalId,
-          resource: g.resource,
-          action: g.action,
-          effect: g.effect,
-          conditions: g.conditions ?? null,
-          source: "creator",
-          createdAt: now,
-          updatedAt: now,
-        });
-      }
-    }
-
     return c.json(formatAgent(agentRow), 201);
   },
 );
@@ -233,7 +214,7 @@ app.get(
     tags: ["Agents"],
     summary: "Get agent details",
     description:
-      "Returns the agent definition, status, health, capabilities, and principal ID.",
+      "Returns the agent definition, status, health, and capabilities.",
     responses: {
       200: {
         description: "Agent details",
@@ -333,6 +314,8 @@ app.patch(
       updates["capabilities"] = body.capabilities;
     if (body.credentialRequirements !== undefined)
       updates["credentialRequirements"] = body.credentialRequirements;
+    if (body.grantRequirements !== undefined)
+      updates["grantRequirements"] = body.grantRequirements;
 
     const updated = first(
       await db
@@ -372,7 +355,7 @@ app.delete(
     tags: ["Agents"],
     summary: "Retire an agent",
     description:
-      "Deactivates the agent's principal and begins graceful shutdown. In-flight work is drained before the agent stops.",
+      "Retires the agent definition and stops all running instances. In-flight work is drained before instances stop.",
     responses: {
       204: {
         description: "Agent retirement initiated",
@@ -403,11 +386,14 @@ app.delete(
 
     const retiredAt = new Date();
 
-    // Deactivate agent principal
-    await db
-      .update(principal)
-      .set({ status: "deactivated", updatedAt: retiredAt })
-      .where(eq(principal.id, existing.principalId));
+    // Deactivate the legacy definition principal if one exists
+    const legacyPrincipalId = existing.principalId;
+    if (legacyPrincipalId) {
+      await db
+        .update(principal)
+        .set({ status: "deactivated", updatedAt: retiredAt })
+        .where(eq(principal.id, legacyPrincipalId));
+    }
 
     // TODO: This is DB-only — it does not signal the sidecar to stop
     // or end the agentSession. A running sidecar will continue until
