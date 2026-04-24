@@ -20,7 +20,7 @@ Agents can use any model backend - local models running on-device, remote APIs, 
 Interchange provides tools to construct agents and skills with properly assembled context and prompts. The builder handles composition of system prompts, skill instructions, initial state, and runtime context into coherent agent configurations. Operators define the building blocks; the builder assembles them into deployable agents.
 
 **Tool Discovery**
-Agents expose their offerings through a registry that other agents can query. Need an agent that can search the web, execute code, or process payments? Discover it, verify its permissions, and invoke it - all through standard protocols.
+Agent definitions declare their offerings in a catalog. Running agents provide live offerings that are immediately invocable. Discovery returns both: live agents you can call now, and definitions that can be launched on demand. Need an agent that can search the web, execute code, or process payments? Discover it, verify its permissions, and invoke it - all through standard protocols.
 
 **Human Interface**
 Humans interact with agents through the same messaging and session infrastructure that agents use with each other. On desktop and mobile, users connect to agents through session channels that stream responses in real-time. When disconnected, messages queue and are available on reconnect. The interface is native to each deployment platform - not a bolted-on afterthought. Agents don't distinguish between human and agent callers at the protocol level; the harness handles both through the same message bus and session channel primitives.
@@ -32,13 +32,13 @@ Interchange handles communication between agents and humans with built-in routin
 Every agent has a wallet. Agents spend to use tools and resources; agents earn by providing services to others. This creates accountability - an agent that misbehaves loses economic access - and enables entirely new interaction patterns where agents can autonomously transact, bid for work, and allocate resources.
 
 **Authorization**
-Fine-grained permissions control what each agent can access, invoke, and spend. Identity is cryptographically verifiable. Trust is explicit, auditable, and revocable.
+Agent definitions declare what capabilities they need and where the authority should come from — the tenant's policies, the definition author, or the person launching the agent. At launch, the control plane resolves these requirements into effective grants. Identity is cryptographically verifiable. Trust is explicit, auditable, and revocable.
 
 **Multi-Tenancy**
 Interchange supports flexible isolation boundaries for agents and resources. A tenant can represent an organization, a team, an individual operator, or a logical grouping of agents - the boundary is defined by whoever deploys and manages the infrastructure. All resources - agents, wallets, data, message channels, and registries - are scoped to tenants by default. Tenants can federate, allowing agents to discover and interact with agents in other tenants when explicitly permitted. This enables shared infrastructure to host multiple independent parties while maintaining strong isolation guarantees.
 
 **Lifecycle Management**
-Agents are created, updated, and retired through a consistent lifecycle. Interchange handles versioning, health checks, and graceful shutdown. Agents can be rolled back to previous versions. Long-running agents can be updated without losing in-flight work.
+Agent definitions and agents have distinct lifecycles. Definitions are created, versioned, and retired as catalog entries. Agents are launched from definitions, monitored for health, and stopped when their work is done. Definitions can be rolled back to previous versions. The definition's update policy governs how changes affect running agents — from automatic redeployment to manual control.
 
 **Observability**
 Operators see what their agents are doing. Interchange provides structured logs, metrics, and distributed tracing across agent interactions. Dashboards surface resource usage, message flow, and anomalies. When something goes wrong, operators can trace the chain of events that led there.
