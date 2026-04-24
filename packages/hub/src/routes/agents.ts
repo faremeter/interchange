@@ -2,12 +2,7 @@ import { eq, and, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import {
-  agent,
-  agentInstance,
-  agentVersion,
-  principal,
-} from "@interchange/db/schema";
+import { agent, agentInstance, agentVersion } from "@interchange/db/schema";
 import {
   CreateAgent,
   UpdateAgent,
@@ -385,15 +380,6 @@ app.delete(
     }
 
     const retiredAt = new Date();
-
-    // Deactivate the legacy definition principal if one exists
-    const legacyPrincipalId = existing.principalId;
-    if (legacyPrincipalId) {
-      await db
-        .update(principal)
-        .set({ status: "deactivated", updatedAt: retiredAt })
-        .where(eq(principal.id, legacyPrincipalId));
-    }
 
     // TODO: This is DB-only — it does not signal the sidecar to stop
     // or end the agentSession. A running sidecar will continue until
