@@ -63,6 +63,10 @@ export function createEventCollectorRegistry(
     switch (event.type) {
       case "reactor.start":
         return { status: "busy" };
+      case "message.received":
+        return { status: "busy" };
+      case "connector.reply":
+        return { status: "idle" };
       case "reactor.gate.blocked":
         if (event.data.reason === "approval")
           return { status: "waiting_approval" };
