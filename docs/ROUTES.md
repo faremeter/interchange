@@ -33,17 +33,21 @@ The tradeoff is longer URLs. `/api/tenants/tnt_abc/agents/agt_xyz` is more verbo
 
 ### Why agent definitions and instances are separate route groups
 
-Agent definitions (`/agents/definitions`) and agent instances (`/agents/instances`) are sibling route groups under the tenant's `/agents` namespace rather than instances being nested under definitions (`/agents/definitions/:agentId/instances`).
+Agent definitions (`/agents/definitions`) and agents (`/agents/instances`) are sibling route groups under the tenant's `/agents` namespace rather than agents being nested under definitions (`/agents/definitions/:agentId/instances`).
 
-Nesting would mean listing all instances in a tenant requires knowing all agent IDs first. It also creates awkward paths when an agent definition is retired but its historical instances are still queryable. Instances are first-class tenant resources alongside wallets, credentials, and approvals.
+Definitions are catalog entries and blueprints — they describe what an agent can do. Agents are the live running entities with state, addresses, principals, and offerings. They are siblings because they are different resource types under the same namespace: one is data, the other is a runtime entity.
+
+Nesting would mean listing all agents in a tenant requires knowing all definition IDs first. It also creates awkward paths when a definition is retired but its historical agents are still queryable. Agents are first-class tenant resources alongside wallets, credentials, and approvals.
+
+Runtime state — data, history, branches, health, logs, metrics — lives on agent paths (`/agents/instances/:instanceId/...`), not on definition paths. This follows from the model: runtime state belongs to the running agent, not the blueprint. Definition paths carry versioning, rollback, and catalog-level offerings.
 
 ### Why cross-tenant reads are separate endpoints
 
-A user who belongs to multiple tenants needs dashboard views: "all my agents across all orgs", "all pending approvals". Rather than making the tenant-scoped endpoints optionally cross-tenant (via an absent header or special parameter), we provide explicit endpoints under `/api/me/...`.
+A user who belongs to multiple tenants needs dashboard views: "all my definitions across all orgs", "all my running agents", "all pending approvals". Rather than making the tenant-scoped endpoints optionally cross-tenant (via an absent header or special parameter), we provide explicit endpoints under `/api/me/...`.
 
-This is clearer for clients: `/api/me/agents` is a different operation from `/api/tenants/:tenantId/agents`. The former aggregates across tenants and tags each result with `tenantId`. The latter is scoped to one tenant. No mode-switching, no ambiguity about what "list agents" means in a given context.
+This is clearer for clients: `/api/me/agents/definitions` is a different operation from `/api/tenants/:tenantId/agents/definitions`. The former aggregates across tenants and tags each result with `tenantId`. The latter is scoped to one tenant. No mode-switching, no ambiguity about what "list definitions" means in a given context.
 
-Only resources that benefit from cross-tenant aggregation have `/api/me/...` endpoints: agents, instances, and approvals. These are the "dashboard" resources -- what's running, what's active, what needs my attention.
+Only resources that benefit from cross-tenant aggregation have `/api/me/...` endpoints: definitions, agents, and approvals. These are the "dashboard" resources -- what's defined, what's running, what needs my attention.
 
 ## Conventions
 
@@ -61,10 +65,10 @@ All IDs are globally unique with typed prefixes:
 
 - `tnt_` -- tenant
 - `prn_` -- principal
-- `agt_` -- agent
+- `agt_` -- agent definition
 - `rol_` -- role
 - `ofr_` -- offering
-- `ins_` -- instance
+- `ins_` -- agent
 - `ses_` -- session (internal, not exposed in the API)
 - `msg_` -- message
 - `wal_` -- wallet
@@ -99,9 +103,9 @@ Response types are documented in the OpenAPI spec via the same ArkType types but
 
 There are no dedicated "binding" endpoints for connecting resources to principals. No `POST /wallets/:walletId/agents/:agentId` to give an agent wallet access. No `POST /credentials/:credentialId/agents/:agentId` to bind a credential.
 
-Instead, all authorization flows through capability grants. Granting an agent wallet access is creating a grant: `{ resource: "wallet:wal_abc", action: "spend", principal_id: "prn_xyz" }`. Revoking it is deleting that grant. This is one mechanism for all authorization -- users, agents, tools, wallets, credentials, APIs.
+Instead, all authorization flows through capability grants. The grant endpoints (`/api/tenants/:tenantId/grants`) manage tenant-level policies and role-based grants. These are the materialized grants that live on principals. The evaluate endpoint (`/api/tenants/:tenantId/principals/:principalId/evaluate`) lets operators debug authorization by asking "what would happen if this principal tried to do X?"
 
-This means the grant endpoints (`/api/tenants/:tenantId/grants`) are the universal authorization management surface. The evaluate endpoint (`/api/tenants/:tenantId/principals/:principalId/evaluate`) lets operators debug authorization by asking "what would happen if this principal tried to do X?"
+Agent definitions declare grant requirements with source annotations (tenant, creator, invoker). These requirements are resolved at launch time by the control plane, which materializes grants on the agent's new principal. Creator-sourced and invoker-sourced grants are resolved against the respective principal's authority at launch time. Tenant-sourced grants are resolved from tenant role and system policies. The grant API endpoints manage the tenant-level policy layer; the launch flow handles per-agent materialization.
 
 ## Approvals as First-Class Resources
 
@@ -113,13 +117,13 @@ When a user approves with `scope: "always"`, the system creates a persistent cap
 
 ## Messages and Streaming
 
-`POST .../agents/instances/:instanceId/messages` persists the user's message and returns. The agent's response does not come back in the HTTP response. Instead, it streams over the instance channel (WebSocket or SSE).
+`POST .../agents/instances/:instanceId/messages` persists the user's message and returns. The agent's response does not come back in the HTTP response. Instead, it streams over the agent's channel (WebSocket or SSE).
 
 This "fire-and-forget via REST, stream via channel" pattern matches the architecture's "persist first, stream second" principle. The durable record (message in the database) is always ahead of or equal to the stream. If the client disconnects, nothing is lost -- they catch up by fetching messages via the REST endpoint.
 
-## Instance Channel Protocol
+## Agent Channel Protocol
 
-The instance channel is a real-time overlay for interactive use cases. It is not fully expressible in the OpenAPI spec, so the protocol details are documented here.
+The agent channel is a real-time overlay for interactive use cases. It is not fully expressible in the OpenAPI spec, so the protocol details are documented here.
 
 ### SSE Event Stream
 
@@ -140,12 +144,12 @@ Event format: JSON objects with a `type` field and `data` payload.
 {"type": "reactor.error", "data": {"error": "...", "fatal": true}}
 ```
 
-Reconnection: Instance channels are ephemeral. On disconnect, the client reconnects and fetches missed messages via the REST `GET .../messages` endpoint. No token-level resume -- tokens are ephemeral previews of content that is persisted as complete messages.
+Reconnection: Agent channels are ephemeral. On disconnect, the client reconnects and fetches missed messages via the REST `GET .../messages` endpoint. No token-level resume -- tokens are ephemeral previews of content that is persisted as complete messages.
 
-### WebSocket Instance Channel (Future)
+### WebSocket Agent Channel (Future)
 
-The architecture specifies a WebSocket instance channel at `wss://.../api/tenants/:tenantId/agents/instances/:instanceId/stream` with JWT authentication. This is not yet implemented. The SSE endpoint serves all current user-facing streaming needs.
+The architecture specifies a WebSocket agent channel at `wss://.../api/tenants/:tenantId/agents/instances/:instanceId/stream` with JWT authentication. This is not yet implemented. The SSE endpoint serves all current user-facing streaming needs.
 
 ### Debug and Telemetry Streams
 
-Debug and telemetry data (state inspection, trace output, log tailing) flows only over the instance channel. It is not part of the durable message record. Requires explicit authorization -- not all clients are permitted to attach debuggers to agents.
+Debug and telemetry data (state inspection, trace output, log tailing) flows only over the agent channel. It is not part of the durable message record. Requires explicit authorization -- not all clients are permitted to attach debuggers to agents.
