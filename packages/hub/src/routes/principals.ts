@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, ne, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
@@ -67,11 +67,34 @@ async function resolveIdentities(
   }
 
   if (agentRefIds.length > 0) {
+    // First pass: resolve definition principals (refId = agent.id)
     const agents = await db.query.agent.findMany({
       where: (a, { inArray }) => inArray(a.id, agentRefIds),
     });
     for (const a of agents) {
       identities.set(a.id, { displayName: a.name });
+    }
+
+    // Second pass: resolve instance principals (refId = agentInstance.id)
+    const unresolvedRefIds = agentRefIds.filter((id) => !identities.has(id));
+    if (unresolvedRefIds.length > 0) {
+      const instances = await db.query.agentInstance.findMany({
+        where: (i, { inArray }) => inArray(i.id, unresolvedRefIds),
+      });
+      const definitionIds = [...new Set(instances.map((i) => i.agentId))];
+      const definitions =
+        definitionIds.length > 0
+          ? await db.query.agent.findMany({
+              where: (a, { inArray }) => inArray(a.id, definitionIds),
+            })
+          : [];
+      const defNames = new Map(definitions.map((d) => [d.id, d.name]));
+      for (const inst of instances) {
+        const name = defNames.get(inst.agentId);
+        if (name) {
+          identities.set(inst.id, { displayName: `${name} (instance)` });
+        }
+      }
     }
   }
 
@@ -152,6 +175,9 @@ app.get(
       status === "deactivated"
     ) {
       conditions.push(eq(principal.status, status));
+    } else {
+      // Exclude deactivated principals by default
+      conditions.push(ne(principal.status, "deactivated"));
     }
     if (cursor) {
       conditions.push(

@@ -109,6 +109,28 @@ async function resolveGrantNames(
       for (const a of agents) {
         refToName.set(a.id, a.name);
       }
+
+      // Resolve instance principals (refId = agentInstance.id)
+      const unresolvedRefIds = agentRefIds.filter((id) => !refToName.has(id));
+      if (unresolvedRefIds.length > 0) {
+        const instances = await db.query.agentInstance.findMany({
+          where: (i, { inArray }) => inArray(i.id, unresolvedRefIds),
+        });
+        const definitionIds = [...new Set(instances.map((i) => i.agentId))];
+        const definitions =
+          definitionIds.length > 0
+            ? await db.query.agent.findMany({
+                where: (a, { inArray }) => inArray(a.id, definitionIds),
+              })
+            : [];
+        const defNames = new Map(definitions.map((d) => [d.id, d.name]));
+        for (const inst of instances) {
+          const name = defNames.get(inst.agentId);
+          if (name) {
+            refToName.set(inst.id, `${name} (instance)`);
+          }
+        }
+      }
     }
 
     for (const p of principals) {
