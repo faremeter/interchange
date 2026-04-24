@@ -17,7 +17,7 @@ export const grant = pgTable("grant", {
   action: text("action").notNull(),
   effect: text("effect", { enum: ["allow", "deny", "ask"] }).notNull(),
   conditions: jsonb("conditions"),
-  source: text("source", {
+  origin: text("origin", {
     enum: ["system", "role", "creator", "invoker"],
   }).notNull(),
   expiresAt: timestamp("expires_at"),

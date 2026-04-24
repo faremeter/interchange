@@ -368,7 +368,7 @@ describe("audit store", () => {
           resource: "tool:bash",
           action: "invoke",
           effect: "allow",
-          source: "creator",
+          origin: "creator",
           specificity: 1009,
         },
         matchingGrants: [
@@ -377,7 +377,7 @@ describe("audit store", () => {
             resource: "tool:bash",
             action: "invoke",
             effect: "allow",
-            source: "creator",
+            origin: "creator",
             specificity: 1009,
           },
         ],

@@ -12,7 +12,7 @@ function toGrantRule(row: typeof grant.$inferSelect): GrantRule {
     resource: row.resource,
     action: row.action,
     effect: row.effect as GrantRule["effect"],
-    source: row.source as GrantRule["source"],
+    origin: row.origin as GrantRule["origin"],
     conditions: row.conditions as Record<string, unknown> | null,
     expiresAt: row.expiresAt,
     roleId: row.roleId,

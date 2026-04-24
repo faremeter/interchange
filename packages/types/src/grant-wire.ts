@@ -7,10 +7,10 @@
 
 import { type } from "arktype";
 
-import { grantEffects, grantSources } from "./grants";
+import { grantEffects, grantOrigins } from "./grants";
 
 const Effect = type.enumerated(...grantEffects);
-const Source = type.enumerated(...grantSources);
+const Origin = type.enumerated(...grantOrigins);
 
 const DateOrNull = type("Date | null").or(type("string.date.parse"));
 
@@ -19,7 +19,7 @@ export const WireGrantRule = type({
   resource: "string",
   action: "string",
   effect: Effect,
-  source: Source,
+  origin: Origin,
   conditions: "Record<string, unknown> | null",
   expiresAt: DateOrNull,
   roleId: "string | null",

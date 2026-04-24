@@ -5,7 +5,7 @@ export type GrantRule = {
   resource: string;
   action: string;
   effect: Effect;
-  source: "system" | "role" | "creator" | "invoker";
+  origin: "system" | "role" | "creator" | "invoker";
   conditions: Record<string, unknown> | null;
   expiresAt: Date | null;
   roleId: string | null;

@@ -29,7 +29,7 @@ export type AuthzMatchedGrant = {
   resource: string;
   action: string;
   effect: Effect;
-  source: "system" | "role" | "creator" | "invoker";
+  origin: "system" | "role" | "creator" | "invoker";
   specificity: number;
 };
 
