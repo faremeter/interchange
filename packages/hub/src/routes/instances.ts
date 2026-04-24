@@ -8,7 +8,9 @@ import {
   agent,
   agentInstance,
   agentSession,
+  grant as grantTable,
   messagePart,
+  principal as principalTable,
   provider,
   sessionMessage,
 } from "@interchange/db/schema";
@@ -19,11 +21,13 @@ import { generateKeyPair, createNodeCrypto } from "@interchange/crypto-node";
 import {
   CreateAgentInstance,
   AgentInstanceResponse,
+  GrantRequirement,
   SendMessage,
   MessageResponse,
   ErrorResponse,
   paginatedSchema,
 } from "@interchange/types";
+import type { GrantEffect, GrantSource } from "@interchange/types";
 import type {
   CryptoProvider,
   ProviderConfig,
@@ -50,6 +54,7 @@ const CredentialRequirement = type({
 });
 
 const CredentialRequirements = CredentialRequirement.array();
+const GrantRequirements = GrantRequirement.array();
 
 const ProviderMetadata = type({
   baseURL: "string",
@@ -165,25 +170,10 @@ app.post(
       );
     }
 
-    // Legacy launch path requires a definition principal. Definitions created
-    // after the three-source model migration have no principalId — the full
-    // launch flow with per-instance principals is implemented separately.
-    const definitionPrincipalId = row.principalId;
-    if (!definitionPrincipalId) {
-      return c.json(
-        {
-          error: {
-            code: "not_launchable",
-            message:
-              "This definition requires the updated instance launch flow",
-          },
-        },
-        409,
-      );
-    }
-
     const instanceId = generateId("instance");
     const agentAddress = `${instanceId}@${tenant.domain}`;
+
+    // --- Credential resolution ---
 
     const parsedRequirements = CredentialRequirements(
       row.credentialRequirements ?? [],
@@ -199,17 +189,32 @@ app.post(
         409,
       );
     }
-    const credentialRequirements = parsedRequirements;
+
+    // Use creatorPrincipalId for credential resolution; fall back to
+    // legacy principalId for definitions created before the migration.
+    const creatorPrincipalId = row.creatorPrincipalId ?? row.principalId;
+    if (!creatorPrincipalId) {
+      return c.json(
+        {
+          error: {
+            code: "not_launchable",
+            message:
+              "Definition has no creator principal for credential resolution",
+          },
+        },
+        409,
+      );
+    }
 
     const providers: ProviderConfig[] = [];
-    for (const req of credentialRequirements) {
+    for (const req of parsedRequirements) {
       let resolved;
       try {
         resolved = await resolveCredentialRequirement(
           db,
           tenant.id,
           req,
-          definitionPrincipalId,
+          creatorPrincipalId,
           principal.id,
         );
       } catch (err) {
@@ -275,6 +280,8 @@ app.post(
       });
     }
 
+    // --- Model config ---
+
     const modelConfig = ModelConfig(row.modelConfig ?? {});
     if (modelConfig instanceof type.errors) {
       return c.json(
@@ -288,30 +295,108 @@ app.post(
       );
     }
 
+    // --- Grant requirement resolution (three-source model) ---
+
     const grantStore = c.get("grantStore");
-    const agentGrants = await grantStore.collectGrants(
-      definitionPrincipalId,
+    const instancePrincipalId = generateId("principal");
+
+    // Collect invoker's grants once — used for both creator and invoker resolution.
+    const invokerGrants = await grantStore.collectGrants(
+      principal.id,
       tenant.id,
     );
-    const nonInvokerGrants = agentGrants.filter((g) => g.source !== "invoker");
-    const invokerRequirements = agentGrants.filter(
-      (g) => g.source === "invoker",
+    // Only system/role/creator grants can be delegated. Invoker-sourced
+    // grants cannot be transitively re-delegated.
+    const delegatableInvokerGrants = invokerGrants.filter(
+      (g) => g.source !== "invoker",
     );
 
-    if (invokerRequirements.length > 0) {
-      // Collect the invoking user's grants once (not per-requirement).
-      const invokerGrants = await grantStore.collectGrants(
-        principal.id,
-        tenant.id,
-      );
-      // Only system/role/creator grants can be delegated. Invoker-sourced
-      // grants cannot be transitively re-delegated — this prevents
-      // privilege escalation through delegation chains.
-      const delegatable = invokerGrants.filter((g) => g.source !== "invoker");
+    // Accumulate grant rows in memory; write to DB only after all
+    // requirements resolve. This avoids orphaned rows on partial failure.
+    const grantRows: {
+      id: string;
+      tenantId: string;
+      principalId: string;
+      resource: string;
+      action: string;
+      effect: GrantEffect;
+      conditions: Record<string, unknown> | null;
+      source: GrantSource;
+      expiresAt: Date | null;
+      createdAt: Date;
+      updatedAt: Date;
+    }[] = [];
 
-      for (const req of invokerRequirements) {
+    const now = new Date();
+    const INVOKER_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
+    const invokerExpiresAt = new Date(now.getTime() + INVOKER_GRANT_TTL_MS);
+
+    const parsedGrantReqs = GrantRequirements(row.grantRequirements ?? []);
+    if (parsedGrantReqs instanceof type.errors) {
+      return c.json(
+        {
+          error: {
+            code: "not_launchable",
+            message: `Invalid grant requirements: ${parsedGrantReqs.summary}`,
+          },
+        },
+        409,
+      );
+    }
+
+    // Collect creator's grants once for all creator-sourced requirements.
+    const hasCreatorReqs = parsedGrantReqs.some((r) => r.source === "creator");
+    const creatorGrants = hasCreatorReqs
+      ? await grantStore.collectGrants(creatorPrincipalId, tenant.id)
+      : [];
+
+    for (const req of parsedGrantReqs) {
+      const effect = req.effect ?? "allow";
+
+      if (req.source === "tenant") {
+        // Tenant-source resolution is not yet implemented. Fail-closed.
+        return c.json(
+          {
+            error: {
+              code: "not_launchable",
+              message: `Tenant-sourced grant requirements are not yet supported (${req.resource}/${req.action})`,
+            },
+          },
+          409,
+        );
+      } else if (req.source === "creator") {
         const result = await evaluateGrants(
-          delegatable,
+          creatorGrants,
+          req.resource,
+          req.action,
+        );
+        if (result.effect !== "allow") {
+          return c.json(
+            {
+              error: {
+                code: "insufficient_grants",
+                message: `Creator lacks authority to delegate ${req.resource}/${req.action}`,
+              },
+            },
+            403,
+          );
+        }
+        grantRows.push({
+          id: generateId("grant"),
+          tenantId: tenant.id,
+          principalId: instancePrincipalId,
+          resource: req.resource,
+          action: req.action,
+          effect,
+          conditions: req.conditions ?? null,
+          source: "creator",
+          expiresAt: null,
+          createdAt: now,
+          updatedAt: now,
+        });
+      } else if (req.source === "invoker") {
+        const result = await evaluateGrants(
+          delegatableInvokerGrants,
           req.resource,
           req.action,
         );
@@ -326,41 +411,119 @@ app.post(
             403,
           );
         }
+        grantRows.push({
+          id: generateId("grant"),
+          tenantId: tenant.id,
+          principalId: instancePrincipalId,
+          resource: req.resource,
+          action: req.action,
+          effect,
+          conditions: req.conditions ?? null,
+          source: "invoker",
+          expiresAt: invokerExpiresAt,
+          createdAt: now,
+          updatedAt: now,
+        });
+      } else {
+        return c.json(
+          {
+            error: {
+              code: "not_launchable",
+              message: `Unknown grant requirement source: ${req.source}`,
+            },
+          },
+          409,
+        );
       }
     }
 
-    // Invoker-sourced grants are ephemeral — they expire when the instance
-    // is torn down via agent.undeploy.
-    // TODO: record invokerPrincipalId for audit trail (INTR-21 follow-up)
-    const grants = [...nonInvokerGrants, ...invokerRequirements];
+    // Process ad-hoc invoker grants from the launch request.
+    if (body.invokerGrants) {
+      for (const ig of body.invokerGrants) {
+        const effect = ig.effect ?? "allow";
+        const result = await evaluateGrants(
+          delegatableInvokerGrants,
+          ig.resource,
+          ig.action,
+        );
+        if (result.effect !== "allow") {
+          return c.json(
+            {
+              error: {
+                code: "insufficient_grants",
+                message: `Invoker lacks authority for ${ig.resource}/${ig.action}`,
+              },
+            },
+            403,
+          );
+        }
+        grantRows.push({
+          id: generateId("grant"),
+          tenantId: tenant.id,
+          principalId: instancePrincipalId,
+          resource: ig.resource,
+          action: ig.action,
+          effect,
+          conditions: ig.conditions ?? null,
+          source: "invoker",
+          expiresAt: invokerExpiresAt,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+
+    // --- Write all DB rows in a transaction ---
 
     const sessionId = generateId("session");
-    const now = new Date();
 
-    // Create a transitional agentSession row to satisfy the FK on
-    // agentInstance.sessionId and the message tables. This coupling
-    // is removed when sessions are fully retired.
-    await db.insert(agentSession).values({
-      id: sessionId,
-      tenantId: tenant.id,
-      agentId: row.id,
-      principalId: principal.id,
-      status: "active",
-      createdAt: now,
-      updatedAt: now,
+    await db.transaction(async (tx) => {
+      // Create per-instance principal
+      await tx.insert(principalTable).values({
+        id: instancePrincipalId,
+        tenantId: tenant.id,
+        kind: "agent",
+        refId: instanceId,
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // Materialize grants on the instance principal
+      for (const g of grantRows) {
+        await tx.insert(grantTable).values(g);
+      }
+
+      // Transitional agentSession row (FK requirement)
+      await tx.insert(agentSession).values({
+        id: sessionId,
+        tenantId: tenant.id,
+        agentId: row.id,
+        principalId: principal.id,
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // Create instance row
+      await tx.insert(agentInstance).values({
+        id: instanceId,
+        agentId: row.id,
+        tenantId: tenant.id,
+        principalId: instancePrincipalId,
+        address: agentAddress,
+        sessionId,
+        status: "deployed",
+        createdAt: now,
+        updatedAt: now,
+      });
     });
 
-    await db.insert(agentInstance).values({
-      id: instanceId,
-      agentId: row.id,
-      tenantId: tenant.id,
-      principalId: definitionPrincipalId,
-      address: agentAddress,
-      sessionId,
-      status: "deployed",
-      createdAt: now,
-      updatedAt: now,
-    });
+    // Collect the materialized grants for the deploy frame
+    const grants = await grantStore.collectGrants(
+      instancePrincipalId,
+      tenant.id,
+    );
 
     const eventCollectors = c.get("eventCollectors");
     eventCollectors.create(agentAddress, tenant.id, sessionId, instanceId);
@@ -378,7 +541,7 @@ app.post(
           sessionId,
           agentId: row.id,
           tenantId: tenant.id,
-          principalId: definitionPrincipalId,
+          principalId: instancePrincipalId,
           agentAddress,
           systemPrompt: row.systemPrompt,
           tools: [],
@@ -411,6 +574,12 @@ app.post(
       } else {
         await db.delete(agentInstance).where(eq(agentInstance.id, instanceId));
       }
+
+      // Deactivate the instance principal created during this launch
+      await db
+        .update(principalTable)
+        .set({ status: "deactivated", updatedAt: failedAt })
+        .where(eq(principalTable.id, instancePrincipalId));
 
       return c.json(
         {
@@ -682,6 +851,19 @@ app.delete(
         endedAt,
       })
       .where(eq(agentInstance.id, instanceId));
+
+    // Deactivate the instance's per-instance principal. Only deactivate
+    // principals whose refId matches this instance — legacy instances share
+    // the definition's principal, which must not be deactivated here.
+    await db
+      .update(principalTable)
+      .set({ status: "deactivated", updatedAt: endedAt })
+      .where(
+        and(
+          eq(principalTable.id, row.principalId),
+          eq(principalTable.refId, instanceId),
+        ),
+      );
 
     // End associated session rows.
     if (row.sessionId) {
