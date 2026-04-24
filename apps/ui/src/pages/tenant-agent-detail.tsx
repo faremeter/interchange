@@ -4,22 +4,19 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Pencil, Plus, Trash2, X } from "lucide-react";
 import {
   type CredentialRequirementSource,
+  type DelegationSource,
   type GrantEffect,
-  type GrantSource,
   credentialRequirementSources,
+  delegationSources,
   grantEffects,
-  grantSources,
 } from "@interchange/types";
 
 import { MutationError } from "@/components/mutation-error";
 import {
   agentAllInstancesQuery,
   agentDetailQuery,
-  createGrantMutation,
   deleteAgentMutation,
-  deleteGrantMutation,
   deployInstanceMutation,
-  principalGrantsQuery,
   tenantProvidersQuery,
   updateAgentMutation,
   type AgentInstanceResponse,
@@ -121,10 +118,6 @@ export function TenantAgentDetailPage() {
   const { data: instances } = useQuery(
     agentAllInstancesQuery(tenantId, agentId),
   );
-  const { data: grants } = useQuery({
-    ...principalGrantsQuery(tenantId, agent?.principalId ?? ""),
-    enabled: !!agent?.principalId,
-  });
   const { data: providers } = useQuery(tenantProvidersQuery(tenantId));
 
   const [editing, setEditing] = useState(false);
@@ -135,91 +128,21 @@ export function TenantAgentDetailPage() {
   const [editDescription, setEditDescription] = useState("");
   const [editSystemPrompt, setEditSystemPrompt] = useState("");
 
-  // Permission add form state
-  const [permProvider, setPermProvider] = useState("");
-  const [permScopes, setPermScopes] = useState("");
-  const [permSource, setPermSource] =
+  // Credential requirement form state
+  const [credProvider, setCredProvider] = useState("");
+  const [credScopes, setCredScopes] = useState("");
+  const [credSource, setCredSource] =
     useState<CredentialRequirementSource>("tenant");
-  const [permEffect, setPermEffect] = useState<GrantEffect>("allow");
-  const [permResource, setPermResource] = useState("");
-  const [permAction, setPermAction] = useState("");
-  const [permGrantSource, setPermGrantSource] =
-    useState<GrantSource>("creator");
-  const [revokeTarget, setRevokeTarget] = useState<string | null>(null);
 
-  // Merge credential requirements with their corresponding grants
-  const requirements = agent?.credentialRequirements ?? [];
-  const grantsList = grants ?? [];
+  // Grant requirement form state
+  const [grantReqResource, setGrantReqResource] = useState("");
+  const [grantReqAction, setGrantReqAction] = useState("");
+  const [grantReqSource, setGrantReqSource] =
+    useState<DelegationSource>("tenant");
+  const [grantReqEffect, setGrantReqEffect] = useState<GrantEffect>("allow");
 
-  interface PermissionRow {
-    type: "credential";
-    providerName: string;
-    scopes: string[];
-    source: string;
-    name?: string;
-    effect: string;
-    requirementIndex: number;
-    grantId?: string;
-  }
-
-  function buildPermissionRows(): PermissionRow[] {
-    const rows: PermissionRow[] = [];
-
-    const providerGrantEffects = new Map<string, string>();
-    for (const g of grantsList) {
-      if (g.resource.startsWith("credential:") && g.action === "use") {
-        const providerName = g.resource.replace("credential:", "");
-        const existing = providerGrantEffects.get(providerName);
-        if (!existing) {
-          providerGrantEffects.set(providerName, g.effect);
-        } else {
-          const priority = { deny: 0, ask: 1, allow: 2 };
-          if (
-            priority[g.effect as keyof typeof priority] <
-            priority[existing as keyof typeof priority]
-          ) {
-            providerGrantEffects.set(providerName, g.effect);
-          }
-        }
-      }
-    }
-
-    for (let i = 0; i < requirements.length; i++) {
-      const req = requirements[i];
-      if (!req) continue;
-      const providerKey = req.providerName.toLowerCase();
-      let matchingGrantId: string | undefined;
-      for (const g of grantsList) {
-        if (
-          g.resource.toLowerCase() === `credential:${providerKey}` &&
-          g.action === "use"
-        ) {
-          matchingGrantId = g.id;
-          break;
-        }
-      }
-
-      rows.push({
-        type: "credential",
-        providerName: req.providerName,
-        scopes: req.scopes ?? [],
-        source: req.source,
-        name: req.name,
-        effect: providerGrantEffects.get(providerKey) ?? "allow",
-        requirementIndex: i,
-        grantId: matchingGrantId,
-      });
-    }
-
-    return rows;
-  }
-
-  function getResourceGrants() {
-    return grantsList.filter((g) => !g.resource.startsWith("credential:"));
-  }
-
-  const permissionRows = buildPermissionRows();
-  const resourceGrants = getResourceGrants();
+  const credentialRequirements = agent?.credentialRequirements ?? [];
+  const grantRequirements = agent?.grantRequirements ?? [];
 
   function enterEditMode() {
     if (!agent) return;
@@ -239,7 +162,6 @@ export function TenantAgentDetailPage() {
       queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "agents", agentId],
       });
-      setEditing(false);
     },
   });
 
@@ -247,39 +169,6 @@ export function TenantAgentDetailPage() {
     ...deleteAgentMutation(tenantId, agentId, queryClient),
     onSuccess: () => {
       navigate({ to: "/tenants/$tenantId/agents", params: { tenantId } });
-    },
-  });
-
-  const grantMut = useMutation({
-    ...createGrantMutation(tenantId, queryClient),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: [
-          "tenants",
-          tenantId,
-          "grants",
-          { principalId: agent?.principalId },
-        ],
-      });
-      resetPermissionForm();
-    },
-  });
-
-  const revokeMut = useMutation({
-    ...deleteGrantMutation(tenantId, revokeTarget ?? "", queryClient),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: [
-          "tenants",
-          tenantId,
-          "grants",
-          { principalId: agent?.principalId },
-        ],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["tenants", tenantId, "agents", agentId],
-      });
-      setRevokeTarget(null);
     },
   });
 
@@ -299,16 +188,6 @@ export function TenantAgentDetailPage() {
     },
   });
 
-  function resetPermissionForm() {
-    setPermProvider("");
-    setPermScopes("");
-    setPermSource("tenant");
-    setPermEffect("allow");
-    setPermResource("");
-    setPermAction("");
-    setPermGrantSource("creator");
-  }
-
   function handleSave(e: React.FormEvent) {
     e.preventDefault();
     if (!agent) return;
@@ -322,67 +201,67 @@ export function TenantAgentDetailPage() {
       body.description = editDescription.trim();
     if (editSystemPrompt.trim() !== (agent.systemPrompt ?? ""))
       body.systemPrompt = editSystemPrompt.trim();
-    updateMut.mutate(body);
+    updateMut.mutate(body, { onSuccess: () => setEditing(false) });
   }
 
-  function addPermission(e: React.FormEvent) {
+  function addCredentialRequirement(e: React.FormEvent) {
     e.preventDefault();
-    if (!agent) return;
-
-    const targetValue = permProvider.trim() || permResource.trim();
-    const isProvider = isKnownProvider(targetValue);
-
-    if (isProvider && permProvider.trim()) {
-      const scopes = permScopes
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-
-      grantMut.mutate({
-        resource: `credential:${permProvider.trim()}`,
-        action: "use",
-        effect: permEffect,
-        source: permGrantSource,
-        principalId: agent.principalId,
-      });
-
-      if (permEffect !== "deny") {
-        const existing = agent.credentialRequirements ?? [];
-        const req = {
-          providerName: permProvider.trim(),
-          source: permSource,
-          ...(scopes.length > 0 ? { scopes } : {}),
-        };
-        updateMut.mutate({
-          credentialRequirements: [...existing, req],
-        });
-      }
-    } else if (permResource.trim() && permAction.trim()) {
-      grantMut.mutate({
-        resource: permResource.trim(),
-        action: permAction.trim(),
-        effect: permEffect,
-        source: permGrantSource,
-        principalId: agent.principalId,
-      });
-    }
-  }
-
-  function removeCredentialPermission(row: PermissionRow) {
-    const existing = agent?.credentialRequirements ?? [];
-    const newRequirements = existing.filter(
-      (_, i) => i !== row.requirementIndex,
+    if (!agent || !credProvider.trim()) return;
+    const scopes = credScopes
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const req = {
+      providerName: credProvider.trim(),
+      source: credSource,
+      ...(scopes.length > 0 ? { scopes } : {}),
+    };
+    updateMut.mutate(
+      { credentialRequirements: [...credentialRequirements, req] },
+      {
+        onSuccess: () => {
+          setCredProvider("");
+          setCredScopes("");
+          setCredSource("tenant");
+        },
+      },
     );
-    updateMut.mutate({ credentialRequirements: newRequirements });
-
-    if (row.grantId) {
-      setRevokeTarget(row.grantId);
-    }
   }
 
-  function isKnownProvider(value: string): boolean {
-    if (!providers) return false;
-    return providers.some((p) => p.name.toLowerCase() === value.toLowerCase());
+  function removeCredentialRequirement(index: number) {
+    updateMut.mutate({
+      credentialRequirements: credentialRequirements.filter(
+        (_, i) => i !== index,
+      ),
+    });
+  }
+
+  function addGrantRequirement(e: React.FormEvent) {
+    e.preventDefault();
+    if (!agent || !grantReqResource.trim() || !grantReqAction.trim()) return;
+    const req = {
+      resource: grantReqResource.trim(),
+      action: grantReqAction.trim(),
+      source: grantReqSource,
+      effect: grantReqEffect,
+    };
+    updateMut.mutate(
+      { grantRequirements: [...grantRequirements, req] },
+      {
+        onSuccess: () => {
+          setGrantReqResource("");
+          setGrantReqAction("");
+          setGrantReqSource("tenant");
+          setGrantReqEffect("allow");
+        },
+      },
+    );
+  }
+
+  function removeGrantRequirement(index: number) {
+    updateMut.mutate({
+      grantRequirements: grantRequirements.filter((_, i) => i !== index),
+    });
   }
 
   if (agentLoading) {
@@ -506,8 +385,10 @@ export function TenantAgentDetailPage() {
             <Row label="Version">
               <span className="font-mono text-xs">v{agent.currentVersion}</span>
             </Row>
-            <Row label="Principal ID">
-              <span className="font-mono text-xs">{agent.principalId}</span>
+            <Row label="Creator Principal">
+              <span className="font-mono text-xs">
+                {agent.creatorPrincipalId ?? "\u2014"}
+              </span>
             </Row>
             {agent.systemPrompt && (
               <Row label="System Prompt">
@@ -603,104 +484,60 @@ export function TenantAgentDetailPage() {
         )}
       </div>
 
-      {/* Unified Permissions section */}
+      {/* Credential Requirements */}
       <div className="mt-8">
-        <h3 className="text-sm font-semibold">Permissions</h3>
+        <h3 className="text-sm font-semibold">Credential Requirements</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          What this agent is allowed to do. Credential permissions control
-          access to external services; resource grants control access to
-          specific resources.
+          External service credentials this agent needs at launch. The source
+          determines who supplies each credential.
         </p>
 
-        {/* Permission table */}
-        {(permissionRows.length > 0 || resourceGrants.length > 0) && (
+        {credentialRequirements.length > 0 && (
           <div className="mt-3 rounded-lg border">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Permission</TableHead>
-                  <TableHead>Details</TableHead>
+                  <TableHead>Provider</TableHead>
+                  <TableHead>Scopes</TableHead>
                   <TableHead>Source</TableHead>
-                  <TableHead>Effect</TableHead>
                   <TableHead className="w-10" />
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {/* Credential permissions */}
-                {permissionRows.map((row) => (
-                  <TableRow key={row.requirementIndex}>
+                {credentialRequirements.map((req, i) => (
+                  <TableRow key={i}>
+                    <TableCell className="font-mono text-xs">
+                      {req.providerName}
+                    </TableCell>
                     <TableCell>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs">
-                          {row.providerName}
+                      {req.scopes && req.scopes.length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {req.scopes.map((s) => (
+                            <Badge
+                              key={s}
+                              variant="outline"
+                              className="font-mono text-xs"
+                            >
+                              {s}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">
+                          any
                         </span>
-                        <Badge variant="outline" className="text-[10px]">
-                          credential
-                        </Badge>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        {row.scopes.length > 0 ? (
-                          <div className="flex flex-wrap gap-1">
-                            {row.scopes.map((s) => (
-                              <Badge
-                                key={s}
-                                variant="outline"
-                                className="font-mono text-xs"
-                              >
-                                {s}
-                              </Badge>
-                            ))}
-                          </div>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">
-                            any
-                          </span>
-                        )}
-                      </div>
+                      )}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
-                      {row.source === "tenant" ? "org" : row.source}
-                    </TableCell>
-                    <TableCell>
-                      <EffectBadge effect={row.effect} />
+                      {req.source === "tenant" ? "org" : req.source}
                     </TableCell>
                     <TableCell>
                       <Button
                         variant="ghost"
                         size="icon-xs"
                         className="text-destructive hover:text-destructive"
-                        onClick={() => removeCredentialPermission(row)}
-                        disabled={updateMut.isPending || revokeMut.isPending}
-                      >
-                        <X className="size-3.5" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {/* Resource grants */}
-                {resourceGrants.map((g) => (
-                  <TableRow key={g.id}>
-                    <TableCell className="font-mono text-xs">
-                      {g.resource}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {g.action}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {g.source}
-                    </TableCell>
-                    <TableCell>
-                      <EffectBadge effect={g.effect} />
-                    </TableCell>
-                    <TableCell>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        className="text-destructive hover:text-destructive"
-                        onClick={() => setRevokeTarget(g.id)}
-                        disabled={revokeMut.isPending}
+                        onClick={() => removeCredentialRequirement(i)}
+                        disabled={updateMut.isPending}
                       >
                         <X className="size-3.5" />
                       </Button>
@@ -712,152 +549,193 @@ export function TenantAgentDetailPage() {
           </div>
         )}
 
-        {/* Add permission form */}
         <div className="mt-4 space-y-3 rounded-lg border p-4">
           <form
-            onSubmit={addPermission}
+            onSubmit={addCredentialRequirement}
             className="flex flex-wrap items-end gap-2"
           >
             <div className="grid gap-1">
-              <Label htmlFor="perm-target" className="text-xs">
-                Provider or Resource
+              <Label htmlFor="cred-provider" className="text-xs">
+                Provider
               </Label>
               <Input
-                id="perm-target"
+                id="cred-provider"
                 list="providers-list"
-                value={permProvider || permResource}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (isKnownProvider(val)) {
-                    setPermProvider(val);
-                    setPermResource("");
-                  } else {
-                    setPermProvider("");
-                    setPermResource(val);
-                  }
-                }}
-                onBlur={(e) => {
-                  const val = e.target.value;
-                  if (isKnownProvider(val)) {
-                    setPermProvider(val);
-                    setPermResource("");
-                  }
-                }}
-                placeholder="Select provider or enter resource pattern"
-                className="h-8 w-56 text-xs"
+                value={credProvider}
+                onChange={(e) => setCredProvider(e.target.value)}
+                placeholder="e.g. github"
+                className="h-8 w-40 text-xs"
               />
               <datalist id="providers-list">
                 {providers?.map((p) => (
-                  <option key={`provider-${p.id}`} value={p.name} />
-                ))}
-                {[
-                  ...new Set(
-                    grantsList
-                      .map((g) => g.resource)
-                      .filter((r) => !r.startsWith("credential:")),
-                  ),
-                ].map((r) => (
-                  <option key={`grant-${r}`} value={r} />
+                  <option key={p.id} value={p.name} />
                 ))}
               </datalist>
             </div>
+            <div className="grid gap-1">
+              <Label htmlFor="cred-scopes" className="text-xs">
+                Scopes
+              </Label>
+              <Input
+                id="cred-scopes"
+                list="scopes-list"
+                value={credScopes}
+                onChange={(e) => setCredScopes(e.target.value)}
+                placeholder="repo, read:org"
+                className="h-8 w-36 text-xs"
+              />
+              <datalist id="scopes-list">
+                {providers
+                  ?.find(
+                    (p) =>
+                      p.name.toLowerCase() ===
+                      credProvider.trim().toLowerCase(),
+                  )
+                  ?.scopes?.map((s) => (
+                    <option key={s} value={s} />
+                  ))}
+              </datalist>
+            </div>
+            <div className="grid gap-1">
+              <Label className="text-xs">Source</Label>
+              <Select
+                value={credSource}
+                onValueChange={(v) =>
+                  setCredSource(v as CredentialRequirementSource)
+                }
+              >
+                <SelectTrigger className="h-8 w-24 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {credentialRequirementSources.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {s === "tenant" ? "org" : s}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              type="submit"
+              size="sm"
+              className="h-8"
+              disabled={updateMut.isPending || !credProvider.trim()}
+            >
+              <Plus className="size-3.5" />
+              Add
+            </Button>
+          </form>
+          <MutationError error={updateMut.error} />
+        </div>
+      </div>
 
-            {/* Provider fields - show if known provider */}
-            {isKnownProvider(permProvider) ? (
-              <>
-                <div className="grid gap-1">
-                  <Label htmlFor="perm-scopes" className="text-xs">
-                    Scopes
-                  </Label>
-                  <Input
-                    id="perm-scopes"
-                    list="scopes-list"
-                    value={permScopes}
-                    onChange={(e) => setPermScopes(e.target.value)}
-                    placeholder="repo, read:org"
-                    className="h-8 w-36 text-xs"
-                  />
-                  <datalist id="scopes-list">
-                    {providers
-                      ?.find(
-                        (p) =>
-                          p.name.toLowerCase() ===
-                          permProvider.trim().toLowerCase(),
-                      )
-                      ?.scopes?.map((s) => (
-                        <option key={s} value={s} />
-                      ))}
-                  </datalist>
-                </div>
-                <div className="grid gap-1">
-                  <Label className="text-xs">Source</Label>
-                  <Select
-                    value={permSource}
-                    onValueChange={(v) =>
-                      setPermSource(v as CredentialRequirementSource)
-                    }
-                  >
-                    <SelectTrigger className="h-8 w-24 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {credentialRequirementSources.map((s) => (
-                        <SelectItem key={s} value={s}>
-                          {s === "tenant" ? "org" : s}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="grid gap-1">
-                  <Label htmlFor="perm-action" className="text-xs">
-                    Action
-                  </Label>
-                  <Input
-                    id="perm-action"
-                    list="actions-list"
-                    value={permAction}
-                    onChange={(e) => setPermAction(e.target.value)}
-                    placeholder="e.g. read"
-                    className="h-8 w-28 text-xs"
-                  />
-                  <datalist id="actions-list">
-                    {[...new Set(grantsList.map((g) => g.action))].map((a) => (
-                      <option key={a} value={a} />
-                    ))}
-                  </datalist>
-                </div>
-                <div className="grid gap-1">
-                  <Label className="text-xs">Source</Label>
-                  <Select
-                    value={permGrantSource}
-                    onValueChange={(v) => setPermGrantSource(v as GrantSource)}
-                  >
-                    <SelectTrigger className="h-8 w-24 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {grantSources
-                        .filter((s) => s !== "system" && s !== "role")
-                        .map((s) => (
-                          <SelectItem key={s} value={s}>
-                            {s}
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </>
-            )}
+      {/* Grant Requirements */}
+      <div className="mt-8">
+        <h3 className="text-sm font-semibold">Grant Requirements</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Resource permissions this agent needs at launch. Each requirement
+          specifies who supplies the grant: the org (tenant), the definition
+          creator, or the person launching the instance (invoker).
+        </p>
 
+        {grantRequirements.length > 0 && (
+          <div className="mt-3 rounded-lg border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Resource</TableHead>
+                  <TableHead>Action</TableHead>
+                  <TableHead>Source</TableHead>
+                  <TableHead>Effect</TableHead>
+                  <TableHead className="w-10" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {grantRequirements.map((req, i) => (
+                  <TableRow key={i}>
+                    <TableCell className="font-mono text-xs">
+                      {req.resource}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {req.action}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {req.source === "tenant" ? "org" : req.source}
+                    </TableCell>
+                    <TableCell>
+                      <EffectBadge effect={req.effect ?? "allow"} />
+                    </TableCell>
+                    <TableCell>
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => removeGrantRequirement(i)}
+                        disabled={updateMut.isPending}
+                      >
+                        <X className="size-3.5" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+
+        <div className="mt-4 space-y-3 rounded-lg border p-4">
+          <form
+            onSubmit={addGrantRequirement}
+            className="flex flex-wrap items-end gap-2"
+          >
+            <div className="grid gap-1">
+              <Label htmlFor="grant-resource" className="text-xs">
+                Resource
+              </Label>
+              <Input
+                id="grant-resource"
+                value={grantReqResource}
+                onChange={(e) => setGrantReqResource(e.target.value)}
+                placeholder="e.g. tool:bash"
+                className="h-8 w-40 text-xs"
+              />
+            </div>
+            <div className="grid gap-1">
+              <Label htmlFor="grant-action" className="text-xs">
+                Action
+              </Label>
+              <Input
+                id="grant-action"
+                value={grantReqAction}
+                onChange={(e) => setGrantReqAction(e.target.value)}
+                placeholder="e.g. invoke"
+                className="h-8 w-28 text-xs"
+              />
+            </div>
+            <div className="grid gap-1">
+              <Label className="text-xs">Source</Label>
+              <Select
+                value={grantReqSource}
+                onValueChange={(v) => setGrantReqSource(v as DelegationSource)}
+              >
+                <SelectTrigger className="h-8 w-24 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {delegationSources.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {s === "tenant" ? "org" : s}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="grid gap-1">
               <Label className="text-xs">Effect</Label>
               <Select
-                value={permEffect}
-                onValueChange={(v) => setPermEffect(v as GrantEffect)}
+                value={grantReqEffect}
+                onValueChange={(v) => setGrantReqEffect(v as GrantEffect)}
               >
                 <SelectTrigger className="h-8 w-24 text-xs">
                   <SelectValue />
@@ -871,21 +749,20 @@ export function TenantAgentDetailPage() {
                 </SelectContent>
               </Select>
             </div>
-
             <Button
               type="submit"
               size="sm"
               className="h-8"
               disabled={
-                grantMut.isPending ||
-                (!permProvider.trim() && !permResource.trim())
+                updateMut.isPending ||
+                !grantReqResource.trim() ||
+                !grantReqAction.trim()
               }
             >
               <Plus className="size-3.5" />
               Add
             </Button>
           </form>
-          <MutationError error={grantMut.error} />
           <MutationError error={updateMut.error} />
         </div>
       </div>
@@ -896,8 +773,9 @@ export function TenantAgentDetailPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete agent?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will stop the agent &ldquo;{agent.name}&rdquo; and deactivate
-              its principal. This action cannot be undone.
+              This will permanently delete the agent definition &ldquo;
+              {agent.name}&rdquo; and all its instances. This action cannot be
+              undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <MutationError error={deleteMut.error} />
@@ -909,35 +787,6 @@ export function TenantAgentDetailPage() {
               disabled={deleteMut.isPending}
             >
               {deleteMut.isPending ? "Deleting..." : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Revoke grant confirmation */}
-      <AlertDialog
-        open={!!revokeTarget}
-        onOpenChange={(open) => {
-          if (!open) setRevokeTarget(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Revoke permission?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently remove this permission from the agent. This
-              action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <MutationError error={revokeMut.error} />
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => revokeMut.mutate()}
-              disabled={revokeMut.isPending}
-            >
-              {revokeMut.isPending ? "Revoking..." : "Revoke"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
