@@ -49,7 +49,7 @@ function mapGrant(g: AuthzDecision["matchingGrants"][number]) {
     resource: g.resource,
     action: g.action,
     effect: g.effect,
-    source: g.source,
+    origin: g.origin,
     specificity: g.specificity,
   };
 }

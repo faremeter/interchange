@@ -66,7 +66,7 @@ export async function evaluateGrants(
       resource: g.resource,
       action: g.action,
       effect: g.effect,
-      source: g.source,
+      origin: g.origin,
       specificity: grantSpecificity(g.resource, g.action),
     });
   }

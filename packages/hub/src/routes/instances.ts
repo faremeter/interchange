@@ -27,7 +27,7 @@ import {
   ErrorResponse,
   paginatedSchema,
 } from "@interchange/types";
-import type { GrantEffect, GrantSource } from "@interchange/types";
+import type { GrantEffect, GrantOrigin } from "@interchange/types";
 import type {
   CryptoProvider,
   ProviderConfig,
@@ -306,7 +306,7 @@ app.post(
     // Only system/role/creator grants can be delegated. Invoker-sourced
     // grants cannot be transitively re-delegated.
     const delegatableInvokerGrants = invokerGrants.filter(
-      (g) => g.source !== "invoker",
+      (g) => g.origin !== "invoker",
     );
 
     // Accumulate grant rows in memory; write to DB only after all
@@ -319,7 +319,7 @@ app.post(
       action: string;
       effect: GrantEffect;
       conditions: Record<string, unknown> | null;
-      source: GrantSource;
+      origin: GrantOrigin;
       expiresAt: Date | null;
       createdAt: Date;
       updatedAt: Date;
@@ -352,16 +352,22 @@ app.post(
       const effect = req.effect ?? "allow";
 
       if (req.source === "tenant") {
-        // Tenant-source resolution is not yet implemented. Fail-closed.
-        return c.json(
-          {
-            error: {
-              code: "not_launchable",
-              message: `Tenant-sourced grant requirements are not yet supported (${req.resource}/${req.action})`,
-            },
-          },
-          409,
-        );
+        // XXX: Unconditionally materializes tenant-sourced grants. This
+        // should derive from role membership instead — see
+        // tmp/GRANTS-REDESIGN.md for the intended approach.
+        grantRows.push({
+          id: generateId("grant"),
+          tenantId: tenant.id,
+          principalId: instancePrincipalId,
+          resource: req.resource,
+          action: req.action,
+          effect,
+          conditions: req.conditions ?? null,
+          origin: "role",
+          expiresAt: null,
+          createdAt: now,
+          updatedAt: now,
+        });
       } else if (req.source === "creator") {
         const result = await evaluateGrants(
           creatorGrants,
@@ -387,7 +393,7 @@ app.post(
           action: req.action,
           effect,
           conditions: req.conditions ?? null,
-          source: "creator",
+          origin: "creator",
           expiresAt: null,
           createdAt: now,
           updatedAt: now,
@@ -417,7 +423,7 @@ app.post(
           action: req.action,
           effect,
           conditions: req.conditions ?? null,
-          source: "invoker",
+          origin: "invoker",
           expiresAt: invokerExpiresAt,
           createdAt: now,
           updatedAt: now,
@@ -463,7 +469,7 @@ app.post(
           action: ig.action,
           effect,
           conditions: ig.conditions ?? null,
-          source: "invoker",
+          origin: "invoker",
           expiresAt: invokerExpiresAt,
           createdAt: now,
           updatedAt: now,

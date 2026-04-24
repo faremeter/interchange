@@ -3,11 +3,11 @@ import { type } from "arktype";
 export const grantEffects = ["allow", "deny", "ask"] as const;
 export type GrantEffect = (typeof grantEffects)[number];
 
-export const grantSources = ["system", "role", "creator", "invoker"] as const;
-export type GrantSource = (typeof grantSources)[number];
+export const grantOrigins = ["system", "role", "creator", "invoker"] as const;
+export type GrantOrigin = (typeof grantOrigins)[number];
 
 const Effect = type.enumerated(...grantEffects);
-const Source = type.enumerated(...grantSources);
+const Origin = type.enumerated(...grantOrigins);
 
 export const CreateGrant = type({
   "roleId?": "string | null",
@@ -16,7 +16,7 @@ export const CreateGrant = type({
   action: "string",
   effect: Effect,
   "conditions?": "Record<string, unknown> | null",
-  source: Source,
+  origin: Origin,
   "expiresAt?": "string | null",
 });
 
@@ -37,7 +37,7 @@ export const GrantResponse = type({
   action: "string",
   effect: Effect,
   "conditions?": "Record<string, unknown> | null",
-  source: Source,
+  origin: Origin,
   "expiresAt?": "string | null",
   createdAt: "string",
   updatedAt: "string",
@@ -53,7 +53,7 @@ export const MatchedGrant = type({
   resource: "string",
   action: "string",
   effect: Effect,
-  source: Source,
+  origin: Origin,
   "specificity?": "number",
 });
 export type MatchedGrant = typeof MatchedGrant.infer;

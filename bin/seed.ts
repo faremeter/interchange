@@ -418,7 +418,7 @@ if (checkOrSkip("create reviewer role", crStatus, 201, crData)) {
       resource: "documents:*",
       action: "read",
       effect: "allow",
-      source: "role",
+      origin: "role",
     },
     aliceCookies,
   );

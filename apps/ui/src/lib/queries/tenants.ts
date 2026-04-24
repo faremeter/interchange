@@ -94,7 +94,7 @@ type GrantResponse = {
   resource: string;
   action: string;
   effect: "allow" | "deny" | "ask";
-  source: "system" | "role" | "creator" | "invoker";
+  origin: "system" | "role" | "creator" | "invoker";
   createdAt: string;
   updatedAt: string;
 };
@@ -611,7 +611,7 @@ type CreateGrantBody = {
   resource: string;
   action: string;
   effect: "allow" | "deny" | "ask";
-  source: "system" | "role" | "creator" | "invoker";
+  origin: "system" | "role" | "creator" | "invoker";
   roleId?: string | null;
   principalId?: string | null;
   conditions?: Record<string, unknown> | null;

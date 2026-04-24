@@ -4,9 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import {
   type GrantEffect,
-  type GrantSource,
+  type GrantOrigin,
   grantEffects,
-  grantSources,
+  grantOrigins,
 } from "@interchange/types";
 
 import { TenantNav } from "@/components/tenant-nav";
@@ -68,7 +68,7 @@ export function TenantGrantsPage() {
   const [resource, setResource] = useState("");
   const [action, setAction] = useState("");
   const [effect, setEffect] = useState<GrantEffect>("allow");
-  const [source, setSource] = useState<GrantSource>("role");
+  const [origin, setOrigin] = useState<GrantOrigin>("role");
   const [targetType, setTargetType] = useState<string>("role");
   const [roleId, setRoleId] = useState("");
   const [principalId, setPrincipalId] = useState("");
@@ -77,7 +77,7 @@ export function TenantGrantsPage() {
     setResource("");
     setAction("");
     setEffect("allow");
-    setSource("role");
+    setOrigin("role");
     setTargetType("role");
     setRoleId("");
     setPrincipalId("");
@@ -116,7 +116,7 @@ export function TenantGrantsPage() {
                 <TableHead>Resource</TableHead>
                 <TableHead>Action</TableHead>
                 <TableHead>Effect</TableHead>
-                <TableHead>Source</TableHead>
+                <TableHead>Origin</TableHead>
                 <TableHead>Target</TableHead>
               </TableRow>
             </TableHeader>
@@ -152,7 +152,7 @@ export function TenantGrantsPage() {
                     <EffectBadge effect={g.effect} />
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {g.source}
+                    {g.origin}
                   </TableCell>
                   <TableCell>
                     {g.roleId && (
@@ -197,7 +197,7 @@ export function TenantGrantsPage() {
                 resource: resource.trim(),
                 action: action.trim(),
                 effect,
-                source,
+                origin,
                 ...(targetType === "role" && roleId ? { roleId } : {}),
                 ...(targetType === "principal" && principalId
                   ? { principalId }
@@ -247,16 +247,16 @@ export function TenantGrantsPage() {
                 </Select>
               </div>
               <div className="grid gap-2">
-                <Label>Source</Label>
+                <Label>Origin</Label>
                 <Select
-                  value={source}
-                  onValueChange={(v) => setSource(v as GrantSource)}
+                  value={origin}
+                  onValueChange={(v) => setOrigin(v as GrantOrigin)}
                 >
                   <SelectTrigger className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {grantSources.map((s) => (
+                    {grantOrigins.map((s) => (
                       <SelectItem key={s} value={s}>
                         {s}
                       </SelectItem>

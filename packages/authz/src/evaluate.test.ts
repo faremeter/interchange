@@ -9,7 +9,7 @@ function grant(
 ): GrantRule {
   return {
     id: `grt_${Math.random().toString(36).slice(2, 10)}`,
-    source: "role",
+    origin: "role",
     conditions: null,
     expiresAt: null,
     roleId: null,
@@ -120,7 +120,7 @@ describe("evaluateGrants", () => {
         resource: "*",
         action: "*",
         effect: "allow",
-        source: "system",
+        origin: "system",
       }),
     ];
 
@@ -173,13 +173,13 @@ describe("evaluateGrants", () => {
         resource: "documents:*",
         action: "read",
         effect: "allow",
-        source: "creator",
+        origin: "creator",
       }),
       grant({
         resource: "documents:*",
         action: "write",
         effect: "ask",
-        source: "creator",
+        origin: "creator",
       }),
     ];
 
@@ -257,13 +257,13 @@ describe("evaluateGrants determinism", () => {
   });
 });
 
-describe("evaluateGrants source neutrality", () => {
-  test("source does not affect evaluation precedence", async () => {
-    const sources = ["system", "role", "creator", "invoker"] as const;
+describe("evaluateGrants origin neutrality", () => {
+  test("origin does not affect evaluation precedence", async () => {
+    const origins = ["system", "role", "creator", "invoker"] as const;
 
-    for (const source of sources) {
+    for (const origin of origins) {
       const grants = [
-        grant({ resource: "agent:*", action: "read", effect: "allow", source }),
+        grant({ resource: "agent:*", action: "read", effect: "allow", origin }),
       ];
 
       const result = await evaluateGrants(grants, "agent:agt_abc", "read");
@@ -277,13 +277,13 @@ describe("evaluateGrants source neutrality", () => {
         resource: "*",
         action: "*",
         effect: "allow",
-        source: "system",
+        origin: "system",
       }),
       grant({
         resource: "agent:*",
         action: "read",
         effect: "deny",
-        source: "creator",
+        origin: "creator",
       }),
     ];
 
@@ -737,18 +737,18 @@ describe("authorize with in-memory store", () => {
 
   test("full scenario: role-based grants via store", async () => {
     const store = memoryStore([
-      grant({ resource: "*", action: "read", effect: "allow", source: "role" }),
+      grant({ resource: "*", action: "read", effect: "allow", origin: "role" }),
       grant({
         resource: "wallet:*",
         action: "spend",
         effect: "ask",
-        source: "role",
+        origin: "role",
       }),
       grant({
         resource: "tool:bash",
         action: "invoke",
         effect: "deny",
-        source: "creator",
+        origin: "creator",
       }),
     ]);
 

@@ -9,7 +9,7 @@ function makeGrant(overrides: Partial<GrantRule> = {}): GrantRule {
     resource: "tool:bash",
     action: "invoke",
     effect: "allow",
-    source: "creator",
+    origin: "creator",
     conditions: null,
     expiresAt: null,
     roleId: null,

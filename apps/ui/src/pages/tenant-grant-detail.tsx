@@ -228,7 +228,7 @@ export function TenantGrantDetailPage() {
             <Row label="Effect">
               <EffectBadge effect={grant.effect} />
             </Row>
-            <Row label="Source">{grant.source}</Row>
+            <Row label="Origin">{grant.origin}</Row>
             <Row label="Target">
               {grant.roleId ? (
                 <Badge variant="secondary">

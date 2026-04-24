@@ -239,7 +239,7 @@ describe("createAuditCollector", () => {
           resource: "tool:bash",
           action: "invoke",
           effect: "allow",
-          source: "creator",
+          origin: "creator",
           specificity: 1009,
         },
         matchingGrants: [
@@ -248,7 +248,7 @@ describe("createAuditCollector", () => {
             resource: "tool:bash",
             action: "invoke",
             effect: "allow",
-            source: "creator",
+            origin: "creator",
             specificity: 1009,
           },
         ],
