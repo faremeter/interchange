@@ -8,15 +8,15 @@ This document specifies the message format, the IMAP inbox model, and the transp
 
 ## Agent Addressing
 
-Every agent instance has an SMTP address as its network identity:
+Every agent has an SMTP address as its network identity:
 
 ```
-instance-id@tenant.interchange.network
+ins_xxxxx@tenant.interchange.network
 ```
 
-The local part identifies the instance within a tenant. The domain identifies the tenant. Tenant boundaries map directly to SMTP domains, providing natural isolation and federation semantics. DNS MX records route messages to the correct infrastructure. Each instance of an agent definition receives its own address, allowing multiple concurrent instances.
+The local part identifies the agent within a tenant. The domain identifies the tenant. Tenant boundaries map directly to SMTP domains, providing natural isolation and federation semantics. DNS MX records route messages to the correct infrastructure. Each agent launched from a definition receives its own address, allowing multiple concurrent agents from the same definition.
 
-Address format follows RFC 5322 addr-spec: `local-part "@" domain`. The local part is a dot-atom (letters, digits, hyphens, dots). No quoted strings, no special characters. Addresses are assigned at instance creation time and are unique within a tenant.
+Address format follows RFC 5322 addr-spec: `local-part "@" domain`. The local part is a dot-atom (letters, digits, hyphens, dots). No quoted strings, no special characters. Addresses are assigned at agent launch time and are unique within a tenant.
 
 ## Message Format
 
