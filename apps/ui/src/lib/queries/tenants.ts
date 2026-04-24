@@ -44,10 +44,18 @@ type CredentialRequirement = {
   name?: string;
 };
 
+type GrantRequirement = {
+  resource: string;
+  action: string;
+  effect?: "allow" | "deny" | "ask";
+  source: "tenant" | "creator" | "invoker";
+  conditions?: Record<string, unknown> | null;
+};
+
 export type AgentResponse = {
   id: string;
   tenantId: string;
-  principalId: string;
+  creatorPrincipalId?: string | null;
   name: string;
   description: string | null;
   systemPrompt: string | null;
@@ -55,6 +63,7 @@ export type AgentResponse = {
   currentVersion: string;
   capabilities: Record<string, unknown> | null;
   credentialRequirements?: CredentialRequirement[];
+  grantRequirements?: GrantRequirement[];
   createdAt: string;
   updatedAt: string;
 };
@@ -521,6 +530,7 @@ type UpdateAgentBody = {
   description?: string;
   systemPrompt?: string;
   credentialRequirements?: CredentialRequirement[];
+  grantRequirements?: GrantRequirement[];
 };
 
 export function createAgentMutation(tenantId: string, qc: QueryClient) {
