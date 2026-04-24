@@ -34,7 +34,7 @@ principal
   id              text PK        -- prn_...
   tenant_id       text FK -> tenant
   kind            text NOT NULL  -- 'user' | 'agent'
-  ref_id          text NOT NULL  -- user.id or agent.id
+  ref_id          text NOT NULL  -- user.id or agent id (ins_...)
   status          text NOT NULL  -- 'active' | 'suspended' | 'invited' | 'deactivated'
   created_at      timestamptz
   updated_at      timestamptz
@@ -59,6 +59,8 @@ Request to /api/me/...
   -> resolve all principals for user_id
   -> aggregate results across tenants, each tagged with tenantId
 ```
+
+Agent requests follow the same flow. The principal is resolved by `(ins_id, tenant_id)` rather than `(user_id, tenant_id)`. The agent's materialized grants are evaluated against the requested operation.
 
 ## Roles
 
@@ -86,6 +88,44 @@ principal_role
   created_at      timestamptz
   PRIMARY KEY(principal_id, role_id)
 ```
+
+## Grant Requirements on Definitions
+
+Agent definitions declare grant requirements — the capabilities an agent needs to function. Requirements are not live grants. They are a manifest that the control plane resolves at launch time to produce materialized grants on the agent's principal. This mirrors the credential requirement model described in CREDENTIALS.md.
+
+Each requirement specifies:
+
+```
+{
+  resource: string     -- glob pattern: "tool:bash", "wallet:*", etc.
+  action: string       -- "invoke", "spend", "read", etc.
+  source: "tenant" | "creator" | "invoker"
+  effect?: "allow" | "ask" | "deny"    -- default: "allow"
+  conditions?: object  -- optional constraints
+}
+```
+
+The `source` field declares where the authority should come from:
+
+- `source: "tenant"` — The tenant's organizational policies must allow this. Resolved from system roles and tenant-configured role grants, walking up the tenant hierarchy. Materializes as a `capability_grant` with `source = 'system'` or `source = 'role'`.
+- `source: "creator"` — The definition author must delegate this. Resolved at launch against the creator's own grants (identified by `creatorPrincipalId` on the definition). The control plane validates that the creator currently holds the authority being delegated — a creator cannot delegate what they don't have. Materializes as a `capability_grant` with `source = 'creator'`. This is the setuid model: the definition author's authority travels with the definition.
+- `source: "invoker"` — The person launching the agent must provide this. Resolved at launch against the invoker's grants. Materializes as a `capability_grant` with `source = 'invoker'` and a short `expires_at` (session-scoped to the agent's lifetime).
+
+### Creator Tracking
+
+The definition stores a `creatorPrincipalId` field identifying the definition author's principal. Creator-sourced requirements resolve against this principal at every launch. If the original creator leaves the organization, ownership can be transferred to another principal. Without transfer, the definition becomes un-launchable for any creator-sourced requirements (the control plane cannot validate delegation authority).
+
+### Resolution at Launch
+
+When an agent is launched, the control plane processes each grant requirement:
+
+1. Look at the `source` field
+2. Resolve against the appropriate principal (tenant policies, creator's grants, or invoker's grants)
+3. Validate that the source has the authority to delegate
+4. Create a `capability_grant` row on the agent's new principal with the appropriate `source` value
+5. Ship the effective grant set to the harness in the deploy frame
+
+The `initialGrants` field on `CreateAgent` is a grant requirements manifest — it specifies requirements with source annotations, not live grants. Each launch resolves these requirements against the current state of creator, tenant, and invoker authority.
 
 ## Capability Grants
 
@@ -160,18 +200,33 @@ The `conditions` JSONB field constrains when a grant applies:
 
 Conditions are evaluated at runtime by the authorization engine. A grant with unmet conditions is skipped during evaluation.
 
+## Grant Revocation
+
+Grant revocation is policy-driven with a default of fail-secure.
+
+**Creator grant revocation**: If the creator's authority is revoked after agents have been launched with creator-sourced grants, running agents lose the affected grants immediately. The control plane pushes a `grants.update` frame to the harness, which re-evaluates its materialized grants and stops exercising revoked capabilities regardless of in-flight work. Tenants can configure grace periods or notification-only behavior for specific grant types.
+
+**Invoker grant revocation**: Invoker-granted capabilities expire when the agent stops unless explicitly persisted. They are session-scoped by default.
+
+**Tenant policy changes**: When tenant policies change (role modifications, system role updates), the control plane re-evaluates affected agents and pushes grant updates to their harnesses.
+
+This parallels the credential revocation model described in CREDENTIALS.md — both follow the same fail-secure default with configurable tenant policies.
+
 ## Mapping to Interchange Concepts
 
-| Interchange concept          | Implementation                                                                                           |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------- |
-| Creator-granted capabilities | Grants with `source = 'creator'`, attached to the agent's principal                                      |
-| Invoker-granted capabilities | Grants with `source = 'invoker'`, attached to the agent's principal, short `expires_at` (session-scoped) |
-| Tool-call gates              | Grants where `resource = 'tool:...'`                                                                     |
-| Wallet access                | Grants where `resource = 'wallet:...'`, `action = 'spend'`, with spending limit conditions               |
-| Credential binding           | Grants where `resource = 'credential:...'`, `action = 'use'`                                             |
-| User roles (RBAC)            | Grants attached to roles, roles assigned to user principals                                              |
-| Human approval gates         | Grants with `effect = 'ask'`                                                                             |
-| Agent delegation chain       | Child agent's grants are a subset of parent agent's grants, enforced at creation time                    |
+This table shows how Interchange authorization concepts map to materialized grant forms in `capability_grant`. Definitions carry requirements (see Grant Requirements on Definitions above); this is what those requirements produce after resolution at launch.
+
+| Interchange concept          | Implementation                                                                                                                                |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tenant-granted capabilities  | Grant requirements with `source: "tenant"`, resolved from tenant policies, materialized with `source = 'system'` or `source = 'role'`         |
+| Creator-granted capabilities | Grant requirements with `source: "creator"`, resolved against creator's principal, materialized with `source = 'creator'`                     |
+| Invoker-granted capabilities | Grant requirements with `source: "invoker"`, resolved against invoker's principal, materialized with `source = 'invoker'`, short `expires_at` |
+| Tool-call gates              | Grants where `resource = 'tool:...'`                                                                                                          |
+| Wallet access                | Grants where `resource = 'wallet:...'`, `action = 'spend'`, with spending limit conditions                                                    |
+| Credential access via grant  | Grants where `resource = 'credential:...'`, `action = 'use'`. See also CREDENTIALS.md for the credential requirement model                    |
+| User roles (RBAC)            | Grants attached to roles, roles assigned to user principals                                                                                   |
+| Human approval gates         | Grants with `effect = 'ask'`                                                                                                                  |
+| Agent delegation chain       | Child agent's grants are a subset of parent agent's grants, enforced at launch time                                                           |
 
 ## Personal Tenant
 
