@@ -84,7 +84,6 @@ System roles (owner, admin, member) are created automatically when a tenant is c
 principal_role
   principal_id    text FK -> principal
   role_id         text FK -> role
-  granted_by      text FK -> principal
   created_at      timestamptz
   PRIMARY KEY(principal_id, role_id)
 ```
@@ -107,9 +106,9 @@ Each requirement specifies:
 
 The `source` field declares where the authority should come from:
 
-- `source: "tenant"` — The tenant's organizational policies must allow this. Resolved from system roles and tenant-configured role grants, walking up the tenant hierarchy. Materializes as a `capability_grant` with `source = 'system'` or `source = 'role'`.
-- `source: "creator"` — The definition author must delegate this. Resolved at launch against the creator's own grants (identified by `creatorPrincipalId` on the definition). The control plane validates that the creator currently holds the authority being delegated — a creator cannot delegate what they don't have. Materializes as a `capability_grant` with `source = 'creator'`. This is the setuid model: the definition author's authority travels with the definition.
-- `source: "invoker"` — The person launching the agent must provide this. Resolved at launch against the invoker's grants. Materializes as a `capability_grant` with `source = 'invoker'` and a short `expires_at` (session-scoped to the agent's lifetime).
+- `source: "tenant"` — The tenant's organizational policies must allow this. Resolved from system roles and tenant-configured role grants, walking up the tenant hierarchy. Materializes as a `grant` with `source = 'system'` or `source = 'role'`.
+- `source: "creator"` — The definition author must delegate this. Resolved at launch against the creator's own grants (identified by `creatorPrincipalId` on the definition). The control plane validates that the creator currently holds the authority being delegated — a creator cannot delegate what they don't have. Materializes as a `grant` with `source = 'creator'`. This is the setuid model: the definition author's authority travels with the definition.
+- `source: "invoker"` — The person launching the agent must provide this. Resolved at launch against the invoker's grants. Materializes as a `grant` with `source = 'invoker'` and a short `expires_at` (session-scoped to the agent's lifetime).
 
 ### Creator Tracking
 
@@ -122,7 +121,7 @@ When an agent is launched, the control plane processes each grant requirement:
 1. Look at the `source` field
 2. Resolve against the appropriate principal (tenant policies, creator's grants, or invoker's grants)
 3. Validate that the source has the authority to delegate
-4. Create a `capability_grant` row on the agent's new principal with the appropriate `source` value
+4. Create a `grant` row on the agent's new principal with the appropriate `source` value
 5. Ship the effective grant set to the harness in the deploy frame
 
 The `initialGrants` field on `CreateAgent` is a grant requirements manifest — it specifies requirements with source annotations, not live grants. Each launch resolves these requirements against the current state of creator, tenant, and invoker authority.
@@ -132,8 +131,8 @@ The `initialGrants` field on `CreateAgent` is a grant requirements manifest — 
 Capability grants are the atomic unit of authorization. Every authorization decision is resolved by evaluating grants. Grants can be attached to a role (applying to all principals with that role) or directly to a principal.
 
 ```
-capability_grant
-  id              text PK        -- cap_...
+grant
+  id              text PK        -- grt_...
   tenant_id       text FK -> tenant
 
   -- Target: who receives this grant (exactly one is non-null)
@@ -186,7 +185,7 @@ For a given principal attempting an operation:
 2. Filter to grants matching the resource and action patterns.
 3. Order by specificity (more specific patterns beat less specific).
 4. Last matching grant wins.
-5. No match defaults to `ask` (escalate to human).
+5. No match defaults to `deny` (fail-closed).
 
 The `ask` effect blocks execution and surfaces an approval request to the appropriate human. The human can respond with `once` (allow this instance), `always` (create a persistent grant), or `reject` (deny with optional feedback).
 
@@ -214,7 +213,7 @@ This parallels the credential revocation model described in CREDENTIALS.md — b
 
 ## Mapping to Interchange Concepts
 
-This table shows how Interchange authorization concepts map to materialized grant forms in `capability_grant`. Definitions carry requirements (see Grant Requirements on Definitions above); this is what those requirements produce after resolution at launch.
+This table shows how Interchange authorization concepts map to materialized grant forms in `grant`. Definitions carry requirements (see Grant Requirements on Definitions above); this is what those requirements produce after resolution at launch.
 
 | Interchange concept          | Implementation                                                                                                                                |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |

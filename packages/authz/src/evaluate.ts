@@ -103,10 +103,9 @@ export async function evaluateGrants(
  * against the requested resource and action, and returns the resolved
  * effect.
  *
- * The caller decides what to do with the result:
- * - HTTP routes may treat null/ask/deny as 403
- * - Agent runtime may treat null as "ask the human"
- * - An open system may treat null as "allow"
+ * Returns null when no grants match (fail-closed). The caller
+ * interprets the result in context: HTTP routes return 403, the
+ * agent runtime blocks the tool call.
  */
 export async function authorize(
   store: GrantStore,
