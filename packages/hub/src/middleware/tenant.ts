@@ -69,7 +69,7 @@ export async function resolveTenant(c: Context<TenantEnv>, next: Next) {
     );
   }
 
-  if (principalRow.status !== "active" && principalRow.status !== "invited") {
+  if (principalRow.status !== "active") {
     log.info("Principal {principalId} has status {status}, denying access", {
       principalId: principalRow.id,
       status: principalRow.status,
