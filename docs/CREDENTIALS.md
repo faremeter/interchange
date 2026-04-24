@@ -75,7 +75,7 @@ A credential requirement specifies:
 - **Source**: whose credential to use -- the tenant's organizational credential, the agent creator's personal credential, or the invoking user's personal credential
 - **Name**: an optional tiebreaker when multiple credentials match the same provider, source, and scope requirements
 
-The source field maps to the architecture document's dual-authority model. Creator-granted credentials are bound at agent creation time and persist for the agent's lifetime. Invoker-granted credentials are provided at invocation time by the user who launches the agent, delegated for the duration of the interaction.
+The source field maps to the architecture document's three-source model. Creator-granted credentials are resolved at agent launch time against the definition author's principal and persist for the agent's lifetime. Invoker-granted credentials are resolved at launch time against the invoker's principal, delegated for the duration of the agent's lifetime. Tenant-sourced credentials are resolved from the tenant hierarchy. Both credentials and grants follow the same requirement/resolution/materialization pattern — declared on the definition, resolved at launch, consumed at runtime.
 
 ## Resolution at Launch Time
 
@@ -89,9 +89,9 @@ When the control plane launches an agent into a harness, it processes each crede
 6. If zero matches, the launch fails (missing required credential)
 7. If all checks pass, the resolved credential is included in the harness's launch payload
 
-The grant validation ensures that an agent creator cannot grant an agent access to credentials the creator doesn't have access to themselves. This is enforced at agent creation time: the control plane resolves the agent definition's credential requirements using the creator's context and validates that the creator holds appropriate grants for every resolved credential.
+The grant validation ensures that a definition creator cannot grant an agent access to credentials the creator doesn't have access to themselves. This is enforced at agent launch time: the control plane resolves the definition's credential requirements using the creator's context (via `creatorPrincipalId` on the definition) and validates that the creator holds appropriate grants for every resolved credential.
 
-At invocation time, if the agent requires invoker-sourced credentials, the invoker's grants are additionally validated. The effective credential set is the union of creator-granted and invoker-granted credentials, subject to both parties' authorization.
+At launch time, if the agent requires invoker-sourced credentials, the invoker's grants are additionally validated. The effective credential set is the union of tenant, creator, and invoker credentials, subject to each party's authorization.
 
 ## Walk-up Resolution
 
@@ -139,9 +139,9 @@ This is not two separate mechanisms but two uses of the same bidirectional chann
 
 Credential access is governed by the existing grant-based authorization system. Grants determine which principals can use which credentials. The agent definition references credentials by capability, but the grant system validates access by credential ID after resolution.
 
-The key constraint is that an agent creator cannot grant an agent access to credentials the creator doesn't have access to themselves. This is enforced at agent creation time: the control plane resolves the agent definition's credential requirements using the creator's context and validates that the creator holds appropriate grants for every resolved credential.
+The key constraint is that a definition creator cannot grant an agent access to credentials the creator doesn't have access to themselves. This is enforced at agent launch time: the control plane resolves the definition's credential requirements using the creator's context (via `creatorPrincipalId` on the definition) and validates that the creator holds appropriate grants for every resolved credential.
 
-At invocation time, if the agent requires invoker-sourced credentials, the invoker's grants are additionally validated. The effective credential set is the union of creator-granted and invoker-granted credentials, subject to both parties' authorization.
+At launch time, if the agent requires invoker-sourced credentials, the invoker's grants are additionally validated. The effective credential set is the union of tenant, creator, and invoker credentials, subject to each party's authorization.
 
 ## OAuth2 Implementation and better-auth
 
