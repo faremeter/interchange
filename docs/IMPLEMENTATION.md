@@ -23,13 +23,13 @@ The choice of SMTP/IMAP is pragmatic: we get a global, federated message bus wit
 
 ### Agent Addressing
 
-Each agent instance has an SMTP address that serves as its network identifier:
+Each agent has an SMTP address that serves as its network identifier:
 
 ```
-instance-id@domain.interchange.network
+ins_xxxxx@domain.interchange.network
 ```
 
-The local part identifies the instance; the domain identifies the tenant. Tenant boundaries map directly to SMTP domains, providing natural isolation and federation semantics. Multiple instances of the same agent definition each receive their own address.
+The local part identifies the agent; the domain identifies the tenant. Tenant boundaries map directly to SMTP domains, providing natural isolation and federation semantics. Multiple agents launched from the same definition each receive their own address.
 
 ### Message Transport
 
@@ -65,7 +65,7 @@ Beyond authenticating message senders, the harness applies content-level safety 
 All input assembled into the agent's context uses consistent structural delimiters. System prompts and skill instructions are clearly marked as trusted. External content (messages, tool responses, user input) is framed as data with explicit boundaries. The framing format is designed to be recognizable by models and resistant to delimiter injection.
 
 **Action Validation**
-Before executing tool invocations, the harness evaluates the action against the agent's grants (`GrantRule` entries where `resource` matches `tool:*`). Validation checks include:
+Before executing tool invocations, the harness evaluates the action against the agent's materialized grants (entries where `resource` matches `tool:*`). Validation checks include:
 
 - Is this tool permitted for this agent?
 - Does the invocation match expected patterns?
@@ -622,7 +622,7 @@ Deployment is a three-phase operation: provision, pack delivery, session start.
 
 **Phase 1: Provision**
 
-1. Hub sends `agent.deploy` with ephemeral config (credentials, grants, providers, session ID)
+1. Hub sends `agent.deploy` with ephemeral config (credentials, materialized grants, providers, session ID)
 2. Sidecar creates the agent directory, generates an Ed25519 key pair, and persists the config
 3. Sidecar responds with `agent.deploy.ack` containing the agent's public key (hex-encoded)
 4. Hub stores the public key for future challenge/response verification
@@ -638,7 +638,7 @@ The sidecar is now provisioned but not running. It can receive pack data.
 9. Sidecar verifies the deploy commit signature against the hub's public key
 10. Sidecar unpacks objects into the git object store
 11. Sidecar updates `refs/heads/deploy` to the new commit
-12. Sidecar merges `deploy` into its instance branch (trivial merge)
+12. Sidecar merges `deploy` into its agent branch (trivial merge)
 13. Sidecar checks out only `deploy/` paths via partial checkout (`filepaths: ["deploy/"], noUpdateHead: true`) — `state/` working-tree files are untouched because `filepaths` restricts the scope, `noUpdateHead` prevents moving the branch pointer
 14. Sidecar responds with `pack.ack`
 
@@ -666,10 +666,10 @@ If the sidecar disconnects before sending the ack, the hub removes the agent fro
 
 ### State Push Flow
 
-1. Sidecar commits context/audit under `state/` on its instance branch (every commit is signed with the agent's Ed25519 key using SSH signature format)
+1. Sidecar commits context/audit under `state/` on its agent branch (every commit is signed with the agent's Ed25519 key using SSH signature format)
 2. On policy trigger (see State Push Policy):
    - Sidecar produces a packfile of new commits since last successful push
-   - Sidecar sends `pack.push` / `pack.done` with its instance ref
+   - Sidecar sends `pack.push` / `pack.done` with its agent ref
 3. Hub verifies commit signatures against the stored public key for that agent
 4. Hub verifies path ownership (no commits modify `deploy/` paths)
 5. Hub responds with `pack.ack` or `pack.reject`
@@ -729,7 +729,7 @@ The signature structure:
 -----END SSH SIGNATURE-----
 ```
 
-State commits carry an author identity of `<agentAddress> <instance-id@interchange.local>` rather than a shared harness identity, making commits attributable in standard git tooling.
+State commits carry an author identity of `<agentAddress> <agent-id@interchange.local>` rather than a shared harness identity, making commits attributable in standard git tooling.
 
 ### Deploy Content Integrity
 
@@ -747,7 +747,7 @@ The deploy tree never contains credentials. API keys, OAuth tokens, and other se
 
 ## Change History: Git-Backed Storage
 
-Agent-local data is stored in the same git repository as the deployed definition, providing revision control as a native capability. State lives under `state/` paths on a per-instance branch, while the deployed definition lives under `deploy/` (see Agent Deployment below).
+Agent-local data is stored in the same git repository as the deployed definition, providing revision control as a native capability. State lives under `state/` paths on a per-agent branch, while the deployed definition lives under `deploy/` (see Agent Deployment below).
 
 ### Storage Backends
 
@@ -761,7 +761,7 @@ The harness abstracts these differences - agents interact with the same history 
 
 ### Repository Structure
 
-Each agent instance has a single git repository:
+Each agent has a single git repository:
 
 ```
 <agent-dir>/
@@ -773,7 +773,7 @@ Each agent instance has a single git repository:
       <name>/
         tool.json
         handler.ts
-  state/                # Sidecar-managed (per-instance journal)
+  state/                # Sidecar-managed (per-agent journal)
     context.json
     audit/
       <session-id>/
@@ -794,11 +794,11 @@ refs/
   tags/
     deploy/v1               (historical deploy versions)
     deploy/v2
-  instances/
-    <instance-id>           (per-instance state branch)
+  agents/
+    <agent-id>              (per-agent state branch)
 ```
 
-The instance branch forks from the deploy ref at creation time. On redeploy, the new deploy commit is merged into the instance branch (always conflict-free due to path disjointness).
+The agent branch forks from the deploy ref at launch time. On redeploy, the new deploy commit is merged into the agent branch (always conflict-free due to path disjointness).
 
 ### Commit Policy
 
