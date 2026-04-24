@@ -8,11 +8,8 @@ export const agent = pgTable("agent", {
   tenantId: text("tenant_id")
     .notNull()
     .references(() => tenant.id, { onDelete: "cascade" }),
-  // Legacy column — new definitions set this to null. Dropped in a future migration.
-  principalId: text("principal_id").references(() => principal.id),
   // Tracks the definition author's principal for resolving source:"creator"
   // grant requirements at launch. See AUTH.md § Grant Requirements on Definitions.
-  // Nullable because pre-existing definitions were never backfilled.
   creatorPrincipalId: text("creator_principal_id").references(
     () => principal.id,
   ),

@@ -127,6 +127,13 @@
       "when": 1777050475351,
       "tag": "0017_hesitant_marvex",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1777053065460,
+      "tag": "0018_natural_sinister_six",
+      "breakpoints": true
     }
   ]
 }

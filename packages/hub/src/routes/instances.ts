@@ -190,9 +190,7 @@ app.post(
       );
     }
 
-    // Use creatorPrincipalId for credential resolution; fall back to
-    // legacy principalId for definitions created before the migration.
-    const creatorPrincipalId = row.creatorPrincipalId ?? row.principalId;
+    const creatorPrincipalId = row.creatorPrincipalId;
     if (!creatorPrincipalId) {
       return c.json(
         {
@@ -852,9 +850,8 @@ app.delete(
       })
       .where(eq(agentInstance.id, instanceId));
 
-    // Deactivate the instance's per-instance principal. Only deactivate
-    // principals whose refId matches this instance — legacy instances share
-    // the definition's principal, which must not be deactivated here.
+    // Deactivate the per-instance principal. The refId guard ensures we
+    // only deactivate the principal created for this specific instance.
     await db
       .update(principalTable)
       .set({ status: "deactivated", updatedAt: endedAt })
