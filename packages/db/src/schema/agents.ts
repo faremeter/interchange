@@ -11,6 +11,12 @@ export const agent = pgTable("agent", {
   principalId: text("principal_id")
     .notNull()
     .references(() => principal.id),
+  // Tracks the definition author's principal for resolving source:"creator"
+  // grant requirements at launch. See AUTH.md § Grant Requirements on Definitions.
+  // TODO: make notNull once definition routes populate this
+  creatorPrincipalId: text("creator_principal_id").references(
+    () => principal.id,
+  ),
   name: text("name").notNull(),
   description: text("description"),
   systemPrompt: text("system_prompt"),
@@ -20,6 +26,9 @@ export const agent = pgTable("agent", {
   modelConfig: jsonb("model_config"),
   capabilities: jsonb("capabilities"),
   credentialRequirements: jsonb("credential_requirements"),
+  // Grant requirements manifest — resolved at launch into materialized grants
+  // on the instance principal. See AUTH.md § Grant Requirements on Definitions.
+  grantRequirements: jsonb("grant_requirements"),
   currentVersion: text("current_version").notNull().default("1"),
   status: text("status", {
     enum: ["deployed", "stopped"],
