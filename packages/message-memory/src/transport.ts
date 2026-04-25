@@ -27,7 +27,11 @@ import {
 } from "./mailbox";
 import { parseHeaderSection } from "@interchange/mime";
 import { buildMessageHeaders } from "./headers";
-import { executeSend, type RemoteSendHandler } from "./send";
+import {
+  executeSend,
+  type RemoteSendHandler,
+  type MessageSentHandler,
+} from "./send";
 import { executeSearch } from "./search";
 import { executeThread } from "./thread";
 import {
@@ -50,6 +54,7 @@ export class InMemoryTransport implements MessageTransport {
   readonly #agentMailboxes = new Map<string, AgentMailboxEntry>();
   readonly #cryptoProviders = new Map<string, CryptoProvider>();
   #remoteSendHandler: RemoteSendHandler | undefined;
+  #messageSentHandler: MessageSentHandler | undefined;
 
   /**
    * Set a handler for delivering messages to recipients not registered on
@@ -59,6 +64,15 @@ export class InMemoryTransport implements MessageTransport {
    */
   setRemoteSendHandler(handler: RemoteSendHandler): void {
     this.#remoteSendHandler = handler;
+  }
+
+  /**
+   * Set a handler that fires after every successful send(). The message
+   * is already delivered when the handler fires — a handler rejection
+   * does not mean the message was not delivered.
+   */
+  setMessageSentHandler(handler: MessageSentHandler): void {
+    this.#messageSentHandler = handler;
   }
 
   /**
@@ -358,6 +372,7 @@ export class InMemoryTransport implements MessageTransport {
       this.#agentMailboxes,
       this.#cryptoProviders,
       () => this.#remoteSendHandler,
+      () => this.#messageSentHandler,
     );
   }
 }
@@ -371,17 +386,20 @@ class AgentMessageTransport implements MessageTransport {
   readonly #agentMailboxes: Map<string, AgentMailboxEntry>;
   readonly #cryptoProviders: Map<string, CryptoProvider>;
   readonly #getRemoteSendHandler: () => RemoteSendHandler | undefined;
+  readonly #getMessageSentHandler: () => MessageSentHandler | undefined;
 
   constructor(
     address: string,
     agentMailboxes: Map<string, AgentMailboxEntry>,
     cryptoProviders: Map<string, CryptoProvider>,
     getRemoteSendHandler: () => RemoteSendHandler | undefined,
+    getMessageSentHandler: () => MessageSentHandler | undefined,
   ) {
     this.#address = address;
     this.#agentMailboxes = agentMailboxes;
     this.#cryptoProviders = cryptoProviders;
     this.#getRemoteSendHandler = getRemoteSendHandler;
+    this.#getMessageSentHandler = getMessageSentHandler;
   }
 
   get #entry(): AgentMailboxEntry {
@@ -412,6 +430,7 @@ class AgentMessageTransport implements MessageTransport {
       this.#agentMailboxes,
       this.#cryptoProviders,
       this.#getRemoteSendHandler(),
+      this.#getMessageSentHandler(),
     );
   }
 

@@ -36,6 +36,20 @@ export type RemoteSendHandler = (
 ) => Promise<void>;
 
 /**
+ * Callback fired after a message is fully assembled and delivered. The
+ * send is already complete when this fires — a handler rejection does
+ * not mean the message was not delivered.
+ *
+ * Used by the sidecar to commit outbound wire messages to the git audit
+ * trail.
+ */
+export type MessageSentHandler = (
+  senderAddress: string,
+  rawMessage: Uint8Array,
+  messageId: string,
+) => Promise<void>;
+
+/**
  * Execute the send() flow:
  * 1. Validate sender registration, split recipients into local/remote
  * 2. Build signed content part (MIME bytes to sign)
@@ -44,6 +58,7 @@ export type RemoteSendHandler = (
  * 5. Append to each local recipient's INBOX and sender's Sent mailbox
  * 6. Forward to remote recipients via onRemoteSend
  * 7. Schedule watch callbacks asynchronously via queueMicrotask
+ * 8. Fire onMessageSent callback (fire-and-forget)
  *
  * If onRemoteSend is not provided and there are remote recipients, send()
  * throws. If onRemoteSend rejects, the error propagates — local delivery
@@ -57,6 +72,7 @@ export async function executeSend(
   agentMailboxes: Map<string, AgentMailboxEntry>,
   cryptoProviders: Map<string, CryptoProvider>,
   onRemoteSend?: RemoteSendHandler,
+  onMessageSent?: MessageSentHandler,
 ): Promise<SendReceipt> {
   const senderCrypto = cryptoProviders.get(senderAddress);
   if (senderCrypto === undefined) {
@@ -215,6 +231,16 @@ export async function executeSend(
   // Forward to remote recipients via federation hook.
   if (remoteRecipients.length > 0 && onRemoteSend !== undefined) {
     await onRemoteSend(rawBytes, remoteRecipients);
+  }
+
+  if (onMessageSent !== undefined) {
+    onMessageSent(senderAddress, rawBytes, messageId).catch((err: unknown) => {
+      queueMicrotask(() => {
+        throw err instanceof Error
+          ? err
+          : new Error(`MessageSentHandler failed: ${String(err)}`);
+      });
+    });
   }
 
   return {
