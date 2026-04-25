@@ -117,6 +117,22 @@ export function createWsClient(config: WsClientConfig): WsClient {
     });
   });
 
+  // Forward local-only sends to the hub so it has full visibility into all
+  // agent mail. These frames are marked delivered: true so the hub does not
+  // attempt to re-route them.
+  transport.addMessageSentHandler(
+    async (_senderAddress, rawMessage, _messageId, recipients, localOnly) => {
+      if (!localOnly) return;
+      const encoded = uint8ArrayToBase64(rawMessage);
+      send({
+        type: "mail.outbound",
+        rawMessage: encoded,
+        recipients,
+        delivered: true,
+      });
+    },
+  );
+
   async function handleAgentDeploy(frame: AgentDeployFrame): Promise<void> {
     try {
       const result = await sessions.provisionAgent(frame.config);

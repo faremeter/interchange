@@ -75,14 +75,16 @@ export const AgentErrorFrame = type({
 export type AgentErrorFrame = typeof AgentErrorFrame.infer;
 
 /**
- * A message from a local agent to a remote recipient. The sidecar's
- * InMemoryTransport calls onRemoteSend, which serializes the signed MIME
- * bytes and pushes this frame.
+ * A message from a local agent. When `delivered` is absent or false the hub
+ * should route the message to its recipients. When `delivered` is true the
+ * message was already delivered locally and is forwarded for audit/projection
+ * only — the hub must not re-route it.
  */
 export const MailOutboundFrame = type({
   type: "'mail.outbound'",
   rawMessage: "string",
   recipients: "string[]",
+  "delivered?": "boolean",
 });
 export type MailOutboundFrame = typeof MailOutboundFrame.infer;
 

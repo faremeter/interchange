@@ -47,6 +47,8 @@ export type MessageSentHandler = (
   senderAddress: string,
   rawMessage: Uint8Array,
   messageId: string,
+  recipients: string[],
+  localOnly: boolean,
 ) => Promise<void>;
 
 /**
@@ -234,7 +236,14 @@ export async function executeSend(
   }
 
   if (onMessageSent !== undefined) {
-    onMessageSent(senderAddress, rawBytes, messageId).catch((err: unknown) => {
+    const localOnly = remoteRecipients.length === 0;
+    onMessageSent(
+      senderAddress,
+      rawBytes,
+      messageId,
+      allAddressees,
+      localOnly,
+    ).catch((err: unknown) => {
       queueMicrotask(() => {
         throw err instanceof Error
           ? err

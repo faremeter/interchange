@@ -314,7 +314,9 @@ export function createSidecarRouter(
         handlePing(ws);
         break;
       case "mail.outbound":
-        handleMailOutbound(frame.rawMessage, frame.recipients);
+        if (frame.delivered !== true) {
+          handleMailOutbound(frame.rawMessage, frame.recipients);
+        }
         break;
       case "agent.event":
         onAgentEvent?.(frame.agentAddress, frame.sessionId, frame.event);

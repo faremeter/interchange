@@ -204,11 +204,13 @@ export function createSessionManager(
     if (pending !== undefined) await pending;
   }
 
-  transport.setMessageSentHandler(
+  transport.addMessageSentHandler(
     async (
       senderAddress: string,
       rawMessage: Uint8Array,
       messageId: string,
+      _recipients: string[],
+      _localOnly: boolean,
     ) => {
       const store = mailStores.get(senderAddress);
       if (store === undefined) {
