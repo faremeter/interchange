@@ -59,6 +59,13 @@ export function createEventCollector(
           isError: event.data.result.isError ?? false,
         });
         break;
+      case "message.sent":
+        await insertPart("message-sent", null, {
+          messageId: event.data.messageId,
+          to: event.data.to,
+          ...(event.data.cc !== undefined ? { cc: event.data.cc } : {}),
+        });
+        break;
       case "connector.reply":
       case "reactor.done":
         await finalizeMessage("delivered");

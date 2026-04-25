@@ -118,6 +118,7 @@ function createMockSessionManager(): SessionManager & {
       Promise.resolve(),
     commitInboundMail: (_agentAddress: string, _rawMessage: Uint8Array) =>
       Promise.resolve(),
+    getSessionId: (_agentAddress: string) => undefined,
   };
   return mock;
 }
