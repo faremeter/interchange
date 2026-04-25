@@ -822,6 +822,11 @@ export const InferenceEvent = type({
     data: { message: WireInboundMessage, correlationId: "string" },
   })
   .or({
+    type: "'message.sent'",
+    seq: "number",
+    data: { messageId: "string", to: "string[]", "cc?": "string[]" },
+  })
+  .or({
     type: "'connector.reply'",
     seq: "number",
     data: { content: "string" },
@@ -958,6 +963,11 @@ export type InferenceEvent =
       type: "message.correlated";
       seq: number;
       data: { message: InboundMessage; correlationId: string };
+    }
+  | {
+      type: "message.sent";
+      seq: number;
+      data: { messageId: string; to: string[]; cc?: string[] };
     }
   | {
       type: "connector.reply";
