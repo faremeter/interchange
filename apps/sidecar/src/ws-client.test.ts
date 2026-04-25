@@ -116,6 +116,8 @@ function createMockSessionManager(): SessionManager & {
     getDeployRef: (_agentAddress: string) => Promise.resolve(null),
     persistHubPublicKey: (_agentAddress: string, _hubPublicKey: string) =>
       Promise.resolve(),
+    commitInboundMail: (_agentAddress: string, _rawMessage: Uint8Array) =>
+      Promise.resolve(),
   };
   return mock;
 }

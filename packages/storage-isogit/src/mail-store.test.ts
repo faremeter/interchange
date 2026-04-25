@@ -41,6 +41,7 @@ describe("createMailAuditStore", () => {
     const store = await createMailAuditStore(testDir);
     const raw = buildRawMessage({ messageId: "<msg-1@test>" });
     const result = await store.commitMail(raw, "in");
+    if (result === null) throw new Error("expected non-null result");
 
     expect(result.messageId).toBe("<msg-1@test>");
     expect(result.threadId).toMatch(/^[0-9a-f]{8}$/);
@@ -56,12 +57,14 @@ describe("createMailAuditStore", () => {
 
     const msg1 = buildRawMessage({ messageId: "<msg-1@test>" });
     const r1 = await store.commitMail(msg1, "in");
+    if (r1 === null) throw new Error("expected non-null r1");
 
     const msg2 = buildRawMessage({
       messageId: "<msg-2@test>",
       inReplyTo: "<msg-1@test>",
     });
     const r2 = await store.commitMail(msg2, "out");
+    if (r2 === null) throw new Error("expected non-null r2");
 
     expect(r2.threadId).toBe(r1.threadId);
     expect(r2.filepath).toBe(`state/mail/${r1.threadId}/0002-out.eml`);
@@ -72,12 +75,14 @@ describe("createMailAuditStore", () => {
 
     const msg1 = buildRawMessage({ messageId: "<msg-1@test>" });
     const r1 = await store.commitMail(msg1, "in");
+    if (r1 === null) throw new Error("expected non-null r1");
 
     const msg2 = buildRawMessage({
       messageId: "<msg-2@test>",
       references: ["<msg-1@test>"],
     });
     const r2 = await store.commitMail(msg2, "out");
+    if (r2 === null) throw new Error("expected non-null r2");
 
     expect(r2.threadId).toBe(r1.threadId);
   });
@@ -87,9 +92,11 @@ describe("createMailAuditStore", () => {
 
     const msg1 = buildRawMessage({ messageId: "<msg-1@test>" });
     const r1 = await store.commitMail(msg1, "in");
+    if (r1 === null) throw new Error("expected non-null r1");
 
     const msg2 = buildRawMessage({ messageId: "<msg-2@test>" });
     const r2 = await store.commitMail(msg2, "in");
+    if (r2 === null) throw new Error("expected non-null r2");
 
     expect(r2.threadId).not.toBe(r1.threadId);
   });
@@ -103,6 +110,18 @@ describe("createMailAuditStore", () => {
     expect(store.commitMail(msg, "in")).rejects.toThrow(
       "Duplicate mail: Message-ID <msg-1@test> already stored",
     );
+  });
+
+  test("duplicate Message-ID returns null with ignoreDuplicate", async () => {
+    const store = await createMailAuditStore(testDir);
+
+    const msg = buildRawMessage({ messageId: "<msg-1@test>" });
+    await store.commitMail(msg, "in");
+
+    const result = await store.commitMail(msg, "in", {
+      ignoreDuplicate: true,
+    });
+    expect(result).toBeNull();
   });
 
   test("missing Message-ID throws", async () => {
@@ -122,6 +141,7 @@ describe("createMailAuditStore", () => {
 
     const msg1 = buildRawMessage({ messageId: "<msg-1@test>" });
     const r1 = await store1.commitMail(msg1, "in");
+    if (r1 === null) throw new Error("expected non-null r1");
 
     const msg2 = buildRawMessage({
       messageId: "<msg-2@test>",
@@ -137,6 +157,7 @@ describe("createMailAuditStore", () => {
       inReplyTo: "<msg-2@test>",
     });
     const r3 = await store2.commitMail(msg3, "in");
+    if (r3 === null) throw new Error("expected non-null r3");
 
     expect(r3.threadId).toBe(r1.threadId);
     expect(r3.filepath).toBe(`state/mail/${r1.threadId}/0003-in.eml`);
@@ -147,6 +168,7 @@ describe("createMailAuditStore", () => {
 
     const msg1 = buildRawMessage({ messageId: "<msg-1@test>" });
     const r1 = await store.commitMail(msg1, "in");
+    if (r1 === null) throw new Error("expected non-null r1");
 
     // Reference an unknown ID first, then the known one
     const msg2 = buildRawMessage({
@@ -154,6 +176,7 @@ describe("createMailAuditStore", () => {
       references: ["<unknown@test>", "<msg-1@test>"],
     });
     const r2 = await store.commitMail(msg2, "out");
+    if (r2 === null) throw new Error("expected non-null r2");
 
     expect(r2.threadId).toBe(r1.threadId);
   });

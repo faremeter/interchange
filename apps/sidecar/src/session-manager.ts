@@ -26,11 +26,13 @@ import { hasProvider } from "@interchange/inference";
 import { createNodeCrypto, createSshSignature } from "@interchange/crypto-node";
 import {
   createIsogitStore,
+  createMailAuditStore,
   initAgentRepo,
   applyPack,
   createDeployPack,
   currentBranch,
   type CommitVerifier,
+  type MailAuditStore,
 } from "@interchange/storage-isogit";
 import type { InMemoryTransport } from "@interchange/message-memory";
 import type { GrantRule } from "@interchange/types/authz";
@@ -116,6 +118,10 @@ export type SessionManager = {
     agentAddress: string,
     hubPublicKey: string,
   ): Promise<void>;
+  commitInboundMail(
+    agentAddress: string,
+    rawMessage: Uint8Array,
+  ): Promise<void>;
 };
 
 // Agents that have been provisioned but not yet started. Holds the config
@@ -171,6 +177,54 @@ export function createSessionManager(
   const sessions = new Map<string, AgentSession>();
   const provisioned = new Map<string, ProvisionedAgent>();
   const pending = new Set<string>();
+  const mailStores = new Map<string, MailAuditStore>();
+
+  // Per-agent promise chain to serialize mail commits and avoid concurrent
+  // git operations on the same repository.
+  const mailCommitQueues = new Map<string, Promise<void>>();
+
+  function enqueueMailCommit(
+    agentAddress: string,
+    fn: () => Promise<void>,
+  ): void {
+    const prev = mailCommitQueues.get(agentAddress) ?? Promise.resolve();
+    const next = prev
+      .catch(() => undefined)
+      .then(fn)
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error`Mail audit commit failed for ${agentAddress}: ${msg}`;
+      });
+    mailCommitQueues.set(agentAddress, next);
+  }
+
+  async function drainMailQueue(agentAddress: string): Promise<void> {
+    const pending = mailCommitQueues.get(agentAddress);
+    mailCommitQueues.delete(agentAddress);
+    if (pending !== undefined) await pending;
+  }
+
+  transport.setMessageSentHandler(
+    async (
+      senderAddress: string,
+      rawMessage: Uint8Array,
+      messageId: string,
+    ) => {
+      const store = mailStores.get(senderAddress);
+      if (store === undefined) {
+        logger.warn`No mail store for sender ${senderAddress}, skipping outbound audit for ${messageId}`;
+        return;
+      }
+      enqueueMailCommit(senderAddress, async () => {
+        const result = await store.commitMail(rawMessage, "out", {
+          ignoreDuplicate: true,
+        });
+        if (result !== null) {
+          logger.info`Committed outbound mail ${messageId} for ${senderAddress}`;
+        }
+      });
+    },
+  );
 
   async function provisionAgent(
     agentConfig: AgentConfig,
@@ -243,6 +297,8 @@ export function createSessionManager(
       const signer = async (payload: string) =>
         createSshSignature(payload, keyPair.privateKey, keyPair.publicKey);
       const storage = await createIsogitStore(storeDir, signer);
+      const mailStore = await createMailAuditStore(storeDir, signer);
+      mailStores.set(agentAddress, mailStore);
 
       const deployTree = await readDeployTree(storeDir);
       const systemPrompt = deployTree.systemPrompt ?? agentConfig.systemPrompt;
@@ -289,6 +345,8 @@ export function createSessionManager(
       logger.info`Started session for ${agentAddress} (session ${sessionId})`;
     } catch (err) {
       sessions.delete(agentAddress);
+      mailStores.delete(agentAddress);
+      mailCommitQueues.delete(agentAddress);
       try {
         transport.unregisterAgent(agentAddress);
       } catch (cleanupErr) {
@@ -311,7 +369,9 @@ export function createSessionManager(
       throw new Error(`No session exists for agent "${agentAddress}"`);
     }
     session.harness.stop();
+    await drainMailQueue(agentAddress);
     sessions.delete(agentAddress);
+    mailStores.delete(agentAddress);
     transport.unregisterAgent(agentAddress);
     logger.info`Stopped session for ${agentAddress}`;
   }
@@ -330,7 +390,9 @@ export function createSessionManager(
       throw new Error(`No session exists for agent "${agentAddress}"`);
     }
     session.harness.stop();
+    await drainMailQueue(agentAddress);
     sessions.delete(agentAddress);
+    mailStores.delete(agentAddress);
     transport.unregisterAgent(agentAddress);
     logger.info`Aborted agent ${agentAddress}: ${reason}`;
   }
@@ -438,6 +500,25 @@ export function createSessionManager(
     await persistAgentConfig(dataDir, agentAddress, config, hubPublicKey);
   }
 
+  async function commitInboundMail(
+    agentAddress: string,
+    rawMessage: Uint8Array,
+  ): Promise<void> {
+    const store = mailStores.get(agentAddress);
+    if (store === undefined) {
+      logger.warn`No mail store for ${agentAddress}, skipping inbound audit`;
+      return;
+    }
+    enqueueMailCommit(agentAddress, async () => {
+      const result = await store.commitMail(rawMessage, "in", {
+        ignoreDuplicate: true,
+      });
+      if (result !== null) {
+        logger.info`Committed inbound mail ${result.messageId} for ${agentAddress}`;
+      }
+    });
+  }
+
   async function getDeployRef(agentAddress: string): Promise<string | null> {
     const dir = path.join(dataDir, sanitizeAddress(agentAddress));
     try {
@@ -471,5 +552,6 @@ export function createSessionManager(
     deleteAgentDir,
     getDeployRef,
     persistHubPublicKey,
+    commitInboundMail,
   };
 }

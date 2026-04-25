@@ -446,6 +446,7 @@ export function createWsClient(config: WsClientConfig): WsClient {
       case "mail.inbound": {
         const rawBytes = base64ToUint8Array(frame.rawMessage);
         deliverLocalMail(frame.agentAddress, rawBytes);
+        void sessions.commitInboundMail(frame.agentAddress, rawBytes);
         break;
       }
       case "agent.deploy":
