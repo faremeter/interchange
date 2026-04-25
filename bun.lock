@@ -173,6 +173,7 @@
       "name": "@interchange/storage-isogit",
       "version": "0.0.0",
       "dependencies": {
+        "@interchange/mime": "workspace:*",
         "@interchange/types": "workspace:*",
         "arktype": "catalog:",
         "isomorphic-git": "^1.27.2",

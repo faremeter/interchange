@@ -16,6 +16,7 @@ import {
 } from "@interchange/types/audit";
 import { AUTHOR } from "./init";
 import type { CommitSigner } from "./signer";
+import { buildSigningArgs } from "./commit-helpers";
 
 const CONTEXT_FILE = "state/context.json";
 
@@ -83,18 +84,8 @@ export class IsogitStore implements ContextStore, AuditStore {
     this.signer = signer;
   }
 
-  private signingArgs(): {
-    onSign?: (args: { payload: string }) => Promise<{ signature: string }>;
-    signingKey?: string;
-  } {
-    if (!this.signer) return {};
-    const signer = this.signer;
-    return {
-      // isogit gates the signing path on a truthy signingKey and passes its
-      // value as secretKey to onSign. We set a sentinel; onSign ignores it.
-      signingKey: "sshsig",
-      onSign: async ({ payload }) => ({ signature: await signer(payload) }),
-    };
+  private signingArgs() {
+    return buildSigningArgs(this.signer);
   }
 
   async load(_signal?: AbortSignal): Promise<{
