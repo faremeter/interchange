@@ -2,7 +2,12 @@ import { eq, and, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import { agent, agentInstance, agentVersion } from "@interchange/db/schema";
+import {
+  agent,
+  agentInstance,
+  agentRole,
+  agentVersion,
+} from "@interchange/db/schema";
 import {
   CreateAgent,
   UpdateAgent,
@@ -27,7 +32,10 @@ import {
   pageParameters,
 } from "../pagination";
 
-function formatAgent(row: typeof agent.$inferSelect) {
+function formatAgent(
+  row: typeof agent.$inferSelect,
+  roles: { id: string; name: string }[],
+) {
   return {
     id: row.id,
     tenantId: row.tenantId,
@@ -61,9 +69,27 @@ function formatAgent(row: typeof agent.$inferSelect) {
             conditions?: Record<string, unknown> | null;
           }[]
         | null) ?? undefined,
+    roles,
     createdAt: ts(row.createdAt),
     updatedAt: ts(row.updatedAt),
   };
+}
+
+async function loadAgentRoles(
+  db: TenantEnv["Variables"]["db"],
+  agentId: string,
+  tenantId: string,
+): Promise<{ id: string; name: string }[]> {
+  const assignments = await db.query.agentRole.findMany({
+    where: eq(agentRole.agentId, agentId),
+  });
+  if (assignments.length === 0) return [];
+  const roleIds = assignments.map((a) => a.roleId);
+  const roles = await db.query.role.findMany({
+    where: (r, { inArray, and: a }) =>
+      a(inArray(r.id, roleIds), eq(r.tenantId, tenantId)),
+  });
+  return roles.map((r) => ({ id: r.id, name: r.name }));
 }
 
 const app = new Hono<TenantEnv>();
@@ -121,9 +147,39 @@ app.get(
       limit,
     });
 
+    const allAssignments =
+      rows.length > 0
+        ? await db.query.agentRole.findMany({
+            where: (ar, { inArray }) =>
+              inArray(
+                ar.agentId,
+                rows.map((r) => r.id),
+              ),
+          })
+        : [];
+
+    const roleIds = [...new Set(allAssignments.map((a) => a.roleId))];
+    const allRoles =
+      roleIds.length > 0
+        ? await db.query.role.findMany({
+            where: (r, { inArray, and: a }) =>
+              a(inArray(r.id, roleIds), eq(r.tenantId, tenantCtx.id)),
+          })
+        : [];
+    const roleMap = new Map(allRoles.map((r) => [r.id, r]));
+
+    const rolesByAgent = new Map<string, { id: string; name: string }[]>();
+    for (const a of allAssignments) {
+      const r = roleMap.get(a.roleId);
+      if (!r) continue;
+      const list = rolesByAgent.get(a.agentId) ?? [];
+      list.push({ id: r.id, name: r.name });
+      rolesByAgent.set(a.agentId, list);
+    }
+
     return c.json(
       paginatedResponse(
-        rows.map((r) => formatAgent(r)),
+        rows.map((r) => formatAgent(r, rolesByAgent.get(r.id) ?? [])),
         rows,
         limit,
       ),
@@ -164,41 +220,78 @@ app.post(
     const now = new Date();
     const agentId = generateId("agent");
 
-    const agentRow = first(
-      await db
-        .insert(agent)
-        .values({
-          id: agentId,
-          tenantId: tenantCtx.id,
-          creatorPrincipalId: creatorPrincipal.id,
-          name: body.name,
-          description: body.description ?? null,
-          systemPrompt: body.systemPrompt ?? null,
-          skills: body.skills ?? null,
-          contextConfig: body.contextConfig ?? null,
-          initialState: body.initialState ?? null,
-          modelConfig: body.modelConfig ?? null,
-          capabilities: body.capabilities ?? null,
-          credentialRequirements: body.credentialRequirements ?? null,
-          grantRequirements: body.grantRequirements ?? null,
-          currentVersion: "1",
-          status: "deployed",
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning(),
-    );
+    // Validate role IDs before writing anything.
+    const uniqueRoleIds = [...new Set(body.roleIds ?? [])];
+    let validRoles: { id: string; name: string }[] = [];
+    if (uniqueRoleIds.length > 0) {
+      const found = await db.query.role.findMany({
+        where: (r, { inArray, and: a }) =>
+          a(inArray(r.id, uniqueRoleIds), eq(r.tenantId, tenantCtx.id)),
+      });
+      if (found.length !== uniqueRoleIds.length) {
+        const validIds = new Set(found.map((r) => r.id));
+        const invalid = uniqueRoleIds.filter((id) => !validIds.has(id));
+        return c.json(
+          {
+            error: {
+              code: "bad_request",
+              message: `Roles not found in tenant: ${invalid.join(", ")}`,
+            },
+          },
+          400,
+        );
+      }
+      validRoles = found.map((r) => ({ id: r.id, name: r.name }));
+    }
 
-    // Create initial version
-    await db.insert(agentVersion).values({
-      id: generateId("agentVersion"),
-      agentId,
-      version: "1",
-      status: "active",
-      createdAt: now,
+    const agentRow = await db.transaction(async (tx) => {
+      const row = first(
+        await tx
+          .insert(agent)
+          .values({
+            id: agentId,
+            tenantId: tenantCtx.id,
+            creatorPrincipalId: creatorPrincipal.id,
+            name: body.name,
+            description: body.description ?? null,
+            systemPrompt: body.systemPrompt ?? null,
+            skills: body.skills ?? null,
+            contextConfig: body.contextConfig ?? null,
+            initialState: body.initialState ?? null,
+            modelConfig: body.modelConfig ?? null,
+            capabilities: body.capabilities ?? null,
+            credentialRequirements: body.credentialRequirements ?? null,
+            grantRequirements: body.grantRequirements ?? null,
+            currentVersion: "1",
+            status: "deployed",
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning(),
+      );
+
+      await tx.insert(agentVersion).values({
+        id: generateId("agentVersion"),
+        agentId,
+        version: "1",
+        status: "active",
+        createdAt: now,
+      });
+
+      if (uniqueRoleIds.length > 0) {
+        await tx.insert(agentRole).values(
+          uniqueRoleIds.map((roleId) => ({
+            agentId,
+            roleId,
+            createdAt: now,
+          })),
+        );
+      }
+
+      return row;
     });
 
-    return c.json(formatAgent(agentRow), 201);
+    return c.json(formatAgent(agentRow, validRoles), 201);
   },
 );
 
@@ -241,7 +334,8 @@ app.get(
       );
     }
 
-    return c.json(formatAgent(row));
+    const roles = await loadAgentRoles(db, agentId, tenantCtx.id);
+    return c.json(formatAgent(row, roles));
   },
 );
 
@@ -289,6 +383,34 @@ app.patch(
     const now = new Date();
     const newVersion = String(Number(existing.currentVersion) + 1);
 
+    // Validate role IDs before writing anything.
+    let validRoles: { id: string; name: string }[] | undefined;
+    if (body.roleIds !== undefined) {
+      const uniqueRoleIds = [...new Set(body.roleIds)];
+      if (uniqueRoleIds.length > 0) {
+        const found = await db.query.role.findMany({
+          where: (r, { inArray, and: a }) =>
+            a(inArray(r.id, uniqueRoleIds), eq(r.tenantId, tenantCtx.id)),
+        });
+        if (found.length !== uniqueRoleIds.length) {
+          const validIds = new Set(found.map((r) => r.id));
+          const invalid = uniqueRoleIds.filter((id) => !validIds.has(id));
+          return c.json(
+            {
+              error: {
+                code: "bad_request",
+                message: `Roles not found in tenant: ${invalid.join(", ")}`,
+              },
+            },
+            400,
+          );
+        }
+        validRoles = found.map((r) => ({ id: r.id, name: r.name }));
+      } else {
+        validRoles = [];
+      }
+    }
+
     const updates: Record<string, unknown> = {
       updatedAt: now,
       currentVersion: newVersion,
@@ -312,34 +434,53 @@ app.patch(
     if (body.grantRequirements !== undefined)
       updates["grantRequirements"] = body.grantRequirements;
 
-    const updated = first(
-      await db
-        .update(agent)
-        .set(updates)
-        .where(eq(agent.id, agentId))
-        .returning(),
-    );
-
-    // Mark old version inactive, create new version
-    await db
-      .update(agentVersion)
-      .set({ status: "inactive" })
-      .where(
-        and(
-          eq(agentVersion.agentId, agentId),
-          eq(agentVersion.version, existing.currentVersion),
-        ),
+    const updated = await db.transaction(async (tx) => {
+      const row = first(
+        await tx
+          .update(agent)
+          .set(updates)
+          .where(eq(agent.id, agentId))
+          .returning(),
       );
 
-    await db.insert(agentVersion).values({
-      id: generateId("agentVersion"),
-      agentId,
-      version: newVersion,
-      status: "active",
-      createdAt: now,
+      await tx
+        .update(agentVersion)
+        .set({ status: "inactive" })
+        .where(
+          and(
+            eq(agentVersion.agentId, agentId),
+            eq(agentVersion.version, existing.currentVersion),
+          ),
+        );
+
+      await tx.insert(agentVersion).values({
+        id: generateId("agentVersion"),
+        agentId,
+        version: newVersion,
+        status: "active",
+        createdAt: now,
+      });
+
+      if (validRoles !== undefined) {
+        await tx.delete(agentRole).where(eq(agentRole.agentId, agentId));
+        if (validRoles.length > 0) {
+          await tx.insert(agentRole).values(
+            validRoles.map((r) => ({
+              agentId,
+              roleId: r.id,
+              createdAt: now,
+            })),
+          );
+        }
+      }
+
+      return row;
     });
 
-    return c.json(formatAgent(updated));
+    const roles =
+      validRoles ?? (await loadAgentRoles(db, agentId, tenantCtx.id));
+
+    return c.json(formatAgent(updated, roles));
   },
 );
 
@@ -547,7 +688,8 @@ app.post(
         .returning(),
     );
 
-    return c.json(formatAgent(updated));
+    const roles = await loadAgentRoles(db, updated.id, tenantCtx.id);
+    return c.json(formatAgent(updated, roles));
   },
 );
 

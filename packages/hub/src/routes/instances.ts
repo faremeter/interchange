@@ -7,10 +7,12 @@ import { type } from "arktype";
 import {
   agent,
   agentInstance,
+  agentRole,
   agentSession,
   grant as grantTable,
   messagePart,
   principal as principalTable,
+  principalRole,
   provider,
   sessionMessage,
 } from "@interchange/db/schema";
@@ -293,7 +295,7 @@ app.post(
       );
     }
 
-    // --- Grant requirement resolution (three-source model) ---
+    // --- Grant requirement resolution (creator/invoker delegation) ---
 
     const grantStore = c.get("grantStore");
     const instancePrincipalId = generateId("principal");
@@ -351,23 +353,7 @@ app.post(
     for (const req of parsedGrantReqs) {
       const effect = req.effect ?? "allow";
 
-      if (req.source === "tenant") {
-        // XXX: Unconditionally materializes tenant-sourced grants. This
-        // should derive from role membership on the agent definition.
-        grantRows.push({
-          id: generateId("grant"),
-          tenantId: tenant.id,
-          principalId: instancePrincipalId,
-          resource: req.resource,
-          action: req.action,
-          effect,
-          conditions: req.conditions ?? null,
-          origin: "role",
-          expiresAt: null,
-          createdAt: now,
-          updatedAt: now,
-        });
-      } else if (req.source === "creator") {
+      if (req.source === "creator") {
         const result = await evaluateGrants(
           creatorGrants,
           req.resource,
@@ -476,6 +462,23 @@ app.post(
       }
     }
 
+    // --- Resolve agent role assignments for the instance principal ---
+
+    const agentRoleRows = await db.query.agentRole.findMany({
+      where: eq(agentRole.agentId, row.id),
+    });
+    const agentRoleIds = agentRoleRows.map((a) => a.roleId);
+    const agentRoleAssignments =
+      agentRoleIds.length > 0
+        ? (
+            await db.query.role.findMany({
+              where: (r, { inArray, and: a }) =>
+                a(inArray(r.id, agentRoleIds), eq(r.tenantId, tenant.id)),
+              columns: { id: true },
+            })
+          ).map((r) => ({ roleId: r.id }))
+        : [];
+
     // --- Write all DB rows in a transaction ---
 
     const sessionId = generateId("session");
@@ -491,6 +494,16 @@ app.post(
         createdAt: now,
         updatedAt: now,
       });
+
+      // Assign the agent definition's roles to the instance principal so
+      // that grants flow through the existing RBAC path (collectGrants).
+      for (const { roleId } of agentRoleAssignments) {
+        await tx.insert(principalRole).values({
+          principalId: instancePrincipalId,
+          roleId,
+          createdAt: now,
+        });
+      }
 
       // Materialize grants on the instance principal
       for (const g of grantRows) {

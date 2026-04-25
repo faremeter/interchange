@@ -4,10 +4,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Pencil, Plus, Trash2, X } from "lucide-react";
 import {
   type CredentialRequirementSource,
-  type DelegationSource,
+  type GrantRequirementSource,
   type GrantEffect,
   credentialRequirementSources,
-  delegationSources,
+  grantRequirementSources,
   grantEffects,
 } from "@interchange/types";
 
@@ -138,7 +138,7 @@ export function TenantAgentDetailPage() {
   const [grantReqResource, setGrantReqResource] = useState("");
   const [grantReqAction, setGrantReqAction] = useState("");
   const [grantReqSource, setGrantReqSource] =
-    useState<DelegationSource>("tenant");
+    useState<GrantRequirementSource>("creator");
   const [grantReqEffect, setGrantReqEffect] = useState<GrantEffect>("allow");
 
   const credentialRequirements = agent?.credentialRequirements ?? [];
@@ -251,7 +251,7 @@ export function TenantAgentDetailPage() {
         onSuccess: () => {
           setGrantReqResource("");
           setGrantReqAction("");
-          setGrantReqSource("tenant");
+          setGrantReqSource("creator");
           setGrantReqEffect("allow");
         },
       },
@@ -529,7 +529,7 @@ export function TenantAgentDetailPage() {
                       )}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
-                      {req.source === "tenant" ? "org" : req.source}
+                      {req.source}
                     </TableCell>
                     <TableCell>
                       <Button
@@ -661,7 +661,7 @@ export function TenantAgentDetailPage() {
                       {req.action}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
-                      {req.source === "tenant" ? "org" : req.source}
+                      {req.source}
                     </TableCell>
                     <TableCell>
                       <EffectBadge effect={req.effect ?? "allow"} />
@@ -717,15 +717,17 @@ export function TenantAgentDetailPage() {
               <Label className="text-xs">Source</Label>
               <Select
                 value={grantReqSource}
-                onValueChange={(v) => setGrantReqSource(v as DelegationSource)}
+                onValueChange={(v) =>
+                  setGrantReqSource(v as GrantRequirementSource)
+                }
               >
                 <SelectTrigger className="h-8 w-24 text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {delegationSources.map((s) => (
+                  {grantRequirementSources.map((s) => (
                     <SelectItem key={s} value={s}>
-                      {s === "tenant" ? "org" : s}
+                      {s}
                     </SelectItem>
                   ))}
                 </SelectContent>

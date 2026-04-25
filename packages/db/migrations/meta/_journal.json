@@ -141,6 +141,13 @@
       "when": 1777180800000,
       "tag": "0019_rename_grant_source_to_origin",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1777085874297,
+      "tag": "0020_add_agent_role",
+      "breakpoints": true
     }
   ]
 }

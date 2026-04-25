@@ -1,12 +1,16 @@
 import { type } from "arktype";
 import { grantEffects } from "./grants";
 
-export const delegationSources = ["tenant", "creator", "invoker"] as const;
-export type DelegationSource = (typeof delegationSources)[number];
+export const credentialRequirementSources = [
+  "tenant",
+  "creator",
+  "invoker",
+] as const;
+export type CredentialRequirementSource =
+  (typeof credentialRequirementSources)[number];
 
-// Preserve the old name for downstream consumers during migration
-export const credentialRequirementSources = delegationSources;
-export type CredentialRequirementSource = DelegationSource;
+export const grantRequirementSources = ["creator", "invoker"] as const;
+export type GrantRequirementSource = (typeof grantRequirementSources)[number];
 
 export const agentDefinitionStatuses = ["deployed", "stopped"] as const;
 export type AgentDefinitionStatus = (typeof agentDefinitionStatuses)[number];
@@ -20,7 +24,8 @@ export const agentInstanceStatuses = [
 ] as const;
 export type AgentInstanceStatus = (typeof agentInstanceStatuses)[number];
 
-const DelegationSourceType = type.enumerated(...delegationSources);
+const CredentialSourceType = type.enumerated(...credentialRequirementSources);
+const GrantSourceType = type.enumerated(...grantRequirementSources);
 const AgentDefinitionStatusType = type.enumerated(...agentDefinitionStatuses);
 const AgentInstanceStatusType = type.enumerated(...agentInstanceStatuses);
 const Effect = type.enumerated(...grantEffects);
@@ -28,7 +33,7 @@ const Effect = type.enumerated(...grantEffects);
 export const CredentialRequirement = type({
   providerName: "string",
   "scopes?": "string[]",
-  source: DelegationSourceType,
+  source: CredentialSourceType,
   "name?": "string",
 });
 
@@ -36,7 +41,7 @@ export const GrantRequirement = type({
   resource: "string",
   action: "string",
   "effect?": Effect,
-  source: DelegationSourceType,
+  source: GrantSourceType,
   "conditions?": "Record<string, unknown> | null",
 });
 
@@ -51,6 +56,7 @@ export const CreateAgent = type({
   "capabilities?": "Record<string, unknown>",
   "credentialRequirements?": CredentialRequirement.array(),
   "grantRequirements?": GrantRequirement.array(),
+  "roleIds?": "string[]",
 });
 
 export const UpdateAgent = type({
@@ -64,6 +70,7 @@ export const UpdateAgent = type({
   "capabilities?": "Record<string, unknown>",
   "credentialRequirements?": CredentialRequirement.array(),
   "grantRequirements?": GrantRequirement.array(),
+  "roleIds?": "string[]",
 });
 
 export const AgentResponse = type({
@@ -83,6 +90,7 @@ export const AgentResponse = type({
   "capabilities?": "Record<string, unknown>",
   "credentialRequirements?": CredentialRequirement.array(),
   "grantRequirements?": GrantRequirement.array(),
+  "roles?": type({ id: "string", name: "string" }).array(),
   createdAt: "string",
   updatedAt: "string",
 });

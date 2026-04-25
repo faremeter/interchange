@@ -276,6 +276,102 @@ if (
   );
 }
 
+// -- Create agent roles in Acme --
+
+log("Creating agent roles in Acme...");
+
+async function ensureRole(
+  tenantId: string,
+  name: string,
+  description: string,
+  grants: { resource: string; action: string; effect: string }[],
+  cookies: CookieJar,
+): Promise<string> {
+  const { status, data } = await api(
+    "POST",
+    `/api/tenants/${tenantId}/roles`,
+    { name, description },
+    cookies,
+  );
+
+  let roleId: string;
+  let roleCreated = false;
+  if (status === 201) {
+    roleId = (data as { id: string }).id;
+    roleCreated = true;
+    log(`  Created role ${name}`);
+  } else if (status === 409) {
+    log(`  SKIP role ${name} (already exists)`);
+    const { data: allRoles } = await api(
+      "GET",
+      `/api/tenants/${tenantId}/roles?limit=200`,
+      undefined,
+      cookies,
+    );
+    const found = (
+      allRoles as { data: { id: string; name: string }[] }
+    ).data.find((r) => r.name === name);
+    if (!found) {
+      process.stderr.write(`[seed] FATAL: could not find role ${name}\n`);
+      process.exit(1);
+    }
+    roleId = found.id;
+  } else {
+    process.stderr.write(
+      `[seed] FAIL create role ${name}: expected 201, got ${status}\n`,
+    );
+    process.stderr.write(`[seed]   ${JSON.stringify(data)}\n`);
+    process.exit(1);
+  }
+
+  if (roleCreated) {
+    for (const g of grants) {
+      const { status: grantStatus, data: grantData } = await api(
+        "POST",
+        `/api/tenants/${tenantId}/grants`,
+        {
+          roleId,
+          resource: g.resource,
+          action: g.action,
+          effect: g.effect,
+          origin: "role",
+        },
+        cookies,
+      );
+      check(
+        `grant ${g.resource}/${g.action} on role ${name}`,
+        grantStatus,
+        201,
+        grantData,
+      );
+    }
+  }
+
+  return roleId;
+}
+
+const researchRoleId = await ensureRole(
+  acmeTenantId,
+  "research-bot",
+  "Grants for the Research Bot agent",
+  [
+    { resource: "documents:*", action: "read", effect: "allow" },
+    { resource: "documents:*", action: "write", effect: "ask" },
+  ],
+  aliceCookies,
+);
+
+const codeReviewRoleId = await ensureRole(
+  acmeTenantId,
+  "code-review-bot",
+  "Grants for the Code Review Bot agent",
+  [
+    { resource: "repos:*", action: "read", effect: "allow" },
+    { resource: "repos:*", action: "comment", effect: "allow" },
+  ],
+  aliceCookies,
+);
+
 // -- Create agents in Acme --
 
 log("Creating agents in Acme...");
@@ -297,20 +393,7 @@ const { status: a1Status, data: a1Data } = await api(
         scopes: ["chat"],
       },
     ],
-    grantRequirements: [
-      {
-        resource: "documents:*",
-        action: "read",
-        effect: "allow",
-        source: "tenant",
-      },
-      {
-        resource: "documents:*",
-        action: "write",
-        effect: "ask",
-        source: "tenant",
-      },
-    ],
+    roleIds: [researchRoleId],
   },
   aliceCookies,
 );
@@ -332,20 +415,7 @@ const { status: a2Status, data: a2Data } = await api(
       { providerName: "Anthropic", source: "tenant", scopes: ["chat"] },
       { providerName: "GitHub", source: "tenant", scopes: ["repo"] },
     ],
-    grantRequirements: [
-      {
-        resource: "repos:*",
-        action: "read",
-        effect: "allow",
-        source: "tenant",
-      },
-      {
-        resource: "repos:*",
-        action: "comment",
-        effect: "allow",
-        source: "tenant",
-      },
-    ],
+    roleIds: [codeReviewRoleId],
   },
   aliceCookies,
 );
@@ -353,9 +423,21 @@ checkOrSkip("create code review bot", a2Status, 201, a2Data);
 const codeReviewBotId = a2Status === 201 ? (a2Data as { id: string }).id : null;
 if (codeReviewBotId) log(`  Code Review Bot ID: ${codeReviewBotId}`);
 
-// -- Create agent in Widgets --
+// -- Create agent role and agent in Widgets --
 
 log("Creating agent in Widgets...");
+
+const supportRoleId = await ensureRole(
+  widgetsTenantId,
+  "support-bot",
+  "Grants for the Customer Support Bot agent",
+  [
+    { resource: "tickets:*", action: "*", effect: "allow" },
+    { resource: "billing:*", action: "read", effect: "allow" },
+    { resource: "billing:*", action: "refund", effect: "ask" },
+  ],
+  aliceCookies,
+);
 
 const { status: a3Status, data: a3Data } = await api(
   "POST",
@@ -375,21 +457,7 @@ const { status: a3Status, data: a3Data } = await api(
         scopes: ["charges:read", "refunds:write"],
       },
     ],
-    grantRequirements: [
-      { resource: "tickets:*", action: "*", effect: "allow", source: "tenant" },
-      {
-        resource: "billing:*",
-        action: "read",
-        effect: "allow",
-        source: "tenant",
-      },
-      {
-        resource: "billing:*",
-        action: "refund",
-        effect: "ask",
-        source: "tenant",
-      },
-    ],
+    roleIds: [supportRoleId],
   },
   aliceCookies,
 );

@@ -6,6 +6,7 @@ import {
   timestamp,
 } from "drizzle-orm/pg-core";
 
+import { agent } from "./agents";
 import { principal } from "./principals";
 import { tenant } from "./tenants";
 
@@ -20,6 +21,20 @@ export const role = pgTable("role", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+export const agentRole = pgTable(
+  "agent_role",
+  {
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agent.id, { onDelete: "cascade" }),
+    roleId: text("role_id")
+      .notNull()
+      .references(() => role.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.agentId, t.roleId] })],
+);
 
 export const principalRole = pgTable(
   "principal_role",

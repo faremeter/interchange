@@ -1,6 +1,6 @@
 {
-  "id": "87cf217b-7a74-43a1-b829-9c2751f0edc8",
-  "prevId": "f07f6e70-f938-481f-9ff5-b67dbc89aee4",
+  "id": "10e87137-d3d3-4511-b01d-6c3b2adda659",
+  "prevId": "87cf217b-7a74-43a1-b829-9c2751f0edc8",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -523,6 +523,62 @@
           "columns": ["tenant_id", "kind", "ref_id"]
         }
       },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.agent_role": {
+      "name": "agent_role",
+      "schema": "",
+      "columns": {
+        "agent_id": {
+          "name": "agent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role_id": {
+          "name": "role_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "agent_role_agent_id_agent_id_fk": {
+          "name": "agent_role_agent_id_agent_id_fk",
+          "tableFrom": "agent_role",
+          "tableTo": "agent",
+          "columnsFrom": ["agent_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "agent_role_role_id_role_id_fk": {
+          "name": "agent_role_role_id_role_id_fk",
+          "tableFrom": "agent_role",
+          "tableTo": "role",
+          "columnsFrom": ["role_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "agent_role_agent_id_role_id_pk": {
+          "name": "agent_role_agent_id_role_id_pk",
+          "columns": ["agent_id", "role_id"]
+        }
+      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

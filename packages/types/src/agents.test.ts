@@ -1,8 +1,9 @@
 import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
 import {
-  delegationSources,
   credentialRequirementSources,
+  grantRequirementSources,
+  CredentialRequirement,
   GrantRequirement,
   CreateAgent,
   UpdateAgent,
@@ -11,40 +12,69 @@ import {
 } from "./agents";
 
 // ---------------------------------------------------------------------------
-// 1. Alias correctness
+// 1. Source enum separation
 // ---------------------------------------------------------------------------
 
-describe("credentialRequirementSources alias", () => {
-  test("credentialRequirementSources is the same reference as delegationSources", () => {
-    expect(credentialRequirementSources).toBe(delegationSources);
-  });
-
-  test("both arrays contain exactly the three expected sources", () => {
-    expect([...delegationSources]).toEqual(["tenant", "creator", "invoker"]);
+describe("source enums", () => {
+  test("credentialRequirementSources includes tenant, creator, invoker", () => {
     expect([...credentialRequirementSources]).toEqual([
       "tenant",
       "creator",
       "invoker",
     ]);
   });
+
+  test("grantRequirementSources includes only creator and invoker", () => {
+    expect([...grantRequirementSources]).toEqual(["creator", "invoker"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
-// 2. GrantRequirement validation
+// 2. CredentialRequirement accepts tenant source
 // ---------------------------------------------------------------------------
 
-describe("GrantRequirement validator", () => {
-  test("accepts a minimal valid requirement (no effect, no conditions)", () => {
-    const result = GrantRequirement({
-      resource: "tool:bash",
-      action: "invoke",
+describe("CredentialRequirement validator", () => {
+  test("accepts tenant source", () => {
+    const result = CredentialRequirement({
+      providerName: "Anthropic",
       source: "tenant",
     });
     expect(result instanceof type.errors).toBe(false);
   });
 
-  test("accepts all three valid sources", () => {
-    for (const source of ["tenant", "creator", "invoker"] as const) {
+  test("accepts creator source", () => {
+    const result = CredentialRequirement({
+      providerName: "Anthropic",
+      source: "creator",
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts invoker source", () => {
+    const result = CredentialRequirement({
+      providerName: "Anthropic",
+      source: "invoker",
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. GrantRequirement validation
+// ---------------------------------------------------------------------------
+
+describe("GrantRequirement validator", () => {
+  test("accepts a minimal valid requirement", () => {
+    const result = GrantRequirement({
+      resource: "tool:bash",
+      action: "invoke",
+      source: "creator",
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts creator and invoker sources", () => {
+    for (const source of ["creator", "invoker"] as const) {
       const result = GrantRequirement({
         resource: "wallet:*",
         action: "spend",
@@ -52,6 +82,15 @@ describe("GrantRequirement validator", () => {
       });
       expect(result instanceof type.errors).toBe(false);
     }
+  });
+
+  test("rejects tenant source", () => {
+    const result = GrantRequirement({
+      resource: "tool:bash",
+      action: "invoke",
+      source: "tenant",
+    });
+    expect(result instanceof type.errors).toBe(true);
   });
 
   test("accepts a fully populated requirement", () => {
@@ -88,7 +127,7 @@ describe("GrantRequirement validator", () => {
     const result = GrantRequirement({
       resource: "tool:bash",
       action: "invoke",
-      source: "tenant",
+      source: "creator",
       effect: "maybe",
     });
     expect(result instanceof type.errors).toBe(true);
@@ -97,7 +136,7 @@ describe("GrantRequirement validator", () => {
   test("rejects missing resource", () => {
     const result = GrantRequirement({
       action: "invoke",
-      source: "tenant",
+      source: "creator",
     });
     expect(result instanceof type.errors).toBe(true);
   });
@@ -105,7 +144,7 @@ describe("GrantRequirement validator", () => {
   test("rejects missing action", () => {
     const result = GrantRequirement({
       resource: "tool:bash",
-      source: "tenant",
+      source: "creator",
     });
     expect(result instanceof type.errors).toBe(true);
   });
@@ -118,16 +157,16 @@ describe("GrantRequirement validator", () => {
     expect(result instanceof type.errors).toBe(true);
   });
 
-  test("effect is optional — absent and present are both valid", () => {
+  test("effect is optional", () => {
     const withoutEffect = GrantRequirement({
       resource: "tool:bash",
       action: "invoke",
-      source: "tenant",
+      source: "creator",
     });
     const withEffect = GrantRequirement({
       resource: "tool:bash",
       action: "invoke",
-      source: "tenant",
+      source: "creator",
       effect: "ask",
     });
     expect(withoutEffect instanceof type.errors).toBe(false);
@@ -136,7 +175,7 @@ describe("GrantRequirement validator", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. CreateAgent — grantRequirements replaces initialGrants
+// 4. CreateAgent
 // ---------------------------------------------------------------------------
 
 describe("CreateAgent", () => {
@@ -144,20 +183,28 @@ describe("CreateAgent", () => {
     const result = CreateAgent({
       name: "My Agent",
       grantRequirements: [
-        { resource: "tool:bash", action: "invoke", source: "tenant" },
+        { resource: "tool:bash", action: "invoke", source: "creator" },
       ],
     });
     expect(result instanceof type.errors).toBe(false);
   });
 
-  test("accepts absent grantRequirements (optional)", () => {
+  test("accepts roleIds array", () => {
+    const result = CreateAgent({
+      name: "My Agent",
+      roleIds: ["role_1", "role_2"],
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts absent grantRequirements and roleIds (optional)", () => {
     const result = CreateAgent({ name: "My Agent" });
     expect(result instanceof type.errors).toBe(false);
   });
 });
 
 // ---------------------------------------------------------------------------
-// 4. UpdateAgent — grantRequirements added
+// 5. UpdateAgent
 // ---------------------------------------------------------------------------
 
 describe("UpdateAgent", () => {
@@ -170,6 +217,13 @@ describe("UpdateAgent", () => {
     expect(result instanceof type.errors).toBe(false);
   });
 
+  test("accepts roleIds array", () => {
+    const result = UpdateAgent({
+      roleIds: ["role_1"],
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
   test("accepts empty update (all fields optional)", () => {
     const result = UpdateAgent({});
     expect(result instanceof type.errors).toBe(false);
@@ -177,7 +231,7 @@ describe("UpdateAgent", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5. AgentResponse — creatorPrincipalId replaces principalId
+// 6. AgentResponse
 // ---------------------------------------------------------------------------
 
 describe("AgentResponse", () => {
@@ -207,7 +261,7 @@ describe("AgentResponse", () => {
     expect(result instanceof type.errors).toBe(false);
   });
 
-  test("accepts a valid response with absent creatorPrincipalId (optional)", () => {
+  test("accepts absent creatorPrincipalId (optional)", () => {
     const result = AgentResponse(validResponse);
     expect(result instanceof type.errors).toBe(false);
   });
@@ -216,15 +270,23 @@ describe("AgentResponse", () => {
     const result = AgentResponse({
       ...validResponse,
       grantRequirements: [
-        { resource: "tool:bash", action: "invoke", source: "tenant" },
+        { resource: "tool:bash", action: "invoke", source: "creator" },
       ],
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts roles on the response", () => {
+    const result = AgentResponse({
+      ...validResponse,
+      roles: [{ id: "role_1", name: "researcher" }],
     });
     expect(result instanceof type.errors).toBe(false);
   });
 });
 
 // ---------------------------------------------------------------------------
-// 6. CreateAgentInstance — invokerGrants
+// 7. CreateAgentInstance
 // ---------------------------------------------------------------------------
 
 describe("CreateAgentInstance", () => {
