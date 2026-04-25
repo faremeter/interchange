@@ -17,11 +17,16 @@ export type MailCommitResult = {
   filepath: string;
 };
 
+export type MailCommitOptions = {
+  ignoreDuplicate?: boolean;
+};
+
 export type MailAuditStore = {
   commitMail(
     rawMessage: Uint8Array,
     direction: MailDirection,
-  ): Promise<MailCommitResult>;
+    options?: MailCommitOptions,
+  ): Promise<MailCommitResult | null>;
 };
 
 type ThreadState = {
@@ -99,11 +104,13 @@ export async function createMailAuditStore(
   async function commitMail(
     rawMessage: Uint8Array,
     direction: MailDirection,
-  ): Promise<MailCommitResult> {
+    options?: MailCommitOptions,
+  ): Promise<MailCommitResult | null> {
     const { messageId, inReplyTo, references } =
       parseThreadingHeaders(rawMessage);
 
     if (messageIndex.has(messageId)) {
+      if (options?.ignoreDuplicate === true) return null;
       throw new Error(`Duplicate mail: Message-ID ${messageId} already stored`);
     }
 

@@ -20,6 +20,7 @@ export { collectReachableObjects } from "./object-walk";
 export {
   createMailAuditStore,
   type MailAuditStore,
+  type MailCommitOptions,
   type MailDirection,
   type MailCommitResult,
 } from "./mail-store";
