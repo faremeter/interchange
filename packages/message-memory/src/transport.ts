@@ -54,7 +54,7 @@ export class InMemoryTransport implements MessageTransport {
   readonly #agentMailboxes = new Map<string, AgentMailboxEntry>();
   readonly #cryptoProviders = new Map<string, CryptoProvider>();
   #remoteSendHandler: RemoteSendHandler | undefined;
-  #messageSentHandler: MessageSentHandler | undefined;
+  readonly #messageSentHandlers = new Set<MessageSentHandler>();
 
   /**
    * Set a handler for delivering messages to recipients not registered on
@@ -67,12 +67,13 @@ export class InMemoryTransport implements MessageTransport {
   }
 
   /**
-   * Set a handler that fires after every successful send(). The message
-   * is already delivered when the handler fires — a handler rejection
-   * does not mean the message was not delivered.
+   * Register a handler that fires after every successful send(). Multiple
+   * handlers may be registered. The message is already delivered when
+   * handlers fire — a handler rejection does not mean the message was not
+   * delivered.
    */
-  setMessageSentHandler(handler: MessageSentHandler): void {
-    this.#messageSentHandler = handler;
+  addMessageSentHandler(handler: MessageSentHandler): void {
+    this.#messageSentHandlers.add(handler);
   }
 
   /**
@@ -372,7 +373,7 @@ export class InMemoryTransport implements MessageTransport {
       this.#agentMailboxes,
       this.#cryptoProviders,
       () => this.#remoteSendHandler,
-      () => this.#messageSentHandler,
+      () => this.#messageSentHandlers,
     );
   }
 }
@@ -386,20 +387,20 @@ class AgentMessageTransport implements MessageTransport {
   readonly #agentMailboxes: Map<string, AgentMailboxEntry>;
   readonly #cryptoProviders: Map<string, CryptoProvider>;
   readonly #getRemoteSendHandler: () => RemoteSendHandler | undefined;
-  readonly #getMessageSentHandler: () => MessageSentHandler | undefined;
+  readonly #getMessageSentHandlers: () => Set<MessageSentHandler>;
 
   constructor(
     address: string,
     agentMailboxes: Map<string, AgentMailboxEntry>,
     cryptoProviders: Map<string, CryptoProvider>,
     getRemoteSendHandler: () => RemoteSendHandler | undefined,
-    getMessageSentHandler: () => MessageSentHandler | undefined,
+    getMessageSentHandlers: () => Set<MessageSentHandler>,
   ) {
     this.#address = address;
     this.#agentMailboxes = agentMailboxes;
     this.#cryptoProviders = cryptoProviders;
     this.#getRemoteSendHandler = getRemoteSendHandler;
-    this.#getMessageSentHandler = getMessageSentHandler;
+    this.#getMessageSentHandlers = getMessageSentHandlers;
   }
 
   get #entry(): AgentMailboxEntry {
@@ -424,13 +425,24 @@ class AgentMessageTransport implements MessageTransport {
     message: OutboundMessage,
     _signal?: AbortSignal,
   ): Promise<SendReceipt> {
+    const handlers = this.#getMessageSentHandlers();
+    const aggregatedHandler: MessageSentHandler | undefined =
+      handlers.size > 0
+        ? async (sender, raw, msgId, recips, localOnly) => {
+            await Promise.allSettled(
+              [...handlers].map((h) =>
+                h(sender, raw, msgId, recips, localOnly),
+              ),
+            );
+          }
+        : undefined;
     return executeSend(
       this.#address,
       message,
       this.#agentMailboxes,
       this.#cryptoProviders,
       this.#getRemoteSendHandler(),
-      this.#getMessageSentHandler(),
+      aggregatedHandler,
     );
   }
 
