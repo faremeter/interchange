@@ -79,11 +79,19 @@ export type AgentErrorFrame = typeof AgentErrorFrame.infer;
  * should route the message to its recipients. When `delivered` is true the
  * message was already delivered locally and is forwarded for audit/projection
  * only — the hub must not re-route it.
+ *
+ * Structured metadata (senderAddress, messageId, to, cc) lets the hub emit
+ * message.sent events without parsing the raw MIME bytes.
  */
 export const MailOutboundFrame = type({
   type: "'mail.outbound'",
   rawMessage: "string",
   recipients: "string[]",
+  "senderAddress?": "string",
+  "sessionId?": "string",
+  "messageId?": "string",
+  "to?": "string[]",
+  "cc?": "string[]",
   "delivered?": "boolean",
 });
 export type MailOutboundFrame = typeof MailOutboundFrame.infer;

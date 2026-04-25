@@ -122,6 +122,7 @@ export type SessionManager = {
     agentAddress: string,
     rawMessage: Uint8Array,
   ): Promise<void>;
+  getSessionId(agentAddress: string): string | undefined;
 };
 
 // Agents that have been provisioned but not yet started. Holds the config
@@ -521,6 +522,10 @@ export function createSessionManager(
     });
   }
 
+  function getSessionId(agentAddress: string): string | undefined {
+    return sessions.get(agentAddress)?.config.sessionId;
+  }
+
   async function getDeployRef(agentAddress: string): Promise<string | null> {
     const dir = path.join(dataDir, sanitizeAddress(agentAddress));
     try {
@@ -555,5 +560,6 @@ export function createSessionManager(
     getDeployRef,
     persistHubPublicKey,
     commitInboundMail,
+    getSessionId,
   };
 }
