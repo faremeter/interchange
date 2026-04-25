@@ -18,6 +18,7 @@ import {
   deleteAgentMutation,
   deployInstanceMutation,
   tenantProvidersQuery,
+  tenantRolesQuery,
   updateAgentMutation,
   type AgentInstanceResponse,
 } from "@/lib/queries/tenants";
@@ -119,6 +120,7 @@ export function TenantAgentDetailPage() {
     agentAllInstancesQuery(tenantId, agentId),
   );
   const { data: providers } = useQuery(tenantProvidersQuery(tenantId));
+  const { data: tenantRoles } = useQuery(tenantRolesQuery(tenantId));
 
   const [editing, setEditing] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -143,6 +145,7 @@ export function TenantAgentDetailPage() {
 
   const credentialRequirements = agent?.credentialRequirements ?? [];
   const grantRequirements = agent?.grantRequirements ?? [];
+  const agentRoles = agent?.roles ?? [];
 
   function enterEditMode() {
     if (!agent) return;
@@ -263,6 +266,20 @@ export function TenantAgentDetailPage() {
       grantRequirements: grantRequirements.filter((_, i) => i !== index),
     });
   }
+
+  function addRole(roleId: string) {
+    const currentIds = agentRoles.map((r) => r.id);
+    updateMut.mutate({ roleIds: [...currentIds, roleId] });
+  }
+
+  function removeRole(roleId: string) {
+    const currentIds = agentRoles.map((r) => r.id);
+    updateMut.mutate({ roleIds: currentIds.filter((id) => id !== roleId) });
+  }
+
+  const availableRoles = (tenantRoles ?? []).filter(
+    (r) => !agentRoles.some((ar) => ar.id === r.id),
+  );
 
   if (agentLoading) {
     return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
@@ -630,13 +647,66 @@ export function TenantAgentDetailPage() {
         </div>
       </div>
 
+      {/* Roles */}
+      <div className="mt-8">
+        <h3 className="text-sm font-semibold">Roles</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Roles assigned to this agent. At launch, the instance principal
+          inherits these roles and their grants.
+        </p>
+
+        {agentRoles.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {agentRoles.map((r) => (
+              <Badge key={r.id} variant="secondary" className="gap-1 pr-1">
+                {r.name}
+                <button
+                  onClick={() => removeRole(r.id)}
+                  disabled={updateMut.isPending}
+                  className="ml-1 rounded-sm hover:bg-muted"
+                >
+                  <X className="size-3" />
+                </button>
+              </Badge>
+            ))}
+          </div>
+        )}
+
+        {availableRoles.length > 0 && (
+          <div className="mt-3 flex items-end gap-2">
+            <div className="grid gap-1">
+              <Label className="text-xs">Add role</Label>
+              <Select onValueChange={addRole} disabled={updateMut.isPending}>
+                <SelectTrigger className="h-8 w-48 text-xs">
+                  <SelectValue placeholder="Select a role..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableRoles.map((r) => (
+                    <SelectItem key={r.id} value={r.id}>
+                      {r.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        )}
+
+        {availableRoles.length === 0 && agentRoles.length === 0 && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            No roles available. Create roles in the tenant settings first.
+          </p>
+        )}
+
+        <MutationError error={updateMut.error} />
+      </div>
+
       {/* Grant Requirements */}
       <div className="mt-8">
         <h3 className="text-sm font-semibold">Grant Requirements</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          Resource permissions this agent needs at launch. Each requirement
-          specifies who supplies the grant: the org (tenant), the definition
-          creator, or the person launching the instance (invoker).
+          Additional permissions delegated by the definition creator or the
+          person launching the instance (invoker).
         </p>
 
         {grantRequirements.length > 0 && (

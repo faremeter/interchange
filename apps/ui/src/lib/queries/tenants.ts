@@ -64,6 +64,7 @@ export type AgentResponse = {
   capabilities: Record<string, unknown> | null;
   credentialRequirements?: CredentialRequirement[];
   grantRequirements?: GrantRequirement[];
+  roles?: { id: string; name: string }[];
   createdAt: string;
   updatedAt: string;
 };
@@ -531,6 +532,7 @@ type UpdateAgentBody = {
   systemPrompt?: string;
   credentialRequirements?: CredentialRequirement[];
   grantRequirements?: GrantRequirement[];
+  roleIds?: string[];
 };
 
 export function createAgentMutation(tenantId: string, qc: QueryClient) {
