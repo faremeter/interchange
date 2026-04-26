@@ -104,6 +104,14 @@ export type SidecarRouterConfig = {
     raw: Uint8Array;
     status: "pending" | "delivered";
   }) => Promise<string>;
+  onMailPersisted?: (row: {
+    id: string;
+    raw: Uint8Array;
+    createdAt: Date;
+    direction: string;
+    instanceId: string | null;
+    agentAddress: string;
+  }) => void;
   onStatePackReceived?: (
     agentAddress: string,
     pack: Uint8Array,
