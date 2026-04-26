@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { sessionMessage, messagePart } from "@interchange/db/schema";
+import { inferenceTurn, turnPart } from "@interchange/db/schema";
 import type { InferenceEvent } from "@interchange/types/runtime";
 
 import { createEventCollector, type EventCollector } from "./event-collector";
@@ -9,12 +9,12 @@ import { createEventCollector, type EventCollector } from "./event-collector";
 // ---------------------------------------------------------------------------
 
 type InsertCall = {
-  table: "session_message" | "message_part";
+  table: "inference_turn" | "turn_part";
   values: Record<string, unknown>;
 };
 
 type UpdateCall = {
-  table: "session_message" | "message_part";
+  table: "inference_turn" | "turn_part";
   set: Record<string, unknown>;
 };
 
@@ -22,9 +22,9 @@ function createFakeDB() {
   const inserts: InsertCall[] = [];
   const updates: UpdateCall[] = [];
 
-  function tableName(table: unknown): "session_message" | "message_part" {
-    if (table === sessionMessage) return "session_message";
-    if (table === messagePart) return "message_part";
+  function tableName(table: unknown): "inference_turn" | "turn_part" {
+    if (table === inferenceTurn) return "inference_turn";
+    if (table === turnPart) return "turn_part";
     throw new Error(`Unexpected table: ${String(table)}`);
   }
 
@@ -83,30 +83,28 @@ describe("EventCollector", () => {
       sessionId: "ses_test",
       instanceId: "ins_test",
       tenantId: "tnt_test",
-      agentAddress: "agt_test@test.localhost",
     });
   });
 
-  test("inference.start creates an assistant message row and step-start part", async () => {
+  test("inference.start creates an inference_turn row and step-start part", async () => {
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
 
-    const messages = fakeDB.inserts.filter(
-      (i) => i.table === "session_message",
-    );
-    expect(messages).toHaveLength(1);
-    const insert = at(messages, 0);
-    expect(insert.values.role).toBe("assistant");
-    expect(insert.values.status).toBe("pending");
+    const turns = fakeDB.inserts.filter((i) => i.table === "inference_turn");
+    expect(turns).toHaveLength(1);
+    const insert = at(turns, 0);
+    expect(insert.values.model).toBe("gpt-4");
+    expect(insert.values.status).toBe("running");
     expect(insert.values.sessionId).toBe("ses_test");
     expect(insert.values.tenantId).toBe("tnt_test");
+    expect(insert.values.startedAt).toBeInstanceOf(Date);
 
-    const parts = fakeDB.inserts.filter((i) => i.table === "message_part");
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
     expect(parts).toHaveLength(1);
     expect(at(parts, 0).values.type).toBe("step-start");
     expect(at(parts, 0).values.metadata).toEqual({ model: "gpt-4" });
   });
 
-  test("reactor.start alone does not create a message", async () => {
+  test("reactor.start alone does not create a turn", async () => {
     await collector.onEvent(event("reactor.start", 1, {}));
 
     expect(fakeDB.inserts).toHaveLength(0);
@@ -134,7 +132,7 @@ describe("EventCollector", () => {
       }),
     );
 
-    const parts = fakeDB.inserts.filter((i) => i.table === "message_part");
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
     // step-start + text + reasoning + tool_call + step-finish = 5 parts
     expect(parts).toHaveLength(5);
 
@@ -169,7 +167,7 @@ describe("EventCollector", () => {
       }),
     );
 
-    const parts = fakeDB.inserts.filter((i) => i.table === "message_part");
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
     // step-start from inference.start + tool result = 2 parts
     expect(parts).toHaveLength(2);
     expect(at(parts, 0).values.type).toBe("step-start");
@@ -182,24 +180,41 @@ describe("EventCollector", () => {
     });
   });
 
-  test("reactor.done marks message as delivered", async () => {
+  test("message.sent is a no-op and produces no parts", async () => {
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    await collector.onEvent(
+      event("message.sent", 2, {
+        messageId: "msg_test",
+        to: "agent@test.localhost",
+      }),
+    );
+
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
+    // Only the step-start; message.sent is not persisted
+    expect(parts).toHaveLength(1);
+    expect(at(parts, 0).values.type).toBe("step-start");
+  });
+
+  test("reactor.done marks turn as completed with endedAt", async () => {
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(event("reactor.done", 10, {}));
 
     expect(fakeDB.updates).toHaveLength(1);
-    expect(at(fakeDB.updates, 0).table).toBe("session_message");
-    expect(at(fakeDB.updates, 0).set).toEqual({ status: "delivered" });
+    expect(at(fakeDB.updates, 0).table).toBe("inference_turn");
+    expect(at(fakeDB.updates, 0).set.status).toBe("completed");
+    expect(at(fakeDB.updates, 0).set.endedAt).toBeInstanceOf(Date);
   });
 
-  test("reactor.error with fatal=true marks message as failed", async () => {
+  test("reactor.error with fatal=true marks turn as failed", async () => {
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(
       event("reactor.error", 10, { error: "boom", fatal: true }),
     );
 
     expect(fakeDB.updates).toHaveLength(1);
-    expect(at(fakeDB.updates, 0).table).toBe("session_message");
-    expect(at(fakeDB.updates, 0).set).toEqual({ status: "failed" });
+    expect(at(fakeDB.updates, 0).table).toBe("inference_turn");
+    expect(at(fakeDB.updates, 0).set.status).toBe("failed");
+    expect(at(fakeDB.updates, 0).set.endedAt).toBeInstanceOf(Date);
   });
 
   test("reactor.error with fatal=false does not update status", async () => {
@@ -223,7 +238,7 @@ describe("EventCollector", () => {
       }),
     );
 
-    const parts = fakeDB.inserts.filter((i) => i.table === "message_part");
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
     expect(parts).toHaveLength(0);
   });
 
@@ -243,22 +258,23 @@ describe("EventCollector", () => {
       }),
     );
 
-    const parts = fakeDB.inserts.filter((i) => i.table === "message_part");
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
     const ordinals = parts.map((p) => p.values.ordinal);
     // step-start (0), text (1), reasoning (2), step-finish (3)
     expect(ordinals).toEqual([0, 1, 2, 3]);
   });
 
-  test("abandon marks pending message as failed", async () => {
+  test("abandon marks pending turn as failed", async () => {
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.abandon();
 
     expect(fakeDB.updates).toHaveLength(1);
-    expect(at(fakeDB.updates, 0).table).toBe("session_message");
-    expect(at(fakeDB.updates, 0).set).toEqual({ status: "failed" });
+    expect(at(fakeDB.updates, 0).table).toBe("inference_turn");
+    expect(at(fakeDB.updates, 0).set.status).toBe("failed");
+    expect(at(fakeDB.updates, 0).set.endedAt).toBeInstanceOf(Date);
   });
 
-  test("abandon with no active message is a no-op", async () => {
+  test("abandon with no active turn is a no-op", async () => {
     await collector.abandon();
     expect(fakeDB.updates).toHaveLength(0);
   });
@@ -283,7 +299,7 @@ describe("EventCollector", () => {
       }),
     );
 
-    const parts = fakeDB.inserts.filter((i) => i.table === "message_part");
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
     const types = parts.map((p) => p.values.type);
     expect(types).toEqual(["step-start", "text", "step-finish"]);
   });
@@ -308,19 +324,19 @@ describe("EventCollector", () => {
       }),
     );
 
-    const parts = fakeDB.inserts.filter((i) => i.table === "message_part");
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
     // Only the step-start from inference.start; deltas are not persisted
     expect(parts).toHaveLength(1);
     expect(at(parts, 0).values.type).toBe("step-start");
   });
 
-  test("full reactor cycle produces correct sequence with per-turn messages", async () => {
+  test("full reactor cycle produces correct sequence with per-turn rows", async () => {
     // Simulate: inference turn 1 (text + tool call) ->
     // tool result -> inference turn 2 (text) -> reactor.done
     //
-    // Each inference.start creates a new assistant message. The second
-    // inference.start finalizes the first message as failed (via the
-    // orphan-guard path) and starts a fresh one.
+    // Each inference.start creates a new turn. The second inference.start
+    // finalizes the first turn as failed (via the orphan-guard path) and
+    // starts a fresh one.
 
     // Turn 1
     await collector.onEvent(event("inference.start", 2, { model: "claude-3" }));
@@ -350,7 +366,7 @@ describe("EventCollector", () => {
       }),
     );
 
-    // Turn 2 — inference.start finalizes turn 1's message as failed (orphan)
+    // Turn 2 — inference.start finalizes turn 1 as failed (orphan)
     await collector.onEvent(event("inference.start", 8, { model: "claude-3" }));
     await collector.onEvent(
       event("inference.done", 12, {
@@ -365,13 +381,11 @@ describe("EventCollector", () => {
 
     await collector.onEvent(event("reactor.done", 13, {}));
 
-    // Two message rows created (one per inference.start)
-    const messages = fakeDB.inserts.filter(
-      (i) => i.table === "session_message",
-    );
-    expect(messages).toHaveLength(2);
+    // Two turn rows created (one per inference.start)
+    const turns = fakeDB.inserts.filter((i) => i.table === "inference_turn");
+    expect(turns).toHaveLength(2);
 
-    const parts = fakeDB.inserts.filter((i) => i.table === "message_part");
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
     const types = parts.map((p) => p.values.type);
     expect(types).toEqual([
       "step-start", // inference turn 1 start
@@ -384,25 +398,23 @@ describe("EventCollector", () => {
       "step-finish", // inference turn 2 end
     ]);
 
-    // First message finalized as failed (orphan), second as delivered
+    // First turn finalized as failed (orphan), second as completed
     expect(fakeDB.updates).toHaveLength(2);
-    expect(at(fakeDB.updates, 0).set).toEqual({ status: "failed" });
-    expect(at(fakeDB.updates, 1).set).toEqual({ status: "delivered" });
+    expect(at(fakeDB.updates, 0).set.status).toBe("failed");
+    expect(at(fakeDB.updates, 1).set.status).toBe("completed");
   });
 
-  test("second inference.start finalizes first message as failed", async () => {
+  test("second inference.start finalizes first turn as failed", async () => {
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(event("inference.start", 5, { model: "gpt-4" }));
 
-    // Two message rows created
-    const messages = fakeDB.inserts.filter(
-      (i) => i.table === "session_message",
-    );
-    expect(messages).toHaveLength(2);
+    // Two turn rows created
+    const turns = fakeDB.inserts.filter((i) => i.table === "inference_turn");
+    expect(turns).toHaveLength(2);
 
-    // First message finalized as failed
+    // First turn finalized as failed
     expect(fakeDB.updates).toHaveLength(1);
-    expect(at(fakeDB.updates, 0).set).toEqual({ status: "failed" });
+    expect(at(fakeDB.updates, 0).set.status).toBe("failed");
   });
 
   test("abandon after reactor.done is a no-op", async () => {
@@ -412,6 +424,36 @@ describe("EventCollector", () => {
 
     // Only one update from reactor.done, not two
     expect(fakeDB.updates).toHaveLength(1);
-    expect(at(fakeDB.updates, 0).set).toEqual({ status: "delivered" });
+    expect(at(fakeDB.updates, 0).set.status).toBe("completed");
+  });
+
+  test("inference.error persists error part and connector.reply persists text", async () => {
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    await collector.onEvent(
+      event("inference.error", 3, {
+        error: {
+          message: "rate limit exceeded",
+          category: "rate_limit",
+          statusCode: 429,
+        },
+      }),
+    );
+    await collector.onEvent(
+      event("connector.reply", 4, { content: "I encountered an error." }),
+    );
+
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
+    const types = parts.map((p) => p.values.type);
+    expect(types).toEqual(["step-start", "error", "text"]);
+
+    expect(at(parts, 1).values.content).toBe("rate limit exceeded");
+    expect(at(parts, 1).values.metadata).toEqual({
+      category: "rate_limit",
+      statusCode: 429,
+    });
+    expect(at(parts, 2).values.content).toBe("I encountered an error.");
+
+    expect(fakeDB.updates).toHaveLength(1);
+    expect(at(fakeDB.updates, 0).set.status).toBe("completed");
   });
 });

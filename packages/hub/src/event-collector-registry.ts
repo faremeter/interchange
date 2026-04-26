@@ -48,7 +48,6 @@ export function createEventCollectorRegistry(
       sessionId,
       instanceId,
       tenantId,
-      agentAddress,
     });
     collectors.set(agentAddress, collector);
     statuses.set(agentAddress, { status: "idle" });
