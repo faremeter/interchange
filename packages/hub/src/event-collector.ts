@@ -41,6 +41,9 @@ export function createEventCollector(
   let ordinal = 0;
   // Prevents double-finalization when reactor.done and abandon() race.
   let finalized = false;
+  // Set when inference.error fires so connector.reply knows to persist its
+  // content (on normal turns, inference.done already persisted the text).
+  let pendingError = false;
 
   async function onEvent(event: InferenceEvent): Promise<void> {
     switch (event.type) {
@@ -66,7 +69,24 @@ export function createEventCollector(
           ...(event.data.cc !== undefined ? { cc: event.data.cc } : {}),
         });
         break;
+      case "inference.error":
+        pendingError = true;
+        await insertPart("error", event.data.error.message, {
+          category: event.data.error.category,
+          ...(event.data.error.statusCode !== undefined
+            ? { statusCode: event.data.error.statusCode }
+            : {}),
+        });
+        break;
       case "connector.reply":
+        // Only persist reply content when it originated from an error path.
+        // On normal turns inference.done already persisted the text parts.
+        if (pendingError) {
+          await insertPart("text", event.data.content, null);
+          pendingError = false;
+        }
+        await finalizeMessage("delivered");
+        break;
       case "reactor.done":
         await finalizeMessage("delivered");
         break;
@@ -92,6 +112,7 @@ export function createEventCollector(
     currentMessageId = generateId("message");
     ordinal = 0;
     finalized = false;
+    pendingError = false;
 
     await db.insert(sessionMessage).values({
       id: currentMessageId,

@@ -6,12 +6,12 @@
 //   inference.done (tools)    → checkpoint + execute_tools
 //   tool.done                 → checkpoint + infer (re-infer with tool results)
 //   inference.done (no tools) → checkpoint + reply (connector sends the message)
-//   inference.error           → checkpoint + done
+//   inference.error           → checkpoint + reply (error message to user)
 //   abort                     → done
 //   reactor.gate.cleared      → checkpoint + infer (resume after gate)
 //
-// The plugin never throws. Inference errors are logged and the plugin returns
-// done so the reactor shuts down cleanly rather than re-trying indefinitely.
+// The plugin never throws. Inference errors are surfaced to the user as a
+// reply so the problem is visible, and the agent remains alive for retries.
 
 import { getLogger } from "@interchange/log";
 import type {
@@ -50,6 +50,31 @@ function extractTextContent(message: AssistantMessage): string {
     }
   }
   return parts.join("\n").trim();
+}
+
+const ERROR_PREAMBLE: Record<string, string> = {
+  credential_failure:
+    "This agent could not complete your request due to a credential error",
+  quota_exhausted:
+    "This agent could not complete your request because the API quota has been exhausted",
+  context_overflow:
+    "This agent could not complete your request because the conversation exceeded the model's context limit",
+  retryable:
+    "This agent encountered a temporary error communicating with the inference provider",
+  fatal:
+    "This agent could not complete your request due to an unrecoverable inference error",
+  aborted: "This agent's inference request was aborted",
+};
+
+function formatInferenceError(error: {
+  category: string;
+  message: string;
+  statusCode?: number;
+}): string {
+  const preamble = ERROR_PREAMBLE[error.category] ?? ERROR_PREAMBLE["fatal"];
+  const status =
+    error.statusCode !== undefined ? ` [HTTP ${error.statusCode}]` : "";
+  return `${preamble}${status}: ${error.message}`;
 }
 
 export class DefaultPlugin implements ReactorPlugin {
@@ -135,7 +160,9 @@ export class DefaultPlugin implements ReactorPlugin {
             : "";
 
         logger.error`Inference error in default plugin: ${event.error.message}${statusDetail} (category: ${event.error.category})`;
-        return [capabilities.checkpoint(), capabilities.done()];
+
+        const userMessage = formatInferenceError(event.error);
+        return [capabilities.checkpoint(), capabilities.reply(userMessage)];
       }
 
       case "reactor.gate.cleared": {

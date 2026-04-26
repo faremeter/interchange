@@ -58,6 +58,7 @@ type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   from: string;
+  isError?: boolean;
 };
 type AgentActivity =
   | { type: "inferring" }
@@ -136,6 +137,7 @@ export function TenantInstanceDetailPage() {
       const history: ChatMessage[] = [];
       for (const msg of messages) {
         if (msg.status !== "delivered") continue;
+        const hasError = msg.parts.some((p) => p.type === "error");
         const text = msg.parts
           .filter(
             (p): p is MessagePart & { content: string } =>
@@ -144,7 +146,12 @@ export function TenantInstanceDetailPage() {
           .map((p) => p.content)
           .join("");
         if (text) {
-          history.push({ role: msg.role, content: text, from: msg.from });
+          history.push({
+            role: msg.role,
+            content: text,
+            from: msg.from,
+            ...(hasError ? { isError: true } : {}),
+          });
         }
       }
 
@@ -164,6 +171,7 @@ export function TenantInstanceDetailPage() {
     if (!isRunning) return;
 
     let cancelled = false;
+    let hadInferenceError = false;
 
     const close = openStream(
       `/api/tenants/${tenantId}/agents/instances/${instanceId}/events`,
@@ -241,7 +249,30 @@ export function TenantInstanceDetailPage() {
             rerender();
             break;
           }
+          case "inference.error":
+            hadInferenceError = true;
+            instanceStreaming.set(instanceId, "");
+            instanceActivity.set(instanceId, null);
+            rerender();
+            break;
           case "connector.reply":
+            instanceStreaming.set(instanceId, "");
+            instanceActivity.set(instanceId, null);
+            // Only push reply content on error turns. On normal turns
+            // inference.done already pushed the assistant message.
+            if (hadInferenceError) {
+              hadInferenceError = false;
+              if (event.data.content) {
+                getMessages(instanceId).push({
+                  role: "assistant",
+                  content: event.data.content,
+                  from: `${instanceId}@agent`,
+                  isError: true,
+                });
+              }
+            }
+            rerender();
+            break;
           case "reactor.done":
             instanceStreaming.set(instanceId, "");
             instanceActivity.set(instanceId, null);
@@ -405,14 +436,17 @@ export function TenantInstanceDetailPage() {
                   <div
                     key={i}
                     className={`rounded p-2 text-sm ${
-                      msg.role === "user"
-                        ? "bg-muted ml-8"
-                        : "mr-8 bg-primary/10"
+                      msg.isError
+                        ? "mr-8 border border-destructive/30 bg-destructive/10 text-destructive"
+                        : msg.role === "user"
+                          ? "bg-muted ml-8"
+                          : "mr-8 bg-primary/10"
                     }`}
                   >
                     {(() => {
-                      const label =
-                        msg.role === "assistant"
+                      const label = msg.isError
+                        ? "Error"
+                        : msg.role === "assistant"
                           ? "Agent"
                           : parseFromHeader(msg.from);
                       if (!label) return null;

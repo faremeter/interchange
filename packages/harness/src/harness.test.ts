@@ -989,7 +989,7 @@ describe("Default plugin", () => {
     expect(normalized.some((a) => a.type === "infer")).toBe(true);
   });
 
-  test("inference.error returns checkpoint and done", async () => {
+  test("inference.error returns checkpoint and reply with error message", async () => {
     const plugin = createDefaultPlugin("claude-test", "You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
@@ -997,8 +997,9 @@ describe("Default plugin", () => {
     const event: ReactorInboundEvent = {
       type: "inference.error",
       error: {
-        category: "retryable",
-        message: "rate limited",
+        category: "credential_failure",
+        message: "invalid API key",
+        statusCode: 401,
       },
       partial: { text: "" },
     };
@@ -1006,7 +1007,13 @@ describe("Default plugin", () => {
     const actions = await plugin.decide(event, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
     expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
-    expect(normalized.some((a) => a.type === "done")).toBe(true);
+
+    const replyAction = normalized.find((a) => a.type === "reply");
+    expect(replyAction).toBeDefined();
+    const content =
+      replyAction?.type === "reply" ? replyAction.content : undefined;
+    expect(content).toContain("credential error");
+    expect(content).toContain("invalid API key");
   });
 
   test("abort returns done", async () => {

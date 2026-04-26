@@ -37,6 +37,7 @@ export const messagePart = pgTable("message_part", {
       "reasoning",
       "tool",
       "file",
+      "error",
       "step-start",
       "step-finish",
       "snapshot",
