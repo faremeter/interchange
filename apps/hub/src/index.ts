@@ -10,6 +10,7 @@ import {
   createSidecarRouter,
 } from "@interchange/hub";
 import { generateKeyPair } from "@interchange/crypto-node";
+import { parseMailToEmail } from "@interchange/mime";
 import type { InferenceEvent } from "@interchange/types/runtime";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import { setup, getLogger } from "@interchange/log";
@@ -170,6 +171,13 @@ const sidecarRouter = createSidecarRouter({
       return null;
     }
     return row.publicKey;
+  },
+  onMailPersisted(row) {
+    const parsed = parseMailToEmail(row.raw, row.id);
+    sidecarRouter.dispatchAgentEvent(row.agentAddress, {
+      type: "mail.delivered",
+      data: { ...parsed, receivedAt: row.createdAt.toISOString() },
+    });
   },
 });
 

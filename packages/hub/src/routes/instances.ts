@@ -10,15 +10,18 @@ import {
   agentRole,
   agentSession,
   grant as grantTable,
+  inferenceTurn,
   messagePart,
   principal as principalTable,
   principalRole,
   provider,
   sessionMail,
   sessionMessage,
+  turnPart,
 } from "@interchange/db/schema";
 import { resolveCredentialRequirement } from "@interchange/db";
-import { evaluateGrants } from "@interchange/authz";
+import { evaluateGrants, authorize } from "@interchange/authz";
+import { parseMailToEmail, extractPartByPath } from "@interchange/mime";
 
 import { generateKeyPair, createNodeCrypto } from "@interchange/crypto-node";
 import {
@@ -27,6 +30,8 @@ import {
   GrantRequirement,
   SendMessage,
   MessageResponse,
+  MailResponse,
+  InferenceTurnResponse,
   ErrorResponse,
   paginatedSchema,
 } from "@interchange/types";
@@ -1098,7 +1103,7 @@ app.post(
       201: {
         description: "Message sent",
         content: {
-          "application/json": { schema: resolver(MessageResponse) },
+          "application/json": { schema: resolver(MailResponse) },
         },
       },
       400: {
@@ -1203,20 +1208,20 @@ app.post(
       ordinal: 0,
     });
 
-    // Fetch recent delivered user messages for the MIME References chain.
+    // Fetch recent delivered inbound mail for the MIME References chain.
     // RFC 2822 does not require all prior message IDs; the most recent
     // are sufficient for threading.
     const priorMessages = await db
-      .select({ id: sessionMessage.id })
-      .from(sessionMessage)
+      .select({ id: sessionMail.id })
+      .from(sessionMail)
       .where(
         and(
-          eq(sessionMessage.instanceId, instanceId),
-          eq(sessionMessage.role, "user"),
-          eq(sessionMessage.status, "delivered"),
+          eq(sessionMail.instanceId, instanceId),
+          eq(sessionMail.direction, "inbound"),
+          eq(sessionMail.status, "delivered"),
         ),
       )
-      .orderBy(asc(sessionMessage.createdAt), asc(sessionMessage.id))
+      .orderBy(asc(sessionMail.createdAt), asc(sessionMail.id))
       .limit(100);
 
     const priorIds = priorMessages.map((m) => `<${m.id}@${tenant.domain}>`);
@@ -1263,31 +1268,36 @@ app.post(
       );
     }
 
+    const mailId = generateId("sessionMail");
+    const mailCreatedAt = new Date();
+
     await db.insert(sessionMail).values({
-      id: generateId("sessionMail"),
+      id: mailId,
       sessionId: row.sessionId,
       instanceId,
       tenantId: tenant.id,
       direction: "inbound",
       status: "delivered",
       raw: rawMIME,
+      createdAt: mailCreatedAt,
+    });
+
+    const sidecarRouter = c.get("sidecarRouter");
+    const parsed = parseMailToEmail(rawMIME, mailId);
+    sidecarRouter.dispatchAgentEvent(row.address, {
+      type: "mail.delivered",
+      data: { ...parsed, receivedAt: mailCreatedAt.toISOString() },
     });
 
     return c.json(
       {
-        id: messageId,
+        id: mailId,
         sessionId: row.sessionId,
-        role: "user" as const,
+        instanceId,
+        direction: "inbound" as const,
         status: "delivered" as const,
-        createdAt: now.toISOString(),
-        from,
-        parts: [
-          {
-            id: partId,
-            type: "text" as const,
-            content: body.content,
-          },
-        ],
+        receivedAt: mailCreatedAt.toISOString(),
+        ...parsed,
       },
       201,
     );
@@ -1409,6 +1419,506 @@ app.get(
           metadata: p.metadata,
         })),
       })),
+    );
+  },
+);
+
+app.post(
+  "/:instanceId/mail",
+  requireGrant(idResource("instance", "instanceId"), "write"),
+  describeRoute({
+    tags: ["Instances"],
+    summary: "Send mail to the agent",
+    description:
+      "Persists the user message as a mail record and dispatches it to the running agent. Returns JMAP Email-shaped response.",
+    responses: {
+      201: {
+        description: "Mail sent",
+        content: {
+          "application/json": { schema: resolver(MailResponse) },
+        },
+      },
+      400: {
+        description: "Validation error",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      404: {
+        description: "Instance not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      409: {
+        description: "Instance not running",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      502: {
+        description: "Sidecar unavailable",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+    },
+  }),
+  validator("json", SendMessage),
+  async (c) => {
+    const tenant = c.get("tenant");
+    const db = c.get("db");
+    const sessionService = c.get("sessionService");
+    const sidecarRouter = c.get("sidecarRouter");
+    const principal = c.get("principal");
+    const instanceId = c.req.param("instanceId");
+    const body = c.req.valid("json");
+
+    const row = await db.query.agentInstance.findFirst({
+      where: and(
+        eq(agentInstance.id, instanceId),
+        eq(agentInstance.tenantId, tenant.id),
+      ),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Instance not found" } },
+        404,
+      );
+    }
+
+    if (row.status !== "running") {
+      return c.json(
+        {
+          error: {
+            code: "conflict",
+            message: `Instance is not running (status: ${row.status})`,
+          },
+        },
+        409,
+      );
+    }
+
+    if (!row.sessionId) {
+      return c.json(
+        {
+          error: {
+            code: "conflict",
+            message: "Instance has no active session",
+          },
+        },
+        409,
+      );
+    }
+
+    const messageId = generateId("message");
+    const now = new Date();
+
+    const user = c.get("user");
+    const fromAddr = `${principal.refId}@${tenant.domain}`;
+    const from = user?.name ? `"${user.name}" <${fromAddr}>` : fromAddr;
+    const mimeMessageId = `<${messageId}@${tenant.domain}>`;
+
+    // Fetch recent delivered inbound mail for the MIME References chain.
+    const priorMail = await db
+      .select({ id: sessionMail.id })
+      .from(sessionMail)
+      .where(
+        and(
+          eq(sessionMail.instanceId, instanceId),
+          eq(sessionMail.direction, "inbound"),
+          eq(sessionMail.status, "delivered"),
+        ),
+      )
+      .orderBy(asc(sessionMail.createdAt), asc(sessionMail.id))
+      .limit(100);
+
+    const priorIds = priorMail.map((m) => `<${m.id}@${tenant.domain}>`);
+    const lastId = priorIds[priorIds.length - 1];
+
+    const cryptoProvider = await getInstanceCryptoProvider(instanceId);
+
+    let rawMIME: Uint8Array;
+    try {
+      rawMIME = await sessionService.sendUserMessage({
+        agentAddress: row.address,
+        from,
+        messageId: mimeMessageId,
+        date: now,
+        content: body.content,
+        ...(lastId !== undefined ? { inReplyTo: lastId } : {}),
+        ...(priorIds.length > 0 ? { references: priorIds } : {}),
+        sessionId: row.sessionId,
+        tenantId: tenant.id,
+        cryptoProvider,
+      });
+    } catch (err) {
+      return c.json(
+        {
+          error: {
+            code: "sidecar_unavailable",
+            message:
+              err instanceof Error
+                ? err.message
+                : "Failed to deliver message to sidecar",
+          },
+        },
+        502,
+      );
+    }
+
+    const mailId = generateId("sessionMail");
+    const mailCreatedAt = new Date();
+
+    await db.insert(sessionMail).values({
+      id: mailId,
+      sessionId: row.sessionId,
+      instanceId,
+      tenantId: tenant.id,
+      direction: "inbound",
+      status: "delivered",
+      raw: rawMIME,
+      createdAt: mailCreatedAt,
+    });
+
+    const parsed = parseMailToEmail(rawMIME, mailId);
+    sidecarRouter.dispatchAgentEvent(row.address, {
+      type: "mail.delivered",
+      data: { ...parsed, receivedAt: mailCreatedAt.toISOString() },
+    });
+
+    return c.json(
+      {
+        id: mailId,
+        sessionId: row.sessionId,
+        instanceId,
+        direction: "inbound" as const,
+        status: "delivered" as const,
+        receivedAt: mailCreatedAt.toISOString(),
+        ...parsed,
+      },
+      201,
+    );
+  },
+);
+
+app.get(
+  "/:instanceId/mail",
+  requireGrant(idResource("instance", "instanceId"), "read"),
+  describeRoute({
+    tags: ["Instances"],
+    summary: "List mail for an instance",
+    description:
+      "Returns parsed JMAP Email objects in reverse chronological order. Cursor-paginated.",
+    parameters: [...pageParameters],
+    responses: {
+      200: {
+        description: "List of mail",
+        content: {
+          "application/json": {
+            schema: resolver(paginatedSchema(MailResponse)),
+          },
+        },
+      },
+      404: {
+        description: "Instance not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const tenant = c.get("tenant");
+    const db = c.get("db");
+    const instanceId = c.req.param("instanceId");
+    const { limit, cursor } = parsePageParams({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
+    });
+
+    const row = await db.query.agentInstance.findFirst({
+      where: and(
+        eq(agentInstance.id, instanceId),
+        eq(agentInstance.tenantId, tenant.id),
+      ),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Instance not found" } },
+        404,
+      );
+    }
+
+    const conditions = [eq(sessionMail.instanceId, instanceId)];
+    if (cursor) {
+      conditions.push(
+        cursorCondition(sessionMail.createdAt, sessionMail.id, cursor),
+      );
+    }
+
+    const rows = await db
+      .select()
+      .from(sessionMail)
+      .where(and(...conditions))
+      .orderBy(...pageOrder(sessionMail.createdAt, sessionMail.id))
+      .limit(limit);
+
+    const items = rows.map((m) => {
+      const parsed = parseMailToEmail(m.raw, m.id);
+      return {
+        id: m.id,
+        sessionId: m.sessionId,
+        instanceId: m.instanceId ?? null,
+        direction: m.direction,
+        status: m.status,
+        receivedAt: m.createdAt.toISOString(),
+        ...parsed,
+      };
+    });
+
+    return c.json(paginatedResponse(items, rows, limit));
+  },
+);
+
+app.get(
+  "/:instanceId/turns",
+  requireGrant(idResource("instance", "instanceId"), "read"),
+  describeRoute({
+    tags: ["Instances"],
+    summary: "List inference turns for an instance",
+    description:
+      "Returns inference turns with their parts in reverse chronological order. Cursor-paginated.",
+    parameters: [...pageParameters],
+    responses: {
+      200: {
+        description: "List of inference turns",
+        content: {
+          "application/json": {
+            schema: resolver(paginatedSchema(InferenceTurnResponse)),
+          },
+        },
+      },
+      404: {
+        description: "Instance not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const tenant = c.get("tenant");
+    const db = c.get("db");
+    const instanceId = c.req.param("instanceId");
+    const { limit, cursor } = parsePageParams({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
+    });
+
+    const row = await db.query.agentInstance.findFirst({
+      where: and(
+        eq(agentInstance.id, instanceId),
+        eq(agentInstance.tenantId, tenant.id),
+      ),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Instance not found" } },
+        404,
+      );
+    }
+
+    const conditions = [eq(inferenceTurn.instanceId, instanceId)];
+    if (cursor) {
+      conditions.push(
+        cursorCondition(inferenceTurn.startedAt, inferenceTurn.id, cursor),
+      );
+    }
+
+    const turns = await db
+      .select()
+      .from(inferenceTurn)
+      .where(and(...conditions))
+      .orderBy(...pageOrder(inferenceTurn.startedAt, inferenceTurn.id))
+      .limit(limit);
+
+    const turnIds = turns.map((t) => t.id);
+
+    const parts =
+      turnIds.length > 0
+        ? await db
+            .select()
+            .from(turnPart)
+            .where(inArray(turnPart.turnId, turnIds))
+            .orderBy(asc(turnPart.ordinal))
+        : [];
+
+    const partsByTurn = new Map<string, typeof parts>();
+    for (const part of parts) {
+      let list = partsByTurn.get(part.turnId);
+      if (list === undefined) {
+        list = [];
+        partsByTurn.set(part.turnId, list);
+      }
+      list.push(part);
+    }
+
+    const items = turns.map((t) => ({
+      id: t.id,
+      sessionId: t.sessionId,
+      instanceId: t.instanceId,
+      model: t.model,
+      status: t.status,
+      startedAt: t.startedAt.toISOString(),
+      endedAt: t.endedAt ? t.endedAt.toISOString() : null,
+      parts: (partsByTurn.get(t.id) ?? []).map((p) => ({
+        id: p.id,
+        type: p.type,
+        content: p.content ?? null,
+        metadata: p.metadata ?? null,
+        ordinal: p.ordinal,
+      })),
+    }));
+
+    return c.json(
+      paginatedResponse(
+        items,
+        turns.map((t) => ({ createdAt: t.startedAt, id: t.id })),
+        limit,
+      ),
+    );
+  },
+);
+
+app.get(
+  "/blobs/:blobId",
+  describeRoute({
+    tags: ["Instances"],
+    summary: "Fetch a blob by ID",
+    description:
+      "Returns raw bytes for a MIME part. Blob IDs are issued by the mail parsing layer.",
+    responses: {
+      200: {
+        description: "Blob bytes",
+        content: { "application/octet-stream": {} },
+      },
+      400: {
+        description: "Invalid blob ID",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      403: {
+        description: "Forbidden",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      404: {
+        description: "Blob not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const blobId = c.req.param("blobId");
+
+    // Blob IDs have the format: blob_<mailId>_<partPath>
+    // where partPath is an IMAP-style section specifier (digits and dots only).
+    // mailId may itself contain underscores, so we match the suffix.
+    const blobMatch = /^blob_(.+?)_(\d[\d.]*)$/.exec(blobId);
+    if (!blobMatch) {
+      return c.json(
+        { error: { code: "bad_request", message: "Invalid blob ID format" } },
+        400,
+      );
+    }
+
+    const mailId = blobMatch[1];
+    const partPath = blobMatch[2];
+
+    if (!mailId || !partPath) {
+      return c.json(
+        { error: { code: "bad_request", message: "Invalid blob ID format" } },
+        400,
+      );
+    }
+
+    const tenant = c.get("tenant");
+    const db = c.get("db");
+
+    const mailRow = await db.query.sessionMail.findFirst({
+      where: and(
+        eq(sessionMail.id, mailId),
+        eq(sessionMail.tenantId, tenant.id),
+      ),
+    });
+
+    if (!mailRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Blob not found" } },
+        404,
+      );
+    }
+
+    const resolvedInstanceId = mailRow.instanceId;
+    if (!resolvedInstanceId) {
+      return c.json(
+        { error: { code: "not_found", message: "Blob not found" } },
+        404,
+      );
+    }
+
+    const principal = c.get("principal");
+    const grantStore = c.get("grantStore");
+    const conditionRegistry = c.get("conditionRegistry");
+
+    const authResult = await authorize(
+      grantStore,
+      principal.id,
+      tenant.id,
+      `instance:${resolvedInstanceId}`,
+      "read",
+      conditionRegistry,
+    );
+
+    if (authResult.effect !== "allow") {
+      return c.json(
+        {
+          error: {
+            code: "forbidden",
+            message: "You do not have permission to perform this action",
+          },
+        },
+        403,
+      );
+    }
+
+    let partBytes: Uint8Array;
+    try {
+      partBytes = extractPartByPath(mailRow.raw, partPath);
+    } catch {
+      return c.json(
+        { error: { code: "not_found", message: "Blob not found" } },
+        404,
+      );
+    }
+
+    return c.body(
+      partBytes.buffer.slice(
+        partBytes.byteOffset,
+        partBytes.byteOffset + partBytes.byteLength,
+      ) as ArrayBuffer,
+      200,
+      {
+        "Content-Type": "application/octet-stream",
+      },
     );
   },
 );
