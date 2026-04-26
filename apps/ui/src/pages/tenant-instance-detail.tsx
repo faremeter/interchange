@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Paperclip } from "lucide-react";
 import { type } from "arktype";
 import {
   InferenceEvent,
   type InferenceEvent as ValidInferenceEvent,
 } from "@interchange/types/runtime";
+import { MailResponse, InferenceTurnResponse } from "@interchange/types";
 
 import { MutationError } from "@/components/mutation-error";
 import {
@@ -19,6 +20,39 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 const sessionEndedEvent = type({ type: "'session.ended'" });
+
+const MailDeliveredEvent = type({
+  type: "'mail.delivered'",
+  data: {
+    "from?": type({
+      name: "string | null",
+      email: "string",
+    }).array(),
+    "to?": type({
+      name: "string | null",
+      email: "string",
+    }).array(),
+    "subject?": "string | null",
+    "sentAt?": "string | null",
+    bodyValues: "Record<string, unknown>",
+    textBody: type({
+      partId: "string",
+      type: "string",
+    }).array(),
+    "htmlBody?": type({
+      partId: "string",
+      type: "string",
+    }).array(),
+    "attachments?": type({
+      blobId: "string",
+      "name?": "string | null",
+      type: "string",
+      size: "number",
+    }).array(),
+    headers: "Record<string, string>",
+    receivedAt: "string",
+  },
+});
 
 function StatusBadge({ status }: { status: string }) {
   const variant =
@@ -54,12 +88,42 @@ function parseFromHeader(from: string): string {
   return local ?? from;
 }
 
-type ChatMessage = {
-  role: "user" | "assistant";
-  content: string;
-  from: string;
-  isError?: boolean;
-};
+function extractMailText(mail: MailResponse): string {
+  const firstTextPart = mail.textBody[0];
+  if (!firstTextPart) return "";
+  const bodyValue = mail.bodyValues[firstTextPart.partId];
+  if (
+    typeof bodyValue === "object" &&
+    bodyValue !== null &&
+    "value" in bodyValue
+  ) {
+    const v = (bodyValue as { value?: unknown }).value;
+    if (typeof v === "string") return v;
+  }
+  return "";
+}
+
+function formatAddress(addr: { name: string | null; email: string }): string {
+  return addr.name ?? addr.email;
+}
+
+type ChatMessage =
+  | {
+      kind: "mail";
+      role: "user" | "assistant";
+      content: string;
+      senderLabel: string;
+      timestamp: string;
+      attachments: MailResponse["attachments"];
+      isError?: boolean;
+    }
+  | {
+      kind: "turn";
+      content: string;
+      timestamp: string;
+      isError?: boolean;
+    };
+
 type AgentActivity =
   | { type: "inferring" }
   | { type: "tool_call"; name: string }
@@ -85,6 +149,49 @@ function clearInstanceState(instanceId: string) {
   instanceMessages.delete(instanceId);
   instanceStreaming.delete(instanceId);
   instanceActivity.delete(instanceId);
+}
+
+function mailToMessage(
+  mail: MailResponse,
+  instanceAddress: string,
+): ChatMessage {
+  const firstSender = mail.from[0];
+  const isFromAgent =
+    firstSender !== undefined &&
+    (firstSender.email.includes(instanceAddress) ||
+      mail.direction === "outbound");
+  const role: "user" | "assistant" = isFromAgent ? "assistant" : "user";
+  const senderLabel = firstSender ? formatAddress(firstSender) : "Unknown";
+  const content = extractMailText(mail);
+
+  return {
+    kind: "mail",
+    role,
+    content,
+    senderLabel,
+    timestamp: mail.receivedAt,
+    attachments: mail.attachments,
+  };
+}
+
+function turnToMessage(turn: InferenceTurnResponse): ChatMessage | null {
+  const textParts = turn.parts.filter(
+    (p): p is typeof p & { content: string } =>
+      p.type === "text" &&
+      typeof p.content === "string" &&
+      p.content.length > 0,
+  );
+  if (textParts.length === 0) return null;
+  const content = textParts.map((p) => p.content).join("");
+  const isError =
+    turn.status === "failed" || turn.parts.some((p) => p.type === "error");
+
+  return {
+    kind: "turn",
+    content,
+    timestamp: turn.startedAt,
+    ...(isError ? { isError: true } : {}),
+  };
 }
 
 export function TenantInstanceDetailPage() {
@@ -118,45 +225,37 @@ export function TenantInstanceDetailPage() {
 
     let cancelled = false;
 
-    type MessagePart = { type: string; content?: string | null };
-    type MessageRow = {
-      role: "user" | "assistant";
-      from: string;
-      status: string;
-      parts: MessagePart[];
-    };
-
     void (async () => {
-      const messages = await api<MessageRow[]>(
-        "GET",
-        `/api/tenants/${tenantId}/agents/instances/${instanceId}/messages?limit=100`,
-      );
+      const [mailRes, turnsRes] = await Promise.all([
+        api<{ data: MailResponse[] }>(
+          "GET",
+          `/api/tenants/${tenantId}/agents/instances/${instanceId}/mail?limit=100`,
+        ),
+        api<{ data: InferenceTurnResponse[] }>(
+          "GET",
+          `/api/tenants/${tenantId}/agents/instances/${instanceId}/turns?limit=100`,
+        ),
+      ]);
+
       if (cancelled) return;
       if (getMessages(instanceId).length > 0) return;
 
-      const history: ChatMessage[] = [];
-      for (const msg of messages) {
-        if (msg.status !== "delivered") continue;
-        const hasError = msg.parts.some((p) => p.type === "error");
-        const text = msg.parts
-          .filter(
-            (p): p is MessagePart & { content: string } =>
-              p.type === "text" && typeof p.content === "string",
-          )
-          .map((p) => p.content)
-          .join("");
-        if (text) {
-          history.push({
-            role: msg.role,
-            content: text,
-            from: msg.from,
-            ...(hasError ? { isError: true } : {}),
-          });
-        }
-      }
+      const instanceAddress = instance?.address ?? "";
 
-      if (history.length > 0) {
-        instanceMessages.set(instanceId, history);
+      const mailMessages: ChatMessage[] = mailRes.data.map((m) =>
+        mailToMessage(m, instanceAddress),
+      );
+
+      const turnMessages: ChatMessage[] = turnsRes.data
+        .map(turnToMessage)
+        .filter((m): m is ChatMessage => m !== null);
+
+      const all = [...mailMessages, ...turnMessages].sort((a, b) =>
+        a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0,
+      );
+
+      if (all.length > 0) {
+        instanceMessages.set(instanceId, all);
         rerender();
       }
     })();
@@ -164,7 +263,7 @@ export function TenantInstanceDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [isRunning, instanceId, tenantId]);
+  }, [isRunning, instanceId, tenantId, instance?.address]);
 
   // Open/close the EventSource based on instance running state.
   useEffect(() => {
@@ -182,6 +281,59 @@ export function TenantInstanceDetailPage() {
           queryClient.invalidateQueries({
             queryKey: ["tenants", tenantId, "instances"],
           });
+          return;
+        }
+
+        // Handle mail.delivered before checking InferenceEvent to avoid
+        // confusion between the two event namespaces.
+        const mailEvent = MailDeliveredEvent(raw);
+        if (!(mailEvent instanceof type.errors)) {
+          const messages = getMessages(instanceId);
+          const already = messages.some(
+            (m) => m.timestamp === mailEvent.data.receivedAt,
+          );
+          if (!already) {
+            const instanceAddress = instance?.address ?? "";
+            const firstSender = mailEvent.data.from?.[0];
+            const isFromAgent =
+              firstSender !== undefined &&
+              firstSender.email.includes(instanceAddress);
+            const role: "user" | "assistant" = isFromAgent
+              ? "assistant"
+              : "user";
+            const senderLabel = firstSender
+              ? formatAddress(firstSender)
+              : "Unknown";
+
+            const firstTextPart = mailEvent.data.textBody[0];
+            let content = "";
+            if (firstTextPart) {
+              const bodyValue = mailEvent.data.bodyValues[firstTextPart.partId];
+              if (
+                typeof bodyValue === "object" &&
+                bodyValue !== null &&
+                "value" in bodyValue
+              ) {
+                const v = (bodyValue as { value?: unknown }).value;
+                if (typeof v === "string") content = v;
+              }
+            }
+
+            messages.push({
+              kind: "mail",
+              role,
+              content,
+              senderLabel,
+              timestamp: mailEvent.data.receivedAt,
+              attachments: (mailEvent.data.attachments ?? []).map((att) => ({
+                blobId: att.blobId,
+                name: att.name ?? null,
+                type: att.type,
+                size: att.size,
+              })),
+            });
+            rerender();
+          }
           return;
         }
 
@@ -220,32 +372,8 @@ export function TenantInstanceDetailPage() {
             rerender();
             break;
           case "inference.done": {
-            const text = event.data.message.content
-              .filter(
-                (b): b is typeof b & { type: "text" } => b.type === "text",
-              )
-              .map((b) => b.text)
-              .join("");
             instanceStreaming.set(instanceId, "");
-            if (text) {
-              getMessages(instanceId).push({
-                role: "assistant",
-                content: text,
-                from: `${instanceId}@agent`,
-              });
-            }
-            rerender();
-            break;
-          }
-          case "message.received": {
-            const inbound = event.data.message;
-            if (inbound.content) {
-              getMessages(instanceId).push({
-                role: "user",
-                content: inbound.content,
-                from: inbound.headers.from,
-              });
-            }
+            instanceActivity.set(instanceId, null);
             rerender();
             break;
           }
@@ -259,14 +387,14 @@ export function TenantInstanceDetailPage() {
             instanceStreaming.set(instanceId, "");
             instanceActivity.set(instanceId, null);
             // Only push reply content on error turns. On normal turns
-            // inference.done already pushed the assistant message.
+            // inference.done already cleared the streaming buffer.
             if (hadInferenceError) {
               hadInferenceError = false;
               if (event.data.content) {
                 getMessages(instanceId).push({
-                  role: "assistant",
+                  kind: "turn",
                   content: event.data.content,
-                  from: `${instanceId}@agent`,
+                  timestamp: new Date().toISOString(),
                   isError: true,
                 });
               }
@@ -287,7 +415,7 @@ export function TenantInstanceDetailPage() {
       close();
       instanceActivity.set(instanceId, null);
     };
-  }, [isRunning, instanceId, tenantId]);
+  }, [isRunning, instanceId, tenantId, instance?.address]);
 
   const stopMut = useMutation({
     ...stopInstanceMutation(tenantId, queryClient),
@@ -312,7 +440,7 @@ export function TenantInstanceDetailPage() {
     try {
       await api(
         "POST",
-        `/api/tenants/${tenantId}/agents/instances/${instanceId}/messages`,
+        `/api/tenants/${tenantId}/agents/instances/${instanceId}/mail`,
         { content: userMessage },
       );
     } finally {
@@ -432,29 +560,55 @@ export function TenantInstanceDetailPage() {
                   Start a conversation with the agent...
                 </p>
               ) : (
-                getMessages(instanceId).map((msg, i) => (
-                  <div
-                    key={i}
-                    className={`rounded p-2 text-sm ${
-                      msg.isError
-                        ? "mr-8 border border-destructive/30 bg-destructive/10 text-destructive"
-                        : msg.role === "user"
-                          ? "bg-muted ml-8"
-                          : "mr-8 bg-primary/10"
-                    }`}
-                  >
-                    {(() => {
-                      const label = msg.isError
-                        ? "Error"
-                        : msg.role === "assistant"
-                          ? "Agent"
-                          : parseFromHeader(msg.from);
-                      if (!label) return null;
-                      return <span className="font-medium">{label}: </span>;
-                    })()}
-                    {msg.content}
-                  </div>
-                ))
+                getMessages(instanceId).map((msg, i) => {
+                  const isUser = msg.kind === "mail" && msg.role === "user";
+                  const isAssistantTurn = msg.kind === "turn";
+                  const isAssistantMail =
+                    msg.kind === "mail" && msg.role === "assistant";
+                  const isAssistant = isAssistantTurn || isAssistantMail;
+
+                  const label = msg.isError
+                    ? "Error"
+                    : isAssistant
+                      ? "Agent"
+                      : msg.kind === "mail"
+                        ? parseFromHeader(msg.senderLabel)
+                        : null;
+
+                  return (
+                    <div
+                      key={i}
+                      className={`rounded p-2 text-sm ${
+                        msg.isError
+                          ? "mr-8 border border-destructive/30 bg-destructive/10 text-destructive"
+                          : isUser
+                            ? "bg-muted ml-8"
+                            : "mr-8 bg-primary/10"
+                      }`}
+                    >
+                      {label ? (
+                        <span className="font-medium">{label}: </span>
+                      ) : null}
+                      {msg.content}
+                      {msg.kind === "mail" && msg.attachments.length > 0 && (
+                        <div className="mt-1 flex flex-col gap-0.5">
+                          {msg.attachments.map((att) => (
+                            <a
+                              key={att.blobId}
+                              href={`/api/tenants/${tenantId}/agents/instances/blobs/${att.blobId}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-xs text-primary underline"
+                            >
+                              <Paperclip className="size-3" />
+                              {att.name ?? att.blobId}
+                            </a>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
               )}
               {getStreaming(instanceId) && (
                 <div className="mr-8 rounded bg-primary/10 p-2 text-sm">
