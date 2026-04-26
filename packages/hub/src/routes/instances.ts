@@ -14,6 +14,7 @@ import {
   principal as principalTable,
   principalRole,
   provider,
+  sessionMail,
   sessionMessage,
 } from "@interchange/db/schema";
 import { resolveCredentialRequirement } from "@interchange/db";
@@ -1223,8 +1224,9 @@ app.post(
 
     const cryptoProvider = await getInstanceCryptoProvider(instanceId);
 
+    let rawMIME: Uint8Array;
     try {
-      await sessionService.sendUserMessage({
+      rawMIME = await sessionService.sendUserMessage({
         agentAddress: row.address,
         from,
         messageId: mimeMessageId,
@@ -1260,6 +1262,16 @@ app.post(
         502,
       );
     }
+
+    await db.insert(sessionMail).values({
+      id: generateId("sessionMail"),
+      sessionId: row.sessionId,
+      instanceId,
+      tenantId: tenant.id,
+      direction: "inbound",
+      status: "delivered",
+      raw: rawMIME,
+    });
 
     return c.json(
       {

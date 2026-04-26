@@ -48,8 +48,9 @@ export type SessionService = {
   /**
    * Compose a signed RFC 2822 message from the user and deliver it to the
    * agent via the mail transport. Throws if the agent is unreachable.
+   * Returns the raw MIME bytes of the assembled message.
    */
-  sendUserMessage(params: UserMessageParams): Promise<void>;
+  sendUserMessage(params: UserMessageParams): Promise<Uint8Array>;
 
   /**
    * Undeploy an agent and wait for the sidecar to acknowledge.
@@ -136,7 +137,9 @@ export function createSessionService(deps: {
     }
   }
 
-  async function sendUserMessage(params: UserMessageParams): Promise<void> {
+  async function sendUserMessage(
+    params: UserMessageParams,
+  ): Promise<Uint8Array> {
     const {
       agentAddress,
       from,
@@ -188,6 +191,8 @@ export function createSessionService(deps: {
         `Failed to deliver message to ${agentAddress}: agent is unreachable`,
       );
     }
+
+    return rawMessage;
   }
 
   async function endSession(
