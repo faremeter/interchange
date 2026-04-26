@@ -162,6 +162,13 @@
       "when": 1777229396694,
       "tag": "0022_material_sleepwalker",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1777235039207,
+      "tag": "0023_flawless_scarlet_witch",
+      "breakpoints": true
     }
   ]
 }

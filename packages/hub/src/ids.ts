@@ -16,8 +16,6 @@ const PREFIXES = {
   offering: "ofr_",
   instance: "ins_",
   session: "ses_",
-  message: "msg_",
-  messagePart: "mpt_",
   sessionMail: "sml_",
   inferenceTurn: "itn_",
   turnPart: "tp_",
