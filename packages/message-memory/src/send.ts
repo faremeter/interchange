@@ -36,20 +36,32 @@ export type RemoteSendHandler = (
 ) => Promise<void>;
 
 /**
+ * Context passed to MessageSentHandler callbacks after a message is fully
+ * assembled and delivered.
+ */
+export type MessageSentContext = {
+  senderAddress: string;
+  rawMessage: Uint8Array;
+  messageId: string;
+  /** Deduplicated union of to and cc — the full routing set. */
+  recipients: string[];
+  /** To addresses only (before merging with cc). */
+  to: string[];
+  /** CC addresses only. Empty array when no CC recipients. */
+  cc: string[];
+  /** True when all recipients were delivered locally (no remote leg). */
+  localOnly: boolean;
+};
+
+/**
  * Callback fired after a message is fully assembled and delivered. The
  * send is already complete when this fires — a handler rejection does
  * not mean the message was not delivered.
  *
  * Used by the sidecar to commit outbound wire messages to the git audit
- * trail.
+ * trail and forward metadata to the hub.
  */
-export type MessageSentHandler = (
-  senderAddress: string,
-  rawMessage: Uint8Array,
-  messageId: string,
-  recipients: string[],
-  localOnly: boolean,
-) => Promise<void>;
+export type MessageSentHandler = (ctx: MessageSentContext) => Promise<void>;
 
 /**
  * Execute the send() flow:
@@ -237,13 +249,15 @@ export async function executeSend(
 
   if (onMessageSent !== undefined) {
     const localOnly = remoteRecipients.length === 0;
-    onMessageSent(
+    onMessageSent({
       senderAddress,
-      rawBytes,
+      rawMessage: rawBytes,
       messageId,
-      allAddressees,
+      recipients: allAddressees,
+      to: recipients,
+      cc: ccAddressList,
       localOnly,
-    ).catch((err: unknown) => {
+    }).catch((err: unknown) => {
       queueMicrotask(() => {
         throw err instanceof Error
           ? err

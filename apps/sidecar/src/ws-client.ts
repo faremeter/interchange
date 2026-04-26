@@ -123,22 +123,21 @@ export function createWsClient(config: WsClientConfig): WsClient {
   // sends are marked delivered: true so the hub does not re-route them.
   // Remote sends are marked delivered: true as well — routing was already
   // handled by the RemoteSendHandler above.
-  transport.addMessageSentHandler(
-    async (senderAddress, rawMessage, messageId, recipients, _localOnly) => {
-      const encoded = uint8ArrayToBase64(rawMessage);
-      const sessionId = sessions.getSessionId(senderAddress);
-      send({
-        type: "mail.outbound",
-        rawMessage: encoded,
-        recipients,
-        senderAddress,
-        ...(sessionId !== undefined ? { sessionId } : {}),
-        messageId,
-        to: recipients,
-        delivered: true,
-      });
-    },
-  );
+  transport.addMessageSentHandler(async (ctx) => {
+    const encoded = uint8ArrayToBase64(ctx.rawMessage);
+    const sessionId = sessions.getSessionId(ctx.senderAddress);
+    send({
+      type: "mail.outbound",
+      rawMessage: encoded,
+      recipients: ctx.recipients,
+      senderAddress: ctx.senderAddress,
+      ...(sessionId !== undefined ? { sessionId } : {}),
+      messageId: ctx.messageId,
+      to: ctx.to,
+      ...(ctx.cc.length > 0 ? { cc: ctx.cc } : {}),
+      delivered: true,
+    });
+  });
 
   async function handleAgentDeploy(frame: AgentDeployFrame): Promise<void> {
     try {

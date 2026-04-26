@@ -428,12 +428,8 @@ class AgentMessageTransport implements MessageTransport {
     const handlers = this.#getMessageSentHandlers();
     const aggregatedHandler: MessageSentHandler | undefined =
       handlers.size > 0
-        ? async (sender, raw, msgId, recips, localOnly) => {
-            await Promise.allSettled(
-              [...handlers].map((h) =>
-                h(sender, raw, msgId, recips, localOnly),
-              ),
-            );
+        ? async (ctx) => {
+            await Promise.allSettled([...handlers].map((h) => h(ctx)));
           }
         : undefined;
     return executeSend(

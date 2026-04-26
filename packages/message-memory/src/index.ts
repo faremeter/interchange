@@ -1,5 +1,9 @@
 export { InMemoryTransport } from "./transport";
-export type { RemoteSendHandler, MessageSentHandler } from "./send";
+export type {
+  RemoteSendHandler,
+  MessageSentHandler,
+  MessageSentContext,
+} from "./send";
 
 /**
  * Create a fresh in-memory transport instance.
