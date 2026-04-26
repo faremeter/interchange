@@ -8,6 +8,7 @@ export {
   parseMultipart,
   extractBoundary,
   extractPartByPath,
+  parseMailToEmail,
 } from "./mime";
 
 export type {
@@ -17,6 +18,11 @@ export type {
   StructuredContent,
   ParsedMimePart,
   ParsedMimeMessage,
+  JMAPEmail,
+  JMAPAddress,
+  JMAPBodyValue,
+  JMAPBodyPart,
+  JMAPAttachment,
 } from "./mime";
 
 export { createDetachedSignatureFromProvider } from "./pgp-sign";

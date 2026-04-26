@@ -15,6 +15,7 @@ import {
   parseMultipart,
   extractBoundary,
   extractPartByPath,
+  parseMailToEmail,
   type MessageHeaders,
 } from "./index";
 
@@ -514,6 +515,316 @@ describe("createDetachedSignatureFromProvider", () => {
       provider.getPublicKey(),
     );
     expect(valid).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseMailToEmail
+// ---------------------------------------------------------------------------
+
+describe("parseMailToEmail", () => {
+  test("parses a simple text/plain message", () => {
+    const raw = enc.encode(
+      [
+        "From: Alice <alice@example.com>",
+        "To: Bob <bob@example.com>",
+        "Subject: Hello",
+        "Date: Tue, 21 Apr 2026 12:00:00 +0000",
+        "MIME-Version: 1.0",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "Hello from Alice",
+      ].join("\r\n"),
+    );
+
+    const email = parseMailToEmail(raw, "sml_abc123");
+
+    expect(email.from).toEqual([{ name: "Alice", email: "alice@example.com" }]);
+    expect(email.to).toEqual([{ name: "Bob", email: "bob@example.com" }]);
+    expect(email.subject).toBe("Hello");
+    expect(email.sentAt).toBe("2026-04-21T12:00:00.000Z");
+    expect(Object.keys(email.bodyValues)).toHaveLength(1);
+    expect(email.bodyValues["1"]?.value).toContain("Hello from Alice");
+    expect(email.textBody).toEqual([{ partId: "1", type: "text/plain" }]);
+    expect(email.htmlBody).toHaveLength(0);
+    expect(email.attachments).toHaveLength(0);
+  });
+
+  test("parses from/to with bare email addresses", () => {
+    const raw = enc.encode(
+      [
+        "From: alice@example.com",
+        "To: bob@example.com, charlie@example.com",
+        "Date: Tue, 21 Apr 2026 12:00:00 +0000",
+        "Content-Type: text/plain",
+        "",
+        "body",
+      ].join("\r\n"),
+    );
+
+    const email = parseMailToEmail(raw, "sml_1");
+
+    expect(email.from).toEqual([{ name: null, email: "alice@example.com" }]);
+    expect(email.to).toEqual([
+      { name: null, email: "bob@example.com" },
+      { name: null, email: "charlie@example.com" },
+    ]);
+  });
+
+  test("returns null subject when header is absent", () => {
+    const raw = enc.encode(
+      [
+        "From: alice@example.com",
+        "To: bob@example.com",
+        "Date: Tue, 21 Apr 2026 12:00:00 +0000",
+        "Content-Type: text/plain",
+        "",
+        "body",
+      ].join("\r\n"),
+    );
+
+    const email = parseMailToEmail(raw, "sml_1");
+    expect(email.subject).toBeNull();
+  });
+
+  test("returns null sentAt when Date header is absent", () => {
+    const raw = enc.encode(
+      [
+        "From: alice@example.com",
+        "To: bob@example.com",
+        "Content-Type: text/plain",
+        "",
+        "body",
+      ].join("\r\n"),
+    );
+
+    const email = parseMailToEmail(raw, "sml_1");
+    expect(email.sentAt).toBeNull();
+  });
+
+  test("returns null sentAt when Date header is unparseable", () => {
+    const raw = enc.encode(
+      [
+        "From: alice@example.com",
+        "To: bob@example.com",
+        "Date: not-a-date",
+        "Content-Type: text/plain",
+        "",
+        "body",
+      ].join("\r\n"),
+    );
+
+    const email = parseMailToEmail(raw, "sml_1");
+    expect(email.sentAt).toBeNull();
+  });
+
+  test("parses multipart/mixed with text and attachment", () => {
+    const boundary = "test_boundary_xyz";
+    const raw = enc.encode(
+      [
+        "From: alice@example.com",
+        "To: bob@example.com",
+        "Date: Tue, 21 Apr 2026 12:00:00 +0000",
+        `Content-Type: multipart/mixed; boundary="${boundary}"`,
+        "",
+        `--${boundary}`,
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "The message body",
+        `--${boundary}`,
+        "Content-Type: application/pdf",
+        'Content-Disposition: attachment; filename="report.pdf"',
+        "",
+        "PDF-BYTES-HERE",
+        `--${boundary}--`,
+      ].join("\r\n"),
+    );
+
+    const email = parseMailToEmail(raw, "sml_multi");
+
+    expect(email.textBody).toEqual([{ partId: "1", type: "text/plain" }]);
+    expect(email.bodyValues["1"]?.value).toContain("The message body");
+    expect(email.attachments).toHaveLength(1);
+    expect(email.attachments[0]).toEqual({
+      blobId: "blob_sml_multi_2",
+      name: "report.pdf",
+      type: "application/pdf",
+      size: "PDF-BYTES-HERE".length,
+    });
+  });
+
+  test("parses multipart/mixed with html part", () => {
+    const boundary = "mixed_html_boundary";
+    const raw = enc.encode(
+      [
+        "From: alice@example.com",
+        "To: bob@example.com",
+        "Date: Tue, 21 Apr 2026 12:00:00 +0000",
+        `Content-Type: multipart/mixed; boundary="${boundary}"`,
+        "",
+        `--${boundary}`,
+        "Content-Type: text/html; charset=utf-8",
+        "",
+        "<p>Hello</p>",
+        `--${boundary}--`,
+      ].join("\r\n"),
+    );
+
+    const email = parseMailToEmail(raw, "sml_html");
+
+    expect(email.htmlBody).toEqual([{ partId: "1", type: "text/html" }]);
+    expect(email.bodyValues["1"]?.value).toContain("<p>Hello</p>");
+    expect(email.textBody).toHaveLength(0);
+    expect(email.attachments).toHaveLength(0);
+  });
+
+  test("parses a multipart/signed conversation message assembled by this library", () => {
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text: "Hello from a signed message",
+    });
+    const fakeSig = enc.encode("FAKE-SIGNATURE");
+    const msg = assembleMessage(
+      makeHeaders({
+        subject: "Signed Convo",
+        interchangeType: "conversation.message",
+        interchangeSessionId: "sess-42",
+      }),
+      content,
+      fakeSig,
+    );
+
+    const email = parseMailToEmail(msg, "sml_signed_plain");
+
+    expect(email.from).toEqual([
+      { name: null, email: "alice@test.interchange" },
+    ]);
+    expect(email.to).toEqual([{ name: null, email: "bob@test.interchange" }]);
+    expect(email.subject).toBe("Signed Convo");
+    expect(email.sentAt).toBe("2026-04-21T12:00:00.000Z");
+    expect(email.textBody).toHaveLength(1);
+    expect(
+      email.bodyValues[defined(email.textBody[0]).partId]?.value,
+    ).toContain("Hello from a signed message");
+    expect(email.attachments).toHaveLength(0);
+    expect(email.headers["interchange-type"]).toBe("conversation.message");
+    expect(email.headers["interchange-session-id"]).toBe("sess-42");
+  });
+
+  test("parses a multipart/signed structured message assembled by this library", () => {
+    const payload = { action: "deploy", env: "staging" };
+    const content = assembleSignedContent({
+      kind: "structured",
+      json: payload,
+      summary: "Deploying to staging",
+    });
+    const fakeSig = enc.encode("FAKE-SIG");
+    const msg = assembleMessage(
+      makeHeaders({ interchangeType: "structured.message" }),
+      content,
+      fakeSig,
+    );
+
+    const email = parseMailToEmail(msg, "sml_signed_structured");
+
+    // The structured message is multipart/mixed inside multipart/signed.
+    // textBody should include the summary text/plain part.
+    expect(email.textBody).toHaveLength(1);
+    const textPartId = defined(email.textBody[0]).partId;
+    expect(email.bodyValues[textPartId]?.value).toContain(
+      "Deploying to staging",
+    );
+    // The application/vnd.interchange+json part is a non-text blob attachment.
+    expect(email.attachments).toHaveLength(1);
+    expect(email.attachments[0]?.type).toBe("application/vnd.interchange+json");
+    expect(email.headers["interchange-type"]).toBe("structured.message");
+  });
+
+  test("blob IDs use the correct scheme", () => {
+    const boundary = "blob_id_boundary";
+    const raw = enc.encode(
+      [
+        "From: alice@example.com",
+        "To: bob@example.com",
+        "Date: Tue, 21 Apr 2026 12:00:00 +0000",
+        `Content-Type: multipart/mixed; boundary="${boundary}"`,
+        "",
+        `--${boundary}`,
+        "Content-Type: text/plain",
+        "",
+        "Text body",
+        `--${boundary}`,
+        "Content-Type: image/png",
+        'Content-Disposition: attachment; filename="photo.png"',
+        "",
+        "PNG-DATA",
+        `--${boundary}`,
+        "Content-Type: application/zip",
+        'Content-Disposition: attachment; filename="archive.zip"',
+        "",
+        "ZIP-DATA",
+        `--${boundary}--`,
+      ].join("\r\n"),
+    );
+
+    const email = parseMailToEmail(raw, "sml_xyz");
+
+    expect(email.attachments[0]?.blobId).toBe("blob_sml_xyz_2");
+    expect(email.attachments[1]?.blobId).toBe("blob_sml_xyz_3");
+  });
+
+  test("extracts Interchange-specific headers into headers field", () => {
+    const raw = enc.encode(
+      [
+        "From: alice@example.com",
+        "To: bob@example.com",
+        "Date: Tue, 21 Apr 2026 12:00:00 +0000",
+        "Content-Type: text/plain",
+        "Interchange-Type: conversation.message",
+        "Interchange-Tenant-ID: tenant-99",
+        "Interchange-Agent-ID: agent-42",
+        "X-Custom: should-not-appear",
+        "",
+        "body",
+      ].join("\r\n"),
+    );
+
+    const email = parseMailToEmail(raw, "sml_hdrs");
+
+    expect(email.headers["interchange-type"]).toBe("conversation.message");
+    expect(email.headers["interchange-tenant-id"]).toBe("tenant-99");
+    expect(email.headers["interchange-agent-id"]).toBe("agent-42");
+    expect(email.headers["x-custom"]).toBeUndefined();
+  });
+
+  test("non-text non-attachment parts are treated as attachments", () => {
+    const boundary = "mixed_types";
+    const raw = enc.encode(
+      [
+        "From: alice@example.com",
+        "To: bob@example.com",
+        "Date: Tue, 21 Apr 2026 12:00:00 +0000",
+        `Content-Type: multipart/mixed; boundary="${boundary}"`,
+        "",
+        `--${boundary}`,
+        "Content-Type: text/plain",
+        "",
+        "Text here",
+        `--${boundary}`,
+        "Content-Type: application/octet-stream",
+        'Content-Disposition: attachment; filename="data.bin"',
+        "",
+        "BINARY",
+        `--${boundary}--`,
+      ].join("\r\n"),
+    );
+
+    const email = parseMailToEmail(raw, "sml_bin");
+
+    expect(email.textBody).toHaveLength(1);
+    expect(email.attachments).toHaveLength(1);
+    expect(email.attachments[0]?.type).toBe("application/octet-stream");
+    expect(email.attachments[0]?.name).toBe("data.bin");
   });
 });
 
