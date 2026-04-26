@@ -96,6 +96,14 @@ export type SidecarRouterConfig = {
   disconnectQueueMaxSize?: number;
   disconnectQueueTTLMs?: number;
   pingTimeoutMs?: number;
+  onMailPersist?: (args: {
+    sessionId: string;
+    instanceId: string;
+    tenantId: string;
+    direction: "inbound" | "outbound";
+    raw: Uint8Array;
+    status: "pending" | "delivered";
+  }) => Promise<string>;
   onStatePackReceived?: (
     agentAddress: string,
     pack: Uint8Array,

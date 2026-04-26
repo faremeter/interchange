@@ -1,8 +1,28 @@
-import { integer, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import {
+  customType,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+} from "drizzle-orm/pg-core";
 
 import { agentInstance } from "./instances";
 import { agentSession } from "./sessions";
 import { tenant } from "./tenants";
+
+const bytea = customType<{ data: Uint8Array; driverData: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+  toDriver(value) {
+    return Buffer.from(value);
+  },
+  fromDriver(value) {
+    return new Uint8Array(value);
+  },
+});
 
 export const sessionMessage = pgTable("session_message", {
   id: text("id").primaryKey(),
@@ -48,3 +68,31 @@ export const messagePart = pgTable("message_part", {
   metadata: jsonb("metadata"),
   ordinal: integer("ordinal").notNull(),
 });
+
+export const sessionMail = pgTable(
+  "session_mail",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => agentSession.id, { onDelete: "cascade" }),
+    instanceId: text("instance_id").references(() => agentInstance.id, {
+      onDelete: "set null",
+    }),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenant.id, { onDelete: "cascade" }),
+    direction: text("direction", { enum: ["inbound", "outbound"] }).notNull(),
+    status: text("status", { enum: ["pending", "delivered"] })
+      .notNull()
+      .default("pending"),
+    raw: bytea("raw").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("session_mail_instance_id_created_at_idx").on(
+      t.instanceId,
+      t.createdAt,
+    ),
+  ],
+);

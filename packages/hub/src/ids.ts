@@ -18,6 +18,7 @@ const PREFIXES = {
   session: "ses_",
   message: "msg_",
   messagePart: "mpt_",
+  sessionMail: "sml_",
 } as const;
 
 type IDKind = keyof typeof PREFIXES;
