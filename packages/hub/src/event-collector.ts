@@ -60,10 +60,6 @@ export function createEventCollector(
           isError: event.data.result.isError ?? false,
         });
         break;
-      case "message.sent":
-        // No longer persisted — message.sent is not part of the turn_part
-        // type enum. The event still flows through SSE dispatch.
-        break;
       case "inference.error":
         pendingError = true;
         await insertPart("error", event.data.error.message, {

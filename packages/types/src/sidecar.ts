@@ -85,8 +85,8 @@ export type AgentErrorFrame = typeof AgentErrorFrame.infer;
  * message was already delivered locally and is forwarded for audit/projection
  * only — the hub must not re-route it.
  *
- * Structured metadata (senderAddress, messageId, to, cc) lets the hub emit
- * message.sent events without parsing the raw MIME bytes.
+ * Structured metadata (senderAddress, messageId, to, cc) is available for
+ * audit and projection purposes without parsing the raw MIME bytes.
  */
 export const MailOutboundFrame = type({
   type: "'mail.outbound'",

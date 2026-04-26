@@ -180,21 +180,6 @@ describe("EventCollector", () => {
     });
   });
 
-  test("message.sent is a no-op and produces no parts", async () => {
-    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
-    await collector.onEvent(
-      event("message.sent", 2, {
-        messageId: "msg_test",
-        to: "agent@test.localhost",
-      }),
-    );
-
-    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
-    // Only the step-start; message.sent is not persisted
-    expect(parts).toHaveLength(1);
-    expect(at(parts, 0).values.type).toBe("step-start");
-  });
-
   test("reactor.done marks turn as completed with endedAt", async () => {
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(event("reactor.done", 10, {}));

@@ -807,11 +807,6 @@ export const InferenceEvent = type({
     data: { result: ToolResult },
   })
   .or({
-    type: "'message.received'",
-    seq: "number",
-    data: { message: WireInboundMessage },
-  })
-  .or({
     type: "'message.queued'",
     seq: "number",
     data: { message: WireInboundMessage },
@@ -820,11 +815,6 @@ export const InferenceEvent = type({
     type: "'message.correlated'",
     seq: "number",
     data: { message: WireInboundMessage, correlationId: "string" },
-  })
-  .or({
-    type: "'message.sent'",
-    seq: "number",
-    data: { messageId: "string", to: "string[]", "cc?": "string[]" },
   })
   .or({
     type: "'connector.reply'",
@@ -950,11 +940,6 @@ export type InferenceEvent =
     }
   | { type: "tool.done"; seq: number; data: { result: ToolResult } }
   | {
-      type: "message.received";
-      seq: number;
-      data: { message: InboundMessage };
-    }
-  | {
       type: "message.queued";
       seq: number;
       data: { message: InboundMessage };
@@ -963,11 +948,6 @@ export type InferenceEvent =
       type: "message.correlated";
       seq: number;
       data: { message: InboundMessage; correlationId: string };
-    }
-  | {
-      type: "message.sent";
-      seq: number;
-      data: { messageId: string; to: string[]; cc?: string[] };
     }
   | {
       type: "connector.reply";

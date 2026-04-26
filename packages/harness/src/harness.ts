@@ -25,11 +25,14 @@ import {
   createAuditCollector,
   createAuthzExtension,
 } from "@interchange/inference";
-import type { Reactor, AuditCollector } from "@interchange/inference";
+import type {
+  Reactor,
+  AuditCollector,
+  ReactorEmittedEvent,
+} from "@interchange/inference";
 import {
   ProviderConfig,
   type InboundMessage,
-  type InferenceEvent,
   type Unsubscribe,
   type ReactorPlugin,
 } from "@interchange/types/runtime";
@@ -227,8 +230,8 @@ export function createHarness(config: HarnessConfig): Harness {
   // Event interception
   // -------------------------------------------------------------------------
 
-  function handleEvent(event: InferenceEvent): void {
-    if (auditCollector !== undefined) {
+  function handleEvent(event: ReactorEmittedEvent): void {
+    if (event.type !== "message.received" && auditCollector !== undefined) {
       auditCollector.onEvent(event);
     }
 
@@ -286,7 +289,9 @@ export function createHarness(config: HarnessConfig): Harness {
       })();
     }
 
-    // Always forward the event to the caller.
+    // message.received is reactor-internal; do not forward to the caller.
+    if (event.type === "message.received") return;
+
     onEvent(event);
   }
 

@@ -25,7 +25,7 @@ import type {
   BeforeToolExtension,
 } from "@interchange/types/runtime";
 
-import type { ReactorConfig, Reactor } from "./reactor";
+import type { ReactorConfig, Reactor, ReactorEmittedEvent } from "./reactor";
 import type { InferenceHarnessOptions } from "./harness";
 import type { CorrelationValidator } from "./correlation";
 
@@ -88,21 +88,21 @@ function noopToolRunner(): ToolRunner {
 }
 
 function collectEvents(): {
-  events: InferenceEvent[];
-  onEvent: (e: InferenceEvent) => void;
+  events: ReactorEmittedEvent[];
+  onEvent: (e: ReactorEmittedEvent) => void;
 } {
-  const events: InferenceEvent[] = [];
+  const events: ReactorEmittedEvent[] = [];
   return {
     events,
-    onEvent: (e: InferenceEvent) => events.push(e),
+    onEvent: (e: ReactorEmittedEvent) => events.push(e),
   };
 }
 
 function waitForEvent(
-  events: InferenceEvent[],
-  predicate: (e: InferenceEvent) => boolean,
+  events: ReactorEmittedEvent[],
+  predicate: (e: ReactorEmittedEvent) => boolean,
   timeoutMs = 2000,
-): Promise<InferenceEvent> {
+): Promise<ReactorEmittedEvent> {
   return new Promise((resolve, reject) => {
     const deadline = setTimeout(
       () => reject(new Error("Timed out waiting for event")),
@@ -199,11 +199,11 @@ type TestReactorOverrides = {
 
 type TestReactorHandle = {
   reactor: Reactor;
-  events: InferenceEvent[];
+  events: ReactorEmittedEvent[];
   waitFor: (
-    type: InferenceEvent["type"],
+    type: ReactorEmittedEvent["type"],
     timeoutMs?: number,
-  ) => Promise<InferenceEvent>;
+  ) => Promise<ReactorEmittedEvent>;
 };
 
 function createTestReactor(
@@ -247,9 +247,9 @@ function createTestReactor(
   const reactor = createReactor(config);
 
   function waitFor(
-    type: InferenceEvent["type"],
+    type: ReactorEmittedEvent["type"],
     timeoutMs = 2000,
-  ): Promise<InferenceEvent> {
+  ): Promise<ReactorEmittedEvent> {
     return waitForEvent(events, (e) => e.type === type, timeoutMs);
   }
 
@@ -287,15 +287,15 @@ function throwingToolRunner(error: Error): ToolRunner {
   };
 }
 
-function getEvent<T extends InferenceEvent["type"]>(
-  events: InferenceEvent[],
+function getEvent<T extends ReactorEmittedEvent["type"]>(
+  events: ReactorEmittedEvent[],
   type: T,
-): Extract<InferenceEvent, { type: T }> {
+): Extract<ReactorEmittedEvent, { type: T }> {
   const found = events.find((e) => e.type === type);
   if (found === undefined) {
     throw new Error(`No event of type '${type}' found`);
   }
-  return found as Extract<InferenceEvent, { type: T }>;
+  return found as Extract<ReactorEmittedEvent, { type: T }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1104,7 +1104,7 @@ describe("test harness helpers", () => {
   });
 
   test("getEvent throws when event is missing", () => {
-    const events: InferenceEvent[] = [];
+    const events: ReactorEmittedEvent[] = [];
     expect(() => getEvent(events, "reactor.error")).toThrow(
       "No event of type 'reactor.error' found",
     );

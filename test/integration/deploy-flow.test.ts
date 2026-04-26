@@ -499,10 +499,11 @@ describe("deploy flow integration", () => {
     expect(firstEvent.addr).toBe(AGENT_ADDRESS);
     expect(firstEvent.sid).toBe(SESSION_ID);
 
-    // The first event from a reactor turn is message.received, followed
-    // by inference events. Verify it is a known reactor event type.
+    // The first new external event after a message arrives is inference.start.
+    // message.received is reactor-internal and does not appear in the
+    // external event stream.
     const payload = firstEvent.event as { type: string };
-    expect(payload.type).toBe("message.received");
+    expect(payload.type).toBe("inference.start");
   });
 
   test("sync request triggers state push to hub repo", async () => {
