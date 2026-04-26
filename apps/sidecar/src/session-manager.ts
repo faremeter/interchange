@@ -206,13 +206,7 @@ export function createSessionManager(
   }
 
   transport.addMessageSentHandler(
-    async (
-      senderAddress: string,
-      rawMessage: Uint8Array,
-      messageId: string,
-      _recipients: string[],
-      _localOnly: boolean,
-    ) => {
+    async ({ senderAddress, rawMessage, messageId }) => {
       const store = mailStores.get(senderAddress);
       if (store === undefined) {
         logger.warn`No mail store for sender ${senderAddress}, skipping outbound audit for ${messageId}`;
