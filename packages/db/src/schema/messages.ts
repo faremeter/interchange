@@ -69,6 +69,60 @@ export const messagePart = pgTable("message_part", {
   ordinal: integer("ordinal").notNull(),
 });
 
+export const inferenceTurn = pgTable(
+  "inference_turn",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => agentSession.id, { onDelete: "cascade" }),
+    instanceId: text("instance_id")
+      .notNull()
+      .references(() => agentInstance.id, { onDelete: "cascade" }),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenant.id, { onDelete: "cascade" }),
+    model: text("model").notNull(),
+    status: text("status", { enum: ["running", "completed", "failed"] })
+      .notNull()
+      .default("running"),
+    startedAt: timestamp("started_at").notNull(),
+    endedAt: timestamp("ended_at"),
+  },
+  (t) => [
+    index("inference_turn_instance_id_started_at_idx").on(
+      t.instanceId,
+      t.startedAt,
+    ),
+  ],
+);
+
+export const turnPart = pgTable("turn_part", {
+  id: text("id").primaryKey(),
+  turnId: text("turn_id")
+    .notNull()
+    .references(() => inferenceTurn.id, { onDelete: "cascade" }),
+  sessionId: text("session_id")
+    .notNull()
+    .references(() => agentSession.id, { onDelete: "cascade" }),
+  type: text("type", {
+    enum: [
+      "text",
+      "reasoning",
+      "tool",
+      "file",
+      "error",
+      "step-start",
+      "step-finish",
+      "snapshot",
+      "patch",
+    ],
+  }).notNull(),
+  content: text("content"),
+  metadata: jsonb("metadata"),
+  ordinal: integer("ordinal").notNull(),
+});
+
 export const sessionMail = pgTable(
   "session_mail",
   {

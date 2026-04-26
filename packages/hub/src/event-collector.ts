@@ -1,4 +1,4 @@
-// Persists assistant message parts from the InferenceEvent stream.
+// Persists assistant inference turns from the InferenceEvent stream.
 //
 // One collector per active session. Events are written eagerly to the DB
 // so data survives crashes. The collector does not block the websocket
@@ -6,7 +6,7 @@
 
 import { eq } from "drizzle-orm";
 
-import { sessionMessage, messagePart } from "@interchange/db/schema";
+import { inferenceTurn, turnPart } from "@interchange/db/schema";
 import { getLogger } from "@interchange/log";
 import type { InferenceEvent, ContentBlock } from "@interchange/types/runtime";
 import type { DB } from "@interchange/db";
@@ -25,19 +25,17 @@ export type EventCollectorConfig = {
   sessionId: string;
   instanceId: string;
   tenantId: string;
-  agentAddress: string;
 };
 
 export function createEventCollector(
   config: EventCollectorConfig,
 ): EventCollector {
-  const { db, sessionId, instanceId, tenantId, agentAddress } = config;
+  const { db, sessionId, instanceId, tenantId } = config;
 
-  // Current assistant message being accumulated. A new message is created
-  // on each inference.start so that each turn gets its own row with the
-  // correct timestamp. Finalized on connector.reply, reactor.done,
+  // Current inference turn being accumulated. A new turn is created on each
+  // inference.start. Finalized on connector.reply, reactor.done,
   // reactor.error (fatal), or abandon.
-  let currentMessageId: string | null = null;
+  let currentTurnId: string | null = null;
   let ordinal = 0;
   // Prevents double-finalization when reactor.done and abandon() race.
   let finalized = false;
@@ -48,7 +46,7 @@ export function createEventCollector(
   async function onEvent(event: InferenceEvent): Promise<void> {
     switch (event.type) {
       case "inference.start":
-        await beginAssistantMessage();
+        await beginTurn(event.data.model);
         await insertPart("step-start", null, { model: event.data.model });
         break;
       case "inference.done":
@@ -63,11 +61,8 @@ export function createEventCollector(
         });
         break;
       case "message.sent":
-        await insertPart("message-sent", null, {
-          messageId: event.data.messageId,
-          to: event.data.to,
-          ...(event.data.cc !== undefined ? { cc: event.data.cc } : {}),
-        });
+        // No longer persisted — message.sent is not part of the turn_part
+        // type enum. The event still flows through SSE dispatch.
         break;
       case "inference.error":
         pendingError = true;
@@ -85,14 +80,14 @@ export function createEventCollector(
           await insertPart("text", event.data.content, null);
           pendingError = false;
         }
-        await finalizeMessage("delivered");
+        await finalizeTurn("completed");
         break;
       case "reactor.done":
-        await finalizeMessage("delivered");
+        await finalizeTurn("completed");
         break;
       case "reactor.error":
         if (event.data.fatal) {
-          await finalizeMessage("failed");
+          await finalizeTurn("failed");
         }
         break;
       default:
@@ -102,27 +97,26 @@ export function createEventCollector(
     }
   }
 
-  async function beginAssistantMessage(): Promise<void> {
-    // If a previous message is still pending, finalize it as failed.
-    if (currentMessageId !== null && !finalized) {
-      log.warn`Orphaned pending message ${currentMessageId} for session ${sessionId}`;
-      await finalizeMessage("failed");
+  async function beginTurn(model: string): Promise<void> {
+    // If a previous turn is still running, finalize it as failed.
+    if (currentTurnId !== null && !finalized) {
+      log.warn`Orphaned running turn ${currentTurnId} for session ${sessionId}`;
+      await finalizeTurn("failed");
     }
 
-    currentMessageId = generateId("message");
+    currentTurnId = generateId("inferenceTurn");
     ordinal = 0;
     finalized = false;
     pendingError = false;
 
-    await db.insert(sessionMessage).values({
-      id: currentMessageId,
+    await db.insert(inferenceTurn).values({
+      id: currentTurnId,
       sessionId,
       instanceId,
       tenantId,
-      role: "assistant",
-      from: agentAddress,
-      status: "pending",
-      createdAt: new Date(),
+      model,
+      status: "running",
+      startedAt: new Date(),
     });
   }
 
@@ -156,30 +150,28 @@ export function createEventCollector(
       }
     }
 
-    // Mark the end of this inference turn.
+    // Mark the end of this inference step.
     await insertPart("step-finish", null, null);
   }
 
-  async function finalizeMessage(
-    status: "delivered" | "failed",
-  ): Promise<void> {
-    if (currentMessageId === null || finalized) return;
+  async function finalizeTurn(status: "completed" | "failed"): Promise<void> {
+    if (currentTurnId === null || finalized) return;
     finalized = true;
 
     await db
-      .update(sessionMessage)
-      .set({ status })
-      .where(eq(sessionMessage.id, currentMessageId));
+      .update(inferenceTurn)
+      .set({ status, endedAt: new Date() })
+      .where(eq(inferenceTurn.id, currentTurnId));
 
-    currentMessageId = null;
+    currentTurnId = null;
   }
 
   async function abandon(): Promise<void> {
-    if (currentMessageId === null || finalized) return;
+    if (currentTurnId === null || finalized) return;
 
-    log.warn`Abandoning pending message ${currentMessageId} for session ${sessionId}`;
+    log.warn`Abandoning running turn ${currentTurnId} for session ${sessionId}`;
 
-    await finalizeMessage("failed");
+    await finalizeTurn("failed");
   }
 
   async function insertPart(
@@ -187,16 +179,16 @@ export function createEventCollector(
     content: string | null,
     metadata: Record<string, unknown> | null,
   ): Promise<void> {
-    if (currentMessageId === null) {
-      log.warn`Dropping ${partType} part: no active message for session ${sessionId}`;
+    if (currentTurnId === null) {
+      log.warn`Dropping ${partType} part: no active turn for session ${sessionId}`;
       return;
     }
 
-    const values: typeof messagePart.$inferInsert = {
-      id: generateId("messagePart"),
-      messageId: currentMessageId,
+    const values: typeof turnPart.$inferInsert = {
+      id: generateId("turnPart"),
+      turnId: currentTurnId,
       sessionId,
-      type: partType as typeof messagePart.$inferInsert.type,
+      type: partType as typeof turnPart.$inferInsert.type,
       ordinal: ordinal++,
     };
 
@@ -208,7 +200,7 @@ export function createEventCollector(
       values.metadata = metadata;
     }
 
-    await db.insert(messagePart).values(values);
+    await db.insert(turnPart).values(values);
   }
 
   return { onEvent, abandon };
