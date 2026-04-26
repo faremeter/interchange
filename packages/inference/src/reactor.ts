@@ -103,7 +103,6 @@ export function createReactor(config: ReactorConfig): Reactor {
   const {
     sessionId,
     plugin,
-    providerConfig,
     toolRunner,
     contextStore,
     correlationValidator,
@@ -303,7 +302,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       const harnessOpts = buildHarnessOpts(
         messages,
         model,
-        providerConfig,
+        config.providerConfig,
         options,
         signal,
         nextSeq,

@@ -40,6 +40,7 @@ import type {
   InboundMessage,
   InferenceEvent,
   KeyPair,
+  ProviderConfig,
   ToolRunner,
   HarnessConfig as AgentConfig,
 } from "@interchange/types/runtime";
@@ -97,6 +98,10 @@ export type SessionManager = {
   abortSession(agentAddress: string, reason: string): Promise<void>;
   deliverMessage(agentAddress: string, message: InboundMessage): void;
   updateGrants(agentAddress: string, grants: GrantRule[]): Promise<void>;
+  updateProviders(
+    agentAddress: string,
+    providers: ProviderConfig[],
+  ): Promise<void>;
   hasSession(agentAddress: string): boolean;
   isProvisioned(agentAddress: string): boolean;
   getAddresses(): string[];
@@ -453,6 +458,29 @@ export function createSessionManager(
     logger.info`Updated grants for ${agentAddress} (${String(grants.length)} rules)`;
   }
 
+  async function updateProviders(
+    agentAddress: string,
+    providers: ProviderConfig[],
+  ): Promise<void> {
+    const session = sessions.get(agentAddress);
+    if (session === undefined) {
+      throw new Error(`No session exists for agent "${agentAddress}"`);
+    }
+    const provider = providers.find((p) => hasProvider(p.provider));
+    if (provider === undefined) {
+      throw new Error(
+        `No supported provider in update for agent "${agentAddress}"`,
+      );
+    }
+    session.harness.setProviderConfig({
+      ...provider,
+      model: session.config.defaultModel,
+    });
+    session.config = { ...session.config, providers };
+    await persistAgentConfig(dataDir, agentAddress, session.config);
+    logger.info`Updated providers for ${agentAddress}`;
+  }
+
   async function applyDeployPack(
     agentAddress: string,
     pack: Uint8Array,
@@ -544,6 +572,7 @@ export function createSessionManager(
     abortSession,
     deliverMessage,
     updateGrants,
+    updateProviders,
     hasSession,
     isProvisioned,
     getAddresses,

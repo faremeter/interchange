@@ -26,11 +26,12 @@ import {
   createAuthzExtension,
 } from "@interchange/inference";
 import type { Reactor, AuditCollector } from "@interchange/inference";
-import type {
-  InboundMessage,
-  InferenceEvent,
-  Unsubscribe,
-  ReactorPlugin,
+import {
+  ProviderConfig,
+  type InboundMessage,
+  type InferenceEvent,
+  type Unsubscribe,
+  type ReactorPlugin,
 } from "@interchange/types/runtime";
 
 import type { HarnessConfig } from "./config";
@@ -41,6 +42,7 @@ import {
   getMessageToolDefinitions,
 } from "./tools";
 import { createDefaultPlugin } from "./plugin";
+import { type } from "arktype";
 
 const logger = getLogger(["interchange", "harness"]);
 
@@ -63,6 +65,12 @@ export type Harness = {
    * other than the INBOX watch.
    */
   deliver(message: InboundMessage): void;
+
+  /**
+   * Hot-swap the provider configuration. Takes effect on the next inference
+   * call — in-flight calls continue with the previous config.
+   */
+  setProviderConfig(config: ProviderConfig): void;
 };
 
 export function createHarness(config: HarnessConfig): Harness {
@@ -299,6 +307,8 @@ export function createHarness(config: HarnessConfig): Harness {
     }
   }
 
+  // The reactor reads config.providerConfig lazily at each inference call,
+  // so mutating this object hot-swaps credentials without restarting.
   const reactorConfig: Parameters<typeof createReactor>[0] = {
     sessionId,
     plugin,
@@ -395,5 +405,13 @@ export function createHarness(config: HarnessConfig): Harness {
     reactor.deliver(message);
   }
 
-  return { start, stop, deliver };
+  function setProviderConfig(newConfig: ProviderConfig): void {
+    const parsed = ProviderConfig(newConfig);
+    if (parsed instanceof type.errors) {
+      throw new Error(`Invalid ProviderConfig: ${parsed.summary}`);
+    }
+    reactorConfig.providerConfig = parsed;
+  }
+
+  return { start, stop, deliver, setProviderConfig };
 }
