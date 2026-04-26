@@ -47,6 +47,9 @@ function createMockRouter(): SidecarRouter & {
     sendGrantsUpdate: track(
       "sendGrantsUpdate",
     ) as SidecarRouter["sendGrantsUpdate"],
+    sendProvidersUpdate: track(
+      "sendProvidersUpdate",
+    ) as SidecarRouter["sendProvidersUpdate"],
     sendPack: track("sendPack") as SidecarRouter["sendPack"],
     sendSyncRequest: track(
       "sendSyncRequest",

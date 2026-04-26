@@ -21,6 +21,7 @@ import type {
   AbortReason,
   HarnessConfig,
   InferenceEvent,
+  ProviderConfig,
 } from "@interchange/types/runtime";
 import type { GrantRule } from "@interchange/types/authz";
 
@@ -51,6 +52,10 @@ export type SidecarRouter = {
   sendSessionStart(agentAddress: string): Promise<void>;
   sendSessionAbort(agentAddress: string, reason: AbortReason): Promise<void>;
   sendGrantsUpdate(agentAddress: string, grants: GrantRule[]): Promise<void>;
+  sendProvidersUpdate(
+    agentAddress: string,
+    providers: ProviderConfig[],
+  ): Promise<void>;
   sendPack(
     agentAddress: string,
     pack: Uint8Array,
@@ -1406,6 +1411,18 @@ export function createSidecarRouter(
     }));
   }
 
+  async function sendProvidersUpdate(
+    agentAddress: string,
+    providers: ProviderConfig[],
+  ): Promise<void> {
+    await sendRequest(agentAddress, (requestId) => ({
+      type: "providers.update",
+      requestId,
+      agentAddress,
+      providers,
+    }));
+  }
+
   function sendSyncRequest(agentAddress: string): void {
     const ws = addressIndex.get(agentAddress);
     if (ws === undefined) {
@@ -1434,6 +1451,7 @@ export function createSidecarRouter(
     sendSessionStart,
     sendSessionAbort,
     sendGrantsUpdate,
+    sendProvidersUpdate,
     sendPack,
     sendSyncRequest,
     subscribeAgent,

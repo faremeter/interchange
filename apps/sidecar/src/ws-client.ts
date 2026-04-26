@@ -22,6 +22,7 @@ import {
   type SessionAbortFrame,
   type SessionStartFrame,
   type GrantsUpdateFrame,
+  type ProvidersUpdateFrame,
   type PackPushFrame,
   type PackDoneFrame,
   type PackAckFrame,
@@ -318,6 +319,22 @@ export function createWsClient(config: WsClientConfig): WsClient {
     }
   }
 
+  async function handleProvidersUpdate(
+    frame: ProvidersUpdateFrame,
+  ): Promise<void> {
+    try {
+      await sessions.updateProviders(frame.agentAddress, frame.providers);
+      send({ type: "session.ack", requestId: frame.requestId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      send({
+        type: "session.error",
+        requestId: frame.requestId,
+        error: message,
+      });
+    }
+  }
+
   function handlePackPush(frame: PackPushFrame): void {
     const reason = packReceiver.handlePush(frame);
     if (reason !== null) {
@@ -494,6 +511,9 @@ export function createWsClient(config: WsClientConfig): WsClient {
         break;
       case "grants.update":
         await handleGrantsUpdate(frame);
+        break;
+      case "providers.update":
+        await handleProvidersUpdate(frame);
         break;
       case "pack.push":
         handlePackPush(frame);

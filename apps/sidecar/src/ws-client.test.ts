@@ -8,7 +8,11 @@ import {
   type WsHandle,
 } from "@interchange/hub";
 import { createInMemoryTransport } from "@interchange/message-memory";
-import type { HarnessConfig, InboundMessage } from "@interchange/types/runtime";
+import type {
+  HarnessConfig,
+  InboundMessage,
+  ProviderConfig,
+} from "@interchange/types/runtime";
 import type { GrantRule } from "@interchange/types/authz";
 
 import { createWsClient } from "./ws-client";
@@ -90,6 +94,12 @@ function createMockSessionManager(): SessionManager & {
     async updateGrants(
       _agentAddress: string,
       _grants: GrantRule[],
+    ): Promise<void> {
+      if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
+    },
+    async updateProviders(
+      _agentAddress: string,
+      _providers: ProviderConfig[],
     ): Promise<void> {
       if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
     },
