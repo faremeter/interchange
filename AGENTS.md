@@ -10,6 +10,10 @@ At the start of every session, before doing any other work:
 
 Do not proceed with any user requests until this step is complete.
 
+## Development Environment
+
+When you need to run the development stack (start/stop services, seed the database, run demos), read `DEV.md` for available commands and options.
+
 ## Build Requirements
 
 You must run the full build pipeline before declaring any task complete:
