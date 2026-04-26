@@ -73,6 +73,44 @@ export type ParsedMimeMessage = {
 };
 
 // ---------------------------------------------------------------------------
+// JMAP Email types (RFC 8621)
+// ---------------------------------------------------------------------------
+
+export type JMAPAddress = {
+  name: string | null;
+  email: string;
+};
+
+export type JMAPBodyValue = {
+  value: string;
+  isEncodingProblem: boolean;
+};
+
+export type JMAPBodyPart = {
+  partId: string;
+  type: string;
+};
+
+export type JMAPAttachment = {
+  blobId: string;
+  name: string | null;
+  type: string;
+  size: number;
+};
+
+export type JMAPEmail = {
+  from: JMAPAddress[];
+  to: JMAPAddress[];
+  subject: string | null;
+  sentAt: string | null;
+  bodyValues: Record<string, JMAPBodyValue>;
+  textBody: JMAPBodyPart[];
+  htmlBody: JMAPBodyPart[];
+  attachments: JMAPAttachment[];
+  headers: Record<string, string>;
+};
+
+// ---------------------------------------------------------------------------
 // Message-ID generation
 // ---------------------------------------------------------------------------
 
@@ -551,4 +589,313 @@ function walkParts(
   // Need to descend further.
   const part = parseMimePart(partBytes);
   return walkParts(part.body, part.contentType, steps, depth + 1);
+}
+
+// ---------------------------------------------------------------------------
+// JMAP Email parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a RFC 2822 address value into structured JMAP address objects.
+ *
+ * Handles both "Display Name" <email@example.com> and bare email@example.com
+ * forms, as well as comma-separated address lists.
+ */
+function parseAddressList(value: string): JMAPAddress[] {
+  const results: JMAPAddress[] = [];
+  // Split on commas that are not inside quoted strings or angle brackets.
+  // We handle the two common forms:
+  //   1. "Display Name" <email>
+  //   2. Display Name <email>
+  //   3. <email>
+  //   4. email
+  const segments = splitAddressList(value);
+  for (const segment of segments) {
+    const addr = parseOneAddress(segment.trim());
+    if (addr !== null) {
+      results.push(addr);
+    }
+  }
+  return results;
+}
+
+function splitAddressList(value: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let depth = 0;
+  let inQuote = false;
+
+  for (const ch of value) {
+    if (ch === '"' && !inQuote) {
+      inQuote = true;
+      current += ch;
+    } else if (ch === '"' && inQuote) {
+      inQuote = false;
+      current += ch;
+    } else if (ch === "<" && !inQuote) {
+      depth++;
+      current += ch;
+    } else if (ch === ">" && !inQuote) {
+      depth--;
+      current += ch;
+    } else if (ch === "," && depth === 0 && !inQuote) {
+      segments.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim() !== "") {
+    segments.push(current);
+  }
+  return segments;
+}
+
+function parseOneAddress(segment: string): JMAPAddress | null {
+  if (segment === "") return null;
+
+  // "Display Name" <email> or Display Name <email>
+  const angleMatch = segment.match(/^(.*?)<([^>]+)>\s*$/);
+  if (angleMatch !== null) {
+    const rawName = angleMatch[1]!.trim();
+    const email = angleMatch[2]!.trim();
+    // Strip surrounding quotes from display name if present
+    const name =
+      rawName === "" ? null : rawName.replace(/^"(.*)"$/, "$1").trim() || null;
+    return { name, email };
+  }
+
+  // Bare email address
+  const bare = segment.trim();
+  if (bare !== "") {
+    return { name: null, email: bare };
+  }
+
+  return null;
+}
+
+/**
+ * Parse the MIME Date header into an ISO 8601 string.
+ *
+ * Returns null if the header is missing or the value cannot be parsed.
+ */
+function parseDateHeader(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  const date = new Date(value);
+  if (isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+/**
+ * Decode a MIME body part, handling Content-Transfer-Encoding.
+ */
+function decodeBodyBytes(
+  body: Uint8Array,
+  headers: Map<string, string>,
+): { value: string; isEncodingProblem: boolean } {
+  const cte = (headers.get("content-transfer-encoding") ?? "7bit")
+    .trim()
+    .toLowerCase();
+
+  if (cte === "base64") {
+    try {
+      const raw = new TextDecoder("utf-8", { fatal: false }).decode(body);
+      const cleaned = raw.replace(/\s+/g, "");
+      const binaryStr = atob(cleaned);
+      return { value: binaryStr, isEncodingProblem: false };
+    } catch {
+      return {
+        value: new TextDecoder("utf-8", { fatal: false }).decode(body),
+        isEncodingProblem: true,
+      };
+    }
+  }
+
+  if (cte === "quoted-printable") {
+    const raw = new TextDecoder("utf-8", { fatal: false }).decode(body);
+    return { value: decodeQuotedPrintable(raw), isEncodingProblem: false };
+  }
+
+  // 7bit, 8bit, binary — decode as UTF-8
+  return {
+    value: new TextDecoder("utf-8", { fatal: false }).decode(body),
+    isEncodingProblem: false,
+  };
+}
+
+function decodeQuotedPrintable(text: string): string {
+  return text
+    .replace(/=\r\n/g, "")
+    .replace(/=\n/g, "")
+    .replace(/=([0-9A-Fa-f]{2})/g, (_match, hex: string) =>
+      String.fromCharCode(parseInt(hex, 16)),
+    );
+}
+
+/**
+ * Determine whether a MIME part is an attachment based on Content-Disposition
+ * and content type.
+ */
+function isAttachmentPart(
+  contentType: string,
+  headers: Map<string, string>,
+): boolean {
+  const disposition = headers.get("content-disposition") ?? "";
+  if (disposition.toLowerCase().startsWith("attachment")) return true;
+
+  const ct = contentType.toLowerCase().split(";")[0]!.trim();
+  if (ct === "text/plain" || ct === "text/html") return false;
+
+  // Non-text types are treated as attachments unless they are multipart.
+  if (ct.startsWith("multipart/")) return false;
+
+  return true;
+}
+
+function extractContentTypeMime(contentType: string): string {
+  return contentType.split(";")[0]!.trim().toLowerCase();
+}
+
+function extractFilename(headers: Map<string, string>): string | null {
+  const disposition = headers.get("content-disposition") ?? "";
+  const nameMatch =
+    disposition.match(/filename="([^"]+)"/i) ??
+    disposition.match(/filename=([^\s;]+)/i);
+  if (nameMatch !== null) return nameMatch[1]!;
+
+  const ct = headers.get("content-type") ?? "";
+  const ctNameMatch =
+    ct.match(/name="([^"]+)"/i) ?? ct.match(/name=([^\s;]+)/i);
+  if (ctNameMatch !== null) return ctNameMatch[1]!;
+
+  return null;
+}
+
+type WalkContext = {
+  mailId: string;
+  bodyValues: Record<string, JMAPBodyValue>;
+  textBody: JMAPBodyPart[];
+  htmlBody: JMAPBodyPart[];
+  attachments: JMAPAttachment[];
+};
+
+/**
+ * Recursively walk MIME parts, populating body values and attachment lists.
+ *
+ * partPath uses IMAP-style dot-separated numbering (e.g., "1", "1.1", "2.3").
+ */
+function walkMimePart(
+  partBytes: Uint8Array,
+  partPath: string,
+  ctx: WalkContext,
+): void {
+  const part = parseMimePart(partBytes);
+  const mime = extractContentTypeMime(part.contentType);
+
+  if (mime.startsWith("multipart/")) {
+    const boundary = extractBoundary(part.contentType);
+    if (boundary === undefined) return;
+    const subParts = parseMultipart(part.body, boundary);
+    subParts.forEach((subPartBytes, idx) => {
+      walkMimePart(subPartBytes, `${partPath}.${idx + 1}`, ctx);
+    });
+    return;
+  }
+
+  if (isAttachmentPart(part.contentType, part.headers)) {
+    const blobId = `blob_${ctx.mailId}_${partPath}`;
+    ctx.attachments.push({
+      blobId,
+      name: extractFilename(part.headers),
+      type: mime,
+      size: part.body.length,
+    });
+    return;
+  }
+
+  const decoded = decodeBodyBytes(part.body, part.headers);
+  ctx.bodyValues[partPath] = decoded;
+
+  if (mime === "text/plain") {
+    ctx.textBody.push({ partId: partPath, type: mime });
+  } else if (mime === "text/html") {
+    ctx.htmlBody.push({ partId: partPath, type: mime });
+  }
+}
+
+/**
+ * Convert raw MIME bytes into a JMAP Email-shaped object.
+ *
+ * Handles text/plain, multipart/mixed, and multipart/signed message shapes.
+ * For multipart/signed (RFC 3156), the signed content part (part 1) is
+ * parsed for body and attachments. Signature verification is not performed.
+ *
+ * @param raw - Raw RFC 2822 message bytes
+ * @param mailId - Opaque mail record ID used to generate blob IDs
+ */
+export function parseMailToEmail(raw: Uint8Array, mailId: string): JMAPEmail {
+  const { headers: msgHeaders, bodyOffset } = parseHeaderSection(raw);
+  const body = raw.slice(bodyOffset);
+  const contentType = msgHeaders.get("content-type") ?? "text/plain";
+  const mime = extractContentTypeMime(contentType);
+
+  const ctx: WalkContext = {
+    mailId,
+    bodyValues: {},
+    textBody: [],
+    htmlBody: [],
+    attachments: [],
+  };
+
+  if (mime === "multipart/signed") {
+    // RFC 3156: part 1 is the signed content, part 2 is the signature.
+    // Parse the content part through to extract body and attachments.
+    const boundary = extractBoundary(contentType);
+    if (boundary !== undefined) {
+      const outerParts = parseMultipart(body, boundary);
+      const contentPart = outerParts[0];
+      if (contentPart !== undefined) {
+        // The content part may itself be text/plain or multipart/mixed.
+        // We assign it path "1" and walk it.
+        walkMimePart(contentPart, "1", ctx);
+      }
+    }
+  } else if (mime.startsWith("multipart/")) {
+    const boundary = extractBoundary(contentType);
+    if (boundary !== undefined) {
+      const parts = parseMultipart(body, boundary);
+      parts.forEach((partBytes, idx) => {
+        walkMimePart(partBytes, `${idx + 1}`, ctx);
+      });
+    }
+  } else {
+    // Single-part message (e.g. text/plain).
+    // Reconstruct minimal part bytes with content-type header so parseMimePart works.
+    const enc = new TextEncoder();
+    const ctHeader = `Content-Type: ${contentType}\r\n\r\n`;
+    const partBytes = new Uint8Array(enc.encode(ctHeader).length + body.length);
+    partBytes.set(enc.encode(ctHeader), 0);
+    partBytes.set(body, enc.encode(ctHeader).length);
+    walkMimePart(partBytes, "1", ctx);
+  }
+
+  // Extract Interchange-specific headers.
+  const interchangeHeaders: Record<string, string> = {};
+  for (const [name, value] of msgHeaders) {
+    if (name.startsWith("interchange-")) {
+      interchangeHeaders[name] = value;
+    }
+  }
+
+  return {
+    from: parseAddressList(msgHeaders.get("from") ?? ""),
+    to: parseAddressList(msgHeaders.get("to") ?? ""),
+    subject: msgHeaders.get("subject") ?? null,
+    sentAt: parseDateHeader(msgHeaders.get("date")),
+    bodyValues: ctx.bodyValues,
+    textBody: ctx.textBody,
+    htmlBody: ctx.htmlBody,
+    attachments: ctx.attachments,
+    headers: interchangeHeaders,
+  };
 }
