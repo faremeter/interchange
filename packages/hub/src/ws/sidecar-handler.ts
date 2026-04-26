@@ -15,12 +15,10 @@ import {
   type HubFrame,
   type PackPushFrame,
   type PackDoneFrame,
-  type MailOutboundFrame,
 } from "@interchange/types/sidecar";
 import type {
   AbortReason,
   HarnessConfig,
-  InferenceEvent,
   ProviderConfig,
 } from "@interchange/types/runtime";
 import type { GrantRule } from "@interchange/types/authz";
@@ -193,9 +191,6 @@ export function createSidecarRouter(
   const disconnectedAgents = new Map<string, DisconnectedAgent>();
   // agentAddress → set of subscriber callbacks for agent events
   const agentSubscribers = new Map<string, Set<(event: unknown) => void>>();
-  // Per-agent monotonic seq counter for hub-synthesized events
-  // (e.g. message.sent). Separate from the reactor's seq counter.
-  const hubSeqCounters = new Map<string, number>();
   // ws handle → liveness timer (reset on each ping from the sidecar)
   const livenessTimers = new Map<WsHandle, ReturnType<typeof setTimeout>>();
 
@@ -346,7 +341,6 @@ export function createSidecarRouter(
         if (frame.delivered !== true) {
           handleMailOutbound(frame.rawMessage, frame.recipients);
         }
-        emitMailSentEvent(ws, frame);
         break;
       case "agent.event":
         onAgentEvent?.(frame.agentAddress, frame.sessionId, frame.event);
@@ -740,39 +734,6 @@ export function createSidecarRouter(
     }
   }
 
-  function nextHubSeq(agentAddress: string): number {
-    const current = hubSeqCounters.get(agentAddress) ?? 0;
-    const next = current + 1;
-    hubSeqCounters.set(agentAddress, next);
-    return next;
-  }
-
-  function emitMailSentEvent(ws: WsHandle, frame: MailOutboundFrame): void {
-    if (frame.senderAddress === undefined || frame.messageId === undefined) {
-      return;
-    }
-
-    const conn = connections.get(ws);
-    if (conn === undefined) return;
-    if (!conn.agentAddresses.has(frame.senderAddress)) {
-      logger.warn`Ignoring mail.outbound from unowned address ${frame.senderAddress}`;
-      return;
-    }
-
-    const event: InferenceEvent = {
-      type: "message.sent",
-      seq: nextHubSeq(frame.senderAddress),
-      data: {
-        messageId: frame.messageId,
-        to: frame.to ?? frame.recipients,
-        ...(frame.cc !== undefined ? { cc: frame.cc } : {}),
-      },
-    };
-
-    onAgentEvent?.(frame.senderAddress, frame.sessionId ?? "", event);
-    dispatchToSubscribers(frame.senderAddress, event);
-  }
-
   function handleClose(ws: WsHandle): void {
     const conn = connections.get(ws);
     if (conn === undefined) return;
@@ -796,7 +757,6 @@ export function createSidecarRouter(
         if (!pendingUndeploys.has(addr) && !pendingSessionStarts.has(addr)) {
           const timer = setTimeout(() => {
             disconnectedAgents.delete(addr);
-            hubSeqCounters.delete(addr);
           }, disconnectQueueTTLMs);
           disconnectedAgents.set(addr, { queue: [], timer });
         }
@@ -1368,7 +1328,6 @@ export function createSidecarRouter(
 
   function removeAgentAddress(ws: WsHandle, agentAddress: string): void {
     addressIndex.delete(agentAddress);
-    hubSeqCounters.delete(agentAddress);
     const conn = connections.get(ws);
     if (conn !== undefined) {
       conn.agentAddresses.delete(agentAddress);

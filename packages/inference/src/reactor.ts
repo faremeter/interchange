@@ -65,6 +65,14 @@ function buildHarnessOpts(
   return { messages, model, providerConfig, signal, nextSeq };
 }
 
+export type ReactorEmittedEvent =
+  | InferenceEvent
+  | {
+      type: "message.received";
+      seq: number;
+      data: { message: InboundMessage };
+    };
+
 export type ReactorConfig = {
   sessionId: string;
   plugin: ReactorPlugin;
@@ -72,7 +80,7 @@ export type ReactorConfig = {
   toolRunner: ToolRunner;
   contextStore: ContextStore;
   correlationValidator?: CorrelationValidator;
-  onEvent: (event: InferenceEvent) => void;
+  onEvent: (event: ReactorEmittedEvent) => void;
   inferenceRunner?: (
     opts: InferenceHarnessOptions,
   ) => AsyncGenerator<InferenceEvent>;
@@ -121,7 +129,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     return ++seq;
   }
 
-  function emit(event: InferenceEvent): void {
+  function emit(event: ReactorEmittedEvent): void {
     onEvent(event);
   }
 

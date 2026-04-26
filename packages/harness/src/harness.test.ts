@@ -406,12 +406,28 @@ describe("Message delivery pipeline", () => {
   test("watch 'exists' event causes harness to fetch and deliver message to reactor", async () => {
     const transport = makeMockTransport();
     const events: InferenceEvent[] = [];
+    let deliveredCount = 0;
+
+    // Plugin that signals delivery by returning done() on message.received.
+    const plugin: ReactorPlugin = {
+      async decide(
+        event: ReactorInboundEvent,
+        _state: ReactorState,
+        caps: ReactorCapabilities,
+      ) {
+        if (event.type === "message.received") {
+          deliveredCount++;
+          return caps.done();
+        }
+        return caps.wait();
+      },
+    };
 
     const inboundMsg = makeInboundMessage();
     transport.enqueueMessage(inboundMsg.ref, inboundMsg);
 
     const harness = createHarness(
-      makeConfig(transport, { onEvent: (e) => events.push(e) }),
+      makeConfig(transport, { onEvent: (e) => events.push(e), plugin }),
     );
     harness.start();
 
@@ -422,19 +438,33 @@ describe("Message delivery pipeline", () => {
       headers: inboundMsg.headers,
     });
 
-    // Reactor should emit message.received after harness fetches.
-    await waitForEvent(events, (e) => e.type === "message.received");
+    // reactor.done signals the plugin received the message.
+    await waitForEvent(events, (e) => e.type === "reactor.done");
+    expect(deliveredCount).toBe(1);
 
     harness.stop();
   });
 
   test("non-'exists' watch events are ignored", async () => {
     const transport = makeMockTransport();
-    const events: InferenceEvent[] = [];
+    let deliveredCount = 0;
 
-    const harness = createHarness(
-      makeConfig(transport, { onEvent: (e) => events.push(e) }),
-    );
+    // Plugin that counts message.received deliveries.
+    const plugin: ReactorPlugin = {
+      async decide(
+        event: ReactorInboundEvent,
+        _state: ReactorState,
+        caps: ReactorCapabilities,
+      ) {
+        if (event.type === "message.received") {
+          deliveredCount++;
+          return caps.done();
+        }
+        return caps.wait();
+      },
+    };
+
+    const harness = createHarness(makeConfig(transport, { plugin }));
     harness.start();
 
     transport.fireWatch({ type: "flagsChanged", uid: 1, flags: ["\\Seen"] });
@@ -443,8 +473,7 @@ describe("Message delivery pipeline", () => {
     // Give a brief window for any erroneous delivery to appear.
     await new Promise<void>((r) => setTimeout(r, 50));
 
-    const received = events.filter((e) => e.type === "message.received");
-    expect(received.length).toBe(0);
+    expect(deliveredCount).toBe(0);
 
     harness.stop();
   });
@@ -452,9 +481,24 @@ describe("Message delivery pipeline", () => {
   test("deliver() injects a message directly into the reactor", async () => {
     const transport = makeMockTransport();
     const events: InferenceEvent[] = [];
+    let deliveredCount = 0;
+
+    const plugin: ReactorPlugin = {
+      async decide(
+        event: ReactorInboundEvent,
+        _state: ReactorState,
+        caps: ReactorCapabilities,
+      ) {
+        if (event.type === "message.received") {
+          deliveredCount++;
+          return caps.done();
+        }
+        return caps.wait();
+      },
+    };
 
     const harness = createHarness(
-      makeConfig(transport, { onEvent: (e) => events.push(e) }),
+      makeConfig(transport, { onEvent: (e) => events.push(e), plugin }),
     );
     harness.start();
 
@@ -464,7 +508,9 @@ describe("Message delivery pipeline", () => {
     const msg = makeInboundMessage();
     harness.deliver(msg);
 
-    await waitForEvent(events, (e) => e.type === "message.received");
+    // reactor.done signals the plugin received the message.
+    await waitForEvent(events, (e) => e.type === "reactor.done");
+    expect(deliveredCount).toBe(1);
 
     harness.stop();
   });

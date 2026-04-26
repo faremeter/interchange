@@ -24,7 +24,7 @@ export { createAnthropicAdapter } from "./providers/anthropic";
 export { createOpenAIAdapter } from "./providers/openai";
 
 export { createReactor } from "./reactor";
-export type { Reactor, ReactorConfig } from "./reactor";
+export type { Reactor, ReactorConfig, ReactorEmittedEvent } from "./reactor";
 export { validateActions } from "./actions";
 export type { ValidationResult } from "./actions";
 export { createGateManager } from "./gates";
