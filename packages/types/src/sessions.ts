@@ -37,21 +37,6 @@ export const SendMessage = type({
   }).array(),
 });
 
-export const MessageResponse = type({
-  id: "string",
-  sessionId: "string",
-  role: "'user' | 'assistant'",
-  status: "'pending' | 'delivered' | 'failed'",
-  createdAt: "string",
-  from: "string",
-  parts: type({
-    id: "string",
-    type: "'text' | 'reasoning' | 'tool' | 'file' | 'step-start' | 'step-finish' | 'snapshot' | 'patch'",
-    "content?": "string | null",
-    "metadata?": "Record<string, unknown> | null",
-  }).array(),
-});
-
 export const MailResponse = type({
   id: "string",
   sessionId: "string",
