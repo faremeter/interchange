@@ -35,12 +35,25 @@ function buildRequest(
   const body: Record<string, unknown> = {
     model,
     max_tokens: options.maxTokens ?? 4096,
-    messages: conversationMessages.map(toAnthropicMessage),
+    messages: conversationMessages.map((msg, i) => {
+      // Place a cache breakpoint on the last user message so all prior
+      // turns are cached on the next request.
+      const isLastUser =
+        msg.role !== "assistant" &&
+        conversationMessages.slice(i + 1).every((m) => m.role === "assistant");
+      return toAnthropicMessage(msg, isLastUser);
+    }),
     stream: true,
   };
 
   if (effectiveSystem) {
-    body["system"] = effectiveSystem;
+    body["system"] = [
+      {
+        type: "text",
+        text: effectiveSystem,
+        cache_control: { type: "ephemeral" },
+      },
+    ];
   }
 
   if (options.thinking?.enabled) {
@@ -51,11 +64,16 @@ function buildRequest(
   }
 
   if (options.tools !== undefined && options.tools.length > 0) {
-    body["tools"] = options.tools.map((t) => ({
+    const tools: Record<string, unknown>[] = options.tools.map((t) => ({
       name: t.name,
       description: t.description,
       input_schema: t.inputSchema,
     }));
+    const lastTool = tools[tools.length - 1];
+    if (lastTool !== undefined) {
+      lastTool["cache_control"] = { type: "ephemeral" };
+    }
+    body["tools"] = tools;
   }
 
   if (options.temperature !== undefined) {
@@ -73,15 +91,22 @@ function buildRequest(
   };
 }
 
-function toAnthropicMessage(msg: ConversationMessage): unknown {
+function toAnthropicMessage(
+  msg: ConversationMessage,
+  cacheLastBlock?: boolean,
+): Record<string, unknown> {
   const role = msg.role === "assistant" ? "assistant" : "user";
-  return {
-    role,
-    content: msg.content.map(toAnthropicBlock),
-  };
+  const content = msg.content.map(toAnthropicBlock);
+  if (cacheLastBlock) {
+    const lastBlock = content[content.length - 1];
+    if (lastBlock !== undefined) {
+      lastBlock["cache_control"] = { type: "ephemeral" };
+    }
+  }
+  return { role, content };
 }
 
-function toAnthropicBlock(block: ContentBlock): unknown {
+function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
   switch (block.type) {
     case "text":
       return { type: "text", text: block.text };
