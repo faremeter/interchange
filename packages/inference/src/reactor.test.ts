@@ -1964,7 +1964,7 @@ describe("createReactor — state snapshot inspection", () => {
     const textBlock = last.content.find((b) => b.type === "text");
     if (textBlock === undefined || textBlock.type !== "text")
       throw new Error("unreachable");
-    expect(textBlock.text).toBe("hello");
+    expect(textBlock.text).toBe("[From: test@example.com]\n\nhello");
   });
 
   test("state.pendingOperations tracks pending markers from tools", async () => {
@@ -2121,7 +2121,7 @@ describe("createReactor — state snapshot inspection", () => {
     const block = firstMsg.content[0];
     if (block === undefined || block.type !== "text")
       throw new Error("unreachable");
-    expect(block.text).toBe("hello");
+    expect(block.text).toBe("[From: test@example.com]\n\nhello");
   });
 });
 

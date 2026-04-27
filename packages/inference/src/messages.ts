@@ -2,6 +2,7 @@ import type {
   ConversationMessage,
   ContentBlock,
   AssistantMessage,
+  InboundMessage,
   ToolCall,
   ToolResult,
 } from "@interchange/types/runtime";
@@ -43,7 +44,21 @@ export type ToolResultBlock = {
 
 export type { ToolCall, ToolResult };
 
-export function createTextMessage(text: string): ConversationMessage {
+export function createInboundMessage(
+  message: InboundMessage,
+): ConversationMessage | null {
+  const content = message.content ?? "";
+  if (content.length === 0) return null;
+
+  const { from, subject } = message.headers;
+  const envelope: string[] = [];
+  if (from.length > 0) envelope.push(`[From: ${from}]`);
+  if (subject !== undefined && subject.length > 0) {
+    envelope.push(`[Subject: ${subject}]`);
+  }
+
+  const text =
+    envelope.length > 0 ? `${envelope.join("\n")}\n\n${content}` : content;
   return { role: "user", content: [{ type: "text", text }] };
 }
 
