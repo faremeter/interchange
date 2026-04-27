@@ -94,10 +94,10 @@ export function createEventCollector(
   }
 
   async function beginTurn(model: string): Promise<void> {
-    // If a previous turn is still running, finalize it as failed.
+    // A previous turn is still open — this is normal in multi-step tool-use
+    // loops where inference.start fires again after tools return.
     if (currentTurnId !== null && !finalized) {
-      log.warn`Orphaned running turn ${currentTurnId} for session ${sessionId}`;
-      await finalizeTurn("failed");
+      await finalizeTurn("completed");
     }
 
     currentTurnId = generateId("inferenceTurn");
