@@ -39,7 +39,13 @@ describe("Anthropic adapter: buildRequest", () => {
     );
     const body = JSON.parse(req.body) as Record<string, unknown>;
 
-    expect(body["system"]).toBe("You are helpful.");
+    expect(body["system"]).toEqual([
+      {
+        type: "text",
+        text: "You are helpful.",
+        cache_control: { type: "ephemeral" },
+      },
+    ]);
     const msgArray = body["messages"] as unknown[];
     // System message should not appear in messages array.
     expect(msgArray).toHaveLength(1);
@@ -56,7 +62,13 @@ describe("Anthropic adapter: buildRequest", () => {
       systemPrompt: "Override system.",
     });
     const body = JSON.parse(req.body) as Record<string, unknown>;
-    expect(body["system"]).toBe("Override system.");
+    expect(body["system"]).toEqual([
+      {
+        type: "text",
+        text: "Override system.",
+        cache_control: { type: "ephemeral" },
+      },
+    ]);
   });
 
   test("includes thinking config when enabled", () => {
