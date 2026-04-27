@@ -185,6 +185,14 @@ If the hub rejects all addresses on reconnect, the sidecar logs the failure and 
 
 If the sidecar discovers agent repositories but has no key pairs for them (e.g., keys were deleted), it skips those agents and logs a warning. It does not generate new keys, since the hub would reject signatures from unknown keys.
 
+## Mail and Event Flow
+
+Mail is the first-class communication primitive. The sidecar persists outbound mail from agents via `mail.outbound` frames sent to the hub. The hub persists inbound mail sent by users via `POST .../instances/:instanceId/mail` and dispatches it to the sidecar as a `mail.delivered` agent event.
+
+The `onEvent` callback in `HarnessConfig` receives `InferenceEvent` values, which cover inference activity, tool execution, reactor lifecycle, and fork events. `message.received` is a `ReactorInboundEvent` — it is delivered directly to the reactor plugin and is not forwarded to session channel subscribers. This keeps the external event stream focused on observable inference activity rather than internal routing signals.
+
+Inference traces are stored separately from mail. The hub records one `inference_turn` per inference cycle and one or more `turn_part` rows per turn. The `/turns` endpoint serves these to UI clients independently of the `/mail` endpoint.
+
 ## Prototype Scope
 
 This document describes the current prototype implementation. It diverges from the production architecture described in ARCHITECTURE.md in several ways: it uses WebSocket for hub-sidecar communication instead of SMTP/IMAP, uses SSE for user-facing event streaming instead of WebSocket session channels, and uses a simplified credential model where credentials travel in deploy frames rather than through a separate credential management channel.

@@ -26,7 +26,7 @@ Agent definitions declare their offerings in a catalog. Running agents provide l
 Humans interact with agents through the same messaging and session infrastructure that agents use with each other. On desktop and mobile, users connect to agents through session channels that stream responses in real-time. When disconnected, messages queue and are available on reconnect. The interface is native to each deployment platform - not a bolted-on afterthought. Agents don't distinguish between human and agent callers at the protocol level; the harness handles both through the same message bus and session channel primitives.
 
 **Message Passing**
-Interchange handles communication between agents and humans with built-in routing and delivery guarantees. Agents can collaborate on complex tasks without bespoke integration work.
+Interchange handles communication between agents and humans with built-in routing and delivery guarantees. The hub acts as a mail server: it stores raw MIME bytes at routing time and serves parsed JMAP Email objects (RFC 8621) to clients. The UI acts as a mail client, consuming these structured views. This design is forward-compatible with JMAP (RFC 8620/8621) for future federation and external mail client support. Agents can collaborate on complex tasks without bespoke integration work.
 
 **Wallets**
 Every agent has a wallet. Agents spend to use tools and resources; agents earn by providing services to others. This creates accountability - an agent that misbehaves loses economic access - and enables entirely new interaction patterns where agents can autonomously transact, bid for work, and allocate resources.
@@ -62,7 +62,7 @@ Interchange builds on established protocols rather than inventing new ones:
 - **Offering discovery** - Agents expose and discover offerings using MCP, OpenAPI, or A2A
 - **Payments** - Wallets send and receive using [Faremeter](https://github.com/faremeter/faremeter), supporting a superset of payment protocols (x402, L402, and others) with an open integration layer for third-party payment systems
 - **Identity** - Cryptographic identity based on existing PKI and DID standards
-- **Messaging** - Built on SMTP/IMAP for universal interoperability
+- **Messaging** - Built on SMTP/IMAP for agent-to-agent communication; JMAP Email (RFC 8621) for the client-facing API
 
 This approach reduces integration friction and allows Interchange to leverage existing tooling, libraries, and operational knowledge.
 

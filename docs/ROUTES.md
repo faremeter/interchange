@@ -70,7 +70,8 @@ All IDs are globally unique with typed prefixes:
 - `ofr_` -- offering
 - `ins_` -- agent
 - `ses_` -- session (internal, not exposed in the API)
-- `msg_` -- message
+- `mail_` -- session mail record
+- `turn_` -- inference turn
 - `wal_` -- wallet
 - `crd_` -- credential
 - `apr_` -- approval
@@ -115,11 +116,19 @@ This design supports mobile clients that need notification-driven approval flows
 
 When a user approves with `scope: "always"`, the system creates a persistent capability grant so the agent won't need to ask again for the same operation. This is the bridge between interactive approval and long-term authorization policy.
 
-## Messages and Streaming
+## Mail and Streaming
 
-`POST .../agents/instances/:instanceId/messages` persists the user's message and returns. The agent's response does not come back in the HTTP response. Instead, it streams over the agent's channel (WebSocket or SSE).
+Mail is the first-class communication primitive. The hub stores raw MIME bytes at routing time and serves parsed views following the JMAP Email object model (RFC 8621).
 
-This "fire-and-forget via REST, stream via channel" pattern matches the architecture's "persist first, stream second" principle. The durable record (message in the database) is always ahead of or equal to the stream. If the client disconnects, nothing is lost -- they catch up by fetching messages via the REST endpoint.
+`POST .../agents/instances/:instanceId/mail` persists the user's message as a mail record and dispatches it to the running agent. The agent's response does not come back in the HTTP response. Instead, it streams over the agent's channel (WebSocket or SSE).
+
+`GET .../agents/instances/:instanceId/mail` returns cursor-paginated JMAP Email objects for the instance, in reverse chronological order.
+
+`GET .../agents/instances/:instanceId/turns` returns cursor-paginated inference turns with their parts. One turn per inference cycle. Turns capture the agent's internal reasoning trace separately from the mail record.
+
+`GET .../blobs/:blobId` returns raw bytes for a MIME attachment part. Blob IDs are embedded in JMAP Email responses by the mail parsing layer, using the format `blob_<mailId>_<partPath>` where `partPath` is an IMAP-style section specifier (e.g. `1.3`). The caller must hold `read` access on the containing instance.
+
+This "fire-and-forget via REST, stream via channel" pattern matches the architecture's "persist first, stream second" principle. The durable record (mail in the database) is always ahead of or equal to the stream. If the client disconnects, nothing is lost -- they catch up by fetching mail via the REST endpoint.
 
 ## Agent Channel Protocol
 
@@ -127,7 +136,7 @@ The agent channel is a real-time overlay for interactive use cases. It is not fu
 
 ### SSE Event Stream
 
-The current implementation uses Server-Sent Events at `GET .../api/tenants/:tenantId/agents/instances/:instanceId/events`. Client-to-server messages use the REST `POST .../messages` endpoint.
+The current implementation uses Server-Sent Events at `GET .../api/tenants/:tenantId/agents/instances/:instanceId/events`. Client-to-server messages use the REST `POST .../mail` endpoint.
 
 Event format: JSON objects with a `type` field and `data` payload.
 
@@ -144,7 +153,7 @@ Event format: JSON objects with a `type` field and `data` payload.
 {"type": "reactor.error", "data": {"error": "...", "fatal": true}}
 ```
 
-Reconnection: Agent channels are ephemeral. On disconnect, the client reconnects and fetches missed messages via the REST `GET .../messages` endpoint. No token-level resume -- tokens are ephemeral previews of content that is persisted as complete messages.
+Reconnection: Agent channels are ephemeral. On disconnect, the client reconnects and fetches missed mail via the REST `GET .../mail` endpoint. No token-level resume -- tokens are ephemeral previews of content that is persisted as complete mail records.
 
 ### WebSocket Agent Channel (Future)
 
