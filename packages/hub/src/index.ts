@@ -21,3 +21,4 @@ export {
   type SidecarRouterConfig,
   type WsHandle,
 } from "./ws";
+export { generateId } from "./ids";

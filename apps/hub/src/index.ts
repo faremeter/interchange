@@ -1,6 +1,6 @@
 import { eq, and, isNull } from "drizzle-orm";
 import { createDB, createGrantStore } from "@interchange/db";
-import { agentInstance } from "@interchange/db/schema";
+import { agentInstance, sessionMail } from "@interchange/db/schema";
 import {
   createAgentRepoStore,
   createApp,
@@ -8,6 +8,7 @@ import {
   createEventCollectorRegistry,
   createSessionService,
   createSidecarRouter,
+  generateId,
 } from "@interchange/hub";
 import { generateKeyPair } from "@interchange/crypto-node";
 import { parseMailToEmail } from "@interchange/mime";
@@ -172,9 +173,37 @@ const sidecarRouter = createSidecarRouter({
     }
     return row.publicKey;
   },
+  async onMailPersist({ senderAddress, direction, raw }) {
+    const instance = await requireInstance(senderAddress);
+    if (!instance.sessionId) {
+      throw new Error(
+        `Instance ${instance.id} has no session for address "${senderAddress}"`,
+      );
+    }
+    const mailId = generateId("sessionMail");
+    const createdAt = new Date();
+
+    await db.insert(sessionMail).values({
+      id: mailId,
+      sessionId: instance.sessionId,
+      instanceId: instance.id,
+      tenantId: instance.tenantId,
+      direction,
+      status: "delivered",
+      raw,
+      createdAt,
+    });
+
+    return {
+      id: mailId,
+      instanceId: instance.id,
+      address: instance.address,
+      createdAt,
+    };
+  },
   onMailPersisted(row) {
     const parsed = parseMailToEmail(row.raw, row.id);
-    sidecarRouter.dispatchAgentEvent(row.agentAddress, {
+    sidecarRouter.dispatchAgentEvent(row.address, {
       type: "mail.delivered",
       data: { ...parsed, receivedAt: row.createdAt.toISOString() },
     });
