@@ -95,20 +95,22 @@ export type SidecarRouterConfig = {
   disconnectQueueTTLMs?: number;
   pingTimeoutMs?: number;
   onMailPersist?: (args: {
-    sessionId: string;
-    instanceId: string;
-    tenantId: string;
-    direction: "inbound" | "outbound";
+    senderAddress: string;
+    direction: "outbound";
     raw: Uint8Array;
-    status: "pending" | "delivered";
-  }) => Promise<string>;
+  }) => Promise<{
+    id: string;
+    instanceId: string | null;
+    address: string;
+    createdAt: Date;
+  }>;
   onMailPersisted?: (row: {
     id: string;
     raw: Uint8Array;
     createdAt: Date;
     direction: string;
     instanceId: string | null;
-    agentAddress: string;
+    address: string;
   }) => void;
   onStatePackReceived?: (
     agentAddress: string,
@@ -142,6 +144,8 @@ export function createSidecarRouter(
     onAgentEvent,
     onSidecarDisconnect,
     onMailOutbound,
+    onMailPersist,
+    onMailPersisted,
     validateToken,
     lookupPublicKey,
     onAgentDeployAck,
@@ -340,6 +344,18 @@ export function createSidecarRouter(
       case "mail.outbound":
         if (frame.delivered !== true) {
           handleMailOutbound(frame.rawMessage, frame.recipients);
+        } else if (onMailPersist && frame.senderAddress) {
+          void handleMailPersist(
+            onMailPersist,
+            frame.rawMessage,
+            frame.senderAddress,
+          );
+        } else if (frame.delivered === true) {
+          if (!frame.senderAddress) {
+            logger.warn`Dropping delivered mail.outbound frame with no senderAddress`;
+          } else {
+            logger.warn`Dropping delivered mail.outbound frame: no onMailPersist handler configured`;
+          }
         }
         break;
       case "agent.event":
@@ -732,6 +748,35 @@ export function createSidecarRouter(
         logger.warn`No mail outbound handler; dropping mail for ${unrouted.join(", ")}`;
       }
     }
+  }
+
+  async function handleMailPersist(
+    persist: NonNullable<SidecarRouterConfig["onMailPersist"]>,
+    rawMessage: string,
+    senderAddress: string,
+  ): Promise<void> {
+    let result;
+    let raw: Uint8Array;
+    try {
+      raw = Uint8Array.from(atob(rawMessage), (c) => c.charCodeAt(0));
+      result = await persist({
+        senderAddress,
+        direction: "outbound",
+        raw,
+      });
+    } catch (err) {
+      logger.error`Failed to persist outbound mail from ${senderAddress}: ${err instanceof Error ? err.message : String(err)}`;
+      return;
+    }
+
+    onMailPersisted?.({
+      id: result.id,
+      raw,
+      createdAt: result.createdAt,
+      direction: "outbound",
+      instanceId: result.instanceId,
+      address: result.address,
+    });
   }
 
   function handleClose(ws: WsHandle): void {
