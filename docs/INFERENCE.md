@@ -81,7 +81,7 @@ tool.start                — Tool execution begins
 tool.update               — Partial tool output (streaming tools)
 tool.done                 — Tool execution completed
 
-message.received          — Inbound message arrived (from human, agent, system)
+message.received          — Inbound message arrived (reactor-internal; not forwarded to session channel subscribers)
 message.queued            — Inbound message queued for later processing
 message.correlated        — Inbound message matched to pending outbound
 
@@ -554,6 +554,12 @@ These are application-level transactions, managed by the tool implementation. Th
 Transaction granularity is the tool's decision. Per-call transactions maximize safety but add overhead. Batch transactions (one savepoint before a sequence of mutations) balance safety and performance. The inference layer provides conversation checkpointing; tools provide mutation rollback. The two are orthogonal.
 
 ## Context Management
+
+### Inference Trace Storage
+
+Inference activity is stored separately from mail. Each inference cycle produces one `inference_turn` row, with its streaming parts stored in `turn_part` rows ordered by `ordinal`. The turn captures the model, status, and time bounds of the cycle. Parts capture individual content blocks: text, reasoning, tool calls, tool results, and step markers.
+
+This separation means mail records are pure RFC 5322 MIME objects, and inference traces are queryable independently. The `/turns` endpoint serves these records to UI clients.
 
 ### Context Store
 

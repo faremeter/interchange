@@ -2,7 +2,9 @@
 
 _Message Transport_
 
-The Interchange message transport is built on SMTP and IMAP as wire protocols. Agents send messages via SMTP and manage their inbox via IMAP. The transport layer is abstracted behind an interface that captures the full semantics of both protocols, allowing implementations to range from real SMTP/IMAP servers to in-process stubs that route messages through memory.
+Mail is the first-class communication primitive in Interchange. The hub stores raw MIME bytes at routing time. Clients interact with mail through the REST API, which serves parsed views following the JMAP Email object model (RFC 8621). Attachments are referenced by blob IDs and fetched separately via `GET /blobs/:blobId`. Direction is always from the agent's perspective: mail arriving at an agent is `inbound`; mail the agent sends is `outbound`.
+
+The wire protocol between agents is SMTP and IMAP. Agents send messages via SMTP and manage their inbox via IMAP. The transport layer is abstracted behind an interface that captures the full semantics of both protocols, allowing implementations to range from real SMTP/IMAP servers to in-process stubs that route messages through memory.
 
 This document specifies the message format, the IMAP inbox model, and the transport interface. It is the contract between the harness (which uses the interface) and the transport implementations (which provide it).
 
