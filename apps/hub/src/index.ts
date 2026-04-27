@@ -205,7 +205,12 @@ const sidecarRouter = createSidecarRouter({
     const parsed = parseMailToEmail(row.raw, row.id);
     sidecarRouter.dispatchAgentEvent(row.address, {
       type: "mail.delivered",
-      data: { ...parsed, receivedAt: row.createdAt.toISOString() },
+      data: {
+        ...parsed,
+        id: row.id,
+        direction: row.direction,
+        receivedAt: row.createdAt.toISOString(),
+      },
     });
   },
 });

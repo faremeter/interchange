@@ -108,7 +108,7 @@ export type SidecarRouterConfig = {
     id: string;
     raw: Uint8Array;
     createdAt: Date;
-    direction: string;
+    direction: "inbound" | "outbound";
     instanceId: string | null;
     address: string;
   }) => void;

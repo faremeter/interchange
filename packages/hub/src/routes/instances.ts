@@ -1249,7 +1249,12 @@ app.post(
     const parsed = parseMailToEmail(rawMIME, mailId);
     sidecarRouter.dispatchAgentEvent(row.address, {
       type: "mail.delivered",
-      data: { ...parsed, receivedAt: mailCreatedAt.toISOString() },
+      data: {
+        ...parsed,
+        id: mailId,
+        direction: "inbound" as const,
+        receivedAt: mailCreatedAt.toISOString(),
+      },
     });
 
     return c.json(
