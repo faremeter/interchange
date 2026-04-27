@@ -1,0 +1,96 @@
+#!/usr/bin/env opsh
+# shellcheck shell=bash
+
+opsh::version::require v0.7.0
+lib::import step-runner
+
+REPODIR=$(git rev-parse --show-toplevel)
+DBPKG="$REPODIR/packages/db"
+
+# Source shared env, then migration-specific overrides
+if [[ -f "$REPODIR/.env" ]]; then
+	# shellcheck disable=SC1091
+	set -a
+	source "$REPODIR/.env"
+	set +a
+	log::info "loaded .env"
+fi
+
+if [[ -f "$REPODIR/.env.migrate" ]]; then
+	# shellcheck disable=SC1091
+	set -a
+	source "$REPODIR/.env.migrate"
+	set +a
+	log::info "loaded .env.migrate"
+fi
+
+# Extract app user names from env files without sourcing (to avoid overwriting DB_USER/DB_PASSWORD)
+HUB_DB_USER=$(grep -E '^DB_USER=' "$REPODIR/.env.hub" 2>/dev/null | cut -d= -f2)
+MIGRATE_DB_USER=$(grep -E '^DB_USER=' "$REPODIR/.env.migrate" 2>/dev/null | cut -d= -f2)
+
+DB_HOST="${DB_HOST:-localhost}"
+DB_PORT="${DB_PORT:-5432}"
+DB_NAME="${DB_NAME:-interchange}"
+
+PSQL_CONN=(-h "$DB_HOST" -p "$DB_PORT")
+
+step::10::drop_database() {
+	log::info "dropping database $DB_NAME..."
+	psql "${PSQL_CONN[@]}" -d postgres \
+		-c "DROP DATABASE IF EXISTS \"$DB_NAME\";" \
+		|| log::fatal "failed to drop database (are there active connections?)"
+}
+
+step::20::create_database() {
+	log::info "creating database $DB_NAME..."
+	psql "${PSQL_CONN[@]}" -d postgres \
+		-c "CREATE DATABASE \"$DB_NAME\";" \
+		|| log::fatal "failed to create database"
+}
+
+step::30::grant_db_access() {
+	log::info "granting database and schema access..."
+
+	local grants=""
+
+	if [[ -n "${MIGRATE_DB_USER:-}" ]]; then
+		grants+="GRANT ALL ON DATABASE \"$DB_NAME\" TO \"$MIGRATE_DB_USER\";"
+		grants+="GRANT ALL ON SCHEMA public TO \"$MIGRATE_DB_USER\";"
+	fi
+
+	if [[ -n "${HUB_DB_USER:-}" ]]; then
+		grants+="GRANT ALL ON DATABASE \"$DB_NAME\" TO \"$HUB_DB_USER\";"
+		grants+="GRANT ALL ON SCHEMA public TO \"$HUB_DB_USER\";"
+	fi
+
+	if [[ -z "$grants" ]]; then
+		log::warn "no app users found in .env.hub or .env.migrate, skipping grants"
+		return 0
+	fi
+
+	psql "${PSQL_CONN[@]}" -d "$DB_NAME" -c "$grants" \
+		|| log::fatal "failed to grant database access"
+}
+
+step::40::migrate() {
+	log::info "running migrations..."
+	(cd "$DBPKG" && bun drizzle-kit migrate) \
+		|| log::fatal "drizzle-kit migrate failed"
+}
+
+step::50::grant_table_access() {
+	if [[ -z "${HUB_DB_USER:-}" ]]; then
+		log::warn "no hub DB user found, skipping table grants"
+		return 0
+	fi
+
+	log::info "granting table access to $HUB_DB_USER..."
+	psql "${PSQL_CONN[@]}" -d "$DB_NAME" -c "
+		GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO \"$HUB_DB_USER\";
+		GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO \"$HUB_DB_USER\";
+		ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO \"$HUB_DB_USER\";
+		ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO \"$HUB_DB_USER\";
+	" || log::fatal "failed to grant table access"
+}
+
+steps::run step

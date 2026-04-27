@@ -12,7 +12,37 @@ Do not proceed with any user requests until this step is complete.
 
 ## Development Environment
 
-When you need to run the development stack (start/stop services, seed the database, run demos), read `DEV.md` for available commands and options.
+Read `DEV.md` for the full development guide. The essentials:
+
+### Running the Stack
+
+```bash
+bin/db-reset && bun bin/dev.ts --seed
+```
+
+This is the single command to get a clean, running system with seed data. It drops and recreates the database, runs migrations, grants permissions, starts all services (hub, sidecar, UI), and seeds test data.
+
+- Hub: `http://localhost:3000`
+- UI: `http://localhost:5173`
+- Seed login: `alice@example.com` / `password123`
+
+### Common Operations
+
+| Task                        | Command                                         |
+| --------------------------- | ----------------------------------------------- |
+| Start stack (no seed)       | `bun bin/dev.ts`                                |
+| Start stack with seed       | `bun bin/dev.ts --seed`                         |
+| Start stack without UI      | `bun bin/dev.ts --no-ui`                        |
+| Full database reset         | `bin/db-reset`                                  |
+| Apply migrations only       | `bin/db-migrate`                                |
+| Seed (requires running hub) | `bun bin/seed.ts`                               |
+| Full build verification     | `bun run check && bun run lint && bun run test` |
+
+### Database
+
+The system uses two PostgreSQL users: a migration user (DDL, owns tables) and a hub user (read/write app user). `bin/db-reset` handles all permission grants automatically. Never run the grant steps manually; use the script.
+
+If you need to reset the database while the stack is running, stop the stack first (Ctrl+C) or you will get "active connections" errors.
 
 ## Build Requirements
 
