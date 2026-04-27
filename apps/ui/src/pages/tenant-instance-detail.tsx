@@ -56,6 +56,16 @@ const MailDeliveredEvent = type({
   },
 });
 
+const TurnCommittedEvent = type({
+  type: "'turn.committed'",
+  data: {
+    turnId: "string",
+    status: "'completed' | 'failed'",
+    text: "string",
+    hadError: "boolean",
+  },
+});
+
 function StatusBadge({ status }: { status: string }) {
   const variant =
     status === "running"
@@ -128,6 +138,7 @@ type ChatMessage =
     }
   | {
       kind: "turn";
+      turnId: string;
       content: string;
       timestamp: string;
       isError?: boolean;
@@ -140,8 +151,8 @@ function isAgentAddress(email: string): boolean {
 
 // Inbound mail is always shown. Outbound mail is only shown when the primary
 // recipient is an agent instance (inter-agent mail). Outbound mail to non-agent
-// addresses (connector replies to humans) is suppressed because inference.done
-// already committed that content as a turn.
+// addresses (connector replies to humans) is suppressed because turn.committed
+// already provides that content as a committed turn in the timeline.
 export function shouldShowMail(data: {
   direction: "inbound" | "outbound";
   to?: { name: string | null; email: string }[];
@@ -229,6 +240,7 @@ function turnToMessage(turn: InferenceTurnResponse): ChatMessage | null {
 
   return {
     kind: "turn",
+    turnId: turn.id,
     content,
     timestamp: turn.startedAt,
     ...(isError ? { isError: true } : {}),
@@ -309,7 +321,6 @@ export function TenantInstanceDetailPage() {
     if (!isRunning) return;
 
     let cancelled = false;
-    let hadInferenceError = false;
 
     const close = openStream(
       `/api/tenants/${tenantId}/agents/instances/${instanceId}/events`,
@@ -323,8 +334,9 @@ export function TenantInstanceDetailPage() {
           return;
         }
 
-        // Handle mail.delivered before checking InferenceEvent to avoid
-        // confusion between the two event namespaces.
+        // Hub-originated committed-state events: these are the only events
+        // that push messages into the timeline. Handle them before checking
+        // the InferenceEvent union to avoid namespace confusion.
         const mailEvent = MailDeliveredEvent(raw);
         if (!(mailEvent instanceof type.errors)) {
           const messages = getMessages(instanceId);
@@ -371,6 +383,38 @@ export function TenantInstanceDetailPage() {
           return;
         }
 
+        const turnEvent = TurnCommittedEvent(raw);
+        if (!(turnEvent instanceof type.errors)) {
+          const messages = getMessages(instanceId);
+          const { turnId, status, text, hadError } = turnEvent.data;
+          const isError = hadError || status === "failed";
+          const already = messages.some(
+            (m) => m.kind === "turn" && m.turnId === turnId,
+          );
+          if (!already && (text || isError)) {
+            messages.push({
+              kind: "turn",
+              turnId,
+              content: text || "An error occurred during inference.",
+              timestamp: new Date().toISOString(),
+              ...(isError ? { isError: true } : {}),
+            });
+          }
+          // Only clear the streaming buffer if it still holds text from the
+          // committed turn. In multi-step tool loops, turn.committed for turn
+          // N may arrive after deltas for turn N+1 have already started
+          // populating the buffer with new content.
+          const current = getStreaming(instanceId);
+          if (!current || current === text) {
+            instanceStreaming.set(instanceId, "");
+          }
+          instanceActivity.set(instanceId, null);
+          rerender();
+          return;
+        }
+
+        // Ephemeral state: inference events drive the streaming preview
+        // and activity indicator only. They never push committed messages.
         const validated = InferenceEvent(raw);
         if (validated instanceof type.errors) return;
         const event: ValidInferenceEvent = validated as ValidInferenceEvent;
@@ -405,46 +449,13 @@ export function TenantInstanceDetailPage() {
             instanceActivity.set(instanceId, null);
             rerender();
             break;
-          case "inference.done": {
-            const blocks = event.data.message.content;
-            const text = blocks
-              .filter(
-                (b): b is { type: "text"; text: string } => b.type === "text",
-              )
-              .map((b) => b.text)
-              .join("");
-            if (text) {
-              getMessages(instanceId).push({
-                kind: "turn",
-                content: text,
-                timestamp: new Date().toISOString(),
-              });
-            }
-            instanceStreaming.set(instanceId, "");
+          case "inference.done":
             instanceActivity.set(instanceId, null);
             rerender();
             break;
-          }
           case "inference.error":
-            hadInferenceError = true;
             instanceStreaming.set(instanceId, "");
             instanceActivity.set(instanceId, null);
-            rerender();
-            break;
-          case "connector.reply":
-            instanceActivity.set(instanceId, null);
-            if (hadInferenceError) {
-              hadInferenceError = false;
-              instanceStreaming.set(instanceId, "");
-              if (event.data.content) {
-                getMessages(instanceId).push({
-                  kind: "turn",
-                  content: event.data.content,
-                  timestamp: new Date().toISOString(),
-                  isError: true,
-                });
-              }
-            }
             rerender();
             break;
           case "reactor.done":
@@ -606,7 +617,7 @@ export function TenantInstanceDetailPage() {
                   Start a conversation with the agent...
                 </p>
               ) : (
-                getMessages(instanceId).map((msg, i) => {
+                getMessages(instanceId).map((msg) => {
                   const isUser = msg.kind === "mail" && msg.role === "user";
                   const isAssistantTurn = msg.kind === "turn";
                   const isAssistantMail =
@@ -637,7 +648,7 @@ export function TenantInstanceDetailPage() {
 
                   return (
                     <div
-                      key={msg.kind === "mail" ? msg.id : i}
+                      key={msg.kind === "mail" ? msg.id : msg.turnId}
                       className={`rounded p-2 text-sm ${
                         msg.isError
                           ? "mr-8 border border-destructive/30 bg-destructive/10 text-destructive"
