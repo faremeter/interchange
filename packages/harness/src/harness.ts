@@ -7,10 +7,8 @@
 // Connector semantics:
 //   - Messages in the active connector thread are fetched, delivered to the
 //     reactor, and deleted from the INBOX (consumed).
-//   - Messages responding to agent-initiated outbound sends are also delivered
-//     and consumed (tracked via outbound message IDs).
-//   - Unsolicited messages (new threads, untracked threads) are delivered to
-//     the reactor for notification and stay in the INBOX for message tools.
+//   - All other inbound messages (replies to agent sends, unsolicited
+//     inter-agent mail) are delivered to the reactor and stay in the INBOX.
 //   - Outbound replies are sent by the harness when the reactor emits a
 //     connector.reply event, with correct threading headers.
 //
@@ -151,19 +149,6 @@ export function createHarness(config: HarnessConfig): Harness {
   // The subject line of the connector conversation.
   let connectorSubject: string | undefined = undefined;
 
-  // -------------------------------------------------------------------------
-  // Outbound thread tracking: message IDs from agent-initiated sends.
-  // -------------------------------------------------------------------------
-
-  // Message-IDs of outbound messages sent by the agent via tools. When a
-  // response arrives with In-Reply-To matching one of these, it belongs to
-  // the reactor and gets delivered + consumed.
-  const outboundMessageIds = new Set<string>();
-
-  // Track in-flight tool calls that are message sends, so we can extract the
-  // messageId from the result.
-  const pendingSendCallIds = new Set<string>();
-
   /**
    * Determine whether a message belongs to the active connector thread.
    */
@@ -185,15 +170,6 @@ export function createHarness(config: HarnessConfig): Harness {
     }
 
     return false;
-  }
-
-  /**
-   * Determine whether a message is a response to an agent-initiated send.
-   */
-  function isAgentInitiatedResponse(message: InboundMessage): boolean {
-    const { inReplyTo } = message.headers;
-    if (inReplyTo === undefined) return false;
-    return outboundMessageIds.has(inReplyTo);
   }
 
   /**
@@ -233,33 +209,6 @@ export function createHarness(config: HarnessConfig): Harness {
   function handleEvent(event: ReactorEmittedEvent): void {
     if (event.type !== "message.received" && auditCollector !== undefined) {
       auditCollector.onEvent(event);
-    }
-
-    // Track outbound sends: when a message.send or message.reply tool starts,
-    // note the call ID. When it completes, extract the messageId.
-    if (event.type === "tool.start") {
-      const name = event.data.call.name;
-      if (name === "message_send" || name === "message_reply") {
-        pendingSendCallIds.add(event.data.call.id);
-      }
-    }
-
-    if (event.type === "tool.done") {
-      const callId = event.data.result.callId;
-      if (pendingSendCallIds.has(callId)) {
-        pendingSendCallIds.delete(callId);
-        const content = event.data.result.content;
-        if (
-          typeof content === "object" &&
-          content !== null &&
-          "messageId" in content &&
-          typeof (content as Record<string, unknown>)["messageId"] === "string"
-        ) {
-          outboundMessageIds.add(
-            (content as Record<string, unknown>)["messageId"] as string,
-          );
-        }
-      }
     }
 
     // Handle connector.reply: send the reply via transport.
@@ -369,8 +318,9 @@ export function createHarness(config: HarnessConfig): Harness {
 
         if (stopped) return;
 
-        // Route by thread: connector and agent-initiated traffic is consumed,
-        // everything else is delivered to the reactor and stays in the INBOX.
+        // Only connector-thread messages are consumed from the INBOX.
+        // Everything else is delivered to the reactor and stays in the
+        // INBOX so message tools can access it.
         if (connectorThreadRoot === undefined) {
           // No active conversation — this message starts one.
           initConnectorThread(message);
@@ -381,13 +331,10 @@ export function createHarness(config: HarnessConfig): Harness {
           advanceConnectorThread(message);
           reactor.deliver(message);
           await consumeFromInbox(message);
-        } else if (isAgentInitiatedResponse(message)) {
-          // Response to an outbound message the agent sent via tools.
-          reactor.deliver(message);
-          await consumeFromInbox(message);
         } else {
-          // Unsolicited inbound mail (e.g., from another agent). Deliver to
-          // reactor for notification but leave in INBOX for message tools.
+          // Non-connector mail (replies to agent sends, unsolicited
+          // inter-agent mail, etc.). Deliver to reactor for notification
+          // but leave in INBOX for message tools.
           reactor.deliver(message);
         }
       })();
