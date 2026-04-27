@@ -38,7 +38,7 @@ import { createGateManager } from "./gates";
 import { createCorrelationRegistry } from "./correlation";
 import { createStateManager } from "./state";
 import { validateActions } from "./actions";
-import { createToolResultMessage, createTextMessage } from "./messages";
+import { createToolResultMessage, createInboundMessage } from "./messages";
 import type { CorrelationValidator } from "./correlation";
 
 const logger = getLogger(["interchange", "reactor"]);
@@ -278,9 +278,9 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       // Append the correlated message to conversation history so the model
       // sees the response content when it re-infers after the gate clears.
-      const content = message.content ?? "";
-      if (content.length > 0) {
-        stateManager.appendMessage(createTextMessage(content));
+      const msg = createInboundMessage(message);
+      if (msg !== null) {
+        stateManager.appendMessage(msg);
       }
     }
 
@@ -474,9 +474,9 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       // Append inbound messages to conversation history so the provider sees them.
       if (event.type === "message.received" && stateManager !== null) {
-        const content = event.message.content ?? "";
-        if (content.length > 0) {
-          stateManager.appendMessage(createTextMessage(content));
+        const msg = createInboundMessage(event.message);
+        if (msg !== null) {
+          stateManager.appendMessage(msg);
         }
       }
 
