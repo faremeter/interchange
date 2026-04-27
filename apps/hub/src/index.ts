@@ -29,7 +29,20 @@ const { db } = createDB({
 });
 
 const auth = createAuth(db);
-const eventCollectors = createEventCollectorRegistry(db);
+const eventCollectors = createEventCollectorRegistry({
+  db,
+  onTurnFinalized(agentAddress, turn) {
+    sidecarRouter.dispatchAgentEvent(agentAddress, {
+      type: "turn.committed",
+      data: {
+        turnId: turn.turnId,
+        status: turn.status,
+        text: turn.text,
+        hadError: turn.hadError,
+      },
+    });
+  },
+});
 const grantStore = createGrantStore(db);
 
 const hubDataDir = process.env["HUB_DATA_DIR"];

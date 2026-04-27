@@ -15,6 +15,13 @@ import { generateId } from "./ids";
 
 const log = getLogger(["hub", "event-collector"]);
 
+export type TurnFinalized = {
+  turnId: string;
+  status: "completed" | "failed";
+  text: string;
+  hadError: boolean;
+};
+
 export type EventCollector = {
   onEvent(event: InferenceEvent): Promise<void>;
   abandon(): Promise<void>;
@@ -25,12 +32,13 @@ export type EventCollectorConfig = {
   sessionId: string;
   instanceId: string;
   tenantId: string;
+  onTurnFinalized?: (turn: TurnFinalized) => void;
 };
 
 export function createEventCollector(
   config: EventCollectorConfig,
 ): EventCollector {
-  const { db, sessionId, instanceId, tenantId } = config;
+  const { db, sessionId, instanceId, tenantId, onTurnFinalized } = config;
 
   // Current inference turn being accumulated. A new turn is created on each
   // inference.start. Finalized on connector.reply, reactor.done,
@@ -42,6 +50,14 @@ export function createEventCollector(
   // Set when inference.error fires so connector.reply knows to persist its
   // content (on normal turns, inference.done already persisted the text).
   let pendingError = false;
+  // Accumulated visible text content for the current turn. Only text blocks
+  // from inference.done (not thinking/reasoning) are included. Reset on each
+  // new turn.
+  let accumulatedText = "";
+  // Set when inference.error fires. Unlike pendingError (which resets on
+  // connector.reply), this persists until finalization so the callback can
+  // report whether an inference error occurred during the turn.
+  let turnHadError = false;
 
   async function onEvent(event: InferenceEvent): Promise<void> {
     switch (event.type) {
@@ -62,6 +78,7 @@ export function createEventCollector(
         break;
       case "inference.error":
         pendingError = true;
+        turnHadError = true;
         await insertPart("error", event.data.error.message, {
           category: event.data.error.category,
           ...(event.data.error.statusCode !== undefined
@@ -73,17 +90,18 @@ export function createEventCollector(
         // Only persist reply content when it originated from an error path.
         // On normal turns inference.done already persisted the text parts.
         if (pendingError) {
+          accumulatedText += event.data.content;
           await insertPart("text", event.data.content, null);
           pendingError = false;
         }
-        await finalizeTurn("completed");
+        await finalizeTurn("completed", true);
         break;
       case "reactor.done":
-        await finalizeTurn("completed");
+        await finalizeTurn("completed", true);
         break;
       case "reactor.error":
         if (event.data.fatal) {
-          await finalizeTurn("failed");
+          await finalizeTurn("failed", true);
         }
         break;
       default:
@@ -97,13 +115,15 @@ export function createEventCollector(
     // A previous turn is still open — this is normal in multi-step tool-use
     // loops where inference.start fires again after tools return.
     if (currentTurnId !== null && !finalized) {
-      await finalizeTurn("completed");
+      await finalizeTurn("completed", true);
     }
 
     currentTurnId = generateId("inferenceTurn");
     ordinal = 0;
     finalized = false;
     pendingError = false;
+    accumulatedText = "";
+    turnHadError = false;
 
     await db.insert(inferenceTurn).values({
       id: currentTurnId,
@@ -120,6 +140,7 @@ export function createEventCollector(
     for (const block of content) {
       switch (block.type) {
         case "text":
+          accumulatedText += block.text;
           await insertPart("text", block.text, null);
           break;
         case "thinking":
@@ -150,14 +171,28 @@ export function createEventCollector(
     await insertPart("step-finish", null, null);
   }
 
-  async function finalizeTurn(status: "completed" | "failed"): Promise<void> {
+  async function finalizeTurn(
+    status: "completed" | "failed",
+    notify: boolean,
+  ): Promise<void> {
     if (currentTurnId === null || finalized) return;
     finalized = true;
+
+    const turnId = currentTurnId;
 
     await db
       .update(inferenceTurn)
       .set({ status, endedAt: new Date() })
-      .where(eq(inferenceTurn.id, currentTurnId));
+      .where(eq(inferenceTurn.id, turnId));
+
+    if (notify && onTurnFinalized) {
+      onTurnFinalized({
+        turnId,
+        status,
+        text: accumulatedText,
+        hadError: turnHadError,
+      });
+    }
 
     currentTurnId = null;
   }
@@ -167,7 +202,7 @@ export function createEventCollector(
 
     log.warn`Abandoning running turn ${currentTurnId} for session ${sessionId}`;
 
-    await finalizeTurn("failed");
+    await finalizeTurn("failed", false);
   }
 
   async function insertPart(

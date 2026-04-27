@@ -2,7 +2,11 @@ import { describe, test, expect, beforeEach } from "bun:test";
 import { inferenceTurn, turnPart } from "@interchange/db/schema";
 import type { InferenceEvent } from "@interchange/types/runtime";
 
-import { createEventCollector, type EventCollector } from "./event-collector";
+import {
+  createEventCollector,
+  type EventCollector,
+  type TurnFinalized,
+} from "./event-collector";
 
 // ---------------------------------------------------------------------------
 // Test helpers: fake DB that records insert/update calls
@@ -440,5 +444,178 @@ describe("EventCollector", () => {
 
     expect(fakeDB.updates).toHaveLength(1);
     expect(at(fakeDB.updates, 0).set.status).toBe("completed");
+  });
+
+  describe("onTurnFinalized callback", () => {
+    let notifications: TurnFinalized[];
+    let notifyCollector: EventCollector;
+
+    beforeEach(() => {
+      notifications = [];
+      notifyCollector = createEventCollector({
+        db: fakeDB.db,
+        sessionId: "ses_test",
+        instanceId: "ins_test",
+        tenantId: "tnt_test",
+        onTurnFinalized: (turn) => notifications.push(turn),
+      });
+    });
+
+    test("reactor.done fires callback with accumulated text", async () => {
+      await notifyCollector.onEvent(
+        event("inference.start", 1, { model: "gpt-4" }),
+      );
+      await notifyCollector.onEvent(
+        event("inference.done", 5, {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Hello world" }],
+            model: "gpt-4",
+          },
+          usage: { input: 10, output: 20 },
+        }),
+      );
+      await notifyCollector.onEvent(event("reactor.done", 10, {}));
+
+      expect(notifications).toHaveLength(1);
+      expect(at(notifications, 0).status).toBe("completed");
+      expect(at(notifications, 0).text).toBe("Hello world");
+      expect(at(notifications, 0).hadError).toBe(false);
+    });
+
+    test("callback excludes thinking blocks from text", async () => {
+      await notifyCollector.onEvent(
+        event("inference.start", 1, { model: "gpt-4" }),
+      );
+      await notifyCollector.onEvent(
+        event("inference.done", 5, {
+          message: {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "Let me think..." },
+              { type: "text", text: "The answer" },
+            ],
+            model: "gpt-4",
+          },
+          usage: { input: 10, output: 20 },
+        }),
+      );
+      await notifyCollector.onEvent(event("reactor.done", 10, {}));
+
+      expect(notifications).toHaveLength(1);
+      expect(at(notifications, 0).text).toBe("The answer");
+    });
+
+    test("multi-step tool loop fires callback for each turn", async () => {
+      await notifyCollector.onEvent(
+        event("inference.start", 1, { model: "gpt-4" }),
+      );
+      await notifyCollector.onEvent(
+        event("inference.done", 3, {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Searching" }],
+            model: "gpt-4",
+          },
+          usage: { input: 10, output: 5 },
+        }),
+      );
+      // Second inference.start finalizes the first turn
+      await notifyCollector.onEvent(
+        event("inference.start", 5, { model: "gpt-4" }),
+      );
+      await notifyCollector.onEvent(
+        event("inference.done", 8, {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Results" }],
+            model: "gpt-4",
+          },
+          usage: { input: 20, output: 10 },
+        }),
+      );
+      await notifyCollector.onEvent(event("reactor.done", 10, {}));
+
+      expect(notifications).toHaveLength(2);
+      expect(at(notifications, 0).text).toBe("Searching");
+      expect(at(notifications, 1).text).toBe("Results");
+    });
+
+    test("abandon does not fire callback", async () => {
+      await notifyCollector.onEvent(
+        event("inference.start", 1, { model: "gpt-4" }),
+      );
+      await notifyCollector.onEvent(
+        event("inference.done", 5, {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Some text" }],
+            model: "gpt-4",
+          },
+          usage: { input: 10, output: 20 },
+        }),
+      );
+      await notifyCollector.abandon();
+
+      expect(notifications).toHaveLength(0);
+    });
+
+    test("error path includes connector.reply content and sets hadError", async () => {
+      await notifyCollector.onEvent(
+        event("inference.start", 1, { model: "gpt-4" }),
+      );
+      await notifyCollector.onEvent(
+        event("inference.error", 3, {
+          error: { message: "rate limit", category: "rate_limit" },
+        }),
+      );
+      await notifyCollector.onEvent(
+        event("connector.reply", 4, { content: "I encountered an error." }),
+      );
+
+      expect(notifications).toHaveLength(1);
+      expect(at(notifications, 0).status).toBe("completed");
+      expect(at(notifications, 0).text).toBe("I encountered an error.");
+      expect(at(notifications, 0).hadError).toBe(true);
+    });
+
+    test("tool-only turn with no text fires callback with empty text", async () => {
+      await notifyCollector.onEvent(
+        event("inference.start", 1, { model: "gpt-4" }),
+      );
+      await notifyCollector.onEvent(
+        event("inference.done", 3, {
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_call",
+                id: "call_1",
+                name: "search",
+                arguments: { q: "test" },
+              },
+            ],
+            model: "gpt-4",
+          },
+          usage: { input: 10, output: 5 },
+        }),
+      );
+      await notifyCollector.onEvent(event("reactor.done", 10, {}));
+
+      expect(notifications).toHaveLength(1);
+      expect(at(notifications, 0).text).toBe("");
+    });
+
+    test("fatal reactor.error fires callback with failed status", async () => {
+      await notifyCollector.onEvent(
+        event("inference.start", 1, { model: "gpt-4" }),
+      );
+      await notifyCollector.onEvent(
+        event("reactor.error", 5, { error: "boom", fatal: true }),
+      );
+
+      expect(notifications).toHaveLength(1);
+      expect(at(notifications, 0).status).toBe("failed");
+    });
   });
 });

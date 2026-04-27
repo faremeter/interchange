@@ -9,7 +9,11 @@ import type { InferenceEvent } from "@interchange/types/runtime";
 import type { SessionStatus } from "@interchange/types";
 import { getLogger } from "@interchange/log";
 
-import { createEventCollector, type EventCollector } from "./event-collector";
+import {
+  createEventCollector,
+  type EventCollector,
+  type TurnFinalized,
+} from "./event-collector";
 
 const log = getLogger(["hub", "event-collector-registry"]);
 
@@ -26,9 +30,15 @@ export type EventCollectorRegistry = {
   getStatus(agentAddress: string): SessionStatus | undefined;
 };
 
+export type EventCollectorRegistryConfig = {
+  db: DB["db"];
+  onTurnFinalized?: (agentAddress: string, turn: TurnFinalized) => void;
+};
+
 export function createEventCollectorRegistry(
-  db: DB["db"],
+  config: EventCollectorRegistryConfig,
 ): EventCollectorRegistry {
+  const { db, onTurnFinalized } = config;
   const collectors = new Map<string, EventCollector>();
   const statuses = new Map<string, SessionStatus>();
 
@@ -48,6 +58,12 @@ export function createEventCollectorRegistry(
       sessionId,
       instanceId,
       tenantId,
+      ...(onTurnFinalized
+        ? {
+            onTurnFinalized: (turn: TurnFinalized) =>
+              onTurnFinalized(agentAddress, turn),
+          }
+        : {}),
     });
     collectors.set(agentAddress, collector);
     statuses.set(agentAddress, { status: "idle" });
