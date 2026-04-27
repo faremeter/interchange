@@ -282,6 +282,142 @@ describe("SidecarRouter", () => {
       expect(outbound).toHaveLength(1);
       expect(outbound[0]?.recipients).toEqual(["external@remote"]);
     });
+
+    test("agent reply to non-agent address still persists outbound record", async () => {
+      // When an agent replies to a human user (usr_ address), the
+      // onMailPersist callback must still persist at least the outbound
+      // record on the sender's session and call onMailPersisted so a
+      // mail.delivered SSE event is dispatched.
+      const persisted: { id: string; address: string }[] = [];
+      const router = createSidecarRouter({
+        onMailPersist: async ({ senderAddress, recipients }) => {
+          // Mirrors the fixed onMailPersist: always create the outbound
+          // record for the sender, and only create inbound records for
+          // recipients that are agent instances (ins_ prefix).
+          const results: {
+            id: string;
+            direction: "inbound" | "outbound";
+            instanceId: string | null;
+            address: string;
+            createdAt: Date;
+          }[] = [
+            {
+              id: "mail_outbound",
+              direction: "outbound",
+              instanceId: senderAddress.split("@")[0] ?? senderAddress,
+              address: senderAddress,
+              createdAt: new Date(),
+            },
+          ];
+          for (const addr of recipients) {
+            if (addr.startsWith("ins_")) {
+              results.push({
+                id: `mail_in_${addr}`,
+                direction: "inbound",
+                instanceId: addr.split("@")[0] ?? addr,
+                address: addr,
+                createdAt: new Date(),
+              });
+            }
+          }
+          return results;
+        },
+        onMailPersisted(row) {
+          persisted.push({ id: row.id, address: row.address });
+        },
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["ins_sender@tenant.example"],
+        }),
+      );
+
+      // Agent sends a reply to a human user address.
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "mail.outbound",
+          delivered: true,
+          senderAddress: "ins_sender@tenant.example",
+          rawMessage: btoa("test message"),
+          recipients: ["usr_human@tenant.example"],
+        }),
+      );
+
+      // Allow the async handleMailPersist to settle.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // The outbound record for the sender must always be persisted,
+      // regardless of whether recipients are agent instances. No inbound
+      // record should be created for the non-agent recipient.
+      expect(persisted).toHaveLength(1);
+      expect(persisted[0]?.address).toBe("ins_sender@tenant.example");
+    });
+
+    test("onMailPersist success calls onMailPersisted for each result", async () => {
+      const persisted: { id: string; address: string }[] = [];
+      const router = createSidecarRouter({
+        onMailPersist: async ({ senderAddress, recipients }) => {
+          return [
+            {
+              id: "mail_out",
+              direction: "outbound" as const,
+              instanceId: senderAddress.split("@")[0] ?? senderAddress,
+              address: senderAddress,
+              createdAt: new Date(),
+            },
+            ...recipients.map((addr) => ({
+              id: `mail_in_${addr}`,
+              direction: "inbound" as const,
+              instanceId: addr.split("@")[0] ?? addr,
+              address: addr,
+              createdAt: new Date(),
+            })),
+          ];
+        },
+        onMailPersisted(row) {
+          persisted.push({ id: row.id, address: row.address });
+        },
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["ins_sender@tenant.example"],
+        }),
+      );
+
+      // Agent sends mail to another agent (both are instances).
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "mail.outbound",
+          delivered: true,
+          senderAddress: "ins_sender@tenant.example",
+          rawMessage: btoa("test message"),
+          recipients: ["ins_receiver@tenant.example"],
+        }),
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Both outbound (sender) and inbound (receiver) records persisted.
+      expect(persisted).toHaveLength(2);
+      expect(persisted[0]?.address).toBe("ins_sender@tenant.example");
+      expect(persisted[1]?.address).toBe("ins_receiver@tenant.example");
+    });
   });
 
   describe("agent lifecycle", () => {

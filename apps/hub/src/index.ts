@@ -195,8 +195,10 @@ const sidecarRouter = createSidecarRouter({
       createdAt,
     };
 
-    // Inbound records for each recipient that has an active instance.
-    const recipientInstances = await Promise.all(
+    // Inbound records for each recipient that has an active agent instance.
+    // Recipients that are not agent instances (e.g. human user addresses)
+    // are skipped.
+    const recipientResults = await Promise.all(
       recipients.map(async (addr) => {
         const row = await db.query.agentInstance.findFirst({
           where: and(
@@ -205,17 +207,17 @@ const sidecarRouter = createSidecarRouter({
           ),
         });
         if (row === undefined) {
-          throw new Error(
-            `No active instance found for recipient address "${addr}"`,
-          );
+          return null;
         }
         if (row.sessionId === null) {
-          throw new Error(
-            `Instance ${row.id} has no session for recipient address "${addr}"`,
-          );
+          log.warn`Active instance ${row.id} for "${addr}" has no session; skipping inbound record`;
+          return null;
         }
         return { addr, instance: row, sessionId: row.sessionId };
       }),
+    );
+    const recipientInstances = recipientResults.filter(
+      (r): r is NonNullable<typeof r> => r !== null,
     );
 
     const inboundEntries = recipientInstances.map(
