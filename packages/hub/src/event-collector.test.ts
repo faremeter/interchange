@@ -351,7 +351,7 @@ describe("EventCollector", () => {
       }),
     );
 
-    // Turn 2 — inference.start finalizes turn 1 as failed (orphan)
+    // Turn 2 — inference.start finalizes turn 1 as completed
     await collector.onEvent(event("inference.start", 8, { model: "claude-3" }));
     await collector.onEvent(
       event("inference.done", 12, {
@@ -383,13 +383,13 @@ describe("EventCollector", () => {
       "step-finish", // inference turn 2 end
     ]);
 
-    // First turn finalized as failed (orphan), second as completed
+    // Both turns finalized as completed
     expect(fakeDB.updates).toHaveLength(2);
-    expect(at(fakeDB.updates, 0).set.status).toBe("failed");
+    expect(at(fakeDB.updates, 0).set.status).toBe("completed");
     expect(at(fakeDB.updates, 1).set.status).toBe("completed");
   });
 
-  test("second inference.start finalizes first turn as failed", async () => {
+  test("second inference.start finalizes first turn as completed", async () => {
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(event("inference.start", 5, { model: "gpt-4" }));
 
@@ -397,9 +397,9 @@ describe("EventCollector", () => {
     const turns = fakeDB.inserts.filter((i) => i.table === "inference_turn");
     expect(turns).toHaveLength(2);
 
-    // First turn finalized as failed
+    // First turn finalized as completed (superseded by next inference step)
     expect(fakeDB.updates).toHaveLength(1);
-    expect(at(fakeDB.updates, 0).set.status).toBe("failed");
+    expect(at(fakeDB.updates, 0).set.status).toBe("completed");
   });
 
   test("abandon after reactor.done is a no-op", async () => {
