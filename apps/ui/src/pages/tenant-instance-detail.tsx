@@ -293,6 +293,7 @@ export function TenantInstanceDetailPage() {
 
     let cancelled = false;
     let hadInferenceError = false;
+    let pendingConnectorReply = false;
 
     const close = openStream(
       `/api/tenants/${tenantId}/agents/instances/${instanceId}/events`,
@@ -317,8 +318,16 @@ export function TenantInstanceDetailPage() {
           );
           if (!already) {
             const d = mailEvent.data;
-            const isFromAgent = d.direction === "outbound";
-            const role: "user" | "assistant" = isFromAgent
+            const isOutbound = d.direction === "outbound";
+
+            // Outbound connector replies were already committed as turn
+            // messages by inference.done. Suppress the duplicate mail entry.
+            if (isOutbound && pendingConnectorReply) {
+              pendingConnectorReply = false;
+              return;
+            }
+
+            const role: "user" | "assistant" = isOutbound
               ? "assistant"
               : "user";
             const firstSender = d.from?.[0];
@@ -346,9 +355,6 @@ export function TenantInstanceDetailPage() {
                 size: att.size,
               })),
             });
-            if (isFromAgent) {
-              instanceStreaming.set(instanceId, "");
-            }
             rerender();
           }
           return;
@@ -389,8 +395,21 @@ export function TenantInstanceDetailPage() {
             rerender();
             break;
           case "inference.done": {
-            // Don't clear the streaming buffer here — keep it visible
-            // until mail.delivered arrives with the persisted message.
+            const blocks = event.data.message.content;
+            const text = blocks
+              .filter(
+                (b): b is { type: "text"; text: string } => b.type === "text",
+              )
+              .map((b) => b.text)
+              .join("");
+            if (text) {
+              getMessages(instanceId).push({
+                kind: "turn",
+                content: text,
+                timestamp: new Date().toISOString(),
+              });
+            }
+            instanceStreaming.set(instanceId, "");
             instanceActivity.set(instanceId, null);
             rerender();
             break;
@@ -414,12 +433,15 @@ export function TenantInstanceDetailPage() {
                   isError: true,
                 });
               }
+            } else {
+              pendingConnectorReply = true;
             }
             rerender();
             break;
           case "reactor.done":
             instanceStreaming.set(instanceId, "");
             instanceActivity.set(instanceId, null);
+            pendingConnectorReply = false;
             rerender();
             break;
         }
