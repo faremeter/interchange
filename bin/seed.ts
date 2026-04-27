@@ -385,7 +385,7 @@ const { status: a1Status, data: a1Data } = await api(
     name: "Research Bot",
     description: "Researches topics and summarizes findings",
     systemPrompt:
-      "You are a research assistant. Find and summarize information.",
+      "You are a research assistant. Find and summarize information. When you receive a mail message, reply to it immediately with a helpful response. Do not wait for further instructions.",
     modelConfig: { defaultModel: "claude-sonnet-4-20250514" },
     capabilities: { research: true, summarize: true },
     credentialRequirements: [
