@@ -5,7 +5,7 @@ Multi-tenant control plane for agent orchestration. Manages tenants, principals 
 ## Prerequisites
 
 - [Bun](https://bun.sh/) (1.2+)
-- [opsh](https://github.com/anomalyco/opsh) (v0.7+) -- for the shell scripts in `bin/`
+- [opsh](https://github.com/alexanderguy/opsh) (v0.7+) -- for the shell scripts in `bin/`
 - PostgreSQL (15+)
 
 ## Setup
@@ -95,7 +95,29 @@ This runs a type check, generates any new Drizzle migration files, and applies t
 
 ## Running
 
-### Hub (API server)
+### Full stack (recommended)
+
+```
+bun bin/dev.ts --seed
+```
+
+Starts hub, sidecar, and UI with file watching, and seeds test data. To skip seeding:
+
+```
+bun bin/dev.ts
+```
+
+To start without the UI:
+
+```
+bun bin/dev.ts --no-ui
+```
+
+- Hub: `http://localhost:3000`
+- UI: `http://localhost:5173`
+- Seed login: `alice@example.com` / `password123`
+
+### Hub only
 
 ```
 bin/hub
@@ -107,9 +129,9 @@ Starts the Hono API server on `http://localhost:3000` with file watching. Verify
 curl http://localhost:3000/status
 ```
 
-### UI (development)
+### UI only
 
-In a second terminal:
+In a second terminal (with the hub already running):
 
 ```
 cd apps/ui
@@ -123,49 +145,68 @@ Opens on `http://localhost:5173`. The Vite dev server proxies `/api` requests to
 With the hub running, seed the database with test data:
 
 ```
-bin/seed.ts
+bun bin/seed.ts
 ```
 
 Creates 3 users (alice/bob/carol, all with password `password123`), 2 tenants, 3 agents, roles, grants, credentials, wallets, offerings, and a federation trust. The seed is idempotent -- it signs in existing users and skips resources that already exist (409).
 
-To start completely fresh, drop and recreate the schema, then re-run migrations and seed:
+### Full database reset
+
+To start completely fresh:
 
 ```
-psql -d interchange -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
-psql -d interchange -f db/init.sql
-bin/db-migrate
-bin/seed.ts
+bin/db-reset && bun bin/dev.ts --seed
 ```
+
+This drops and recreates the database, runs migrations, grants permissions, and starts all services with seed data.
 
 ## Project structure
 
 ```
 apps/
-  hub/          Entry point -- starts the Hono server, wires DB + auth
-  ui/           React SPA -- Vite + TanStack Router/Query + Tailwind
+  hub/              Entry point -- starts the Hono server, wires DB + auth
+  sidecar/          Agent sidecar process -- WebSocket client, key store, tool dispatch
+  ui/               React SPA -- Vite + TanStack Router/Query + Tailwind
 
 packages/
-  authz/        Authorization engine -- pattern matching, specificity, evaluation
-  db/           Drizzle schema, migrations, connection pooling
-  hub/          Hono app factory, route handlers, middleware
-  log/          LogTape wrapper (setup, getLogger, Hono middleware)
-  types/        Shared ArkType type definitions for API request/response
+  authz/            Authorization engine -- pattern matching, specificity, evaluation
+  crypto-node/      Cryptographic primitives -- signing, verification, PGP, SSH signatures
+  db/               Drizzle schema, migrations, connection pooling
+  harness/          Agent harness -- deploy tree, plugin system, tool orchestration
+  hub/              Hono app factory, route handlers, middleware
+  inference/        LLM inference -- provider adapters, streaming, audit collection
+  log/              LogTape wrapper (setup, getLogger, Hono middleware)
+  message-memory/   JMAP-style message memory -- mailbox, search, send, threads
+  mime/             MIME message construction and PGP signing
+  pack-transport/   Git pack protocol -- chunked transport for pack send/receive
+  storage-isogit/   Git object storage -- isogit-backed mail store, history, pack ops
+  tools-posix/      POSIX tool implementations -- file read/write, shell execution
+  types/            Shared type definitions (ArkType validators, runtime types, wire formats)
 
 bin/
-  hub           Start the hub server (sources .env + .env.hub)
-  db-migrate    Generate and apply Drizzle migrations
-  seed.ts       Seed test data via the HTTP API
-  gen-api-docs.ts  Generate docs/API.md from OpenAPI spec + ArkType introspection
-  add-package   Scaffold a new workspace package
-  check-env     Verify git hooks configuration
+  hub               Start the hub server (sources .env + .env.hub)
+  db-migrate        Generate and apply Drizzle migrations
+  db-reset          Drop and recreate the database, run migrations, grant permissions
+  dev.ts            Start the full stack (hub + sidecar + UI) with file watching
+  seed.ts           Seed test data via the HTTP API
+  gen-api-docs.ts   Generate docs/API.md from OpenAPI spec + ArkType introspection
+  add-package       Scaffold a new workspace package
+  check-env         Verify git hooks configuration
 
 db/
-  init.sql      Bootstrap database roles and permissions
+  init.sql          Bootstrap database roles and permissions
 
 docs/
-  AUTH.md       Authorization model design
-  ROUTES.md     API route conventions
-  API.md        Generated API reference (gitignored from prettier)
+  API.md            Generated API reference (gitignored from prettier)
+  ARCHITECTURE.md   System architecture overview
+  AUTH.md           Authorization model design
+  CREDENTIALS.md    Credential management
+  HARNESS_DESIGN.md Agent harness design
+  IMPLEMENTATION.md Implementation notes
+  INFERENCE.md      Inference subsystem design
+  MESSAGE.md        Messaging system design
+  PRODUCT.md        Product requirements
+  ROUTES.md         API route conventions
 ```
 
 ## Scripts
