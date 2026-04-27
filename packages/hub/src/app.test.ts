@@ -16,7 +16,7 @@ const mockAuth = {
 const mockDb = {} as unknown as DB["db"];
 const sidecarRouter = createSidecarRouter({});
 const sessionService = {} as unknown as SessionService;
-const eventCollectors = createEventCollectorRegistry(mockDb);
+const eventCollectors = createEventCollectorRegistry({ db: mockDb });
 
 const app = createApp({
   auth: mockAuth,
