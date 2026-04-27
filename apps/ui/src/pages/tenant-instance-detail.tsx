@@ -24,6 +24,8 @@ const sessionEndedEvent = type({ type: "'session.ended'" });
 const MailDeliveredEvent = type({
   type: "'mail.delivered'",
   data: {
+    id: "string",
+    direction: "'inbound' | 'outbound'",
     "from?": type({
       name: "string | null",
       email: "string",
@@ -110,6 +112,7 @@ function formatAddress(addr: { name: string | null; email: string }): string {
 type ChatMessage =
   | {
       kind: "mail";
+      id: string;
       role: "user" | "assistant";
       content: string;
       senderLabel: string;
@@ -151,21 +154,16 @@ function clearInstanceState(instanceId: string) {
   instanceActivity.delete(instanceId);
 }
 
-function mailToMessage(
-  mail: MailResponse,
-  instanceAddress: string,
-): ChatMessage {
-  const firstSender = mail.from[0];
-  const isFromAgent =
-    firstSender !== undefined &&
-    (firstSender.email.includes(instanceAddress) ||
-      mail.direction === "outbound");
+function mailToMessage(mail: MailResponse): ChatMessage {
+  const isFromAgent = mail.direction === "outbound";
   const role: "user" | "assistant" = isFromAgent ? "assistant" : "user";
+  const firstSender = mail.from[0];
   const senderLabel = firstSender ? formatAddress(firstSender) : "Unknown";
   const content = extractMailText(mail);
 
   return {
     kind: "mail",
+    id: mail.id,
     role,
     content,
     senderLabel,
@@ -239,10 +237,8 @@ export function TenantInstanceDetailPage() {
       if (cancelled) return;
       if (getMessages(instanceId).length > 0) return;
 
-      const instanceAddress = instance?.address ?? "";
-
       const mailMessages: ChatMessage[] = mailRes.data.map((m) =>
-        mailToMessage(m, instanceAddress),
+        mailToMessage(m),
       );
 
       const turnMessages: ChatMessage[] = turnsRes.data
@@ -262,7 +258,7 @@ export function TenantInstanceDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [isRunning, instanceId, tenantId, instance?.address]);
+  }, [isRunning, instanceId, tenantId]);
 
   // Open/close the EventSource based on instance running state.
   useEffect(() => {
@@ -288,18 +284,16 @@ export function TenantInstanceDetailPage() {
         const mailEvent = MailDeliveredEvent(raw);
         if (!(mailEvent instanceof type.errors)) {
           const messages = getMessages(instanceId);
+          const mailId = mailEvent.data.id;
           const already = messages.some(
-            (m) => m.timestamp === mailEvent.data.receivedAt,
+            (m) => m.kind === "mail" && m.id === mailId,
           );
           if (!already) {
-            const instanceAddress = instance?.address ?? "";
-            const firstSender = mailEvent.data.from?.[0];
-            const isFromAgent =
-              firstSender !== undefined &&
-              firstSender.email.includes(instanceAddress);
+            const isFromAgent = mailEvent.data.direction === "outbound";
             const role: "user" | "assistant" = isFromAgent
               ? "assistant"
               : "user";
+            const firstSender = mailEvent.data.from?.[0];
             const senderLabel = firstSender
               ? formatAddress(firstSender)
               : "Unknown";
@@ -320,6 +314,7 @@ export function TenantInstanceDetailPage() {
 
             messages.push({
               kind: "mail",
+              id: mailId,
               role,
               content,
               senderLabel,
