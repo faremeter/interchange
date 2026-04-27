@@ -183,8 +183,7 @@ function turnToMessage(turn: InferenceTurnResponse): ChatMessage | null {
   );
   if (textParts.length === 0) return null;
   const content = textParts.map((p) => p.content).join("");
-  const isError =
-    turn.status === "failed" || turn.parts.some((p) => p.type === "error");
+  const isError = turn.status === "failed";
 
   return {
     kind: "turn",
@@ -332,6 +331,9 @@ export function TenantInstanceDetailPage() {
                 size: att.size,
               })),
             });
+            if (isFromAgent) {
+              instanceStreaming.set(instanceId, "");
+            }
             rerender();
           }
           return;
@@ -372,7 +374,8 @@ export function TenantInstanceDetailPage() {
             rerender();
             break;
           case "inference.done": {
-            instanceStreaming.set(instanceId, "");
+            // Don't clear the streaming buffer here — keep it visible
+            // until mail.delivered arrives with the persisted message.
             instanceActivity.set(instanceId, null);
             rerender();
             break;
@@ -384,12 +387,10 @@ export function TenantInstanceDetailPage() {
             rerender();
             break;
           case "connector.reply":
-            instanceStreaming.set(instanceId, "");
             instanceActivity.set(instanceId, null);
-            // Only push reply content on error turns. On normal turns
-            // inference.done already cleared the streaming buffer.
             if (hadInferenceError) {
               hadInferenceError = false;
+              instanceStreaming.set(instanceId, "");
               if (event.data.content) {
                 getMessages(instanceId).push({
                   kind: "turn",
