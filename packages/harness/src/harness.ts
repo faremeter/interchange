@@ -9,8 +9,8 @@
 //     reactor, and deleted from the INBOX (consumed).
 //   - Messages responding to agent-initiated outbound sends are also delivered
 //     and consumed (tracked via outbound message IDs).
-//   - Unsolicited messages (new threads, untracked threads) stay in the INBOX
-//     for the agent to discover via message tools.
+//   - Unsolicited messages (new threads, untracked threads) are delivered to
+//     the reactor for notification and stay in the INBOX for message tools.
 //   - Outbound replies are sent by the harness when the reactor emits a
 //     connector.reply event, with correct threading headers.
 //
@@ -370,7 +370,7 @@ export function createHarness(config: HarnessConfig): Harness {
         if (stopped) return;
 
         // Route by thread: connector and agent-initiated traffic is consumed,
-        // everything else stays in the INBOX.
+        // everything else is delivered to the reactor and stays in the INBOX.
         if (connectorThreadRoot === undefined) {
           // No active conversation — this message starts one.
           initConnectorThread(message);
@@ -385,9 +385,11 @@ export function createHarness(config: HarnessConfig): Harness {
           // Response to an outbound message the agent sent via tools.
           reactor.deliver(message);
           await consumeFromInbox(message);
+        } else {
+          // Unsolicited inbound mail (e.g., from another agent). Deliver to
+          // reactor for notification but leave in INBOX for message tools.
+          reactor.deliver(message);
         }
-        // else: unsolicited message — stays in the INBOX for the agent's
-        // mail tools to discover.
       })();
     });
 
