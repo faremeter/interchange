@@ -173,33 +173,90 @@ const sidecarRouter = createSidecarRouter({
     }
     return row.publicKey;
   },
-  async onMailPersist({ senderAddress, direction, raw }) {
-    const instance = await requireInstance(senderAddress);
-    if (!instance.sessionId) {
+  async onMailPersist({ senderAddress, recipients, raw }) {
+    const senderInstance = await requireInstance(senderAddress);
+    if (!senderInstance.sessionId) {
       throw new Error(
-        `Instance ${instance.id} has no session for address "${senderAddress}"`,
+        `Instance ${senderInstance.id} has no session for address "${senderAddress}"`,
       );
     }
-    const mailId = generateId("sessionMail");
     const createdAt = new Date();
 
-    await db.insert(sessionMail).values({
-      id: mailId,
-      sessionId: instance.sessionId,
-      instanceId: instance.id,
-      tenantId: instance.tenantId,
-      direction,
-      status: "delivered",
+    // Outbound record on the sender's session.
+    const outboundId = generateId("sessionMail");
+    const outboundRecord = {
+      id: outboundId,
+      sessionId: senderInstance.sessionId,
+      instanceId: senderInstance.id,
+      tenantId: senderInstance.tenantId,
+      direction: "outbound" as const,
+      status: "delivered" as const,
       raw,
       createdAt,
-    });
-
-    return {
-      id: mailId,
-      instanceId: instance.id,
-      address: instance.address,
-      createdAt,
     };
+
+    // Inbound records for each recipient that has an active instance.
+    const recipientInstances = await Promise.all(
+      recipients.map(async (addr) => {
+        const row = await db.query.agentInstance.findFirst({
+          where: and(
+            eq(agentInstance.address, addr),
+            isNull(agentInstance.endedAt),
+          ),
+        });
+        if (row === undefined) {
+          throw new Error(
+            `No active instance found for recipient address "${addr}"`,
+          );
+        }
+        if (row.sessionId === null) {
+          throw new Error(
+            `Instance ${row.id} has no session for recipient address "${addr}"`,
+          );
+        }
+        return { addr, instance: row, sessionId: row.sessionId };
+      }),
+    );
+
+    const inboundEntries = recipientInstances.map(
+      ({ addr, instance, sessionId }) => {
+        const id = generateId("sessionMail");
+        return {
+          record: {
+            id,
+            sessionId,
+            instanceId: instance.id,
+            tenantId: instance.tenantId,
+            direction: "inbound" as const,
+            status: "delivered" as const,
+            raw,
+            createdAt,
+          },
+          result: {
+            id,
+            direction: "inbound" as const,
+            instanceId: instance.id,
+            address: addr,
+            createdAt,
+          },
+        };
+      },
+    );
+
+    await db
+      .insert(sessionMail)
+      .values([outboundRecord, ...inboundEntries.map((e) => e.record)]);
+
+    return [
+      {
+        id: outboundId,
+        direction: "outbound" as const,
+        instanceId: senderInstance.id,
+        address: senderInstance.address,
+        createdAt,
+      },
+      ...inboundEntries.map((e) => e.result),
+    ];
   },
   onMailPersisted(row) {
     const parsed = parseMailToEmail(row.raw, row.id);

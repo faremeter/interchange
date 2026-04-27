@@ -96,14 +96,17 @@ export type SidecarRouterConfig = {
   pingTimeoutMs?: number;
   onMailPersist?: (args: {
     senderAddress: string;
-    direction: "outbound";
+    recipients: string[];
     raw: Uint8Array;
-  }) => Promise<{
-    id: string;
-    instanceId: string | null;
-    address: string;
-    createdAt: Date;
-  }>;
+  }) => Promise<
+    {
+      id: string;
+      direction: "inbound" | "outbound";
+      instanceId: string | null;
+      address: string;
+      createdAt: Date;
+    }[]
+  >;
   onMailPersisted?: (row: {
     id: string;
     raw: Uint8Array;
@@ -349,6 +352,7 @@ export function createSidecarRouter(
             onMailPersist,
             frame.rawMessage,
             frame.senderAddress,
+            frame.recipients,
           );
         } else if (frame.delivered === true) {
           if (!frame.senderAddress) {
@@ -754,29 +758,34 @@ export function createSidecarRouter(
     persist: NonNullable<SidecarRouterConfig["onMailPersist"]>,
     rawMessage: string,
     senderAddress: string,
+    recipients: string[],
   ): Promise<void> {
-    let result;
+    let results;
     let raw: Uint8Array;
     try {
       raw = Uint8Array.from(atob(rawMessage), (c) => c.charCodeAt(0));
-      result = await persist({
+      results = await persist({
         senderAddress,
-        direction: "outbound",
+        recipients,
         raw,
       });
     } catch (err) {
-      logger.error`Failed to persist outbound mail from ${senderAddress}: ${err instanceof Error ? err.message : String(err)}`;
+      logger.error`Failed to persist mail from ${senderAddress}: ${err instanceof Error ? err.message : String(err)}`;
       return;
     }
 
-    onMailPersisted?.({
-      id: result.id,
-      raw,
-      createdAt: result.createdAt,
-      direction: "outbound",
-      instanceId: result.instanceId,
-      address: result.address,
-    });
+    if (onMailPersisted !== undefined) {
+      for (const result of results) {
+        onMailPersisted({
+          id: result.id,
+          raw,
+          createdAt: result.createdAt,
+          direction: result.direction,
+          instanceId: result.instanceId,
+          address: result.address,
+        });
+      }
+    }
   }
 
   function handleClose(ws: WsHandle): void {
