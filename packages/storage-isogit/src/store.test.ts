@@ -450,6 +450,24 @@ describe("audit store", () => {
       store.commitAudit([makeAuditRecord({ callId: "c1", seq: 1 })]),
     ).rejects.toThrow("Duplicate audit record");
   });
+
+  test("commitAudit duplicate in batch leaves no orphaned files", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    await store.commitAudit([makeAuditRecord({ callId: "c1", seq: 0 })]);
+
+    // Batch contains a new record and a duplicate. Pre-flight should
+    // reject before writing the new record to disk.
+    const fresh = makeAuditRecord({ callId: "c2", seq: 1 });
+    const dup = makeAuditRecord({ callId: "c1", seq: 2 });
+    await expect(store.commitAudit([fresh, dup])).rejects.toThrow(
+      "Duplicate audit record",
+    );
+
+    const freshPath = path.join(dir, "state", "audit", "session-1", "c2.json");
+    expect(fs.existsSync(freshPath)).toBe(false);
+  });
 });
 
 function makeErrorRecord(overrides: Partial<ErrorRecord> = {}): ErrorRecord {
