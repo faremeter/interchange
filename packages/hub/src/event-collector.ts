@@ -20,6 +20,8 @@ export type TurnFinalized = {
   status: "completed" | "failed";
   text: string;
   hadError: boolean;
+  errors: { category: string; message: string }[];
+  toolErrors: { name: string; content: string }[];
 };
 
 export type EventCollector = {
@@ -58,6 +60,14 @@ export function createEventCollector(
   // connector.reply), this persists until finalization so the callback can
   // report whether an inference error occurred during the turn.
   let turnHadError = false;
+  // Structured error details accumulated during the turn for inclusion in
+  // TurnFinalized. Reset on each new turn.
+  let accumulatedErrors: { category: string; message: string }[] = [];
+  // Maps tool call IDs to tool names for correlating tool results with their
+  // originating calls. Populated from inference.done tool_call blocks.
+  const callNames = new Map<string, string>();
+  // Tool results that reported isError, accumulated for TurnFinalized.
+  let accumulatedToolErrors: { name: string; content: string }[] = [];
 
   async function onEvent(event: InferenceEvent): Promise<void> {
     switch (event.type) {
@@ -68,14 +78,23 @@ export function createEventCollector(
       case "inference.done":
         await handleInferenceDone(event.data.message.content);
         break;
-      case "tool.done":
+      case "tool.done": {
+        const isError = event.data.result.isError ?? false;
         await insertPart("tool", null, {
           kind: "result",
           callId: event.data.result.callId,
           content: event.data.result.content,
-          isError: event.data.result.isError ?? false,
+          isError,
         });
+        if (isError) {
+          const name =
+            callNames.get(event.data.result.callId) ?? event.data.result.callId;
+          const raw = event.data.result.content;
+          const content = typeof raw === "string" ? raw : JSON.stringify(raw);
+          accumulatedToolErrors.push({ name, content });
+        }
         break;
+      }
       case "inference.error":
         pendingError = true;
         turnHadError = true;
@@ -84,6 +103,10 @@ export function createEventCollector(
           ...(event.data.error.statusCode !== undefined
             ? { statusCode: event.data.error.statusCode }
             : {}),
+        });
+        accumulatedErrors.push({
+          category: event.data.error.category,
+          message: event.data.error.message,
         });
         break;
       case "connector.reply":
@@ -101,7 +124,34 @@ export function createEventCollector(
         break;
       case "reactor.error":
         if (event.data.fatal) {
+          // The reactor failed before any inference started (e.g., context
+          // store load failure), but the user needs to see why their agent
+          // failed, and without a turn there is no container for the error.
+          if (currentTurnId === null) {
+            await beginTurn("unknown");
+          }
+          turnHadError = true;
+          // Push after beginTurn so the error survives the array reset.
+          accumulatedErrors.push({
+            category: "reactor_error",
+            message: event.data.error,
+          });
+          await insertPart("error", event.data.error, {
+            category: "reactor_error",
+          });
           await finalizeTurn("failed", true);
+        } else {
+          if (currentTurnId === null) {
+            await beginTurn("unknown");
+          }
+          turnHadError = true;
+          accumulatedErrors.push({
+            category: "reactor_error",
+            message: event.data.error,
+          });
+          await insertPart("error", event.data.error, {
+            category: "reactor_error",
+          });
         }
         break;
       default:
@@ -124,6 +174,9 @@ export function createEventCollector(
     pendingError = false;
     accumulatedText = "";
     turnHadError = false;
+    accumulatedErrors = [];
+    callNames.clear();
+    accumulatedToolErrors = [];
 
     await db.insert(inferenceTurn).values({
       id: currentTurnId,
@@ -147,6 +200,7 @@ export function createEventCollector(
           await insertPart("reasoning", block.thinking, null);
           break;
         case "tool_call":
+          callNames.set(block.id, block.name);
           await insertPart("tool", null, {
             kind: "call",
             callId: block.id,
@@ -191,6 +245,8 @@ export function createEventCollector(
         status,
         text: accumulatedText,
         hadError: turnHadError,
+        errors: accumulatedErrors,
+        toolErrors: accumulatedToolErrors,
       });
     }
 

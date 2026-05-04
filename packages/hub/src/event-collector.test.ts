@@ -416,6 +416,49 @@ describe("EventCollector", () => {
     expect(at(fakeDB.updates, 0).set.status).toBe("completed");
   });
 
+  test("fatal reactor.error with no active turn creates a turn and inserts error part", async () => {
+    await collector.onEvent(
+      event("reactor.error", 1, {
+        error: "context store unavailable",
+        fatal: true,
+      }),
+    );
+
+    const turns = fakeDB.inserts.filter((i) => i.table === "inference_turn");
+    expect(turns).toHaveLength(1);
+    expect(at(turns, 0).values.model).toBe("unknown");
+    expect(at(turns, 0).values.status).toBe("running");
+
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
+    expect(parts).toHaveLength(1);
+    expect(at(parts, 0).values.type).toBe("error");
+    expect(at(parts, 0).values.content).toBe("context store unavailable");
+    expect(at(parts, 0).values.metadata).toEqual({ category: "reactor_error" });
+
+    expect(fakeDB.updates).toHaveLength(1);
+    expect(at(fakeDB.updates, 0).table).toBe("inference_turn");
+    expect(at(fakeDB.updates, 0).set.status).toBe("failed");
+  });
+
+  test("fatal reactor.error inserts error part before finalizing", async () => {
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    await collector.onEvent(
+      event("reactor.error", 5, { error: "fatal failure", fatal: true }),
+    );
+
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
+    const types = parts.map((p) => p.values.type);
+    expect(types).toContain("error");
+
+    const errorPart = parts.find((p) => p.values.type === "error");
+    if (errorPart === undefined) throw new Error("Expected an error part");
+    expect(errorPart.values.content).toBe("fatal failure");
+    expect(errorPart.values.metadata).toEqual({ category: "reactor_error" });
+
+    expect(fakeDB.updates).toHaveLength(1);
+    expect(at(fakeDB.updates, 0).set.status).toBe("failed");
+  });
+
   test("inference.error persists error part and connector.reply persists text", async () => {
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(
@@ -616,6 +659,148 @@ describe("EventCollector", () => {
 
       expect(notifications).toHaveLength(1);
       expect(at(notifications, 0).status).toBe("failed");
+    });
+
+    test("fatal reactor.error with no active turn includes error in TurnFinalized", async () => {
+      await notifyCollector.onEvent(
+        event("reactor.error", 1, {
+          error: "context store unavailable",
+          fatal: true,
+        }),
+      );
+
+      expect(notifications).toHaveLength(1);
+      expect(at(notifications, 0).status).toBe("failed");
+      expect(at(notifications, 0).errors).toEqual([
+        { category: "reactor_error", message: "context store unavailable" },
+      ]);
+    });
+
+    test("TurnFinalized includes accumulated errors", async () => {
+      await notifyCollector.onEvent(
+        event("inference.start", 1, { model: "gpt-4" }),
+      );
+      await notifyCollector.onEvent(
+        event("inference.error", 3, {
+          error: { message: "rate limit exceeded", category: "rate_limit" },
+        }),
+      );
+      await notifyCollector.onEvent(
+        event("connector.reply", 4, { content: "I hit a rate limit." }),
+      );
+
+      expect(notifications).toHaveLength(1);
+      expect(at(notifications, 0).errors).toEqual([
+        { category: "rate_limit", message: "rate limit exceeded" },
+      ]);
+    });
+
+    test("TurnFinalized includes tool errors from failed tool results", async () => {
+      await notifyCollector.onEvent(
+        event("inference.start", 1, { model: "gpt-4" }),
+      );
+      await notifyCollector.onEvent(
+        event("inference.done", 3, {
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_call",
+                id: "call_1",
+                name: "file_read",
+                arguments: { path: "/etc/shadow" },
+              },
+            ],
+            model: "gpt-4",
+          },
+          usage: { input: 10, output: 5 },
+        }),
+      );
+      await notifyCollector.onEvent(
+        event("tool.done", 5, {
+          result: {
+            callId: "call_1",
+            content: "Permission denied",
+            isError: true,
+          },
+        }),
+      );
+      await notifyCollector.onEvent(event("reactor.done", 10, {}));
+
+      expect(notifications).toHaveLength(1);
+      expect(at(notifications, 0).toolErrors).toEqual([
+        { name: "file_read", content: "Permission denied" },
+      ]);
+    });
+
+    test("TurnFinalized includes non-fatal reactor errors", async () => {
+      await notifyCollector.onEvent(
+        event("inference.start", 1, { model: "gpt-4" }),
+      );
+      await notifyCollector.onEvent(
+        event("reactor.error", 3, {
+          error: "checkpoint failed",
+          fatal: false,
+        }),
+      );
+      await notifyCollector.onEvent(
+        event("inference.done", 5, {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Continuing" }],
+            model: "gpt-4",
+          },
+          usage: { input: 5, output: 5 },
+        }),
+      );
+      await notifyCollector.onEvent(event("reactor.done", 10, {}));
+
+      expect(notifications).toHaveLength(1);
+      expect(at(notifications, 0).errors).toEqual([
+        { category: "reactor_error", message: "checkpoint failed" },
+      ]);
+      expect(at(notifications, 0).hadError).toBe(true);
+    });
+
+    test("non-fatal reactor.error with no active turn creates a turn and surfaces error", async () => {
+      await notifyCollector.onEvent(
+        event("reactor.error", 1, {
+          error: "checkpoint hook failed",
+          fatal: false,
+        }),
+      );
+      // The non-fatal error created a synthetic turn. The next
+      // inference.start auto-finalizes it before starting a new turn.
+      await notifyCollector.onEvent(
+        event("inference.start", 5, { model: "gpt-4" }),
+      );
+
+      expect(notifications).toHaveLength(1);
+      expect(at(notifications, 0).status).toBe("completed");
+      expect(at(notifications, 0).hadError).toBe(true);
+      expect(at(notifications, 0).errors).toEqual([
+        { category: "reactor_error", message: "checkpoint hook failed" },
+      ]);
+    });
+
+    test("TurnFinalized errors array is empty when no errors occurred", async () => {
+      await notifyCollector.onEvent(
+        event("inference.start", 1, { model: "gpt-4" }),
+      );
+      await notifyCollector.onEvent(
+        event("inference.done", 5, {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "All good" }],
+            model: "gpt-4",
+          },
+          usage: { input: 5, output: 5 },
+        }),
+      );
+      await notifyCollector.onEvent(event("reactor.done", 10, {}));
+
+      expect(notifications).toHaveLength(1);
+      expect(at(notifications, 0).errors).toEqual([]);
     });
   });
 });
