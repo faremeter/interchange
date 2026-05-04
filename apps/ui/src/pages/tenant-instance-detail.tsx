@@ -63,6 +63,10 @@ const TurnCommittedEvent = type({
     status: "'completed' | 'failed'",
     text: "string",
     hadError: "boolean",
+    "errors?": type({
+      category: "string",
+      message: "string",
+    }).array(),
   },
 });
 
@@ -142,6 +146,8 @@ type ChatMessage =
       content: string;
       timestamp: string;
       isError?: boolean;
+      errors?: { category: string; message: string }[];
+      toolErrors?: { name: string; content: string }[];
     };
 
 function isAgentAddress(email: string): boolean {
@@ -234,7 +240,53 @@ function turnToMessage(turn: InferenceTurnResponse): ChatMessage | null {
       typeof p.content === "string" &&
       p.content.length > 0,
   );
-  if (textParts.length === 0) return null;
+
+  const errors: { category: string; message: string }[] = turn.parts
+    .filter(
+      (p): p is typeof p & { content: string } =>
+        p.type === "error" &&
+        typeof p.content === "string" &&
+        p.content.length > 0,
+    )
+    .map((p) => ({
+      category:
+        typeof p.metadata?.category === "string"
+          ? p.metadata.category
+          : "unknown",
+      message: p.content,
+    }));
+
+  const callNames = new Map<string, string>();
+  for (const p of turn.parts) {
+    if (
+      p.type === "tool" &&
+      p.metadata?.kind === "call" &&
+      typeof p.metadata.callId === "string" &&
+      typeof p.metadata.name === "string"
+    ) {
+      callNames.set(p.metadata.callId, p.metadata.name);
+    }
+  }
+
+  const toolErrors: { name: string; content: string }[] = turn.parts
+    .filter(
+      (p) =>
+        p.type === "tool" &&
+        p.metadata?.kind === "result" &&
+        p.metadata?.isError === true,
+    )
+    .map((p) => {
+      const callId =
+        typeof p.metadata?.callId === "string" ? p.metadata.callId : "";
+      const name = callNames.get(callId) ?? callId;
+      const raw = p.metadata?.content;
+      const content = typeof raw === "string" ? raw : JSON.stringify(raw);
+      return { name, content };
+    });
+
+  if (textParts.length === 0 && errors.length === 0 && toolErrors.length === 0)
+    return null;
+
   const content = textParts.map((p) => p.content).join("");
   const isError = turn.status === "failed";
 
@@ -244,6 +296,8 @@ function turnToMessage(turn: InferenceTurnResponse): ChatMessage | null {
     content,
     timestamp: turn.startedAt,
     ...(isError ? { isError: true } : {}),
+    ...(errors.length > 0 ? { errors } : {}),
+    ...(toolErrors.length > 0 ? { toolErrors } : {}),
   };
 }
 
@@ -386,7 +440,7 @@ export function TenantInstanceDetailPage() {
         const turnEvent = TurnCommittedEvent(raw);
         if (!(turnEvent instanceof type.errors)) {
           const messages = getMessages(instanceId);
-          const { turnId, status, text, hadError } = turnEvent.data;
+          const { turnId, status, text, hadError, errors } = turnEvent.data;
           const isError = hadError || status === "failed";
           const already = messages.some(
             (m) => m.kind === "turn" && m.turnId === turnId,
@@ -398,6 +452,7 @@ export function TenantInstanceDetailPage() {
               content: text || "An error occurred during inference.",
               timestamp: new Date().toISOString(),
               ...(isError ? { isError: true } : {}),
+              ...(errors && errors.length > 0 ? { errors } : {}),
             });
           }
           // Only clear the streaming buffer if it still holds text from the
@@ -703,6 +758,40 @@ export function TenantInstanceDetailPage() {
                       ) : (
                         msg.content
                       )}
+                      {msg.kind === "turn" &&
+                        msg.errors &&
+                        msg.errors.length > 0 && (
+                          <div className="mt-1.5 space-y-1">
+                            {msg.errors.map((err, i) => (
+                              <div
+                                key={i}
+                                className="rounded border border-destructive/30 bg-destructive/10 px-2 py-1 text-xs text-destructive"
+                              >
+                                <span className="font-medium">
+                                  {err.category}:
+                                </span>{" "}
+                                {err.message}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      {msg.kind === "turn" &&
+                        msg.toolErrors &&
+                        msg.toolErrors.length > 0 && (
+                          <div className="mt-1.5 space-y-1">
+                            {msg.toolErrors.map((err, i) => (
+                              <div
+                                key={i}
+                                className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-400"
+                              >
+                                <span className="font-medium">
+                                  Tool Error ({err.name}):
+                                </span>{" "}
+                                {err.content}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       {msg.kind === "mail" && msg.attachments.length > 0 && (
                         <div className="mt-1 flex flex-col gap-0.5">
                           {msg.attachments.map((att) => (
