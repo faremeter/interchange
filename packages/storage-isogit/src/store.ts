@@ -13,6 +13,7 @@ import { type } from "arktype";
 import {
   AuditRecord,
   type AuditRecord as AuditRecordType,
+  type ErrorRecord,
 } from "@interchange/types/audit";
 import { AUTHOR } from "./init";
 import type { CommitSigner } from "./signer";
@@ -56,6 +57,7 @@ async function readCommitLog(
 }
 
 const AUDIT_DIR = "state/audit";
+const ERRORS_DIR = "state/errors";
 
 const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
 
@@ -202,6 +204,64 @@ export class IsogitStore implements ContextStore, AuditStore {
       fs,
       dir: this.dir,
       message: `Record ${count} tool audit ${noun}`,
+      author: AUTHOR,
+      ...this.signingArgs(),
+    });
+  }
+
+  async commitErrors(
+    records: ErrorRecord[],
+    _signal?: AbortSignal,
+  ): Promise<void> {
+    if (records.length === 0) return;
+
+    // Pre-flight: validate all records and check for duplicates before
+    // writing anything to disk. This avoids orphaned files if a
+    // duplicate is detected partway through the batch.
+    const planned: { record: ErrorRecord; filepath: string }[] = [];
+    for (const record of records) {
+      assertSafeSegment(record.sessionId, "sessionId");
+
+      const sanitizedCategory = record.category.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const seq = String(record.seq).padStart(8, "0");
+      const filepath = path.join(
+        ERRORS_DIR,
+        record.sessionId,
+        `${seq}-${sanitizedCategory}.json`,
+      );
+      const fullPath = path.join(this.dir, filepath);
+
+      try {
+        await fs.promises.access(fullPath);
+        throw new Error(
+          `Duplicate error record: ${record.sessionId}/${seq}-${sanitizedCategory}`,
+        );
+      } catch (e) {
+        if (e instanceof Error && "code" in e && e.code === "ENOENT") {
+          // Expected: file does not exist yet.
+        } else {
+          throw e;
+        }
+      }
+
+      planned.push({ record, filepath });
+    }
+
+    // Write phase: all validation passed, safe to write files.
+    for (const { record, filepath } of planned) {
+      const sessionDir = path.join(this.dir, ERRORS_DIR, record.sessionId);
+      await fs.promises.mkdir(sessionDir, { recursive: true });
+      const fullPath = path.join(this.dir, filepath);
+      await fs.promises.writeFile(fullPath, JSON.stringify(record, null, 2));
+      await git.add({ fs, dir: this.dir, filepath });
+    }
+
+    const count = records.length;
+    const noun = count === 1 ? "record" : "records";
+    await git.commit({
+      fs,
+      dir: this.dir,
+      message: `Record ${count} error ${noun}`,
       author: AUTHOR,
       ...this.signingArgs(),
     });
