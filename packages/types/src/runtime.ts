@@ -7,7 +7,7 @@
 // ToolRunner, etc.) remain plain TypeScript.
 
 import { type } from "arktype";
-import type { AuditRecord } from "./audit";
+import type { AuditRecord, ErrorRecord } from "./audit";
 import { WireGrantRule } from "./grant-wire";
 
 // ---------------------------------------------------------------------------
@@ -1331,6 +1331,12 @@ export interface AuditStore {
    * the given sessionId, ordered by seq.
    */
   loadAudit(sessionId: string, signal?: AbortSignal): Promise<AuditRecord[]>;
+
+  /**
+   * Persist a batch of error records. Called at checkpoint boundaries
+   * and shutdown with all error records accumulated since the last flush.
+   */
+  commitErrors(records: ErrorRecord[], signal?: AbortSignal): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
