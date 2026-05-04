@@ -17,7 +17,7 @@ import type {
   ConversationMessage,
   TokenUsage,
 } from "@interchange/types/runtime";
-import type { AuditRecord } from "@interchange/types/audit";
+import type { AuditRecord, ErrorRecord } from "@interchange/types/audit";
 
 const ZERO_USAGE: TokenUsage = {
   input: 0,
@@ -449,6 +449,72 @@ describe("audit store", () => {
     await expect(
       store.commitAudit([makeAuditRecord({ callId: "c1", seq: 1 })]),
     ).rejects.toThrow("Duplicate audit record");
+  });
+});
+
+function makeErrorRecord(overrides: Partial<ErrorRecord> = {}): ErrorRecord {
+  return {
+    source: "inference",
+    category: "credential_failure",
+    message: "Authentication failed",
+    fatal: false,
+    timestamp: "2026-04-17T00:00:00.000Z",
+    sessionId: "session-1",
+    seq: 1,
+    ...overrides,
+  };
+}
+
+describe("error store", () => {
+  test("commitErrors writes error records to state/errors directory", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    const record = makeErrorRecord();
+    await store.commitErrors([record]);
+
+    const expectedPath = path.join(
+      dir,
+      "state",
+      "errors",
+      "session-1",
+      "0001-credential_failure.json",
+    );
+    const raw = await fs.promises.readFile(expectedPath, "utf-8");
+    expect(JSON.parse(raw)).toEqual(record);
+  });
+
+  test("commitErrors creates a git commit", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    await store.commitErrors([makeErrorRecord()]);
+
+    const entries = await git.log({ fs, dir, depth: 1 });
+    const entry = entries[0];
+    if (!entry) throw new Error("no commit found");
+    expect(entry.commit.message.trimEnd()).toBe("Record 1 error record");
+  });
+
+  test("commitErrors rejects duplicate error records", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    const record = makeErrorRecord({ seq: 1, category: "credential_failure" });
+    await store.commitErrors([record]);
+    await expect(store.commitErrors([record])).rejects.toThrow(
+      "Duplicate error record",
+    );
+  });
+
+  test("commitErrors validates sessionId path segments", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+
+    const record = makeErrorRecord({ sessionId: "../evil" });
+    await expect(store.commitErrors([record])).rejects.toThrow(
+      "unsafe characters",
+    );
   });
 });
 
