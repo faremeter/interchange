@@ -29,3 +29,16 @@ export const AuditRecord = type({
   seq: "number.integer >= 0",
 });
 export type AuditRecord = typeof AuditRecord.infer;
+
+export const ErrorRecord = type({
+  source: "'inference' | 'reactor'",
+  category: "string",
+  message: "string",
+  "model?": "string",
+  "statusCode?": "number.integer",
+  fatal: "boolean",
+  timestamp: "string",
+  sessionId: "string",
+  seq: "number.integer >= 0",
+});
+export type ErrorRecord = typeof ErrorRecord.infer;
