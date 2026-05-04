@@ -35,6 +35,8 @@ import {
   type ReactorPlugin,
 } from "@interchange/types/runtime";
 
+import type { ErrorRecord } from "@interchange/types/audit";
+
 import type { HarnessConfig } from "./config";
 import { validateConfig } from "./config";
 import {
@@ -117,6 +119,9 @@ export function createHarness(config: HarnessConfig): Harness {
   const auditStore = config.auditStore;
   const auditCollector: AuditCollector | undefined =
     auditStore !== undefined ? createAuditCollector(sessionId) : undefined;
+
+  const accumulatedErrors: ErrorRecord[] = [];
+  let errorSeq = 0;
 
   const authzExtension =
     config.authorize !== undefined
@@ -241,6 +246,33 @@ export function createHarness(config: HarnessConfig): Harness {
     // message.received is reactor-internal; do not forward to the caller.
     if (event.type === "message.received") return;
 
+    if (event.type === "inference.error" && auditStore) {
+      accumulatedErrors.push({
+        source: "inference",
+        category: event.data.error.category,
+        message: event.data.error.message,
+        fatal: false,
+        timestamp: new Date().toISOString(),
+        sessionId,
+        seq: errorSeq++,
+        ...(event.data.error.statusCode !== undefined
+          ? { statusCode: event.data.error.statusCode }
+          : {}),
+      });
+    }
+
+    if (event.type === "reactor.error" && auditStore) {
+      accumulatedErrors.push({
+        source: "reactor",
+        category: "reactor_error",
+        message: event.data.error,
+        fatal: event.data.fatal,
+        timestamp: new Date().toISOString(),
+        sessionId,
+        seq: errorSeq++,
+      });
+    }
+
     onEvent(event);
   }
 
@@ -261,6 +293,14 @@ export function createHarness(config: HarnessConfig): Harness {
     }
   }
 
+  async function flushErrors(): Promise<void> {
+    if (accumulatedErrors.length === 0) return;
+    if (auditStore === undefined) return;
+    const count = accumulatedErrors.length;
+    await auditStore.commitErrors(accumulatedErrors.slice(0, count));
+    accumulatedErrors.splice(0, count);
+  }
+
   // The reactor reads config.providerConfig lazily at each inference call,
   // so mutating this object hot-swaps credentials without restarting.
   const reactorConfig: Parameters<typeof createReactor>[0] = {
@@ -274,13 +314,17 @@ export function createHarness(config: HarnessConfig): Harness {
   };
 
   if (auditCollector !== undefined) {
-    reactorConfig.afterCheckpoint = () => flushAudit();
+    reactorConfig.afterCheckpoint = async () => {
+      await flushAudit();
+      await flushErrors();
+    };
     reactorConfig.onShutdown = async () => {
       const inflight = auditCollector.pending();
       if (inflight > 0) {
         logger.warn`${inflight} audit records in flight at shutdown, these tool calls will not be recorded`;
       }
       await flushAudit();
+      await flushErrors();
     };
   }
 

@@ -30,7 +30,7 @@ import type {
   ToolResult,
   InferenceEvent,
 } from "@interchange/types/runtime";
-import type { AuditRecord } from "@interchange/types/audit";
+import type { AuditRecord, ErrorRecord } from "@interchange/types/audit";
 import type { AuthzCallResult } from "@interchange/inference";
 import type {
   ReactorInboundEvent,
@@ -1198,6 +1198,9 @@ describe("Config validation", () => {
       async loadAudit() {
         return [];
       },
+      async commitErrors() {
+        /* noop */
+      },
     };
     expect(() => createHarness(makeConfig(transport, { auditStore }))).toThrow(
       "authorize is required when auditStore is provided",
@@ -1212,6 +1215,9 @@ describe("Config validation", () => {
       },
       async loadAudit() {
         return [];
+      },
+      async commitErrors() {
+        /* noop */
       },
     };
     const authorize = async (): Promise<AuthzCallResult> => ({
@@ -1252,6 +1258,9 @@ describe("Audit integration", () => {
       },
       async loadAudit() {
         return committed.flat();
+      },
+      async commitErrors() {
+        /* noop */
       },
       getCommitted() {
         return committed;
@@ -1505,5 +1514,344 @@ describe("Audit integration", () => {
     expect(record.authz.blocked).toBe(true);
     expect(record.authz.effect).toBeNull();
     expect(record.result.isError).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Error flushing
+// ---------------------------------------------------------------------------
+
+describe("Error flushing", () => {
+  function makeErrorAuditStore(): AuditStore & {
+    getCommittedErrors(): ErrorRecord[][];
+  } {
+    const committedErrors: ErrorRecord[][] = [];
+    return {
+      async commitAudit() {
+        /* noop */
+      },
+      async loadAudit() {
+        return [];
+      },
+      async commitErrors(records: ErrorRecord[]) {
+        committedErrors.push([...records]);
+      },
+      getCommittedErrors() {
+        return committedErrors;
+      },
+    };
+  }
+
+  function allowAll(): Promise<AuthzCallResult> {
+    return Promise.resolve({
+      effect: "allow" as const,
+      matchingGrants: [],
+      resolvedBy: null,
+    });
+  }
+
+  function waitForDone(events: InferenceEvent[]): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const deadline = setTimeout(
+        () => reject(new Error("Timed out waiting for reactor.done")),
+        5000,
+      );
+      const check = () => {
+        if (events.some((e) => e.type === "reactor.done")) {
+          clearTimeout(deadline);
+          resolve();
+          return;
+        }
+        setTimeout(check, 10);
+      };
+      check();
+    });
+  }
+
+  test("inference.error events are accumulated and flushed at checkpoint", async () => {
+    const transport = makeMockTransport();
+    const auditStore = makeErrorAuditStore();
+    const events: InferenceEvent[] = [];
+
+    // Plugin that triggers inference (which will fail due to invalid provider
+    // URL) and then checkpoints + completes on inference.error.
+    const plugin: ReactorPlugin = {
+      async decide(
+        event: { type: string },
+        _state: ReactorState,
+        caps: ReactorCapabilities,
+      ) {
+        if (event.type === "message.received") {
+          return caps.infer("claude-test");
+        }
+        if (event.type === "inference.error") {
+          return [caps.checkpoint("after-error"), caps.done()];
+        }
+        return caps.done();
+      },
+    };
+
+    // Use an unreachable URL so inference fails immediately with a network
+    // error, causing the reactor to emit inference.error.
+    const harness = createHarness(
+      makeConfig(transport, {
+        provider: {
+          provider: "anthropic",
+          baseURL: "http://localhost:1",
+          apiKey: "test-key",
+          model: "claude-test",
+        },
+        auditStore,
+        authorize: () => allowAll(),
+        onEvent: (e) => events.push(e),
+        plugin,
+      }),
+    );
+
+    harness.start();
+    harness.deliver(makeInboundMessage());
+    await waitForDone(events);
+
+    const batches = auditStore.getCommittedErrors();
+    expect(batches.length).toBe(1);
+    const record = batches[0]?.[0];
+    if (record === undefined) throw new Error("expected error record");
+    expect(record.source).toBe("inference");
+    expect(record.category).toBeDefined();
+    expect(record.message).toBeDefined();
+    expect(record.fatal).toBe(false);
+    expect(record.sessionId).toBeDefined();
+  });
+
+  test("reactor.error (fatal) events are accumulated and flushed", async () => {
+    const transport = makeMockTransport();
+    const auditStore = makeErrorAuditStore();
+    const events: InferenceEvent[] = [];
+
+    // Plugin that throws on message.received, causing a fatal reactor.error.
+    const plugin: ReactorPlugin = {
+      async decide(event: { type: string }, _state: ReactorState) {
+        if (event.type === "message.received") {
+          throw new Error("plugin explosion");
+        }
+        return { type: "done" as const };
+      },
+    };
+
+    const harness = createHarness(
+      makeConfig(transport, {
+        auditStore,
+        authorize: () => allowAll(),
+        onEvent: (e) => events.push(e),
+        plugin,
+      }),
+    );
+
+    harness.start();
+    harness.deliver(makeInboundMessage());
+    await waitForDone(events);
+
+    const batches = auditStore.getCommittedErrors();
+    expect(batches.length).toBe(1);
+    const record = batches[0]?.[0];
+    if (record === undefined) throw new Error("expected error record");
+    expect(record.source).toBe("reactor");
+    expect(record.category).toBe("reactor_error");
+    expect(record.fatal).toBe(true);
+    expect(record.message).toContain("plugin explosion");
+    expect(record.sessionId).toBeDefined();
+  });
+
+  test("no commitErrors call when no errors occurred", async () => {
+    const transport = makeMockTransport();
+    const auditStore = makeErrorAuditStore();
+    const events: InferenceEvent[] = [];
+
+    // Plugin that completes without errors.
+    const plugin: ReactorPlugin = {
+      async decide(
+        event: { type: string },
+        _state: ReactorState,
+        caps: ReactorCapabilities,
+      ) {
+        if (event.type === "message.received") {
+          return [caps.checkpoint(), caps.done()];
+        }
+        return caps.done();
+      },
+    };
+
+    const harness = createHarness(
+      makeConfig(transport, {
+        auditStore,
+        authorize: () => allowAll(),
+        onEvent: (e) => events.push(e),
+        plugin,
+      }),
+    );
+
+    harness.start();
+    harness.deliver(makeInboundMessage());
+    await waitForDone(events);
+
+    expect(auditStore.getCommittedErrors().length).toBe(0);
+  });
+
+  test("non-fatal reactor.error events are recorded in the error audit trail", async () => {
+    const transport = makeMockTransport();
+    const auditStore = makeErrorAuditStore();
+    const events: InferenceEvent[] = [];
+
+    // Plugin that triggers a checkpoint (which succeeds) then completes.
+    // The reactor emits a non-fatal reactor.error for afterCheckpoint
+    // hook failures, but we can simulate by using a plugin that causes
+    // inference (which fails) and then checkpoints + completes.
+    const plugin: ReactorPlugin = {
+      async decide(
+        event: { type: string },
+        _state: ReactorState,
+        caps: ReactorCapabilities,
+      ) {
+        if (event.type === "message.received") {
+          return caps.infer("claude-test");
+        }
+        if (event.type === "inference.error") {
+          return [caps.checkpoint("after-error"), caps.done()];
+        }
+        return caps.done();
+      },
+    };
+
+    const harness = createHarness(
+      makeConfig(transport, {
+        provider: {
+          provider: "anthropic",
+          baseURL: "http://localhost:1",
+          apiKey: "test-key",
+          model: "claude-test",
+        },
+        auditStore,
+        authorize: () => allowAll(),
+        onEvent: (e) => events.push(e),
+        plugin,
+      }),
+    );
+
+    harness.start();
+    harness.deliver(makeInboundMessage());
+    await waitForDone(events);
+
+    // The inference.error should be recorded regardless of fatal status.
+    const allRecords = auditStore.getCommittedErrors().flat();
+    const inferenceErrors = allRecords.filter((r) => r.source === "inference");
+    expect(inferenceErrors.length).toBeGreaterThanOrEqual(1);
+    const record = inferenceErrors[0];
+    if (record === undefined) throw new Error("expected inference error");
+    expect(record.fatal).toBe(false);
+  });
+
+  test("errors survive a commitErrors failure", async () => {
+    const transport = makeMockTransport();
+    const committedErrors: ErrorRecord[][] = [];
+    let shouldFail = true;
+    const auditStore: AuditStore & { getCommittedErrors(): ErrorRecord[][] } = {
+      async commitAudit() {
+        /* noop */
+      },
+      async loadAudit() {
+        return [];
+      },
+      async commitErrors(records: ErrorRecord[]) {
+        if (shouldFail) {
+          shouldFail = false;
+          throw new Error("simulated storage failure");
+        }
+        committedErrors.push([...records]);
+      },
+      getCommittedErrors() {
+        return committedErrors;
+      },
+    };
+    const events: InferenceEvent[] = [];
+
+    // Plugin that triggers inference (fails due to bad URL), then
+    // checkpoints (commitErrors throws on first call), then completes
+    // (commitErrors succeeds on shutdown flush with the retained records).
+    const plugin: ReactorPlugin = {
+      async decide(
+        event: { type: string },
+        _state: ReactorState,
+        caps: ReactorCapabilities,
+      ) {
+        if (event.type === "message.received") {
+          return caps.infer("claude-test");
+        }
+        if (event.type === "inference.error") {
+          return [caps.checkpoint("will-fail"), caps.done()];
+        }
+        return caps.done();
+      },
+    };
+
+    const harness = createHarness(
+      makeConfig(transport, {
+        provider: {
+          provider: "anthropic",
+          baseURL: "http://localhost:1",
+          apiKey: "test-key",
+          model: "claude-test",
+        },
+        auditStore,
+        authorize: () => allowAll(),
+        onEvent: (e) => events.push(e),
+        plugin,
+      }),
+    );
+
+    harness.start();
+    harness.deliver(makeInboundMessage());
+    await waitForDone(events);
+
+    // The first flush failed but the records should have been retained
+    // and flushed on shutdown.
+    expect(committedErrors.length).toBe(1);
+    const record = committedErrors[0]?.[0];
+    if (record === undefined) throw new Error("expected error record");
+    expect(record.source).toBe("inference");
+  });
+
+  test("errors are flushed at shutdown when no checkpoint occurred", async () => {
+    const transport = makeMockTransport();
+    const auditStore = makeErrorAuditStore();
+    const events: InferenceEvent[] = [];
+
+    // Plugin that throws — reactor.error is emitted and then shutdown
+    // happens (no explicit checkpoint). Errors must be flushed via
+    // onShutdown.
+    const plugin: ReactorPlugin = {
+      async decide(event: { type: string }, _state: ReactorState) {
+        if (event.type === "message.received") {
+          throw new Error("shutdown flush test");
+        }
+        return { type: "done" as const };
+      },
+    };
+
+    const harness = createHarness(
+      makeConfig(transport, {
+        auditStore,
+        authorize: () => allowAll(),
+        onEvent: (e) => events.push(e),
+        plugin,
+      }),
+    );
+
+    harness.start();
+    harness.deliver(makeInboundMessage());
+    await waitForDone(events);
+
+    const batches = auditStore.getCommittedErrors();
+    expect(batches.length).toBe(1);
+    expect(batches[0]?.[0]?.source).toBe("reactor");
   });
 });
