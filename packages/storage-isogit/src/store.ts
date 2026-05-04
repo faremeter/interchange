@@ -167,12 +167,13 @@ export class IsogitStore implements ContextStore, AuditStore {
   ): Promise<void> {
     if (records.length === 0) return;
 
+    // Pre-flight: validate all records and check for duplicates before
+    // writing anything to disk. This avoids orphaned files if a
+    // duplicate is detected partway through the batch.
+    const planned: { record: AuditRecordType; filepath: string }[] = [];
     for (const record of records) {
       assertSafeSegment(record.sessionId, "sessionId");
       assertSafeSegment(record.callId, "callId");
-
-      const sessionDir = path.join(this.dir, AUDIT_DIR, record.sessionId);
-      await fs.promises.mkdir(sessionDir, { recursive: true });
 
       const filepath = path.join(
         AUDIT_DIR,
@@ -194,6 +195,14 @@ export class IsogitStore implements ContextStore, AuditStore {
         }
       }
 
+      planned.push({ record, filepath });
+    }
+
+    // Write phase: all validation passed, safe to write files.
+    for (const { record, filepath } of planned) {
+      const sessionDir = path.join(this.dir, AUDIT_DIR, record.sessionId);
+      await fs.promises.mkdir(sessionDir, { recursive: true });
+      const fullPath = path.join(this.dir, filepath);
       await fs.promises.writeFile(fullPath, JSON.stringify(record, null, 2));
       await git.add({ fs, dir: this.dir, filepath });
     }
