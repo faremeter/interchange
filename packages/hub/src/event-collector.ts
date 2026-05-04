@@ -20,6 +20,7 @@ export type TurnFinalized = {
   status: "completed" | "failed";
   text: string;
   hadError: boolean;
+  errors: { category: string; message: string }[];
 };
 
 export type EventCollector = {
@@ -58,6 +59,9 @@ export function createEventCollector(
   // connector.reply), this persists until finalization so the callback can
   // report whether an inference error occurred during the turn.
   let turnHadError = false;
+  // Structured error details accumulated during the turn for inclusion in
+  // TurnFinalized. Reset on each new turn.
+  let accumulatedErrors: { category: string; message: string }[] = [];
 
   async function onEvent(event: InferenceEvent): Promise<void> {
     switch (event.type) {
@@ -85,6 +89,10 @@ export function createEventCollector(
             ? { statusCode: event.data.error.statusCode }
             : {}),
         });
+        accumulatedErrors.push({
+          category: event.data.error.category,
+          message: event.data.error.message,
+        });
         break;
       case "connector.reply":
         // Only persist reply content when it originated from an error path.
@@ -101,6 +109,20 @@ export function createEventCollector(
         break;
       case "reactor.error":
         if (event.data.fatal) {
+          // The reactor failed before any inference started (e.g., context
+          // store load failure), but the user needs to see why their agent
+          // failed, and without a turn there is no container for the error.
+          if (currentTurnId === null) {
+            await beginTurn("unknown");
+          }
+          turnHadError = true;
+          accumulatedErrors.push({
+            category: "reactor_error",
+            message: event.data.error,
+          });
+          await insertPart("error", event.data.error, {
+            category: "reactor_error",
+          });
           await finalizeTurn("failed", true);
         }
         break;
@@ -124,6 +146,7 @@ export function createEventCollector(
     pendingError = false;
     accumulatedText = "";
     turnHadError = false;
+    accumulatedErrors = [];
 
     await db.insert(inferenceTurn).values({
       id: currentTurnId,
@@ -191,6 +214,7 @@ export function createEventCollector(
         status,
         text: accumulatedText,
         hadError: turnHadError,
+        errors: accumulatedErrors,
       });
     }
 
