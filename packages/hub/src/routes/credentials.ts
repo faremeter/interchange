@@ -2,18 +2,8 @@ import { eq, and, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import {
-  credential,
-  provider,
-  agent,
-  agentInstance,
-  agentSession,
-} from "@interchange/db/schema";
-import {
-  getAncestorChain,
-  resolveCredentialByName,
-  resolveCredentialRequirement,
-} from "@interchange/db";
+import { credential, provider } from "@interchange/db/schema";
+import { getAncestorChain, resolveCredentialByName } from "@interchange/db";
 import {
   CreateCredential,
   UpdateCredential,
@@ -21,10 +11,6 @@ import {
   ErrorResponse,
   paginatedSchema,
 } from "@interchange/types";
-import type { ProviderConfig } from "@interchange/types/runtime";
-
-import { type } from "arktype";
-import { getLogger } from "@interchange/log";
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
@@ -37,6 +23,7 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
+import { pushProviderUpdates } from "../credential-push";
 
 function formatCredential(row: typeof credential.$inferSelect) {
   return {
@@ -55,135 +42,6 @@ function formatCredential(row: typeof credential.$inferSelect) {
     createdAt: ts(row.createdAt),
     updatedAt: ts(row.updatedAt),
   };
-}
-
-const log = getLogger(["hub", "credentials"]);
-
-const CredentialRequirement = type({
-  providerName: "string",
-  "scopes?": "string[]",
-  source: "'tenant' | 'creator' | 'invoker'",
-  "name?": "string",
-});
-const CredentialRequirements = CredentialRequirement.array();
-
-const ProviderMetadata = type({ baseURL: "string" });
-
-/**
- * After a credential secret is rotated, find all running instances in the
- * tenant that may use credentials from the affected provider, re-resolve
- * their full providers array, and push updates to sidecars.
- *
- * Fire-and-forget from the caller's perspective — errors are logged but
- * do not fail the PATCH response.
- */
-async function pushProviderUpdates(
-  c: { get: (key: string) => unknown },
-  tenantId: string,
-): Promise<void> {
-  const db = c.get("db") as import("@interchange/db").DB["db"];
-  const sidecarRouter = c.get(
-    "sidecarRouter",
-  ) as import("../ws/sidecar-handler").SidecarRouter;
-
-  // Find all running instances in this tenant.
-  const instances = await db.query.agentInstance.findMany({
-    where: and(
-      eq(agentInstance.tenantId, tenantId),
-      eq(agentInstance.status, "running"),
-    ),
-  });
-
-  if (instances.length === 0) return;
-
-  // For each instance, look up the agent definition and re-resolve credentials.
-  const results = await Promise.allSettled(
-    instances.map(async (instance) => {
-      const agentRow = await db.query.agent.findFirst({
-        where: eq(agent.id, instance.agentId),
-      });
-      if (!agentRow) return;
-
-      const requirements = CredentialRequirements(
-        agentRow.credentialRequirements ?? [],
-      );
-      if (requirements instanceof type.errors) {
-        log.warn`Invalid credential requirements for agent ${agentRow.id}: ${requirements.summary}`;
-        return;
-      }
-
-      // Look up the invoker's principal from the session. The instance's
-      // own principalId is a synthetic agent principal, not the human who
-      // started the session.
-      let invokerPrincipalId: string | null = null;
-      if (instance.sessionId) {
-        const session = await db.query.agentSession.findFirst({
-          where: eq(agentSession.id, instance.sessionId),
-        });
-        if (session) {
-          invokerPrincipalId = session.principalId;
-        }
-      }
-
-      // Resolve each credential requirement independently. A failure in one
-      // requirement must not prevent the others from being resolved.
-      const providers: ProviderConfig[] = [];
-      for (const req of requirements) {
-        // Skip creator-scoped requirements when the agent has no creator
-        // principal — matching the guard in the launch-time path.
-        if (req.source === "creator" && !agentRow.creatorPrincipalId) {
-          continue;
-        }
-
-        // Skip invoker-scoped requirements when there is no session or
-        // the session's invoker principal could not be determined.
-        if (req.source === "invoker" && !invokerPrincipalId) {
-          continue;
-        }
-
-        let resolved;
-        try {
-          resolved = await resolveCredentialRequirement(
-            db,
-            tenantId,
-            req,
-            agentRow.creatorPrincipalId ?? "",
-            invokerPrincipalId,
-          );
-        } catch {
-          continue;
-        }
-        if (!resolved) continue;
-
-        const providerRow = await db.query.provider.findFirst({
-          where: eq(provider.id, resolved.providerId),
-        });
-        if (!providerRow) continue;
-
-        const metadata = ProviderMetadata(providerRow.metadata ?? {});
-        if (metadata instanceof type.errors) {
-          log.warn`Invalid provider metadata for provider ${providerRow.id}: ${metadata.summary}`;
-          continue;
-        }
-
-        providers.push({
-          provider: providerRow.plugin,
-          baseURL: metadata.baseURL,
-          apiKey: resolved.secret,
-        });
-      }
-
-      if (providers.length === 0) return;
-
-      await sidecarRouter.sendProvidersUpdate(instance.address, providers);
-    }),
-  );
-
-  for (const result of results) {
-    if (result.status === "rejected") {
-      log.warn`Failed to push provider update: ${String(result.reason)}`;
-    }
-  }
 }
 
 const app = new Hono<TenantEnv>();
@@ -508,7 +366,8 @@ app.patch(
 
     // If the secret was updated, push new provider config to running instances.
     if (body.secret !== undefined) {
-      void pushProviderUpdates(c, updated.tenantId);
+      const sidecarRouter = c.get("sidecarRouter");
+      void pushProviderUpdates(db, sidecarRouter, updated.tenantId);
     }
 
     return c.json(formatCredential(updated));
