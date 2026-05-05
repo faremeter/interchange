@@ -9,6 +9,7 @@ import {
   createSessionService,
   createSidecarRouter,
   generateId,
+  resolveInstanceProviders,
 } from "@interchange/hub";
 import { generateKeyPair } from "@interchange/crypto-node";
 import { parseMailToEmail } from "@interchange/mime";
@@ -122,6 +123,27 @@ const sidecarRouter = createSidecarRouter({
       instance.tenantId,
     );
     await sidecarRouter.sendGrantsUpdate(agentAddress, grants);
+
+    // Re-resolve and push credentials so the agent picks up any
+    // rotations that happened while the sidecar was disconnected.
+    // Fail-open: a stale credential causes runtime 401s, not a
+    // security escalation, so we log rather than reject the reconnect.
+    try {
+      const providers = await resolveInstanceProviders(
+        db,
+        instance.tenantId,
+        instance,
+      );
+      if (providers.length > 0) {
+        await sidecarRouter.sendProvidersUpdate(agentAddress, providers);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn(
+        "Failed to push credentials on reconnect for {agentAddress}: {msg}",
+        { agentAddress, msg },
+      );
+    }
 
     const now = new Date();
     if (instance.status !== "running") {
