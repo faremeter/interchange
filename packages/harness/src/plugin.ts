@@ -132,7 +132,10 @@ export class DefaultPlugin implements ReactorPlugin {
           return [capabilities.checkpoint(), capabilities.reply(replyContent)];
         }
 
-        return [capabilities.checkpoint(), capabilities.done()];
+        // Empty response (no text, no tool calls) — checkpoint and wait for
+        // the next inbound message. The reactor only shuts down on explicit
+        // stop (abort), never because the model produced an empty turn.
+        return [capabilities.checkpoint(), capabilities.wait()];
       }
 
       case "tool.done": {
