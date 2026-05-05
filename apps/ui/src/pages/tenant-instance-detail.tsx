@@ -199,6 +199,8 @@ type AgentActivity =
 const instanceMessages = new Map<string, ChatMessage[]>();
 const instanceStreaming = new Map<string, string>();
 const instanceActivity = new Map<string, AgentActivity | null>();
+const instanceHydrated = new Map<string, boolean>();
+const instanceSSEBuffer = new Map<string, ChatMessage[]>();
 
 function getMessages(instanceId: string): ChatMessage[] {
   const existing = instanceMessages.get(instanceId);
@@ -216,6 +218,8 @@ function clearInstanceState(instanceId: string) {
   instanceMessages.delete(instanceId);
   instanceStreaming.delete(instanceId);
   instanceActivity.delete(instanceId);
+  instanceHydrated.delete(instanceId);
+  instanceSSEBuffer.delete(instanceId);
 }
 
 function mailToMessage(mail: MailResponse): ChatMessage {
@@ -331,48 +335,82 @@ export function TenantInstanceDetailPage() {
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const chatPinnedRef = useRef(true);
 
-  // Hydrate chat history from the hub's DB on mount/reload.
+  // Hydrate chat history from the hub's DB on mount/reload. SSE events
+  // that arrive during the fetch window are buffered in instanceSSEBuffer
+  // and merged with the historical batch once the fetch resolves.
   useEffect(() => {
     if (!isRunning) return;
-    if (getMessages(instanceId).length > 0) return;
+    if (instanceHydrated.get(instanceId)) return;
 
     let cancelled = false;
 
     void (async () => {
-      const [mailRes, turnsRes] = await Promise.all([
-        api<{ data: MailResponse[] }>(
-          "GET",
-          `/api/tenants/${tenantId}/agents/instances/${instanceId}/mail?limit=100`,
-        ),
-        api<{ data: InferenceTurnResponse[] }>(
-          "GET",
-          `/api/tenants/${tenantId}/agents/instances/${instanceId}/turns?limit=100`,
-        ),
-      ]);
+      const all: ChatMessage[] = [];
+      let fetchError: unknown;
+
+      try {
+        const [mailRes, turnsRes] = await Promise.all([
+          api<{ data: MailResponse[] }>(
+            "GET",
+            `/api/tenants/${tenantId}/agents/instances/${instanceId}/mail?limit=100`,
+          ),
+          api<{ data: InferenceTurnResponse[] }>(
+            "GET",
+            `/api/tenants/${tenantId}/agents/instances/${instanceId}/turns?limit=100`,
+          ),
+        ]);
+
+        for (const m of mailRes.data) {
+          if (shouldShowMail(m)) all.push(mailToMessage(m));
+        }
+        for (const t of turnsRes.data) {
+          const msg = turnToMessage(t);
+          if (msg) all.push(msg);
+        }
+      } catch (err) {
+        fetchError = err;
+      }
 
       if (cancelled) return;
-      if (getMessages(instanceId).length > 0) return;
 
-      const mailMessages: ChatMessage[] = mailRes.data
-        .filter((m) => shouldShowMail(m))
-        .map((m) => mailToMessage(m));
+      // Drain any SSE events that arrived while the fetch was in-flight
+      // and merge them with the historical batch, deduplicating by ID.
+      const buffered = instanceSSEBuffer.get(instanceId);
+      instanceSSEBuffer.delete(instanceId);
 
-      const turnMessages: ChatMessage[] = turnsRes.data
-        .map(turnToMessage)
-        .filter((m): m is ChatMessage => m !== null);
+      if (buffered) {
+        const seenMailIds = new Set<string>();
+        const seenTurnIds = new Set<string>();
+        for (const m of all) {
+          if (m.kind === "mail") seenMailIds.add(m.id);
+          else seenTurnIds.add(m.turnId);
+        }
+        for (const m of buffered) {
+          if (m.kind === "mail" && !seenMailIds.has(m.id)) all.push(m);
+          else if (m.kind === "turn" && !seenTurnIds.has(m.turnId)) all.push(m);
+        }
+      }
 
-      const all = [...mailMessages, ...turnMessages].sort((a, b) =>
+      all.sort((a, b) =>
         a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0,
       );
 
-      if (all.length > 0) {
-        instanceMessages.set(instanceId, all);
-        rerender();
+      instanceMessages.set(instanceId, all);
+      instanceHydrated.set(instanceId, true);
+      rerender();
+
+      // Re-throw after draining the buffer so the error surfaces as an
+      // unhandled rejection rather than being silently swallowed.
+      if (fetchError) {
+        throw new Error("Failed to hydrate chat history", {
+          cause: fetchError,
+        });
       }
     })();
 
     return () => {
       cancelled = true;
+      instanceSSEBuffer.delete(instanceId);
     };
   }, [isRunning, instanceId, tenantId]);
 
@@ -400,10 +438,12 @@ export function TenantInstanceDetailPage() {
         const mailEvent = MailDeliveredEvent(raw);
         if (!(mailEvent instanceof type.errors)) {
           const messages = getMessages(instanceId);
+          const buffer = instanceSSEBuffer.get(instanceId);
           const mailId = mailEvent.data.id;
-          const already = messages.some(
-            (m) => m.kind === "mail" && m.id === mailId,
-          );
+          const already =
+            messages.some((m) => m.kind === "mail" && m.id === mailId) ||
+            (buffer !== undefined &&
+              buffer.some((m) => m.kind === "mail" && m.id === mailId));
           if (!already) {
             const d = mailEvent.data;
             if (!shouldShowMail(d)) return;
@@ -423,7 +463,7 @@ export function TenantInstanceDetailPage() {
               email: r.email,
             }));
 
-            messages.push({
+            const newMsg: ChatMessage = {
               kind: "mail",
               id: mailId,
               role,
@@ -437,8 +477,16 @@ export function TenantInstanceDetailPage() {
                 type: att.type,
                 size: att.size,
               })),
-            });
-            rerender();
+            };
+
+            if (instanceHydrated.get(instanceId)) {
+              messages.push(newMsg);
+              rerender();
+            } else if (buffer) {
+              buffer.push(newMsg);
+            } else {
+              instanceSSEBuffer.set(instanceId, [newMsg]);
+            }
           }
           return;
         }
@@ -446,14 +494,16 @@ export function TenantInstanceDetailPage() {
         const turnEvent = TurnCommittedEvent(raw);
         if (!(turnEvent instanceof type.errors)) {
           const messages = getMessages(instanceId);
+          const buffer = instanceSSEBuffer.get(instanceId);
           const { turnId, status, text, hadError, errors, toolErrors } =
             turnEvent.data;
           const isError = hadError || status === "failed";
-          const already = messages.some(
-            (m) => m.kind === "turn" && m.turnId === turnId,
-          );
+          const already =
+            messages.some((m) => m.kind === "turn" && m.turnId === turnId) ||
+            (buffer !== undefined &&
+              buffer.some((m) => m.kind === "turn" && m.turnId === turnId));
           if (!already && (text || isError || toolErrors.length > 0)) {
-            messages.push({
+            const newMsg: ChatMessage = {
               kind: "turn",
               turnId,
               content: text || "An error occurred during inference.",
@@ -461,7 +511,18 @@ export function TenantInstanceDetailPage() {
               ...(isError ? { isError: true } : {}),
               ...(errors.length > 0 ? { errors } : {}),
               ...(toolErrors.length > 0 ? { toolErrors } : {}),
-            });
+            };
+            // Always push turns to messages so the committed text replaces
+            // the streaming preview. Pre-hydration, also buffer for dedup
+            // during the hydration merge.
+            messages.push(newMsg);
+            if (!instanceHydrated.get(instanceId)) {
+              if (buffer) {
+                buffer.push(newMsg);
+              } else {
+                instanceSSEBuffer.set(instanceId, [newMsg]);
+              }
+            }
           }
           // Only clear the streaming buffer if it still holds text from the
           // committed turn. In multi-step tool loops, turn.committed for turn
@@ -534,6 +595,7 @@ export function TenantInstanceDetailPage() {
       cancelled = true;
       close();
       instanceActivity.set(instanceId, null);
+      instanceSSEBuffer.delete(instanceId);
     };
   }, [isRunning, instanceId, tenantId, instance?.address]);
 
