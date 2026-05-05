@@ -1077,6 +1077,52 @@ describe("Default plugin", () => {
     expect(normalized.some((a) => a.type === "done")).toBe(true);
   });
 
+  test("inference.done with empty content returns checkpoint and wait", async () => {
+    const plugin = createDefaultPlugin("claude-test", "You are helpful.");
+    const caps = makeCapabilities();
+    const state = makeState();
+
+    const event: ReactorInboundEvent = {
+      type: "inference.done",
+      message: {
+        role: "assistant",
+        model: "claude-test",
+        content: [],
+      },
+      usage: emptyUsage(),
+    };
+
+    const actions = await plugin.decide(event, state, caps);
+    const normalized = Array.isArray(actions) ? actions : [actions];
+    expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
+    expect(normalized.some((a) => a.type === "wait")).toBe(true);
+    expect(normalized.some((a) => a.type === "done")).toBe(false);
+    expect(normalized.some((a) => a.type === "reply")).toBe(false);
+  });
+
+  test("inference.done with whitespace-only text returns checkpoint and wait", async () => {
+    const plugin = createDefaultPlugin("claude-test", "You are helpful.");
+    const caps = makeCapabilities();
+    const state = makeState();
+
+    const event: ReactorInboundEvent = {
+      type: "inference.done",
+      message: {
+        role: "assistant",
+        model: "claude-test",
+        content: [{ type: "text", text: "   \n\t  " }],
+      },
+      usage: emptyUsage(),
+    };
+
+    const actions = await plugin.decide(event, state, caps);
+    const normalized = Array.isArray(actions) ? actions : [actions];
+    expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
+    expect(normalized.some((a) => a.type === "wait")).toBe(true);
+    expect(normalized.some((a) => a.type === "done")).toBe(false);
+    expect(normalized.some((a) => a.type === "reply")).toBe(false);
+  });
+
   test("reactive mode inference.done returns checkpoint and wait", async () => {
     const plugin = createDefaultPlugin("claude-test", "You are helpful.", [], {
       mode: "reactive",
