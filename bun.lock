@@ -122,6 +122,14 @@
         "hono-openapi": "^1.2.0",
       },
     },
+    "packages/hub-client": {
+      "name": "@interchange/hub-client",
+      "version": "0.0.1",
+      "dependencies": {
+        "@interchange/types": "workspace:*",
+        "arktype": "catalog:",
+      },
+    },
     "packages/inference": {
       "name": "@interchange/inference",
       "version": "0.0.0",
@@ -393,6 +401,8 @@
     "@interchange/hub": ["@interchange/hub@workspace:packages/hub"],
 
     "@interchange/hub-app": ["@interchange/hub-app@workspace:apps/hub"],
+
+    "@interchange/hub-client": ["@interchange/hub-client@workspace:packages/hub-client"],
 
     "@interchange/inference": ["@interchange/inference@workspace:packages/inference"],
 
