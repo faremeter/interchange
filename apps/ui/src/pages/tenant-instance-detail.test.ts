@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { shouldShowMail } from "./tenant-instance-detail";
+import { shouldShowMail } from "@interchange/hub-client";
 
 // Agent addresses always start with "ins_".
 const AGENT_ADDR = "ins_abc123@tenant.example";
