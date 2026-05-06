@@ -962,6 +962,20 @@ app.get(
     return streamSSE(c, async (stream) => {
       const noop = () => undefined;
 
+      // Emit the replay before subscribing to live events so that a
+      // delta arriving between subscribe() and the replay write cannot
+      // beat the catch-up text onto the stream.
+      const accumulatedText = eventCollectors.getAccumulatedText(row.address);
+      if (accumulatedText !== undefined && accumulatedText !== "") {
+        await stream.writeSSE({
+          event: "agent.event",
+          data: JSON.stringify({
+            type: "inference.text.replay",
+            data: { text: accumulatedText },
+          }),
+        });
+      }
+
       const unsubscribe = sidecarRouter.subscribeAgent(row.address, (event) => {
         stream
           .writeSSE({
@@ -979,17 +993,6 @@ app.get(
         clearInterval(keepalive);
         unsubscribe();
       });
-
-      const accumulatedText = eventCollectors.getAccumulatedText(row.address);
-      if (accumulatedText !== undefined && accumulatedText !== "") {
-        await stream.writeSSE({
-          event: "agent.event",
-          data: JSON.stringify({
-            type: "inference.text.replay",
-            data: { text: accumulatedText },
-          }),
-        });
-      }
 
       // Keep the stream open until the client disconnects.
       await new Promise<void>(noop);
