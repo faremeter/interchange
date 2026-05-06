@@ -44,6 +44,7 @@ function makeContextStore(messages: ConversationMessage[] = []): ContextStore {
         messages,
         pendingOperations: [],
         tokenUsage: emptyUsage(),
+        connectorState: null,
       };
     },
     async commit(_msgs, _ops, _usage, message): Promise<ContextCommit> {
@@ -1269,6 +1270,7 @@ describe("createReactor — tool runner failures", () => {
           messages: [],
           pendingOperations: [],
           tokenUsage: emptyUsage(),
+          connectorState: null,
         };
       },
       async commit(msgs, _ops, _usage, message): Promise<ContextCommit> {
@@ -1509,6 +1511,7 @@ describe("createReactor — checkpoint failure", () => {
           messages: [],
           pendingOperations: [],
           tokenUsage: emptyUsage(),
+          connectorState: null,
         };
       },
       async commit(): Promise<ContextCommit> {
