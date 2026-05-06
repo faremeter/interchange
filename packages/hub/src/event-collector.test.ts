@@ -7,6 +7,7 @@ import {
   type EventCollector,
   type TurnFinalized,
 } from "./event-collector";
+import { createEventCollectorRegistry } from "./event-collector-registry";
 
 // ---------------------------------------------------------------------------
 // Test helpers: fake DB that records insert/update calls
@@ -802,5 +803,117 @@ describe("EventCollector", () => {
       expect(notifications).toHaveLength(1);
       expect(at(notifications, 0).errors).toEqual([]);
     });
+  });
+
+  describe("getAccumulatedText", () => {
+    test("returns empty string before any events", () => {
+      expect(collector.getAccumulatedText()).toBe("");
+    });
+
+    test("returns accumulated text after inference.done events with text blocks", async () => {
+      await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+      await collector.onEvent(
+        event("inference.done", 5, {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Hello " }],
+            model: "gpt-4",
+          },
+          usage: { input: 10, output: 5 },
+        }),
+      );
+      await collector.onEvent(
+        event("inference.done", 6, {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "world" }],
+            model: "gpt-4",
+          },
+          usage: { input: 10, output: 5 },
+        }),
+      );
+
+      expect(collector.getAccumulatedText()).toBe("Hello world");
+    });
+
+    test("resets to empty string after a new inference.start event", async () => {
+      await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+      await collector.onEvent(
+        event("inference.done", 5, {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "First turn text" }],
+            model: "gpt-4",
+          },
+          usage: { input: 10, output: 5 },
+        }),
+      );
+      expect(collector.getAccumulatedText()).toBe("First turn text");
+
+      await collector.onEvent(event("inference.start", 8, { model: "gpt-4" }));
+      expect(collector.getAccumulatedText()).toBe("");
+    });
+  });
+});
+
+describe("EventCollectorRegistry getAccumulatedText", () => {
+  function createFakeDBForRegistry() {
+    const db = {
+      insert(_table: unknown) {
+        return {
+          values(_vals: Record<string, unknown>) {
+            return Promise.resolve();
+          },
+        };
+      },
+      update(_table: unknown) {
+        return {
+          set(_vals: Record<string, unknown>) {
+            return {
+              where(_condition: unknown) {
+                return Promise.resolve();
+              },
+            };
+          },
+        };
+      },
+    };
+    return { db: db as never };
+  }
+
+  test("returns undefined for unknown agent address", () => {
+    const { db } = createFakeDBForRegistry();
+    const registry = createEventCollectorRegistry({ db });
+    expect(registry.getAccumulatedText("agent://unknown")).toBeUndefined();
+  });
+
+  test("returns accumulated text from the collector for a known address", async () => {
+    const { db } = createFakeDBForRegistry();
+    const registry = createEventCollectorRegistry({ db });
+    const address = "agent://test-instance";
+
+    registry.create(address, "tnt_test", "ses_test", "ins_test");
+
+    registry.dispatch(
+      address,
+      event("inference.start", 1, { model: "gpt-4" }),
+    );
+    // dispatch is fire-and-forget; wait for the microtask queue to flush
+    await Promise.resolve();
+
+    registry.dispatch(
+      address,
+      event("inference.done", 5, {
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "streaming text" }],
+          model: "gpt-4",
+        },
+        usage: { input: 10, output: 5 },
+      }),
+    );
+    await Promise.resolve();
+
+    expect(registry.getAccumulatedText(address)).toBe("streaming text");
   });
 });

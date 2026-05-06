@@ -28,6 +28,7 @@ export type EventCollectorRegistry = {
   abandon(agentAddress: string): void;
   has(agentAddress: string): boolean;
   getStatus(agentAddress: string): SessionStatus | undefined;
+  getAccumulatedText(agentAddress: string): string | undefined;
 };
 
 export type EventCollectorRegistryConfig = {
@@ -142,5 +143,9 @@ export function createEventCollectorRegistry(
     return statuses.get(agentAddress);
   }
 
-  return { create, dispatch, abandon, has, getStatus };
+  function getAccumulatedText(agentAddress: string): string | undefined {
+    return collectors.get(agentAddress)?.getAccumulatedText();
+  }
+
+  return { create, dispatch, abandon, has, getStatus, getAccumulatedText };
 }
