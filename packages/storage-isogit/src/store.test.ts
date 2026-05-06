@@ -562,6 +562,53 @@ describe("error store", () => {
   });
 });
 
+describe("load reads from git HEAD, not working tree", () => {
+  test("load ignores a corrupt working-tree context.json and reads from HEAD", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    const messages: ConversationMessage[] = [
+      { role: "user", content: [{ type: "text", text: "committed data" }] },
+    ];
+    await store.commit(messages, [], ZERO_USAGE, "checkpoint");
+
+    // Corrupt the working-tree file without committing.
+    const contextPath = path.join(dir, "state", "context.json");
+    await fs.promises.writeFile(contextPath, "NOT VALID JSON }{");
+
+    // load() should read from git HEAD, not the corrupt working-tree file.
+    const { messages: loaded } = await store.load();
+    expect(loaded).toEqual(messages);
+  });
+
+  test("load falls back to the last good commit when HEAD context.json is unparseable", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    const goodMessages: ConversationMessage[] = [
+      { role: "user", content: [{ type: "text", text: "good data" }] },
+    ];
+    await store.commit(goodMessages, [], ZERO_USAGE, "good checkpoint");
+
+    // Commit garbage directly into context.json via the git plumbing to
+    // simulate a corrupt HEAD blob. We write the garbage, stage it, and
+    // commit it so HEAD has the invalid state.
+    const contextPath = path.join(dir, "state", "context.json");
+    await fs.promises.writeFile(contextPath, "CORRUPT");
+    await git.add({ fs, dir, filepath: "state/context.json" });
+    await git.commit({
+      fs,
+      dir,
+      message: "bad checkpoint",
+      author: { name: "test", email: "test@test.com" },
+    });
+
+    // load() should walk back and find the last good checkpoint.
+    const { messages: loaded } = await store.load();
+    expect(loaded).toEqual(goodMessages);
+  });
+});
+
 describe("commit signing", () => {
   test("commits are signed when a signer is provided", async () => {
     const dir = await tempDir();
