@@ -95,10 +95,35 @@ export class IsogitStore implements ContextStore, AuditStore {
     pendingOperations: PendingOperation[];
     tokenUsage: TokenUsage;
   }> {
-    const contextPath = path.join(this.dir, CONTEXT_FILE);
-    const raw = await fs.promises.readFile(contextPath, "utf-8");
-    const parsed = JSON.parse(raw) as unknown;
-    return parseContextData(parsed);
+    const entries = await git.log({ fs, dir: this.dir, depth: 50 });
+    for (const entry of entries) {
+      let blob: Uint8Array;
+      try {
+        ({ blob } = await git.readBlob({
+          fs,
+          dir: this.dir,
+          oid: entry.oid,
+          filepath: CONTEXT_FILE,
+        }));
+      } catch {
+        continue;
+      }
+      const text = new TextDecoder().decode(blob);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        continue;
+      }
+      try {
+        return parseContextData(parsed);
+      } catch {
+        continue;
+      }
+    }
+    throw new Error(
+      "No parseable context.json found in any commit in the git log",
+    );
   }
 
   async commit(
