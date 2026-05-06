@@ -22,6 +22,20 @@ import { buildSigningArgs } from "./commit-helpers";
 
 const CONTEXT_FILE = "state/context.json";
 
+const ConnectorThreadStateSchema = type({
+  threadRoot: "string",
+  lastMessageId: "string",
+  replyTo: "string",
+  "subject?": "string",
+});
+
+const ContextDataSchema = type({
+  messages: "unknown[]",
+  pendingOperations: "unknown[]",
+  tokenUsage: "object",
+  "connectorState?": type("null").or(ConnectorThreadStateSchema),
+});
+
 type ContextData = {
   messages: ConversationMessage[];
   pendingOperations: PendingOperation[];
@@ -30,45 +44,15 @@ type ContextData = {
 };
 
 function parseContextData(raw: unknown): ContextData {
-  if (
-    typeof raw !== "object" ||
-    raw === null ||
-    !Array.isArray((raw as Record<string, unknown>)["messages"]) ||
-    !Array.isArray((raw as Record<string, unknown>)["pendingOperations"]) ||
-    typeof (raw as Record<string, unknown>)["tokenUsage"] !== "object"
-  ) {
-    throw new Error("context data has unexpected structure");
-  }
-  const obj = raw as Record<string, unknown>;
-  const rawConnectorState = obj["connectorState"];
-  let connectorState: ConnectorThreadState | null;
-  if (rawConnectorState === undefined || rawConnectorState === null) {
-    connectorState = null;
-  } else if (
-    typeof rawConnectorState === "object" &&
-    typeof (rawConnectorState as Record<string, unknown>)["threadRoot"] ===
-      "string" &&
-    typeof (rawConnectorState as Record<string, unknown>)["lastMessageId"] ===
-      "string" &&
-    typeof (rawConnectorState as Record<string, unknown>)["replyTo"] ===
-      "string"
-  ) {
-    const cs = rawConnectorState as Record<string, unknown>;
-    const subject = cs["subject"];
-    connectorState = {
-      threadRoot: cs["threadRoot"] as string,
-      lastMessageId: cs["lastMessageId"] as string,
-      replyTo: cs["replyTo"] as string,
-      ...(typeof subject === "string" ? { subject } : {}),
-    };
-  } else {
-    throw new Error("context data connectorState has unexpected structure");
+  const result = ContextDataSchema(raw);
+  if (result instanceof type.errors) {
+    throw new Error(`context data has unexpected structure: ${result.summary}`);
   }
   return {
-    messages: obj["messages"] as ConversationMessage[],
-    pendingOperations: obj["pendingOperations"] as PendingOperation[],
-    tokenUsage: obj["tokenUsage"] as TokenUsage,
-    connectorState,
+    messages: result.messages as ConversationMessage[],
+    pendingOperations: result.pendingOperations as PendingOperation[],
+    tokenUsage: result.tokenUsage as TokenUsage,
+    connectorState: result.connectorState ?? null,
   };
 }
 
