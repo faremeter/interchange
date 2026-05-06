@@ -816,6 +816,24 @@ describe("streaming buffer", () => {
 
     expect(session.streaming).toBe("");
   });
+
+  test("inference.text.replay sets streaming when streaming is empty", () => {
+    mock.emit({ type: "inference.text.replay", data: { text: "hello world" } });
+
+    expect(session.streaming).toBe("hello world");
+  });
+
+  test("inference.text.replay does not overwrite streaming when already populated", () => {
+    mock.emit({
+      type: "inference.text.delta",
+      seq: 1,
+      data: { token: "already here", partial: { text: "already here" } },
+    });
+
+    mock.emit({ type: "inference.text.replay", data: { text: "hello world" } });
+
+    expect(session.streaming).toBe("already here");
+  });
 });
 
 // Activity state machine
