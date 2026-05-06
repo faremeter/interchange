@@ -935,6 +935,7 @@ app.get(
     const tenantCtx = c.get("tenant");
     const db = c.get("db");
     const sidecarRouter = c.get("sidecarRouter");
+    const eventCollectors = c.get("eventCollectors");
     const instanceId = c.req.param("instanceId");
 
     const row = await db.query.agentInstance.findFirst({
@@ -978,6 +979,17 @@ app.get(
         clearInterval(keepalive);
         unsubscribe();
       });
+
+      const accumulatedText = eventCollectors.getAccumulatedText(row.address);
+      if (accumulatedText !== undefined && accumulatedText !== "") {
+        await stream.writeSSE({
+          event: "agent.event",
+          data: JSON.stringify({
+            type: "inference.text.replay",
+            data: { text: accumulatedText },
+          }),
+        });
+      }
 
       // Keep the stream open until the client disconnects.
       await new Promise<void>(noop);

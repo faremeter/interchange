@@ -15,6 +15,7 @@ import {
 import type { Transport } from "./transport";
 import type { AgentActivity, InstanceEvent } from "./types";
 import {
+  InferenceTextReplayEvent,
   MailDeliveredEvent,
   sessionEndedEvent,
   TurnCommittedEvent,
@@ -138,6 +139,15 @@ export function createInstanceSession(opts: {
       }
       activity = null;
       onChange();
+      return;
+    }
+
+    const replayEvent = InferenceTextReplayEvent(raw);
+    if (!(replayEvent instanceof type.errors)) {
+      if (streaming === "") {
+        streaming = replayEvent.data.text;
+        onChange();
+      }
       return;
     }
 
