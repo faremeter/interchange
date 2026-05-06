@@ -80,7 +80,7 @@ describe("save and load round-trip", () => {
       },
     ];
 
-    await store.commit(messages, [], ZERO_USAGE, "first checkpoint", null);
+    await store.commit(messages, [], ZERO_USAGE, "first checkpoint");
     const { messages: loaded } = await store.load();
 
     expect(loaded).toEqual(messages);
@@ -102,8 +102,8 @@ describe("save and load round-trip", () => {
       },
     ];
 
-    await store.commit(first, [], ZERO_USAGE, "step 1", null);
-    await store.commit(second, [], ZERO_USAGE, "step 2", null);
+    await store.commit(first, [], ZERO_USAGE, "step 1");
+    await store.commit(second, [], ZERO_USAGE, "step 2");
 
     const { messages } = await store.load();
     expect(messages).toEqual(second);
@@ -120,7 +120,6 @@ describe("checkpoint creates commit", () => {
       [],
       ZERO_USAGE,
       "named checkpoint",
-      null,
     );
 
     expect(typeof commitResult.hash).toBe("string");
@@ -134,7 +133,7 @@ describe("checkpoint creates commit", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    await store.commit([], [], ZERO_USAGE, "my checkpoint", null);
+    await store.commit([], [], ZERO_USAGE, "my checkpoint");
     const entries = await store.log(5);
 
     const found = entries.find((e) => e.message === "my checkpoint");
@@ -162,14 +161,14 @@ describe("branch operations", () => {
     const mainMessages: ConversationMessage[] = [
       { role: "user", content: [{ type: "text", text: "on main" }] },
     ];
-    await store.commit(mainMessages, [], ZERO_USAGE, "main work", null);
+    await store.commit(mainMessages, [], ZERO_USAGE, "main work");
 
     await createAndSwitchBranch(dir, "experiment");
 
     const branchMessages: ConversationMessage[] = [
       { role: "user", content: [{ type: "text", text: "on branch" }] },
     ];
-    await store.commit(branchMessages, [], ZERO_USAGE, "branch work", null);
+    await store.commit(branchMessages, [], ZERO_USAGE, "branch work");
 
     await switchBranch(dir, "main");
 
@@ -195,8 +194,8 @@ describe("history log", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    await store.commit([], [], ZERO_USAGE, "commit one", null);
-    await store.commit([], [], ZERO_USAGE, "commit two", null);
+    await store.commit([], [], ZERO_USAGE, "commit one");
+    await store.commit([], [], ZERO_USAGE, "commit two");
 
     const entries = await logHistory(dir, 5);
 
@@ -211,8 +210,8 @@ describe("history log", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    const first = await store.commit([], [], ZERO_USAGE, "first", null);
-    const second = await store.commit([], [], ZERO_USAGE, "second", null);
+    const first = await store.commit([], [], ZERO_USAGE, "first");
+    const second = await store.commit([], [], ZERO_USAGE, "second");
 
     expect(second.parentHash).toBe(first.hash);
   });
@@ -226,7 +225,7 @@ describe("readAt", () => {
     const v1: ConversationMessage[] = [
       { role: "user", content: [{ type: "text", text: "version 1" }] },
     ];
-    const first = await store.commit(v1, [], ZERO_USAGE, "v1", null);
+    const first = await store.commit(v1, [], ZERO_USAGE, "v1");
 
     const v2: ConversationMessage[] = [
       ...v1,
@@ -236,7 +235,7 @@ describe("readAt", () => {
         model: "m",
       },
     ];
-    await store.commit(v2, [], ZERO_USAGE, "v2", null);
+    await store.commit(v2, [], ZERO_USAGE, "v2");
 
     const atFirst = await store.readAt(first.hash);
     expect(atFirst).toEqual(v1);
@@ -571,7 +570,7 @@ describe("load reads from git HEAD, not working tree", () => {
     const messages: ConversationMessage[] = [
       { role: "user", content: [{ type: "text", text: "committed data" }] },
     ];
-    await store.commit(messages, [], ZERO_USAGE, "checkpoint", null);
+    await store.commit(messages, [], ZERO_USAGE, "checkpoint");
 
     // Corrupt the working-tree file without committing.
     const contextPath = path.join(dir, "state", "context.json");
@@ -589,7 +588,7 @@ describe("load reads from git HEAD, not working tree", () => {
     const goodMessages: ConversationMessage[] = [
       { role: "user", content: [{ type: "text", text: "good data" }] },
     ];
-    await store.commit(goodMessages, [], ZERO_USAGE, "good checkpoint", null);
+    await store.commit(goodMessages, [], ZERO_USAGE, "good checkpoint");
 
     // Commit garbage directly into context.json via the git plumbing to
     // simulate a corrupt HEAD blob. We write the garbage, stage it, and
@@ -622,7 +621,8 @@ describe("connector thread state", () => {
       subject: "Re: Test thread",
     };
 
-    await store.commit([], [], ZERO_USAGE, "checkpoint", connectorState);
+    store.setConnectorState(connectorState);
+    await store.commit([], [], ZERO_USAGE, "checkpoint");
     const loaded = await store.load();
 
     expect(loaded.connectorState).toEqual(connectorState);
@@ -638,7 +638,8 @@ describe("connector thread state", () => {
       replyTo: "user@example.com",
     };
 
-    await store.commit([], [], ZERO_USAGE, "checkpoint", connectorState);
+    store.setConnectorState(connectorState);
+    await store.commit([], [], ZERO_USAGE, "checkpoint");
     const loaded = await store.load();
 
     expect(loaded.connectorState).toEqual(connectorState);
@@ -648,7 +649,7 @@ describe("connector thread state", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    await store.commit([], [], ZERO_USAGE, "checkpoint", null);
+    await store.commit([], [], ZERO_USAGE, "checkpoint");
     const loaded = await store.load();
 
     expect(loaded.connectorState).toBeNull();
@@ -691,7 +692,7 @@ describe("commit signing", () => {
       `-----BEGIN SSH SIGNATURE-----\n${Buffer.from(payload).toString("base64").slice(0, 70)}\n-----END SSH SIGNATURE-----`;
 
     const store = new IsogitStore(dir, signer);
-    await store.commit([], [], ZERO_USAGE, "signed commit", null);
+    await store.commit([], [], ZERO_USAGE, "signed commit");
 
     const [entry] = await git.log({ fs, dir, depth: 1 });
     if (!entry) throw new Error("no commit found");
@@ -705,7 +706,7 @@ describe("commit signing", () => {
     await initAgentRepo(dir);
 
     const store = new IsogitStore(dir);
-    await store.commit([], [], ZERO_USAGE, "unsigned commit", null);
+    await store.commit([], [], ZERO_USAGE, "unsigned commit");
 
     const [entry] = await git.log({ fs, dir, depth: 1 });
     if (!entry) throw new Error("no commit found");

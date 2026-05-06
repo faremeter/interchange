@@ -96,6 +96,7 @@ function assertSafeSegment(value: string, label: string): void {
 export class IsogitStore implements ContextStore, AuditStore {
   private readonly dir: string;
   private readonly signer: CommitSigner | undefined;
+  private pendingConnectorState: ConnectorThreadState | null = null;
 
   constructor(dir: string, signer?: CommitSigner) {
     this.dir = dir;
@@ -104,6 +105,10 @@ export class IsogitStore implements ContextStore, AuditStore {
 
   private signingArgs() {
     return buildSigningArgs(this.signer);
+  }
+
+  setConnectorState(state: ConnectorThreadState | null): void {
+    this.pendingConnectorState = state;
   }
 
   async load(_signal?: AbortSignal): Promise<{
@@ -148,14 +153,13 @@ export class IsogitStore implements ContextStore, AuditStore {
     pendingOperations: PendingOperation[],
     tokenUsage: TokenUsage,
     message: string,
-    connectorState: ConnectorThreadState | null,
     _signal?: AbortSignal,
   ): Promise<ContextCommit> {
     const data: ContextData = {
       messages,
       pendingOperations,
       tokenUsage,
-      connectorState,
+      connectorState: this.pendingConnectorState,
     };
     const contextPath = path.join(this.dir, CONTEXT_FILE);
     await fs.promises.writeFile(contextPath, JSON.stringify(data, null, 2));
