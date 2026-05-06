@@ -644,7 +644,6 @@ export function createReactor(config: ReactorConfig): Reactor {
         stateManager.getPendingOperations(),
         stateManager.getTokenUsage(),
         message,
-        null,
       );
     } catch (cause) {
       logger.error`Checkpoint failed: ${cause}`;

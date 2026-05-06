@@ -185,20 +185,16 @@ export function createHarness(config: HarnessConfig): Harness {
       restoreConnectorState(loaded.connectorState);
       return loaded;
     },
-    async commit(
-      messages,
-      pendingOperations,
-      tokenUsage,
-      message,
-      _connectorState,
-      signal,
-    ) {
+    setConnectorState(state) {
+      storage.setConnectorState(state);
+    },
+    async commit(messages, pendingOperations, tokenUsage, message, signal) {
+      storage.setConnectorState(currentConnectorState());
       return storage.commit(
         messages,
         pendingOperations,
         tokenUsage,
         message,
-        currentConnectorState(),
         signal,
       );
     },

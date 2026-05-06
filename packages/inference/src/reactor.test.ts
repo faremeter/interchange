@@ -47,6 +47,9 @@ function makeContextStore(messages: ConversationMessage[] = []): ContextStore {
         connectorState: null,
       };
     },
+    setConnectorState() {
+      /* noop */
+    },
     async commit(_msgs, _ops, _usage, message): Promise<ContextCommit> {
       return { hash: "abc", message, timestamp: Date.now() };
     },
@@ -264,6 +267,9 @@ function failingContextStore(error: Error): ContextStore {
   return {
     async load() {
       throw error;
+    },
+    setConnectorState() {
+      return fail();
     },
     async commit() {
       return fail();
@@ -1273,6 +1279,9 @@ describe("createReactor — tool runner failures", () => {
           connectorState: null,
         };
       },
+      setConnectorState() {
+        /* noop */
+      },
       async commit(msgs, _ops, _usage, message): Promise<ContextCommit> {
         committedMessages = [...msgs];
         return { hash: "abc", message, timestamp: Date.now() };
@@ -1513,6 +1522,9 @@ describe("createReactor — checkpoint failure", () => {
           tokenUsage: emptyUsage(),
           connectorState: null,
         };
+      },
+      setConnectorState() {
+        /* noop */
       },
       async commit(): Promise<ContextCommit> {
         checkpointCalled = true;

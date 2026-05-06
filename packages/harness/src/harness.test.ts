@@ -62,12 +62,14 @@ function makeContextStore(): ContextStore {
         connectorState: null,
       };
     },
+    setConnectorState() {
+      /* noop */
+    },
     async commit(
       _msgs: ConversationMessage[],
       _ops: PendingOperation[],
       _usage: TokenUsage,
       message: string,
-      _connectorState,
     ): Promise<ContextCommit> {
       return { hash: "mock-hash", message, timestamp: Date.now() };
     },

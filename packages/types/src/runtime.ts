@@ -1292,6 +1292,13 @@ export interface ContextStore {
   }>;
 
   /**
+   * Buffer connector thread state for the next commit. The harness calls
+   * this before each checkpoint so that connector state is persisted
+   * atomically with the conversation context.
+   */
+  setConnectorState(state: ConnectorThreadState | null): void;
+
+  /**
    * Commit the current message history and reactor metadata to the store.
    * May be called during a checkpoint, suspension, compaction, or shutdown.
    */
@@ -1300,7 +1307,6 @@ export interface ContextStore {
     pendingOperations: PendingOperation[],
     tokenUsage: TokenUsage,
     message: string,
-    connectorState: ConnectorThreadState | null,
     signal?: AbortSignal,
   ): Promise<ContextCommit>;
 
