@@ -22,13 +22,13 @@ describe("shouldShowMail", () => {
     ).toBe(true);
   });
 
-  test("outbound mail to another agent is shown", () => {
+  test("outbound mail to another agent is suppressed", () => {
     expect(
       shouldShowMail({
         direction: "outbound",
         to: [{ name: "Other Agent", email: AGENT_ADDR }],
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   test("outbound connector reply to human is suppressed", () => {
