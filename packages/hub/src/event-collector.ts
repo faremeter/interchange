@@ -27,6 +27,7 @@ export type TurnFinalized = {
 export type EventCollector = {
   onEvent(event: InferenceEvent): Promise<void>;
   abandon(): Promise<void>;
+  getAccumulatedText(): string;
 };
 
 export type EventCollectorConfig = {
@@ -290,5 +291,9 @@ export function createEventCollector(
     await db.insert(turnPart).values(values);
   }
 
-  return { onEvent, abandon };
+  function getAccumulatedText(): string {
+    return accumulatedText;
+  }
+
+  return { onEvent, abandon, getAccumulatedText };
 }
