@@ -39,18 +39,16 @@ export function isAgentAddress(email: string): boolean {
   return !!local && local.startsWith("ins_");
 }
 
-// Inbound mail is always shown. Outbound mail is only shown when the primary
-// recipient is an agent instance (inter-agent mail). Outbound mail to non-agent
-// addresses (connector replies to humans) is suppressed because turn.committed
-// already provides that content as a committed turn in the timeline.
+// Inbound mail is always shown. All outbound mail is suppressed because
+// turn.committed already provides that content as a committed turn in the
+// timeline. This applies to both connector replies to humans and inter-agent
+// replies; the receiving agent sees the message via its own inbound
+// mail.delivered event, so no information is lost.
 export function shouldShowMail(data: {
   direction: "inbound" | "outbound";
   to?: { name: string | null; email: string }[];
 }): boolean {
-  if (data.direction === "inbound") return true;
-  const first = data.to?.[0];
-  if (!first) return false;
-  return isAgentAddress(first.email);
+  return data.direction === "inbound";
 }
 
 // Agent instance addresses are "<instanceId>@<domain>" where instanceId
