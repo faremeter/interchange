@@ -490,20 +490,29 @@ describe("deploy flow integration", () => {
       required: ["name"],
     });
 
-    await waitFor(() => hub.agentEvents.length > eventsBefore, {
-      diagnostics: sidecarDiagnostics,
-    });
+    // reactor.start may or may not have arrived before eventsBefore was
+    // captured (it depends on how fast contextStore.load() resolves), so
+    // wait until we see an inference.start event rather than assuming
+    // it is the very first new event.
+    await waitFor(
+      () =>
+        hub.agentEvents
+          .slice(eventsBefore)
+          .some(
+            (e) =>
+              (e.event as { type: string }).type === "inference.start",
+          ),
+      { diagnostics: sidecarDiagnostics },
+    );
 
-    const firstEvent = hub.agentEvents[eventsBefore];
-    if (firstEvent === undefined) throw new Error("unreachable");
-    expect(firstEvent.addr).toBe(AGENT_ADDRESS);
-    expect(firstEvent.sid).toBe(SESSION_ID);
-
-    // The first new external event after a message arrives is inference.start.
-    // message.received is reactor-internal and does not appear in the
-    // external event stream.
-    const payload = firstEvent.event as { type: string };
-    expect(payload.type).toBe("inference.start");
+    const inferenceStartEvent = hub.agentEvents
+      .slice(eventsBefore)
+      .find(
+        (e) => (e.event as { type: string }).type === "inference.start",
+      );
+    if (inferenceStartEvent === undefined) throw new Error("unreachable");
+    expect(inferenceStartEvent.addr).toBe(AGENT_ADDRESS);
+    expect(inferenceStartEvent.sid).toBe(SESSION_ID);
   });
 
   test("sync request triggers state push to hub repo", async () => {
