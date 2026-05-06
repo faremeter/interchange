@@ -59,6 +59,7 @@ function makeContextStore(): ContextStore {
         messages: [] as ConversationMessage[],
         pendingOperations: [] as PendingOperation[],
         tokenUsage: emptyUsage(),
+        connectorState: null,
       };
     },
     async commit(
@@ -66,6 +67,7 @@ function makeContextStore(): ContextStore {
       _ops: PendingOperation[],
       _usage: TokenUsage,
       message: string,
+      _connectorState,
     ): Promise<ContextCommit> {
       return { hash: "mock-hash", message, timestamp: Date.now() };
     },

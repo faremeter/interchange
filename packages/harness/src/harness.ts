@@ -30,6 +30,8 @@ import type {
 } from "@interchange/inference";
 import {
   ProviderConfig,
+  type ContextStore,
+  type ConnectorThreadState,
   type InboundMessage,
   type Unsubscribe,
   type ReactorPlugin,
@@ -140,19 +142,76 @@ export function createHarness(config: HarnessConfig): Harness {
   // Connector state: track which thread(s) this reactor owns.
   // -------------------------------------------------------------------------
 
-  // The root Message-ID of the active connector conversation. Messages whose
-  // References chain includes this ID are connector traffic.
   let connectorThreadRoot: string | undefined = undefined;
-
-  // The Message-ID of the most recent message in the connector thread. Used
-  // as In-Reply-To when sending the next reply.
   let connectorLastMessageId: string | undefined = undefined;
-
-  // The address to reply to for the connector conversation.
   let connectorReplyTo: string | undefined = undefined;
-
-  // The subject line of the connector conversation.
   let connectorSubject: string | undefined = undefined;
+
+  function currentConnectorState(): ConnectorThreadState | null {
+    if (
+      connectorThreadRoot === undefined ||
+      connectorLastMessageId === undefined ||
+      connectorReplyTo === undefined
+    ) {
+      return null;
+    }
+    return {
+      threadRoot: connectorThreadRoot,
+      lastMessageId: connectorLastMessageId,
+      replyTo: connectorReplyTo,
+      ...(connectorSubject !== undefined ? { subject: connectorSubject } : {}),
+    };
+  }
+
+  function restoreConnectorState(state: ConnectorThreadState | null): void {
+    if (state === null) {
+      connectorThreadRoot = undefined;
+      connectorLastMessageId = undefined;
+      connectorReplyTo = undefined;
+      connectorSubject = undefined;
+    } else {
+      connectorThreadRoot = state.threadRoot;
+      connectorLastMessageId = state.lastMessageId;
+      connectorReplyTo = state.replyTo;
+      connectorSubject = state.subject;
+    }
+  }
+
+  // Wrap the context store so load() restores connector state and commit()
+  // persists the current connector state alongside the conversation context.
+  const contextStore: ContextStore = {
+    async load(signal) {
+      const loaded = await storage.load(signal);
+      restoreConnectorState(loaded.connectorState);
+      return loaded;
+    },
+    async commit(
+      messages,
+      pendingOperations,
+      tokenUsage,
+      message,
+      _connectorState,
+      signal,
+    ) {
+      return storage.commit(
+        messages,
+        pendingOperations,
+        tokenUsage,
+        message,
+        currentConnectorState(),
+        signal,
+      );
+    },
+    async branch(name, signal) {
+      return storage.branch(name, signal);
+    },
+    async log(limit, signal) {
+      return storage.log(limit, signal);
+    },
+    async readAt(hash, signal) {
+      return storage.readAt(hash, signal);
+    },
+  };
 
   /**
    * Determine whether a message belongs to the active connector thread.
@@ -308,7 +367,7 @@ export function createHarness(config: HarnessConfig): Harness {
     plugin,
     providerConfig: provider,
     toolRunner: combinedRunner,
-    contextStore: storage,
+    contextStore,
     onEvent: handleEvent,
     beforeToolExtensions,
   };

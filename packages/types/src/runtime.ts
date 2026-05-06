@@ -1259,6 +1259,17 @@ export type ContextCommit = {
 };
 
 /**
+ * The state of an active connector thread. Persisted alongside the
+ * conversation context so that reply threading survives sidecar restarts.
+ */
+export type ConnectorThreadState = {
+  threadRoot: string;
+  lastMessageId: string;
+  replyTo: string;
+  subject?: string;
+};
+
+/**
  * The context store interface. Implementations back the store with git
  * (filesystem, in-memory, or virtual) depending on the execution environment.
  * The reactor accepts any implementation that satisfies this interface.
@@ -1277,6 +1288,7 @@ export interface ContextStore {
     messages: ConversationMessage[];
     pendingOperations: PendingOperation[];
     tokenUsage: TokenUsage;
+    connectorState: ConnectorThreadState | null;
   }>;
 
   /**
@@ -1288,6 +1300,7 @@ export interface ContextStore {
     pendingOperations: PendingOperation[],
     tokenUsage: TokenUsage,
     message: string,
+    connectorState: ConnectorThreadState | null,
     signal?: AbortSignal,
   ): Promise<ContextCommit>;
 

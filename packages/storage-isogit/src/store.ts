@@ -6,6 +6,7 @@ import type {
   AuditStore,
   ContextCommit,
   ConversationMessage,
+  ConnectorThreadState,
   PendingOperation,
   TokenUsage,
 } from "@interchange/types/runtime";
@@ -25,6 +26,7 @@ type ContextData = {
   messages: ConversationMessage[];
   pendingOperations: PendingOperation[];
   tokenUsage: TokenUsage;
+  connectorState: ConnectorThreadState | null;
 };
 
 function parseContextData(raw: unknown): ContextData {
@@ -37,7 +39,37 @@ function parseContextData(raw: unknown): ContextData {
   ) {
     throw new Error("context data has unexpected structure");
   }
-  return raw as ContextData;
+  const obj = raw as Record<string, unknown>;
+  const rawConnectorState = obj["connectorState"];
+  let connectorState: ConnectorThreadState | null;
+  if (rawConnectorState === undefined || rawConnectorState === null) {
+    connectorState = null;
+  } else if (
+    typeof rawConnectorState === "object" &&
+    typeof (rawConnectorState as Record<string, unknown>)["threadRoot"] ===
+      "string" &&
+    typeof (rawConnectorState as Record<string, unknown>)["lastMessageId"] ===
+      "string" &&
+    typeof (rawConnectorState as Record<string, unknown>)["replyTo"] ===
+      "string"
+  ) {
+    const cs = rawConnectorState as Record<string, unknown>;
+    const subject = cs["subject"];
+    connectorState = {
+      threadRoot: cs["threadRoot"] as string,
+      lastMessageId: cs["lastMessageId"] as string,
+      replyTo: cs["replyTo"] as string,
+      ...(typeof subject === "string" ? { subject } : {}),
+    };
+  } else {
+    throw new Error("context data connectorState has unexpected structure");
+  }
+  return {
+    messages: obj["messages"] as ConversationMessage[],
+    pendingOperations: obj["pendingOperations"] as PendingOperation[],
+    tokenUsage: obj["tokenUsage"] as TokenUsage,
+    connectorState,
+  };
 }
 
 async function readCommitLog(
@@ -94,6 +126,7 @@ export class IsogitStore implements ContextStore, AuditStore {
     messages: ConversationMessage[];
     pendingOperations: PendingOperation[];
     tokenUsage: TokenUsage;
+    connectorState: ConnectorThreadState | null;
   }> {
     const entries = await git.log({ fs, dir: this.dir, depth: 50 });
     for (const entry of entries) {
@@ -131,9 +164,15 @@ export class IsogitStore implements ContextStore, AuditStore {
     pendingOperations: PendingOperation[],
     tokenUsage: TokenUsage,
     message: string,
+    connectorState: ConnectorThreadState | null,
     _signal?: AbortSignal,
   ): Promise<ContextCommit> {
-    const data: ContextData = { messages, pendingOperations, tokenUsage };
+    const data: ContextData = {
+      messages,
+      pendingOperations,
+      tokenUsage,
+      connectorState,
+    };
     const contextPath = path.join(this.dir, CONTEXT_FILE);
     await fs.promises.writeFile(contextPath, JSON.stringify(data, null, 2));
 
