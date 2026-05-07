@@ -103,7 +103,7 @@ app.post(
     tags: ["Instances"],
     summary: "Deploy an agent instance",
     description:
-      "Creates a new running instance of the specified agent definition. Resolves credentials, provisions the agent on a sidecar, and starts the session.",
+      "Creates a new running instance of the specified agent definition. Resolves the definition's credential and grant requirements, materializes grants on a new agent principal, provisions the agent on a sidecar, and starts it. The invoker can provide invokerGrants to delegate additional capabilities, resolved against the invoker's own authority at launch.",
     responses: {
       201: {
         description: "Instance deployed",

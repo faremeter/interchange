@@ -5,7 +5,9 @@ export const ApprovalResponse = type({
   tenantId: "string",
   principalId: "string",
   agentId: "string",
-  sessionId: "string",
+  sessionId: type("string").describe(
+    "Internal FK to the session channel. The approval was created during an instance's execution; the instance ID can be resolved via the session relationship.",
+  ),
   resource: "string",
   action: "string",
   "context?": "Record<string, unknown> | null",

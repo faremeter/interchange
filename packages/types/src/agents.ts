@@ -55,7 +55,9 @@ export const CreateAgent = type({
   "modelConfig?": "Record<string, unknown>",
   "capabilities?": "Record<string, unknown>",
   "credentialRequirements?": CredentialRequirement.array(),
-  "grantRequirements?": GrantRequirement.array(),
+  "grantRequirements?": GrantRequirement.array().describe(
+    "A grant requirements manifest, not live grants. Each entry declares a resource, action, and source (creator or invoker). The control plane resolves these requirements at each agent launch against the current authority of the creator and invoker.",
+  ),
   "roleIds?": "string[]",
 });
 
@@ -77,7 +79,9 @@ export const AgentResponse = type({
   id: "string",
   tenantId: "string",
   // TODO: remove null once all definitions have been backfilled
-  "creatorPrincipalId?": "string | null",
+  "creatorPrincipalId?": type("string | null").describe(
+    "Identifies the definition author's principal (definitions have no principalId of their own). Used for resolving creator-sourced grant and credential requirements.",
+  ),
   name: "string",
   "description?": "string | null",
   "systemPrompt?": "string | null",
@@ -102,7 +106,11 @@ export const CreateAgentInstance = type({
     action: "string",
     "effect?": Effect,
     "conditions?": "Record<string, unknown> | null",
-  }).array(),
+  })
+    .array()
+    .describe(
+      "Capabilities the invoker is willing to delegate to the agent, resolved against the invoker's own authority at launch. These are materialized as grants on the agent principal in addition to any grants from the definition's own requirements.",
+    ),
 });
 
 export const AgentInstanceResponse = type({
