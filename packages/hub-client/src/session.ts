@@ -48,6 +48,7 @@ export function createInstanceSession(opts: {
 
   let events: InstanceEvent[] = [];
   let streaming = "";
+  let streamingFromReplay = false;
   let activity: AgentActivity | null = null;
   let hydrated = false;
 
@@ -136,6 +137,7 @@ export function createInstanceSession(opts: {
       // deltas for turn N+1 have already started populating the buffer.
       if (!streaming || streaming === text) {
         streaming = "";
+        streamingFromReplay = false;
       }
       activity = null;
       onChange();
@@ -146,6 +148,7 @@ export function createInstanceSession(opts: {
     if (!(replayEvent instanceof type.errors)) {
       if (streaming === "") {
         streaming = replayEvent.data.text;
+        streamingFromReplay = true;
         onChange();
       }
       return;
@@ -165,6 +168,7 @@ export function createInstanceSession(opts: {
         break;
       case "inference.text.delta":
         streaming += event.data.token;
+        streamingFromReplay = false;
         activity = null;
         onChange();
         break;
@@ -186,11 +190,13 @@ export function createInstanceSession(opts: {
         break;
       case "inference.error":
         streaming = "";
+        streamingFromReplay = false;
         activity = null;
         onChange();
         break;
       case "reactor.done":
         streaming = "";
+        streamingFromReplay = false;
         activity = null;
         onChange();
         break;
@@ -277,6 +283,14 @@ export function createInstanceSession(opts: {
         all.sort((a, b) =>
           a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0,
         );
+
+        // If streaming was set by replay and no live deltas have arrived
+        // since, the corresponding turn is already in the hydrated events.
+        // Clear it so the UI doesn't show a stale streaming preview.
+        if (streamingFromReplay) {
+          streaming = "";
+          streamingFromReplay = false;
+        }
 
         events = all;
         hydrated = true;

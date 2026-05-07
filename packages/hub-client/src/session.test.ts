@@ -834,6 +834,193 @@ describe("streaming buffer", () => {
 
     expect(session.streaming).toBe("already here");
   });
+
+  test("replay-only streaming is cleared after hydration completes", async () => {
+    let resolveFetch!: () => void;
+    const fetchPending = new Promise<void>((r) => {
+      resolveFetch = r;
+    });
+
+    const turn = makeTurn({ id: "turn_1", startedAt: "2024-01-01T00:00:00Z" });
+    const bus = { emit: noop as (event: unknown) => void };
+    const transport: Transport = {
+      async fetch<T>(_method: string, path: string): Promise<T> {
+        await fetchPending;
+        if (path.includes("/mail")) return { data: [] } as T;
+        if (path.includes("/turns")) return { data: [turn] } as T;
+        throw new Error(`Unexpected: ${path}`);
+      },
+      subscribe(_path: string, onEvent: (event: unknown) => void): () => void {
+        bus.emit = onEvent;
+        return () => {
+          bus.emit = noop;
+        };
+      },
+    };
+
+    const s = createInstanceSession({
+      tenantId: TENANT_ID,
+      instanceId: INSTANCE_ID,
+      transport,
+      onChange: noop,
+    });
+
+    s.start();
+
+    // Replay arrives before hydration completes
+    bus.emit({ type: "inference.text.replay", data: { text: "stale text" } });
+    expect(s.streaming).toBe("stale text");
+
+    // Hydration completes — the turn is already finished, so replay is stale
+    resolveFetch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(s.streaming).toBe("");
+  });
+
+  test("replay streaming survives hydration when live deltas have arrived", async () => {
+    let resolveFetch!: () => void;
+    const fetchPending = new Promise<void>((r) => {
+      resolveFetch = r;
+    });
+
+    const bus = { emit: noop as (event: unknown) => void };
+    const transport: Transport = {
+      async fetch<T>(_method: string, path: string): Promise<T> {
+        await fetchPending;
+        if (path.includes("/mail")) return { data: [] } as T;
+        if (path.includes("/turns")) return { data: [] } as T;
+        throw new Error(`Unexpected: ${path}`);
+      },
+      subscribe(_path: string, onEvent: (event: unknown) => void): () => void {
+        bus.emit = onEvent;
+        return () => {
+          bus.emit = noop;
+        };
+      },
+    };
+
+    const s = createInstanceSession({
+      tenantId: TENANT_ID,
+      instanceId: INSTANCE_ID,
+      transport,
+      onChange: noop,
+    });
+
+    s.start();
+
+    // Replay arrives, then live deltas continue
+    bus.emit({ type: "inference.text.replay", data: { text: "replay " } });
+    bus.emit({
+      type: "inference.text.delta",
+      seq: 1,
+      data: { token: "live", partial: { text: "replay live" } },
+    });
+    expect(s.streaming).toBe("replay live");
+
+    // Hydration completes — streaming should NOT be cleared because
+    // live deltas prove inference is still active
+    resolveFetch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(s.streaming).toBe("replay live");
+  });
+
+  test("inference.error after replay clears streamingFromReplay so hydration does not double-clear", async () => {
+    let resolveFetch!: () => void;
+    const fetchPending = new Promise<void>((r) => {
+      resolveFetch = r;
+    });
+
+    const bus = { emit: noop as (event: unknown) => void };
+    const transport: Transport = {
+      async fetch<T>(_method: string, path: string): Promise<T> {
+        await fetchPending;
+        if (path.includes("/mail")) return { data: [] } as T;
+        if (path.includes("/turns")) return { data: [] } as T;
+        throw new Error(`Unexpected: ${path}`);
+      },
+      subscribe(_path: string, onEvent: (event: unknown) => void): () => void {
+        bus.emit = onEvent;
+        return () => {
+          bus.emit = noop;
+        };
+      },
+    };
+
+    const s = createInstanceSession({
+      tenantId: TENANT_ID,
+      instanceId: INSTANCE_ID,
+      transport,
+      onChange: noop,
+    });
+
+    s.start();
+
+    // Replay arrives, then inference fails
+    bus.emit({ type: "inference.text.replay", data: { text: "partial" } });
+    expect(s.streaming).toBe("partial");
+
+    bus.emit({
+      type: "inference.error",
+      seq: 1,
+      data: {
+        error: { category: "retryable", message: "fail" },
+        partial: { text: "partial" },
+      },
+    });
+    expect(s.streaming).toBe("");
+
+    // Hydration completes — streaming should remain "" (not be re-cleared
+    // by a stale streamingFromReplay flag)
+    resolveFetch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(s.streaming).toBe("");
+  });
+
+  test("reactor.done after replay clears streamingFromReplay so hydration does not double-clear", async () => {
+    let resolveFetch!: () => void;
+    const fetchPending = new Promise<void>((r) => {
+      resolveFetch = r;
+    });
+
+    const bus = { emit: noop as (event: unknown) => void };
+    const transport: Transport = {
+      async fetch<T>(_method: string, path: string): Promise<T> {
+        await fetchPending;
+        if (path.includes("/mail")) return { data: [] } as T;
+        if (path.includes("/turns")) return { data: [] } as T;
+        throw new Error(`Unexpected: ${path}`);
+      },
+      subscribe(_path: string, onEvent: (event: unknown) => void): () => void {
+        bus.emit = onEvent;
+        return () => {
+          bus.emit = noop;
+        };
+      },
+    };
+
+    const s = createInstanceSession({
+      tenantId: TENANT_ID,
+      instanceId: INSTANCE_ID,
+      transport,
+      onChange: noop,
+    });
+
+    s.start();
+
+    bus.emit({ type: "inference.text.replay", data: { text: "done text" } });
+    expect(s.streaming).toBe("done text");
+
+    bus.emit({ type: "reactor.done", seq: 1, data: {} });
+    expect(s.streaming).toBe("");
+
+    resolveFetch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(s.streaming).toBe("");
+  });
 });
 
 // Activity state machine
