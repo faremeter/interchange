@@ -22,6 +22,7 @@ A server application. One instance (or cluster), backed by Postgres. No portabil
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@interchange/hub-api`         | Hono routes, middleware, request/response handling. The HTTP API surface.                                                                                 |
 | `@interchange/hub-db`          | Drizzle schema, connection pooling, credential resolution, grant store, tenant hierarchy queries. Postgres-specific.                                      |
+| `@interchange/hub-client`      | Browser/UI client library. API transport, SSE event stream transforms, instance session management. Consumed by the UI, not the hub itself.               |
 | `@interchange/hub-credentials` | Background credential refresh workers, proactive push of updated credentials to harnesses. Long-running process, not request/response.                    |
 | `@interchange/hub-sessions`    | WebSocket proxy between clients and harnesses, session brokering, NAT traversal for harnesses behind firewalls. Stateful, long-lived connections.         |
 | `@interchange/hub-ca`          | Certificate authority. Ed25519 certificate issuance, renewal, and revocation for agent and harness identity. Security-sensitive, benefits from isolation. |
@@ -40,11 +41,13 @@ Distributed across many environments: containers, VMs, local processes, Cloudfla
 
 Uses `fetch` and `ReadableStream` exclusively. No Node APIs, no filesystem assumptions, no native bindings. Ships once, works everywhere.
 
-| Package                  | Purpose                                                                                                                                                                                                                                          |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@interchange/inference` | Provider adapters (Anthropic, OpenAI-compatible), streaming harness, reactor, plugin system, context management, compaction, error classification, token accounting, cross-provider message transformation, test provider. The reasoning engine. |
-| `@interchange/wallet`    | Payment tool definitions (`wallet.pay`, `wallet.request_payment`, etc.), spending policy enforcement, payment backend plugin interface. Policy logic is arithmetic and pattern matching.                                                         |
-| `@interchange/harness`   | Agent lifecycle, event routing, tool dispatch, content safety, session channel logic. Composes inference, wallet, and authz with environment-specific implementations injected at startup.                                                       |
+| Package                       | Purpose                                                                                                                                                                                                                                          |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@interchange/inference`      | Provider adapters (Anthropic, OpenAI-compatible), streaming harness, reactor, plugin system, context management, compaction, error classification, token accounting, cross-provider message transformation, test provider. The reasoning engine. |
+| `@interchange/wallet`         | Payment tool definitions (`wallet.pay`, `wallet.request_payment`, etc.), spending policy enforcement, payment backend plugin interface. Policy logic is arithmetic and pattern matching.                                                         |
+| `@interchange/harness`        | Agent lifecycle, event routing, tool dispatch, content safety, session channel logic. Composes inference, wallet, and authz with environment-specific implementations injected at startup.                                                       |
+| `@interchange/mime`           | MIME message construction, multipart assembly, PGP detached signature generation, RFC 2822 formatting, and MIME parsing. Used by message transports.                                                                                             |
+| `@interchange/pack-transport` | Git pack protocol chunking and reassembly. Transfers git object data between the hub and sidecars over WebSocket or HTTP.                                                                                                                        |
 
 ### Environment-Specific Implementations
 
@@ -66,10 +69,11 @@ Each package implements an interface defined in `@interchange/types`. The harnes
 
 **Message Transport** (implements `MessageTransport`):
 
-| Package                     | Environment | Implementation                                                                            |
-| --------------------------- | ----------- | ----------------------------------------------------------------------------------------- |
-| `@interchange/message-smtp` | Server      | SMTP/IMAP client over TCP. TLS, MIME parsing, SPF/DKIM/DMARC. Requires raw socket access. |
-| `@interchange/message-http` | Constrained | HTTP relay through the hub. For environments that cannot open TCP sockets.                |
+| Package                       | Environment | Implementation                                                                                                   |
+| ----------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------- |
+| `@interchange/message-smtp`   | Server      | SMTP/IMAP client over TCP. TLS, MIME parsing, SPF/DKIM/DMARC. Requires raw socket access.                        |
+| `@interchange/message-http`   | Constrained | HTTP relay through the hub. For environments that cannot open TCP sockets.                                       |
+| `@interchange/message-memory` | Testing     | In-memory message transport for single-process and test environments. Agents register and exchange mail locally. |
 
 **Payment Backends** (implements `WalletBackend`):
 
