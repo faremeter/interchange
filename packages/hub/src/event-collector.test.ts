@@ -894,10 +894,7 @@ describe("EventCollectorRegistry getAccumulatedText", () => {
 
     registry.create(address, "tnt_test", "ses_test", "ins_test");
 
-    registry.dispatch(
-      address,
-      event("inference.start", 1, { model: "gpt-4" }),
-    );
+    registry.dispatch(address, event("inference.start", 1, { model: "gpt-4" }));
     // dispatch is fire-and-forget; wait for the microtask queue to flush
     await Promise.resolve();
 

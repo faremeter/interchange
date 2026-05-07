@@ -499,17 +499,14 @@ describe("deploy flow integration", () => {
         hub.agentEvents
           .slice(eventsBefore)
           .some(
-            (e) =>
-              (e.event as { type: string }).type === "inference.start",
+            (e) => (e.event as { type: string }).type === "inference.start",
           ),
       { diagnostics: sidecarDiagnostics },
     );
 
     const inferenceStartEvent = hub.agentEvents
       .slice(eventsBefore)
-      .find(
-        (e) => (e.event as { type: string }).type === "inference.start",
-      );
+      .find((e) => (e.event as { type: string }).type === "inference.start");
     if (inferenceStartEvent === undefined) throw new Error("unreachable");
     expect(inferenceStartEvent.addr).toBe(AGENT_ADDRESS);
     expect(inferenceStartEvent.sid).toBe(SESSION_ID);
