@@ -24,7 +24,7 @@ import {
 const app = new Hono<TenantEnv>();
 
 app.get(
-  "/federation",
+  "/",
   describeRoute({
     tags: ["Tenants"],
     summary: "List federation trust relationships",
@@ -86,7 +86,7 @@ app.get(
 );
 
 app.post(
-  "/federation",
+  "/",
   describeRoute({
     tags: ["Tenants"],
     summary: "Establish federation trust",
@@ -168,7 +168,7 @@ app.post(
 );
 
 app.delete(
-  "/federation/:targetTenantId",
+  "/:targetTenantId",
   describeRoute({
     tags: ["Tenants"],
     summary: "Revoke federation trust",

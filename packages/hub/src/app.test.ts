@@ -84,6 +84,19 @@ describe("app", () => {
     }
   });
 
+  test("federation routes do not double the /federation path segment", async () => {
+    const res = await app.request("/openapi.json");
+    const spec = (await res.json()) as { paths: Record<string, unknown> };
+    const federationPaths = Object.keys(spec.paths).filter((p) =>
+      p.includes("federation"),
+    );
+
+    expect(federationPaths.length).toBeGreaterThan(0);
+    for (const p of federationPaths) {
+      expect(p).not.toContain("federation/federation");
+    }
+  });
+
   test("POST with invalid body returns 400", async () => {
     const res = await app.request("/api/tenants", {
       method: "POST",
