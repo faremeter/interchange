@@ -49,7 +49,9 @@ export const ApprovalSummary = type({
   tenantName: "string",
   agentId: "string",
   agentName: "string",
-  sessionId: "string",
+  sessionId: type("string").describe(
+    "Internal FK to the session channel. The instance ID can be resolved via the session relationship.",
+  ),
   resource: "string",
   action: "string",
   createdAt: "string",

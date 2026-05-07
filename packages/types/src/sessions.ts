@@ -39,7 +39,9 @@ export const SendMessage = type({
 
 export const MailResponse = type({
   id: "string",
-  sessionId: "string",
+  sessionId: type("string").describe(
+    "Internal session channel identifier, not a user-facing session resource.",
+  ),
   instanceId: "string | null",
   direction: "'inbound' | 'outbound'",
   status: "'pending' | 'delivered'",
@@ -75,7 +77,9 @@ export type MailResponse = typeof MailResponse.infer;
 
 export const InferenceTurnResponse = type({
   id: "string",
-  sessionId: "string",
+  sessionId: type("string").describe(
+    "Internal session channel identifier, not a user-facing session resource.",
+  ),
   instanceId: "string",
   model: "string",
   status: "'running' | 'completed' | 'failed'",
