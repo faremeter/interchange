@@ -7,8 +7,9 @@ Instructions for AI agents working in this repository.
 At the start of every session, before doing any other work:
 
 1. Read `CONVENTIONS.md` and follow all conventions defined there
+2. Scan `skills/` for local skill directories. Read the YAML frontmatter of each `SKILL.md` to learn what skills are available. Do not read the full skill body unless the skill is being invoked.
 
-Do not proceed with any user requests until this step is complete.
+Do not proceed with any user requests until these steps are complete.
 
 ## Development Environment
 
