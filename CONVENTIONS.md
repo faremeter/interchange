@@ -42,7 +42,7 @@ bun run check && bun run lint && bun run test
 
 # Individual commands
 bun run check    # tsc -b --noEmit (validates entire TypeScript project graph)
-bun run lint     # Prettier + ESLint checks
+bun run lint     # Prettier + ESLint + API docs freshness
 bun run format   # Auto-format with Prettier
 bun run test     # Run bun tests
 ```
@@ -64,6 +64,7 @@ bun run test     # Run bun tests
 - Use the package logger, never `console`
 - Co-locate tests with source files
 - Run `bun run format` before committing
+- Run `bun run docs` after changing routes or type descriptions
 - Let TypeScript infer types when obvious
 
 ### Don't
