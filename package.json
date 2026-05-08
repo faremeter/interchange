@@ -12,7 +12,7 @@
   },
   "scripts": {
     "check": "tsc -b --noEmit",
-    "lint": "prettier -c . && eslint --cache .",
+    "lint": "prettier -c . && eslint --cache . && bun run check:docs",
     "format": "prettier -w .",
     "test": "bun test",
     "docs": "bun bin/gen-api-docs.ts",
