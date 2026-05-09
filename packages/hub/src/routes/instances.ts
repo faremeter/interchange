@@ -11,6 +11,7 @@ import {
   agentSession,
   grant as grantTable,
   inferenceTurn,
+  offering,
   principal as principalTable,
   principalRole,
   provider,
@@ -26,6 +27,7 @@ import {
   CreateAgentInstance,
   AgentInstanceResponse,
   AgentHealth,
+  OfferingDetail,
   GrantRequirement,
   SendMessage,
   MailResponse,
@@ -39,6 +41,7 @@ import type {
   ProviderConfig,
 } from "@interchange/types/runtime";
 import { SessionLaunchError } from "../session-service";
+import { formatOffering } from "./offerings";
 
 import type { TenantEnv } from "../context";
 import { requireGrant, idResource } from "../middleware/grant";
@@ -842,6 +845,69 @@ app.get(
     const readiness = status !== undefined ? "ok" : "not_ready";
 
     return c.json({ liveness, readiness, lastCheckedAt: null });
+  },
+);
+
+app.get(
+  "/:instanceId/offerings",
+  requireGrant(idResource("instance", "instanceId"), "read"),
+  describeRoute({
+    tags: ["Instances"],
+    summary: "List instance offerings",
+    description:
+      "Returns the offerings associated with the instance's agent definition. These represent the capabilities the instance can provide.",
+    responses: {
+      200: {
+        description: "List of offerings",
+        content: {
+          "application/json": {
+            schema: resolver(OfferingDetail.array()),
+          },
+        },
+      },
+      404: {
+        description: "Instance not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const db = c.get("db");
+    const instanceId = c.req.param("instanceId");
+
+    const [row] = await db
+      .select({
+        instance: agentInstance,
+        agentName: agent.name,
+      })
+      .from(agentInstance)
+      .innerJoin(agent, eq(agentInstance.agentId, agent.id))
+      .where(
+        and(
+          eq(agentInstance.id, instanceId),
+          eq(agentInstance.tenantId, tenantCtx.id),
+        ),
+      )
+      .limit(1);
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Instance not found" } },
+        404,
+      );
+    }
+
+    const offerings = await db.query.offering.findMany({
+      where: and(
+        eq(offering.agentId, row.instance.agentId),
+        eq(offering.tenantId, tenantCtx.id),
+      ),
+    });
+
+    return c.json(offerings.map((o) => formatOffering(o, row.agentName)));
   },
 );
 

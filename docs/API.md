@@ -47,6 +47,7 @@
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId | Get instance detail |
 | DELETE | /api/tenants/:tenantId/agents/instances/:instanceId | Stop an instance |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/health | Get instance health |
+| GET | /api/tenants/:tenantId/agents/instances/:instanceId/offerings | List instance offerings |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/events | SSE event stream |
 | POST | /api/tenants/:tenantId/agents/instances/:instanceId/abort | Abort current operation |
 | POST | /api/tenants/:tenantId/agents/instances/:instanceId/mail | Send mail to the agent |
@@ -532,6 +533,14 @@ Returns liveness and readiness for a running instance. Liveness reflects whether
 200: AgentHealth -- Health status
 404: ErrorResponse -- Instance not found
 410: ErrorResponse -- Instance stopped
+
+### GET /api/tenants/:tenantId/agents/instances/:instanceId/offerings
+List instance offerings
+
+Returns the offerings associated with the instance's agent definition. These represent the capabilities the instance can provide.
+
+200: OfferingDetail[] -- List of offerings
+404: ErrorResponse -- Instance not found
 
 ### GET /api/tenants/:tenantId/agents/instances/:instanceId/events
 SSE event stream
