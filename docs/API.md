@@ -40,8 +40,6 @@
 | DELETE | /api/tenants/:tenantId/agents/definitions/:agentId | Retire an agent |
 | GET | /api/tenants/:tenantId/agents/definitions/:agentId/versions | List agent versions |
 | POST | /api/tenants/:tenantId/agents/definitions/:agentId/rollback | Rollback to a previous version |
-| GET | /api/tenants/:tenantId/agents/definitions/:agentId/health | Get agent health status |
-| GET | /api/tenants/:tenantId/agents/definitions/:agentId/offerings | List agent offerings |
 | POST | /api/tenants/:tenantId/agents/instances | Deploy an agent instance |
 | GET | /api/tenants/:tenantId/agents/instances | List agent instances |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId | Get instance detail |
@@ -468,21 +466,6 @@ Body: RollbackRequest
 
 200: AgentResponse -- Rollback initiated
 400: ErrorResponse -- Invalid version
-
-### GET /api/tenants/:tenantId/agents/definitions/:agentId/health
-Get agent health status
-
-Returns liveness and readiness status.
-
-200: AgentHealth -- Health status
-404: ErrorResponse -- Agent not found
-
-### GET /api/tenants/:tenantId/agents/definitions/:agentId/offerings
-List agent offerings
-
-Returns the agent's exposed offerings with pricing metadata.
-
-200: Offering[] -- List of offerings
 
 ## Instances
 
@@ -1073,10 +1056,6 @@ Source: packages/types/src/models.ts
 ### OAuthClientResponse
 `{ createdAt: string, id: string, name: string, providerId: string, tenantId: string, updatedAt: string, defaultScopes?: string[] | null, metadata?: { [string]: unknown } | null, redirectUris?: string[] | null }`
 Source: packages/types/src/oauth-clients.ts
-
-### Offering
-`{ agentId: string, id: string, name: string, description?: string | null, pricing?: { base?: { amount: string, currency: string }, bounds?: { max?: string, min?: string }, methods?: string[], negotiable?: boolean } }`
-Source: packages/types/src/agents.ts
 
 ### OfferingDetail
 `{ agentId: string, agentName: string, id: string, name: string, tenantId: string, description?: string | null, pricing?: { base?: { amount: string, currency: string }, bounds?: { max?: string, min?: string }, methods?: string[], negotiable?: boolean }, schema?: { [string]: unknown } | null }`
