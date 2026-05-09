@@ -59,6 +59,15 @@ export type AgentRepoStore = {
   getSigningPublicKey(): Uint8Array;
 };
 
+function hasCode(err: unknown): err is { code: string } {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    typeof (err as { code: unknown }).code === "string"
+  );
+}
+
 export function createAgentRepoStore(config: {
   dataDir: string;
   signingKey: { privateKey: Uint8Array; publicKey: Uint8Array };
@@ -194,12 +203,7 @@ export function createAgentRepoStore(config: {
     try {
       return await git.resolveRef({ fs, dir, ref: DEPLOY_REF });
     } catch (err: unknown) {
-      if (
-        typeof err === "object" &&
-        err !== null &&
-        "code" in err &&
-        (err as { code: string }).code === "NotFoundError"
-      ) {
+      if (hasCode(err) && err.code === "NotFoundError") {
         return null;
       }
       throw err;

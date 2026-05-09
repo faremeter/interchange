@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import git from "isomorphic-git";
+import { readRawObject } from "./isogit-helpers";
 
 /**
  * Verifies the signature embedded in a git commit object.
@@ -269,12 +270,7 @@ export async function applyPack(
       // Reconstruct the signing payload from the raw object bytes.
       // readCommit().payload is unreliable for SSH signatures because
       // isogit's withoutSignature() only handles PGP armor markers.
-      const { object: rawBytes } = (await git.readObject({
-        fs,
-        dir,
-        oid: expectedSha,
-        format: "content",
-      })) as { object: Uint8Array };
+      const { object: rawBytes } = await readRawObject(dir, expectedSha);
       const payload = stripGpgsig(new TextDecoder().decode(rawBytes));
 
       if (!verifyCommit(payload, commit.gpgsig)) {
