@@ -46,6 +46,7 @@
 | GET | /api/tenants/:tenantId/agents/instances | List agent instances |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId | Get instance detail |
 | DELETE | /api/tenants/:tenantId/agents/instances/:instanceId | Stop an instance |
+| GET | /api/tenants/:tenantId/agents/instances/:instanceId/health | Get instance health |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/events | SSE event stream |
 | POST | /api/tenants/:tenantId/agents/instances/:instanceId/abort | Abort current operation |
 | POST | /api/tenants/:tenantId/agents/instances/:instanceId/mail | Send mail to the agent |
@@ -522,6 +523,15 @@ Stops the running instance and undeploys the agent from the sidecar.
 404: ErrorResponse -- Instance not found
 409: ErrorResponse -- Instance already stopped
 502: ErrorResponse -- Sidecar unavailable
+
+### GET /api/tenants/:tenantId/agents/instances/:instanceId/health
+Get instance health
+
+Returns liveness and readiness for a running instance. Liveness reflects whether the instance's sidecar connection is active. Readiness reflects whether the instance has an active event collector and can process work.
+
+200: AgentHealth -- Health status
+404: ErrorResponse -- Instance not found
+410: ErrorResponse -- Instance stopped
 
 ### GET /api/tenants/:tenantId/agents/instances/:instanceId/events
 SSE event stream
