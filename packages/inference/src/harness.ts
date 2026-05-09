@@ -13,6 +13,8 @@
 // Provider adapters never touch SSE parsing, connection lifecycle, abort
 // handling, or event emission. They translate request/response shapes.
 
+import { type } from "arktype";
+
 import type {
   ConversationMessage,
   InferenceEvent,
@@ -334,11 +336,9 @@ export async function* runInference(
     let parsedArgs: Record<string, unknown>;
     try {
       const raw = tc.argsBuffer.trim() === "" ? "{}" : tc.argsBuffer;
-      const result = JSON.parse(raw);
-      parsedArgs =
-        typeof result === "object" && result !== null
-          ? (result as Record<string, unknown>)
-          : {};
+      const parsed = JSON.parse(raw);
+      const validated = ParsedToolArgs(parsed);
+      parsedArgs = validated instanceof type.errors ? {} : validated;
     } catch {
       parsedArgs = { _raw: tc.argsBuffer };
     }
@@ -457,24 +457,22 @@ function injectCredentials(
   return result;
 }
 
-function extractErrorMessage(body: unknown): string | null {
-  if (body === null || typeof body !== "object") return null;
-  const obj = body as Record<string, unknown>;
+const ParsedToolArgs = type("Record<string, unknown>");
 
-  // Anthropic: { error: { message: "..." } }
-  const anthropicError = obj["error"];
-  if (
-    anthropicError !== null &&
-    typeof anthropicError === "object" &&
-    typeof (anthropicError as Record<string, unknown>)["message"] === "string"
-  ) {
-    return (anthropicError as Record<string, unknown>)["message"] as string;
+const ErrorBody = type({ error: { message: "string" } });
+const DirectMessageBody = type({ message: "string" });
+
+function extractErrorMessage(body: unknown): string | null {
+  // Anthropic/OpenAI: { error: { message: "..." } }
+  const errorBody = ErrorBody(body);
+  if (!(errorBody instanceof type.errors)) {
+    return errorBody.error.message;
   }
 
-  // OpenAI: { error: { message: "..." } } — same structure
   // Direct message field as fallback.
-  if (typeof obj["message"] === "string") {
-    return obj["message"] as string;
+  const directBody = DirectMessageBody(body);
+  if (!(directBody instanceof type.errors)) {
+    return directBody.message;
   }
 
   return null;
