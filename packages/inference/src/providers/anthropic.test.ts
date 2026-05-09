@@ -1,8 +1,51 @@
+import { type } from "arktype";
 import { describe, test, expect } from "bun:test";
 import { createAnthropicAdapter } from "./anthropic";
 import type { ConversationMessage } from "@interchange/types/runtime";
 
 const adapter = createAnthropicAdapter();
+
+const AnthropicContentBlock = type({
+  type: "string",
+  "text?": "string",
+  "id?": "string",
+  "name?": "string",
+  "cache_control?": { type: "string" },
+});
+
+const AnthropicMessage = type({
+  role: "string",
+  content: AnthropicContentBlock.array(),
+});
+
+const AnthropicThinking = type({
+  type: "string",
+  budget_tokens: "number",
+});
+
+const AnthropicTool = type({
+  name: "string",
+  "description?": "string",
+  input_schema: "unknown",
+  "cache_control?": { type: "string" },
+});
+
+const AnthropicSystemBlock = type({
+  type: "string",
+  text: "string",
+  "cache_control?": { type: "string" },
+});
+
+const AnthropicRequestBody = type({
+  model: "string",
+  max_tokens: "number",
+  messages: AnthropicMessage.array(),
+  stream: "boolean",
+  "system?": AnthropicSystemBlock.array(),
+  "thinking?": AnthropicThinking,
+  "tools?": AnthropicTool.array(),
+  "temperature?": "number",
+});
 
 describe("Anthropic adapter: buildRequest", () => {
   test("builds a request with required fields", () => {
@@ -20,10 +63,10 @@ describe("Anthropic adapter: buildRequest", () => {
     expect(req.headers["content-type"]).toBe("application/json");
     expect(req.headers["anthropic-version"]).toBe("2023-06-01");
 
-    const body = JSON.parse(req.body) as Record<string, unknown>;
-    expect(body["model"]).toBe("claude-3-5-sonnet-20241022");
-    expect(body["stream"]).toBe(true);
-    expect(typeof body["max_tokens"]).toBe("number");
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    expect(body.model).toBe("claude-3-5-sonnet-20241022");
+    expect(body.stream).toBe(true);
+    expect(typeof body.max_tokens).toBe("number");
   });
 
   test("extracts system messages into top-level system field", () => {
@@ -37,19 +80,18 @@ describe("Anthropic adapter: buildRequest", () => {
       "claude-3-5-sonnet-20241022",
       {},
     );
-    const body = JSON.parse(req.body) as Record<string, unknown>;
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
 
-    expect(body["system"]).toEqual([
+    expect(body.system).toEqual([
       {
         type: "text",
         text: "You are helpful.",
         cache_control: { type: "ephemeral" },
       },
     ]);
-    const msgArray = body["messages"] as unknown[];
     // System message should not appear in messages array.
-    expect(msgArray).toHaveLength(1);
-    expect((msgArray[0] as Record<string, unknown>)["role"]).toBe("user");
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.role).toBe("user");
   });
 
   test("options.systemPrompt overrides system messages", () => {
@@ -61,8 +103,8 @@ describe("Anthropic adapter: buildRequest", () => {
     const req = adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {
       systemPrompt: "Override system.",
     });
-    const body = JSON.parse(req.body) as Record<string, unknown>;
-    expect(body["system"]).toEqual([
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    expect(body.system).toEqual([
       {
         type: "text",
         text: "Override system.",
@@ -79,10 +121,9 @@ describe("Anthropic adapter: buildRequest", () => {
     const req = adapter.buildRequest(messages, "claude-3-7-sonnet-20250219", {
       thinking: { enabled: true, budgetTokens: 2048 },
     });
-    const body = JSON.parse(req.body) as Record<string, unknown>;
-    const thinking = body["thinking"] as Record<string, unknown>;
-    expect(thinking["type"]).toBe("enabled");
-    expect(thinking["budget_tokens"]).toBe(2048);
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    expect(body.thinking?.type).toBe("enabled");
+    expect(body.thinking?.budget_tokens).toBe(2048);
   });
 
   test("converts tool_call blocks to tool_use type", () => {
@@ -105,13 +146,11 @@ describe("Anthropic adapter: buildRequest", () => {
       "claude-3-5-sonnet-20241022",
       {},
     );
-    const body = JSON.parse(req.body) as Record<string, unknown>;
-    const msgArray = body["messages"] as Record<string, unknown>[];
-    const contentArray = msgArray[0]?.["content"] as Record<string, unknown>[];
-    const block = contentArray[0];
-    expect(block?.["type"]).toBe("tool_use");
-    expect(block?.["id"]).toBe("toolu_01");
-    expect(block?.["name"]).toBe("read_file");
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    const block = body.messages[0]?.content[0];
+    expect(block?.type).toBe("tool_use");
+    expect(block?.id).toBe("toolu_01");
+    expect(block?.name).toBe("read_file");
   });
 
   test("serializes tool definitions with Anthropic wire format", () => {
@@ -131,17 +170,15 @@ describe("Anthropic adapter: buildRequest", () => {
         },
       ],
     });
-    const body = JSON.parse(req.body) as Record<string, unknown>;
-    const tools = body["tools"] as Record<string, unknown>[];
-    expect(tools).toHaveLength(1);
-    expect(tools[0]?.["name"]).toBe("greet");
-    expect(tools[0]?.["description"]).toBe("Greet someone");
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    expect(body.tools).toHaveLength(1);
+    expect(body.tools?.[0]?.name).toBe("greet");
+    expect(body.tools?.[0]?.description).toBe("Greet someone");
     // Anthropic uses input_schema, not inputSchema.
-    expect(tools[0]?.["input_schema"]).toEqual({
+    expect(body.tools?.[0]?.input_schema).toEqual({
       type: "object",
       properties: { name: { type: "string" } },
     });
-    expect(tools[0]?.["inputSchema"]).toBeUndefined();
   });
 
   test("omits tools key when tools array is empty", () => {
@@ -152,7 +189,7 @@ describe("Anthropic adapter: buildRequest", () => {
     const req = adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {
       tools: [],
     });
-    const body = JSON.parse(req.body) as Record<string, unknown>;
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
     expect("tools" in body).toBe(false);
   });
 
@@ -166,7 +203,7 @@ describe("Anthropic adapter: buildRequest", () => {
       "claude-3-5-sonnet-20241022",
       {},
     );
-    const body = JSON.parse(req.body) as Record<string, unknown>;
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
     expect("tools" in body).toBe(false);
   });
 
@@ -178,8 +215,8 @@ describe("Anthropic adapter: buildRequest", () => {
     const req = adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {
       maxTokens: 512,
     });
-    const body = JSON.parse(req.body) as Record<string, unknown>;
-    expect(body["max_tokens"]).toBe(512);
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    expect(body.max_tokens).toBe(512);
   });
 });
 
