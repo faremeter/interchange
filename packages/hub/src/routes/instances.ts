@@ -25,6 +25,7 @@ import { generateKeyPair, createNodeCrypto } from "@interchange/crypto-node";
 import {
   CreateAgentInstance,
   AgentInstanceResponse,
+  AgentHealth,
   GrantRequirement,
   SendMessage,
   MailResponse,
@@ -772,6 +773,75 @@ app.get(
     }
 
     return c.json(result);
+  },
+);
+
+app.get(
+  "/:instanceId/health",
+  requireGrant(idResource("instance", "instanceId"), "read"),
+  describeRoute({
+    tags: ["Instances"],
+    summary: "Get instance health",
+    description:
+      "Returns liveness and readiness for a running instance. Liveness reflects whether the instance's sidecar connection is active. Readiness reflects whether the instance has an active event collector and can process work.",
+    responses: {
+      200: {
+        description: "Health status",
+        content: {
+          "application/json": { schema: resolver(AgentHealth) },
+        },
+      },
+      404: {
+        description: "Instance not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      410: {
+        description: "Instance stopped",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const tenantCtx = c.get("tenant");
+    const db = c.get("db");
+    const sidecarRouter = c.get("sidecarRouter");
+    const eventCollectors = c.get("eventCollectors");
+    const instanceId = c.req.param("instanceId");
+
+    const row = await db.query.agentInstance.findFirst({
+      where: and(
+        eq(agentInstance.id, instanceId),
+        eq(agentInstance.tenantId, tenantCtx.id),
+      ),
+    });
+
+    if (!row) {
+      return c.json(
+        { error: { code: "not_found", message: "Instance not found" } },
+        404,
+      );
+    }
+
+    if (row.status === "stopped") {
+      return c.json(
+        { error: { code: "gone", message: "Instance has stopped" } },
+        410,
+      );
+    }
+
+    const routableAddresses = sidecarRouter.getRoutableAddresses();
+    const liveness = routableAddresses.includes(row.address)
+      ? "ok"
+      : "unhealthy";
+
+    const status = eventCollectors.getStatus(row.address);
+    const readiness = status !== undefined ? "ok" : "not_ready";
+
+    return c.json({ liveness, readiness, lastCheckedAt: null });
   },
 );
 
