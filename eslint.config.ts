@@ -20,6 +20,16 @@ export default defineConfig(
         { allowTaggedTemplates: true },
       ],
       "@typescript-eslint/consistent-type-definitions": 0,
+      "@typescript-eslint/no-unsafe-type-assertion": "error",
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "CallExpression[callee.name='useParams'] Property[key.name='strict'][value.value=false]",
+          message:
+            "Do not use useParams({ strict: false }). Use useParams({ from: '/path/$param' }) for typed route params.",
+        },
+      ],
       "@typescript-eslint/no-unused-vars": [
         "error",
         {

@@ -308,7 +308,7 @@ function processData(data: unknown) {
 }
 ```
 
-Type assertions (`as Type`) bypass type checking and often indicate interface problems. Prefer runtime validation:
+Type assertions (`as Type`) bypass type checking and often indicate interface problems. The ESLint rule `@typescript-eslint/no-unsafe-type-assertion` is enabled at error level to enforce this. Prefer runtime validation:
 
 ```typescript
 // Bad
@@ -320,6 +320,95 @@ const data = UserData(raw);
 if (data instanceof type.errors) {
   throw new Error(`Invalid response: ${data.summary}`);
 }
+```
+
+#### Database query results
+
+Drizzle types `jsonb()` as `unknown` and `text({ enum })` as `string`, which tempts cast-at-callsite. Validate once in the DB layer using `parseRow` functions in `packages/db/src/parse-row.ts`:
+
+```typescript
+// Bad
+const skills = row.skills as string[];
+
+// Good — parseRow validates at the boundary
+const agent = parseAgentRow(row); // skills is already string[]
+```
+
+#### Parsed JSON
+
+Validate external JSON with arktype before using it:
+
+```typescript
+// Bad
+const body = (await req.json()) as DeployManifest;
+
+// Good
+const raw: unknown = await req.json();
+const body = DeployManifest.assert(raw);
+```
+
+#### Test mocks
+
+Write factory functions that satisfy the full interface. For typed empty arrays, annotate the type explicitly:
+
+```typescript
+// Bad
+const mock = {} as unknown as DB;
+
+// Good
+function createMockDB(opts: MockDBOpts) {
+  return { query: { ... } } as unknown as Parameters<typeof createApp>[0]["db"];
+}
+
+// Bad
+const items = [] as SomeType[];
+
+// Good
+const items: SomeType[] = [];
+```
+
+When a library type cannot be structurally satisfied in tests (e.g., betterAuth's `Auth`, Drizzle's `PgDatabase`), the `as unknown as LibraryType` double-cast is acceptable with an `eslint-disable-next-line` and a justification comment.
+
+#### Third-party callbacks
+
+Use type predicate guards instead of casting callback arguments:
+
+```typescript
+// Bad
+onChange={(value) => setValue(value as CredentialType)}
+
+// Good
+function isCredentialType(v: string): v is CredentialType {
+  return credentialTypes.includes(v as CredentialType);
+}
+onChange={(value) => {
+  if (isCredentialType(value)) setValue(value);
+}}
+```
+
+#### Router params
+
+Use TanStack Router's `from` parameter instead of `strict: false` with a cast. An ESLint `no-restricted-syntax` rule enforces this:
+
+```typescript
+// Bad
+const { tenantId } = useParams({ strict: false }) as { tenantId: string };
+
+// Good
+const { tenantId } = useParams({ from: "/authed/tenants/$tenantId" });
+```
+
+#### `as const`
+
+`as const` is always allowed. It narrows literal types and serves a different purpose than type assertions. The lint rule does not flag it.
+
+#### When `as` is acceptable
+
+Only for binary/byte-level parsing where bounds are mathematically guaranteed, or when a library's type definitions cannot express the actual type. Each use requires `eslint-disable-next-line` with a justification:
+
+```typescript
+// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- byte offset is bounds-checked above
+const view = new DataView(buffer.slice(offset, offset + 4) as ArrayBuffer);
 ```
 
 ### Generic Constraints vs Index Signatures
