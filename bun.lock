@@ -103,6 +103,7 @@
         "@interchange/inference": "workspace:*",
         "@interchange/log": "workspace:*",
         "@interchange/types": "workspace:*",
+        "arktype": "catalog:",
       },
     },
     "packages/hub": {
