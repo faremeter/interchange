@@ -297,12 +297,13 @@ function getEvent<T extends ReactorEmittedEvent["type"]>(
   events: ReactorEmittedEvent[],
   type: T,
 ): Extract<ReactorEmittedEvent, { type: T }> {
-  const found = events.find((e) => e.type === type);
+  const found = events.find(
+    (e): e is Extract<ReactorEmittedEvent, { type: T }> => e.type === type,
+  );
   if (found === undefined) {
     throw new Error(`No event of type '${type}' found`);
   }
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- Array.find does not narrow the type to the matched subtype; the predicate `e.type === type` guarantees this is the correct discriminated union member
-  return found as Extract<ReactorEmittedEvent, { type: T }>;
+  return found;
 }
 
 // ---------------------------------------------------------------------------
@@ -2458,13 +2459,13 @@ describe("createReactor — beforeToolExtensions", () => {
     expect(starts.length).toBe(0);
 
     // tool.done is emitted with isError and the block reason.
-    const doneEvents = events.filter((e) => e.type === "tool.done");
+    const doneEvents = events.filter(
+      (e): e is Extract<ReactorEmittedEvent, { type: "tool.done" }> =>
+        e.type === "tool.done",
+    );
     expect(doneEvents.length).toBeGreaterThanOrEqual(1);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- doneEvents is filtered to only "tool.done" events; Array.filter does not narrow the element type to the discriminated union member
-    const blocked = doneEvents[0] as Extract<
-      InferenceEvent,
-      { type: "tool.done" }
-    >;
+    const blocked = doneEvents[0];
+    if (!blocked) throw new Error("expected at least one tool.done event");
     expect(blocked.data.result.isError).toBe(true);
     expect(blocked.data.result.content).toBe("Denied by policy");
     expect(blocked.data.result.callId).toBe("call-1");
