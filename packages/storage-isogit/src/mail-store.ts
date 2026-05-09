@@ -21,6 +21,14 @@ export type MailCommitOptions = {
   ignoreDuplicate?: boolean;
 };
 
+export type MailEntry = {
+  threadId: string;
+  ordinal: number;
+  direction: MailDirection;
+  messageId: string;
+  raw: Uint8Array;
+};
+
 export type MailAuditStore = {
   commitMail(
     rawMessage: Uint8Array,
@@ -143,22 +151,48 @@ export async function createMailAuditStore(
   return { commitMail };
 }
 
-async function rebuildIndex(
-  dir: string,
-  messageIndex: Map<string, string>,
-  threads: Map<string, ThreadState>,
-): Promise<void> {
+function parseFilename(filename: string): {
+  ordinal: number;
+  direction: MailDirection;
+} {
+  const stem = filename.replace(/\.eml$/, "");
+  const dashIndex = stem.indexOf("-");
+  if (dashIndex === -1) {
+    throw new Error(`Malformed mail filename: ${filename}`);
+  }
+
+  const ordinalStr = stem.slice(0, dashIndex);
+  const ordinal = parseInt(ordinalStr, 10);
+  if (isNaN(ordinal)) {
+    throw new Error(`Malformed mail filename: ${filename}`);
+  }
+
+  const directionStr = stem.slice(dashIndex + 1);
+  if (directionStr !== "in" && directionStr !== "out") {
+    throw new Error(
+      `Invalid mail direction '${directionStr}' in filename: ${filename}`,
+    );
+  }
+
+  return { ordinal, direction: directionStr };
+}
+
+async function scanMail(dir: string): Promise<MailEntry[]> {
   const mailDir = path.join(dir, MAIL_DIR);
 
   let threadDirs: string[];
   try {
     threadDirs = await fs.promises.readdir(mailDir);
-  } catch (e) {
+  } catch (e: unknown) {
     if (e instanceof Error && "code" in e && e.code === "ENOENT") {
-      return;
+      return [];
     }
     throw e;
   }
+
+  threadDirs.sort();
+
+  const entries: MailEntry[] = [];
 
   for (const threadId of threadDirs) {
     const threadPath = path.join(mailDir, threadId);
@@ -168,22 +202,38 @@ async function rebuildIndex(
     const files = await fs.promises.readdir(threadPath);
     const emlFiles = files.filter((f) => f.endsWith(".eml")).sort();
 
-    let maxOrdinal = 0;
     for (const file of emlFiles) {
-      const ordinalStr = file.split("-")[0];
-      if (ordinalStr !== undefined) {
-        const ordinal = parseInt(ordinalStr, 10);
-        if (!isNaN(ordinal) && ordinal > maxOrdinal) {
-          maxOrdinal = ordinal;
-        }
-      }
-
+      const { ordinal, direction } = parseFilename(file);
       const fullPath = path.join(threadPath, file);
       const raw = await fs.promises.readFile(fullPath);
       const { messageId } = parseThreadingHeaders(raw);
-      messageIndex.set(messageId, threadId);
-    }
 
-    threads.set(threadId, { nextOrdinal: maxOrdinal + 1 });
+      entries.push({ threadId, ordinal, direction, messageId, raw });
+    }
+  }
+
+  return entries;
+}
+
+export async function listMail(dir: string): Promise<MailEntry[]> {
+  return scanMail(dir);
+}
+
+async function rebuildIndex(
+  dir: string,
+  messageIndex: Map<string, string>,
+  threads: Map<string, ThreadState>,
+): Promise<void> {
+  const entries = await scanMail(dir);
+
+  for (const entry of entries) {
+    messageIndex.set(entry.messageId, entry.threadId);
+
+    const state = threads.get(entry.threadId);
+    if (state === undefined) {
+      threads.set(entry.threadId, { nextOrdinal: entry.ordinal + 1 });
+    } else if (entry.ordinal >= state.nextOrdinal) {
+      state.nextOrdinal = entry.ordinal + 1;
+    }
   }
 }

@@ -19,10 +19,12 @@ export { createDeployPack } from "./pack-send";
 export { collectReachableObjects } from "./object-walk";
 export {
   createMailAuditStore,
+  listMail,
   type MailAuditStore,
   type MailCommitOptions,
   type MailDirection,
   type MailCommitResult,
+  type MailEntry,
 } from "./mail-store";
 
 /**
