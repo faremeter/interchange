@@ -95,36 +95,42 @@ export function createInstanceSession(opts: {
 
     const turnEvent = TurnCommittedEvent(raw);
     if (!(turnEvent instanceof type.errors)) {
-      const { turnId, status, text, hadError, errors, toolErrors } =
+      const { turnId, status, text, hadReply, hadError, errors, toolErrors } =
         turnEvent.data;
-      const isError = hadError || status === "failed";
-      const alreadyInEvents = events.some(
-        (e) => e.kind === "turn" && e.turnId === turnId,
-      );
-      const alreadyInBuffer =
-        sseBuffer !== null &&
-        sseBuffer.some((e) => e.kind === "turn" && e.turnId === turnId);
 
-      if (!alreadyInEvents && !alreadyInBuffer) {
-        if (text || isError || toolErrors.length > 0) {
-          const newEvent: InstanceEvent = {
-            kind: "turn",
-            turnId,
-            content: text || "An error occurred during inference.",
-            timestamp: new Date().toISOString(),
-            ...(isError ? { isError: true } : {}),
-            ...(errors.length > 0 ? { errors } : {}),
-            ...(toolErrors.length > 0 ? { toolErrors } : {}),
-          };
-          // Inline push/buffer instead of pushOrBuffer to avoid a double
-          // onChange — this handler always calls onChange at the end for
-          // streaming/activity state changes.
-          if (hydrated) {
-            events.push(newEvent);
-          } else if (sseBuffer !== null) {
-            sseBuffer.push(newEvent);
-          } else {
-            sseBuffer = [newEvent];
+      // When hadReply is true, outbound mail will follow with the
+      // authoritative content. Treat the turn as ephemeral: clear
+      // streaming state but do not push it to the timeline.
+      if (!hadReply) {
+        const isError = hadError || status === "failed";
+        const alreadyInEvents = events.some(
+          (e) => e.kind === "turn" && e.turnId === turnId,
+        );
+        const alreadyInBuffer =
+          sseBuffer !== null &&
+          sseBuffer.some((e) => e.kind === "turn" && e.turnId === turnId);
+
+        if (!alreadyInEvents && !alreadyInBuffer) {
+          if (text || isError || toolErrors.length > 0) {
+            const newEvent: InstanceEvent = {
+              kind: "turn",
+              turnId,
+              content: text || "An error occurred during inference.",
+              timestamp: new Date().toISOString(),
+              ...(isError ? { isError: true } : {}),
+              ...(errors.length > 0 ? { errors } : {}),
+              ...(toolErrors.length > 0 ? { toolErrors } : {}),
+            };
+            // Inline push/buffer instead of pushOrBuffer to avoid a double
+            // onChange — this handler always calls onChange at the end for
+            // streaming/activity state changes.
+            if (hydrated) {
+              events.push(newEvent);
+            } else if (sseBuffer !== null) {
+              sseBuffer.push(newEvent);
+            } else {
+              sseBuffer = [newEvent];
+            }
           }
         }
       }

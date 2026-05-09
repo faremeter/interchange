@@ -40,6 +40,7 @@ const eventCollectors = createEventCollectorRegistry({
         turnId: turn.turnId,
         status: turn.status,
         text: turn.text,
+        hadReply: turn.hadReply,
         hadError: turn.hadError,
         errors: turn.errors,
         toolErrors: turn.toolErrors,

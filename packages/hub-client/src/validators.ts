@@ -44,6 +44,7 @@ export const TurnCommittedEvent = type({
     turnId: "string",
     status: "'completed' | 'failed'",
     text: "string",
+    hadReply: "boolean",
     hadError: "boolean",
     errors: type({
       category: "string",
