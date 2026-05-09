@@ -55,9 +55,11 @@ function emptyUsage(): TokenUsage {
 function makeContextStore(): ContextStore {
   return {
     async load() {
+      const messages: ConversationMessage[] = [];
+      const pendingOperations: PendingOperation[] = [];
       return {
-        messages: [] as ConversationMessage[],
-        pendingOperations: [] as PendingOperation[],
+        messages,
+        pendingOperations,
         tokenUsage: emptyUsage(),
         connectorState: null,
       };

@@ -15,7 +15,17 @@ const mockAuth = {
 
 const mockDb = {} as unknown as DB["db"];
 const sidecarRouter = createSidecarRouter({});
-const sessionService = {} as unknown as SessionService;
+const sessionService: SessionService = {
+  launchSession(_params) {
+    throw new Error("mock: sessionService.launchSession not implemented");
+  },
+  sendUserMessage(_params) {
+    throw new Error("mock: sessionService.sendUserMessage not implemented");
+  },
+  endSession(_addr, _reason) {
+    throw new Error("mock: sessionService.endSession not implemented");
+  },
+};
 const eventCollectors = createEventCollectorRegistry({ db: mockDb });
 
 const app = createApp({

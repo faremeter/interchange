@@ -164,25 +164,71 @@ function createMockAuth(userId: string) {
 function createMockSidecarRouter(
   routableAddresses: string[] = [],
 ): SidecarRouter {
-  const stub = notImplemented("sidecarRouter");
+  function notImpl(name: string): never {
+    throw new Error(`mock: sidecarRouter.${name} not implemented`);
+  }
   return {
-    handleOpen: stub,
-    handleMessage: stub,
-    handleClose: stub,
-    routeMail: stub as unknown as SidecarRouter["routeMail"],
-    sendAgentDeploy: stub as unknown as SidecarRouter["sendAgentDeploy"],
-    sendAgentUndeploy: stub as unknown as SidecarRouter["sendAgentUndeploy"],
-    sendSessionStart: stub as unknown as SidecarRouter["sendSessionStart"],
-    sendSessionAbort: stub as unknown as SidecarRouter["sendSessionAbort"],
-    sendGrantsUpdate: stub as unknown as SidecarRouter["sendGrantsUpdate"],
-    sendProvidersUpdate:
-      stub as unknown as SidecarRouter["sendProvidersUpdate"],
-    sendPack: stub as unknown as SidecarRouter["sendPack"],
-    sendSyncRequest: stub,
-    subscribeAgent: stub as unknown as SidecarRouter["subscribeAgent"],
-    dispatchAgentEvent: stub,
+    handleOpen(_ws) {
+      notImpl("handleOpen");
+    },
+    handleMessage(_ws, _data) {
+      notImpl("handleMessage");
+    },
+    handleClose(_ws) {
+      notImpl("handleClose");
+    },
+    routeMail(_addr, _msg) {
+      return notImpl("routeMail");
+    },
+    sendAgentDeploy(_addr, _config) {
+      return notImpl("sendAgentDeploy");
+    },
+    sendAgentUndeploy(_addr, _reason) {
+      return notImpl("sendAgentUndeploy");
+    },
+    sendSessionStart(_addr) {
+      return notImpl("sendSessionStart");
+    },
+    sendSessionAbort(_addr, _reason) {
+      return notImpl("sendSessionAbort");
+    },
+    sendGrantsUpdate(_addr, _grants) {
+      return notImpl("sendGrantsUpdate");
+    },
+    sendProvidersUpdate(_addr, _providers) {
+      return notImpl("sendProvidersUpdate");
+    },
+    sendPack(_addr, _pack, _ref, _sha) {
+      return notImpl("sendPack");
+    },
+    sendSyncRequest(_addr) {
+      notImpl("sendSyncRequest");
+    },
+    subscribeAgent(_addr, _callback) {
+      return notImpl("subscribeAgent");
+    },
+    dispatchAgentEvent(_addr, _event) {
+      notImpl("dispatchAgentEvent");
+    },
     getConnectedSidecars: () => [],
     getRoutableAddresses: () => routableAddresses,
+  };
+}
+
+function createMockSessionService(): SessionService {
+  function notImpl(name: string): never {
+    throw new Error(`mock: sessionService.${name} not implemented`);
+  }
+  return {
+    launchSession(_params) {
+      return notImpl("launchSession");
+    },
+    sendUserMessage(_params) {
+      return notImpl("sendUserMessage");
+    },
+    endSession(_addr, _reason) {
+      return notImpl("endSession");
+    },
   };
 }
 
@@ -221,9 +267,7 @@ function createTestApp(opts: TestAppOpts = {}) {
     db,
     grantStore: createInMemoryGrantStore(opts.grants ?? [makeGrant()]),
     sidecarRouter: createMockSidecarRouter(opts.routableAddresses),
-    sessionService: notImplemented(
-      "sessionService",
-    ) as unknown as SessionService,
+    sessionService: createMockSessionService(),
     eventCollectors: createMockEventCollectors(opts.collectorStatuses),
   });
 }
