@@ -18,7 +18,10 @@ import {
   sessionMail,
   turnPart,
 } from "@interchange/db/schema";
-import { resolveCredentialRequirement } from "@interchange/db";
+import {
+  resolveCredentialRequirement,
+  parseAgentSkills,
+} from "@interchange/db";
 import { evaluateGrants, authorize } from "@interchange/authz";
 import { parseMailToEmail, extractPartByPath } from "@interchange/mime";
 
@@ -551,10 +554,7 @@ app.post(
     const eventCollectors = c.get("eventCollectors");
     eventCollectors.create(agentAddress, tenant.id, sessionId, instanceId);
 
-    const skills = (row.skills ?? []) as {
-      name: string;
-      definition: Record<string, unknown>;
-    }[];
+    const skills = parseAgentSkills(row.skills);
 
     try {
       await sessionService.launchSession({

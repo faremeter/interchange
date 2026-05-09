@@ -5,18 +5,20 @@ import type { GrantRule, GrantStore } from "@interchange/types/authz";
 import type { DB } from "./client";
 import { grant } from "./schema/grants";
 import { principalRole } from "./schema/roles";
+import { parseGrantRow } from "./parse-row";
 
 function toGrantRule(row: typeof grant.$inferSelect): GrantRule {
+  const parsed = parseGrantRow(row);
   return {
-    id: row.id,
-    resource: row.resource,
-    action: row.action,
-    effect: row.effect as GrantRule["effect"],
-    origin: row.origin as GrantRule["origin"],
-    conditions: row.conditions as Record<string, unknown> | null,
-    expiresAt: row.expiresAt,
-    roleId: row.roleId,
-    principalId: row.principalId,
+    id: parsed.id,
+    resource: parsed.resource,
+    action: parsed.action,
+    effect: parsed.effect,
+    origin: parsed.origin,
+    conditions: parsed.conditions,
+    expiresAt: parsed.expiresAt,
+    roleId: parsed.roleId,
+    principalId: parsed.principalId,
   };
 }
 

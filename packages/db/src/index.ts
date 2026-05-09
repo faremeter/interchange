@@ -9,4 +9,19 @@ export {
   resolveCredentialById,
   resolveCredentialRequirement,
 } from "./credential-resolution";
+export {
+  parseAgentRow,
+  parseAgentVersionRow,
+  parseAgentSkills,
+  parseGrantRow,
+  parseOfferingRow,
+  parseCredentialRow,
+  parseProviderRow,
+  parseTenantRow,
+  parseWalletRow,
+  parseTransactionRow,
+  parseOAuthClientRow,
+  parseSidecarStatus,
+  parseTurnPartType,
+} from "./parse-row";
 export * as schema from "./schema";

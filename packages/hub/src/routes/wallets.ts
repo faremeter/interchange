@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
 import { wallet, transaction } from "@interchange/db/schema";
+import { parseWalletRow, parseTransactionRow } from "@interchange/db";
 import {
   CreateWallet,
   UpdateWallet,
@@ -25,32 +26,34 @@ import {
 } from "../pagination";
 
 function formatWallet(row: typeof wallet.$inferSelect) {
+  const parsed = parseWalletRow(row);
   return {
-    id: row.id,
-    tenantId: row.tenantId,
-    name: row.name,
-    backendType: row.backendType as "crypto" | "fiat" | "credits",
-    currency: row.currency,
-    balance: row.balance,
-    config: (row.config as Record<string, unknown> | null) ?? undefined,
-    createdAt: ts(row.createdAt),
-    updatedAt: ts(row.updatedAt),
+    id: parsed.id,
+    tenantId: parsed.tenantId,
+    name: parsed.name,
+    backendType: parsed.backendType,
+    currency: parsed.currency,
+    balance: parsed.balance,
+    config: parsed.config ?? undefined,
+    createdAt: ts(parsed.createdAt),
+    updatedAt: ts(parsed.updatedAt),
   };
 }
 
 function formatTransaction(row: typeof transaction.$inferSelect) {
+  const parsed = parseTransactionRow(row);
   return {
-    id: row.id,
-    walletId: row.walletId,
-    agentId: row.agentId ?? null,
-    direction: row.direction as "inbound" | "outbound",
-    amount: row.amount,
-    currency: row.currency,
-    recipientId: row.recipientId ?? null,
-    senderId: row.senderId ?? null,
-    requestId: row.requestId ?? null,
-    status: row.status as "pending" | "completed" | "failed",
-    createdAt: ts(row.createdAt),
+    id: parsed.id,
+    walletId: parsed.walletId,
+    agentId: parsed.agentId ?? null,
+    direction: parsed.direction,
+    amount: parsed.amount,
+    currency: parsed.currency,
+    recipientId: parsed.recipientId ?? null,
+    senderId: parsed.senderId ?? null,
+    requestId: parsed.requestId ?? null,
+    status: parsed.status,
+    createdAt: ts(parsed.createdAt),
   };
 }
 

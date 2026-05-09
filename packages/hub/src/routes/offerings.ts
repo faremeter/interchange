@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
 import { agent, offering } from "@interchange/db/schema";
+import { parseOfferingRow } from "@interchange/db";
 import {
   CreateOffering,
   UpdateOffering,
@@ -24,26 +25,20 @@ import {
   pageParameters,
 } from "../pagination";
 
-type Pricing = {
-  base?: { amount: string; currency: string };
-  methods?: string[];
-  negotiable?: boolean;
-  bounds?: { min?: string; max?: string };
-};
-
 export function formatOffering(
   row: typeof offering.$inferSelect,
   agentName: string,
 ) {
+  const parsed = parseOfferingRow(row);
   return {
-    id: row.id,
-    agentId: row.agentId,
+    id: parsed.id,
+    agentId: parsed.agentId,
     agentName,
-    tenantId: row.tenantId,
-    name: row.name,
-    description: row.description ?? null,
-    pricing: (row.pricing as Pricing | null) ?? undefined,
-    schema: (row.schema as Record<string, unknown> | null) ?? null,
+    tenantId: parsed.tenantId,
+    name: parsed.name,
+    description: parsed.description ?? null,
+    pricing: parsed.pricing ?? undefined,
+    schema: parsed.schema,
   };
 }
 

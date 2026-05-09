@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
 import { oauthClient, provider } from "@interchange/db/schema";
-import { getAncestorChain } from "@interchange/db";
+import { getAncestorChain, parseOAuthClientRow } from "@interchange/db";
 import {
   CreateOAuthClient,
   UpdateOAuthClient,
@@ -25,16 +25,17 @@ import {
 } from "../pagination";
 
 function formatOAuthClient(row: typeof oauthClient.$inferSelect) {
+  const parsed = parseOAuthClientRow(row);
   return {
-    id: row.id,
-    tenantId: row.tenantId,
-    providerId: row.providerId,
-    name: row.name,
-    redirectUris: row.redirectUris ?? null,
-    defaultScopes: row.defaultScopes ?? null,
-    metadata: (row.metadata as Record<string, unknown> | null) ?? null,
-    createdAt: ts(row.createdAt),
-    updatedAt: ts(row.updatedAt),
+    id: parsed.id,
+    tenantId: parsed.tenantId,
+    providerId: parsed.providerId,
+    name: parsed.name,
+    redirectUris: parsed.redirectUris ?? null,
+    defaultScopes: parsed.defaultScopes ?? null,
+    metadata: parsed.metadata,
+    createdAt: ts(parsed.createdAt),
+    updatedAt: ts(parsed.updatedAt),
   };
 }
 

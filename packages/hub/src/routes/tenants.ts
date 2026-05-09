@@ -9,6 +9,7 @@ import {
   principalRole,
   grant,
 } from "@interchange/db/schema";
+import { parseTenantRow } from "@interchange/db";
 import {
   CreateTenant,
   UpdateTenant,
@@ -23,15 +24,16 @@ import { generateId } from "../ids";
 const SYSTEM_ROLES = ["owner", "admin", "member"] as const;
 
 function formatTenant(row: typeof tenant.$inferSelect) {
+  const parsed = parseTenantRow(row);
   return {
-    id: row.id,
-    name: row.name,
-    slug: row.slug,
-    domain: row.domain,
-    parentId: row.parentId ?? null,
-    config: (row.config as Record<string, unknown>) ?? undefined,
-    createdAt: ts(row.createdAt),
-    updatedAt: ts(row.updatedAt),
+    id: parsed.id,
+    name: parsed.name,
+    slug: parsed.slug,
+    domain: parsed.domain,
+    parentId: parsed.parentId ?? null,
+    config: parsed.config ?? undefined,
+    createdAt: ts(parsed.createdAt),
+    updatedAt: ts(parsed.updatedAt),
   };
 }
 

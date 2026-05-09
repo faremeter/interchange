@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import type { Handler } from "hono";
 
 import { sidecar } from "@interchange/db/schema";
+import { parseSidecarStatus } from "@interchange/db";
 
 import type { AppEnv } from "../context";
 
@@ -24,19 +25,20 @@ export function createSidecarRoutes(wsHandler?: Handler<AppEnv>) {
     const body = await c.req.json<SidecarRegisterBody>();
     const { id, url, status } = body;
 
+    const resolvedStatus = parseSidecarStatus(status ?? "online");
     const [created] = await db
       .insert(sidecar)
       .values({
         id: id || crypto.randomUUID(),
         url,
-        status: (status as "online" | "offline" | "error") || "online",
+        status: resolvedStatus,
         lastHeartbeat: new Date(),
       })
       .onConflictDoUpdate({
         target: sidecar.id,
         set: {
           url,
-          status: (status as "online" | "offline" | "error") || "online",
+          status: resolvedStatus,
           lastHeartbeat: new Date(),
         },
       })

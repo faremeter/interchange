@@ -3,7 +3,11 @@ import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
 import { credential, provider } from "@interchange/db/schema";
-import { getAncestorChain, resolveCredentialByName } from "@interchange/db";
+import {
+  getAncestorChain,
+  resolveCredentialByName,
+  parseCredentialRow,
+} from "@interchange/db";
 import {
   CreateCredential,
   UpdateCredential,
@@ -26,21 +30,22 @@ import {
 import { pushProviderUpdates } from "../credential-push";
 
 function formatCredential(row: typeof credential.$inferSelect) {
+  const parsed = parseCredentialRow(row);
   return {
-    id: row.id,
-    tenantId: row.tenantId,
-    providerId: row.providerId,
-    principalId: row.principalId ?? null,
-    oauthClientId: row.oauthClientId ?? null,
-    name: row.name,
-    type: row.type as "api_key" | "oauth_token" | "certificate" | "other",
-    description: row.description ?? null,
-    scopes: row.scopes ?? null,
-    expiresAt: row.expiresAt ? ts(row.expiresAt) : null,
-    status: row.status as "active" | "expired" | "revoked" | "error",
-    metadata: (row.metadata as Record<string, unknown> | null) ?? null,
-    createdAt: ts(row.createdAt),
-    updatedAt: ts(row.updatedAt),
+    id: parsed.id,
+    tenantId: parsed.tenantId,
+    providerId: parsed.providerId,
+    principalId: parsed.principalId ?? null,
+    oauthClientId: parsed.oauthClientId ?? null,
+    name: parsed.name,
+    type: parsed.type,
+    description: parsed.description ?? null,
+    scopes: parsed.scopes ?? null,
+    expiresAt: parsed.expiresAt ? ts(parsed.expiresAt) : null,
+    status: parsed.status,
+    metadata: parsed.metadata,
+    createdAt: ts(parsed.createdAt),
+    updatedAt: ts(parsed.updatedAt),
   };
 }
 
