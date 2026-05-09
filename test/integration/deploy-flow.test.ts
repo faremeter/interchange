@@ -103,6 +103,7 @@ function startMockInference(): {
   const server = Bun.serve({
     port: 0,
     async fetch(req) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- this is a test mock server that only receives requests from the sidecar under test; the shape is known
       const body = (await req.json()) as InferenceRequest;
       requests.push(body);
 
@@ -324,6 +325,7 @@ beforeAll(async () => {
   });
 
   // Drain stderr into a rolling buffer for diagnostics on timeout.
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- Subprocess is declared without generics; with stderr: "pipe" the actual type is ReadableStream<Uint8Array>
   const stderr = sidecarProc.stderr as ReadableStream<Uint8Array>;
   (async () => {
     const reader = stderr.getReader();
@@ -424,8 +426,16 @@ describe("deploy flow integration", () => {
       path.join(agentDir, "deploy", "skills", "greet", "tool.json"),
       "utf-8",
     );
-    const tool = JSON.parse(toolJson) as { name: string };
-    expect(tool.name).toBe("greet");
+    const toolParsed = JSON.parse(toolJson);
+    if (
+      toolParsed === null ||
+      typeof toolParsed !== "object" ||
+      !("name" in toolParsed) ||
+      typeof toolParsed.name !== "string"
+    ) {
+      throw new Error("tool.json missing expected name field");
+    }
+    expect(toolParsed.name).toBe("greet");
   });
 
   test("send message and verify inference receives deploy tools", async () => {
@@ -494,19 +504,29 @@ describe("deploy flow integration", () => {
     // captured (it depends on how fast contextStore.load() resolves), so
     // wait until we see an inference.start event rather than assuming
     // it is the very first new event.
+    function hasEventType(
+      event: unknown,
+      type: string,
+    ): event is { type: string } {
+      return (
+        typeof event === "object" &&
+        event !== null &&
+        "type" in event &&
+        event.type === type
+      );
+    }
+
     await waitFor(
       () =>
         hub.agentEvents
           .slice(eventsBefore)
-          .some(
-            (e) => (e.event as { type: string }).type === "inference.start",
-          ),
+          .some((e) => hasEventType(e.event, "inference.start")),
       { diagnostics: sidecarDiagnostics },
     );
 
     const inferenceStartEvent = hub.agentEvents
       .slice(eventsBefore)
-      .find((e) => (e.event as { type: string }).type === "inference.start");
+      .find((e) => hasEventType(e.event, "inference.start"));
     if (inferenceStartEvent === undefined) throw new Error("unreachable");
     expect(inferenceStartEvent.addr).toBe(AGENT_ADDRESS);
     expect(inferenceStartEvent.sid).toBe(SESSION_ID);

@@ -23,8 +23,10 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 function defined<T>(value: T | undefined | null): T {
-  expect(value).toBeDefined();
-  return value as T;
+  if (value === undefined || value === null) {
+    throw new Error("Expected a defined value but got undefined/null");
+  }
+  return value;
 }
 
 function makeHeaders(overrides?: Partial<MessageHeaders>): MessageHeaders {

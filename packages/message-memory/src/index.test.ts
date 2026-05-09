@@ -283,8 +283,7 @@ describe("fetchFull", () => {
     expect(msg.signatureStatus).toBe("valid");
     expect(msg.payload).toBeDefined();
     expect(msg.payload!.type).toBe("offering.request");
-    const body = msg.payload!.body as { offeringId: string };
-    expect(body.offeringId).toBe("code-review");
+    expect(msg.payload!.body["offeringId"]).toBe("code-review");
   });
 
   test("fetchHeaders returns parsed headers", async () => {

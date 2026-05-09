@@ -529,7 +529,7 @@ describe("evaluateGrants action verbs from spec", () => {
 
   test("spend action with conditions via registry", async () => {
     const registry: ConditionRegistry = {
-      max_spend_per_day: (value) => (value as number) > 50,
+      max_spend_per_day: (value) => typeof value === "number" && value > 50,
     };
     const grants = [
       grant({
