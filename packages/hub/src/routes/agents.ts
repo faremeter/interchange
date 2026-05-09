@@ -13,9 +13,7 @@ import {
   UpdateAgent,
   AgentResponse,
   AgentVersion,
-  AgentHealth,
   RollbackRequest,
-  Offering,
   ErrorResponse,
   paginatedSchema,
 } from "@interchange/types";
@@ -690,92 +688,6 @@ app.post(
 
     const roles = await loadAgentRoles(db, updated.id, tenantCtx.id);
     return c.json(formatAgent(updated, roles));
-  },
-);
-
-app.get(
-  "/:agentId/health",
-  requireGrant(idResource("agent", "agentId"), "read"),
-  describeRoute({
-    tags: ["Agents"],
-    summary: "Get agent health status",
-    description: "Returns liveness and readiness status.",
-    responses: {
-      200: {
-        description: "Health status",
-        content: {
-          "application/json": { schema: resolver(AgentHealth) },
-        },
-      },
-      404: {
-        description: "Agent not found",
-        content: {
-          "application/json": { schema: resolver(ErrorResponse) },
-        },
-      },
-    },
-  }),
-  async (c) => {
-    const tenantCtx = c.get("tenant");
-    const agentId = c.req.param("agentId");
-    const db = c.get("db");
-
-    const row = await db.query.agent.findFirst({
-      where: and(eq(agent.id, agentId), eq(agent.tenantId, tenantCtx.id)),
-    });
-
-    if (!row) {
-      return c.json(
-        { error: { code: "not_found", message: "Agent not found" } },
-        404,
-      );
-    }
-
-    // Placeholder health -- in production this would query the agent kernel
-    return c.json({
-      liveness: row.status === "deployed" ? "ok" : "unhealthy",
-      readiness: row.status === "deployed" ? "ok" : "not_ready",
-      lastCheckedAt: null,
-    });
-  },
-);
-
-app.get(
-  "/:agentId/offerings",
-  requireGrant(idResource("agent", "agentId"), "read"),
-  describeRoute({
-    tags: ["Agents"],
-    summary: "List agent offerings",
-    description: "Returns the agent's exposed offerings with pricing metadata.",
-    responses: {
-      200: {
-        description: "List of offerings",
-        content: {
-          "application/json": {
-            schema: resolver(Offering.array()),
-          },
-        },
-      },
-    },
-  }),
-  async (c) => {
-    const tenantCtx = c.get("tenant");
-    const agentId = c.req.param("agentId");
-    const db = c.get("db");
-
-    const row = await db.query.agent.findFirst({
-      where: and(eq(agent.id, agentId), eq(agent.tenantId, tenantCtx.id)),
-    });
-
-    if (!row) {
-      return c.json(
-        { error: { code: "not_found", message: "Agent not found" } },
-        404,
-      );
-    }
-
-    // Offerings are stored as jsonb -- return empty array if none
-    return c.json([]);
   },
 );
 
