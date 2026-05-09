@@ -19,6 +19,7 @@ export type TurnFinalized = {
   turnId: string;
   status: "completed" | "failed";
   text: string;
+  hadReply: boolean;
   hadError: boolean;
   errors: { category: string; message: string }[];
   toolErrors: { name: string; content: string }[];
@@ -118,10 +119,10 @@ export function createEventCollector(
           await insertPart("text", event.data.content, null);
           pendingError = false;
         }
-        await finalizeTurn("completed", true);
+        await finalizeTurn("completed", true, true);
         break;
       case "reactor.done":
-        await finalizeTurn("completed", true);
+        await finalizeTurn("completed", true, false);
         break;
       case "reactor.error":
         if (event.data.fatal) {
@@ -140,7 +141,7 @@ export function createEventCollector(
           await insertPart("error", event.data.error, {
             category: "reactor_error",
           });
-          await finalizeTurn("failed", true);
+          await finalizeTurn("failed", true, false);
         } else {
           if (currentTurnId === null) {
             await beginTurn("unknown");
@@ -166,7 +167,7 @@ export function createEventCollector(
     // A previous turn is still open — this is normal in multi-step tool-use
     // loops where inference.start fires again after tools return.
     if (currentTurnId !== null && !finalized) {
-      await finalizeTurn("completed", true);
+      await finalizeTurn("completed", true, false);
     }
 
     currentTurnId = generateId("inferenceTurn");
@@ -229,6 +230,7 @@ export function createEventCollector(
   async function finalizeTurn(
     status: "completed" | "failed",
     notify: boolean,
+    hadReply: boolean,
   ): Promise<void> {
     if (currentTurnId === null || finalized) return;
     finalized = true;
@@ -245,6 +247,7 @@ export function createEventCollector(
         turnId,
         status,
         text: accumulatedText,
+        hadReply,
         hadError: turnHadError,
         errors: accumulatedErrors,
         toolErrors: accumulatedToolErrors,
@@ -259,7 +262,7 @@ export function createEventCollector(
 
     log.warn`Abandoning running turn ${currentTurnId} for session ${sessionId}`;
 
-    await finalizeTurn("failed", false);
+    await finalizeTurn("failed", false, false);
   }
 
   async function insertPart(
