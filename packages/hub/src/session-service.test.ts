@@ -22,7 +22,10 @@ function createMockRouter(): SidecarRouter & {
       return Promise.resolve();
     };
 
-  const mock = {
+  // track() returns a generic variadic function; each SidecarRouter method has
+  // a specific typed signature. The casts below are unavoidable given the
+  // generic tracker design — each method's parameter types cannot be inferred.
+  const mock: SidecarRouter & { calls: Call[]; routeMailResult: boolean } = {
     calls,
     routeMailResult: true,
     handleOpen: track("handleOpen") as SidecarRouter["handleOpen"],
@@ -96,7 +99,7 @@ function createMockRepoStore(): AgentRepoStore & { calls: Call[] } {
 const AGENT_ADDRESS = "agent-1@test.local";
 const AGENT_ID = "agent-1";
 
-const MOCK_CONFIG = {
+const MOCK_CONFIG: HarnessConfig = {
   sessionId: "ses-1",
   agentId: AGENT_ID,
   tenantId: "tenant-1",
@@ -107,7 +110,7 @@ const MOCK_CONFIG = {
   grants: [],
   providers: [],
   defaultModel: "mock",
-} as HarnessConfig;
+};
 
 const MOCK_CONTENT: DeployContent = {
   systemPrompt: "Test",
@@ -168,9 +171,9 @@ describe("SessionService", () => {
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(SessionLaunchError);
-    const launchErr = err as SessionLaunchError;
-    expect(launchErr.phase).toBe("pack");
-    expect(launchErr.leakedAgent).toBe(false);
+    if (!(err instanceof SessionLaunchError)) throw new Error("unreachable");
+    expect(err.phase).toBe("pack");
+    expect(err.leakedAgent).toBe(false);
 
     const routerMethods = router.calls.map((c) => c.method);
     expect(routerMethods).toContain("sendAgentUndeploy");
@@ -194,9 +197,9 @@ describe("SessionService", () => {
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(SessionLaunchError);
-    const launchErr = err as SessionLaunchError;
-    expect(launchErr.phase).toBe("start");
-    expect(launchErr.leakedAgent).toBe(false);
+    if (!(err instanceof SessionLaunchError)) throw new Error("unreachable");
+    expect(err.phase).toBe("start");
+    expect(err.leakedAgent).toBe(false);
 
     const routerMethods = router.calls.map((c) => c.method);
     expect(routerMethods).toContain("sendAgentUndeploy");
@@ -222,14 +225,15 @@ describe("SessionService", () => {
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(SessionLaunchError);
-    const launchErr = err as SessionLaunchError;
-    expect(launchErr.leakedAgent).toBe(true);
-    expect(launchErr.phase).toBe("pack");
+    if (!(err instanceof SessionLaunchError)) throw new Error("unreachable");
+    expect(err.leakedAgent).toBe(true);
+    expect(err.phase).toBe("pack");
 
     // The original error (pack failure) must be preserved as the cause,
     // not the cleanup failure.
-    expect(launchErr.cause).toBeInstanceOf(Error);
-    expect((launchErr.cause as Error).message).toBe("pack failed");
+    expect(err.cause).toBeInstanceOf(Error);
+    if (!(err.cause instanceof Error)) throw new Error("unreachable");
+    expect(err.cause.message).toBe("pack failed");
   });
 
   test("launchSession does not provision on write failure", async () => {
@@ -250,9 +254,9 @@ describe("SessionService", () => {
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(SessionLaunchError);
-    const launchErr = err as SessionLaunchError;
-    expect(launchErr.phase).toBe("write");
-    expect(launchErr.leakedAgent).toBe(false);
+    if (!(err instanceof SessionLaunchError)) throw new Error("unreachable");
+    expect(err.phase).toBe("write");
+    expect(err.leakedAgent).toBe(false);
     expect(router.calls.length).toBe(0);
   });
 
@@ -275,9 +279,9 @@ describe("SessionService", () => {
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(SessionLaunchError);
-    const launchErr = err as SessionLaunchError;
-    expect(launchErr.phase).toBe("provision");
-    expect(launchErr.leakedAgent).toBe(false);
+    if (!(err instanceof SessionLaunchError)) throw new Error("unreachable");
+    expect(err.phase).toBe("provision");
+    expect(err.leakedAgent).toBe(false);
 
     const routerMethods = router.calls.map((c) => c.method);
     expect(routerMethods).not.toContain("sendPack");
@@ -341,8 +345,9 @@ describe("SessionService", () => {
     if (call === undefined) throw new Error("unreachable");
     expect(call.args[0]).toBe(AGENT_ADDRESS);
 
-    const base64Body = call.args[1] as string;
-    const decoded = Buffer.from(base64Body, "base64").toString("utf-8");
+    const rawArg = call.args[1];
+    if (typeof rawArg !== "string") throw new Error("expected string arg");
+    const decoded = Buffer.from(rawArg, "base64").toString("utf-8");
     expect(decoded).toContain("From: user@test.local");
     expect(decoded).toContain(`To: ${AGENT_ADDRESS}`);
     expect(decoded).toContain("Message-ID: <msg-1@test.local>");
@@ -367,9 +372,9 @@ describe("SessionService", () => {
     const call = router.calls.find((c) => c.method === "routeMail");
     if (call === undefined) throw new Error("unreachable");
 
-    const decoded = Buffer.from(call.args[1] as string, "base64").toString(
-      "utf-8",
-    );
+    const rawArg1 = call.args[1];
+    if (typeof rawArg1 !== "string") throw new Error("expected string arg");
+    const decoded = Buffer.from(rawArg1, "base64").toString("utf-8");
     expect(decoded).toContain("In-Reply-To: <prev@test.local>");
     expect(decoded).toContain(
       "References: <root@test.local> <prev@test.local>",
@@ -389,7 +394,8 @@ describe("SessionService", () => {
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).toContain("unreachable");
+    if (!(err instanceof Error)) throw new Error("unreachable");
+    expect(err.message).toContain("unreachable");
   });
 
   test("sendUserMessage propagates signing failure", async () => {
@@ -411,7 +417,8 @@ describe("SessionService", () => {
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).toBe("signing failed");
+    if (!(err instanceof Error)) throw new Error("unreachable");
+    expect(err.message).toBe("signing failed");
     expect(router.calls.filter((c) => c.method === "routeMail").length).toBe(0);
   });
 });

@@ -169,11 +169,10 @@ function pluginFromTable(
 ): ReactorPlugin {
   return {
     async decide(event, state, caps) {
-      // The cast is safe: the mapped PluginTable type guarantees that
-      // table[event.type] was constructed with a handler typed for
-      // Extract<ReactorInboundEvent, { type: typeof event.type }>.
-      // TypeScript cannot correlate the runtime key with the mapped
-      // type's per-key handler signature (correlated union problem).
+      // TypeScript cannot correlate the runtime key with the mapped type's
+      // per-key handler signature (correlated union problem): table[event.type]
+      // is typed as a union of all handlers, but we know it matches this event.
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- correlated union: table[event.type] is guaranteed to be typed for this event.type by the PluginTable mapped type
       const handler = table[event.type] as
         | PluginHandler<typeof event>
         | undefined;
@@ -302,6 +301,7 @@ function getEvent<T extends ReactorEmittedEvent["type"]>(
   if (found === undefined) {
     throw new Error(`No event of type '${type}' found`);
   }
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- Array.find does not narrow the type to the matched subtype; the predicate `e.type === type` guarantees this is the correct discriminated union member
   return found as Extract<ReactorEmittedEvent, { type: T }>;
 }
 
@@ -1360,6 +1360,7 @@ describe("createReactor — plugin misbehavior", () => {
     const { reactor, events, waitFor } = createTestReactor({
       plugin: pluginFromTable({
         "message.received": (_e, _s, caps) => [
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- intentionally passing a reserved-namespace string to test that the reactor rejects it
           caps.emit("inference.hijack" as `custom.${string}`, {}),
           caps.done(),
         ],
@@ -1379,6 +1380,7 @@ describe("createReactor — plugin misbehavior", () => {
     const { reactor, events, waitFor } = createTestReactor({
       plugin: pluginFromTable({
         "message.received": (_e, _s, caps) => [
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- intentionally passing a reserved-namespace string to test that the reactor rejects it
           caps.emit("tool.fake" as `custom.${string}`, {}),
           caps.done(),
         ],
@@ -1398,6 +1400,7 @@ describe("createReactor — plugin misbehavior", () => {
     const { reactor, events, waitFor } = createTestReactor({
       plugin: pluginFromTable({
         "message.received": (_e, _s, caps) => [
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- intentionally passing a reserved-namespace string to test that the reactor rejects it
           caps.emit("reactor.fake" as `custom.${string}`, {}),
           caps.done(),
         ],
@@ -1417,6 +1420,7 @@ describe("createReactor — plugin misbehavior", () => {
     const { reactor, events, waitFor } = createTestReactor({
       plugin: pluginFromTable({
         "message.received": (_e, _s, caps) => [
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- intentionally passing a reserved-namespace string to test that the reactor rejects it
           caps.emit("fork.fake" as `custom.${string}`, {}),
           caps.done(),
         ],
@@ -2456,6 +2460,7 @@ describe("createReactor — beforeToolExtensions", () => {
     // tool.done is emitted with isError and the block reason.
     const doneEvents = events.filter((e) => e.type === "tool.done");
     expect(doneEvents.length).toBeGreaterThanOrEqual(1);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- doneEvents is filtered to only "tool.done" events; Array.filter does not narrow the element type to the discriminated union member
     const blocked = doneEvents[0] as Extract<
       InferenceEvent,
       { type: "tool.done" }

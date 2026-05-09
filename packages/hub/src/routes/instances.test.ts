@@ -126,6 +126,7 @@ function createMockDB(opts: MockDBOpts) {
     };
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
   return {
     query: {
       tenant: {
@@ -150,6 +151,7 @@ function createMockDB(opts: MockDBOpts) {
 }
 
 function createMockAuth(userId: string) {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- betterAuth type cannot be structurally satisfied in tests
   return {
     api: {
       getSession: async () => ({
@@ -380,6 +382,7 @@ describe("GET /agents/instances/:instanceId/health", () => {
     const res = await app.request(`${instanceURL()}/health`);
     expect(res.status).toBe(404);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled mock app
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("not_found");
   });
@@ -403,6 +406,7 @@ describe("GET /agents/instances/:instanceId/health", () => {
     const res = await app.request(`${instanceURL()}/health`);
     expect(res.status).toBe(410);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled mock app
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("gone");
   });
@@ -452,6 +456,7 @@ describe("GET /agents/instances/:instanceId/offerings", () => {
     const res = await app.request(`${instanceURL()}/offerings`);
     expect(res.status).toBe(200);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled mock app
     const body = (await res.json()) as {
       id: string;
       agentId: string;
@@ -502,6 +507,7 @@ describe("GET /agents/instances/:instanceId/offerings", () => {
     const res = await app.request(`${instanceURL()}/offerings`);
     expect(res.status).toBe(404);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled mock app
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("not_found");
   });
@@ -540,6 +546,7 @@ describe("GET /agents/instances/:instanceId/offerings", () => {
     const res = await app.request(`${instanceURL()}/offerings`);
     expect(res.status).toBe(200);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled mock app
     const body = (await res.json()) as {
       id: string;
       name: string;

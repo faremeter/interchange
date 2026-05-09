@@ -1731,6 +1731,7 @@ app.get(
     }
 
     return c.body(
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- Uint8Array.buffer.slice always returns ArrayBuffer
       partBytes.buffer.slice(
         partBytes.byteOffset,
         partBytes.byteOffset + partBytes.byteLength,

@@ -6,6 +6,7 @@ import { createEventCollectorRegistry } from "./event-collector-registry";
 import type { SessionService } from "./session-service";
 import { createSidecarRouter } from "./ws/sidecar-handler";
 
+// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- betterAuth type cannot be structurally satisfied in tests
 const mockAuth = {
   api: {
     getSession: async () => null,
@@ -13,6 +14,7 @@ const mockAuth = {
   handler: async () => new Response("", { status: 404 }),
 } as unknown as Auth;
 
+// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
 const mockDb = {} as unknown as DB["db"];
 const sidecarRouter = createSidecarRouter({});
 const sessionService: SessionService = {
@@ -48,6 +50,7 @@ describe("app", () => {
     const res = await app.request("/openapi.json");
     expect(res.status).toBe(200);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled app
     const spec = (await res.json()) as {
       info: { title: string; version: string };
       paths: Record<string, unknown>;
@@ -60,6 +63,7 @@ describe("app", () => {
     expect(paths.length).toBeGreaterThan(50);
 
     const tags = new Set<string>();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- OpenAPI path methods shape
     for (const methods of Object.values(spec.paths) as Record<
       string,
       { tags?: string[] }
@@ -96,6 +100,7 @@ describe("app", () => {
 
   test("federation routes do not double the /federation path segment", async () => {
     const res = await app.request("/openapi.json");
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled app
     const spec = (await res.json()) as { paths: Record<string, unknown> };
     const federationPaths = Object.keys(spec.paths).filter((p) =>
       p.includes("federation"),

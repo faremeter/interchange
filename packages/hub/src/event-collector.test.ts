@@ -58,10 +58,12 @@ function createFakeDB() {
     },
   };
 
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- fake DB satisfies the shape required by event-collector at runtime
   return { db: db as never, inserts, updates };
 }
 
 function event(type: string, seq: number, data: unknown): InferenceEvent {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test helper: type string is the correct discriminant, validated by the test setup
   return { type, seq, data } as InferenceEvent;
 }
 
@@ -878,6 +880,7 @@ describe("EventCollectorRegistry getAccumulatedText", () => {
         };
       },
     };
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- fake DB satisfies the shape required by event-collector-registry at runtime
     return { db: db as never };
   }
 

@@ -62,8 +62,16 @@ describe("AgentRepoStore", () => {
       path.join(repoDir, "deploy", "skills", "greet", "tool.json"),
       "utf-8",
     );
-    const tool = JSON.parse(toolJson) as { name: string };
-    expect(tool.name).toBe("greet");
+    const toolParsed = JSON.parse(toolJson);
+    if (
+      toolParsed === null ||
+      typeof toolParsed !== "object" ||
+      !("name" in toolParsed) ||
+      typeof toolParsed.name !== "string"
+    ) {
+      throw new Error("tool.json missing expected name field");
+    }
+    expect(toolParsed.name).toBe("greet");
 
     const ref = await git.resolveRef({
       fs,
