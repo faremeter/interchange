@@ -143,22 +143,3 @@ export const AgentHealth = type({
 export const RollbackRequest = type({
   version: "string",
 });
-
-export const Offering = type({
-  id: "string",
-  agentId: "string",
-  name: "string",
-  "description?": "string | null",
-  "pricing?": {
-    "base?": {
-      amount: "string",
-      currency: "string",
-    },
-    "methods?": "string[]",
-    "negotiable?": "boolean",
-    "bounds?": {
-      "min?": "string",
-      "max?": "string",
-    },
-  },
-});
