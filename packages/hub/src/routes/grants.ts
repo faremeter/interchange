@@ -4,6 +4,7 @@ import { describeRoute, resolver, validator } from "hono-openapi";
 
 import { authorize } from "@interchange/authz";
 import { grant, principal } from "@interchange/db/schema";
+import { parseGrantRow } from "@interchange/db";
 import {
   CreateGrant,
   UpdateGrant,
@@ -32,22 +33,24 @@ type ResolvedNames = {
 };
 
 function formatGrant(row: typeof grant.$inferSelect, names?: ResolvedNames) {
+  const parsed = parseGrantRow(row);
   return {
-    id: row.id,
-    tenantId: row.tenantId,
-    roleId: row.roleId ?? null,
-    roleName: (row.roleId && names?.roleNames.get(row.roleId)) ?? null,
-    principalId: row.principalId ?? null,
+    id: parsed.id,
+    tenantId: parsed.tenantId,
+    roleId: parsed.roleId ?? null,
+    roleName: (parsed.roleId && names?.roleNames.get(parsed.roleId)) ?? null,
+    principalId: parsed.principalId ?? null,
     principalName:
-      (row.principalId && names?.principalNames.get(row.principalId)) ?? null,
-    resource: row.resource,
-    action: row.action,
-    effect: row.effect as "allow" | "deny" | "ask",
-    conditions: (row.conditions as Record<string, unknown> | null) ?? null,
-    origin: row.origin as "system" | "role" | "creator" | "invoker",
-    expiresAt: row.expiresAt ? ts(row.expiresAt) : null,
-    createdAt: ts(row.createdAt),
-    updatedAt: ts(row.updatedAt),
+      (parsed.principalId && names?.principalNames.get(parsed.principalId)) ??
+      null,
+    resource: parsed.resource,
+    action: parsed.action,
+    effect: parsed.effect,
+    conditions: parsed.conditions,
+    origin: parsed.origin,
+    expiresAt: parsed.expiresAt ? ts(parsed.expiresAt) : null,
+    createdAt: ts(parsed.createdAt),
+    updatedAt: ts(parsed.updatedAt),
   };
 }
 

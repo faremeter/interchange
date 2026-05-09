@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
 import { provider } from "@interchange/db/schema";
-import { getAncestorChain } from "@interchange/db";
+import { getAncestorChain, parseProviderRow } from "@interchange/db";
 import {
   CreateProvider,
   UpdateProvider,
@@ -25,18 +25,19 @@ import {
 } from "../pagination";
 
 function formatProvider(row: typeof provider.$inferSelect) {
+  const parsed = parseProviderRow(row);
   return {
-    id: row.id,
-    tenantId: row.tenantId,
-    name: row.name,
-    plugin: row.plugin,
-    authorizationUrl: row.authorizationUrl ?? null,
-    tokenUrl: row.tokenUrl ?? null,
-    userInfoUrl: row.userInfoUrl ?? null,
-    scopes: row.scopes ?? null,
-    metadata: (row.metadata as Record<string, unknown> | null) ?? null,
-    createdAt: ts(row.createdAt),
-    updatedAt: ts(row.updatedAt),
+    id: parsed.id,
+    tenantId: parsed.tenantId,
+    name: parsed.name,
+    plugin: parsed.plugin,
+    authorizationUrl: parsed.authorizationUrl ?? null,
+    tokenUrl: parsed.tokenUrl ?? null,
+    userInfoUrl: parsed.userInfoUrl ?? null,
+    scopes: parsed.scopes ?? null,
+    metadata: parsed.metadata,
+    createdAt: ts(parsed.createdAt),
+    updatedAt: ts(parsed.updatedAt),
   };
 }
 

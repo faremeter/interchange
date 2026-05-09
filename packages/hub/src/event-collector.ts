@@ -9,7 +9,7 @@ import { eq } from "drizzle-orm";
 import { inferenceTurn, turnPart } from "@interchange/db/schema";
 import { getLogger } from "@interchange/log";
 import type { InferenceEvent, ContentBlock } from "@interchange/types/runtime";
-import type { DB } from "@interchange/db";
+import { type DB, parseTurnPartType } from "@interchange/db";
 
 import { generateId } from "./ids";
 
@@ -276,7 +276,7 @@ export function createEventCollector(
       id: generateId("turnPart"),
       turnId: currentTurnId,
       sessionId,
-      type: partType as typeof turnPart.$inferInsert.type,
+      type: parseTurnPartType(partType),
       ordinal: ordinal++,
     };
 

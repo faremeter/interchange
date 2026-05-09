@@ -8,6 +8,7 @@ import {
   agentRole,
   agentVersion,
 } from "@interchange/db/schema";
+import { parseAgentRow, parseAgentVersionRow } from "@interchange/db";
 import {
   CreateAgent,
   UpdateAgent,
@@ -34,42 +35,26 @@ function formatAgent(
   row: typeof agent.$inferSelect,
   roles: { id: string; name: string }[],
 ) {
+  const parsed = parseAgentRow(row);
   return {
-    id: row.id,
-    tenantId: row.tenantId,
-    creatorPrincipalId: row.creatorPrincipalId ?? undefined,
-    name: row.name,
-    description: row.description ?? null,
-    systemPrompt: row.systemPrompt ?? null,
-    skills: (row.skills as Record<string, unknown>) ?? undefined,
-    contextConfig: (row.contextConfig as Record<string, unknown>) ?? undefined,
-    initialState: (row.initialState as Record<string, unknown>) ?? undefined,
-    modelConfig: (row.modelConfig as Record<string, unknown>) ?? undefined,
-    currentVersion: row.currentVersion,
-    status: row.status,
-    capabilities: (row.capabilities as Record<string, unknown>) ?? undefined,
-    credentialRequirements:
-      (row.credentialRequirements as
-        | {
-            providerName: string;
-            scopes?: string[];
-            source: string;
-            name?: string;
-          }[]
-        | null) ?? undefined,
-    grantRequirements:
-      (row.grantRequirements as
-        | {
-            resource: string;
-            action: string;
-            effect?: string;
-            source: string;
-            conditions?: Record<string, unknown> | null;
-          }[]
-        | null) ?? undefined,
+    id: parsed.id,
+    tenantId: parsed.tenantId,
+    creatorPrincipalId: parsed.creatorPrincipalId ?? undefined,
+    name: parsed.name,
+    description: parsed.description ?? null,
+    systemPrompt: parsed.systemPrompt ?? null,
+    skills: parsed.skills ?? undefined,
+    contextConfig: parsed.contextConfig ?? undefined,
+    initialState: parsed.initialState ?? undefined,
+    modelConfig: parsed.modelConfig ?? undefined,
+    currentVersion: parsed.currentVersion,
+    status: parsed.status,
+    capabilities: parsed.capabilities ?? undefined,
+    credentialRequirements: parsed.credentialRequirements ?? undefined,
+    grantRequirements: parsed.grantRequirements ?? undefined,
     roles,
-    createdAt: ts(row.createdAt),
-    updatedAt: ts(row.updatedAt),
+    createdAt: ts(parsed.createdAt),
+    updatedAt: ts(parsed.updatedAt),
   };
 }
 
@@ -585,11 +570,14 @@ app.get(
       limit,
     });
 
-    const items = rows.map((v) => ({
-      version: v.version,
-      status: v.status as "active" | "inactive" | "failed",
-      createdAt: ts(v.createdAt),
-    }));
+    const items = rows.map((v) => {
+      const parsed = parseAgentVersionRow(v);
+      return {
+        version: parsed.version,
+        status: parsed.status,
+        createdAt: ts(parsed.createdAt),
+      };
+    });
 
     return c.json(paginatedResponse(items, rows, limit));
   },
