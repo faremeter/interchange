@@ -118,7 +118,7 @@ export function TenantAgentsPage() {
 
   return (
     <div>
-      <TenantNav />
+      <TenantNav tenantId={tenantId} />
 
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Agents</h2>

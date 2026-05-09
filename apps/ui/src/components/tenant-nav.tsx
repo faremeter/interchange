@@ -1,4 +1,4 @@
-import { Link, useLocation, useParams } from "@tanstack/react-router";
+import { Link, useLocation } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
 import { tenantDetailQuery } from "@/lib/queries/tenants";
@@ -15,8 +15,7 @@ const NAV_ITEMS = [
   { label: "Offerings", path: "/offerings" },
 ] as const;
 
-export function TenantNav() {
-  const { tenantId } = useParams({ from: "/authed/tenants/$tenantId" });
+export function TenantNav({ tenantId }: { tenantId: string }) {
   const { data: tenant } = useQuery(tenantDetailQuery(tenantId));
 
   const location = useLocation();

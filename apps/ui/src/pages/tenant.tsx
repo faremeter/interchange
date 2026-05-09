@@ -49,7 +49,7 @@ export function TenantPage() {
 
   return (
     <div>
-      <TenantNav />
+      <TenantNav tenantId={tenantId} />
 
       <div className="grid gap-4 sm:grid-cols-3">
         <Card>
