@@ -117,6 +117,7 @@
         "@interchange/log": "workspace:*",
         "@interchange/mime": "workspace:*",
         "@interchange/pack-transport": "workspace:*",
+        "@interchange/storage-isogit": "workspace:*",
         "@interchange/types": "workspace:*",
         "arktype": "catalog:",
         "better-auth": "^1.4.18",
