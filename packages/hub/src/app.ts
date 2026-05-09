@@ -26,7 +26,7 @@ import { agentDataRoutes } from "./routes/agent-data";
 import { createSidecarRoutes } from "./routes/sidecars";
 
 import { type DB, createGrantStore } from "@interchange/db";
-import type { ConditionRegistry } from "@interchange/types/authz";
+import type { ConditionRegistry, GrantStore } from "@interchange/types/authz";
 import { timeWindowEvaluator } from "@interchange/authz";
 import type { SessionService } from "./session-service";
 import type { SidecarRouter } from "./ws/sidecar-handler";
@@ -38,6 +38,7 @@ export type CreateAppOpts = {
   sidecarRouter: SidecarRouter;
   sessionService: SessionService;
   eventCollectors: EventCollectorRegistry;
+  grantStore?: GrantStore;
   sidecarWsHandler?: Handler<AppEnv>;
 };
 
@@ -47,10 +48,11 @@ export function createApp({
   sidecarRouter,
   sessionService,
   eventCollectors,
+  grantStore: externalGrantStore,
   sidecarWsHandler,
 }: CreateAppOpts) {
   const app = new Hono<AppEnv>();
-  const grantStore = createGrantStore(db);
+  const grantStore = externalGrantStore ?? createGrantStore(db);
   const conditionRegistry: ConditionRegistry = {
     time_window: timeWindowEvaluator,
   };
