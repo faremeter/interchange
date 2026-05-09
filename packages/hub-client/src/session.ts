@@ -1,10 +1,7 @@
 import { type } from "arktype";
 
 import type { InferenceTurnResponse, MailResponse } from "@interchange/types";
-import {
-  InferenceEvent,
-  type InferenceEvent as InferenceEventType,
-} from "@interchange/types/runtime";
+import { parseInferenceEvent } from "@interchange/types/runtime";
 
 import {
   mailDeliveryToEvent,
@@ -154,14 +151,9 @@ export function createInstanceSession(opts: {
       return;
     }
 
-    const validated = InferenceEvent(raw);
+    const validated = parseInferenceEvent(raw);
     if (validated instanceof type.errors) return;
-    // The validator's inferred type loses the custom.${string} discriminant
-    // because the regex pattern infers as string. The manually-defined
-    // InferenceEvent type uses a template literal that preserves it for switch
-    // statement narrowing.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-    const event = validated as InferenceEventType;
+    const event = validated;
 
     switch (event.type) {
       case "inference.start":

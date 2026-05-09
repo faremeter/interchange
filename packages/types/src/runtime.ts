@@ -997,6 +997,20 @@ export type InferenceEvent =
     };
 
 /**
+ * Validate unknown data as an InferenceEvent, returning the manually-defined
+ * type that preserves the `custom.${string}` discriminant for switch narrowing.
+ * See the InferenceEvent type alias above for why the cast is needed.
+ */
+export function parseInferenceEvent(
+  data: unknown,
+): InferenceEvent | type.errors {
+  const result = InferenceEvent(data);
+  if (result instanceof type.errors) return result;
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- arktype regex infers as string; manual type uses template literal
+  return result as InferenceEvent;
+}
+
+/**
  * A pending async operation registered in the reactor's async state.
  * Correlates an outbound message (or payment/approval request) to the
  * expected inbound response.
