@@ -6,19 +6,77 @@
 //
 // (MESSAGE.md § Messaging Tools)
 
+import { type } from "arktype";
 import type {
   MessageTransport,
   ToolRunner,
   ToolCall,
   ToolResult,
   ToolDefinition,
-  SearchQuery,
-  InterchangeType,
   OutboundMessage,
-  MessageRef,
+  SearchQuery,
 } from "@interchange/types/runtime";
 
 type ToolHandler = (call: ToolCall, signal: AbortSignal) => Promise<ToolResult>;
+
+// ---------------------------------------------------------------------------
+// Argument schemas
+// ---------------------------------------------------------------------------
+
+const InterchangeType = type.enumerated(
+  "conversation.message",
+  "conversation.join",
+  "conversation.leave",
+  "offering.request",
+  "offering.response",
+  "offering.error",
+  "offering.discover",
+  "offering.catalog",
+  "payment.required",
+  "payment.receipt",
+  "payment.verified",
+  "approval.request",
+  "approval.granted",
+  "approval.denied",
+  "system.health",
+  "system.register",
+  "system.deregister",
+  "system.credential.refresh",
+);
+type InterchangeType = typeof InterchangeType.infer;
+
+const SendArgs = type({
+  to: "string | string[]",
+  "type?": InterchangeType,
+  "content?": "string",
+  "payload?": "Record<string, unknown>",
+  "subject?": "string",
+  "inReplyTo?": "string",
+});
+
+const ReplyArgs = type({
+  ref: { uid: "number", mailbox: "string" },
+  "type?": InterchangeType,
+  "content?": "string",
+  "payload?": "Record<string, unknown>",
+});
+
+const SearchArgs = type({
+  "mailbox?": "string",
+  "query?": "Record<string, unknown>",
+  "limit?": "number",
+});
+
+const ReadArgs = type({
+  ref: { uid: "number", mailbox: "string" },
+  "parts?": "string",
+});
+
+const WaitArgs = type({
+  "query?": "Record<string, unknown>",
+  "timeout?": "number",
+  "mailbox?": "string",
+});
 
 // ---------------------------------------------------------------------------
 // Individual tool handlers
@@ -26,18 +84,12 @@ type ToolHandler = (call: ToolCall, signal: AbortSignal) => Promise<ToolResult>;
 
 function makeMessageSendHandler(transport: MessageTransport): ToolHandler {
   return async (call, signal) => {
-    const args = call.arguments;
-
-    const to = args["to"];
-    if (to === undefined) {
-      return errorResult(call.id, "missing required parameter: to");
-    }
-    if (typeof to !== "string" && !Array.isArray(to)) {
-      return errorResult(call.id, "parameter 'to' must be a string or array");
+    const args = SendArgs(call.arguments);
+    if (args instanceof type.errors) {
+      return errorResult(call.id, args.summary);
     }
 
-    const content = args["content"];
-    const payload = args["payload"];
+    const { content, payload } = args;
 
     if (content !== undefined && payload !== undefined) {
       return errorResult(
@@ -46,27 +98,22 @@ function makeMessageSendHandler(transport: MessageTransport): ToolHandler {
       );
     }
 
-    const type: InterchangeType =
-      typeof args["type"] === "string"
-        ? (args["type"] as InterchangeType)
-        : "conversation.message";
-
     const outbound: OutboundMessage = {
-      to: to as string | string[],
-      type,
+      to: args.to,
+      type: args.type ?? "conversation.message",
     };
 
-    if (typeof args["subject"] === "string") {
-      outbound.subject = args["subject"];
+    if (args.subject !== undefined) {
+      outbound.subject = args.subject;
     }
-    if (typeof content === "string") {
+    if (content !== undefined) {
       outbound.content = content;
     }
-    if (typeof payload === "object" && payload !== null) {
-      outbound.payload = payload as Record<string, unknown>;
+    if (payload !== undefined) {
+      outbound.payload = payload;
     }
-    if (typeof args["inReplyTo"] === "string") {
-      outbound.inReplyTo = args["inReplyTo"];
+    if (args.inReplyTo !== undefined) {
+      outbound.inReplyTo = args.inReplyTo;
     }
 
     let receipt;
@@ -86,14 +133,12 @@ function makeMessageSendHandler(transport: MessageTransport): ToolHandler {
 
 function makeMessageReplyHandler(transport: MessageTransport): ToolHandler {
   return async (call, signal) => {
-    const args = call.arguments;
-
-    const ref = args["ref"];
-    if (ref === undefined || typeof ref !== "object" || ref === null) {
-      return errorResult(call.id, "missing required parameter: ref");
+    const args = ReplyArgs(call.arguments);
+    if (args instanceof type.errors) {
+      return errorResult(call.id, args.summary);
     }
 
-    const messageRef = ref as MessageRef;
+    const messageRef = args.ref;
 
     // Fetch the parent message to retrieve threading headers.
     let parentHeaders;
@@ -106,8 +151,7 @@ function makeMessageReplyHandler(transport: MessageTransport): ToolHandler {
       );
     }
 
-    const content = args["content"];
-    const payload = args["payload"];
+    const { content, payload } = args;
 
     if (content !== undefined && payload !== undefined) {
       return errorResult(
@@ -116,18 +160,13 @@ function makeMessageReplyHandler(transport: MessageTransport): ToolHandler {
       );
     }
 
-    const type: InterchangeType =
-      typeof args["type"] === "string"
-        ? (args["type"] as InterchangeType)
-        : "conversation.message";
-
     // Build References: parent's References + parent's Message-ID
     const parentReferences = parentHeaders.references ?? [];
     const references = [...parentReferences, parentHeaders.messageId];
 
     const outbound: OutboundMessage = {
       to: parentHeaders.from,
-      type,
+      type: args.type ?? "conversation.message",
       inReplyTo: parentHeaders.messageId,
     };
 
@@ -136,11 +175,11 @@ function makeMessageReplyHandler(transport: MessageTransport): ToolHandler {
       outbound.subject = parentHeaders.subject;
     }
 
-    if (typeof content === "string") {
+    if (content !== undefined) {
       outbound.content = content;
     }
-    if (typeof payload === "object" && payload !== null) {
-      outbound.payload = payload as Record<string, unknown>;
+    if (payload !== undefined) {
+      outbound.payload = payload;
     }
 
     // Include References in a summary field for the transport to set as a
@@ -167,21 +206,18 @@ function makeMessageReplyHandler(transport: MessageTransport): ToolHandler {
 
 function makeMessageSearchHandler(transport: MessageTransport): ToolHandler {
   return async (call, signal) => {
-    const args = call.arguments;
+    const args = SearchArgs(call.arguments);
+    if (args instanceof type.errors) {
+      return errorResult(call.id, args.summary);
+    }
 
-    const mailbox =
-      typeof args["mailbox"] === "string" ? args["mailbox"] : "INBOX";
-
-    const query =
-      typeof args["query"] === "object" && args["query"] !== null
-        ? (args["query"] as SearchQuery)
-        : {};
-
-    const limit = typeof args["limit"] === "number" ? args["limit"] : 20;
+    const mailbox = args.mailbox ?? "INBOX";
+    const query = args.query ?? {};
+    const limit = args.limit ?? 20;
 
     let refs;
     try {
-      refs = await transport.search(mailbox, query, signal);
+      refs = await transport.search(mailbox, query as SearchQuery, signal);
     } catch (cause) {
       const msg = cause instanceof Error ? cause.message : String(cause);
       const code = msg.includes("does not exist")
@@ -217,15 +253,13 @@ function makeMessageSearchHandler(transport: MessageTransport): ToolHandler {
 
 function makeMessageReadHandler(transport: MessageTransport): ToolHandler {
   return async (call, signal) => {
-    const args = call.arguments;
-
-    const ref = args["ref"];
-    if (ref === undefined || typeof ref !== "object" || ref === null) {
-      return errorResult(call.id, "missing required parameter: ref");
+    const args = ReadArgs(call.arguments);
+    if (args instanceof type.errors) {
+      return errorResult(call.id, args.summary);
     }
 
-    const messageRef = ref as MessageRef;
-    const parts = typeof args["parts"] === "string" ? args["parts"] : "payload";
+    const messageRef = args.ref;
+    const parts = args.parts ?? "payload";
 
     if (parts === "headers") {
       let headers;
@@ -314,21 +348,21 @@ function makeMessageReadHandler(transport: MessageTransport): ToolHandler {
 
 function makeMessageWaitHandler(transport: MessageTransport): ToolHandler {
   return async (call, signal) => {
-    const args = call.arguments;
+    const args = WaitArgs(call.arguments);
+    if (args instanceof type.errors) {
+      return errorResult(call.id, args.summary);
+    }
 
-    const query =
-      typeof args["query"] === "object" && args["query"] !== null
-        ? (args["query"] as SearchQuery)
-        : {};
-
-    const timeoutSeconds =
-      typeof args["timeout"] === "number" ? args["timeout"] : 120;
-
-    const mailbox =
-      typeof args["mailbox"] === "string" ? args["mailbox"] : "INBOX";
+    const query = args.query ?? {};
+    const timeoutSeconds = args.timeout ?? 120;
+    const mailbox = args.mailbox ?? "INBOX";
 
     // Check for an existing match first.
-    const existing = await transport.search(mailbox, query, signal);
+    const existing = await transport.search(
+      mailbox,
+      query as SearchQuery,
+      signal,
+    );
     const firstMatch = existing[0];
     if (firstMatch !== undefined) {
       const message = await transport.fetchFull(firstMatch, signal);
@@ -352,7 +386,10 @@ function makeMessageWaitHandler(transport: MessageTransport): ToolHandler {
         if (event.type !== "exists") return;
 
         // Match against the query's 'from' field (the primary use case).
-        if (query.from !== undefined && event.headers.from !== query.from) {
+        if (
+          typeof query.from === "string" &&
+          event.headers.from !== query.from
+        ) {
           return;
         }
 

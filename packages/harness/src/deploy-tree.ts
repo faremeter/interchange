@@ -7,7 +7,14 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { type } from "arktype";
 import type { ToolDefinition } from "@interchange/types/runtime";
+
+const ToolManifest = type({
+  "name?": "string",
+  "description?": "string",
+  "inputSchema?": "Record<string, unknown>",
+});
 
 export type DeployToolInfo = {
   definition: ToolDefinition;
@@ -87,26 +94,27 @@ export async function readDeployTree(dir: string): Promise<DeployTree> {
       );
     }
 
-    const obj = parsed as Record<string, unknown>;
+    const manifest = ToolManifest(parsed);
+    if (manifest instanceof type.errors) {
+      throw new Error(
+        `Invalid tool.json in skill "${skillName}": ${manifest.summary}`,
+      );
+    }
 
-    if (typeof obj["name"] !== "string" || obj["name"].trim() === "") {
+    if (manifest.name === undefined || manifest.name.trim() === "") {
       throw new Error(
         `Invalid tool.json in skill "${skillName}": missing or empty "name" field`,
       );
     }
     if (
-      typeof obj["description"] !== "string" ||
-      obj["description"].trim() === ""
+      manifest.description === undefined ||
+      manifest.description.trim() === ""
     ) {
       throw new Error(
         `Invalid tool.json in skill "${skillName}": missing or empty "description" field`,
       );
     }
-    if (
-      typeof obj["inputSchema"] !== "object" ||
-      obj["inputSchema"] === null ||
-      Array.isArray(obj["inputSchema"])
-    ) {
+    if (manifest.inputSchema === undefined) {
       throw new Error(
         `Invalid tool.json in skill "${skillName}": missing or invalid "inputSchema" field`,
       );
@@ -125,9 +133,9 @@ export async function readDeployTree(dir: string): Promise<DeployTree> {
 
     tools.push({
       definition: {
-        name: obj["name"] as string,
-        description: obj["description"] as string,
-        inputSchema: obj["inputSchema"] as Record<string, unknown>,
+        name: manifest.name,
+        description: manifest.description,
+        inputSchema: manifest.inputSchema,
       },
       hasHandler,
     });
