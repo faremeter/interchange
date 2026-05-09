@@ -641,6 +641,7 @@ export type ConversationMessage = {
   role: "user" | "assistant" | "system";
   content: ContentBlock[];
   model?: string;
+  timestamp: number;
 };
 
 /**
@@ -651,6 +652,7 @@ export const AssistantMessage = type({
   role: "'assistant'",
   content: ContentBlock.array(),
   model: "string",
+  timestamp: "number",
 });
 export type AssistantMessage = typeof AssistantMessage.infer;
 

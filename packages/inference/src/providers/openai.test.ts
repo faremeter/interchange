@@ -42,7 +42,11 @@ const OpenAIRequestBody = type({
 describe("OpenAI adapter: buildRequest", () => {
   test("builds a request with required fields", () => {
     const messages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "Hello" }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Hello" }],
+        timestamp: 1000,
+      },
     ];
 
     const req = adapter.buildRequest(messages, "gpt-4o", {});
@@ -59,7 +63,11 @@ describe("OpenAI adapter: buildRequest", () => {
 
   test("converts text messages correctly", () => {
     const messages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "What is 2+2?" }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "What is 2+2?" }],
+        timestamp: 1000,
+      },
     ];
 
     const req = adapter.buildRequest(messages, "gpt-4o", {});
@@ -72,8 +80,16 @@ describe("OpenAI adapter: buildRequest", () => {
 
   test("converts system messages to system role", () => {
     const messages: ConversationMessage[] = [
-      { role: "system", content: [{ type: "text", text: "Be concise." }] },
-      { role: "user", content: [{ type: "text", text: "Hi." }] },
+      {
+        role: "system",
+        content: [{ type: "text", text: "Be concise." }],
+        timestamp: 1000,
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Hi." }],
+        timestamp: 1000,
+      },
     ];
 
     const req = adapter.buildRequest(messages, "gpt-4o", {});
@@ -85,7 +101,11 @@ describe("OpenAI adapter: buildRequest", () => {
 
   test("prepends systemPrompt from options", () => {
     const messages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "Hi." }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Hi." }],
+        timestamp: 1000,
+      },
     ];
 
     const req = adapter.buildRequest(messages, "gpt-4o", {
@@ -110,6 +130,7 @@ describe("OpenAI adapter: buildRequest", () => {
             arguments: { city: "London" },
           },
         ],
+        timestamp: 1000,
       },
     ];
 
@@ -137,6 +158,7 @@ describe("OpenAI adapter: buildRequest", () => {
             content: [{ type: "text", text: "Sunny, 22°C" }],
           },
         ],
+        timestamp: 1000,
       },
     ];
 
@@ -151,7 +173,11 @@ describe("OpenAI adapter: buildRequest", () => {
 
   test("uses max_tokens from options", () => {
     const messages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "Hi." }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Hi." }],
+        timestamp: 1000,
+      },
     ];
 
     const req = adapter.buildRequest(messages, "gpt-4o", { maxTokens: 256 });

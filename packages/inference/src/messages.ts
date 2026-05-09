@@ -59,18 +59,26 @@ export function createInboundMessage(
 
   const text =
     envelope.length > 0 ? `${envelope.join("\n")}\n\n${content}` : content;
-  return { role: "user", content: [{ type: "text", text }] };
+  return {
+    role: "user",
+    content: [{ type: "text", text }],
+    timestamp: Date.now(),
+  };
 }
 
 export function createSystemMessage(text: string): ConversationMessage {
-  return { role: "system", content: [{ type: "text", text }] };
+  return {
+    role: "system",
+    content: [{ type: "text", text }],
+    timestamp: Date.now(),
+  };
 }
 
 export function createAssistantMessage(
   blocks: ContentBlock[],
   model: string,
 ): AssistantMessage {
-  return { role: "assistant", content: blocks, model };
+  return { role: "assistant", content: blocks, model, timestamp: Date.now() };
 }
 
 export function createToolResultMessage(
@@ -93,5 +101,5 @@ export function createToolResultMessage(
     }
     return block;
   });
-  return { role: "user", content: blocks };
+  return { role: "user", content: blocks, timestamp: Date.now() };
 }

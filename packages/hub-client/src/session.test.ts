@@ -1120,6 +1120,7 @@ describe("activity state machine", () => {
           role: "assistant",
           content: [],
           model: "gpt-4",
+          timestamp: 1000,
         },
         usage: {
           input: 10,

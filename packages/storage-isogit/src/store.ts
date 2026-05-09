@@ -34,6 +34,7 @@ const ConversationMessageSchema = type({
   role: "'user' | 'assistant' | 'system'",
   content: ContentBlock.array(),
   "model?": "string",
+  timestamp: "number",
 });
 
 const PendingOperationSchema = type({

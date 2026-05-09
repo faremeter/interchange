@@ -393,6 +393,7 @@ export async function* runInference(
     role: "assistant",
     content: contentBlocks,
     model,
+    timestamp: Date.now(),
   };
 
   yield {

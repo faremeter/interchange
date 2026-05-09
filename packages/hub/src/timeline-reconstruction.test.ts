@@ -37,15 +37,22 @@ const NO_USAGE = {
   thinking: 0,
 };
 
-function userMessage(text: string): ConversationMessage {
-  return { role: "user", content: [{ type: "text", text }] };
+function userMessage(
+  text: string,
+  timestamp = Date.now(),
+): ConversationMessage {
+  return { role: "user", content: [{ type: "text", text }], timestamp };
 }
 
-function assistantMessage(text: string): ConversationMessage {
+function assistantMessage(
+  text: string,
+  timestamp = Date.now(),
+): ConversationMessage {
   return {
     role: "assistant",
     content: [{ type: "text", text }],
     model: "test-model",
+    timestamp,
   };
 }
 
@@ -53,17 +60,20 @@ function toolCallMessage(
   callId: string,
   name: string,
   args: Record<string, unknown>,
+  timestamp = Date.now(),
 ): ConversationMessage {
   return {
     role: "assistant",
     content: [{ type: "tool_call", id: callId, name, arguments: args }],
     model: "test-model",
+    timestamp,
   };
 }
 
 function toolResultMessage(
   callId: string,
   result: string,
+  timestamp = Date.now(),
 ): ConversationMessage {
   return {
     role: "user",
@@ -74,6 +84,7 @@ function toolResultMessage(
         content: [{ type: "text", text: result }],
       },
     ],
+    timestamp,
   };
 }
 
@@ -103,9 +114,10 @@ describe("reconstructTimeline", () => {
     await initAgentRepo(dir);
     const store = new IsogitStore(dir);
 
+    const t = 1700000000000;
     const messages: ConversationMessage[] = [
-      userMessage("Hello"),
-      assistantMessage("Hi there"),
+      userMessage("Hello", t),
+      assistantMessage("Hi there", t + 1000),
     ];
     await store.commit(messages, NO_OPS, NO_USAGE, "checkpoint");
 
@@ -114,13 +126,9 @@ describe("reconstructTimeline", () => {
     const turns = result.events.filter((e) => e.kind === "turn");
     expect(turns).toHaveLength(1);
     expect(turns[0]?.content).toBe("Hi there");
-    expect(turns[0]?.timestamp).toBeGreaterThan(0);
+    // Should use the per-message timestamp, not the git commit timestamp
+    expect(turns[0]?.timestamp).toBe(t + 1000);
 
-    // Gap: no per-message timestamps
-    const timestampGap = result.gaps.find(
-      (g) => g.kind === "no-per-message-timestamps",
-    );
-    expect(timestampGap).toBeDefined();
   });
 
   test("reconstructs multi-turn conversations across checkpoints", async () => {
@@ -128,18 +136,20 @@ describe("reconstructTimeline", () => {
     await initAgentRepo(dir);
     const store = new IsogitStore(dir);
 
+    const t = 1700000000000;
+
     // First turn
     const messages1: ConversationMessage[] = [
-      userMessage("Hello"),
-      assistantMessage("Hi there"),
+      userMessage("Hello", t),
+      assistantMessage("Hi there", t + 1000),
     ];
     await store.commit(messages1, NO_OPS, NO_USAGE, "checkpoint");
 
     // Second turn (appends to the same message array)
     const messages2: ConversationMessage[] = [
       ...messages1,
-      userMessage("How are you?"),
-      assistantMessage("I'm doing well"),
+      userMessage("How are you?", t + 5000),
+      assistantMessage("I'm doing well", t + 6000),
     ];
     await store.commit(messages2, NO_OPS, NO_USAGE, "checkpoint");
 
@@ -150,10 +160,9 @@ describe("reconstructTimeline", () => {
     expect(turns[0]?.content).toBe("Hi there");
     expect(turns[1]?.content).toBe("I'm doing well");
 
-    // Second turn should have a later or equal timestamp
-    if (turns[0] !== undefined && turns[1] !== undefined) {
-      expect(turns[1].timestamp).toBeGreaterThanOrEqual(turns[0].timestamp);
-    }
+    // Should use per-message timestamps
+    expect(turns[0]?.timestamp).toBe(t + 1000);
+    expect(turns[1]?.timestamp).toBe(t + 6000);
   });
 
   test("treats a tool-use loop as a single turn", async () => {
@@ -359,16 +368,16 @@ describe("reconstructTimeline", () => {
     await initAgentRepo(dir);
     const store = new IsogitStore(dir);
 
+    const t = 1700000000000;
     const messages: ConversationMessage[] = [
-      userMessage("Hello"),
-      assistantMessage("Hi"),
+      userMessage("Hello", t),
+      assistantMessage("Hi", t + 1000),
     ];
     await store.commit(messages, NO_OPS, NO_USAGE, "checkpoint");
 
     const result = await reconstructTimeline(dir);
 
     const gapKinds = result.gaps.map((g) => g.kind);
-    expect(gapKinds).toContain("no-per-message-timestamps");
     expect(gapKinds).toContain("no-turn-boundaries");
     expect(gapKinds).toContain("no-assistant-mail-linkage");
     expect(gapKinds).toContain("no-turn-status");
