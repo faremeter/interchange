@@ -19,6 +19,7 @@ export type MailCommitResult = {
 
 export type MailCommitOptions = {
   ignoreDuplicate?: boolean;
+  checkpointHash?: string;
 };
 
 export type MailEntry = {
@@ -135,10 +136,15 @@ export async function createMailAuditStore(
     await git.add({ fs, dir, filepath });
 
     const label = direction === "in" ? "inbound" : "outbound";
+    const subject = `Record ${label} mail ${messageId}`;
+    const message =
+      options?.checkpointHash !== undefined
+        ? `${subject}\n\nCheckpoint: ${options.checkpointHash}`
+        : subject;
     await git.commit({
       fs,
       dir,
-      message: `Record ${label} mail ${messageId}`,
+      message,
       author: AUTHOR,
       ...signingArgs,
     });

@@ -821,7 +821,7 @@ export const InferenceEvent = type({
   .or({
     type: "'connector.reply'",
     seq: "number",
-    data: { content: "string" },
+    data: { content: "string", "checkpointHash?": "string" },
   })
   .or({
     type: "'reactor.start'",
@@ -954,7 +954,7 @@ export type InferenceEvent =
   | {
       type: "connector.reply";
       seq: number;
-      data: { content: string };
+      data: { content: string; checkpointHash?: string };
     }
   | { type: "reactor.start"; seq: number; data: Record<string, never> }
   | {

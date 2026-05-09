@@ -249,12 +249,45 @@ describe("reconstructTimeline", () => {
     if (outboundEvent !== undefined && outboundEvent.kind === "mail") {
       expect(outboundEvent.messageId).toBe("<msg-2@test>");
     }
+  });
 
-    // Gap: no link between assistant messages and outbound mail
-    const linkGap = result.gaps.find(
-      (g) => g.kind === "no-assistant-mail-linkage",
+  test("links outbound mail to checkpoint via Checkpoint trailer", async () => {
+    const dir = await makeTempDir();
+    await initAgentRepo(dir);
+    const store = new IsogitStore(dir);
+
+    const t = 1700000000000;
+    const messages: ConversationMessage[] = [
+      userMessage("Hello", t),
+      assistantMessage("Hi there", t + 1000),
+    ];
+    const commit = await store.commit(
+      messages,
+      NO_OPS,
+      NO_USAGE,
+      "checkpoint: inference-done",
     );
-    expect(linkGap).toBeDefined();
+
+    const mailStore = await createMailAuditStore(dir);
+    const outbound = buildRawMessage({
+      messageId: "<reply@test>",
+      from: "agent@example.com",
+      to: "alice@example.com",
+      body: "Hi there",
+    });
+    await mailStore.commitMail(outbound, "out", {
+      checkpointHash: commit.hash,
+    });
+
+    const result = await reconstructTimeline(dir);
+
+    const mailEvents = result.events.filter((e) => e.kind === "mail");
+    expect(mailEvents).toHaveLength(1);
+    const mailEvent = mailEvents[0];
+    expect(mailEvent).toBeDefined();
+    if (mailEvent !== undefined && mailEvent.kind === "mail") {
+      expect(mailEvent.checkpointHash).toBe(commit.hash);
+    }
   });
 
   test("associates error records from git with the preceding turn", async () => {
@@ -391,7 +424,7 @@ describe("reconstructTimeline", () => {
     }
   });
 
-  test("produces remaining gap types for a well-formed checkpoint", async () => {
+  test("produces no gaps for a well-formed checkpoint", async () => {
     const dir = await makeTempDir();
     await initAgentRepo(dir);
     const store = new IsogitStore(dir);
@@ -410,8 +443,7 @@ describe("reconstructTimeline", () => {
 
     const result = await reconstructTimeline(dir);
 
-    const gapKinds = result.gaps.map((g) => g.kind);
-    expect(gapKinds).toContain("no-assistant-mail-linkage");
+    expect(result.gaps).toHaveLength(0);
   });
 
   test("marks turns as error when checkpoint reason is inference-error", async () => {
