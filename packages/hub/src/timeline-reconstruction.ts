@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import path from "node:path";
+import git from "isomorphic-git";
 import { type } from "arktype";
 import {
   IsogitStore,
@@ -7,7 +7,10 @@ import {
   type MailDirection,
 } from "@interchange/storage-isogit";
 import type { ConversationMessage } from "@interchange/types/runtime";
-import { ErrorRecord } from "@interchange/types/audit";
+import {
+  ErrorRecord,
+  type ErrorRecord as ErrorRecordType,
+} from "@interchange/types/audit";
 
 export type ReconstructedEvent =
   | {
@@ -28,8 +31,6 @@ export type ReconstructedEvent =
 
 export type GapKind =
   | "no-assistant-mail-linkage"
-  | "no-error-turn-association"
-  | "errors-from-working-tree"
   | "message-count-regression"
   | "corrupt-checkpoint"
   | "corrupt-error-record";
@@ -156,52 +157,70 @@ function extractTurns(
 }
 
 type ErrorReadResult = {
-  errors: { category: string; message: string; timestamp: string }[];
+  errors: ErrorRecordType[];
   corruptFiles: string[];
 };
 
-async function readErrorRecords(dir: string): Promise<ErrorReadResult> {
-  const errorsDir = path.join(dir, ERRORS_DIR);
-  let sessionDirs: string[];
-  try {
-    sessionDirs = await fs.promises.readdir(errorsDir);
-  } catch (e: unknown) {
-    if (e instanceof Error && "code" in e && e.code === "ENOENT") {
-      return { errors: [], corruptFiles: [] };
-    }
-    throw e;
-  }
+const ERROR_COMMIT_PATTERN = /^Record \d+ error records?$/;
 
-  const errors: { category: string; message: string; timestamp: string }[] = [];
+async function readErrorRecordsFromCommit(
+  dir: string,
+  oid: string,
+): Promise<ErrorReadResult> {
+  const errors: ErrorRecordType[] = [];
   const corruptFiles: string[] = [];
 
-  for (const sessionId of sessionDirs) {
-    const sessionPath = path.join(errorsDir, sessionId);
-    const stat = await fs.promises.stat(sessionPath);
-    if (!stat.isDirectory()) continue;
+  // Walk state/errors/ in the commit tree
+  let sessionTree;
+  try {
+    sessionTree = await git.readTree({ fs, dir, oid, filepath: ERRORS_DIR });
+  } catch {
+    return { errors: [], corruptFiles: [] };
+  }
 
-    const files = await fs.promises.readdir(sessionPath);
-    for (const file of files) {
-      if (!file.endsWith(".json")) continue;
-      const fullPath = path.join(sessionPath, file);
-      const raw = await fs.promises.readFile(fullPath, "utf-8");
+  for (const sessionEntry of sessionTree.tree) {
+    if (sessionEntry.type !== "tree") continue;
+    const sessionId = sessionEntry.path;
+
+    let fileTree;
+    try {
+      fileTree = await git.readTree({
+        fs,
+        dir,
+        oid,
+        filepath: `${ERRORS_DIR}/${sessionId}`,
+      });
+    } catch {
+      continue;
+    }
+
+    for (const fileEntry of fileTree.tree) {
+      if (fileEntry.type !== "blob" || !fileEntry.path.endsWith(".json"))
+        continue;
+
+      let blob: Uint8Array;
+      try {
+        ({ blob } = await git.readBlob({ fs, dir, oid: fileEntry.oid }));
+      } catch {
+        corruptFiles.push(`${sessionId}/${fileEntry.path}`);
+        continue;
+      }
+
+      const text = new TextDecoder().decode(blob);
       let parsed: unknown;
       try {
-        parsed = JSON.parse(raw);
+        parsed = JSON.parse(text);
       } catch {
-        corruptFiles.push(`${sessionId}/${file}`);
+        corruptFiles.push(`${sessionId}/${fileEntry.path}`);
         continue;
       }
+
       const result = ErrorRecord(parsed);
       if (result instanceof type.errors) {
-        corruptFiles.push(`${sessionId}/${file}`);
+        corruptFiles.push(`${sessionId}/${fileEntry.path}`);
         continue;
       }
-      errors.push({
-        category: result.category,
-        message: result.message,
-        timestamp: result.timestamp,
-      });
+      errors.push(result);
     }
   }
 
@@ -226,11 +245,41 @@ export async function reconstructTimeline(
   const commits = await store.log(MAX_LOG_DEPTH);
   commits.reverse();
 
-  // Process checkpoint commits to extract turns
+  // Process commits to extract turns and associate errors
   let prevMessageCount = 0;
   let hasCheckpoints = false;
+  // Track the index of the last turn event so error commits can attach to it
+  let lastTurnEventIndex = -1;
 
   for (const commit of commits) {
+    // Handle error commits — associate with the most recent turn
+    if (ERROR_COMMIT_PATTERN.test(commit.message)) {
+      const { errors: errorRecords, corruptFiles } =
+        await readErrorRecordsFromCommit(dir, commit.hash);
+
+      for (const file of corruptFiles) {
+        gaps.push({
+          kind: "corrupt-error-record",
+          description: `Error record ${file} failed validation and was excluded from the timeline`,
+        });
+      }
+
+      if (errorRecords.length > 0 && lastTurnEventIndex >= 0) {
+        const turnEvent = events[lastTurnEventIndex];
+        if (turnEvent !== undefined && turnEvent.kind === "turn") {
+          turnEvent.isError = true;
+          turnEvent.errors = [
+            ...(turnEvent.errors ?? []),
+            ...errorRecords.map((e) => ({
+              category: e.category,
+              message: e.message,
+            })),
+          ];
+        }
+      }
+      continue;
+    }
+
     const reason = parseCheckpointReason(commit.message);
     if (reason === null) continue;
 
@@ -256,6 +305,9 @@ export async function reconstructTimeline(
       // Treat the entire message array as new for this checkpoint
       const turnEvents = extractTurns(messages, status);
       events.push(...turnEvents);
+      if (turnEvents.length > 0) {
+        lastTurnEventIndex = events.length - 1;
+      }
       prevMessageCount = messages.length;
       continue;
     }
@@ -267,6 +319,9 @@ export async function reconstructTimeline(
 
     const turnEvents = extractTurns(newMessages, status);
     events.push(...turnEvents);
+    if (turnEvents.length > 0) {
+      lastTurnEventIndex = events.length - 1;
+    }
   }
 
   // Process mail entries
@@ -291,41 +346,6 @@ export async function reconstructTimeline(
       timestamp,
       raw: entry.raw,
     });
-  }
-
-  // Process error records from the working tree
-  const { errors, corruptFiles } = await readErrorRecords(dir);
-
-  for (const file of corruptFiles) {
-    gaps.push({
-      kind: "corrupt-error-record",
-      description: `Error record ${file} failed validation and was excluded from the timeline`,
-    });
-  }
-
-  if (errors.length > 0) {
-    // Errors have no turn association, so use the last checkpoint as a best-effort timestamp
-    const fallbackTimestamp =
-      commits.filter((c) => parseCheckpointReason(c.message) !== null).at(-1)
-        ?.timestamp ?? 0;
-
-    events.push({
-      kind: "turn",
-      content: "",
-      timestamp: fallbackTimestamp,
-      status: "error",
-      isError: true,
-      errors: errors.map((e) => ({ category: e.category, message: e.message })),
-    });
-
-    addGap(
-      "no-error-turn-association",
-      "Error records have sessionId and seq but no turn ID; cannot associate errors with specific turns",
-    );
-    addGap(
-      "errors-from-working-tree",
-      "Error records are read from the working tree, not from git objects; this breaks audit integrity for bare repos",
-    );
   }
 
   // Sort all events by timestamp

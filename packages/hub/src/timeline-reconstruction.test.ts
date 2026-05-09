@@ -257,7 +257,7 @@ describe("reconstructTimeline", () => {
     expect(linkGap).toBeDefined();
   });
 
-  test("surfaces error records and documents the turn association gap", async () => {
+  test("associates error records from git with the preceding turn", async () => {
     const dir = await makeTempDir();
     await initAgentRepo(dir);
     const store = new IsogitStore(dir);
@@ -274,7 +274,7 @@ describe("reconstructTimeline", () => {
       "checkpoint: inference-done",
     );
 
-    // Write error records
+    // Write error records (committed to git by the store)
     const errors: ErrorRecord[] = [
       {
         source: "inference",
@@ -290,27 +290,20 @@ describe("reconstructTimeline", () => {
 
     const result = await reconstructTimeline(dir);
 
-    // Errors should be surfaced
-    const errorEvents = result.events.filter(
-      (e) => e.kind === "turn" && e.isError === true,
-    );
-    expect(errorEvents).toHaveLength(1);
-    if (errorEvents[0] !== undefined && errorEvents[0].kind === "turn") {
-      expect(errorEvents[0].errors).toHaveLength(1);
-      expect(errorEvents[0].errors?.[0]?.category).toBe("rate_limit");
+    // Errors should be attached to the preceding turn, not a synthetic one
+    const turns = result.events.filter((e) => e.kind === "turn");
+    expect(turns).toHaveLength(1);
+    const turn = turns[0];
+    expect(turn?.kind === "turn" && turn.isError).toBe(true);
+    expect(turn?.kind === "turn" && turn.errors).toHaveLength(1);
+    if (turn?.kind === "turn") {
+      expect(turn.errors?.[0]?.category).toBe("rate_limit");
     }
 
-    // Gap: errors have no turn association
-    const errorGap = result.gaps.find(
-      (g) => g.kind === "no-error-turn-association",
-    );
-    expect(errorGap).toBeDefined();
-
-    // Gap: reading errors from working tree, not git objects
-    const workingTreeGap = result.gaps.find(
-      (g) => g.kind === "errors-from-working-tree",
-    );
-    expect(workingTreeGap).toBeDefined();
+    // No error-association or working-tree gaps should be present
+    const gapKinds = result.gaps.map((g) => g.kind);
+    expect(gapKinds).not.toContain("no-error-turn-association");
+    expect(gapKinds).not.toContain("errors-from-working-tree");
   });
 
   test("handles message-count regression gracefully", async () => {
@@ -418,11 +411,7 @@ describe("reconstructTimeline", () => {
     const result = await reconstructTimeline(dir);
 
     const gapKinds = result.gaps.map((g) => g.kind);
-    // With checkpoint reasons, turn boundaries/status/hadError are resolved
     expect(gapKinds).toContain("no-assistant-mail-linkage");
-    // These are only emitted when errors exist, not present here
-    expect(gapKinds).not.toContain("no-error-turn-association");
-    expect(gapKinds).not.toContain("errors-from-working-tree");
   });
 
   test("marks turns as error when checkpoint reason is inference-error", async () => {
@@ -540,7 +529,7 @@ describe("reconstructTimeline", () => {
     expect(corruptGaps).toHaveLength(1);
   });
 
-  test("records gaps for corrupt error record files", async () => {
+  test("records gaps for corrupt error record files in git", async () => {
     const dir = await makeTempDir();
     await initAgentRepo(dir);
     const store = new IsogitStore(dir);
@@ -549,15 +538,12 @@ describe("reconstructTimeline", () => {
       [userMessage("Hello"), assistantMessage("Hi")],
       NO_OPS,
       NO_USAGE,
-      "checkpoint",
+      "checkpoint: inference-done",
     );
 
-    // Write one valid and one corrupt error record
-    const errorsDir = path.join(dir, "state/errors/test-session");
-    await fs.promises.mkdir(errorsDir, { recursive: true });
-    await fs.promises.writeFile(
-      path.join(errorsDir, "00000000-valid.json"),
-      JSON.stringify({
+    // Commit a valid error record via the store
+    await store.commitErrors([
+      {
         source: "inference",
         category: "rate_limit",
         message: "Rate limited",
@@ -565,20 +551,37 @@ describe("reconstructTimeline", () => {
         timestamp: new Date().toISOString(),
         sessionId: "test-session",
         seq: 0,
-      }),
-    );
+      },
+    ]);
+
+    // Manually commit a corrupt error file directly via git
+    const errorsDir = path.join(dir, "state/errors/test-session");
     await fs.promises.writeFile(
       path.join(errorsDir, "00000001-corrupt.json"),
       "NOT VALID JSON",
     );
+    await git.add({
+      fs,
+      dir,
+      filepath: "state/errors/test-session/00000001-corrupt.json",
+    });
+    await git.commit({
+      fs,
+      dir,
+      message: "Record 1 error record",
+      author: { name: "test", email: "test@test.dev" },
+    });
 
     const result = await reconstructTimeline(dir);
 
-    // Valid error should be surfaced
-    const errorEvents = result.events.filter(
-      (e) => e.kind === "turn" && e.isError === true,
+    // Valid error should be associated with the preceding turn
+    const turns = result.events.filter((e) => e.kind === "turn");
+    expect(turns).toHaveLength(1);
+    const turn = turns[0];
+    expect(turn?.kind === "turn" && turn.isError).toBe(true);
+    expect(turn?.kind === "turn" && turn.errors?.length).toBeGreaterThanOrEqual(
+      1,
     );
-    expect(errorEvents).toHaveLength(1);
 
     // Corrupt file should produce a gap
     const corruptGaps = result.gaps.filter(
