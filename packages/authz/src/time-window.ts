@@ -22,13 +22,13 @@ type TimeWindowValue = {
 
 function parseHHMM(s: string, field: string): { hour: number; minute: number } {
   const match = /^(\d{2}):(\d{2})$/.exec(s);
-  if (match === null) {
+  if (match === null || match[1] === undefined || match[2] === undefined) {
     throw new Error(
       `time_window: "${field}" must be HH:MM in 24-hour format, got "${s}"`,
     );
   }
-  const hour = parseInt(match[1] as string, 10);
-  const minute = parseInt(match[2] as string, 10);
+  const hour = parseInt(match[1], 10);
+  const minute = parseInt(match[2], 10);
   if (hour > 23 || minute > 59) {
     throw new Error(`time_window: "${field}" is out of range, got "${s}"`);
   }
@@ -42,25 +42,27 @@ function validateShape(value: unknown): TimeWindowValue {
     );
   }
 
-  const obj = value as Record<string, unknown>;
+  const after = "after" in value ? value.after : undefined;
+  const before = "before" in value ? value.before : undefined;
+  const timezone = "timezone" in value ? value.timezone : undefined;
 
-  if (typeof obj.after !== "string") {
+  if (typeof after !== "string") {
     throw new Error(
-      `time_window: "after" must be a string, got ${typeof obj.after}`,
+      `time_window: "after" must be a string, got ${typeof after}`,
     );
   }
-  if (typeof obj.before !== "string") {
+  if (typeof before !== "string") {
     throw new Error(
-      `time_window: "before" must be a string, got ${typeof obj.before}`,
+      `time_window: "before" must be a string, got ${typeof before}`,
     );
   }
-  if (typeof obj.timezone !== "string") {
+  if (typeof timezone !== "string") {
     throw new Error(
-      `time_window: "timezone" is required and must be a string, got ${typeof obj.timezone}`,
+      `time_window: "timezone" is required and must be a string, got ${typeof timezone}`,
     );
   }
 
-  return { after: obj.after, before: obj.before, timezone: obj.timezone };
+  return { after, before, timezone };
 }
 
 function toMinutes(h: number, m: number): number {

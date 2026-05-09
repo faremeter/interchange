@@ -96,9 +96,8 @@ function formatPreview(value: unknown, maxLen: number): string {
   if (typeof value === "string") {
     text = value;
   } else if (typeof value === "object" && value !== null) {
-    const obj = value as Record<string, unknown>;
-    if (Object.keys(obj).length === 0) return "";
-    text = JSON.stringify(obj);
+    if (Object.keys(value).length === 0) return "";
+    text = JSON.stringify(value);
   } else {
     return "";
   }

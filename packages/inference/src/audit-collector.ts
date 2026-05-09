@@ -38,6 +38,9 @@ export type AuditCollector = {
 function coerceContent(content: unknown): string | Record<string, unknown> {
   if (typeof content === "string") return content;
   if (typeof content === "object" && content !== null) {
+    // content is a non-null object — compatible with Record<string, unknown>
+    // but TypeScript can't verify the index signature without a cast.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     return content as Record<string, unknown>;
   }
   throw new Error(`Unexpected tool result content type: ${typeof content}`);
@@ -82,7 +85,7 @@ export function createAuditCollector(sessionId: string): AuditCollector {
       pendingRecords.set(call.id, {
         callId: call.id,
         tool: call.name,
-        arguments: call.arguments as Record<string, unknown>,
+        arguments: call.arguments,
         authz: decision ? decisionToAuthz(decision) : null,
       });
       return;

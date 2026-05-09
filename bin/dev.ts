@@ -20,6 +20,15 @@ $.verbose = false;
 
 const ROOT = resolve(import.meta.dirname, "..");
 
+function hasStderr(err: unknown): err is { stderr: string } {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "stderr" in err &&
+    typeof (err as { stderr: unknown }).stderr === "string"
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Argument parsing
 // ---------------------------------------------------------------------------
@@ -230,8 +239,8 @@ try {
   }
 } catch (err) {
   console.error("Database migration failed:");
-  if (err instanceof Error && "stderr" in err) {
-    console.error((err as { stderr: string }).stderr);
+  if (hasStderr(err)) {
+    console.error(err.stderr);
   }
   process.exit(1);
 }
@@ -277,8 +286,8 @@ if (wantSeed) {
     }
   } catch (err) {
     console.error("Seeding failed:");
-    if (err instanceof Error && "stderr" in err) {
-      console.error((err as { stderr: string }).stderr);
+    if (hasStderr(err)) {
+      console.error(err.stderr);
     }
     await shutdown(1);
   }

@@ -1,11 +1,11 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- MIME multipart parsing with bounds checks */
+import { type } from "arktype";
 import type {
   MessageHeaders,
   BodyStructure,
   MessagePart,
   InboundMessage,
   SignatureStatus,
-  InterchangeType,
   CryptoProvider,
   MessageRef,
 } from "@interchange/types/runtime";
@@ -20,6 +20,31 @@ import {
 } from "@interchange/mime";
 import { buildMessageHeaders } from "./headers";
 import { verifyDetachedSignature } from "@interchange/crypto-node";
+
+const MessagePayload = type({
+  type: type.enumerated(
+    "conversation.message",
+    "conversation.join",
+    "conversation.leave",
+    "offering.request",
+    "offering.response",
+    "offering.error",
+    "offering.discover",
+    "offering.catalog",
+    "payment.required",
+    "payment.receipt",
+    "payment.verified",
+    "approval.request",
+    "approval.granted",
+    "approval.denied",
+    "system.health",
+    "system.register",
+    "system.deregister",
+    "system.credential.refresh",
+  ),
+  version: "string",
+  body: "Record<string, unknown>",
+});
 
 /**
  * Parse raw RFC 2822 headers from a stored message.
@@ -123,12 +148,11 @@ export async function fetchFull(
       const jsonText = new TextDecoder("utf-8", { fatal: false }).decode(
         part11.body,
       );
-      const parsed = JSON.parse(jsonText) as {
-        type: InterchangeType;
-        version: string;
-        body: Record<string, unknown>;
-      };
-      result.payload = parsed;
+      const validated = MessagePayload(JSON.parse(jsonText));
+      if (validated instanceof type.errors) {
+        throw new Error(`invalid message payload: ${validated.summary}`);
+      }
+      result.payload = validated;
     }
   } catch {
     // If we can't parse the content, return what we have with the signature status.

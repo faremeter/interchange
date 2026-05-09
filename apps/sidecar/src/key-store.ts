@@ -15,6 +15,15 @@ import { sanitizeAddress } from "./session-manager";
 
 const logger = getLogger(["interchange", "sidecar", "keystore"]);
 
+function hasCode(err: unknown): err is { code: string } {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    typeof (err as { code: unknown }).code === "string"
+  );
+}
+
 const AgentMeta = type({
   version: "1",
   address: "string",
@@ -104,17 +113,15 @@ export async function persistAgentConfig(
   const agentDir = path.join(dataDir, sanitizeAddress(agentAddress));
   const metaPath = path.join(agentDir, "agent.json");
 
-  let existing: Partial<AgentMeta> = {};
+  let existingHubPublicKey: string | undefined;
   try {
     const raw = await fs.readFile(metaPath, "utf-8");
-    existing = JSON.parse(raw) as Partial<AgentMeta>;
+    const parsed = AgentMeta(JSON.parse(raw));
+    if (!(parsed instanceof type.errors)) {
+      existingHubPublicKey = parsed.hubPublicKey;
+    }
   } catch (err: unknown) {
-    if (
-      typeof err === "object" &&
-      err !== null &&
-      "code" in err &&
-      (err as { code: string }).code === "ENOENT"
-    ) {
+    if (hasCode(err) && err.code === "ENOENT") {
       // File doesn't exist yet — start fresh.
     } else {
       throw err;
@@ -124,8 +131,8 @@ export async function persistAgentConfig(
   const meta: AgentMeta = { version: 1, address: agentAddress, config };
   if (hubPublicKey !== undefined) {
     meta.hubPublicKey = hubPublicKey;
-  } else if (existing.hubPublicKey !== undefined) {
-    meta.hubPublicKey = existing.hubPublicKey;
+  } else if (existingHubPublicKey !== undefined) {
+    meta.hubPublicKey = existingHubPublicKey;
   }
   await fs.writeFile(metaPath, JSON.stringify(meta));
 }

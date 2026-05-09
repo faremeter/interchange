@@ -12,10 +12,13 @@ type ArkTypeValue = {
 };
 
 function isArkType(v: unknown): v is ArkTypeValue {
+  if (v == null) return false;
+  if (typeof v !== "object" && typeof v !== "function") return false;
   return (
-    v != null &&
-    typeof (v as ArkTypeValue).expression === "string" &&
-    typeof (v as ArkTypeValue).toJsonSchema === "function"
+    "expression" in v &&
+    typeof (v as Record<string, unknown>)["expression"] === "string" &&
+    "toJsonSchema" in v &&
+    typeof (v as Record<string, unknown>)["toJsonSchema"] === "function"
   );
 }
 
@@ -48,6 +51,9 @@ export function resolver(
     }> {
       const result = await base.toOpenAPISchema(options);
       return {
+        // $ref objects are valid SchemaObjects per OpenAPI 3.1 but the
+        // openapi-types definition doesn't model the $ref-only form.
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
         schema: {
           $ref: `#/components/schemas/${name}`,
         } as unknown as OpenAPIV3_1.SchemaObject,
