@@ -31,7 +31,10 @@ type Pricing = {
   bounds?: { min?: string; max?: string };
 };
 
-function formatOffering(row: typeof offering.$inferSelect, agentName: string) {
+export function formatOffering(
+  row: typeof offering.$inferSelect,
+  agentName: string,
+) {
   return {
     id: row.id,
     agentId: row.agentId,
