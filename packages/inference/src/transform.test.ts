@@ -12,6 +12,7 @@ describe("transformMessages", () => {
           { type: "thinking", thinking: "Let me think..." },
           { type: "text", text: "Here is the answer." },
         ],
+        timestamp: 1000,
       },
     ];
 
@@ -35,6 +36,7 @@ describe("transformMessages", () => {
           { type: "thinking", thinking: "Some reasoning..." },
           { type: "text", text: "Answer." },
         ],
+        timestamp: 1000,
       },
     ];
 
@@ -57,6 +59,7 @@ describe("transformMessages", () => {
           { type: "thinking", thinking: "Reasoning..." },
           { type: "text", text: "Answer." },
         ],
+        timestamp: 1000,
       },
     ];
 
@@ -72,7 +75,11 @@ describe("transformMessages", () => {
 
   test("injects synthetic tool results for orphaned tool calls", () => {
     const messages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "Do something." }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Do something." }],
+        timestamp: 1000,
+      },
       {
         role: "assistant",
         content: [
@@ -83,6 +90,7 @@ describe("transformMessages", () => {
             arguments: { path: "/tmp/foo" },
           },
         ],
+        timestamp: 1000,
       },
       // No tool result follows — the conversation was interrupted.
     ];
@@ -103,7 +111,11 @@ describe("transformMessages", () => {
 
   test("does not inject when tool results are present", () => {
     const messages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "Do something." }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Do something." }],
+        timestamp: 1000,
+      },
       {
         role: "assistant",
         content: [
@@ -114,6 +126,7 @@ describe("transformMessages", () => {
             arguments: { path: "/tmp/foo" },
           },
         ],
+        timestamp: 1000,
       },
       {
         role: "user",
@@ -124,6 +137,7 @@ describe("transformMessages", () => {
             content: [{ type: "text", text: "file contents" }],
           },
         ],
+        timestamp: 1000,
       },
     ];
 
@@ -133,8 +147,16 @@ describe("transformMessages", () => {
 
   test("preserves user and system messages unchanged", () => {
     const messages: ConversationMessage[] = [
-      { role: "system", content: [{ type: "text", text: "You are helpful." }] },
-      { role: "user", content: [{ type: "text", text: "Hello." }] },
+      {
+        role: "system",
+        content: [{ type: "text", text: "You are helpful." }],
+        timestamp: 1000,
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Hello." }],
+        timestamp: 1000,
+      },
     ];
 
     const result = transformMessages(messages, { targetModel: "gpt-4o" });

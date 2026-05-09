@@ -26,7 +26,6 @@ export type ReconstructedEvent =
     };
 
 export type GapKind =
-  | "no-per-message-timestamps"
   | "no-turn-boundaries"
   | "no-assistant-mail-linkage"
   | "no-turn-status"
@@ -74,7 +73,6 @@ type TurnAccumulator = {
 
 function extractTurns(
   newMessages: ConversationMessage[],
-  commitTimestamp: number,
 ): ReconstructedEvent[] {
   const events: ReconstructedEvent[] = [];
   let current: TurnAccumulator | null = null;
@@ -89,10 +87,13 @@ function extractTurns(
           timestamp: current.timestamp,
         });
       }
-      current = { texts: [], timestamp: commitTimestamp };
+      current = { texts: [], timestamp: msg.timestamp };
     } else if (msg.role === "assistant") {
       if (current === null) {
-        current = { texts: [], timestamp: commitTimestamp };
+        current = { texts: [], timestamp: msg.timestamp };
+      } else {
+        // Update timestamp to the latest assistant message in this turn
+        current.timestamp = msg.timestamp;
       }
       const text = extractTextContent(msg);
       if (text.length > 0) {
@@ -209,7 +210,7 @@ export async function reconstructTimeline(
         `Message count dropped from ${prevMessageCount} to ${messages.length} at commit ${commit.hash}`,
       );
       // Treat the entire message array as new for this checkpoint
-      const turnEvents = extractTurns(messages, commit.timestamp);
+      const turnEvents = extractTurns(messages);
       events.push(...turnEvents);
       prevMessageCount = messages.length;
       continue;
@@ -220,7 +221,7 @@ export async function reconstructTimeline(
 
     if (newMessages.length === 0) continue;
 
-    const turnEvents = extractTurns(newMessages, commit.timestamp);
+    const turnEvents = extractTurns(newMessages);
     events.push(...turnEvents);
   }
 
@@ -286,10 +287,6 @@ export async function reconstructTimeline(
 
   // Always-present gaps (structural limitations of the current git format)
   if (hasCheckpoints) {
-    addGap(
-      "no-per-message-timestamps",
-      "ConversationMessage has no timestamp field; all messages in a checkpoint share the git commit timestamp",
-    );
     addGap(
       "no-turn-boundaries",
       "Checkpoint commit messages are the literal string 'checkpoint' with no turn ID; turn boundaries are heuristically inferred from role sequences",
