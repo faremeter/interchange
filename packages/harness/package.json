@@ -12,6 +12,7 @@
   "dependencies": {
     "@interchange/inference": "workspace:*",
     "@interchange/log": "workspace:*",
-    "@interchange/types": "workspace:*"
+    "@interchange/types": "workspace:*",
+    "arktype": "catalog:"
   }
 }
