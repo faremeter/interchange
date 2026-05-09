@@ -1,3 +1,6 @@
+import { type } from "arktype";
+
+import { getLogger } from "@interchange/log";
 import type {
   ConversationMessage,
   ContentBlock,
@@ -7,6 +10,8 @@ import type {
   TokenUsage,
 } from "@interchange/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
+
+const logger = getLogger(["interchange", "inference", "anthropic"]);
 
 // ---------------------------------------------------------------------------
 // Request building
@@ -194,6 +199,57 @@ export type AnthropicRawEvent =
   | { kind: "message_stop" }
   | { kind: "skip" };
 
+const ContentBlockDelta = type({
+  type: "'content_block_delta'",
+  "index?": "number",
+  delta: {
+    type: "string",
+    "text?": "string",
+    "thinking?": "string",
+    "partial_json?": "string",
+  },
+});
+
+const ContentBlockStart = type({
+  type: "'content_block_start'",
+  "index?": "number",
+  // Anthropic sends either content_block (snake_case) or contentBlock (camelCase).
+  "content_block?": { type: "string", "id?": "string", "name?": "string" },
+  "contentBlock?": { type: "string", "id?": "string", "name?": "string" },
+});
+
+const ContentBlockStop = type({
+  type: "'content_block_stop'",
+  "index?": "number",
+});
+
+const MessageDelta = type({
+  type: "'message_delta'",
+  "usage?": { "output_tokens?": "number" },
+});
+
+const MessageStart = type({
+  type: "'message_start'",
+  "message?": {
+    "usage?": {
+      "input_tokens?": "number",
+      "output_tokens?": "number",
+      "cache_read_input_tokens?": "number",
+      "cache_creation_input_tokens?": "number",
+    },
+  },
+});
+
+const MessageStop = type({ type: "'message_stop'" });
+const Ping = type({ type: "'ping'" });
+
+const AnthropicSSEEvent = ContentBlockDelta.or(ContentBlockStart)
+  .or(ContentBlockStop)
+  .or(MessageDelta)
+  .or(MessageStart)
+  .or(MessageStop)
+  .or(Ping);
+
 function parseResponse(sseData: string): InferenceEvent[] {
   let parsed: unknown;
   try {
@@ -202,30 +258,21 @@ function parseResponse(sseData: string): InferenceEvent[] {
     return [];
   }
 
-  if (
-    parsed === null ||
-    typeof parsed !== "object" ||
-    !("type" in parsed) ||
-    typeof (parsed as Record<string, unknown>)["type"] !== "string"
-  ) {
+  const event = AnthropicSSEEvent(parsed);
+  if (event instanceof type.errors) {
+    logger.warn`Unexpected SSE event shape: ${event.summary}`;
     return [];
   }
-
-  const event = parsed as Record<string, unknown>;
-  const eventType = event["type"] as string;
 
   // The seq field is a placeholder 0 — the harness assigns real sequence numbers.
   const seq = 0;
 
-  switch (eventType) {
+  switch (event.type) {
     case "content_block_delta": {
-      const delta = event["delta"] as Record<string, unknown> | undefined;
-      if (delta === undefined) return [];
+      const { delta } = event;
 
-      const deltaType = delta["type"] as string | undefined;
-
-      if (deltaType === "text_delta") {
-        const token = (delta["text"] as string | undefined) ?? "";
+      if (delta.type === "text_delta") {
+        const token = delta.text ?? "";
         return [
           {
             type: "inference.text.delta",
@@ -235,8 +282,8 @@ function parseResponse(sseData: string): InferenceEvent[] {
         ];
       }
 
-      if (deltaType === "thinking_delta") {
-        const token = (delta["thinking"] as string | undefined) ?? "";
+      if (delta.type === "thinking_delta") {
+        const token = delta.thinking ?? "";
         return [
           {
             type: "inference.thinking.delta",
@@ -246,9 +293,9 @@ function parseResponse(sseData: string): InferenceEvent[] {
         ];
       }
 
-      if (deltaType === "input_json_delta") {
-        const index = (event["index"] as number | undefined) ?? 0;
-        const fragment = (delta["partial_json"] as string | undefined) ?? "";
+      if (delta.type === "input_json_delta") {
+        const index = event.index ?? 0;
+        const fragment = delta.partial_json ?? "";
         return [
           {
             type: "inference.tool_call.delta",
@@ -266,16 +313,13 @@ function parseResponse(sseData: string): InferenceEvent[] {
     }
 
     case "content_block_start": {
-      const block =
-        (event["contentBlock"] as Record<string, unknown> | undefined) ??
-        (event["content_block"] as Record<string, unknown> | undefined);
+      const block = event.content_block ?? event.contentBlock;
       if (block === undefined) return [];
 
-      const blockType = block["type"] as string | undefined;
-      if (blockType === "tool_use") {
-        const index = (event["index"] as number | undefined) ?? 0;
-        const callId = (block["id"] as string | undefined) ?? String(index);
-        const name = (block["name"] as string | undefined) ?? "";
+      if (block.type === "tool_use") {
+        const index = event.index ?? 0;
+        const callId = block.id ?? String(index);
+        const name = block.name ?? "";
         return [
           {
             type: "inference.tool_call.start",
@@ -294,13 +338,9 @@ function parseResponse(sseData: string): InferenceEvent[] {
     }
 
     case "message_delta": {
-      const usage = event["usage"] as Record<string, unknown> | undefined;
-      if (usage === undefined) return [];
-
-      const outputTokens = (usage["output_tokens"] as number | undefined) ?? 0;
-      const inputTokens = 0;
+      const outputTokens = event.usage?.output_tokens ?? 0;
       const inferenceUsage: TokenUsage = {
-        input: inputTokens,
+        input: 0,
         output: outputTokens,
         cacheRead: 0,
         cacheWrite: 0,
@@ -312,18 +352,14 @@ function parseResponse(sseData: string): InferenceEvent[] {
     }
 
     case "message_start": {
-      const msgUsage = (
-        event["message"] as Record<string, unknown> | undefined
-      )?.["usage"] as Record<string, unknown> | undefined;
+      const msgUsage = event.message?.usage;
       if (msgUsage === undefined) return [];
 
       const inferenceUsage: TokenUsage = {
-        input: (msgUsage["input_tokens"] as number | undefined) ?? 0,
-        output: (msgUsage["output_tokens"] as number | undefined) ?? 0,
-        cacheRead:
-          (msgUsage["cache_read_input_tokens"] as number | undefined) ?? 0,
-        cacheWrite:
-          (msgUsage["cache_creation_input_tokens"] as number | undefined) ?? 0,
+        input: msgUsage.input_tokens ?? 0,
+        output: msgUsage.output_tokens ?? 0,
+        cacheRead: msgUsage.cache_read_input_tokens ?? 0,
+        cacheWrite: msgUsage.cache_creation_input_tokens ?? 0,
         thinking: 0,
       };
       return [
@@ -333,7 +369,6 @@ function parseResponse(sseData: string): InferenceEvent[] {
 
     case "message_stop":
     case "ping":
-    default:
       return [];
   }
 }
