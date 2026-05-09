@@ -507,7 +507,7 @@ describe("EventCollector", () => {
       });
     });
 
-    test("reactor.done fires callback with accumulated text", async () => {
+    test("reactor.done fires callback with accumulated text and hadReply false", async () => {
       await notifyCollector.onEvent(
         event("inference.start", 1, { model: "gpt-4" }),
       );
@@ -526,6 +526,7 @@ describe("EventCollector", () => {
       expect(notifications).toHaveLength(1);
       expect(at(notifications, 0).status).toBe("completed");
       expect(at(notifications, 0).text).toBe("Hello world");
+      expect(at(notifications, 0).hadReply).toBe(false);
       expect(at(notifications, 0).hadError).toBe(false);
     });
 
@@ -552,7 +553,7 @@ describe("EventCollector", () => {
       expect(at(notifications, 0).text).toBe("The answer");
     });
 
-    test("multi-step tool loop fires callback for each turn", async () => {
+    test("multi-step tool loop fires callback with hadReply false for each turn", async () => {
       await notifyCollector.onEvent(
         event("inference.start", 1, { model: "gpt-4" }),
       );
@@ -566,7 +567,7 @@ describe("EventCollector", () => {
           usage: { input: 10, output: 5 },
         }),
       );
-      // Second inference.start finalizes the first turn
+      // Second inference.start finalizes the first turn via orphan guard
       await notifyCollector.onEvent(
         event("inference.start", 5, { model: "gpt-4" }),
       );
@@ -584,7 +585,9 @@ describe("EventCollector", () => {
 
       expect(notifications).toHaveLength(2);
       expect(at(notifications, 0).text).toBe("Searching");
+      expect(at(notifications, 0).hadReply).toBe(false);
       expect(at(notifications, 1).text).toBe("Results");
+      expect(at(notifications, 1).hadReply).toBe(false);
     });
 
     test("abandon does not fire callback", async () => {
@@ -606,7 +609,7 @@ describe("EventCollector", () => {
       expect(notifications).toHaveLength(0);
     });
 
-    test("error path includes connector.reply content and sets hadError", async () => {
+    test("connector.reply sets hadReply true and hadError true on error path", async () => {
       await notifyCollector.onEvent(
         event("inference.start", 1, { model: "gpt-4" }),
       );
@@ -622,6 +625,7 @@ describe("EventCollector", () => {
       expect(notifications).toHaveLength(1);
       expect(at(notifications, 0).status).toBe("completed");
       expect(at(notifications, 0).text).toBe("I encountered an error.");
+      expect(at(notifications, 0).hadReply).toBe(true);
       expect(at(notifications, 0).hadError).toBe(true);
     });
 
@@ -652,7 +656,7 @@ describe("EventCollector", () => {
       expect(at(notifications, 0).text).toBe("");
     });
 
-    test("fatal reactor.error fires callback with failed status", async () => {
+    test("fatal reactor.error fires callback with failed status and hadReply false", async () => {
       await notifyCollector.onEvent(
         event("inference.start", 1, { model: "gpt-4" }),
       );
@@ -662,6 +666,7 @@ describe("EventCollector", () => {
 
       expect(notifications).toHaveLength(1);
       expect(at(notifications, 0).status).toBe("failed");
+      expect(at(notifications, 0).hadReply).toBe(false);
     });
 
     test("fatal reactor.error with no active turn includes error in TurnFinalized", async () => {
@@ -679,7 +684,7 @@ describe("EventCollector", () => {
       ]);
     });
 
-    test("TurnFinalized includes accumulated errors", async () => {
+    test("TurnFinalized includes accumulated errors with hadReply true", async () => {
       await notifyCollector.onEvent(
         event("inference.start", 1, { model: "gpt-4" }),
       );
@@ -693,6 +698,7 @@ describe("EventCollector", () => {
       );
 
       expect(notifications).toHaveLength(1);
+      expect(at(notifications, 0).hadReply).toBe(true);
       expect(at(notifications, 0).errors).toEqual([
         { category: "rate_limit", message: "rate limit exceeded" },
       ]);
