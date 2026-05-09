@@ -52,17 +52,9 @@ import {
   scanExistingAgents,
   type AgentKeyEntry,
 } from "./key-store";
+import { hasCode } from "./errors";
 
 const logger = getLogger(["interchange", "sidecar", "agents"]);
-
-function hasCode(err: unknown): err is { code: string } {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "code" in err &&
-    typeof (err as { code: unknown }).code === "string"
-  );
-}
 
 export type AgentSession = {
   harness: Harness;

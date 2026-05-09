@@ -1,13 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-function hasCode(err: unknown): err is { code: string } {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "code" in err &&
-    typeof (err as { code: unknown }).code === "string"
-  );
-}
+import { hasCode } from "./errors";
 
 export type ReadFileArgs = {
   path: string;
