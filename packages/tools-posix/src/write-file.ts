@@ -1,14 +1,7 @@
 import { writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
-function hasCode(err: unknown): err is { code: string } {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "code" in err &&
-    typeof (err as { code: unknown }).code === "string"
-  );
-}
+import { hasCode } from "./errors";
 
 export type WriteFileArgs = {
   path: string;

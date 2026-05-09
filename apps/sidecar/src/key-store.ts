@@ -12,17 +12,9 @@ import { getLogger } from "@interchange/log";
 import { generateKeyPair } from "@interchange/crypto-node";
 import { type KeyPair, HarnessConfig } from "@interchange/types/runtime";
 import { sanitizeAddress } from "./session-manager";
+import { hasCode } from "./errors";
 
 const logger = getLogger(["interchange", "sidecar", "keystore"]);
-
-function hasCode(err: unknown): err is { code: string } {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "code" in err &&
-    typeof (err as { code: unknown }).code === "string"
-  );
-}
 
 const AgentMeta = type({
   version: "1",
