@@ -1,8 +1,43 @@
+import { type } from "arktype";
 import { describe, test, expect } from "bun:test";
 import { createOpenAIAdapter } from "./openai";
 import type { ConversationMessage } from "@interchange/types/runtime";
 
 const adapter = createOpenAIAdapter();
+
+const OpenAIFunctionCall = type({
+  name: "string",
+  arguments: "string",
+});
+
+const OpenAIToolCall = type({
+  id: "string",
+  type: "string",
+  function: OpenAIFunctionCall,
+});
+
+const OpenAIAssistantMessage = type({
+  role: "string",
+  "content?": "string | null",
+  "tool_calls?": OpenAIToolCall.array(),
+});
+
+const OpenAIPlainMessage = type({
+  role: "string",
+  "content?": "string | null",
+  "tool_call_id?": "string",
+});
+
+const OpenAIMessage = OpenAIAssistantMessage.or(OpenAIPlainMessage);
+
+const OpenAIRequestBody = type({
+  model: "string",
+  max_tokens: "number",
+  messages: OpenAIMessage.array(),
+  stream: "boolean",
+  "temperature?": "number",
+  "tools?": "unknown[]",
+});
 
 describe("OpenAI adapter: buildRequest", () => {
   test("builds a request with required fields", () => {
@@ -16,10 +51,10 @@ describe("OpenAI adapter: buildRequest", () => {
     expect(req.url).toBe("/chat/completions");
     expect(req.headers["content-type"]).toBe("application/json");
 
-    const body = JSON.parse(req.body) as Record<string, unknown>;
-    expect(body["model"]).toBe("gpt-4o");
-    expect(body["stream"]).toBe(true);
-    expect(typeof body["max_tokens"]).toBe("number");
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    expect(body.model).toBe("gpt-4o");
+    expect(body.stream).toBe(true);
+    expect(typeof body.max_tokens).toBe("number");
   });
 
   test("converts text messages correctly", () => {
@@ -28,12 +63,11 @@ describe("OpenAI adapter: buildRequest", () => {
     ];
 
     const req = adapter.buildRequest(messages, "gpt-4o", {});
-    const body = JSON.parse(req.body) as Record<string, unknown>;
-    const msgArray = body["messages"] as Record<string, unknown>[];
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
 
-    expect(msgArray).toHaveLength(1);
-    expect(msgArray[0]?.["role"]).toBe("user");
-    expect(msgArray[0]?.["content"]).toBe("What is 2+2?");
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.role).toBe("user");
+    expect(body.messages[0]?.content).toBe("What is 2+2?");
   });
 
   test("converts system messages to system role", () => {
@@ -43,11 +77,10 @@ describe("OpenAI adapter: buildRequest", () => {
     ];
 
     const req = adapter.buildRequest(messages, "gpt-4o", {});
-    const body = JSON.parse(req.body) as Record<string, unknown>;
-    const msgArray = body["messages"] as Record<string, unknown>[];
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
 
-    expect(msgArray[0]?.["role"]).toBe("system");
-    expect(msgArray[0]?.["content"]).toBe("Be concise.");
+    expect(body.messages[0]?.role).toBe("system");
+    expect(body.messages[0]?.content).toBe("Be concise.");
   });
 
   test("prepends systemPrompt from options", () => {
@@ -58,12 +91,11 @@ describe("OpenAI adapter: buildRequest", () => {
     const req = adapter.buildRequest(messages, "gpt-4o", {
       systemPrompt: "Always respond in JSON.",
     });
-    const body = JSON.parse(req.body) as Record<string, unknown>;
-    const msgArray = body["messages"] as Record<string, unknown>[];
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
 
-    expect(msgArray[0]?.["role"]).toBe("system");
-    expect(msgArray[0]?.["content"]).toBe("Always respond in JSON.");
-    expect(msgArray).toHaveLength(2);
+    expect(body.messages[0]?.role).toBe("system");
+    expect(body.messages[0]?.content).toBe("Always respond in JSON.");
+    expect(body.messages).toHaveLength(2);
   });
 
   test("converts assistant tool_call blocks to tool_calls format", () => {
@@ -82,18 +114,16 @@ describe("OpenAI adapter: buildRequest", () => {
     ];
 
     const req = adapter.buildRequest(messages, "gpt-4o", {});
-    const body = JSON.parse(req.body) as Record<string, unknown>;
-    const msgArray = body["messages"] as Record<string, unknown>[];
-
-    const assistantMsg = msgArray[0] as Record<string, unknown>;
-    const toolCalls = assistantMsg["tool_calls"] as Record<string, unknown>[];
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    const assistantMsg = OpenAIAssistantMessage.assert(body.messages[0]);
+    const toolCalls = assistantMsg.tool_calls;
     expect(toolCalls).toHaveLength(1);
-    expect(toolCalls[0]?.["id"]).toBe("call_abc");
-    expect(toolCalls[0]?.["type"]).toBe("function");
-
-    const fn = toolCalls[0]?.["function"] as Record<string, unknown>;
-    expect(fn["name"]).toBe("get_weather");
-    expect(JSON.parse(fn["arguments"] as string)).toEqual({ city: "London" });
+    expect(toolCalls?.[0]?.id).toBe("call_abc");
+    expect(toolCalls?.[0]?.type).toBe("function");
+    expect(toolCalls?.[0]?.function.name).toBe("get_weather");
+    expect(JSON.parse(toolCalls?.[0]?.function.arguments ?? "{}")).toEqual({
+      city: "London",
+    });
   });
 
   test("converts tool_result blocks to tool role messages", () => {
@@ -111,14 +141,12 @@ describe("OpenAI adapter: buildRequest", () => {
     ];
 
     const req = adapter.buildRequest(messages, "gpt-4o", {});
-    const body = JSON.parse(req.body) as Record<string, unknown>;
-    const msgArray = body["messages"] as Record<string, unknown>[];
-
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
     // tool_result blocks are flattened into tool role messages.
-    const toolMsg = msgArray[0] as Record<string, unknown>;
-    expect(toolMsg["role"]).toBe("tool");
-    expect(toolMsg["tool_call_id"]).toBe("call_abc");
-    expect(toolMsg["content"]).toBe("Sunny, 22°C");
+    const toolMsg = OpenAIPlainMessage.assert(body.messages[0]);
+    expect(toolMsg.role).toBe("tool");
+    expect(toolMsg.tool_call_id).toBe("call_abc");
+    expect(toolMsg.content).toBe("Sunny, 22°C");
   });
 
   test("uses max_tokens from options", () => {
@@ -127,8 +155,8 @@ describe("OpenAI adapter: buildRequest", () => {
     ];
 
     const req = adapter.buildRequest(messages, "gpt-4o", { maxTokens: 256 });
-    const body = JSON.parse(req.body) as Record<string, unknown>;
-    expect(body["max_tokens"]).toBe(256);
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    expect(body.max_tokens).toBe(256);
   });
 });
 
