@@ -21,15 +21,13 @@ export type ReconstructedEvent =
       kind: "turn";
       content: string;
       timestamp: number;
+      status: "completed" | "error" | "in-progress";
       isError?: boolean;
       errors?: { category: string; message: string }[];
     };
 
 export type GapKind =
-  | "no-turn-boundaries"
   | "no-assistant-mail-linkage"
-  | "no-turn-status"
-  | "no-had-error"
   | "no-error-turn-association"
   | "errors-from-working-tree"
   | "message-count-regression"
@@ -48,6 +46,45 @@ export type ReconstructionResult = {
 
 const ERRORS_DIR = "state/errors";
 const MAX_LOG_DEPTH = 10000;
+
+type CheckpointReason =
+  | "inference-done"
+  | "tool-execution"
+  | "tool-done"
+  | "inference-error"
+  | "gate-cleared";
+
+function isCheckpointReason(value: string): value is CheckpointReason {
+  return (
+    value === "inference-done" ||
+    value === "tool-execution" ||
+    value === "tool-done" ||
+    value === "inference-error" ||
+    value === "gate-cleared"
+  );
+}
+
+function parseCheckpointReason(commitMessage: string): CheckpointReason | null {
+  const match = /^checkpoint: (.+)$/.exec(commitMessage);
+  if (match?.[1] === undefined) return null;
+  if (!isCheckpointReason(match[1])) return null;
+  return match[1];
+}
+
+function reasonToStatus(
+  reason: CheckpointReason,
+): "completed" | "error" | "in-progress" {
+  switch (reason) {
+    case "inference-done":
+      return "completed";
+    case "inference-error":
+      return "error";
+    case "tool-execution":
+    case "tool-done":
+    case "gate-cleared":
+      return "in-progress";
+  }
+}
 
 function isToolResultMessage(msg: ConversationMessage): boolean {
   const first = msg.content[0];
@@ -73,6 +110,7 @@ type TurnAccumulator = {
 
 function extractTurns(
   newMessages: ConversationMessage[],
+  status: "completed" | "error" | "in-progress",
 ): ReconstructedEvent[] {
   const events: ReconstructedEvent[] = [];
   let current: TurnAccumulator | null = null;
@@ -85,6 +123,7 @@ function extractTurns(
           kind: "turn",
           content: current.texts.join(""),
           timestamp: current.timestamp,
+          status,
         });
       }
       current = { texts: [], timestamp: msg.timestamp };
@@ -108,6 +147,8 @@ function extractTurns(
       kind: "turn",
       content: current.texts.join(""),
       timestamp: current.timestamp,
+      status,
+      ...(status === "error" ? { isError: true } : {}),
     });
   }
 
@@ -190,9 +231,12 @@ export async function reconstructTimeline(
   let hasCheckpoints = false;
 
   for (const commit of commits) {
-    if (commit.message !== "checkpoint") continue;
+    const reason = parseCheckpointReason(commit.message);
+    if (reason === null) continue;
 
     hasCheckpoints = true;
+    const status = reasonToStatus(reason);
+
     let messages: ConversationMessage[];
     try {
       messages = await store.readAt(commit.hash);
@@ -210,7 +254,7 @@ export async function reconstructTimeline(
         `Message count dropped from ${prevMessageCount} to ${messages.length} at commit ${commit.hash}`,
       );
       // Treat the entire message array as new for this checkpoint
-      const turnEvents = extractTurns(messages);
+      const turnEvents = extractTurns(messages, status);
       events.push(...turnEvents);
       prevMessageCount = messages.length;
       continue;
@@ -221,7 +265,7 @@ export async function reconstructTimeline(
 
     if (newMessages.length === 0) continue;
 
-    const turnEvents = extractTurns(newMessages);
+    const turnEvents = extractTurns(newMessages, status);
     events.push(...turnEvents);
   }
 
@@ -262,12 +306,14 @@ export async function reconstructTimeline(
   if (errors.length > 0) {
     // Errors have no turn association, so use the last checkpoint as a best-effort timestamp
     const fallbackTimestamp =
-      commits.filter((c) => c.message === "checkpoint").at(-1)?.timestamp ?? 0;
+      commits.filter((c) => parseCheckpointReason(c.message) !== null).at(-1)
+        ?.timestamp ?? 0;
 
     events.push({
       kind: "turn",
       content: "",
       timestamp: fallbackTimestamp,
+      status: "error",
       isError: true,
       errors: errors.map((e) => ({ category: e.category, message: e.message })),
     });
@@ -284,22 +330,6 @@ export async function reconstructTimeline(
 
   // Sort all events by timestamp
   events.sort((a, b) => a.timestamp - b.timestamp);
-
-  // Always-present gaps (structural limitations of the current git format)
-  if (hasCheckpoints) {
-    addGap(
-      "no-turn-boundaries",
-      "Checkpoint commit messages are the literal string 'checkpoint' with no turn ID; turn boundaries are heuristically inferred from role sequences",
-    );
-    addGap(
-      "no-turn-status",
-      "Whether a turn completed or failed lives only in the inference_turn DB table; nothing in the git repo records this",
-    );
-    addGap(
-      "no-had-error",
-      "hadError is an in-memory flag in the event collector, never persisted to git",
-    );
-  }
 
   if (mailEntries.length > 0 || hasCheckpoints) {
     addGap(
