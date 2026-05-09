@@ -1,4 +1,28 @@
 #!/usr/bin/env bun
+/* eslint-disable no-console */
+
+import { type, type Type } from "arktype";
+import {
+  TenantResponse,
+  AgentResponse,
+  PrincipalResponse,
+  PrincipalSummary,
+  AgentSummary,
+  RoleResponse,
+  ProviderResponse,
+  paginatedSchema,
+} from "@interchange/types";
+
+const AuthResponse = type({ "user?": { id: "string" } });
+
+function parse<T>(schema: Type<T>, data: unknown, label: string): T {
+  const result = schema(data);
+  if (result instanceof type.errors) {
+    console.error(`Seed validation failed for ${label}: ${result.summary}`);
+    process.exit(1);
+  }
+  return result;
+}
 
 const BASE = process.env["HUB_URL"] ?? "http://localhost:3000";
 
@@ -98,7 +122,8 @@ async function authenticate(
   });
 
   if (signUp.cookies.length > 0) {
-    const userId = (signUp.data as { user?: { id: string } })?.user?.id ?? "";
+    const userId =
+      parse(AuthResponse, signUp.data, "sign-up response").user?.id ?? "";
     return { cookies: signUp.cookies, userId };
   }
 
@@ -115,7 +140,8 @@ async function authenticate(
     process.exit(1);
   }
 
-  const userId = (signIn.data as { user?: { id: string } })?.user?.id ?? "";
+  const userId =
+    parse(AuthResponse, signIn.data, "sign-in response").user?.id ?? "";
   return { cookies: signIn.cookies, userId };
 }
 
@@ -159,7 +185,7 @@ async function ensureTenant(
 
   if (status === 201) {
     log(`  Created ${slug} tenant`);
-    return (data as { id: string }).id;
+    return parse(TenantResponse, data, "tenant response").id;
   }
 
   // Already exists -- look up via /me/principals
@@ -169,8 +195,10 @@ async function ensureTenant(
     undefined,
     cookies,
   );
-  const principalList = (
-    principals as { data: { tenantId: string; tenantSlug: string }[] }
+  const principalList = parse(
+    paginatedSchema(PrincipalSummary),
+    principals,
+    "me/principals response",
   ).data;
   const match = principalList.find((p) => p.tenantSlug === slug);
 
@@ -203,7 +231,11 @@ const { data: rolesData } = await api(
   undefined,
   aliceCookies,
 );
-const rolesList = (rolesData as { data: { id: string; name: string }[] }).data;
+const rolesList = parse(
+  paginatedSchema(RoleResponse),
+  rolesData,
+  "roles response",
+).data;
 const memberRole = rolesList.find((r) => r.name === "member");
 
 const { status: inviteStatus, data: inviteData } = await api(
@@ -215,7 +247,11 @@ const { status: inviteStatus, data: inviteData } = await api(
 
 let bobPrincipalId: string;
 if (checkOrSkip("invite bob", inviteStatus, 201, inviteData)) {
-  bobPrincipalId = (inviteData as { id: string }).id;
+  bobPrincipalId = parse(
+    PrincipalResponse,
+    inviteData,
+    "invite bob response",
+  ).id;
   await api(
     "PATCH",
     `/api/tenants/${acmeTenantId}/principals/${bobPrincipalId}`,
@@ -230,8 +266,10 @@ if (checkOrSkip("invite bob", inviteStatus, 201, inviteData)) {
     undefined,
     aliceCookies,
   );
-  const acmePrincipalList = (
-    acmePrincipals as { data: { id: string; refId: string }[] }
+  const acmePrincipalList = parse(
+    paginatedSchema(PrincipalResponse),
+    acmePrincipals,
+    "acme principals response",
   ).data;
   const bobP = acmePrincipalList.find((p) => p.refId === bob.userId);
   bobPrincipalId = bobP?.id ?? "";
@@ -248,8 +286,10 @@ const { data: widgetRoles } = await api(
   undefined,
   aliceCookies,
 );
-const widgetRolesList = (
-  widgetRoles as { data: { id: string; name: string }[] }
+const widgetRolesList = parse(
+  paginatedSchema(RoleResponse),
+  widgetRoles,
+  "widget roles response",
 ).data;
 const widgetAdminRole = widgetRolesList.find((r) => r.name === "admin");
 
@@ -267,7 +307,11 @@ if (
     carolInviteData,
   )
 ) {
-  const carolPrincipalId = (carolInviteData as { id: string }).id;
+  const carolPrincipalId = parse(
+    PrincipalResponse,
+    carolInviteData,
+    "invite carol response",
+  ).id;
   await api(
     "PATCH",
     `/api/tenants/${widgetsTenantId}/principals/${carolPrincipalId}`,
@@ -297,7 +341,7 @@ async function ensureRole(
   let roleId: string;
   let roleCreated = false;
   if (status === 201) {
-    roleId = (data as { id: string }).id;
+    roleId = parse(RoleResponse, data, `create role ${name} response`).id;
     roleCreated = true;
     log(`  Created role ${name}`);
   } else if (status === 409) {
@@ -308,8 +352,10 @@ async function ensureRole(
       undefined,
       cookies,
     );
-    const found = (
-      allRoles as { data: { id: string; name: string }[] }
+    const found = parse(
+      paginatedSchema(RoleResponse),
+      allRoles,
+      `roles list response`,
     ).data.find((r) => r.name === name);
     if (!found) {
       process.stderr.write(`[seed] FATAL: could not find role ${name}\n`);
@@ -400,7 +446,10 @@ const { status: a1Status, data: a1Data } = await api(
   aliceCookies,
 );
 checkOrSkip("create research bot", a1Status, 201, a1Data);
-const researchBotId = a1Status === 201 ? (a1Data as { id: string }).id : null;
+const researchBotId =
+  a1Status === 201
+    ? parse(AgentResponse, a1Data, "research bot response").id
+    : null;
 if (researchBotId) log(`  Research Bot ID: ${researchBotId}`);
 
 const { status: a2Status, data: a2Data } = await api(
@@ -422,7 +471,10 @@ const { status: a2Status, data: a2Data } = await api(
   aliceCookies,
 );
 checkOrSkip("create code review bot", a2Status, 201, a2Data);
-const codeReviewBotId = a2Status === 201 ? (a2Data as { id: string }).id : null;
+const codeReviewBotId =
+  a2Status === 201
+    ? parse(AgentResponse, a2Data, "code review bot response").id
+    : null;
 if (codeReviewBotId) log(`  Code Review Bot ID: ${codeReviewBotId}`);
 
 // -- Create agent role and agent in Widgets --
@@ -465,7 +517,10 @@ const { status: a3Status, data: a3Data } = await api(
   aliceCookies,
 );
 checkOrSkip("create support bot", a3Status, 201, a3Data);
-const supportBotId = a3Status === 201 ? (a3Data as { id: string }).id : null;
+const supportBotId =
+  a3Status === 201
+    ? parse(AgentResponse, a3Data, "support bot response").id
+    : null;
 if (supportBotId) log(`  Support Bot ID: ${supportBotId}`);
 
 // -- Create custom role and grants --
@@ -479,7 +534,11 @@ const { status: crStatus, data: crData } = await api(
   aliceCookies,
 );
 if (checkOrSkip("create reviewer role", crStatus, 201, crData)) {
-  const reviewerRoleId = (crData as { id: string }).id;
+  const reviewerRoleId = parse(
+    RoleResponse,
+    crData,
+    "reviewer role response",
+  ).id;
 
   await api(
     "POST",
@@ -575,7 +634,11 @@ const { data: acmeProviders } = await api(
   undefined,
   aliceCookies,
 );
-const providerList = acmeProviders as { data: { id: string; name: string }[] };
+const providerList = parse(
+  paginatedSchema(ProviderResponse),
+  acmeProviders,
+  "acme providers response",
+);
 const anthropicProvider = providerList.data.find((p) => p.name === "Anthropic");
 const githubProvider = providerList.data.find((p) => p.name === "GitHub");
 
@@ -585,9 +648,11 @@ const { data: widgetProviders } = await api(
   undefined,
   aliceCookies,
 );
-const widgetProviderList = widgetProviders as {
-  data: { id: string; name: string }[];
-};
+const widgetProviderList = parse(
+  paginatedSchema(ProviderResponse),
+  widgetProviders,
+  "widget providers response",
+);
 const stripeProvider = widgetProviderList.data.find((p) => p.name === "Stripe");
 
 // -- Create OAuth clients --
@@ -711,7 +776,11 @@ const { data: acmeAgents } = await api(
   undefined,
   aliceCookies,
 );
-const agentList = (acmeAgents as { data: { id: string; name: string }[] }).data;
+const agentList = parse(
+  paginatedSchema(AgentResponse),
+  acmeAgents,
+  "acme agents response",
+).data;
 const researchBot = agentList.find((a) => a.name === "Research Bot");
 const codeReviewBot = agentList.find((a) => a.name === "Code Review Bot");
 
@@ -721,8 +790,10 @@ const { data: widgetAgents } = await api(
   undefined,
   aliceCookies,
 );
-const widgetAgentList = (
-  widgetAgents as { data: { id: string; name: string }[] }
+const widgetAgentList = parse(
+  paginatedSchema(AgentResponse),
+  widgetAgents,
+  "widget agents response",
 ).data;
 const supportBot = widgetAgentList.find(
   (a) => a.name === "Customer Support Bot",
@@ -832,7 +903,7 @@ const { status: mePrincipals, data: mePrinData } = await api(
 );
 check("get alice principals", mePrincipals, 200, mePrinData);
 log(
-  `  Alice has ${(mePrinData as { data: unknown[] }).data.length} principal(s) across tenants`,
+  `  Alice has ${parse(paginatedSchema(PrincipalSummary), mePrinData, "alice principals response").data.length} principal(s) across tenants`,
 );
 
 const { status: meAgents, data: meAgentData } = await api(
@@ -843,7 +914,7 @@ const { status: meAgents, data: meAgentData } = await api(
 );
 check("get alice agents", meAgents, 200, meAgentData);
 log(
-  `  Alice can see ${(meAgentData as { data: unknown[] }).data.length} agent(s)`,
+  `  Alice can see ${parse(paginatedSchema(AgentSummary), meAgentData, "alice agents response").data.length} agent(s)`,
 );
 
 // Verify Bob's view
@@ -854,7 +925,7 @@ const { data: bobPrinData } = await api(
   bobCookies,
 );
 log(
-  `  Bob has ${(bobPrinData as { data: unknown[] }).data.length} principal(s)`,
+  `  Bob has ${parse(paginatedSchema(PrincipalSummary), bobPrinData, "bob principals response").data.length} principal(s)`,
 );
 
 // Verify Carol's view
@@ -865,7 +936,7 @@ const { data: carolPrinData } = await api(
   carolCookies,
 );
 log(
-  `  Carol has ${(carolPrinData as { data: unknown[] }).data.length} principal(s)`,
+  `  Carol has ${parse(paginatedSchema(PrincipalSummary), carolPrinData, "carol principals response").data.length} principal(s)`,
 );
 
 log("Seed completed successfully.");
