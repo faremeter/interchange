@@ -1,3 +1,5 @@
+import { type } from "arktype";
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -8,6 +10,13 @@ export class ApiError extends Error {
     this.name = "ApiError";
   }
 }
+
+const ErrorBody = type({
+  "error?": {
+    "code?": "string",
+    "message?": "string",
+  },
+});
 
 export interface Transport {
   fetch<T>(method: string, path: string, body?: unknown): Promise<T>;
@@ -29,17 +38,20 @@ export function createBrowserTransport(): Transport {
       const res = await globalThis.fetch(path, init);
 
       if (!res.ok) {
-        const data = (await res.json().catch(() => null)) as {
-          error?: { code?: string; message?: string };
-        } | null;
+        const raw = await res.json().catch(() => null);
+        const data = raw !== null ? ErrorBody(raw) : null;
+        const errorBody = data instanceof type.errors ? null : data;
         throw new ApiError(
           res.status,
-          data?.error?.code ?? "unknown",
-          data?.error?.message ?? `HTTP ${res.status}`,
+          errorBody?.error?.code ?? "unknown",
+          errorBody?.error?.message ?? `HTTP ${res.status}`,
         );
       }
 
+      // T is a generic parameter — runtime validation is the caller's responsibility.
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       if (res.status === 204) return undefined as T;
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return (await res.json()) as T;
     },
 

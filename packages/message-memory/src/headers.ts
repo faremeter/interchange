@@ -3,6 +3,31 @@ import type {
   InterchangeType,
 } from "@interchange/types/runtime";
 
+const INTERCHANGE_TYPES = new Set<string>([
+  "conversation.message",
+  "conversation.join",
+  "conversation.leave",
+  "offering.request",
+  "offering.response",
+  "offering.error",
+  "offering.discover",
+  "offering.catalog",
+  "payment.required",
+  "payment.receipt",
+  "payment.verified",
+  "approval.request",
+  "approval.granted",
+  "approval.denied",
+  "system.health",
+  "system.register",
+  "system.deregister",
+  "system.credential.refresh",
+]);
+
+function isInterchangeType(s: string): s is InterchangeType {
+  return INTERCHANGE_TYPES.has(s);
+}
+
 /**
  * Build a MessageHeaders object from a parsed header map.
  *
@@ -51,8 +76,8 @@ export function buildMessageHeaders(
   if (listId !== undefined) result.listId = listId;
 
   const rawType = headers.get("interchange-type");
-  if (rawType !== undefined) {
-    result.interchangeType = rawType as InterchangeType;
+  if (rawType !== undefined && isInterchangeType(rawType)) {
+    result.interchangeType = rawType;
   }
 
   const corrId = headers.get("interchange-correlation-id");

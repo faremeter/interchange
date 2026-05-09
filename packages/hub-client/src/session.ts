@@ -156,9 +156,11 @@ export function createInstanceSession(opts: {
 
     const validated = InferenceEvent(raw);
     if (validated instanceof type.errors) return;
-    // The validator returns typeof InferenceEvent.infer which loses some
-    // discriminated union narrowing. The manually-defined InferenceEvent type
-    // preserves it correctly for switch statement narrowing.
+    // The validator's inferred type loses the custom.${string} discriminant
+    // because the regex pattern infers as string. The manually-defined
+    // InferenceEvent type uses a template literal that preserves it for switch
+    // statement narrowing.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     const event = validated as InferenceEventType;
 
     switch (event.type) {

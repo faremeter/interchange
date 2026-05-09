@@ -118,9 +118,12 @@ export function createAuthzExtension(
       }
 
       const blocked = result.effect !== "allow";
-      const blockReason = blocked
-        ? formatBlockReason(result.effect as BlockEffect, resource, action)
-        : undefined;
+      const blockReason =
+        result.effect === "deny" ||
+        result.effect === "ask" ||
+        result.effect === null
+          ? formatBlockReason(result.effect, resource, action)
+          : undefined;
 
       const decision: AuthzDecision = {
         callId: call.id,

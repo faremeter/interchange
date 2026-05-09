@@ -1,5 +1,14 @@
 import { readFile } from "node:fs/promises";
 
+function hasCode(err: unknown): err is { code: string } {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    typeof (err as { code: unknown }).code === "string"
+  );
+}
+
 export type ReadFileArgs = {
   path: string;
   offset?: number;
@@ -20,15 +29,14 @@ export async function runReadFile(
     }
     content = buf.toString("utf8");
   } catch (err) {
-    if (err instanceof Error && "code" in err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") {
+    if (hasCode(err)) {
+      if (err.code === "ENOENT") {
         throw new Error(`file not found: ${args.path}`, { cause: err });
       }
-      if (code === "EACCES") {
+      if (err.code === "EACCES") {
         throw new Error(`permission denied: ${args.path}`, { cause: err });
       }
-      if (code === "EISDIR") {
+      if (err.code === "EISDIR") {
         throw new Error(`path is a directory: ${args.path}`, { cause: err });
       }
     }

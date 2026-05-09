@@ -55,6 +55,15 @@ import {
 
 const logger = getLogger(["interchange", "sidecar", "agents"]);
 
+function hasCode(err: unknown): err is { code: string } {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    typeof (err as { code: unknown }).code === "string"
+  );
+}
+
 export type AgentSession = {
   harness: Harness;
   agentAddress: string;
@@ -553,12 +562,7 @@ export function createSessionManager(
     try {
       return await git.resolveRef({ fs, dir, ref: "refs/heads/deploy" });
     } catch (err: unknown) {
-      if (
-        typeof err === "object" &&
-        err !== null &&
-        "code" in err &&
-        (err as { code: string }).code === "NotFoundError"
-      ) {
+      if (hasCode(err) && err.code === "NotFoundError") {
         return null;
       }
       throw err;

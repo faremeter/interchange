@@ -1,6 +1,15 @@
 import { writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
+function hasCode(err: unknown): err is { code: string } {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    typeof (err as { code: unknown }).code === "string"
+  );
+}
+
 export type WriteFileArgs = {
   path: string;
   content: string;
@@ -16,13 +25,10 @@ export async function runWriteFile(
   try {
     await mkdir(dir, { recursive: true });
   } catch (err) {
-    if (err instanceof Error && "code" in err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "EACCES") {
-        throw new Error(`permission denied creating directory: ${dir}`, {
-          cause: err,
-        });
-      }
+    if (hasCode(err) && err.code === "EACCES") {
+      throw new Error(`permission denied creating directory: ${dir}`, {
+        cause: err,
+      });
     }
     throw err;
   }
@@ -34,12 +40,11 @@ export async function runWriteFile(
   try {
     await writeFile(args.path, args.content, { encoding: "utf8", signal });
   } catch (err) {
-    if (err instanceof Error && "code" in err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "EACCES") {
+    if (hasCode(err)) {
+      if (err.code === "EACCES") {
         throw new Error(`permission denied: ${args.path}`, { cause: err });
       }
-      if (code === "EISDIR") {
+      if (err.code === "EISDIR") {
         throw new Error(`path is a directory: ${args.path}`, { cause: err });
       }
     }
