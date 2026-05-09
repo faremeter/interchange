@@ -116,26 +116,32 @@ export class DefaultPlugin implements ReactorPlugin {
         if (toolCalls.length > 0) {
           this.pendingToolResults = toolCalls.length;
           return [
-            capabilities.checkpoint(),
+            capabilities.checkpoint("tool-execution"),
             capabilities.executeTools(toolCalls, true),
           ];
         }
 
         // No tool calls — the model is done reasoning for this turn.
         if (this.policy.mode === "reactive") {
-          return [capabilities.checkpoint(), capabilities.wait()];
+          return [
+            capabilities.checkpoint("inference-done"),
+            capabilities.wait(),
+          ];
         }
 
         // Conversational agent: send reply via the connector.
         const replyContent = extractTextContent(event.message);
         if (replyContent.length > 0) {
-          return [capabilities.checkpoint(), capabilities.reply(replyContent)];
+          return [
+            capabilities.checkpoint("inference-done"),
+            capabilities.reply(replyContent),
+          ];
         }
 
         // Empty response (no text, no tool calls) — checkpoint and wait for
         // the next inbound message. The reactor only shuts down on explicit
         // stop (abort), never because the model produced an empty turn.
-        return [capabilities.checkpoint(), capabilities.wait()];
+        return [capabilities.checkpoint("inference-done"), capabilities.wait()];
       }
 
       case "tool.done": {
@@ -144,11 +150,11 @@ export class DefaultPlugin implements ReactorPlugin {
           return [];
         }
         if (this.policy.mode === "reactive") {
-          return [capabilities.checkpoint(), capabilities.wait()];
+          return [capabilities.checkpoint("tool-done"), capabilities.wait()];
         }
         // All tool results received — re-infer with complete context.
         return [
-          capabilities.checkpoint(),
+          capabilities.checkpoint("tool-done"),
           capabilities.infer(this.model, {
             systemPrompt: this.systemPrompt,
             tools: this.toolDefinitions,
@@ -165,12 +171,15 @@ export class DefaultPlugin implements ReactorPlugin {
         logger.error`Inference error in default plugin: ${event.error.message}${statusDetail} (category: ${event.error.category})`;
 
         const userMessage = formatInferenceError(event.error);
-        return [capabilities.checkpoint(), capabilities.reply(userMessage)];
+        return [
+          capabilities.checkpoint("inference-error"),
+          capabilities.reply(userMessage),
+        ];
       }
 
       case "reactor.gate.cleared": {
         return [
-          capabilities.checkpoint(),
+          capabilities.checkpoint("gate-cleared"),
           capabilities.infer(this.model, {
             systemPrompt: this.systemPrompt,
             tools: this.toolDefinitions,

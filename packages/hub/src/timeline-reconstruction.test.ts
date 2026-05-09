@@ -119,7 +119,12 @@ describe("reconstructTimeline", () => {
       userMessage("Hello", t),
       assistantMessage("Hi there", t + 1000),
     ];
-    await store.commit(messages, NO_OPS, NO_USAGE, "checkpoint");
+    await store.commit(
+      messages,
+      NO_OPS,
+      NO_USAGE,
+      "checkpoint: inference-done",
+    );
 
     const result = await reconstructTimeline(dir);
 
@@ -128,7 +133,8 @@ describe("reconstructTimeline", () => {
     expect(turns[0]?.content).toBe("Hi there");
     // Should use the per-message timestamp, not the git commit timestamp
     expect(turns[0]?.timestamp).toBe(t + 1000);
-
+    // Status derived from checkpoint reason
+    expect(turns[0]?.kind === "turn" && turns[0].status).toBe("completed");
   });
 
   test("reconstructs multi-turn conversations across checkpoints", async () => {
@@ -143,7 +149,12 @@ describe("reconstructTimeline", () => {
       userMessage("Hello", t),
       assistantMessage("Hi there", t + 1000),
     ];
-    await store.commit(messages1, NO_OPS, NO_USAGE, "checkpoint");
+    await store.commit(
+      messages1,
+      NO_OPS,
+      NO_USAGE,
+      "checkpoint: inference-done",
+    );
 
     // Second turn (appends to the same message array)
     const messages2: ConversationMessage[] = [
@@ -151,7 +162,12 @@ describe("reconstructTimeline", () => {
       userMessage("How are you?", t + 5000),
       assistantMessage("I'm doing well", t + 6000),
     ];
-    await store.commit(messages2, NO_OPS, NO_USAGE, "checkpoint");
+    await store.commit(
+      messages2,
+      NO_OPS,
+      NO_USAGE,
+      "checkpoint: inference-done",
+    );
 
     const result = await reconstructTimeline(dir);
 
@@ -176,19 +192,18 @@ describe("reconstructTimeline", () => {
       toolResultMessage("call-1", "72F and sunny"),
       assistantMessage("The weather in SF is 72F and sunny."),
     ];
-    await store.commit(messages, NO_OPS, NO_USAGE, "checkpoint");
+    await store.commit(
+      messages,
+      NO_OPS,
+      NO_USAGE,
+      "checkpoint: inference-done",
+    );
 
     const result = await reconstructTimeline(dir);
 
     const turns = result.events.filter((e) => e.kind === "turn");
     expect(turns).toHaveLength(1);
     expect(turns[0]?.content).toBe("The weather in SF is 72F and sunny.");
-
-    // Gap: turn boundaries are heuristic
-    const turnBoundaryGap = result.gaps.find(
-      (g) => g.kind === "no-turn-boundaries",
-    );
-    expect(turnBoundaryGap).toBeDefined();
   });
 
   test("reconstructs mail events", async () => {
@@ -252,7 +267,12 @@ describe("reconstructTimeline", () => {
       userMessage("Do something risky"),
       assistantMessage("Attempting..."),
     ];
-    await store.commit(messages, NO_OPS, NO_USAGE, "checkpoint");
+    await store.commit(
+      messages,
+      NO_OPS,
+      NO_USAGE,
+      "checkpoint: inference-done",
+    );
 
     // Write error records
     const errors: ErrorRecord[] = [
@@ -305,14 +325,24 @@ describe("reconstructTimeline", () => {
       userMessage("More"),
       assistantMessage("Sure"),
     ];
-    await store.commit(messages1, NO_OPS, NO_USAGE, "checkpoint");
+    await store.commit(
+      messages1,
+      NO_OPS,
+      NO_USAGE,
+      "checkpoint: inference-done",
+    );
 
     // Second checkpoint with only 2 messages (regression)
     const messages2: ConversationMessage[] = [
       userMessage("Fresh start"),
       assistantMessage("OK"),
     ];
-    await store.commit(messages2, NO_OPS, NO_USAGE, "checkpoint");
+    await store.commit(
+      messages2,
+      NO_OPS,
+      NO_USAGE,
+      "checkpoint: inference-done",
+    );
 
     const result = await reconstructTimeline(dir);
 
@@ -345,7 +375,12 @@ describe("reconstructTimeline", () => {
       userMessage("Hello"),
       assistantMessage("Hi there"),
     ];
-    await store.commit(messages, NO_OPS, NO_USAGE, "checkpoint");
+    await store.commit(
+      messages,
+      NO_OPS,
+      NO_USAGE,
+      "checkpoint: inference-done",
+    );
 
     const result = await reconstructTimeline(dir);
 
@@ -363,7 +398,7 @@ describe("reconstructTimeline", () => {
     }
   });
 
-  test("produces all known gap types", async () => {
+  test("produces remaining gap types for a well-formed checkpoint", async () => {
     const dir = await makeTempDir();
     await initAgentRepo(dir);
     const store = new IsogitStore(dir);
@@ -373,15 +408,85 @@ describe("reconstructTimeline", () => {
       userMessage("Hello", t),
       assistantMessage("Hi", t + 1000),
     ];
-    await store.commit(messages, NO_OPS, NO_USAGE, "checkpoint");
+    await store.commit(
+      messages,
+      NO_OPS,
+      NO_USAGE,
+      "checkpoint: inference-done",
+    );
 
     const result = await reconstructTimeline(dir);
 
     const gapKinds = result.gaps.map((g) => g.kind);
-    expect(gapKinds).toContain("no-turn-boundaries");
+    // With checkpoint reasons, turn boundaries/status/hadError are resolved
     expect(gapKinds).toContain("no-assistant-mail-linkage");
-    expect(gapKinds).toContain("no-turn-status");
-    expect(gapKinds).toContain("no-had-error");
+    // These are only emitted when errors exist, not present here
+    expect(gapKinds).not.toContain("no-error-turn-association");
+    expect(gapKinds).not.toContain("errors-from-working-tree");
+  });
+
+  test("marks turns as error when checkpoint reason is inference-error", async () => {
+    const dir = await makeTempDir();
+    await initAgentRepo(dir);
+    const store = new IsogitStore(dir);
+
+    const t = 1700000000000;
+    const messages: ConversationMessage[] = [
+      userMessage("Hello", t),
+      assistantMessage("Something went wrong", t + 1000),
+    ];
+    await store.commit(
+      messages,
+      NO_OPS,
+      NO_USAGE,
+      "checkpoint: inference-error",
+    );
+
+    const result = await reconstructTimeline(dir);
+
+    const turns = result.events.filter((e) => e.kind === "turn");
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.kind === "turn" && turns[0].status).toBe("error");
+    expect(turns[0]?.kind === "turn" && turns[0].isError).toBe(true);
+  });
+
+  test("marks turns as in-progress for mid-turn checkpoints", async () => {
+    const dir = await makeTempDir();
+    await initAgentRepo(dir);
+    const store = new IsogitStore(dir);
+
+    const t = 1700000000000;
+    const messages: ConversationMessage[] = [
+      userMessage("What's the weather?", t),
+      toolCallMessage("call-1", "get_weather", { city: "SF" }, t + 1000),
+    ];
+    await store.commit(
+      messages,
+      NO_OPS,
+      NO_USAGE,
+      "checkpoint: tool-execution",
+    );
+
+    // Add tool result and final response
+    const messages2: ConversationMessage[] = [
+      ...messages,
+      toolResultMessage("call-1", "72F", t + 2000),
+      assistantMessage("It's 72F in SF", t + 3000),
+    ];
+    await store.commit(
+      messages2,
+      NO_OPS,
+      NO_USAGE,
+      "checkpoint: inference-done",
+    );
+
+    const result = await reconstructTimeline(dir);
+
+    const turns = result.events.filter((e) => e.kind === "turn");
+    // tool-execution checkpoint has no text content, so no turn emitted
+    // inference-done checkpoint has the final response
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.kind === "turn" && turns[0].status).toBe("completed");
   });
 
   test("handles empty repo with no checkpoints", async () => {
@@ -404,7 +509,12 @@ describe("reconstructTimeline", () => {
       userMessage("Hello"),
       assistantMessage("Hi"),
     ];
-    await store.commit(messages, NO_OPS, NO_USAGE, "checkpoint");
+    await store.commit(
+      messages,
+      NO_OPS,
+      NO_USAGE,
+      "checkpoint: inference-done",
+    );
 
     // Write a corrupt checkpoint directly via git
     const contextPath = path.join(dir, "state/context.json");
@@ -413,7 +523,7 @@ describe("reconstructTimeline", () => {
     await git.commit({
       fs,
       dir,
-      message: "checkpoint",
+      message: "checkpoint: inference-done",
       author: { name: "test", email: "test@test.dev" },
     });
 
@@ -490,7 +600,7 @@ describe("reconstructTimeline", () => {
       await git.commit({
         fs,
         dir,
-        message: "checkpoint",
+        message: "checkpoint: inference-done",
         author: { name: "test", email: "test@test.dev" },
       });
     }
