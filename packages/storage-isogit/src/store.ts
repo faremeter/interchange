@@ -1,14 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import git from "isomorphic-git";
-import type {
-  ContextStore,
-  AuditStore,
-  ContextCommit,
-  ConversationMessage,
-  ConnectorThreadState,
-  PendingOperation,
+import {
+  ContentBlock,
   TokenUsage,
+  type ContextStore,
+  type AuditStore,
+  type ContextCommit,
+  type ConversationMessage,
+  type ConnectorThreadState,
+  type PendingOperation,
 } from "@interchange/types/runtime";
 import { type } from "arktype";
 import {
@@ -29,10 +30,23 @@ const ConnectorThreadStateSchema = type({
   "subject?": "string",
 });
 
+const ConversationMessageSchema = type({
+  role: "'user' | 'assistant' | 'system'",
+  content: ContentBlock.array(),
+  "model?": "string",
+});
+
+const PendingOperationSchema = type({
+  correlationId: "string",
+  "expectedFrom?": "string",
+  registeredAt: "number",
+  gateId: "string",
+});
+
 const ContextDataSchema = type({
-  messages: "unknown[]",
-  pendingOperations: "unknown[]",
-  tokenUsage: "object",
+  messages: ConversationMessageSchema.array(),
+  pendingOperations: PendingOperationSchema.array(),
+  tokenUsage: TokenUsage,
   "connectorState?": type("null").or(ConnectorThreadStateSchema),
 });
 
@@ -49,9 +63,9 @@ function parseContextData(raw: unknown): ContextData {
     throw new Error(`context data has unexpected structure: ${result.summary}`);
   }
   return {
-    messages: result.messages as ConversationMessage[],
-    pendingOperations: result.pendingOperations as PendingOperation[],
-    tokenUsage: result.tokenUsage as TokenUsage,
+    messages: result.messages,
+    pendingOperations: result.pendingOperations,
+    tokenUsage: result.tokenUsage,
     connectorState: result.connectorState ?? null,
   };
 }
