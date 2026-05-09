@@ -382,9 +382,8 @@ describe("GET /agents/instances/:instanceId/health", () => {
     const res = await app.request(`${instanceURL()}/health`);
     expect(res.status).toBe(404);
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled mock app
-    const body = (await res.json()) as { error: { code: string } };
-    expect(body.error.code).toBe("not_found");
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ error: { code: "not_found" } });
   });
 
   test("returns 410 when instance is stopped", async () => {
@@ -406,9 +405,8 @@ describe("GET /agents/instances/:instanceId/health", () => {
     const res = await app.request(`${instanceURL()}/health`);
     expect(res.status).toBe(410);
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled mock app
-    const body = (await res.json()) as { error: { code: string } };
-    expect(body.error.code).toBe("gone");
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ error: { code: "gone" } });
   });
 });
 
@@ -456,24 +454,12 @@ describe("GET /agents/instances/:instanceId/offerings", () => {
     const res = await app.request(`${instanceURL()}/offerings`);
     expect(res.status).toBe(200);
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled mock app
-    const body = (await res.json()) as {
-      id: string;
-      agentId: string;
-      agentName: string;
-      name: string;
-    }[];
+    const body: unknown = await res.json();
     expect(body).toHaveLength(2);
-
-    const first = body[0];
-    const second = body[1];
-    if (!first || !second) throw new Error("expected two offerings");
-
-    expect(first.id).toBe("off_1");
-    expect(first.agentName).toBe("Test Agent");
-    expect(first.name).toBe("Translation");
-    expect(second.id).toBe("off_2");
-    expect(second.name).toBe("Summarization");
+    expect(body).toMatchObject([
+      { id: "off_1", agentName: "Test Agent", name: "Translation" },
+      { id: "off_2", name: "Summarization" },
+    ]);
   });
 
   test("returns empty array when no offerings exist", async () => {
@@ -507,9 +493,8 @@ describe("GET /agents/instances/:instanceId/offerings", () => {
     const res = await app.request(`${instanceURL()}/offerings`);
     expect(res.status).toBe(404);
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled mock app
-    const body = (await res.json()) as { error: { code: string } };
-    expect(body.error.code).toBe("not_found");
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ error: { code: "not_found" } });
   });
 
   test("returns offerings for stopped instances", async () => {
@@ -546,18 +531,8 @@ describe("GET /agents/instances/:instanceId/offerings", () => {
     const res = await app.request(`${instanceURL()}/offerings`);
     expect(res.status).toBe(200);
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled mock app
-    const body = (await res.json()) as {
-      id: string;
-      name: string;
-      agentName: string;
-    }[];
+    const body: unknown = await res.json();
     expect(body).toHaveLength(1);
-
-    const entry = body[0];
-    if (!entry) throw new Error("expected one offering");
-
-    expect(entry.id).toBe("off_1");
-    expect(entry.agentName).toBe("Test Agent");
+    expect(body).toMatchObject([{ id: "off_1", agentName: "Test Agent" }]);
   });
 });

@@ -1,10 +1,16 @@
 import { describe, test, expect } from "bun:test";
+import { type } from "arktype";
 import type { DB } from "@interchange/db";
 import { createApp } from "./app";
 import type { Auth } from "./auth";
 import { createEventCollectorRegistry } from "./event-collector-registry";
 import type { SessionService } from "./session-service";
 import { createSidecarRouter } from "./ws/sidecar-handler";
+
+const OpenAPISpec = type({
+  info: { title: "string", version: "string" },
+  paths: "Record<string, Record<string, unknown>>",
+});
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- betterAuth type cannot be structurally satisfied in tests
 const mockAuth = {
@@ -50,11 +56,7 @@ describe("app", () => {
     const res = await app.request("/openapi.json");
     expect(res.status).toBe(200);
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled app
-    const spec = (await res.json()) as {
-      info: { title: string; version: string };
-      paths: Record<string, unknown>;
-    };
+    const spec = OpenAPISpec.assert(await res.json());
 
     expect(spec.info.title).toBe("Interchange Hub");
     expect(spec.info.version).toBe("0.0.0");
@@ -63,16 +65,14 @@ describe("app", () => {
     expect(paths.length).toBeGreaterThan(50);
 
     const tags = new Set<string>();
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- OpenAPI path methods shape
-    for (const methods of Object.values(spec.paths) as Record<
-      string,
-      { tags?: string[] }
-    >[]) {
+    for (const methods of Object.values(spec.paths)) {
       for (const op of Object.values(methods)) {
-        if (op.tags) {
-          for (const tag of op.tags) {
-            tags.add(tag);
-          }
+        if (typeof op !== "object" || op === null) continue;
+        if (!("tags" in op)) continue;
+        const { tags: opTags } = op;
+        if (!Array.isArray(opTags)) continue;
+        for (const tag of opTags) {
+          if (typeof tag === "string") tags.add(tag);
         }
       }
     }
@@ -100,8 +100,7 @@ describe("app", () => {
 
   test("federation routes do not double the /federation path segment", async () => {
     const res = await app.request("/openapi.json");
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled app
-    const spec = (await res.json()) as { paths: Record<string, unknown> };
+    const spec = OpenAPISpec.assert(await res.json());
     const federationPaths = Object.keys(spec.paths).filter((p) =>
       p.includes("federation"),
     );
