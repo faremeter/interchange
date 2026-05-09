@@ -137,6 +137,7 @@
       "dependencies": {
         "@interchange/log": "workspace:*",
         "@interchange/types": "workspace:*",
+        "arktype": "catalog:",
       },
     },
     "packages/log": {
