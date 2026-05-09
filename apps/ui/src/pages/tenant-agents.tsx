@@ -90,7 +90,7 @@ function AgentRow({
 }
 
 export function TenantAgentsPage() {
-  const { tenantId } = useParams({ strict: false }) as { tenantId: string };
+  const { tenantId } = useParams({ from: "/authed/tenants/$tenantId/agents" });
   const queryClient = useQueryClient();
   const { data: agents, isLoading } = useQuery(tenantAgentsQuery(tenantId));
 

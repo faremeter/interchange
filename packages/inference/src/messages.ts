@@ -77,7 +77,7 @@ export function createToolResultMessage(
   results: ToolResult[],
 ): ConversationMessage {
   const blocks: ContentBlock[] = results.map((r) => {
-    const block: ContentBlock = {
+    const block: Extract<ContentBlock, { type: "tool_result" }> = {
       type: "tool_result",
       callId: r.callId,
       content:
@@ -86,12 +86,10 @@ export function createToolResultMessage(
           : [{ type: "text" as const, text: JSON.stringify(r.content) }],
     };
     if (r.detail !== undefined) {
-      (block as Extract<ContentBlock, { type: "tool_result" }>).detail =
-        r.detail;
+      block.detail = r.detail;
     }
     if (r.isError !== undefined) {
-      (block as Extract<ContentBlock, { type: "tool_result" }>).isError =
-        r.isError;
+      block.isError = r.isError;
     }
     return block;
   });

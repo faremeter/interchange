@@ -60,7 +60,9 @@ function InstanceRow({
 }
 
 export function TenantInstancesPage() {
-  const { tenantId } = useParams({ strict: false }) as { tenantId: string };
+  const { tenantId } = useParams({
+    from: "/authed/tenants/$tenantId/instances",
+  });
   const { data: instances, isLoading } = useQuery(
     tenantInstancesQuery(tenantId),
   );

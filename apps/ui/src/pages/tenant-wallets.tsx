@@ -43,22 +43,22 @@ const BACKEND_LABELS: Record<WalletBackendType, string> = {
   credits: "Credits",
 };
 
-function BackendBadge({ type }: { type: string }) {
+function isWalletBackendType(v: string): v is WalletBackendType {
+  return (walletBackendTypes as readonly string[]).includes(v);
+}
+
+function BackendBadge({ type }: { type: WalletBackendType }) {
   const variant =
     type === "crypto"
       ? "destructive"
       : type === "fiat"
         ? "secondary"
         : "outline";
-  return (
-    <Badge variant={variant}>
-      {BACKEND_LABELS[type as WalletBackendType] ?? type}
-    </Badge>
-  );
+  return <Badge variant={variant}>{BACKEND_LABELS[type]}</Badge>;
 }
 
 export function TenantWalletsPage() {
-  const { tenantId } = useParams({ strict: false }) as { tenantId: string };
+  const { tenantId } = useParams({ from: "/authed/tenants/$tenantId/wallets" });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: wallets, isLoading } = useQuery(tenantWalletsQuery(tenantId));
@@ -180,7 +180,9 @@ export function TenantWalletsPage() {
               <Label>Backend Type</Label>
               <Select
                 value={createBackend}
-                onValueChange={(v) => setCreateBackend(v as WalletBackendType)}
+                onValueChange={(v) => {
+                  if (isWalletBackendType(v)) setCreateBackend(v);
+                }}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue />

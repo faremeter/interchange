@@ -53,6 +53,20 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 
+function isCredentialRequirementSource(
+  v: string,
+): v is CredentialRequirementSource {
+  return (credentialRequirementSources as readonly string[]).includes(v);
+}
+
+function isGrantRequirementSource(v: string): v is GrantRequirementSource {
+  return (grantRequirementSources as readonly string[]).includes(v);
+}
+
+function isGrantEffect(v: string): v is GrantEffect {
+  return (grantEffects as readonly string[]).includes(v);
+}
+
 const DEFINITION_STATUS_LABEL: Record<string, string> = {
   deployed: "active",
   stopped: "retired",
@@ -106,10 +120,9 @@ function InstanceStatusBadge({
 }
 
 export function TenantAgentDetailPage() {
-  const { tenantId, agentId } = useParams({ strict: false }) as {
-    tenantId: string;
-    agentId: string;
-  };
+  const { tenantId, agentId } = useParams({
+    from: "/authed/tenants/$tenantId/agents/$agentId",
+  });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
@@ -617,9 +630,9 @@ export function TenantAgentDetailPage() {
               <Label className="text-xs">Source</Label>
               <Select
                 value={credSource}
-                onValueChange={(v) =>
-                  setCredSource(v as CredentialRequirementSource)
-                }
+                onValueChange={(v) => {
+                  if (isCredentialRequirementSource(v)) setCredSource(v);
+                }}
               >
                 <SelectTrigger className="h-8 w-24 text-xs">
                   <SelectValue />
@@ -787,9 +800,9 @@ export function TenantAgentDetailPage() {
               <Label className="text-xs">Source</Label>
               <Select
                 value={grantReqSource}
-                onValueChange={(v) =>
-                  setGrantReqSource(v as GrantRequirementSource)
-                }
+                onValueChange={(v) => {
+                  if (isGrantRequirementSource(v)) setGrantReqSource(v);
+                }}
               >
                 <SelectTrigger className="h-8 w-24 text-xs">
                   <SelectValue />
@@ -807,7 +820,9 @@ export function TenantAgentDetailPage() {
               <Label className="text-xs">Effect</Label>
               <Select
                 value={grantReqEffect}
-                onValueChange={(v) => setGrantReqEffect(v as GrantEffect)}
+                onValueChange={(v) => {
+                  if (isGrantEffect(v)) setGrantReqEffect(v);
+                }}
               >
                 <SelectTrigger className="h-8 w-24 text-xs">
                   <SelectValue />

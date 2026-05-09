@@ -16,6 +16,7 @@
 import type {
   InboundMessage,
   InferenceEvent,
+  InferenceOptions,
   ProviderConfig,
   ReactorPlugin,
   ReactorInboundEvent,
@@ -47,17 +48,16 @@ function buildHarnessOpts(
   messages: ConversationMessage[],
   model: string,
   providerConfig: ProviderConfig,
-  options: Record<string, unknown>,
+  options: InferenceOptions | undefined,
   signal: AbortSignal,
   nextSeq: () => number,
 ): InferenceHarnessOptions {
-  if (Object.keys(options).length > 0) {
+  if (options !== undefined) {
     return {
       messages,
       model,
       providerConfig,
-      inferenceOptions:
-        options as import("@interchange/types/runtime").InferenceOptions,
+      inferenceOptions: options,
       signal,
       nextSeq,
     };
@@ -97,7 +97,7 @@ export type Reactor = {
   /** Inject an inbound message into the reactor. */
   deliver(message: InboundMessage): void;
   /** Initiate graceful shutdown with a reason. */
-  abort(reason: string): void;
+  abort(reason: AbortReason): void;
 };
 
 const DEFAULT_GATE_TIMEOUT_MS = 3_600_000;
@@ -299,7 +299,7 @@ export function createReactor(config: ReactorConfig): Reactor {
 
   async function executeInfer(
     model: string,
-    options: Record<string, unknown>,
+    options: InferenceOptions | undefined,
   ): Promise<void> {
     if (stateManager === null) return;
 
@@ -610,10 +610,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       // Handle infer.
       const inferAction = normalized.find((a) => a.type === "infer");
       if (inferAction !== undefined && inferAction.type === "infer") {
-        await executeInfer(
-          inferAction.model,
-          (inferAction.options ?? {}) as Record<string, unknown>,
-        );
+        await executeInfer(inferAction.model, inferAction.options);
         continue;
       }
 
@@ -772,8 +769,8 @@ export function createReactor(config: ReactorConfig): Reactor {
     })();
   }
 
-  function abort(reason: string): void {
-    enqueue({ type: "abort", reason: reason as AbortReason });
+  function abort(reason: AbortReason): void {
+    enqueue({ type: "abort", reason });
   }
 
   return { start, deliver, abort };

@@ -25,7 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export function TenantPage() {
-  const { tenantId } = useParams({ strict: false }) as { tenantId: string };
+  const { tenantId } = useParams({ from: "/authed/tenants/$tenantId" });
   const queryClient = useQueryClient();
   const { data: tenant, isLoading } = useQuery(tenantDetailQuery(tenantId));
   const { data: principals } = useQuery(tenantPrincipalsQuery(tenantId));

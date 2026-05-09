@@ -37,6 +37,10 @@ import {
 } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 
+function isUpdatablePrincipalStatus(v: string): v is UpdatablePrincipalStatus {
+  return (updatablePrincipalStatuses as readonly string[]).includes(v);
+}
+
 function StatusBadge({ status }: { status: string }) {
   const variant =
     status === "active"
@@ -65,10 +69,9 @@ function Row({
 }
 
 export function TenantPrincipalDetailPage() {
-  const { tenantId, principalId } = useParams({ strict: false }) as {
-    tenantId: string;
-    principalId: string;
-  };
+  const { tenantId, principalId } = useParams({
+    from: "/authed/tenants/$tenantId/principals/$principalId",
+  });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
@@ -185,9 +188,9 @@ export function TenantPrincipalDetailPage() {
                 </Label>
                 <Select
                   value={selectedStatus || principal.status}
-                  onValueChange={(v) =>
-                    setSelectedStatus(v as UpdatablePrincipalStatus)
-                  }
+                  onValueChange={(v) => {
+                    if (isUpdatablePrincipalStatus(v)) setSelectedStatus(v);
+                  }}
                 >
                   <SelectTrigger id="status-select" className="h-8 w-44">
                     <SelectValue />
