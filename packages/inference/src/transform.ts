@@ -114,7 +114,11 @@ function injectOrphanedToolResults(
       isError: true,
     }));
 
-    result.push({ role: "user", content: syntheticBlocks });
+    result.push({
+      role: "user",
+      content: syntheticBlocks,
+      timestamp: Date.now(),
+    });
   }
 
   return result;

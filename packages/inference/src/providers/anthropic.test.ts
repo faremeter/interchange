@@ -50,7 +50,11 @@ const AnthropicRequestBody = type({
 describe("Anthropic adapter: buildRequest", () => {
   test("builds a request with required fields", () => {
     const messages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "Hello" }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Hello" }],
+        timestamp: 1000,
+      },
     ];
 
     const req = adapter.buildRequest(
@@ -71,8 +75,16 @@ describe("Anthropic adapter: buildRequest", () => {
 
   test("extracts system messages into top-level system field", () => {
     const messages: ConversationMessage[] = [
-      { role: "system", content: [{ type: "text", text: "You are helpful." }] },
-      { role: "user", content: [{ type: "text", text: "Hi." }] },
+      {
+        role: "system",
+        content: [{ type: "text", text: "You are helpful." }],
+        timestamp: 1000,
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Hi." }],
+        timestamp: 1000,
+      },
     ];
 
     const req = adapter.buildRequest(
@@ -96,8 +108,16 @@ describe("Anthropic adapter: buildRequest", () => {
 
   test("options.systemPrompt overrides system messages", () => {
     const messages: ConversationMessage[] = [
-      { role: "system", content: [{ type: "text", text: "Original system." }] },
-      { role: "user", content: [{ type: "text", text: "Hi." }] },
+      {
+        role: "system",
+        content: [{ type: "text", text: "Original system." }],
+        timestamp: 1000,
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Hi." }],
+        timestamp: 1000,
+      },
     ];
 
     const req = adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {
@@ -115,7 +135,11 @@ describe("Anthropic adapter: buildRequest", () => {
 
   test("includes thinking config when enabled", () => {
     const messages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "Think deeply." }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Think deeply." }],
+        timestamp: 1000,
+      },
     ];
 
     const req = adapter.buildRequest(messages, "claude-3-7-sonnet-20250219", {
@@ -138,6 +162,7 @@ describe("Anthropic adapter: buildRequest", () => {
             arguments: { path: "/etc/hosts" },
           },
         ],
+        timestamp: 1000,
       },
     ];
 
@@ -155,7 +180,11 @@ describe("Anthropic adapter: buildRequest", () => {
 
   test("serializes tool definitions with Anthropic wire format", () => {
     const messages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "Hi." }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Hi." }],
+        timestamp: 1000,
+      },
     ];
 
     const req = adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {
@@ -183,7 +212,11 @@ describe("Anthropic adapter: buildRequest", () => {
 
   test("omits tools key when tools array is empty", () => {
     const messages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "Hi." }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Hi." }],
+        timestamp: 1000,
+      },
     ];
 
     const req = adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {
@@ -195,7 +228,11 @@ describe("Anthropic adapter: buildRequest", () => {
 
   test("omits tools key when tools is undefined", () => {
     const messages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "Hi." }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Hi." }],
+        timestamp: 1000,
+      },
     ];
 
     const req = adapter.buildRequest(
@@ -209,7 +246,11 @@ describe("Anthropic adapter: buildRequest", () => {
 
   test("uses max_tokens from options", () => {
     const messages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "Hi." }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Hi." }],
+        timestamp: 1000,
+      },
     ];
 
     const req = adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {

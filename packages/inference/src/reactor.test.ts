@@ -1686,6 +1686,7 @@ describe("createReactor — dequeue priority", () => {
           },
         ],
         model: "test-model",
+        timestamp: 1000,
       },
     ];
 
@@ -2187,6 +2188,7 @@ function makeAssistantMessage(text: string): AssistantMessage {
     role: "assistant",
     content: [{ type: "text", text }],
     model: "mock-model",
+    timestamp: 1000,
   };
 }
 
@@ -2366,6 +2368,7 @@ describe("createReactor — beforeToolExtensions", () => {
       },
     ],
     model: "test-model",
+    timestamp: 1000,
   };
 
   const inferUsage: TokenUsage = {
@@ -2653,6 +2656,7 @@ describe("createReactor — beforeToolExtensions", () => {
         },
       ],
       model: "test-model",
+      timestamp: 1000,
     };
 
     let toolDoneCount = 0;

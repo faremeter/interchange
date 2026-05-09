@@ -72,11 +72,16 @@ describe("save and load round-trip", () => {
     const store = await createIsogitStore(dir);
 
     const messages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "Hello" }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Hello" }],
+        timestamp: 1000,
+      },
       {
         role: "assistant",
         content: [{ type: "text", text: "Hi there" }],
         model: "test-model",
+        timestamp: 2000,
       },
     ];
 
@@ -91,7 +96,11 @@ describe("save and load round-trip", () => {
     const store = await createIsogitStore(dir);
 
     const first: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "step 1" }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "step 1" }],
+        timestamp: 1000,
+      },
     ];
     const second: ConversationMessage[] = [
       ...first,
@@ -99,6 +108,7 @@ describe("save and load round-trip", () => {
         role: "assistant",
         content: [{ type: "text", text: "step 2" }],
         model: "m",
+        timestamp: 2000,
       },
     ];
 
@@ -159,14 +169,22 @@ describe("branch operations", () => {
     const store = await createIsogitStore(dir);
 
     const mainMessages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "on main" }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "on main" }],
+        timestamp: 1000,
+      },
     ];
     await store.commit(mainMessages, [], ZERO_USAGE, "main work");
 
     await createAndSwitchBranch(dir, "experiment");
 
     const branchMessages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "on branch" }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "on branch" }],
+        timestamp: 2000,
+      },
     ];
     await store.commit(branchMessages, [], ZERO_USAGE, "branch work");
 
@@ -223,7 +241,11 @@ describe("readAt", () => {
     const store = await createIsogitStore(dir);
 
     const v1: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "version 1" }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "version 1" }],
+        timestamp: 1000,
+      },
     ];
     const first = await store.commit(v1, [], ZERO_USAGE, "v1");
 
@@ -233,6 +255,7 @@ describe("readAt", () => {
         role: "assistant",
         content: [{ type: "text", text: "version 2" }],
         model: "m",
+        timestamp: 2000,
       },
     ];
     await store.commit(v2, [], ZERO_USAGE, "v2");
@@ -568,7 +591,11 @@ describe("load reads from git HEAD, not working tree", () => {
     const store = await createIsogitStore(dir);
 
     const messages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "committed data" }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "committed data" }],
+        timestamp: 1000,
+      },
     ];
     await store.commit(messages, [], ZERO_USAGE, "checkpoint");
 
@@ -586,7 +613,11 @@ describe("load reads from git HEAD, not working tree", () => {
     const store = await createIsogitStore(dir);
 
     const goodMessages: ConversationMessage[] = [
-      { role: "user", content: [{ type: "text", text: "good data" }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "good data" }],
+        timestamp: 1000,
+      },
     ];
     await store.commit(goodMessages, [], ZERO_USAGE, "good checkpoint");
 

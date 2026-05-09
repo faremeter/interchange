@@ -997,6 +997,7 @@ describe("Default plugin", () => {
             arguments: { path: "/test" },
           },
         ],
+        timestamp: 1000,
       },
       usage: emptyUsage(),
     };
@@ -1018,6 +1019,7 @@ describe("Default plugin", () => {
         role: "assistant",
         model: "claude-test",
         content: [{ type: "text", text: "Here is my response." }],
+        timestamp: 1000,
       },
       usage: emptyUsage(),
     };
@@ -1102,6 +1104,7 @@ describe("Default plugin", () => {
         role: "assistant",
         model: "claude-test",
         content: [],
+        timestamp: 1000,
       },
       usage: emptyUsage(),
     };
@@ -1125,6 +1128,7 @@ describe("Default plugin", () => {
         role: "assistant",
         model: "claude-test",
         content: [{ type: "text", text: "   \n\t  " }],
+        timestamp: 1000,
       },
       usage: emptyUsage(),
     };
@@ -1150,6 +1154,7 @@ describe("Default plugin", () => {
         role: "assistant",
         model: "claude-test",
         content: [{ type: "text", text: "done processing" }],
+        timestamp: 1000,
       },
       usage: emptyUsage(),
     };
@@ -1204,6 +1209,7 @@ describe("Default plugin", () => {
             arguments: { path: "/b" },
           },
         ],
+        timestamp: 1000,
       },
       usage: emptyUsage(),
     };
