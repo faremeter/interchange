@@ -40,7 +40,7 @@ function coerceContent(content: unknown): string | Record<string, unknown> {
   if (typeof content === "object" && content !== null) {
     // content is a non-null object — compatible with Record<string, unknown>
     // but TypeScript can't verify the index signature without a cast.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- non-null object is structurally compatible with Record<string, unknown> but TS won't widen
     return content as Record<string, unknown>;
   }
   throw new Error(`Unexpected tool result content type: ${typeof content}`);

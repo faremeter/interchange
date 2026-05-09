@@ -997,9 +997,10 @@ export type InferenceEvent =
     };
 
 /**
- * Validate unknown data as an InferenceEvent, returning the manually-defined
- * type that preserves the `custom.${string}` discriminant for switch narrowing.
- * See the InferenceEvent type alias above for why the cast is needed.
+ * Validate unknown data as an InferenceEvent. ArkType's regex-based validator
+ * infers `custom.*` event types as `string`, but the manual InferenceEvent type
+ * uses a `custom.${string}` template literal for switch narrowing. This function
+ * centralizes that single unavoidable cast.
  */
 export function parseInferenceEvent(
   data: unknown,

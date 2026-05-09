@@ -53,7 +53,7 @@ export function resolver(
       return {
         // $ref objects are valid SchemaObjects per OpenAPI 3.1 but the
         // openapi-types definition doesn't model the $ref-only form.
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- openapi-types SchemaObject doesn't model $ref-only form; valid per OpenAPI 3.1
         schema: {
           $ref: `#/components/schemas/${name}`,
         } as unknown as OpenAPIV3_1.SchemaObject,

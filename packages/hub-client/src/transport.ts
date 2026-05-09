@@ -48,10 +48,9 @@ export function createBrowserTransport(): Transport {
         );
       }
 
-      // T is a generic parameter — runtime validation is the caller's responsibility.
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- T is a generic parameter; runtime validation is the caller's responsibility
       if (res.status === 204) return undefined as T;
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- T is a generic parameter; runtime validation is the caller's responsibility
       return (await res.json()) as T;
     },
 
