@@ -249,3 +249,117 @@ describe("instance route test infrastructure", () => {
     expect(res.status).toBe(403);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Health endpoint tests
+// ---------------------------------------------------------------------------
+
+describe("GET /agents/instances/:instanceId/health", () => {
+  test("returns ok/ok when address is routable and collector exists", async () => {
+    const app = createTestApp({
+      routableAddresses: [ADDRESS],
+      collectorStatuses: new Map([[ADDRESS, { status: "idle" }]]),
+    });
+
+    const res = await app.request(`${instanceURL()}/health`);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body).toEqual({
+      liveness: "ok",
+      readiness: "ok",
+      lastCheckedAt: null,
+    });
+  });
+
+  test("returns unhealthy/not_ready when not routable and no collector", async () => {
+    const app = createTestApp({
+      routableAddresses: [],
+      collectorStatuses: new Map(),
+    });
+
+    const res = await app.request(`${instanceURL()}/health`);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body).toEqual({
+      liveness: "unhealthy",
+      readiness: "not_ready",
+      lastCheckedAt: null,
+    });
+  });
+
+  test("returns ok/not_ready when routable but no collector", async () => {
+    const app = createTestApp({
+      routableAddresses: [ADDRESS],
+      collectorStatuses: new Map(),
+    });
+
+    const res = await app.request(`${instanceURL()}/health`);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body).toEqual({
+      liveness: "ok",
+      readiness: "not_ready",
+      lastCheckedAt: null,
+    });
+  });
+
+  test("returns unhealthy/ok when not routable but collector exists", async () => {
+    const app = createTestApp({
+      routableAddresses: [],
+      collectorStatuses: new Map([[ADDRESS, { status: "busy" }]]),
+    });
+
+    const res = await app.request(`${instanceURL()}/health`);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body).toEqual({
+      liveness: "unhealthy",
+      readiness: "ok",
+      lastCheckedAt: null,
+    });
+  });
+
+  test("returns 404 when instance does not exist", async () => {
+    const app = createTestApp({
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        instance: undefined,
+        agent: testAgent,
+      },
+    });
+
+    const res = await app.request(`${instanceURL()}/health`);
+    expect(res.status).toBe(404);
+
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("not_found");
+  });
+
+  test("returns 410 when instance is stopped", async () => {
+    const stoppedInstance = {
+      ...testInstance,
+      status: "stopped" as const,
+      endedAt: new Date("2025-06-01"),
+    };
+
+    const app = createTestApp({
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        instance: stoppedInstance,
+        agent: testAgent,
+      },
+    });
+
+    const res = await app.request(`${instanceURL()}/health`);
+    expect(res.status).toBe(410);
+
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("gone");
+  });
+});
