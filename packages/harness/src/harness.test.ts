@@ -635,8 +635,9 @@ describe("message_send tool", () => {
     const result = await sendHandler(call, new AbortController().signal);
 
     expect(result.isError).toBeUndefined();
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled mock transport
-    const content = result.content as Record<string, unknown>;
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    const content = result.content;
     expect(typeof content["messageId"]).toBe("string");
 
     expect(transport.getSentMessages().length).toBe(1);
@@ -794,8 +795,9 @@ describe("message_search tool", () => {
 
     const result = await searchHandler(call, new AbortController().signal);
     expect(result.isError).toBeUndefined();
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled mock transport
-    const content = result.content as Record<string, unknown>;
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    const content = result.content;
     expect(Array.isArray(content["results"])).toBe(true);
   });
 
@@ -840,8 +842,9 @@ describe("message_read tool", () => {
 
     const result = await readHandler(call, new AbortController().signal);
     expect(result.isError).toBeUndefined();
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled mock transport
-    const content = result.content as Record<string, unknown>;
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    const content = result.content;
     expect(content["headers"]).toBeDefined();
     expect(content["signatureStatus"]).toBe("missing");
   });
@@ -864,8 +867,9 @@ describe("message_read tool", () => {
 
     const result = await readHandler(call, new AbortController().signal);
     expect(result.isError).toBeUndefined();
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test response from controlled mock transport
-    const content = result.content as Record<string, unknown>;
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    const content = result.content;
     expect(content["headers"]).toBeDefined();
   });
 
