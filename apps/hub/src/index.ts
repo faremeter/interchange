@@ -13,10 +13,7 @@ import {
 } from "@interchange/hub";
 import { generateKeyPair } from "@interchange/crypto-node";
 import { parseMailToEmail } from "@interchange/mime";
-import {
-  InferenceEvent,
-  type InferenceEvent as InferenceEventType,
-} from "@interchange/types/runtime";
+import { parseInferenceEvent } from "@interchange/types/runtime";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import { setup, getLogger } from "@interchange/log";
 import { type } from "arktype";
@@ -95,7 +92,7 @@ async function requireInstance(agentAddress: string) {
 const sidecarRouter = createSidecarRouter({
   hubPublicKey: hexEncode(hubSigningKey.publicKey),
   onAgentEvent(agentAddress, _sessionId, event) {
-    const validated = InferenceEvent(event);
+    const validated = parseInferenceEvent(event);
     if (validated instanceof type.errors) {
       log.warn("Received invalid agent event for {agentAddress}: {summary}", {
         agentAddress,
@@ -103,10 +100,7 @@ const sidecarRouter = createSidecarRouter({
       });
       return;
     }
-    // The validator's inferred type loses the custom.${string} discriminant.
-    // The manually defined InferenceEventType preserves it for switch narrowing.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-    eventCollectors.dispatch(agentAddress, validated as InferenceEventType);
+    eventCollectors.dispatch(agentAddress, validated);
   },
   onSidecarDisconnect(agentAddresses) {
     for (const addr of agentAddresses) {
