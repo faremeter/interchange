@@ -85,7 +85,7 @@ export function TenantWalletsPage() {
 
   return (
     <div>
-      <TenantNav />
+      <TenantNav tenantId={tenantId} />
 
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Wallets</h2>
