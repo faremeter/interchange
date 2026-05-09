@@ -601,7 +601,12 @@ export function createReactor(config: ReactorConfig): Reactor {
         emit({
           type: "connector.reply",
           seq: nextSeq(),
-          data: { content: replyAction.content },
+          data: {
+            content: replyAction.content,
+            ...(lastCheckpointHash !== undefined
+              ? { checkpointHash: lastCheckpointHash }
+              : {}),
+          },
         });
         // After replying, wait for the next inbound message.
         continue;
@@ -633,15 +638,21 @@ export function createReactor(config: ReactorConfig): Reactor {
     });
   }
 
+  let lastCheckpointHash: string | undefined;
+
   async function executeCheckpoint(message: string): Promise<void> {
     if (stateManager === null) return;
+    // Clear before attempting so a failed checkpoint never leaves a stale
+    // hash from a previous turn attached to the next connector.reply.
+    lastCheckpointHash = undefined;
     try {
-      await contextStore.commit(
+      const commit = await contextStore.commit(
         stateManager.getMessages(),
         stateManager.getPendingOperations(),
         stateManager.getTokenUsage(),
         message,
       );
+      lastCheckpointHash = commit.hash;
     } catch (cause) {
       logger.error`Checkpoint failed: ${cause}`;
       emitError(
