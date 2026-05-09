@@ -1,5 +1,4 @@
-import fs from "node:fs";
-import git from "isomorphic-git";
+import { readCommitObject, readTreeEntries } from "./isogit-helpers";
 
 /**
  * Collect all unique object OIDs reachable from a commit: the commit itself,
@@ -12,21 +11,11 @@ export async function collectReachableObjects(
   const seen = new Set<string>();
   seen.add(commitOid);
 
-  const { object: commitObj } = await git.readObject({
-    fs,
-    dir,
-    oid: commitOid,
-  });
-  const commit = commitObj as { tree: string };
+  const commit = await readCommitObject(dir, commitOid);
   seen.add(commit.tree);
 
   async function walkTree(treeOid: string): Promise<void> {
-    const { object: treeObj } = await git.readObject({
-      fs,
-      dir,
-      oid: treeOid,
-    });
-    const entries = treeObj as { oid: string; type: string }[];
+    const entries = await readTreeEntries(dir, treeOid);
     for (const entry of entries) {
       if (seen.has(entry.oid)) continue;
       seen.add(entry.oid);
