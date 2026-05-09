@@ -186,6 +186,18 @@ export function createSessionManager(
   const pending = new Set<string>();
   const mailStores = new Map<string, MailAuditStore>();
 
+  // Checkpoint hash captured from the most recent connector.reply event for
+  // each agent. Consumed (deleted) by the MessageSentHandler so that only
+  // the connector reply mail commit receives the linkage — subsequent
+  // tool-initiated sends do not carry a stale hash.
+  //
+  // Ordering guarantee: the harness calls onEvent() synchronously inside
+  // handleEvent(), which fires before the detached transport.send() resolves.
+  // Because executeSend() always awaits at least once (signature generation)
+  // before calling MessageSentHandler, the map write in onEvent completes
+  // before the handler reads it.
+  const lastCheckpointHashes = new Map<string, string>();
+
   // Per-agent promise chain to serialize mail commits and avoid concurrent
   // git operations on the same repository.
   const mailCommitQueues = new Map<string, Promise<void>>();
@@ -218,9 +230,12 @@ export function createSessionManager(
         logger.warn`No mail store for sender ${senderAddress}, skipping outbound audit for ${messageId}`;
         return;
       }
+      const checkpointHash = lastCheckpointHashes.get(senderAddress);
+      lastCheckpointHashes.delete(senderAddress);
       enqueueMailCommit(senderAddress, async () => {
         const result = await store.commitMail(rawMessage, "out", {
           ignoreDuplicate: true,
+          ...(checkpointHash !== undefined ? { checkpointHash } : {}),
         });
         if (result !== null) {
           logger.info`Committed outbound mail ${messageId} for ${senderAddress}`;
@@ -332,6 +347,12 @@ export function createSessionManager(
         deployTools: deployToolDefs,
         tools: toolDispatch,
         onEvent(event: InferenceEvent) {
+          if (
+            event.type === "connector.reply" &&
+            event.data.checkpointHash !== undefined
+          ) {
+            lastCheckpointHashes.set(agentAddress, event.data.checkpointHash);
+          }
           onEvent(agentAddress, sessionId, event);
         },
       });

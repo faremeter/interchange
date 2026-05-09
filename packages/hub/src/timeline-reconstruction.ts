@@ -19,6 +19,7 @@ export type ReconstructedEvent =
       messageId: string;
       timestamp: number;
       raw: Uint8Array;
+      checkpointHash?: string;
     }
   | {
       kind: "turn";
@@ -30,7 +31,6 @@ export type ReconstructedEvent =
     };
 
 export type GapKind =
-  | "no-assistant-mail-linkage"
   | "message-count-regression"
   | "corrupt-checkpoint"
   | "corrupt-error-record";
@@ -247,7 +247,6 @@ export async function reconstructTimeline(
 
   // Process commits to extract turns and associate errors
   let prevMessageCount = 0;
-  let hasCheckpoints = false;
   // Track the index of the last turn event so error commits can attach to it
   let lastTurnEventIndex = -1;
 
@@ -283,7 +282,6 @@ export async function reconstructTimeline(
     const reason = parseCheckpointReason(commit.message);
     if (reason === null) continue;
 
-    hasCheckpoints = true;
     const status = reasonToStatus(reason);
 
     let messages: ConversationMessage[];
@@ -326,37 +324,45 @@ export async function reconstructTimeline(
 
   // Process mail entries
   const mailEntries = await listMail(dir);
-  // Correlate mail timestamps with git commits by matching commit messages
-  const mailCommitTimestamps = new Map<string, number>();
+  // Correlate mail timestamps and checkpoint linkage with git commits.
+  // The Checkpoint trailer regex uses $ to anchor at end-of-string. This
+  // relies on IsogitStore.log() calling trimEnd() on commit messages to
+  // strip the trailing newline that isomorphic-git appends.
+  const mailCommitMeta = new Map<
+    string,
+    { timestamp: number; checkpointHash?: string }
+  >();
   for (const commit of commits) {
-    const match = /^Record (?:inbound|outbound) mail (.+)$/.exec(
+    const match = /^Record (?:inbound|outbound) mail (.+)$/m.exec(
       commit.message,
     );
     if (match?.[1] !== undefined) {
-      mailCommitTimestamps.set(match[1], commit.timestamp);
+      const checkpointMatch = /\nCheckpoint: ([0-9a-f]+)$/.exec(commit.message);
+      mailCommitMeta.set(match[1], {
+        timestamp: commit.timestamp,
+        ...(checkpointMatch?.[1] !== undefined
+          ? { checkpointHash: checkpointMatch[1] }
+          : {}),
+      });
     }
   }
 
   for (const entry of mailEntries) {
-    const timestamp = mailCommitTimestamps.get(entry.messageId) ?? 0;
+    const meta = mailCommitMeta.get(entry.messageId);
     events.push({
       kind: "mail",
       direction: entry.direction,
       messageId: entry.messageId,
-      timestamp,
+      timestamp: meta?.timestamp ?? 0,
       raw: entry.raw,
+      ...(meta?.checkpointHash !== undefined
+        ? { checkpointHash: meta.checkpointHash }
+        : {}),
     });
   }
 
   // Sort all events by timestamp
   events.sort((a, b) => a.timestamp - b.timestamp);
-
-  if (mailEntries.length > 0 || hasCheckpoints) {
-    addGap(
-      "no-assistant-mail-linkage",
-      "The mail store has messageId and the context store has ConversationMessage, but nothing connects assistant messages to their corresponding outbound mail",
-    );
-  }
 
   return { events, gaps };
 }
