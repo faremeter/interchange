@@ -363,3 +363,150 @@ describe("GET /agents/instances/:instanceId/health", () => {
     expect(body.error.code).toBe("gone");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Offerings endpoint tests
+// ---------------------------------------------------------------------------
+
+describe("GET /agents/instances/:instanceId/offerings", () => {
+  test("returns offerings for the instance's agent definition", async () => {
+    const offerings = [
+      {
+        id: "off_1",
+        agentId: AGENT_ID,
+        tenantId: TENANT_ID,
+        name: "Translation",
+        description: "Translate text",
+        pricing: { base: { amount: "10", currency: "USD" } },
+        schema: null,
+        createdAt: new Date("2025-01-01"),
+        updatedAt: new Date("2025-01-01"),
+      },
+      {
+        id: "off_2",
+        agentId: AGENT_ID,
+        tenantId: TENANT_ID,
+        name: "Summarization",
+        description: null,
+        pricing: null,
+        schema: null,
+        createdAt: new Date("2025-01-02"),
+        updatedAt: new Date("2025-01-02"),
+      },
+    ];
+
+    const app = createTestApp({
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        instance: testInstance,
+        agent: testAgent,
+        offerings,
+      },
+    });
+
+    const res = await app.request(`${instanceURL()}/offerings`);
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as {
+      id: string;
+      agentId: string;
+      agentName: string;
+      name: string;
+    }[];
+    expect(body).toHaveLength(2);
+
+    const first = body[0];
+    const second = body[1];
+    if (!first || !second) throw new Error("expected two offerings");
+
+    expect(first.id).toBe("off_1");
+    expect(first.agentName).toBe("Test Agent");
+    expect(first.name).toBe("Translation");
+    expect(second.id).toBe("off_2");
+    expect(second.name).toBe("Summarization");
+  });
+
+  test("returns empty array when no offerings exist", async () => {
+    const app = createTestApp({
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        instance: testInstance,
+        agent: testAgent,
+        offerings: [],
+      },
+    });
+
+    const res = await app.request(`${instanceURL()}/offerings`);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body).toEqual([]);
+  });
+
+  test("returns 404 when instance does not exist", async () => {
+    const app = createTestApp({
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        instance: undefined,
+        agent: undefined,
+      },
+    });
+
+    const res = await app.request(`${instanceURL()}/offerings`);
+    expect(res.status).toBe(404);
+
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("not_found");
+  });
+
+  test("returns offerings for stopped instances", async () => {
+    const stoppedInstance = {
+      ...testInstance,
+      status: "stopped" as const,
+      endedAt: new Date("2025-06-01"),
+    };
+
+    const offerings = [
+      {
+        id: "off_1",
+        agentId: AGENT_ID,
+        tenantId: TENANT_ID,
+        name: "Translation",
+        description: "Translate text",
+        pricing: null,
+        schema: null,
+        createdAt: new Date("2025-01-01"),
+        updatedAt: new Date("2025-01-01"),
+      },
+    ];
+
+    const app = createTestApp({
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        instance: stoppedInstance,
+        agent: testAgent,
+        offerings,
+      },
+    });
+
+    const res = await app.request(`${instanceURL()}/offerings`);
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as {
+      id: string;
+      name: string;
+      agentName: string;
+    }[];
+    expect(body).toHaveLength(1);
+
+    const entry = body[0];
+    if (!entry) throw new Error("expected one offering");
+
+    expect(entry.id).toBe("off_1");
+    expect(entry.agentName).toBe("Test Agent");
+  });
+});
