@@ -1,3 +1,6 @@
+import { type } from "arktype";
+
+import { getLogger } from "@interchange/log";
 import type {
   ConversationMessage,
   ContentBlock,
@@ -8,6 +11,8 @@ import type {
 } from "@interchange/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 
+const logger = getLogger(["interchange", "inference", "openai"]);
+
 // ---------------------------------------------------------------------------
 // Request building
 // ---------------------------------------------------------------------------
@@ -17,10 +22,12 @@ function buildRequest(
   model: string,
   options: InferenceOptions,
 ): BuiltRequest {
+  const convertedMessages: unknown[] = messages.flatMap(toOpenAIMessage);
+
   const body: Record<string, unknown> = {
     model,
     max_tokens: options.maxTokens ?? 4096,
-    messages: messages.flatMap(toOpenAIMessage),
+    messages: convertedMessages,
     stream: true,
   };
 
@@ -42,10 +49,9 @@ function buildRequest(
   if (options.systemPrompt) {
     // Prepend a system message if provided via options (takes priority over
     // any system messages already in the history).
-    const existing = body["messages"] as unknown[];
     body["messages"] = [
       { role: "system", content: options.systemPrompt },
-      ...existing,
+      ...convertedMessages,
     ];
   }
 
@@ -166,6 +172,41 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
 
 const EMPTY_PARTIAL: PartialMessage = { text: "" };
 
+const OpenAIToolCallDelta = type({
+  "index?": "number",
+  "id?": "string",
+  "function?": { "name?": "string", "arguments?": "string" },
+});
+
+const OpenAIChunkDelta = type({
+  "role?": "string",
+  "content?": "string | null",
+  "reasoning_content?": "string | null",
+  "reasoning?": "string | null",
+  "tool_calls?": OpenAIToolCallDelta.array(),
+});
+
+const PromptTokensDetails = type({ "cached_tokens?": "number" }).or("null");
+const CompletionTokensDetails = type({
+  "reasoning_tokens?": "number",
+}).or("null");
+
+const OpenAIChunkUsage = type({
+  "prompt_tokens?": "number",
+  "completion_tokens?": "number",
+  "prompt_tokens_details?": PromptTokensDetails,
+  "completion_tokens_details?": CompletionTokensDetails,
+});
+
+const OpenAIChunk = type({
+  "choices?": type({
+    "index?": "number",
+    delta: OpenAIChunkDelta,
+    "finish_reason?": "string | null",
+  }).array(),
+  "usage?": OpenAIChunkUsage.or("null"),
+});
+
 function parseResponse(sseData: string): InferenceEvent[] {
   let parsed: unknown;
   try {
@@ -174,43 +215,34 @@ function parseResponse(sseData: string): InferenceEvent[] {
     return [];
   }
 
-  if (parsed === null || typeof parsed !== "object") {
+  const chunk = OpenAIChunk(parsed);
+  if (chunk instanceof type.errors) {
+    logger.warn`Unexpected SSE chunk shape: ${chunk.summary}`;
     return [];
   }
 
-  const event = parsed as Record<string, unknown>;
   const seq = 0;
 
-  const choices = event["choices"] as unknown[] | undefined;
+  const { choices } = chunk;
   if (choices === undefined || choices.length === 0) {
     // Check for usage-only events (some providers send a final event with usage).
-    const usage = event["usage"] as Record<string, unknown> | undefined;
-    if (usage !== undefined) {
+    const { usage } = chunk;
+    if (usage != null) {
       const tokenUsage: TokenUsage = {
-        input: (usage["prompt_tokens"] as number | undefined) ?? 0,
-        output: (usage["completion_tokens"] as number | undefined) ?? 0,
-        cacheRead:
-          ((
-            usage["prompt_tokens_details"] as
-              | Record<string, unknown>
-              | undefined
-          )?.["cached_tokens"] as number) ?? 0,
+        input: usage.prompt_tokens ?? 0,
+        output: usage.completion_tokens ?? 0,
+        cacheRead: usage.prompt_tokens_details?.cached_tokens ?? 0,
         cacheWrite: 0,
-        thinking:
-          ((
-            usage["completion_tokens_details"] as
-              | Record<string, unknown>
-              | undefined
-          )?.["reasoning_tokens"] as number) ?? 0,
+        thinking: usage.completion_tokens_details?.reasoning_tokens ?? 0,
       };
       return [{ type: "inference.usage", seq, data: { usage: tokenUsage } }];
     }
     return [];
   }
 
-  const choice = choices[0] as Record<string, unknown>;
-  const delta = choice["delta"] as Record<string, unknown> | undefined;
-  if (delta === undefined) return [];
+  const choice = choices[0];
+  if (choice === undefined) return [];
+  const { delta } = choice;
 
   const events: InferenceEvent[] = [];
 
@@ -218,10 +250,7 @@ function parseResponse(sseData: string): InferenceEvent[] {
   //   - kimi (via OpenRouter): delta.reasoning
   //   - kimi (direct): delta.reasoning_content
   //   - DeepSeek / others: delta.reasoning_content
-  const reasoning = (delta["reasoning_content"] ?? delta["reasoning"]) as
-    | string
-    | null
-    | undefined;
+  const reasoning = delta.reasoning_content ?? delta.reasoning;
   if (typeof reasoning === "string" && reasoning.length > 0) {
     events.push({
       type: "inference.thinking.delta",
@@ -230,7 +259,7 @@ function parseResponse(sseData: string): InferenceEvent[] {
     });
   }
 
-  const content = delta["content"] as string | null | undefined;
+  const { content } = delta;
   if (typeof content === "string" && content.length > 0) {
     events.push({
       type: "inference.text.delta",
@@ -239,17 +268,15 @@ function parseResponse(sseData: string): InferenceEvent[] {
     });
   }
 
-  const toolCallDeltas = delta["tool_calls"] as
-    | Record<string, unknown>[]
-    | undefined;
+  const { tool_calls: toolCallDeltas } = delta;
 
   if (toolCallDeltas !== undefined) {
     for (const tcDelta of toolCallDeltas) {
-      const index = (tcDelta["index"] as number | undefined) ?? 0;
-      const id = tcDelta["id"] as string | undefined;
-      const fn = tcDelta["function"] as Record<string, unknown> | undefined;
-      const name = fn?.["name"] as string | undefined;
-      const argFragment = fn?.["arguments"] as string | undefined;
+      const index = tcDelta.index ?? 0;
+      const { id } = tcDelta;
+      const fn = tcDelta.function;
+      const name = fn?.name;
+      const argFragment = fn?.arguments;
 
       if (id !== undefined && name !== undefined) {
         // First delta for this tool call — emit start.
@@ -274,19 +301,16 @@ function parseResponse(sseData: string): InferenceEvent[] {
     }
   }
 
-  // Check finish_reason to emit tool_call.end events.
-  const finishReason = choice["finish_reason"] as string | null | undefined;
-  if (finishReason === "tool_calls") {
-    // The harness will finalize open tool calls on stream end.
-    // We emit nothing extra here — it's handled by the harness.
-  }
+  // finish_reason is checked but we emit nothing — the harness handles cleanup.
+  // (Keeping the reference here documents the field is intentionally unused.)
+  void choice.finish_reason;
 
   // Usage at end of stream (stream_options: { include_usage: true }).
-  const usageInChunk = event["usage"] as Record<string, unknown> | undefined;
-  if (usageInChunk !== undefined) {
+  const usageInChunk = chunk.usage;
+  if (usageInChunk != null) {
     const tokenUsage: TokenUsage = {
-      input: (usageInChunk["prompt_tokens"] as number | undefined) ?? 0,
-      output: (usageInChunk["completion_tokens"] as number | undefined) ?? 0,
+      input: usageInChunk.prompt_tokens ?? 0,
+      output: usageInChunk.completion_tokens ?? 0,
       cacheRead: 0,
       cacheWrite: 0,
       thinking: 0,
