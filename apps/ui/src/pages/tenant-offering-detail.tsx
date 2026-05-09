@@ -42,10 +42,9 @@ function Row({
 }
 
 export function TenantOfferingDetailPage() {
-  const { tenantId, offeringId } = useParams({ strict: false }) as {
-    tenantId: string;
-    offeringId: string;
-  };
+  const { tenantId, offeringId } = useParams({
+    from: "/authed/tenants/$tenantId/offerings/$offeringId",
+  });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 

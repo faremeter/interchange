@@ -53,10 +53,9 @@ function Row({
 }
 
 export function TenantInstanceDetailPage() {
-  const { tenantId, instanceId } = useParams({ strict: false }) as {
-    tenantId: string;
-    instanceId: string;
-  };
+  const { tenantId, instanceId } = useParams({
+    from: "/authed/tenants/$tenantId/instances/$instanceId",
+  });
   const queryClient = useQueryClient();
 
   const { data: instance, isLoading } = useQuery(

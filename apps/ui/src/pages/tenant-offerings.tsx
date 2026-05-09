@@ -38,7 +38,9 @@ import {
 } from "@/components/ui/table";
 
 export function TenantOfferingsPage() {
-  const { tenantId } = useParams({ strict: false }) as { tenantId: string };
+  const { tenantId } = useParams({
+    from: "/authed/tenants/$tenantId/offerings",
+  });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: offerings, isLoading } = useQuery(

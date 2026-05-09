@@ -37,6 +37,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
+function isCredentialType(v: string): v is CredentialType {
+  return (credentialTypes as readonly string[]).includes(v);
+}
+
 const TYPE_LABELS: Record<CredentialType, string> = {
   api_key: "API Key",
   oauth_token: "OAuth Token",
@@ -44,22 +48,20 @@ const TYPE_LABELS: Record<CredentialType, string> = {
   other: "Other",
 };
 
-function TypeBadge({ type }: { type: string }) {
+function TypeBadge({ type }: { type: CredentialType }) {
   const variant =
     type === "certificate"
       ? "secondary"
       : type === "oauth_token"
         ? "outline"
         : "default";
-  return (
-    <Badge variant={variant}>
-      {TYPE_LABELS[type as CredentialType] ?? type}
-    </Badge>
-  );
+  return <Badge variant={variant}>{TYPE_LABELS[type]}</Badge>;
 }
 
 export function TenantCredentialsPage() {
-  const { tenantId } = useParams({ strict: false }) as { tenantId: string };
+  const { tenantId } = useParams({
+    from: "/authed/tenants/$tenantId/credentials",
+  });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: credentials, isLoading } = useQuery(
@@ -191,7 +193,9 @@ export function TenantCredentialsPage() {
               <Label>Type</Label>
               <Select
                 value={createType}
-                onValueChange={(v) => setCreateType(v as CredentialType)}
+                onValueChange={(v) => {
+                  if (isCredentialType(v)) setCreateType(v);
+                }}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue />

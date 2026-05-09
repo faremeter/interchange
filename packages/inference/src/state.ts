@@ -11,7 +11,6 @@ import type {
   PendingOperation,
   TokenUsage,
   ReactorState,
-  GateType,
 } from "@interchange/types/runtime";
 import type { GateSnapshot } from "./gates";
 
@@ -92,7 +91,7 @@ export function createStateManager(
       ),
       activeGates: activeGatesSnapshot.map((g) => ({
         gateId: g.gateId,
-        type: g.type as GateType,
+        type: g.type,
         timeoutAt: g.timeoutAt,
       })),
       activeForks: activeForks.map((f) => ({ ...f })),

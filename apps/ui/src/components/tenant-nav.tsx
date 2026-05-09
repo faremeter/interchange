@@ -16,7 +16,7 @@ const NAV_ITEMS = [
 ] as const;
 
 export function TenantNav() {
-  const { tenantId } = useParams({ strict: false }) as { tenantId: string };
+  const { tenantId } = useParams({ from: "/authed/tenants/$tenantId" });
   const { data: tenant } = useQuery(tenantDetailQuery(tenantId));
 
   const location = useLocation();

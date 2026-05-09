@@ -58,10 +58,9 @@ function Row({
 }
 
 export function TenantWalletDetailPage() {
-  const { tenantId, walletId } = useParams({ strict: false }) as {
-    tenantId: string;
-    walletId: string;
-  };
+  const { tenantId, walletId } = useParams({
+    from: "/authed/tenants/$tenantId/wallets/$walletId",
+  });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 

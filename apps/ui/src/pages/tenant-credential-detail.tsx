@@ -59,10 +59,9 @@ function Row({
 }
 
 export function TenantCredentialDetailPage() {
-  const { tenantId, credentialId } = useParams({ strict: false }) as {
-    tenantId: string;
-    credentialId: string;
-  };
+  const { tenantId, credentialId } = useParams({
+    from: "/authed/tenants/$tenantId/credentials/$credentialId",
+  });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 

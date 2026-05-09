@@ -42,10 +42,9 @@ function Row({
 }
 
 export function TenantRoleDetailPage() {
-  const { tenantId, roleId } = useParams({ strict: false }) as {
-    tenantId: string;
-    roleId: string;
-  };
+  const { tenantId, roleId } = useParams({
+    from: "/authed/tenants/$tenantId/roles/$roleId",
+  });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 

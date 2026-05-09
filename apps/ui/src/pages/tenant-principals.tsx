@@ -48,7 +48,9 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function TenantPrincipalsPage() {
-  const { tenantId } = useParams({ strict: false }) as { tenantId: string };
+  const { tenantId } = useParams({
+    from: "/authed/tenants/$tenantId/principals",
+  });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: principals, isLoading } = useQuery(

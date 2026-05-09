@@ -34,6 +34,10 @@ import {
 } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 
+function isGrantEffect(v: string): v is GrantEffect {
+  return (grantEffects as readonly string[]).includes(v);
+}
+
 function EffectBadge({ effect }: { effect: string }) {
   const variant =
     effect === "allow"
@@ -62,10 +66,9 @@ function Row({
 }
 
 export function TenantGrantDetailPage() {
-  const { tenantId, grantId } = useParams({ strict: false }) as {
-    tenantId: string;
-    grantId: string;
-  };
+  const { tenantId, grantId } = useParams({
+    from: "/authed/tenants/$tenantId/grants/$grantId",
+  });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
@@ -189,7 +192,9 @@ export function TenantGrantDetailPage() {
                 <div className="px-4 py-2">
                   <Select
                     value={editEffect}
-                    onValueChange={(v) => setEditEffect(v as GrantEffect)}
+                    onValueChange={(v) => {
+                      if (isGrantEffect(v)) setEditEffect(v);
+                    }}
                   >
                     <SelectTrigger id="edit-effect">
                       <SelectValue />

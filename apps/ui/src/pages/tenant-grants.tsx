@@ -45,6 +45,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
+function isGrantEffect(v: string): v is GrantEffect {
+  return (grantEffects as readonly string[]).includes(v);
+}
+
+function isGrantOrigin(v: string): v is GrantOrigin {
+  return (grantOrigins as readonly string[]).includes(v);
+}
+
 function EffectBadge({ effect }: { effect: string }) {
   const variant =
     effect === "allow"
@@ -56,7 +64,7 @@ function EffectBadge({ effect }: { effect: string }) {
 }
 
 export function TenantGrantsPage() {
-  const { tenantId } = useParams({ strict: false }) as { tenantId: string };
+  const { tenantId } = useParams({ from: "/authed/tenants/$tenantId/grants" });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: grants, isLoading } = useQuery(tenantGrantsQuery(tenantId));
@@ -232,7 +240,9 @@ export function TenantGrantsPage() {
                 <Label>Effect</Label>
                 <Select
                   value={effect}
-                  onValueChange={(v) => setEffect(v as GrantEffect)}
+                  onValueChange={(v) => {
+                    if (isGrantEffect(v)) setEffect(v);
+                  }}
                 >
                   <SelectTrigger className="w-full">
                     <SelectValue />
@@ -250,7 +260,9 @@ export function TenantGrantsPage() {
                 <Label>Origin</Label>
                 <Select
                   value={origin}
-                  onValueChange={(v) => setOrigin(v as GrantOrigin)}
+                  onValueChange={(v) => {
+                    if (isGrantOrigin(v)) setOrigin(v);
+                  }}
                 >
                   <SelectTrigger className="w-full">
                     <SelectValue />

@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/table";
 
 export function TenantRolesPage() {
-  const { tenantId } = useParams({ strict: false }) as { tenantId: string };
+  const { tenantId } = useParams({ from: "/authed/tenants/$tenantId/roles" });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: roles, isLoading } = useQuery(tenantRolesQuery(tenantId));

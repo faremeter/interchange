@@ -1624,9 +1624,9 @@ describe("createReactor — abort handling", () => {
     reactor.deliver(makeInboundMessage());
     await waitFor("message.received");
 
-    reactor.abort("reason-1");
-    reactor.abort("reason-2");
-    reactor.abort("reason-3");
+    reactor.abort("admin_kill");
+    reactor.abort("admin_kill");
+    reactor.abort("admin_kill");
 
     await waitFor("reactor.done");
 
@@ -1646,7 +1646,7 @@ describe("createReactor — abort handling", () => {
     });
 
     // Abort is enqueued before start().
-    reactor.abort("preemptive");
+    reactor.abort("admin_kill");
     reactor.start();
 
     await waitFor("reactor.done");
@@ -2885,7 +2885,7 @@ describe("createReactor — onShutdown", () => {
     reactor.start();
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.start");
-    reactor.abort("test_disconnect");
+    reactor.abort("user_disconnect");
     await waitFor("reactor.done");
     expect(shutdownCalled).toBe(true);
   });
