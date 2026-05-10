@@ -588,11 +588,11 @@ export const TokenUsage = type({
 export type TokenUsage = typeof TokenUsage.infer;
 
 // ---------------------------------------------------------------------------
-// Internal Message Format (INFERENCE.md § Message Format)
+// Internal Turn Format (INFERENCE.md § Message Format)
 // ---------------------------------------------------------------------------
 
 /**
- * A single content block within a conversation message. Provider-agnostic.
+ * A single content block within a conversation turn. Provider-agnostic.
  *
  * (INFERENCE.md § Message Format › Content Types)
  */
@@ -630,9 +630,9 @@ export const ContentBlock = TextBlock.or(ThinkingBlock)
 export type ContentBlock = typeof ContentBlock.infer;
 
 /**
- * A message in the internal conversation history. The `model` field records
- * which provider model produced this message (present only on assistant
- * messages). Used by cross-provider transformation to strip or preserve
+ * A turn in the internal conversation history. The `model` field records
+ * which provider model produced this turn (present only on assistant
+ * turns). Used by cross-provider transformation to strip or preserve
  * thinking blocks.
  *
  * (INFERENCE.md § Message Format)
@@ -645,8 +645,8 @@ export type ConversationTurn = {
 };
 
 /**
- * A completed assistant turn returned in `inference.done`. Distinct type
- * from ConversationTurn to make the inference boundary explicit.
+ * A completed assistant turn returned in `inference.done`. Narrower type
+ * than ConversationTurn to make the inference boundary explicit.
  */
 export const AssistantTurn = type({
   role: "'assistant'",
@@ -1179,7 +1179,7 @@ export interface AfterToolExtension {
 }
 
 /**
- * Extension that transforms the message array before each inference call.
+ * Extension that transforms the turn array before each inference call.
  * Modifications are ephemeral — they affect the inference call but are not
  * committed to the context store. Extensions run in order.
  *
@@ -1190,17 +1190,6 @@ export interface ContextTransformExtension {
     turns: ConversationTurn[],
     state: ReactorState,
   ): Promise<ConversationTurn[]>;
-}
-
-/**
- * Extension that intercepts inbound messages before the core plugin sees
- * them. Returning `null` drops the message.
- */
-export interface MessageRoutingExtension {
-  routeMessage(
-    message: InboundMessage,
-    state: ReactorState,
-  ): Promise<InboundMessage | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1291,7 +1280,7 @@ export type ConnectorThreadState = {
  * (filesystem, in-memory, or virtual) depending on the execution environment.
  * The reactor accepts any implementation that satisfies this interface.
  *
- * The store holds the message history and reactor metadata. Forking creates
+ * The store holds the turn history and reactor metadata. Forking creates
  * a git branch. Compaction commits the compacted history.
  *
  * (INFERENCE.md § Context Management › Context Store)
