@@ -1388,3 +1388,458 @@ describe("agent reply lifecycle", () => {
     expect(turnEvents[0]!.content).toBe("Sure thing.");
   });
 });
+
+// Multi-turn conversation
+//
+// Exercises a realistic back-and-forth: human sends mail, agent thinks and
+// replies, human sends another mail, agent replies again. Verifies the full
+// timeline accumulates correctly.
+
+describe("multi-turn conversation", () => {
+  let session: InstanceSession;
+  let mock: ReturnType<typeof createMockTransport>;
+
+  beforeEach(async () => {
+    mock = createMockTransport(makeHydrationHandler());
+    session = createInstanceSession({
+      tenantId: TENANT_ID,
+      instanceId: INSTANCE_ID,
+      transport: mock.transport,
+      onChange: noop,
+    });
+    session.start();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  test("two full request-reply cycles produce four timeline events", () => {
+    // Turn 1: human mail arrives
+    mock.emit({
+      type: "mail.delivered",
+      data: {
+        id: "mail_human_1",
+        direction: "inbound",
+        from: [{ name: "Alice", email: HUMAN_ADDR }],
+        to: [{ name: null, email: AGENT_ADDR }],
+        bodyValues: { p1: { value: "What is 2+2?" } },
+        textBody: [{ partId: "p1", type: "text/plain" }],
+        headers: {},
+        receivedAt: "2024-01-01T00:00:00Z",
+      },
+    });
+
+    // Agent starts thinking, streams, commits
+    mock.emit({ type: "inference.start", seq: 1, data: { model: "gpt-4" } });
+    mock.emit({
+      type: "inference.text.delta",
+      seq: 2,
+      data: { token: "4", partial: { text: "4" } },
+    });
+    mock.emit({
+      type: "turn.committed",
+      data: {
+        turnId: "turn_1",
+        status: "completed",
+        text: "4",
+        hadReply: true,
+        hadError: false,
+        errors: [],
+        toolErrors: [],
+      },
+    });
+
+    // Turn 2: human follows up
+    mock.emit({
+      type: "mail.delivered",
+      data: {
+        id: "mail_human_2",
+        direction: "inbound",
+        from: [{ name: "Alice", email: HUMAN_ADDR }],
+        to: [{ name: null, email: AGENT_ADDR }],
+        bodyValues: { p1: { value: "And 3+3?" } },
+        textBody: [{ partId: "p1", type: "text/plain" }],
+        headers: {},
+        receivedAt: "2024-01-01T00:01:00Z",
+      },
+    });
+
+    // Agent replies again
+    mock.emit({ type: "inference.start", seq: 3, data: { model: "gpt-4" } });
+    mock.emit({
+      type: "inference.text.delta",
+      seq: 4,
+      data: { token: "6", partial: { text: "6" } },
+    });
+    mock.emit({
+      type: "turn.committed",
+      data: {
+        turnId: "turn_2",
+        status: "completed",
+        text: "6",
+        hadReply: true,
+        hadError: false,
+        errors: [],
+        toolErrors: [],
+      },
+    });
+
+    expect(session.streaming).toBe("");
+    expect(session.activity).toBeNull();
+    expect(session.events).toHaveLength(4);
+
+    const mails = session.events.filter((e) => e.kind === "mail");
+    const turns = session.events.filter((e) => e.kind === "turn");
+    expect(mails).toHaveLength(2);
+    expect(turns).toHaveLength(2);
+    expect(turns[0]!.content).toBe("4");
+    expect(turns[1]!.content).toBe("6");
+  });
+
+  test("agent uses tools then replies", () => {
+    // Human sends a question that requires tool use
+    mock.emit({
+      type: "mail.delivered",
+      data: {
+        id: "mail_tools",
+        direction: "inbound",
+        from: [{ name: "Alice", email: HUMAN_ADDR }],
+        to: [{ name: null, email: AGENT_ADDR }],
+        bodyValues: { p1: { value: "Search for X" } },
+        textBody: [{ partId: "p1", type: "text/plain" }],
+        headers: {},
+        receivedAt: "2024-01-01T00:00:00Z",
+      },
+    });
+
+    // Agent starts inference, calls a tool
+    mock.emit({ type: "inference.start", seq: 1, data: { model: "gpt-4" } });
+    mock.emit({
+      type: "inference.tool_call.start",
+      seq: 2,
+      data: { callId: "call_1", name: "search", partial: { text: "" } },
+    });
+    expect(session.activity).toEqual({ type: "tool_call", name: "search" });
+
+    mock.emit({
+      type: "tool.start",
+      seq: 3,
+      data: { call: { id: "call_1", name: "search", arguments: {} } },
+    });
+    expect(session.activity).toEqual({ type: "tool_running", name: "search" });
+
+    mock.emit({
+      type: "tool.done",
+      seq: 4,
+      data: { result: { callId: "call_1", content: "found it" } },
+    });
+    expect(session.activity).toBeNull();
+
+    // Agent produces final text after tool use
+    mock.emit({ type: "inference.start", seq: 5, data: { model: "gpt-4" } });
+    mock.emit({
+      type: "inference.text.delta",
+      seq: 6,
+      data: { token: "Found it.", partial: { text: "Found it." } },
+    });
+    mock.emit({
+      type: "turn.committed",
+      data: {
+        turnId: "turn_tools",
+        status: "completed",
+        text: "Found it.",
+        hadReply: true,
+        hadError: false,
+        errors: [],
+        toolErrors: [],
+      },
+    });
+
+    expect(session.streaming).toBe("");
+    expect(session.activity).toBeNull();
+
+    const turns = session.events.filter((e) => e.kind === "turn");
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.content).toBe("Found it.");
+  });
+});
+
+// Hydration edge cases
+
+describe("hydration edge cases", () => {
+  test("turn arriving via SSE during hydration is deduplicated against fetched turns", async () => {
+    let resolveFetch!: () => void;
+    const fetchPending = new Promise<void>((r) => {
+      resolveFetch = r;
+    });
+
+    const turn = makeTurn({
+      id: "turn_race",
+      startedAt: "2024-01-01T01:00:00Z",
+    });
+
+    const bus = { emit: noop as (event: unknown) => void };
+    const transport: Transport = {
+      async fetch<T>(_method: string, path: string): Promise<T> {
+        await fetchPending;
+        if (path.includes("/mail")) return { data: [] } as T;
+        if (path.includes("/turns")) return { data: [turn] } as T;
+        throw new Error(`Unexpected: ${path}`);
+      },
+      subscribe(_path: string, onEvent: (event: unknown) => void): () => void {
+        bus.emit = onEvent;
+        return () => {
+          bus.emit = noop;
+        };
+      },
+    };
+
+    const session = createInstanceSession({
+      tenantId: TENANT_ID,
+      instanceId: INSTANCE_ID,
+      transport,
+      onChange: noop,
+    });
+
+    session.start();
+
+    // Same turn arrives via SSE while fetch is in-flight
+    bus.emit({
+      type: "turn.committed",
+      data: {
+        turnId: "turn_race",
+        status: "completed",
+        text: "Hello from assistant",
+        hadReply: false,
+        hadError: false,
+        errors: [],
+        toolErrors: [],
+      },
+    });
+
+    resolveFetch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Turn should appear exactly once
+    const turns = session.events.filter((e) => e.kind === "turn");
+    expect(turns).toHaveLength(1);
+  });
+
+  test("destroy during hydration does not call onChange or set hydrated", async () => {
+    let resolveFetch!: () => void;
+    const fetchPending = new Promise<void>((r) => {
+      resolveFetch = r;
+    });
+
+    let changes = 0;
+    const bus = { emit: noop as (event: unknown) => void };
+    const transport: Transport = {
+      async fetch<T>(_method: string, path: string): Promise<T> {
+        await fetchPending;
+        if (path.includes("/mail")) return { data: [makeMail()] } as T;
+        if (path.includes("/turns")) return { data: [makeTurn()] } as T;
+        throw new Error(`Unexpected: ${path}`);
+      },
+      subscribe(_path: string, onEvent: (event: unknown) => void): () => void {
+        bus.emit = onEvent;
+        return () => {
+          bus.emit = noop;
+        };
+      },
+    };
+
+    const session = createInstanceSession({
+      tenantId: TENANT_ID,
+      instanceId: INSTANCE_ID,
+      transport,
+      onChange: () => {
+        changes++;
+      },
+    });
+
+    session.start();
+    session.destroy();
+
+    // Unblock fetch — but session is already destroyed
+    resolveFetch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(session.hydrated).toBe(false);
+    expect(session.events).toHaveLength(0);
+    expect(changes).toBe(0);
+  });
+
+  test("start cleanup cancels hydration without destroying session", async () => {
+    let resolveFetch!: () => void;
+    const fetchPending = new Promise<void>((r) => {
+      resolveFetch = r;
+    });
+
+    let changes = 0;
+    const transport: Transport = {
+      async fetch<T>(_method: string, path: string): Promise<T> {
+        await fetchPending;
+        if (path.includes("/mail")) return { data: [makeMail()] } as T;
+        if (path.includes("/turns")) return { data: [makeTurn()] } as T;
+        throw new Error(`Unexpected: ${path}`);
+      },
+      subscribe(_path: string, _onEvent: (event: unknown) => void): () => void {
+        return noop;
+      },
+    };
+
+    const session = createInstanceSession({
+      tenantId: TENANT_ID,
+      instanceId: INSTANCE_ID,
+      transport,
+      onChange: () => {
+        changes++;
+      },
+    });
+
+    const cleanup = session.start();
+    cleanup();
+
+    // Unblock fetch — but cleanup already cancelled
+    resolveFetch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(session.hydrated).toBe(false);
+    expect(session.events).toHaveLength(0);
+    expect(changes).toBe(0);
+  });
+
+  // NOTE: hydration fetch failure (both fetches throw) produces an unhandled
+  // rejection via `void (async () => { ... throw ... })()`. Bun's test runner
+  // intercepts unhandled rejections before user-level handlers, making it
+  // impossible to suppress in tests without modifying the production code.
+  // The observable behavior (SSE buffer is drained, hydrated is set, then the
+  // error re-throws) is correct but not testable in this harness.
+});
+
+// Turn edge cases
+
+describe("turn edge cases", () => {
+  let session: InstanceSession;
+  let mock: ReturnType<typeof createMockTransport>;
+
+  beforeEach(async () => {
+    mock = createMockTransport(makeHydrationHandler());
+    session = createInstanceSession({
+      tenantId: TENANT_ID,
+      instanceId: INSTANCE_ID,
+      transport: mock.transport,
+      onChange: noop,
+    });
+    session.start();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  test("turn with only toolErrors and no text is shown", () => {
+    mock.emit({
+      type: "turn.committed",
+      data: {
+        turnId: "turn_toolerr",
+        status: "completed",
+        text: "",
+        hadReply: false,
+        hadError: false,
+        errors: [],
+        toolErrors: [{ name: "search", content: "API rate limited" }],
+      },
+    });
+
+    const turns = session.events.filter((e) => e.kind === "turn");
+    expect(turns).toHaveLength(1);
+    const turn = turns[0]!;
+    expect(turn.content).toBe("An error occurred during inference.");
+    if (turn.kind === "turn") {
+      expect(turn.toolErrors).toEqual([
+        { name: "search", content: "API rate limited" },
+      ]);
+    }
+  });
+
+  test("turn with no text, no error, and no toolErrors is dropped", () => {
+    mock.emit({
+      type: "turn.committed",
+      data: {
+        turnId: "turn_empty",
+        status: "completed",
+        text: "",
+        hadReply: false,
+        hadError: false,
+        errors: [],
+        toolErrors: [],
+      },
+    });
+
+    expect(session.events).toHaveLength(0);
+  });
+
+  test("turn with failed status but no hadError still shows as error", () => {
+    mock.emit({
+      type: "turn.committed",
+      data: {
+        turnId: "turn_failed",
+        status: "failed",
+        text: "",
+        hadReply: false,
+        hadError: false,
+        errors: [],
+        toolErrors: [],
+      },
+    });
+
+    const turns = session.events.filter((e) => e.kind === "turn");
+    expect(turns).toHaveLength(1);
+    if (turns[0]!.kind === "turn") {
+      expect(turns[0]!.isError).toBe(true);
+    }
+  });
+
+  test("turn committed during multi-step tool loop preserves newer streaming", () => {
+    // Agent is already streaming turn N+1 content
+    mock.emit({
+      type: "inference.text.delta",
+      seq: 1,
+      data: { token: "New reply", partial: { text: "New reply" } },
+    });
+
+    // Turn N commits (late arrival) — should not clobber streaming
+    mock.emit({
+      type: "turn.committed",
+      data: {
+        turnId: "turn_old",
+        status: "completed",
+        text: "Old reply",
+        hadReply: true,
+        hadError: false,
+        errors: [],
+        toolErrors: [],
+      },
+    });
+
+    expect(session.streaming).toBe("New reply");
+
+    // Turn N+1 commits — streaming matches, so it clears
+    mock.emit({
+      type: "turn.committed",
+      data: {
+        turnId: "turn_new",
+        status: "completed",
+        text: "New reply",
+        hadReply: true,
+        hadError: false,
+        errors: [],
+        toolErrors: [],
+      },
+    });
+
+    expect(session.streaming).toBe("");
+
+    // Both turns should be in the timeline
+    const turns = session.events.filter((e) => e.kind === "turn");
+    expect(turns).toHaveLength(2);
+    expect(turns[0]!.content).toBe("Old reply");
+    expect(turns[1]!.content).toBe("New reply");
+  });
+});
