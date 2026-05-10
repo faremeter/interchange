@@ -66,21 +66,6 @@ export function createInboundTurn(
   };
 }
 
-export function createSystemMessage(text: string): ConversationTurn {
-  return {
-    role: "system",
-    content: [{ type: "text", text }],
-    timestamp: Date.now(),
-  };
-}
-
-export function createAssistantMessage(
-  blocks: ContentBlock[],
-  model: string,
-): AssistantTurn {
-  return { role: "assistant", content: blocks, model, timestamp: Date.now() };
-}
-
 export function createToolResultTurn(results: ToolResult[]): ConversationTurn {
   const blocks: ContentBlock[] = results.map((r) => {
     const block: Extract<ContentBlock, { type: "tool_result" }> = {
