@@ -225,9 +225,21 @@ describe("session lifecycle", () => {
 describe("hydration", () => {
   test("populates events from mail and turns after start", async () => {
     const mail = makeMail({ id: "mail_1", receivedAt: "2024-01-01T00:00:00Z" });
+    // Text-only turns are suppressed during hydration (mail is the canonical
+    // record). Use a turn with errors so it survives turnToEvent.
     const turn = makeTurn({
       id: "turn_1",
       startedAt: "2024-01-01T01:00:00Z",
+      status: "failed",
+      parts: [
+        {
+          id: "part_err",
+          type: "error",
+          content: "Something failed",
+          metadata: { category: "timeout" },
+          ordinal: 0,
+        },
+      ],
     });
 
     const mock = createMockTransport(makeHydrationHandler([mail], [turn]));
@@ -246,20 +258,22 @@ describe("hydration", () => {
     expect(session.events[1]!.kind).toBe("turn");
   });
 
-  test("filters mail through shouldShowMail", async () => {
-    // Outbound connector reply — should be suppressed
-    const suppressedMail = makeMail({
-      id: "mail_suppress",
+  test("hydration shows all mail including connector replies", async () => {
+    const connectorReply = makeMail({
+      id: "mail_reply",
       direction: "outbound",
       from: [{ name: null, email: AGENT_ADDR }],
       to: [{ name: "Alice", email: HUMAN_ADDR }],
       headers: { "interchange-type": "conversation.message" },
     });
-    // Inbound — should be shown
-    const visibleMail = makeMail({ id: "mail_visible", direction: "inbound" });
+    const inbound = makeMail({
+      id: "mail_inbound",
+      direction: "inbound",
+      receivedAt: "2024-01-01T00:00:00Z",
+    });
 
     const mock = createMockTransport(
-      makeHydrationHandler([suppressedMail, visibleMail]),
+      makeHydrationHandler([connectorReply, inbound]),
     );
     const session = createInstanceSession({
       tenantId: TENANT_ID,
@@ -271,12 +285,12 @@ describe("hydration", () => {
     session.start();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(session.events).toHaveLength(1);
-    const first = session.events[0]!;
-    expect(first.kind).toBe("mail");
-    if (first.kind === "mail") {
-      expect(first.id).toBe("mail_visible");
-    }
+    expect(session.events).toHaveLength(2);
+    const ids = session.events.map((e) =>
+      e.kind === "mail" ? e.id : "unexpected",
+    );
+    expect(ids).toContain("mail_reply");
+    expect(ids).toContain("mail_inbound");
   });
 
   test("skips turns that produce no displayable event", async () => {
@@ -316,6 +330,16 @@ describe("hydration", () => {
     const laterTurn = makeTurn({
       id: "turn_later",
       startedAt: "2024-01-02T00:00:00Z",
+      status: "failed",
+      parts: [
+        {
+          id: "part_err",
+          type: "error",
+          content: "fail",
+          metadata: { category: "timeout" },
+          ordinal: 0,
+        },
+      ],
     });
     const betweenMail = makeMail({
       id: "mail_mid",

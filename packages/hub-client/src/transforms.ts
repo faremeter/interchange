@@ -186,8 +186,7 @@ export function turnToEvent(turn: InferenceTurnResponse): InstanceEvent | null {
       return { name, content };
     });
 
-  if (textParts.length === 0 && errors.length === 0 && toolErrors.length === 0)
-    return null;
+  if (errors.length === 0 && toolErrors.length === 0) return null;
 
   const rawContent = textParts.map((p) => p.content).join("");
   const isError = turn.status === "failed";

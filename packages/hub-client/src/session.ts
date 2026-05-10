@@ -252,7 +252,7 @@ export function createInstanceSession(opts: {
           ]);
 
           for (const m of mailRes.data) {
-            if (shouldShowMail(m)) all.push(mailToEvent(m));
+            all.push(mailToEvent(m));
           }
           for (const t of turnsRes.data) {
             const event = turnToEvent(t);
