@@ -491,6 +491,35 @@ export function getMessageToolDefinitions(): ToolDefinition[] {
       },
     },
     {
+      name: "message_reply",
+      description:
+        "Reply to a message by reference. Addresses the reply to the original sender and sets inReplyTo for threading.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          ref: {
+            type: "object",
+            description: "Message reference { uid, mailbox }",
+            properties: {
+              uid: { type: "number" },
+              mailbox: { type: "string" },
+            },
+            required: ["uid", "mailbox"],
+          },
+          content: {
+            type: "string",
+            description: "Reply text content",
+          },
+          type: {
+            type: "string",
+            description: "Message type (default: conversation.message)",
+            default: "conversation.message",
+          },
+        },
+        required: ["ref", "content"],
+      },
+    },
+    {
       name: "message_search",
       description:
         "Search for messages in a mailbox. Returns message summaries.",
