@@ -2,58 +2,43 @@ import { describe, expect, test } from "bun:test";
 
 import { shouldShowMail } from "@interchange/hub-client";
 
-// Agent addresses always start with "ins_".
-const AGENT_ADDR = "ins_abc123@tenant.example";
-const HUMAN_ADDR = "usr_alice@tenant.example";
-
 describe("shouldShowMail", () => {
-  test("inbound mail is shown regardless of recipient address", () => {
+  test("inbound mail is always shown", () => {
     expect(
       shouldShowMail({
         direction: "inbound",
-        to: [{ name: null, email: AGENT_ADDR }],
+        headers: {},
       }),
     ).toBe(true);
     expect(
       shouldShowMail({
         direction: "inbound",
-        to: [{ name: null, email: HUMAN_ADDR }],
+        headers: { "interchange-type": "conversation.message" },
       }),
     ).toBe(true);
   });
 
-  test("outbound mail to another agent is suppressed", () => {
+  test("outbound connector reply is suppressed", () => {
     expect(
       shouldShowMail({
         direction: "outbound",
-        to: [{ name: "Other Agent", email: AGENT_ADDR }],
+        headers: { "interchange-type": "conversation.message" },
       }),
     ).toBe(false);
   });
 
-  test("outbound connector reply to human is suppressed", () => {
+  test("outbound non-connector mail is shown", () => {
     expect(
       shouldShowMail({
         direction: "outbound",
-        to: [{ name: "Alice", email: HUMAN_ADDR }],
+        headers: {},
       }),
-    ).toBe(false);
-  });
-
-  test("outbound mail with no recipients is suppressed", () => {
+    ).toBe(true);
     expect(
       shouldShowMail({
         direction: "outbound",
+        headers: { "interchange-type": "offering.request" },
       }),
-    ).toBe(false);
-  });
-
-  test("outbound mail with empty recipients is suppressed", () => {
-    expect(
-      shouldShowMail({
-        direction: "outbound",
-        to: [],
-      }),
-    ).toBe(false);
+    ).toBe(true);
   });
 });

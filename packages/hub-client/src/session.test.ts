@@ -247,12 +247,13 @@ describe("hydration", () => {
   });
 
   test("filters mail through shouldShowMail", async () => {
-    // Outbound to human — should be suppressed
+    // Outbound connector reply — should be suppressed
     const suppressedMail = makeMail({
       id: "mail_suppress",
       direction: "outbound",
       from: [{ name: null, email: AGENT_ADDR }],
       to: [{ name: "Alice", email: HUMAN_ADDR }],
+      headers: { "interchange-type": "conversation.message" },
     });
     // Inbound — should be shown
     const visibleMail = makeMail({ id: "mail_visible", direction: "inbound" });
@@ -588,7 +589,7 @@ describe("SSE event processing", () => {
     }
   });
 
-  test("mail.delivered for suppressed outbound mail is ignored", async () => {
+  test("mail.delivered for connector reply is suppressed", async () => {
     mock.emit({
       type: "mail.delivered",
       data: {
@@ -598,12 +599,35 @@ describe("SSE event processing", () => {
         to: [{ name: "Alice", email: HUMAN_ADDR }],
         bodyValues: { p1: { value: "Reply" } },
         textBody: [{ partId: "p1", type: "text/plain" }],
-        headers: {},
+        headers: { "interchange-type": "conversation.message" },
         receivedAt: "2024-01-01T00:00:00Z",
       },
     });
 
     expect(session.events).toHaveLength(0);
+  });
+
+  test("mail.delivered for non-connector outbound mail is shown", async () => {
+    mock.emit({
+      type: "mail.delivered",
+      data: {
+        id: "mail_tool_send",
+        direction: "outbound",
+        from: [{ name: null, email: AGENT_ADDR }],
+        to: [{ name: "Other Agent", email: "ins_other@tenant.example" }],
+        bodyValues: { p1: { value: "Hello agent" } },
+        textBody: [{ partId: "p1", type: "text/plain" }],
+        headers: {},
+        receivedAt: "2024-01-01T00:00:00Z",
+      },
+    });
+
+    expect(session.events).toHaveLength(1);
+    const event = session.events[0]!;
+    expect(event.kind).toBe("mail");
+    if (event.kind === "mail") {
+      expect(event.id).toBe("mail_tool_send");
+    }
   });
 
   test("turn.committed pushes a turn event", () => {
@@ -1363,7 +1387,7 @@ describe("agent reply lifecycle", () => {
       },
     });
 
-    // Outbound mail arrives — shouldShowMail suppresses it (direction: outbound)
+    // Outbound connector reply mail arrives — suppressed by shouldShowMail
     mock.emit({
       type: "mail.delivered",
       data: {
@@ -1373,7 +1397,7 @@ describe("agent reply lifecycle", () => {
         to: [{ name: "Alice", email: HUMAN_ADDR }],
         bodyValues: { p1: { value: "Sure thing." } },
         textBody: [{ partId: "p1", type: "text/plain" }],
-        headers: {},
+        headers: { "interchange-type": "conversation.message" },
         receivedAt: "2024-01-01T00:01:00Z",
       },
     });

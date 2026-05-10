@@ -17,63 +17,46 @@ const AGENT_ADDR = "ins_abc123@tenant.example";
 const HUMAN_ADDR = "usr_alice@tenant.example";
 
 describe("shouldShowMail", () => {
-  test("inbound mail is shown regardless of recipient address", () => {
+  test("inbound mail is always shown", () => {
     expect(
       shouldShowMail({
         direction: "inbound",
-        to: [{ name: null, email: AGENT_ADDR }],
+        headers: {},
       }),
     ).toBe(true);
     expect(
       shouldShowMail({
         direction: "inbound",
-        to: [{ name: null, email: HUMAN_ADDR }],
+        headers: { "interchange-type": "conversation.message" },
       }),
     ).toBe(true);
   });
 
-  test("outbound mail to another agent is suppressed", () => {
+  test("outbound connector reply is suppressed", () => {
     expect(
       shouldShowMail({
         direction: "outbound",
-        to: [{ name: "Other Agent", email: AGENT_ADDR }],
+        headers: { "interchange-type": "conversation.message" },
       }),
     ).toBe(false);
   });
 
-  test("outbound inter-agent mail is suppressed", () => {
+  test("outbound mail to agent is shown", () => {
     expect(
       shouldShowMail({
         direction: "outbound",
-        to: [{ name: "Agent B", email: "ins_abc@example.com" }],
+        headers: {},
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
-  test("outbound connector reply to human is suppressed", () => {
+  test("outbound mail to human without connector type is shown", () => {
     expect(
       shouldShowMail({
         direction: "outbound",
-        to: [{ name: "Alice", email: HUMAN_ADDR }],
+        headers: { "interchange-type": "offering.request" },
       }),
-    ).toBe(false);
-  });
-
-  test("outbound mail with no recipients is suppressed", () => {
-    expect(
-      shouldShowMail({
-        direction: "outbound",
-      }),
-    ).toBe(false);
-  });
-
-  test("outbound mail with empty recipients is suppressed", () => {
-    expect(
-      shouldShowMail({
-        direction: "outbound",
-        to: [],
-      }),
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 
@@ -224,6 +207,7 @@ describe("mailDeliveryToEvent", () => {
     to: [{ name: null, email: AGENT_ADDR }],
     bodyValues: { p1: { value: "SSE body" } },
     textBody: [{ partId: "p1", type: "text/plain" }],
+    headers: {} as Record<string, string>,
     receivedAt: "2024-01-02T00:00:00Z",
   };
 
