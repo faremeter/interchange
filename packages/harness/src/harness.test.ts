@@ -22,7 +22,7 @@ import type {
   ListInfo,
   MailboxEvent,
   Unsubscribe,
-  ConversationMessage,
+  ConversationTurn,
   PendingOperation,
   TokenUsage,
   ContextCommit,
@@ -55,10 +55,10 @@ function emptyUsage(): TokenUsage {
 function makeContextStore(): ContextStore {
   return {
     async load() {
-      const messages: ConversationMessage[] = [];
+      const turns: ConversationTurn[] = [];
       const pendingOperations: PendingOperation[] = [];
       return {
-        messages,
+        turns,
         pendingOperations,
         tokenUsage: emptyUsage(),
         connectorState: null,
@@ -68,7 +68,7 @@ function makeContextStore(): ContextStore {
       /* noop */
     },
     async commit(
-      _msgs: ConversationMessage[],
+      _msgs: ConversationTurn[],
       _ops: PendingOperation[],
       _usage: TokenUsage,
       message: string,
@@ -81,7 +81,7 @@ function makeContextStore(): ContextStore {
     async log(): Promise<ContextCommit[]> {
       return [];
     },
-    async readAt(): Promise<ConversationMessage[]> {
+    async readAt(): Promise<ConversationTurn[]> {
       return [];
     },
   };
@@ -954,7 +954,7 @@ describe("Default plugin", () => {
 
   function makeState(): import("@interchange/types/runtime").ReactorState {
     return {
-      messages: [],
+      turns: [],
       activeForks: [],
       pendingOperations: [],
       activeGates: [],
@@ -986,7 +986,7 @@ describe("Default plugin", () => {
 
     const event: ReactorInboundEvent = {
       type: "inference.done",
-      message: {
+      turn: {
         role: "assistant",
         model: "claude-test",
         content: [
@@ -1015,7 +1015,7 @@ describe("Default plugin", () => {
 
     const doneEvent: ReactorInboundEvent = {
       type: "inference.done",
-      message: {
+      turn: {
         role: "assistant",
         model: "claude-test",
         content: [{ type: "text", text: "Here is my response." }],
@@ -1100,7 +1100,7 @@ describe("Default plugin", () => {
 
     const event: ReactorInboundEvent = {
       type: "inference.done",
-      message: {
+      turn: {
         role: "assistant",
         model: "claude-test",
         content: [],
@@ -1124,7 +1124,7 @@ describe("Default plugin", () => {
 
     const event: ReactorInboundEvent = {
       type: "inference.done",
-      message: {
+      turn: {
         role: "assistant",
         model: "claude-test",
         content: [{ type: "text", text: "   \n\t  " }],
@@ -1150,7 +1150,7 @@ describe("Default plugin", () => {
 
     const event: ReactorInboundEvent = {
       type: "inference.done",
-      message: {
+      turn: {
         role: "assistant",
         model: "claude-test",
         content: [{ type: "text", text: "done processing" }],
@@ -1192,7 +1192,7 @@ describe("Default plugin", () => {
     // First trigger inference.done with 2 tool calls to set pendingToolResults.
     const inferDone: ReactorInboundEvent = {
       type: "inference.done",
-      message: {
+      turn: {
         role: "assistant",
         model: "claude-test",
         content: [

@@ -1,7 +1,7 @@
 import { type } from "arktype";
 import { describe, test, expect } from "bun:test";
 import { createAnthropicAdapter } from "./anthropic";
-import type { ConversationMessage } from "@interchange/types/runtime";
+import type { ConversationTurn } from "@interchange/types/runtime";
 
 const adapter = createAnthropicAdapter();
 
@@ -49,7 +49,7 @@ const AnthropicRequestBody = type({
 
 describe("Anthropic adapter: buildRequest", () => {
   test("builds a request with required fields", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "Hello" }],
@@ -74,7 +74,7 @@ describe("Anthropic adapter: buildRequest", () => {
   });
 
   test("extracts system messages into top-level system field", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "system",
         content: [{ type: "text", text: "You are helpful." }],
@@ -107,7 +107,7 @@ describe("Anthropic adapter: buildRequest", () => {
   });
 
   test("options.systemPrompt overrides system messages", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "system",
         content: [{ type: "text", text: "Original system." }],
@@ -134,7 +134,7 @@ describe("Anthropic adapter: buildRequest", () => {
   });
 
   test("includes thinking config when enabled", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "Think deeply." }],
@@ -151,7 +151,7 @@ describe("Anthropic adapter: buildRequest", () => {
   });
 
   test("converts tool_call blocks to tool_use type", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "assistant",
         content: [
@@ -179,7 +179,7 @@ describe("Anthropic adapter: buildRequest", () => {
   });
 
   test("serializes tool definitions with Anthropic wire format", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "Hi." }],
@@ -211,7 +211,7 @@ describe("Anthropic adapter: buildRequest", () => {
   });
 
   test("omits tools key when tools array is empty", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "Hi." }],
@@ -227,7 +227,7 @@ describe("Anthropic adapter: buildRequest", () => {
   });
 
   test("omits tools key when tools is undefined", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "Hi." }],
@@ -245,7 +245,7 @@ describe("Anthropic adapter: buildRequest", () => {
   });
 
   test("uses max_tokens from options", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "Hi." }],

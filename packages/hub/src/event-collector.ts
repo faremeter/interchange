@@ -78,7 +78,7 @@ export function createEventCollector(
         await insertPart("step-start", null, { model: event.data.model });
         break;
       case "inference.done":
-        await handleInferenceDone(event.data.message.content);
+        await handleInferenceDone(event.data.turn.content);
         break;
       case "tool.done": {
         const isError = event.data.result.isError ?? false;

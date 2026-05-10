@@ -1,5 +1,5 @@
 import type {
-  ConversationMessage,
+  ConversationTurn,
   InferenceEvent,
   InferenceOptions,
 } from "@interchange/types/runtime";
@@ -14,7 +14,7 @@ export type BuiltRequest = {
 // A request builder takes the internal message format and produces a
 // provider-specific HTTP request. Pure function — no state, no side effects.
 export type RequestBuilder = (
-  messages: ConversationMessage[],
+  messages: ConversationTurn[],
   model: string,
   options: InferenceOptions,
 ) => BuiltRequest;

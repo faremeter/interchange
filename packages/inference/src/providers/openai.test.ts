@@ -1,7 +1,7 @@
 import { type } from "arktype";
 import { describe, test, expect } from "bun:test";
 import { createOpenAIAdapter } from "./openai";
-import type { ConversationMessage } from "@interchange/types/runtime";
+import type { ConversationTurn } from "@interchange/types/runtime";
 
 const adapter = createOpenAIAdapter();
 
@@ -41,7 +41,7 @@ const OpenAIRequestBody = type({
 
 describe("OpenAI adapter: buildRequest", () => {
   test("builds a request with required fields", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "Hello" }],
@@ -62,7 +62,7 @@ describe("OpenAI adapter: buildRequest", () => {
   });
 
   test("converts text messages correctly", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "What is 2+2?" }],
@@ -79,7 +79,7 @@ describe("OpenAI adapter: buildRequest", () => {
   });
 
   test("converts system messages to system role", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "system",
         content: [{ type: "text", text: "Be concise." }],
@@ -100,7 +100,7 @@ describe("OpenAI adapter: buildRequest", () => {
   });
 
   test("prepends systemPrompt from options", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "Hi." }],
@@ -119,7 +119,7 @@ describe("OpenAI adapter: buildRequest", () => {
   });
 
   test("converts assistant tool_call blocks to tool_calls format", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "assistant",
         content: [
@@ -148,7 +148,7 @@ describe("OpenAI adapter: buildRequest", () => {
   });
 
   test("converts tool_result blocks to tool role messages", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [
@@ -172,7 +172,7 @@ describe("OpenAI adapter: buildRequest", () => {
   });
 
   test("uses max_tokens from options", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "Hi." }],

@@ -20,7 +20,7 @@ import type {
   ReactorState,
   ReactorCapabilities,
   ReactorAction,
-  AssistantMessage,
+  AssistantTurn,
   ToolCall,
   ToolDefinition,
 } from "@interchange/types/runtime";
@@ -28,9 +28,9 @@ import type { PluginPolicy } from "./config";
 
 const logger = getLogger(["interchange", "harness", "plugin"]);
 
-function extractToolCalls(message: AssistantMessage): ToolCall[] {
+function extractToolCalls(turn: AssistantTurn): ToolCall[] {
   const calls: ToolCall[] = [];
-  for (const block of message.content) {
+  for (const block of turn.content) {
     if (block.type === "tool_call") {
       calls.push({
         id: block.id,
@@ -42,9 +42,9 @@ function extractToolCalls(message: AssistantMessage): ToolCall[] {
   return calls;
 }
 
-function extractTextContent(message: AssistantMessage): string {
+function extractTextContent(turn: AssistantTurn): string {
   const parts: string[] = [];
-  for (const block of message.content) {
+  for (const block of turn.content) {
     if (block.type === "text") {
       parts.push(block.text);
     }
@@ -112,7 +112,7 @@ export class DefaultPlugin implements ReactorPlugin {
       }
 
       case "inference.done": {
-        const toolCalls = extractToolCalls(event.message);
+        const toolCalls = extractToolCalls(event.turn);
         if (toolCalls.length > 0) {
           this.pendingToolResults = toolCalls.length;
           return [
@@ -130,7 +130,7 @@ export class DefaultPlugin implements ReactorPlugin {
         }
 
         // Conversational agent: send reply via the connector.
-        const replyContent = extractTextContent(event.message);
+        const replyContent = extractTextContent(event.turn);
         if (replyContent.length > 0) {
           return [
             capabilities.checkpoint("inference-done"),

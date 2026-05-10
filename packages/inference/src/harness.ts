@@ -16,13 +16,13 @@
 import { type } from "arktype";
 
 import type {
-  ConversationMessage,
+  ConversationTurn,
   InferenceEvent,
   InferenceOptions,
   PartialMessage,
   ProviderConfig,
   TokenUsage,
-  AssistantMessage,
+  AssistantTurn,
   ContentBlock,
 } from "@interchange/types/runtime";
 
@@ -36,7 +36,7 @@ import {
 } from "./errors";
 
 export type InferenceHarnessOptions = {
-  messages: ConversationMessage[];
+  turns: ConversationTurn[];
   model: string;
   providerConfig: ProviderConfig;
   inferenceOptions?: InferenceOptions;
@@ -49,7 +49,7 @@ export async function* runInference(
   opts: InferenceHarnessOptions,
 ): AsyncIterable<InferenceEvent> {
   const {
-    messages,
+    turns,
     model,
     providerConfig,
     inferenceOptions = {},
@@ -107,7 +107,7 @@ export async function* runInference(
 
   let builtRequest;
   try {
-    builtRequest = adapter.buildRequest(messages, model, inferenceOptions);
+    builtRequest = adapter.buildRequest(turns, model, inferenceOptions);
   } catch (cause) {
     yield {
       type: "inference.error",
@@ -389,7 +389,7 @@ export async function* runInference(
   }
   contentBlocks.push(...completedToolCalls);
 
-  const finalMessage: AssistantMessage = {
+  const finalTurn: AssistantTurn = {
     role: "assistant",
     content: contentBlocks,
     model,
@@ -399,7 +399,7 @@ export async function* runInference(
   yield {
     type: "inference.done",
     seq: nextSeq(),
-    data: { message: finalMessage, usage: finalUsage },
+    data: { turn: finalTurn, usage: finalUsage },
   };
 }
 

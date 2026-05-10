@@ -23,7 +23,7 @@ import type {
   ContextStore,
   ToolRunner,
   TokenUsage,
-  ConversationMessage,
+  ConversationTurn,
   ToolResult,
   ToolCall,
   AbortReason,
@@ -39,13 +39,13 @@ import { createGateManager } from "./gates";
 import { createCorrelationRegistry } from "./correlation";
 import { createStateManager } from "./state";
 import { validateActions } from "./actions";
-import { createToolResultMessage, createInboundMessage } from "./messages";
+import { createToolResultTurn, createInboundTurn } from "./turns";
 import type { CorrelationValidator } from "./correlation";
 
 const logger = getLogger(["interchange", "reactor"]);
 
 function buildHarnessOpts(
-  messages: ConversationMessage[],
+  turns: ConversationTurn[],
   model: string,
   providerConfig: ProviderConfig,
   options: InferenceOptions | undefined,
@@ -54,7 +54,7 @@ function buildHarnessOpts(
 ): InferenceHarnessOptions {
   if (options !== undefined) {
     return {
-      messages,
+      turns,
       model,
       providerConfig,
       inferenceOptions: options,
@@ -62,7 +62,7 @@ function buildHarnessOpts(
       nextSeq,
     };
   }
-  return { messages, model, providerConfig, signal, nextSeq };
+  return { turns, model, providerConfig, signal, nextSeq };
 }
 
 export type ReactorEmittedEvent =
@@ -172,10 +172,10 @@ export function createReactor(config: ReactorConfig): Reactor {
 
   function historyHasPendingToolCalls(): boolean {
     if (stateManager === null) return false;
-    const messages = stateManager.getMessages();
-    if (messages.length === 0) return false;
+    const turns = stateManager.getTurns();
+    if (turns.length === 0) return false;
 
-    const last = messages.at(-1);
+    const last = turns.at(-1);
     if (last === undefined || last.role !== "assistant") return false;
 
     return last.content.some((b) => b.type === "tool_call");
@@ -278,9 +278,9 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       // Append the correlated message to conversation history so the model
       // sees the response content when it re-infers after the gate clears.
-      const msg = createInboundMessage(message);
+      const msg = createInboundTurn(message);
       if (msg !== null) {
-        stateManager.appendMessage(msg);
+        stateManager.appendTurn(msg);
       }
     }
 
@@ -304,11 +304,11 @@ export function createReactor(config: ReactorConfig): Reactor {
     if (stateManager === null) return;
 
     const signal = operationController.signal;
-    const messages = stateManager.getMessages();
+    const turns = stateManager.getTurns();
 
     const p = (async () => {
       const harnessOpts = buildHarnessOpts(
-        messages,
+        turns,
         model,
         config.providerConfig,
         options,
@@ -331,12 +331,12 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       if (lastDone !== undefined) {
         if (stateManager !== null) {
-          stateManager.appendMessage(lastDone.data.message);
+          stateManager.appendTurn(lastDone.data.turn);
           stateManager.accumUsage(lastDone.data.usage);
         }
         enqueue({
           type: "inference.done",
-          message: lastDone.data.message,
+          turn: lastDone.data.turn,
           usage: lastDone.data.usage,
         });
       } else if (lastError !== undefined) {
@@ -438,7 +438,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     }
 
     if (addToHistory && stateManager !== null) {
-      stateManager.appendMessage(createToolResultMessage(results));
+      stateManager.appendTurn(createToolResultTurn(results));
     }
 
     for (const result of results) {
@@ -474,9 +474,9 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       // Append inbound messages to conversation history so the provider sees them.
       if (event.type === "message.received" && stateManager !== null) {
-        const msg = createInboundMessage(event.message);
+        const msg = createInboundTurn(event.message);
         if (msg !== null) {
-          stateManager.appendMessage(msg);
+          stateManager.appendTurn(msg);
         }
       }
 
@@ -647,7 +647,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     lastCheckpointHash = undefined;
     try {
       const commit = await contextStore.commit(
-        stateManager.getMessages(),
+        stateManager.getTurns(),
         stateManager.getPendingOperations(),
         stateManager.getTokenUsage(),
         message,
@@ -722,12 +722,12 @@ export function createReactor(config: ReactorConfig): Reactor {
     running = true;
 
     void (async () => {
-      let initialMessages: ConversationMessage[];
+      let initialTurns: ConversationTurn[];
       let initialOps;
       let initialUsage: TokenUsage;
       try {
         const loaded = await contextStore.load();
-        initialMessages = loaded.messages;
+        initialTurns = loaded.turns;
         initialOps = loaded.pendingOperations;
         initialUsage = loaded.tokenUsage;
       } catch (cause) {
@@ -742,7 +742,7 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       stateManager = createStateManager(
         sessionId,
-        initialMessages,
+        initialTurns,
         initialOps,
         initialUsage,
       );

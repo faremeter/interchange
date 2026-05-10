@@ -62,7 +62,7 @@ export async function initAgentRepo(dir: string): Promise<void> {
     contextPath,
     JSON.stringify(
       {
-        messages: [],
+        turns: [],
         pendingOperations: [],
         tokenUsage: {
           input: 0,

@@ -637,7 +637,7 @@ export type ContentBlock = typeof ContentBlock.infer;
  *
  * (INFERENCE.md § Message Format)
  */
-export type ConversationMessage = {
+export type ConversationTurn = {
   role: "user" | "assistant" | "system";
   content: ContentBlock[];
   model?: string;
@@ -645,16 +645,16 @@ export type ConversationMessage = {
 };
 
 /**
- * A completed assistant message returned in `inference.done`. Distinct type
- * from ConversationMessage to make the inference boundary explicit.
+ * A completed assistant turn returned in `inference.done`. Distinct type
+ * from ConversationTurn to make the inference boundary explicit.
  */
-export const AssistantMessage = type({
+export const AssistantTurn = type({
   role: "'assistant'",
   content: ContentBlock.array(),
   model: "string",
   timestamp: "number",
 });
-export type AssistantMessage = typeof AssistantMessage.infer;
+export type AssistantTurn = typeof AssistantTurn.infer;
 
 // ---------------------------------------------------------------------------
 // Error Classification (INFERENCE.md § Error Classification)
@@ -786,7 +786,7 @@ export const InferenceEvent = type({
   .or({
     type: "'inference.done'",
     seq: "number",
-    data: { message: AssistantMessage, usage: TokenUsage },
+    data: { turn: AssistantTurn, usage: TokenUsage },
   })
   .or({
     type: "'inference.error'",
@@ -927,7 +927,7 @@ export type InferenceEvent =
   | {
       type: "inference.done";
       seq: number;
-      data: { message: AssistantMessage; usage: TokenUsage };
+      data: { turn: AssistantTurn; usage: TokenUsage };
     }
   | {
       type: "inference.error";
@@ -1033,7 +1033,7 @@ export type PendingOperation = {
  * (INFERENCE.md § Agent Reactor › Plugin Decision Function)
  */
 export type ReactorState = {
-  messages: ConversationMessage[];
+  turns: ConversationTurn[];
   activeForks: { forkId: string; mode: ForkMode }[];
   pendingOperations: PendingOperation[];
   activeGates: { gateId: string; type: GateType; timeoutAt: number }[];
@@ -1122,7 +1122,7 @@ export type ReactorCapabilities = {
  */
 export type ReactorInboundEvent =
   | { type: "message.received"; message: InboundMessage }
-  | { type: "inference.done"; message: AssistantMessage; usage: TokenUsage }
+  | { type: "inference.done"; turn: AssistantTurn; usage: TokenUsage }
   | { type: "inference.error"; error: InferenceError; partial: PartialMessage }
   | { type: "tool.done"; result: ToolResult }
   | {
@@ -1187,9 +1187,9 @@ export interface AfterToolExtension {
  */
 export interface ContextTransformExtension {
   transformContext(
-    messages: ConversationMessage[],
+    turns: ConversationTurn[],
     state: ReactorState,
-  ): Promise<ConversationMessage[]>;
+  ): Promise<ConversationTurn[]>;
 }
 
 /**
@@ -1298,11 +1298,11 @@ export type ConnectorThreadState = {
  */
 export interface ContextStore {
   /**
-   * Load the current message history and reactor metadata from the store.
+   * Load the current turn history and reactor metadata from the store.
    * Called during reactor initialization.
    */
   load(signal?: AbortSignal): Promise<{
-    messages: ConversationMessage[];
+    turns: ConversationTurn[];
     pendingOperations: PendingOperation[];
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
@@ -1316,11 +1316,11 @@ export interface ContextStore {
   setConnectorState(state: ConnectorThreadState | null): void;
 
   /**
-   * Commit the current message history and reactor metadata to the store.
+   * Commit the current turn history and reactor metadata to the store.
    * May be called during a checkpoint, suspension, compaction, or shutdown.
    */
   commit(
-    messages: ConversationMessage[],
+    turns: ConversationTurn[],
     pendingOperations: PendingOperation[],
     tokenUsage: TokenUsage,
     message: string,
@@ -1339,10 +1339,10 @@ export interface ContextStore {
   log(limit?: number, signal?: AbortSignal): Promise<ContextCommit[]>;
 
   /**
-   * Read the message history at a specific commit hash. Used for history
+   * Read the turn history at a specific commit hash. Used for history
    * inspection and rollback.
    */
-  readAt(hash: string, signal?: AbortSignal): Promise<ConversationMessage[]>;
+  readAt(hash: string, signal?: AbortSignal): Promise<ConversationTurn[]>;
 }
 
 // ---------------------------------------------------------------------------

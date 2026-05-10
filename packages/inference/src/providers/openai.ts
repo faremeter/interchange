@@ -2,7 +2,7 @@ import { type } from "arktype";
 
 import { getLogger } from "@interchange/log";
 import type {
-  ConversationMessage,
+  ConversationTurn,
   ContentBlock,
   InferenceEvent,
   InferenceOptions,
@@ -18,7 +18,7 @@ const logger = getLogger(["interchange", "inference", "openai"]);
 // ---------------------------------------------------------------------------
 
 function buildRequest(
-  messages: ConversationMessage[],
+  messages: ConversationTurn[],
   model: string,
   options: InferenceOptions,
 ): BuiltRequest {
@@ -65,7 +65,7 @@ function buildRequest(
   };
 }
 
-function toOpenAIMessage(msg: ConversationMessage): unknown[] {
+function toOpenAIMessage(msg: ConversationTurn): unknown[] {
   if (msg.role === "system") {
     const text = msg.content
       .filter((b): b is { type: "text"; text: string } => b.type === "text")

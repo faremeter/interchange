@@ -1116,7 +1116,7 @@ describe("activity state machine", () => {
       type: "inference.done",
       seq: 2,
       data: {
-        message: {
+        turn: {
           role: "assistant",
           content: [],
           model: "gpt-4",
