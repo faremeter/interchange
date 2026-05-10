@@ -33,7 +33,8 @@ export type ReconstructedEvent =
 export type GapKind =
   | "message-count-regression"
   | "corrupt-checkpoint"
-  | "corrupt-error-record";
+  | "corrupt-error-record"
+  | "orphan-mail";
 
 export type ReconstructionGap = {
   kind: GapKind;
@@ -349,6 +350,12 @@ export async function reconstructTimeline(
 
   for (const entry of mailEntries) {
     const meta = mailCommitMeta.get(entry.messageId);
+    if (meta === undefined) {
+      gaps.push({
+        kind: "orphan-mail",
+        description: `Mail entry ${entry.messageId} has no corresponding git commit; its timestamp is unreliable`,
+      });
+    }
     events.push({
       kind: "mail",
       direction: entry.direction,
