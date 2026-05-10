@@ -1278,3 +1278,113 @@ describe("onChange callback", () => {
     expect(changes).toBe(before + 2);
   });
 });
+
+// Agent reply lifecycle (end-to-end)
+//
+// Exercises the full sequence a real user sees when an agent replies to a
+// human: streaming tokens arrive, the turn commits with hadReply: true, and
+// an outbound mail.delivered event follows. The agent's reply must remain
+// visible in the timeline at every stage.
+
+describe("agent reply lifecycle", () => {
+  let session: InstanceSession;
+  let mock: ReturnType<typeof createMockTransport>;
+
+  beforeEach(async () => {
+    mock = createMockTransport(makeHydrationHandler());
+    session = createInstanceSession({
+      tenantId: TENANT_ID,
+      instanceId: INSTANCE_ID,
+      transport: mock.transport,
+      onChange: noop,
+    });
+    session.start();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  test("agent reply is visible after turn.committed with hadReply: true", () => {
+    // 1. User sees streaming tokens as the agent generates its reply
+    mock.emit({
+      type: "inference.text.delta",
+      seq: 1,
+      data: { token: "I can help", partial: { text: "I can help" } },
+    });
+    mock.emit({
+      type: "inference.text.delta",
+      seq: 2,
+      data: {
+        token: " with that.",
+        partial: { text: "I can help with that." },
+      },
+    });
+    expect(session.streaming).toBe("I can help with that.");
+
+    // 2. Turn commits — hadReply: true because the agent sent an outbound reply
+    mock.emit({
+      type: "turn.committed",
+      data: {
+        turnId: "turn_reply",
+        status: "completed",
+        text: "I can help with that.",
+        hadReply: true,
+        hadError: false,
+        errors: [],
+        toolErrors: [],
+      },
+    });
+
+    // Streaming is cleared (expected)
+    expect(session.streaming).toBe("");
+
+    // The turn MUST appear in events — the user's reply cannot vanish
+    const turnEvents = session.events.filter((e) => e.kind === "turn");
+    expect(turnEvents).toHaveLength(1);
+    expect(turnEvents[0]!.content).toBe("I can help with that.");
+  });
+
+  test("agent reply remains visible after outbound mail.delivered is suppressed", () => {
+    // Full sequence: stream → commit → outbound mail
+    mock.emit({
+      type: "inference.text.delta",
+      seq: 1,
+      data: { token: "Sure thing.", partial: { text: "Sure thing." } },
+    });
+
+    mock.emit({
+      type: "turn.committed",
+      data: {
+        turnId: "turn_reply_2",
+        status: "completed",
+        text: "Sure thing.",
+        hadReply: true,
+        hadError: false,
+        errors: [],
+        toolErrors: [],
+      },
+    });
+
+    // Outbound mail arrives — shouldShowMail suppresses it (direction: outbound)
+    mock.emit({
+      type: "mail.delivered",
+      data: {
+        id: "mail_reply",
+        direction: "outbound",
+        from: [{ name: null, email: AGENT_ADDR }],
+        to: [{ name: "Alice", email: HUMAN_ADDR }],
+        bodyValues: { p1: { value: "Sure thing." } },
+        textBody: [{ partId: "p1", type: "text/plain" }],
+        headers: {},
+        receivedAt: "2024-01-01T00:01:00Z",
+      },
+    });
+
+    // After the full sequence, the reply must still be visible
+    expect(session.streaming).toBe("");
+    const allEvents = session.events;
+    expect(allEvents.length).toBeGreaterThanOrEqual(1);
+
+    const turnEvents = allEvents.filter((e) => e.kind === "turn");
+    expect(turnEvents).toHaveLength(1);
+    expect(turnEvents[0]!.content).toBe("Sure thing.");
+  });
+});
