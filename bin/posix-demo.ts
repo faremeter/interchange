@@ -78,7 +78,7 @@ const betaProvider = readAgentProvider("BETA");
 
 const DEMO_SEED =
   process.env["DEMO_SEED"] ??
-  "Use the message_send tool to send a message to beta@local.interchange asking: What do you want to be when you grow up? Then tell me what Beta says.";
+  "Use the mail_send tool to send a message to beta@local.interchange asking: What do you want to be when you grow up? Then tell me what Beta says.";
 
 log.info("alpha: {provider} / {model}", {
   provider: alphaProvider.provider,
@@ -266,9 +266,9 @@ const harnessAlpha = createHarness({
   address: ALPHA_ADDRESS,
   systemPrompt: `You are Alpha, an agent that relays messages between the user and other agents.
 
-IMPORTANT: When the user mentions another agent by name, you MUST immediately call the message_send tool to contact that agent. Do NOT reply to the user asking what to send. Do NOT introduce yourself. Just call the tool.
+IMPORTANT: When the user mentions another agent by name, you MUST immediately call the mail_send tool to contact that agent. Do NOT reply to the user asking what to send. Do NOT introduce yourself. Just call the tool.
 
-Example: If the user says "Ask Beta what his favorite color is", you call message_send with to="${BETA_ADDRESS}" and content="What is your favorite color?"
+Example: If the user says "Ask Beta what his favorite color is", you call mail_send with to="${BETA_ADDRESS}" and content="What is your favorite color?"
 
 Known agents:
   Beta: ${BETA_ADDRESS}

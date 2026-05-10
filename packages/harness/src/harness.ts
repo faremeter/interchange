@@ -42,9 +42,9 @@ import type { ErrorRecord } from "@interchange/types/audit";
 import type { HarnessConfig } from "./config";
 import { validateConfig } from "./config";
 import {
-  buildMessageToolHandlers,
+  buildMailToolHandlers,
   buildCombinedRunner,
-  getMessageToolDefinitions,
+  getMailToolDefinitions,
 } from "./tools";
 import { createDefaultPlugin } from "./plugin";
 import { type } from "arktype";
@@ -97,17 +97,17 @@ export function createHarness(config: HarnessConfig): Harness {
     plugin = createDefaultPlugin(
       provider.model,
       config.systemPrompt,
-      [...getMessageToolDefinitions(), ...deployToolDefs],
+      [...getMailToolDefinitions(), ...deployToolDefs],
       config.pluginPolicy ?? {},
     );
   }
 
-  // Build message tool handlers and the combined runner. Name collision
+  // Build mail tool handlers and the combined runner. Name collision
   // detection happens here at construction time — startup fails loudly.
-  const messageHandlers = buildMessageToolHandlers(transport);
+  const mailHandlers = buildMailToolHandlers(transport);
 
   const combinedRunner = buildCombinedRunner(
-    messageHandlers,
+    mailHandlers,
     tools,
     deployToolDefs,
   );

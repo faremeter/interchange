@@ -40,7 +40,7 @@ import type {
 } from "@interchange/types/runtime";
 
 import { createHarness } from "./harness";
-import { buildMessageToolHandlers, buildCombinedRunner } from "./tools";
+import { buildMailToolHandlers, buildCombinedRunner } from "./tools";
 import { createDefaultPlugin } from "./plugin";
 import type { HarnessConfig } from "./config";
 
@@ -527,9 +527,9 @@ describe("Message delivery pipeline", () => {
 // ---------------------------------------------------------------------------
 
 describe("Tool name collision detection", () => {
-  test("buildCombinedRunner throws when caller provides a message.* tool", () => {
+  test("buildCombinedRunner throws when caller provides a mail_* tool", () => {
     const transport = makeMockTransport();
-    const messageHandlers = buildMessageToolHandlers(transport);
+    const mailHandlers = buildMailToolHandlers(transport);
     const callerTools: ToolRunner = {
       async run(call) {
         return { callId: call.id, content: "ok" };
@@ -537,15 +537,15 @@ describe("Tool name collision detection", () => {
     };
 
     expect(() =>
-      buildCombinedRunner(messageHandlers, callerTools, [
-        { name: "message_send", description: "test", inputSchema: {} },
+      buildCombinedRunner(mailHandlers, callerTools, [
+        { name: "mail_send", description: "test", inputSchema: {} },
       ]),
-    ).toThrow('Tool name collision: "message_send"');
+    ).toThrow('Tool name collision: "mail_send"');
   });
 
   test("buildCombinedRunner succeeds when no name collisions", () => {
     const transport = makeMockTransport();
-    const messageHandlers = buildMessageToolHandlers(transport);
+    const mailHandlers = buildMailToolHandlers(transport);
     const callerTools: ToolRunner = {
       async run(call) {
         return { callId: call.id, content: "ok" };
@@ -553,27 +553,27 @@ describe("Tool name collision detection", () => {
     };
 
     expect(() =>
-      buildCombinedRunner(messageHandlers, callerTools, [
+      buildCombinedRunner(mailHandlers, callerTools, [
         { name: "read_file", description: "test", inputSchema: {} },
         { name: "write_file", description: "test", inputSchema: {} },
       ]),
     ).not.toThrow();
   });
 
-  test("combined runner dispatches message tools to message handlers", async () => {
+  test("combined runner dispatches mail tools to mail handlers", async () => {
     const transport = makeMockTransport();
-    const messageHandlers = buildMessageToolHandlers(transport);
+    const mailHandlers = buildMailToolHandlers(transport);
     const callerTools: ToolRunner = {
       async run(call) {
         return { callId: call.id, content: "caller-result" };
       },
     };
 
-    const runner = buildCombinedRunner(messageHandlers, callerTools, []);
+    const runner = buildCombinedRunner(mailHandlers, callerTools, []);
 
     const call: ToolCall = {
       id: "c1",
-      name: "message_send",
+      name: "mail_send",
       arguments: {
         to: "user@test",
         content: "hello",
@@ -589,16 +589,16 @@ describe("Tool name collision detection", () => {
     expect(transport.getSentMessages().length).toBe(1);
   });
 
-  test("combined runner dispatches non-message tools to caller runner", async () => {
+  test("combined runner dispatches non-mail tools to caller runner", async () => {
     const transport = makeMockTransport();
-    const messageHandlers = buildMessageToolHandlers(transport);
+    const mailHandlers = buildMailToolHandlers(transport);
     const callerTools: ToolRunner = {
       async run(call) {
         return { callId: call.id, content: "caller-handled" };
       },
     };
 
-    const runner = buildCombinedRunner(messageHandlers, callerTools, []);
+    const runner = buildCombinedRunner(mailHandlers, callerTools, []);
 
     const call: ToolCall = {
       id: "c2",
@@ -612,19 +612,19 @@ describe("Tool name collision detection", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. Message tool: message_send
+// 4. Mail tool: mail_send
 // ---------------------------------------------------------------------------
 
-describe("message_send tool", () => {
+describe("mail_send tool", () => {
   test("sends a conversation message and returns messageId", async () => {
     const transport = makeMockTransport();
-    const handlers = buildMessageToolHandlers(transport);
-    const sendHandler = handlers.get("message_send");
+    const handlers = buildMailToolHandlers(transport);
+    const sendHandler = handlers.get("mail_send");
     if (sendHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "s1",
-      name: "message_send",
+      name: "mail_send",
       arguments: {
         to: "user@test",
         content: "Hello from agent",
@@ -650,13 +650,13 @@ describe("message_send tool", () => {
 
   test("returns error when 'to' is missing", async () => {
     const transport = makeMockTransport();
-    const handlers = buildMessageToolHandlers(transport);
-    const sendHandler = handlers.get("message_send");
+    const handlers = buildMailToolHandlers(transport);
+    const sendHandler = handlers.get("mail_send");
     if (sendHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "s2",
-      name: "message_send",
+      name: "mail_send",
       arguments: { content: "No recipient" },
     };
 
@@ -666,13 +666,13 @@ describe("message_send tool", () => {
 
   test("returns error when both content and payload are provided", async () => {
     const transport = makeMockTransport();
-    const handlers = buildMessageToolHandlers(transport);
-    const sendHandler = handlers.get("message_send");
+    const handlers = buildMailToolHandlers(transport);
+    const sendHandler = handlers.get("mail_send");
     if (sendHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "s3",
-      name: "message_send",
+      name: "mail_send",
       arguments: {
         to: "user@test",
         content: "text",
@@ -686,13 +686,13 @@ describe("message_send tool", () => {
 
   test("returns result without pending marker when no correlationId", async () => {
     const transport = makeMockTransport();
-    const handlers = buildMessageToolHandlers(transport);
-    const sendHandler = handlers.get("message_send");
+    const handlers = buildMailToolHandlers(transport);
+    const sendHandler = handlers.get("mail_send");
     if (sendHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "s4",
-      name: "message_send",
+      name: "mail_send",
       arguments: {
         to: "peer@test",
         content: "invoke request",
@@ -706,10 +706,10 @@ describe("message_send tool", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5. Message tool: message_reply
+// 5. Mail tool: mail_reply
 // ---------------------------------------------------------------------------
 
-describe("message_reply tool", () => {
+describe("mail_reply tool", () => {
   test("fetches parent headers and sends reply with inReplyTo", async () => {
     const transport = makeMockTransport();
 
@@ -729,13 +729,13 @@ describe("message_reply tool", () => {
     };
     transport.enqueueMessage(parentRef, parentMsg);
 
-    const handlers = buildMessageToolHandlers(transport);
-    const replyHandler = handlers.get("message_reply");
+    const handlers = buildMailToolHandlers(transport);
+    const replyHandler = handlers.get("mail_reply");
     if (replyHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "r1",
-      name: "message_reply",
+      name: "mail_reply",
       arguments: {
         ref: parentRef,
         content: "This is the reply",
@@ -757,13 +757,13 @@ describe("message_reply tool", () => {
 
   test("returns error when ref is missing", async () => {
     const transport = makeMockTransport();
-    const handlers = buildMessageToolHandlers(transport);
-    const replyHandler = handlers.get("message_reply");
+    const handlers = buildMailToolHandlers(transport);
+    const replyHandler = handlers.get("mail_reply");
     if (replyHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "r2",
-      name: "message_reply",
+      name: "mail_reply",
       arguments: { content: "no ref" },
     };
 
@@ -773,19 +773,19 @@ describe("message_reply tool", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6. Message tool: message_search
+// 6. Mail tool: mail_search
 // ---------------------------------------------------------------------------
 
-describe("message_search tool", () => {
+describe("mail_search tool", () => {
   test("calls transport.search and returns summaries", async () => {
     const transport = makeMockTransport();
-    const handlers = buildMessageToolHandlers(transport);
-    const searchHandler = handlers.get("message_search");
+    const handlers = buildMailToolHandlers(transport);
+    const searchHandler = handlers.get("mail_search");
     if (searchHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "q1",
-      name: "message_search",
+      name: "mail_search",
       arguments: {
         mailbox: "INBOX",
         query: { from: "user@test" },
@@ -803,13 +803,13 @@ describe("message_search tool", () => {
 
   test("defaults mailbox to INBOX when not specified", async () => {
     const transport = makeMockTransport();
-    const handlers = buildMessageToolHandlers(transport);
-    const searchHandler = handlers.get("message_search");
+    const handlers = buildMailToolHandlers(transport);
+    const searchHandler = handlers.get("mail_search");
     if (searchHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "q2",
-      name: "message_search",
+      name: "mail_search",
       arguments: { query: {} },
     };
 
@@ -819,10 +819,10 @@ describe("message_search tool", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7. Message tool: message_read
+// 7. Mail tool: mail_read
 // ---------------------------------------------------------------------------
 
-describe("message_read tool", () => {
+describe("mail_read tool", () => {
   test("fetches full message when parts='full'", async () => {
     const transport = makeMockTransport();
     const ref: MessageRef = { uid: 5, mailbox: "INBOX" };
@@ -830,13 +830,13 @@ describe("message_read tool", () => {
     const storedMsg = { ...msg, ref };
     transport.enqueueMessage(ref, storedMsg);
 
-    const handlers = buildMessageToolHandlers(transport);
-    const readHandler = handlers.get("message_read");
+    const handlers = buildMailToolHandlers(transport);
+    const readHandler = handlers.get("mail_read");
     if (readHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "rd1",
-      name: "message_read",
+      name: "mail_read",
       arguments: { ref, parts: "full" },
     };
 
@@ -855,13 +855,13 @@ describe("message_read tool", () => {
     const msg = makeInboundMessage();
     transport.enqueueMessage(ref, { ...msg, ref });
 
-    const handlers = buildMessageToolHandlers(transport);
-    const readHandler = handlers.get("message_read");
+    const handlers = buildMailToolHandlers(transport);
+    const readHandler = handlers.get("mail_read");
     if (readHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "rd2",
-      name: "message_read",
+      name: "mail_read",
       arguments: { ref, parts: "headers" },
     };
 
@@ -875,13 +875,13 @@ describe("message_read tool", () => {
 
   test("returns error when ref is missing", async () => {
     const transport = makeMockTransport();
-    const handlers = buildMessageToolHandlers(transport);
-    const readHandler = handlers.get("message_read");
+    const handlers = buildMailToolHandlers(transport);
+    const readHandler = handlers.get("mail_read");
     if (readHandler === undefined) throw new Error("handler not found");
 
     const call: ToolCall = {
       id: "rd3",
-      name: "message_read",
+      name: "mail_read",
       arguments: { parts: "full" },
     };
 
