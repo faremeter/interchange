@@ -38,8 +38,10 @@ export function createInstanceSession(opts: {
   transport: Transport;
   onChange: () => void;
   onSessionEnded?: () => void;
+  onError?: (error: Error) => void;
 }): InstanceSession {
-  const { tenantId, instanceId, transport, onChange, onSessionEnded } = opts;
+  const { tenantId, instanceId, transport, onChange, onSessionEnded, onError } =
+    opts;
 
   const basePath = `/api/tenants/${tenantId}/agents/instances/${instanceId}`;
 
@@ -299,9 +301,14 @@ export function createInstanceSession(opts: {
         onChange();
 
         if (fetchError) {
-          throw new Error("Failed to hydrate chat history", {
+          const error = new Error("Failed to hydrate chat history", {
             cause: fetchError,
           });
+          if (onError) {
+            onError(error);
+          } else {
+            throw error;
+          }
         }
       })();
 

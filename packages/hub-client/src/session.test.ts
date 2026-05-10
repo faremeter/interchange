@@ -1707,12 +1707,61 @@ describe("hydration edge cases", () => {
     expect(changes).toBe(0);
   });
 
-  // NOTE: hydration fetch failure (both fetches throw) produces an unhandled
-  // rejection via `void (async () => { ... throw ... })()`. Bun's test runner
-  // intercepts unhandled rejections before user-level handlers, making it
-  // impossible to suppress in tests without modifying the production code.
-  // The observable behavior (SSE buffer is drained, hydrated is set, then the
-  // error re-throws) is correct but not testable in this harness.
+  test("hydration fetch failure calls onError and still drains SSE buffer", async () => {
+    const bus = { emit: noop as (event: unknown) => void };
+    const transport: Transport = {
+      async fetch<T>(_method: string, _path: string): Promise<T> {
+        throw new Error("network failure");
+      },
+      subscribe(_path: string, onEvent: (event: unknown) => void): () => void {
+        bus.emit = onEvent;
+        return () => {
+          bus.emit = noop;
+        };
+      },
+    };
+
+    let reportedError: Error | null = null;
+    const session = createInstanceSession({
+      tenantId: TENANT_ID,
+      instanceId: INSTANCE_ID,
+      transport,
+      onChange: noop,
+      onError: (err) => {
+        reportedError = err;
+      },
+    });
+
+    session.start();
+
+    // SSE event arrives during the (failing) fetch
+    bus.emit({
+      type: "mail.delivered",
+      data: {
+        id: "mail_during_fail",
+        direction: "inbound",
+        from: [{ name: "Alice", email: HUMAN_ADDR }],
+        to: [{ name: null, email: AGENT_ADDR }],
+        bodyValues: { p1: { value: "Hello" } },
+        textBody: [{ partId: "p1", type: "text/plain" }],
+        headers: {},
+        receivedAt: "2024-01-01T00:00:00Z",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Session is hydrated with SSE buffer contents despite the fetch failure
+    expect(session.hydrated).toBe(true);
+    expect(session.events).toHaveLength(1);
+    expect(session.events[0]!.kind).toBe("mail");
+
+    // Error was reported through onError callback
+    expect(reportedError).toBeInstanceOf(Error);
+    expect(reportedError!.message).toBe("Failed to hydrate chat history");
+    expect(reportedError!.cause).toBeInstanceOf(Error);
+    expect((reportedError!.cause as Error).message).toBe("network failure");
+  });
 });
 
 // Turn edge cases
