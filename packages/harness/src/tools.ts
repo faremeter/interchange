@@ -1,10 +1,10 @@
-// Message tool implementations for the harness.
+// Mail tool implementations for the harness.
 //
 // Each tool wraps the MessageTransport interface, translating model-supplied
 // arguments into transport calls and returning structured results the model
 // can reason about.
 //
-// (MESSAGE.md § Messaging Tools)
+// (MESSAGE.md § Mail Tools)
 
 import { type } from "arktype";
 import type {
@@ -82,7 +82,7 @@ const WaitArgs = type({
 // Individual tool handlers
 // ---------------------------------------------------------------------------
 
-function makeMessageSendHandler(transport: MessageTransport): ToolHandler {
+function makeMailSendHandler(transport: MessageTransport): ToolHandler {
   return async (call, signal) => {
     const args = SendArgs(call.arguments);
     if (args instanceof type.errors) {
@@ -131,7 +131,7 @@ function makeMessageSendHandler(transport: MessageTransport): ToolHandler {
   };
 }
 
-function makeMessageReplyHandler(transport: MessageTransport): ToolHandler {
+function makeMailReplyHandler(transport: MessageTransport): ToolHandler {
   return async (call, signal) => {
     const args = ReplyArgs(call.arguments);
     if (args instanceof type.errors) {
@@ -204,7 +204,7 @@ function makeMessageReplyHandler(transport: MessageTransport): ToolHandler {
   };
 }
 
-function makeMessageSearchHandler(transport: MessageTransport): ToolHandler {
+function makeMailSearchHandler(transport: MessageTransport): ToolHandler {
   return async (call, signal) => {
     const args = SearchArgs(call.arguments);
     if (args instanceof type.errors) {
@@ -251,7 +251,7 @@ function makeMessageSearchHandler(transport: MessageTransport): ToolHandler {
   };
 }
 
-function makeMessageReadHandler(transport: MessageTransport): ToolHandler {
+function makeMailReadHandler(transport: MessageTransport): ToolHandler {
   return async (call, signal) => {
     const args = ReadArgs(call.arguments);
     if (args instanceof type.errors) {
@@ -346,7 +346,7 @@ function makeMessageReadHandler(transport: MessageTransport): ToolHandler {
   };
 }
 
-function makeMessageWaitHandler(transport: MessageTransport): ToolHandler {
+function makeMailWaitHandler(transport: MessageTransport): ToolHandler {
   return async (call, signal) => {
     const args = WaitArgs(call.arguments);
     if (args instanceof type.errors) {
@@ -445,23 +445,23 @@ function makeMessageWaitHandler(transport: MessageTransport): ToolHandler {
 // Tool name registry
 // ---------------------------------------------------------------------------
 
-export type MessageToolName =
-  | "message_send"
-  | "message_reply"
-  | "message_search"
-  | "message_read"
-  | "message_wait";
+export type MailToolName =
+  | "mail_send"
+  | "mail_reply"
+  | "mail_search"
+  | "mail_read"
+  | "mail_wait";
 
 /**
- * Tool definitions for the built-in message tools, suitable for passing to
+ * Tool definitions for the built-in mail tools, suitable for passing to
  * the inference provider so the model knows these tools exist.
  */
-export function getMessageToolDefinitions(): ToolDefinition[] {
+export function getMailToolDefinitions(): ToolDefinition[] {
   return [
     {
-      name: "message_send",
+      name: "mail_send",
       description:
-        "Send a message to another agent or address. Use this to initiate conversations or send information to other agents.",
+        "Send mail to another agent or address. Use this to initiate conversations or send information to other agents.",
       inputSchema: {
         type: "object",
         properties: {
@@ -491,9 +491,9 @@ export function getMessageToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: "message_reply",
+      name: "mail_reply",
       description:
-        "Reply to a message by reference. Addresses the reply to the original sender and sets inReplyTo for threading.",
+        "Reply to mail by reference. Addresses the reply to the original sender and sets inReplyTo for threading.",
       inputSchema: {
         type: "object",
         properties: {
@@ -520,9 +520,8 @@ export function getMessageToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: "message_search",
-      description:
-        "Search for messages in a mailbox. Returns message summaries.",
+      name: "mail_search",
+      description: "Search mail in a mailbox. Returns message summaries.",
       inputSchema: {
         type: "object",
         properties: {
@@ -544,8 +543,8 @@ export function getMessageToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: "message_read",
-      description: "Read a specific message by reference.",
+      name: "mail_read",
+      description: "Read a specific mail message by reference.",
       inputSchema: {
         type: "object",
         properties: {
@@ -569,9 +568,9 @@ export function getMessageToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: "message_wait",
+      name: "mail_wait",
       description:
-        "Wait for a message matching a query to arrive. Blocks until a matching message is delivered or the timeout expires. Use this instead of polling message_search in a loop.",
+        "Wait for a message matching a query to arrive. Blocks until a matching message is delivered or the timeout expires. Use this instead of polling mail_search in a loop.",
       inputSchema: {
         type: "object",
         properties: {
@@ -599,45 +598,45 @@ export function getMessageToolDefinitions(): ToolDefinition[] {
 }
 
 /**
- * Build a map of message tool name → handler for the given transport.
+ * Build a map of mail tool name → handler for the given transport.
  */
-export function buildMessageToolHandlers(
+export function buildMailToolHandlers(
   transport: MessageTransport,
 ): Map<string, ToolHandler> {
   const handlers = new Map<string, ToolHandler>();
-  handlers.set("message_send", makeMessageSendHandler(transport));
-  handlers.set("message_reply", makeMessageReplyHandler(transport));
-  handlers.set("message_search", makeMessageSearchHandler(transport));
-  handlers.set("message_read", makeMessageReadHandler(transport));
-  handlers.set("message_wait", makeMessageWaitHandler(transport));
+  handlers.set("mail_send", makeMailSendHandler(transport));
+  handlers.set("mail_reply", makeMailReplyHandler(transport));
+  handlers.set("mail_search", makeMailSearchHandler(transport));
+  handlers.set("mail_read", makeMailReadHandler(transport));
+  handlers.set("mail_wait", makeMailWaitHandler(transport));
   return handlers;
 }
 
 /**
- * Combine message tool handlers with a caller-supplied ToolRunner into a
+ * Combine mail tool handlers with a caller-supplied ToolRunner into a
  * single unified ToolRunner. Throws at call time if a name collision exists
- * between message tools and the caller-supplied tools.
+ * between mail tools and the caller-supplied tools.
  *
  * The collision check runs at construction time (startup), not at invocation
  * time, so it fails loudly before any inference happens.
  */
 export function buildCombinedRunner(
-  messageHandlers: Map<string, ToolHandler>,
+  mailHandlers: Map<string, ToolHandler>,
   callerTools: ToolRunner,
   callerToolDefs: ToolDefinition[],
 ): ToolRunner {
   // Check for collisions at startup.
   for (const def of callerToolDefs) {
-    if (messageHandlers.has(def.name)) {
+    if (mailHandlers.has(def.name)) {
       throw new Error(
-        `Tool name collision: "${def.name}" is registered by both the message tools and the caller-provided ToolRunner`,
+        `Tool name collision: "${def.name}" is registered by both the mail tools and the caller-provided ToolRunner`,
       );
     }
   }
 
   return {
     async run(call: ToolCall, signal: AbortSignal): Promise<ToolResult> {
-      const handler = messageHandlers.get(call.name);
+      const handler = mailHandlers.get(call.name);
       if (handler !== undefined) {
         return handler(call, signal);
       }

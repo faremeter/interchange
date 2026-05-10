@@ -486,7 +486,7 @@ describe("deploy flow integration", () => {
     const toolNames = tools.map((t) => t.name);
 
     expect(toolNames).toContain("greet");
-    expect(toolNames).toContain("message_send");
+    expect(toolNames).toContain("mail_send");
 
     const greetTool = tools.find((t) => t.name === "greet");
     expect(greetTool).toBeDefined();

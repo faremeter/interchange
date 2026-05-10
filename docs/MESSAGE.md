@@ -618,13 +618,13 @@ Efficient reconnection using QRESYNC semantics. The harness provides its last kn
 
 If UIDVALIDITY has changed (mailbox was recreated), the transport signals a full resync is required.
 
-## Messaging Tools
+## Mail Tools
 
 The agent interacts with the message transport through tools exposed by the harness. These tools are what the inference layer presents to the model. They map to the transport interface operations.
 
 ### Tool Definitions
 
-**message.send** — Send a message to one or more recipients.
+**mail.send** — Send mail to one or more recipients.
 
 Parameters:
 
@@ -643,7 +643,7 @@ Returns on success: `{ messageId: string }` if delivery is fire-and-forget, or `
 
 Returns on error: `{ error: string, code: string }`. Error codes: `invalid_address` (unresolvable recipient), `invalid_type` (unknown payload type), `too_large` (message exceeds size limit), `send_failed` (SMTP submission rejected).
 
-**message.reply** — Reply to a specific message. Convenience wrapper around `message.send` that automatically sets `inReplyTo` and extends the `References` chain from the parent message.
+**mail.reply** — Reply to a specific message. Convenience wrapper around `mail.send` that automatically sets `inReplyTo` and extends the `References` chain from the parent message.
 
 Parameters:
 
@@ -653,9 +653,9 @@ Parameters:
 - `type`: Interchange payload type (default: `conversation.message` — use `offering.response` when replying to an offering request)
 - `attachments`: optional
 
-Returns: same as `message.send`
+Returns: same as `mail.send`
 
-**message.search** — Search the inbox.
+**mail.search** — Search the inbox.
 
 Parameters:
 
@@ -667,7 +667,7 @@ Returns: array of message summaries (message ref, headers, payload type, preview
 
 Returns on error: `{ error: string, code: string }`. Error codes: `invalid_mailbox` (mailbox does not exist), `invalid_query` (malformed search criteria).
 
-**message.read** — Read a specific message.
+**mail.read** — Read a specific message.
 
 Parameters:
 
@@ -678,7 +678,7 @@ Returns: the requested content. For `"payload"`, returns the parsed `application
 
 Returns on error: `{ error: string, code: string }`. Error codes: `not_found` (message no longer exists), `invalid_part` (requested MIME part does not exist).
 
-**message.threads** — Get conversation threads.
+**mail.threads** — Get conversation threads.
 
 Parameters:
 
@@ -688,7 +688,7 @@ Parameters:
 
 Returns: array of thread trees, each with message summaries and child threads.
 
-**message.flag** — Set or clear flags on a message.
+**mail.flag** — Set or clear flags on a message.
 
 Parameters:
 
@@ -700,7 +700,7 @@ Returns: `{ ok: true }`
 
 Returns on error: `{ error: string, code: string }`. Error codes: `not_found`, `invalid_flag` (flag name not permitted by server).
 
-**message.move** — Move a message to a different mailbox.
+**mail.move** — Move a message to a different mailbox.
 
 Parameters:
 
@@ -711,11 +711,11 @@ Returns: `{ ok: true }`
 
 Returns on error: `{ error: string, code: string }`. Error codes: `not_found`, `invalid_mailbox`.
 
-**message.wait** — Block until a message matching a query arrives.
+**mail.wait** — Block until a message matching a query arrives.
 
 Parameters:
 
-- `query`: search criteria (same shape as `message.search` query — e.g. `{ from: "agent@..." }`)
+- `query`: search criteria (same shape as `mail.search` query — e.g. `{ from: "agent@..." }`)
 - `timeout`: maximum seconds to wait (default: 120)
 - `mailbox`: mailbox to watch (default: `INBOX`)
 
@@ -725,7 +725,7 @@ Returns on success: `{ ref, from, subject, content }` — the matched message's 
 
 Returns on error: `{ error: string, code: string }`. Error codes: `timeout` (no matching message arrived within the deadline), `aborted` (reactor shut down while waiting).
 
-Use this instead of polling `message.search` in a loop. The blocking behavior is transparent to the reactor — the tool's promise simply takes longer to resolve, and the agent naturally idles until it does.
+Use this instead of polling `mail.search` in a loop. The blocking behavior is transparent to the reactor — the tool's promise simply takes longer to resolve, and the agent naturally idles until it does.
 
 ### Offering Tools
 
@@ -757,7 +757,7 @@ Returns: `{ messageId: string, status: "pending", correlationId: string }`
 
 ### Pending Marker Pattern
 
-When `message.send` is used for an offering request (type `offering.request`), the tool returns a pending marker:
+When `mail.send` is used for an offering request (type `offering.request`), the tool returns a pending marker:
 
 ```json
 {
