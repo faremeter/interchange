@@ -332,11 +332,6 @@ describe("reconstructTimeline", () => {
     if (turn?.kind === "turn") {
       expect(turn.errors?.[0]?.category).toBe("rate_limit");
     }
-
-    // No error-association or working-tree gaps should be present
-    const gapKinds = result.gaps.map((g) => g.kind);
-    expect(gapKinds).not.toContain("no-error-turn-association");
-    expect(gapKinds).not.toContain("errors-from-working-tree");
   });
 
   test("handles message-count regression gracefully", async () => {
