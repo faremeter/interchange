@@ -15,11 +15,11 @@ import type {
   ToolRunner,
   InferenceEvent,
   InboundMessage,
-  ConversationMessage,
+  ConversationTurn,
   PendingOperation,
   TokenUsage,
   ContextCommit,
-  AssistantMessage,
+  AssistantTurn,
   InferenceError,
   PartialMessage,
   BeforeToolExtension,
@@ -37,11 +37,11 @@ function emptyUsage(): TokenUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
 }
 
-function makeContextStore(messages: ConversationMessage[] = []): ContextStore {
+function makeContextStore(turns: ConversationTurn[] = []): ContextStore {
   return {
     async load() {
       return {
-        messages,
+        turns,
         pendingOperations: [],
         tokenUsage: emptyUsage(),
         connectorState: null,
@@ -1269,12 +1269,12 @@ describe("createReactor — tool runner failures", () => {
 
   test("addToHistory=false runs tools but skips history append", async () => {
     // We observe history indirectly via a checkpoint that captures the
-    // messages passed to contextStore.commit().
-    let committedMessages: ConversationMessage[] = [];
+    // turns passed to contextStore.commit().
+    let committedTurns: ConversationTurn[] = [];
     const capturingStore: ContextStore = {
       async load() {
         return {
-          messages: [],
+          turns: [],
           pendingOperations: [],
           tokenUsage: emptyUsage(),
           connectorState: null,
@@ -1284,7 +1284,7 @@ describe("createReactor — tool runner failures", () => {
         /* noop */
       },
       async commit(msgs, _ops, _usage, message): Promise<ContextCommit> {
-        committedMessages = [...msgs];
+        committedTurns = [...msgs];
         return { hash: "abc", message, timestamp: Date.now() };
       },
       async branch() {
@@ -1316,17 +1316,17 @@ describe("createReactor — tool runner failures", () => {
     await waitFor("reactor.done");
 
     // Verify commit was actually called before checking its contents.
-    expect(committedMessages.length).toBeGreaterThan(0);
+    expect(committedTurns.length).toBeGreaterThan(0);
 
     // The committed history should contain the inbound text message but
     // no tool_result message since addToHistory was false.
-    const hasToolResult = committedMessages.some((m) =>
+    const hasToolResult = committedTurns.some((m) =>
       m.content.some((b) => b.type === "tool_result"),
     );
     expect(hasToolResult).toBe(false);
 
     // The inbound user message should still be in history.
-    const hasUserText = committedMessages.some(
+    const hasUserText = committedTurns.some(
       (m) => m.role === "user" && m.content.some((b) => b.type === "text"),
     );
     expect(hasUserText).toBe(true);
@@ -1522,7 +1522,7 @@ describe("createReactor — checkpoint failure", () => {
     const failingStore: ContextStore = {
       async load() {
         return {
-          messages: [],
+          turns: [],
           pendingOperations: [],
           tokenUsage: emptyUsage(),
           connectorState: null,
@@ -1674,7 +1674,7 @@ describe("createReactor — dequeue priority", () => {
     // block. Using addToHistory=false on executeTools keeps this as the
     // last message, so historyHasPendingToolCalls() stays true when the
     // loop calls dequeueNext() after tools complete.
-    const seededMessages: ConversationMessage[] = [
+    const seededTurns: ConversationTurn[] = [
       {
         role: "assistant",
         content: [
@@ -1709,7 +1709,7 @@ describe("createReactor — dequeue priority", () => {
     };
 
     const { reactor, waitFor } = createTestReactor({
-      contextStore: makeContextStore(seededMessages),
+      contextStore: makeContextStore(seededTurns),
       plugin: {
         async decide(event, _state, caps) {
           order.push(event.type);
@@ -1963,12 +1963,12 @@ describe("createReactor — start guard", () => {
 // ---------------------------------------------------------------------------
 
 describe("createReactor — state snapshot inspection", () => {
-  test("state.messages contains delivered message text", async () => {
-    let capturedMessages: ConversationMessage[] = [];
+  test("state.turns contains delivered message text", async () => {
+    let capturedTurns: ConversationTurn[] = [];
     const { reactor, waitFor } = createTestReactor({
       plugin: pluginFromTable({
         "message.received": (_e, state, caps) => {
-          capturedMessages = state.messages;
+          capturedTurns = state.turns;
           return caps.done();
         },
       }),
@@ -1978,8 +1978,8 @@ describe("createReactor — state snapshot inspection", () => {
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
-    expect(capturedMessages.length).toBe(1);
-    const last = capturedMessages.at(-1);
+    expect(capturedTurns.length).toBe(1);
+    const last = capturedTurns.at(-1);
     if (last === undefined) throw new Error("unreachable");
     expect(last.role).toBe("user");
     const textBlock = last.content.find((b) => b.type === "text");
@@ -2111,7 +2111,7 @@ describe("createReactor — state snapshot inspection", () => {
             messageCount++;
             if (messageCount === 1) {
               // Mutate the snapshot's content block.
-              const msg = state.messages[0];
+              const msg = state.turns[0];
               if (msg !== undefined) {
                 const block = msg.content[0];
                 if (block !== undefined && block.type === "text") {
@@ -2137,7 +2137,7 @@ describe("createReactor — state snapshot inspection", () => {
     await waitFor("reactor.done");
 
     if (secondSnapshot === undefined) throw new Error("unreachable");
-    const firstMsg = secondSnapshot.messages[0];
+    const firstMsg = secondSnapshot.turns[0];
     if (firstMsg === undefined) throw new Error("unreachable");
     const block = firstMsg.content[0];
     if (block === undefined || block.type !== "text")
@@ -2183,7 +2183,7 @@ describe("createReactor — deliver after done", () => {
 // 21. Inference path (infer action)
 // ---------------------------------------------------------------------------
 
-function makeAssistantMessage(text: string): AssistantMessage {
+function makeAssistantTurn(text: string): AssistantTurn {
   return {
     role: "assistant",
     content: [{ type: "text", text }],
@@ -2194,7 +2194,7 @@ function makeAssistantMessage(text: string): AssistantMessage {
 
 function makeInferenceRunner(
   result:
-    | { type: "done"; message: AssistantMessage; usage: TokenUsage }
+    | { type: "done"; turn: AssistantTurn; usage: TokenUsage }
     | { type: "error"; error: InferenceError; partial: PartialMessage },
 ): (opts: InferenceHarnessOptions) => AsyncGenerator<InferenceEvent> {
   return async function* (opts) {
@@ -2202,7 +2202,7 @@ function makeInferenceRunner(
       const event: InferenceEvent = {
         type: "inference.done",
         seq: opts.nextSeq(),
-        data: { message: result.message, usage: result.usage },
+        data: { turn: result.turn, usage: result.usage },
       };
       yield event;
     } else {
@@ -2225,7 +2225,7 @@ describe("createReactor — inference path", () => {
       cacheWrite: 5,
       thinking: 20,
     };
-    const assistantMsg = makeAssistantMessage("Hello from the model");
+    const assistantMsg = makeAssistantTurn("Hello from the model");
 
     let stateAtInferenceDone: ReactorState | undefined;
 
@@ -2239,7 +2239,7 @@ describe("createReactor — inference path", () => {
       }),
       inferenceRunner: makeInferenceRunner({
         type: "done",
-        message: assistantMsg,
+        turn: assistantMsg,
         usage: inferUsage,
       }),
     });
@@ -2250,7 +2250,7 @@ describe("createReactor — inference path", () => {
 
     // The emitted event stream should contain inference.done.
     const inferDone = getEvent(events, "inference.done");
-    expect(inferDone.data.message.content[0]).toEqual({
+    expect(inferDone.data.turn.content[0]).toEqual({
       type: "text",
       text: "Hello from the model",
     });
@@ -2264,7 +2264,7 @@ describe("createReactor — inference path", () => {
 
     // The assistant message should have been appended to the conversation.
     const lastMsg =
-      stateAtInferenceDone.messages[stateAtInferenceDone.messages.length - 1];
+      stateAtInferenceDone.turns[stateAtInferenceDone.turns.length - 1];
     if (lastMsg === undefined) throw new Error("no messages in state snapshot");
     expect(lastMsg.role).toBe("assistant");
     expect(lastMsg.content[0]).toEqual({
@@ -2357,7 +2357,7 @@ describe("createReactor — inference path", () => {
 // ---------------------------------------------------------------------------
 
 describe("createReactor — beforeToolExtensions", () => {
-  const toolCallMsg: AssistantMessage = {
+  const toolCallMsg: AssistantTurn = {
     role: "assistant",
     content: [
       {
@@ -2382,7 +2382,7 @@ describe("createReactor — beforeToolExtensions", () => {
   function inferenceRunnerWithToolCall() {
     return makeInferenceRunner({
       type: "done",
-      message: toolCallMsg,
+      turn: toolCallMsg,
       usage: inferUsage,
     });
   }
@@ -2625,7 +2625,7 @@ describe("createReactor — beforeToolExtensions", () => {
     if (capturedState === undefined)
       throw new Error("extension was never called");
     // State should contain the inbound message and the assistant tool_call message.
-    expect(capturedState.messages.length).toBeGreaterThanOrEqual(2);
+    expect(capturedState.turns.length).toBeGreaterThanOrEqual(2);
     expect(capturedState.sessionId).toContain("test-sess-");
   });
 
@@ -2639,7 +2639,7 @@ describe("createReactor — beforeToolExtensions", () => {
 
     const toolsRun: string[] = [];
 
-    const twoToolCallMsg: AssistantMessage = {
+    const twoToolCallMsg: AssistantTurn = {
       role: "assistant",
       content: [
         {
@@ -2694,7 +2694,7 @@ describe("createReactor — beforeToolExtensions", () => {
       }),
       inferenceRunner: makeInferenceRunner({
         type: "done",
-        message: twoToolCallMsg,
+        turn: twoToolCallMsg,
         usage: inferUsage,
       }),
       beforeToolExtensions: [blockBash],

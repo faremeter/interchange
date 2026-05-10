@@ -6,7 +6,7 @@ import {
   listMail,
   type MailDirection,
 } from "@interchange/storage-isogit";
-import type { ConversationMessage } from "@interchange/types/runtime";
+import type { ConversationTurn } from "@interchange/types/runtime";
 import {
   ErrorRecord,
   type ErrorRecord as ErrorRecordType,
@@ -88,14 +88,14 @@ function reasonToStatus(
   }
 }
 
-function isToolResultMessage(msg: ConversationMessage): boolean {
+function isToolResultTurn(msg: ConversationTurn): boolean {
   const first = msg.content[0];
   return (
     msg.role === "user" && first !== undefined && first.type === "tool_result"
   );
 }
 
-function extractTextContent(msg: ConversationMessage): string {
+function extractTextContent(msg: ConversationTurn): string {
   return msg.content
     .filter((b) => b.type === "text")
     .map((b) => {
@@ -111,14 +111,14 @@ type TurnAccumulator = {
 };
 
 function extractTurns(
-  newMessages: ConversationMessage[],
+  newMessages: ConversationTurn[],
   status: "completed" | "error" | "in-progress",
 ): ReconstructedEvent[] {
   const events: ReconstructedEvent[] = [];
   let current: TurnAccumulator | null = null;
 
   for (const msg of newMessages) {
-    if (msg.role === "user" && !isToolResultMessage(msg)) {
+    if (msg.role === "user" && !isToolResultTurn(msg)) {
       // New user message (not a tool result) starts a new turn
       if (current !== null && current.texts.length > 0) {
         events.push({
@@ -285,7 +285,7 @@ export async function reconstructTimeline(
 
     const status = reasonToStatus(reason);
 
-    let messages: ConversationMessage[];
+    let messages: ConversationTurn[];
     try {
       messages = await store.readAt(commit.hash);
     } catch {

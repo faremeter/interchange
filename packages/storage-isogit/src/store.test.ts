@@ -13,10 +13,7 @@ import {
 } from "./index";
 import { IsogitStore } from "./store";
 import { initAgentRepo } from "./init";
-import type {
-  ConversationMessage,
-  TokenUsage,
-} from "@interchange/types/runtime";
+import type { ConversationTurn, TokenUsage } from "@interchange/types/runtime";
 import type { AuditRecord, ErrorRecord } from "@interchange/types/audit";
 
 const ZERO_USAGE: TokenUsage = {
@@ -50,9 +47,9 @@ describe("createIsogitStore", () => {
   test("initializes a new agent repo and returns a usable store", async () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
-    const { messages, pendingOperations, tokenUsage } = await store.load();
+    const { turns, pendingOperations, tokenUsage } = await store.load();
 
-    expect(messages).toEqual([]);
+    expect(turns).toEqual([]);
     expect(pendingOperations).toEqual([]);
     expect(tokenUsage).toEqual(ZERO_USAGE);
   });
@@ -61,8 +58,8 @@ describe("createIsogitStore", () => {
     const dir = await tempDir();
     await createIsogitStore(dir);
     const store = await createIsogitStore(dir);
-    const { messages } = await store.load();
-    expect(messages).toEqual([]);
+    const { turns } = await store.load();
+    expect(turns).toEqual([]);
   });
 });
 
@@ -71,7 +68,7 @@ describe("save and load round-trip", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "Hello" }],
@@ -86,7 +83,7 @@ describe("save and load round-trip", () => {
     ];
 
     await store.commit(messages, [], ZERO_USAGE, "first checkpoint");
-    const { messages: loaded } = await store.load();
+    const { turns: loaded } = await store.load();
 
     expect(loaded).toEqual(messages);
   });
@@ -95,14 +92,14 @@ describe("save and load round-trip", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    const first: ConversationMessage[] = [
+    const first: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "step 1" }],
         timestamp: 1000,
       },
     ];
-    const second: ConversationMessage[] = [
+    const second: ConversationTurn[] = [
       ...first,
       {
         role: "assistant",
@@ -115,8 +112,8 @@ describe("save and load round-trip", () => {
     await store.commit(first, [], ZERO_USAGE, "step 1");
     await store.commit(second, [], ZERO_USAGE, "step 2");
 
-    const { messages } = await store.load();
-    expect(messages).toEqual(second);
+    const { turns } = await store.load();
+    expect(turns).toEqual(second);
   });
 });
 
@@ -168,30 +165,30 @@ describe("branch operations", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    const mainMessages: ConversationMessage[] = [
+    const mainTurns: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "on main" }],
         timestamp: 1000,
       },
     ];
-    await store.commit(mainMessages, [], ZERO_USAGE, "main work");
+    await store.commit(mainTurns, [], ZERO_USAGE, "main work");
 
     await createAndSwitchBranch(dir, "experiment");
 
-    const branchMessages: ConversationMessage[] = [
+    const branchTurns: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "on branch" }],
         timestamp: 2000,
       },
     ];
-    await store.commit(branchMessages, [], ZERO_USAGE, "branch work");
+    await store.commit(branchTurns, [], ZERO_USAGE, "branch work");
 
     await switchBranch(dir, "main");
 
-    const { messages } = await store.load();
-    expect(messages).toEqual(mainMessages);
+    const { turns } = await store.load();
+    expect(turns).toEqual(mainTurns);
   });
 
   test("listBranches includes main and created branches", async () => {
@@ -240,7 +237,7 @@ describe("readAt", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    const v1: ConversationMessage[] = [
+    const v1: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "version 1" }],
@@ -249,7 +246,7 @@ describe("readAt", () => {
     ];
     const first = await store.commit(v1, [], ZERO_USAGE, "v1");
 
-    const v2: ConversationMessage[] = [
+    const v2: ConversationTurn[] = [
       ...v1,
       {
         role: "assistant",
@@ -590,7 +587,7 @@ describe("load reads from git HEAD, not working tree", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "committed data" }],
@@ -604,7 +601,7 @@ describe("load reads from git HEAD, not working tree", () => {
     await fs.promises.writeFile(contextPath, "NOT VALID JSON }{");
 
     // load() should read from git HEAD, not the corrupt working-tree file.
-    const { messages: loaded } = await store.load();
+    const { turns: loaded } = await store.load();
     expect(loaded).toEqual(messages);
   });
 
@@ -612,14 +609,14 @@ describe("load reads from git HEAD, not working tree", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    const goodMessages: ConversationMessage[] = [
+    const goodTurns: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "good data" }],
         timestamp: 1000,
       },
     ];
-    await store.commit(goodMessages, [], ZERO_USAGE, "good checkpoint");
+    await store.commit(goodTurns, [], ZERO_USAGE, "good checkpoint");
 
     // Commit garbage directly into context.json via the git plumbing to
     // simulate a corrupt HEAD blob. We write the garbage, stage it, and
@@ -635,8 +632,8 @@ describe("load reads from git HEAD, not working tree", () => {
     });
 
     // load() should walk back and find the last good checkpoint.
-    const { messages: loaded } = await store.load();
-    expect(loaded).toEqual(goodMessages);
+    const { turns: loaded } = await store.load();
+    expect(loaded).toEqual(goodTurns);
   });
 });
 
@@ -693,7 +690,7 @@ describe("connector thread state", () => {
     // Write a context.json that mimics an old commit without connectorState.
     const contextPath = path.join(dir, "state", "context.json");
     const oldFormat = {
-      messages: [],
+      turns: [],
       pendingOperations: [],
       tokenUsage: ZERO_USAGE,
     };

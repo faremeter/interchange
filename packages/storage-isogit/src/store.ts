@@ -7,7 +7,7 @@ import {
   type ContextStore,
   type AuditStore,
   type ContextCommit,
-  type ConversationMessage,
+  type ConversationTurn,
   type ConnectorThreadState,
   type PendingOperation,
 } from "@interchange/types/runtime";
@@ -30,7 +30,7 @@ const ConnectorThreadStateSchema = type({
   "subject?": "string",
 });
 
-const ConversationMessageSchema = type({
+const ConversationTurnSchema = type({
   role: "'user' | 'assistant' | 'system'",
   content: ContentBlock.array(),
   "model?": "string",
@@ -45,14 +45,14 @@ const PendingOperationSchema = type({
 });
 
 const ContextDataSchema = type({
-  messages: ConversationMessageSchema.array(),
+  turns: ConversationTurnSchema.array(),
   pendingOperations: PendingOperationSchema.array(),
   tokenUsage: TokenUsage,
   "connectorState?": type("null").or(ConnectorThreadStateSchema),
 });
 
 type ContextData = {
-  messages: ConversationMessage[];
+  turns: ConversationTurn[];
   pendingOperations: PendingOperation[];
   tokenUsage: TokenUsage;
   connectorState: ConnectorThreadState | null;
@@ -64,7 +64,7 @@ function parseContextData(raw: unknown): ContextData {
     throw new Error(`context data has unexpected structure: ${result.summary}`);
   }
   return {
-    messages: result.messages,
+    turns: result.turns,
     pendingOperations: result.pendingOperations,
     tokenUsage: result.tokenUsage,
     connectorState: result.connectorState ?? null,
@@ -127,7 +127,7 @@ export class IsogitStore implements ContextStore, AuditStore {
   }
 
   async load(_signal?: AbortSignal): Promise<{
-    messages: ConversationMessage[];
+    turns: ConversationTurn[];
     pendingOperations: PendingOperation[];
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
@@ -164,14 +164,14 @@ export class IsogitStore implements ContextStore, AuditStore {
   }
 
   async commit(
-    messages: ConversationMessage[],
+    turns: ConversationTurn[],
     pendingOperations: PendingOperation[],
     tokenUsage: TokenUsage,
     message: string,
     _signal?: AbortSignal,
   ): Promise<ContextCommit> {
     const data: ContextData = {
-      messages,
+      turns,
       pendingOperations,
       tokenUsage,
       connectorState: this.pendingConnectorState,
@@ -215,7 +215,7 @@ export class IsogitStore implements ContextStore, AuditStore {
   async readAt(
     hash: string,
     _signal?: AbortSignal,
-  ): Promise<ConversationMessage[]> {
+  ): Promise<ConversationTurn[]> {
     const { blob } = await git.readBlob({
       fs,
       dir: this.dir,
@@ -225,7 +225,7 @@ export class IsogitStore implements ContextStore, AuditStore {
     const text = new TextDecoder().decode(blob);
     const parsed = JSON.parse(text) as unknown;
     const data = parseContextData(parsed);
-    return data.messages;
+    return data.turns;
   }
 
   async commitAudit(

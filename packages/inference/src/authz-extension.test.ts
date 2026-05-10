@@ -19,7 +19,7 @@ function emptyUsage(): TokenUsage {
 function makeState(): ReactorState {
   return {
     sessionId: "test",
-    messages: [],
+    turns: [],
     activeForks: [],
     pendingOperations: [],
     activeGates: [],
