@@ -623,6 +623,163 @@ describe("reconstructTimeline", () => {
     expect(corruptGaps[0]?.description).toContain("00000001-corrupt.json");
   });
 
+  test("reconstructs a full multi-step session from git", async () => {
+    const dir = await makeTempDir();
+    await initAgentRepo(dir);
+    const store = new IsogitStore(dir);
+    const mailStore = await createMailAuditStore(dir);
+
+    const t = 1700000000000;
+
+    // 1. Inbound mail arrives
+    const inbound = buildRawMessage({
+      messageId: "<inbound-1@test>",
+      from: "alice@example.com",
+      to: "agent@example.com",
+      body: "What is the weather in SF and NYC?",
+    });
+    await mailStore.commitMail(inbound, "in");
+
+    // 2. First inference: agent decides to call a tool
+    const msgs1: ConversationMessage[] = [
+      userMessage("What is the weather in SF and NYC?", t),
+      toolCallMessage("call-1", "get_weather", { city: "SF" }, t + 1000),
+    ];
+    await store.commit(msgs1, NO_OPS, NO_USAGE, "checkpoint: tool-execution");
+
+    // 3. Tool result comes back
+    const msgs2: ConversationMessage[] = [
+      ...msgs1,
+      toolResultMessage("call-1", "72F and sunny", t + 2000),
+    ];
+    await store.commit(msgs2, NO_OPS, NO_USAGE, "checkpoint: tool-done");
+
+    // 4. Second inference: agent calls another tool
+    const msgs3: ConversationMessage[] = [
+      ...msgs2,
+      toolCallMessage("call-2", "get_weather", { city: "NYC" }, t + 3000),
+    ];
+    await store.commit(msgs3, NO_OPS, NO_USAGE, "checkpoint: tool-execution");
+
+    // 5. Second tool result
+    const msgs4: ConversationMessage[] = [
+      ...msgs3,
+      toolResultMessage("call-2", "55F and rainy", t + 4000),
+    ];
+    await store.commit(msgs4, NO_OPS, NO_USAGE, "checkpoint: tool-done");
+
+    // 6. Final inference: agent composes reply
+    const msgs5: ConversationMessage[] = [
+      ...msgs4,
+      assistantMessage("SF is 72F and sunny. NYC is 55F and rainy.", t + 5000),
+    ];
+    const finalCommit = await store.commit(
+      msgs5,
+      NO_OPS,
+      NO_USAGE,
+      "checkpoint: inference-done",
+    );
+
+    // 7. Outbound mail sent with checkpoint linkage
+    const outbound = buildRawMessage({
+      messageId: "<outbound-1@test>",
+      from: "agent@example.com",
+      to: "alice@example.com",
+      inReplyTo: "<inbound-1@test>",
+      body: "SF is 72F and sunny. NYC is 55F and rainy.",
+    });
+    await mailStore.commitMail(outbound, "out", {
+      checkpointHash: finalCommit.hash,
+    });
+
+    // 8. An error occurs on a follow-up inference
+    const msgs6: ConversationMessage[] = [
+      ...msgs5,
+      userMessage("What about London?", t + 10000),
+      assistantMessage("Let me check London weather.", t + 11000),
+    ];
+    await store.commit(msgs6, NO_OPS, NO_USAGE, "checkpoint: inference-error");
+
+    // 9. Error record committed
+    await store.commitErrors([
+      {
+        source: "inference",
+        category: "rate_limit",
+        message: "Rate limited by provider",
+        fatal: false,
+        timestamp: new Date(t + 11000).toISOString(),
+        sessionId: "test-session",
+        seq: 0,
+      },
+    ]);
+
+    // --- Reconstruct and verify ---
+    const result = await reconstructTimeline(dir);
+
+    // No gaps — all data is well-formed and linked
+    expect(result.gaps).toHaveLength(0);
+
+    // Mail events
+    const mailEvents = result.events.filter((e) => e.kind === "mail");
+    expect(mailEvents).toHaveLength(2);
+
+    const inboundMail = mailEvents.find(
+      (e) => e.kind === "mail" && e.direction === "in",
+    );
+    expect(inboundMail).toBeDefined();
+    if (inboundMail !== undefined && inboundMail.kind === "mail") {
+      expect(inboundMail.messageId).toBe("<inbound-1@test>");
+    }
+
+    const outboundMail = mailEvents.find(
+      (e) => e.kind === "mail" && e.direction === "out",
+    );
+    expect(outboundMail).toBeDefined();
+    if (outboundMail !== undefined && outboundMail.kind === "mail") {
+      expect(outboundMail.messageId).toBe("<outbound-1@test>");
+      expect(outboundMail.checkpointHash).toBe(finalCommit.hash);
+    }
+
+    // Turn events
+    const turns = result.events.filter((e) => e.kind === "turn");
+
+    // Tool-only checkpoints (tool-execution, tool-done) produce no text
+    // content, so no turn events. Only inference-done and inference-error
+    // checkpoints that add assistant text produce turns.
+    expect(turns).toHaveLength(2);
+
+    const completedTurn = turns.find(
+      (e) => e.kind === "turn" && e.status === "completed",
+    );
+    expect(completedTurn).toBeDefined();
+    if (completedTurn !== undefined && completedTurn.kind === "turn") {
+      expect(completedTurn.content).toBe(
+        "SF is 72F and sunny. NYC is 55F and rainy.",
+      );
+    }
+
+    const errorTurn = turns.find(
+      (e) => e.kind === "turn" && e.status === "error",
+    );
+    expect(errorTurn).toBeDefined();
+    if (errorTurn !== undefined && errorTurn.kind === "turn") {
+      expect(errorTurn.content).toBe("Let me check London weather.");
+      expect(errorTurn.isError).toBe(true);
+      expect(errorTurn.errors).toBeDefined();
+      expect(errorTurn.errors?.length).toBe(1);
+      expect(errorTurn.errors?.[0]?.category).toBe("rate_limit");
+    }
+
+    // Events are sorted by timestamp — mail and turns interleaved correctly
+    for (let i = 1; i < result.events.length; i++) {
+      const prev = result.events[i - 1];
+      const curr = result.events[i];
+      if (prev !== undefined && curr !== undefined) {
+        expect(curr.timestamp).toBeGreaterThanOrEqual(prev.timestamp);
+      }
+    }
+  });
+
   test("records multiple gaps for multiple corrupt checkpoints", async () => {
     const dir = await makeTempDir();
     await initAgentRepo(dir);
