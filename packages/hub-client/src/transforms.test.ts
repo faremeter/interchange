@@ -286,16 +286,8 @@ describe("turnToEvent", () => {
     ],
   };
 
-  test("converts a text turn to an event", () => {
-    const event = turnToEvent(baseTurn);
-    expect(event).not.toBeNull();
-    if (!event) return;
-    expect(event.kind).toBe("turn");
-    if (event.kind !== "turn") return;
-    expect(event.turnId).toBe("turn_1");
-    expect(event.content).toBe("Hello from assistant");
-    expect(event.timestamp).toBe("2024-01-03T00:00:00Z");
-    expect(event.isError).toBeUndefined();
+  test("text-only turns return null (represented by outbound mail)", () => {
+    expect(turnToEvent(baseTurn)).toBeNull();
   });
 
   test("returns null for turns with no displayable parts", () => {
@@ -379,30 +371,27 @@ describe("turnToEvent", () => {
     ]);
   });
 
-  test("concatenates multiple text parts", () => {
-    const event = turnToEvent({
-      ...baseTurn,
-      parts: [
-        {
-          id: "p1",
-          type: "text" as const,
-          content: "Hello",
-          metadata: null,
-          ordinal: 0,
-        },
-        {
-          id: "p2",
-          type: "text" as const,
-          content: " world",
-          metadata: null,
-          ordinal: 1,
-        },
-      ],
-    });
-    expect(event).not.toBeNull();
-    if (!event) return;
-    expect(event.kind).toBe("turn");
-    if (event.kind !== "turn") return;
-    expect(event.content).toBe("Hello world");
+  test("text-only turns with multiple parts still return null", () => {
+    expect(
+      turnToEvent({
+        ...baseTurn,
+        parts: [
+          {
+            id: "p1",
+            type: "text" as const,
+            content: "Hello",
+            metadata: null,
+            ordinal: 0,
+          },
+          {
+            id: "p2",
+            type: "text" as const,
+            content: " world",
+            metadata: null,
+            ordinal: 1,
+          },
+        ],
+      }),
+    ).toBeNull();
   });
 });
