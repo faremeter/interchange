@@ -2,7 +2,7 @@ import { type } from "arktype";
 
 import { getLogger } from "@interchange/log";
 import type {
-  ConversationMessage,
+  ConversationTurn,
   ContentBlock,
   InferenceEvent,
   InferenceOptions,
@@ -18,7 +18,7 @@ const logger = getLogger(["interchange", "inference", "anthropic"]);
 // ---------------------------------------------------------------------------
 
 function buildRequest(
-  messages: ConversationMessage[],
+  messages: ConversationTurn[],
   model: string,
   options: InferenceOptions,
 ): BuiltRequest {
@@ -97,7 +97,7 @@ function buildRequest(
 }
 
 function toAnthropicMessage(
-  msg: ConversationMessage,
+  msg: ConversationTurn,
   cacheLastBlock?: boolean,
 ): Record<string, unknown> {
   const role = msg.role === "assistant" ? "assistant" : "user";

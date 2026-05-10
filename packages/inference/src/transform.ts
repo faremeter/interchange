@@ -10,7 +10,7 @@
 // not per-conversation.
 
 import type {
-  ConversationMessage,
+  ConversationTurn,
   ContentBlock,
 } from "@interchange/types/runtime";
 
@@ -22,14 +22,14 @@ export type TransformOptions = {
 };
 
 export function transformMessages(
-  messages: ConversationMessage[],
+  messages: ConversationTurn[],
   options: TransformOptions,
-): ConversationMessage[] {
+): ConversationTurn[] {
   const { targetModel, keepThinkingForSameModel = true } = options;
 
   // First pass: strip thinking blocks and filter aborted assistant messages.
   const filtered = messages
-    .map((msg): ConversationMessage | null => {
+    .map((msg): ConversationTurn | null => {
       if (msg.role === "assistant") {
         const isSameModel = msg.model === targetModel;
         const keepThinking = keepThinkingForSameModel && isSameModel;
@@ -54,16 +54,16 @@ export function transformMessages(
       }
       return msg;
     })
-    .filter((msg): msg is ConversationMessage => msg !== null);
+    .filter((msg): msg is ConversationTurn => msg !== null);
 
   // Second pass: inject synthetic tool results for orphaned tool calls.
   return injectOrphanedToolResults(filtered);
 }
 
 function injectOrphanedToolResults(
-  messages: ConversationMessage[],
-): ConversationMessage[] {
-  const result: ConversationMessage[] = [];
+  messages: ConversationTurn[],
+): ConversationTurn[] {
+  const result: ConversationTurn[] = [];
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];

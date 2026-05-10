@@ -8,7 +8,7 @@ import {
   initAgentRepo,
   createMailAuditStore,
 } from "@interchange/storage-isogit";
-import type { ConversationMessage } from "@interchange/types/runtime";
+import type { ConversationTurn } from "@interchange/types/runtime";
 import type { ErrorRecord } from "@interchange/types/audit";
 import { reconstructTimeline } from "./timeline-reconstruction";
 
@@ -37,17 +37,14 @@ const NO_USAGE = {
   thinking: 0,
 };
 
-function userMessage(
-  text: string,
-  timestamp = Date.now(),
-): ConversationMessage {
+function userMessage(text: string, timestamp = Date.now()): ConversationTurn {
   return { role: "user", content: [{ type: "text", text }], timestamp };
 }
 
 function assistantMessage(
   text: string,
   timestamp = Date.now(),
-): ConversationMessage {
+): ConversationTurn {
   return {
     role: "assistant",
     content: [{ type: "text", text }],
@@ -61,7 +58,7 @@ function toolCallMessage(
   name: string,
   args: Record<string, unknown>,
   timestamp = Date.now(),
-): ConversationMessage {
+): ConversationTurn {
   return {
     role: "assistant",
     content: [{ type: "tool_call", id: callId, name, arguments: args }],
@@ -74,7 +71,7 @@ function toolResultMessage(
   callId: string,
   result: string,
   timestamp = Date.now(),
-): ConversationMessage {
+): ConversationTurn {
   return {
     role: "user",
     content: [
@@ -115,7 +112,7 @@ describe("reconstructTimeline", () => {
     const store = new IsogitStore(dir);
 
     const t = 1700000000000;
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       userMessage("Hello", t),
       assistantMessage("Hi there", t + 1000),
     ];
@@ -145,7 +142,7 @@ describe("reconstructTimeline", () => {
     const t = 1700000000000;
 
     // First turn
-    const messages1: ConversationMessage[] = [
+    const messages1: ConversationTurn[] = [
       userMessage("Hello", t),
       assistantMessage("Hi there", t + 1000),
     ];
@@ -157,7 +154,7 @@ describe("reconstructTimeline", () => {
     );
 
     // Second turn (appends to the same message array)
-    const messages2: ConversationMessage[] = [
+    const messages2: ConversationTurn[] = [
       ...messages1,
       userMessage("How are you?", t + 5000),
       assistantMessage("I'm doing well", t + 6000),
@@ -186,7 +183,7 @@ describe("reconstructTimeline", () => {
     await initAgentRepo(dir);
     const store = new IsogitStore(dir);
 
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       userMessage("What's the weather?"),
       toolCallMessage("call-1", "get_weather", { city: "SF" }),
       toolResultMessage("call-1", "72F and sunny"),
@@ -257,7 +254,7 @@ describe("reconstructTimeline", () => {
     const store = new IsogitStore(dir);
 
     const t = 1700000000000;
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       userMessage("Hello", t),
       assistantMessage("Hi there", t + 1000),
     ];
@@ -296,7 +293,7 @@ describe("reconstructTimeline", () => {
     const store = new IsogitStore(dir);
 
     // Write a conversation first
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       userMessage("Do something risky"),
       assistantMessage("Attempting..."),
     ];
@@ -340,7 +337,7 @@ describe("reconstructTimeline", () => {
     const store = new IsogitStore(dir);
 
     // First checkpoint with 4 messages
-    const messages1: ConversationMessage[] = [
+    const messages1: ConversationTurn[] = [
       userMessage("Hello"),
       assistantMessage("Hi"),
       userMessage("More"),
@@ -354,7 +351,7 @@ describe("reconstructTimeline", () => {
     );
 
     // Second checkpoint with only 2 messages (regression)
-    const messages2: ConversationMessage[] = [
+    const messages2: ConversationTurn[] = [
       userMessage("Fresh start"),
       assistantMessage("OK"),
     ];
@@ -392,7 +389,7 @@ describe("reconstructTimeline", () => {
     await mailStore.commitMail(inbound, "in");
 
     // Then a turn
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       userMessage("Hello"),
       assistantMessage("Hi there"),
     ];
@@ -425,7 +422,7 @@ describe("reconstructTimeline", () => {
     const store = new IsogitStore(dir);
 
     const t = 1700000000000;
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       userMessage("Hello", t),
       assistantMessage("Hi", t + 1000),
     ];
@@ -447,7 +444,7 @@ describe("reconstructTimeline", () => {
     const store = new IsogitStore(dir);
 
     const t = 1700000000000;
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       userMessage("Hello", t),
       assistantMessage("Something went wrong", t + 1000),
     ];
@@ -472,7 +469,7 @@ describe("reconstructTimeline", () => {
     const store = new IsogitStore(dir);
 
     const t = 1700000000000;
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       userMessage("What's the weather?", t),
       toolCallMessage("call-1", "get_weather", { city: "SF" }, t + 1000),
     ];
@@ -484,7 +481,7 @@ describe("reconstructTimeline", () => {
     );
 
     // Add tool result and final response
-    const messages2: ConversationMessage[] = [
+    const messages2: ConversationTurn[] = [
       ...messages,
       toolResultMessage("call-1", "72F", t + 2000),
       assistantMessage("It's 72F in SF", t + 3000),
@@ -521,7 +518,7 @@ describe("reconstructTimeline", () => {
     const store = new IsogitStore(dir);
 
     // Write a valid checkpoint first
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       userMessage("Hello"),
       assistantMessage("Hi"),
     ];
@@ -636,35 +633,35 @@ describe("reconstructTimeline", () => {
     await mailStore.commitMail(inbound, "in");
 
     // 2. First inference: agent decides to call a tool
-    const msgs1: ConversationMessage[] = [
+    const msgs1: ConversationTurn[] = [
       userMessage("What is the weather in SF and NYC?", t),
       toolCallMessage("call-1", "get_weather", { city: "SF" }, t + 1000),
     ];
     await store.commit(msgs1, NO_OPS, NO_USAGE, "checkpoint: tool-execution");
 
     // 3. Tool result comes back
-    const msgs2: ConversationMessage[] = [
+    const msgs2: ConversationTurn[] = [
       ...msgs1,
       toolResultMessage("call-1", "72F and sunny", t + 2000),
     ];
     await store.commit(msgs2, NO_OPS, NO_USAGE, "checkpoint: tool-done");
 
     // 4. Second inference: agent calls another tool
-    const msgs3: ConversationMessage[] = [
+    const msgs3: ConversationTurn[] = [
       ...msgs2,
       toolCallMessage("call-2", "get_weather", { city: "NYC" }, t + 3000),
     ];
     await store.commit(msgs3, NO_OPS, NO_USAGE, "checkpoint: tool-execution");
 
     // 5. Second tool result
-    const msgs4: ConversationMessage[] = [
+    const msgs4: ConversationTurn[] = [
       ...msgs3,
       toolResultMessage("call-2", "55F and rainy", t + 4000),
     ];
     await store.commit(msgs4, NO_OPS, NO_USAGE, "checkpoint: tool-done");
 
     // 6. Final inference: agent composes reply
-    const msgs5: ConversationMessage[] = [
+    const msgs5: ConversationTurn[] = [
       ...msgs4,
       assistantMessage("SF is 72F and sunny. NYC is 55F and rainy.", t + 5000),
     ];
@@ -688,7 +685,7 @@ describe("reconstructTimeline", () => {
     });
 
     // 8. An error occurs on a follow-up inference
-    const msgs6: ConversationMessage[] = [
+    const msgs6: ConversationTurn[] = [
       ...msgs5,
       userMessage("What about London?", t + 10000),
       assistantMessage("Let me check London weather.", t + 11000),

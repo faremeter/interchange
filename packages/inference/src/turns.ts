@@ -1,13 +1,13 @@
 import type {
-  ConversationMessage,
+  ConversationTurn,
   ContentBlock,
-  AssistantMessage,
+  AssistantTurn,
   InboundMessage,
   ToolCall,
   ToolResult,
 } from "@interchange/types/runtime";
 
-export type { ConversationMessage, ContentBlock, AssistantMessage };
+export type { ConversationTurn, ContentBlock, AssistantTurn };
 
 export type TextBlock = { type: "text"; text: string };
 
@@ -44,9 +44,9 @@ export type ToolResultBlock = {
 
 export type { ToolCall, ToolResult };
 
-export function createInboundMessage(
+export function createInboundTurn(
   message: InboundMessage,
-): ConversationMessage | null {
+): ConversationTurn | null {
   const content = message.content ?? "";
   if (content.length === 0) return null;
 
@@ -66,7 +66,7 @@ export function createInboundMessage(
   };
 }
 
-export function createSystemMessage(text: string): ConversationMessage {
+export function createSystemMessage(text: string): ConversationTurn {
   return {
     role: "system",
     content: [{ type: "text", text }],
@@ -77,13 +77,11 @@ export function createSystemMessage(text: string): ConversationMessage {
 export function createAssistantMessage(
   blocks: ContentBlock[],
   model: string,
-): AssistantMessage {
+): AssistantTurn {
   return { role: "assistant", content: blocks, model, timestamp: Date.now() };
 }
 
-export function createToolResultMessage(
-  results: ToolResult[],
-): ConversationMessage {
+export function createToolResultTurn(results: ToolResult[]): ConversationTurn {
   const blocks: ContentBlock[] = results.map((r) => {
     const block: Extract<ContentBlock, { type: "tool_result" }> = {
       type: "tool_result",

@@ -121,7 +121,7 @@ describe("EventCollector", () => {
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(
       event("inference.done", 5, {
-        message: {
+        turn: {
           role: "assistant",
           content: [
             { type: "text", text: "Hello world" },
@@ -221,7 +221,7 @@ describe("EventCollector", () => {
   test("parts before inference.start are dropped", async () => {
     await collector.onEvent(
       event("inference.done", 5, {
-        message: {
+        turn: {
           role: "assistant",
           content: [{ type: "text", text: "orphan" }],
           model: "gpt-4",
@@ -238,7 +238,7 @@ describe("EventCollector", () => {
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(
       event("inference.done", 5, {
-        message: {
+        turn: {
           role: "assistant",
           content: [
             { type: "text", text: "hello" },
@@ -275,7 +275,7 @@ describe("EventCollector", () => {
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(
       event("inference.done", 5, {
-        message: {
+        turn: {
           role: "assistant",
           content: [
             {
@@ -334,7 +334,7 @@ describe("EventCollector", () => {
     await collector.onEvent(event("inference.start", 2, { model: "claude-3" }));
     await collector.onEvent(
       event("inference.done", 5, {
-        message: {
+        turn: {
           role: "assistant",
           content: [
             { type: "text", text: "Let me search" },
@@ -362,7 +362,7 @@ describe("EventCollector", () => {
     await collector.onEvent(event("inference.start", 8, { model: "claude-3" }));
     await collector.onEvent(
       event("inference.done", 12, {
-        message: {
+        turn: {
           role: "assistant",
           content: [{ type: "text", text: "Here are the results" }],
           model: "claude-3",
@@ -513,7 +513,7 @@ describe("EventCollector", () => {
       );
       await notifyCollector.onEvent(
         event("inference.done", 5, {
-          message: {
+          turn: {
             role: "assistant",
             content: [{ type: "text", text: "Hello world" }],
             model: "gpt-4",
@@ -536,7 +536,7 @@ describe("EventCollector", () => {
       );
       await notifyCollector.onEvent(
         event("inference.done", 5, {
-          message: {
+          turn: {
             role: "assistant",
             content: [
               { type: "thinking", thinking: "Let me think..." },
@@ -559,7 +559,7 @@ describe("EventCollector", () => {
       );
       await notifyCollector.onEvent(
         event("inference.done", 3, {
-          message: {
+          turn: {
             role: "assistant",
             content: [{ type: "text", text: "Searching" }],
             model: "gpt-4",
@@ -573,7 +573,7 @@ describe("EventCollector", () => {
       );
       await notifyCollector.onEvent(
         event("inference.done", 8, {
-          message: {
+          turn: {
             role: "assistant",
             content: [{ type: "text", text: "Results" }],
             model: "gpt-4",
@@ -596,7 +596,7 @@ describe("EventCollector", () => {
       );
       await notifyCollector.onEvent(
         event("inference.done", 5, {
-          message: {
+          turn: {
             role: "assistant",
             content: [{ type: "text", text: "Some text" }],
             model: "gpt-4",
@@ -635,7 +635,7 @@ describe("EventCollector", () => {
       );
       await notifyCollector.onEvent(
         event("inference.done", 3, {
-          message: {
+          turn: {
             role: "assistant",
             content: [
               {
@@ -710,7 +710,7 @@ describe("EventCollector", () => {
       );
       await notifyCollector.onEvent(
         event("inference.done", 3, {
-          message: {
+          turn: {
             role: "assistant",
             content: [
               {
@@ -754,7 +754,7 @@ describe("EventCollector", () => {
       );
       await notifyCollector.onEvent(
         event("inference.done", 5, {
-          message: {
+          turn: {
             role: "assistant",
             content: [{ type: "text", text: "Continuing" }],
             model: "gpt-4",
@@ -798,7 +798,7 @@ describe("EventCollector", () => {
       );
       await notifyCollector.onEvent(
         event("inference.done", 5, {
-          message: {
+          turn: {
             role: "assistant",
             content: [{ type: "text", text: "All good" }],
             model: "gpt-4",
@@ -822,7 +822,7 @@ describe("EventCollector", () => {
       await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
       await collector.onEvent(
         event("inference.done", 5, {
-          message: {
+          turn: {
             role: "assistant",
             content: [{ type: "text", text: "Hello " }],
             model: "gpt-4",
@@ -832,7 +832,7 @@ describe("EventCollector", () => {
       );
       await collector.onEvent(
         event("inference.done", 6, {
-          message: {
+          turn: {
             role: "assistant",
             content: [{ type: "text", text: "world" }],
             model: "gpt-4",
@@ -848,7 +848,7 @@ describe("EventCollector", () => {
       await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
       await collector.onEvent(
         event("inference.done", 5, {
-          message: {
+          turn: {
             role: "assistant",
             content: [{ type: "text", text: "First turn text" }],
             model: "gpt-4",
@@ -910,7 +910,7 @@ describe("EventCollectorRegistry getAccumulatedText", () => {
     registry.dispatch(
       address,
       event("inference.done", 5, {
-        message: {
+        turn: {
           role: "assistant",
           content: [{ type: "text", text: "streaming text" }],
           model: "gpt-4",

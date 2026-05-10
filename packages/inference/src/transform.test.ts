@@ -1,10 +1,10 @@
 import { describe, test, expect } from "bun:test";
 import { transformMessages, createIDNormalizer } from "./transform";
-import type { ConversationMessage } from "@interchange/types/runtime";
+import type { ConversationTurn } from "@interchange/types/runtime";
 
 describe("transformMessages", () => {
   test("preserves messages when target model matches originating model", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "assistant",
         model: "claude-3-5-sonnet",
@@ -28,7 +28,7 @@ describe("transformMessages", () => {
   });
 
   test("strips thinking blocks when replaying to a different model", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "assistant",
         model: "claude-3-5-sonnet",
@@ -51,7 +51,7 @@ describe("transformMessages", () => {
   });
 
   test("strips thinking blocks when keepThinkingForSameModel is false", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "assistant",
         model: "claude-3-5-sonnet",
@@ -74,7 +74,7 @@ describe("transformMessages", () => {
   });
 
   test("injects synthetic tool results for orphaned tool calls", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "Do something." }],
@@ -110,7 +110,7 @@ describe("transformMessages", () => {
   });
 
   test("does not inject when tool results are present", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [{ type: "text", text: "Do something." }],
@@ -146,7 +146,7 @@ describe("transformMessages", () => {
   });
 
   test("preserves user and system messages unchanged", () => {
-    const messages: ConversationMessage[] = [
+    const messages: ConversationTurn[] = [
       {
         role: "system",
         content: [{ type: "text", text: "You are helpful." }],

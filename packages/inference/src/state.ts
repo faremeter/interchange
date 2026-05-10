@@ -1,4 +1,4 @@
-// Reactor state management: message history, async operations, usage tracking.
+// Reactor state management: turn history, async operations, usage tracking.
 //
 // The state object is the authoritative view the plugin receives on every
 // decision. It is mutable by the reactor only — the plugin receives a
@@ -7,7 +7,7 @@
 // (INFERENCE.md § Agent Reactor › Plugin Decision Function)
 
 import type {
-  ConversationMessage,
+  ConversationTurn,
   PendingOperation,
   TokenUsage,
   ReactorState,
@@ -22,11 +22,11 @@ export type ReactorStateManager = ReturnType<typeof createStateManager>;
  */
 export function createStateManager(
   sessionId: string,
-  initialMessages: ConversationMessage[],
+  initialTurns: ConversationTurn[],
   initialOps: PendingOperation[],
   initialUsage: TokenUsage,
 ) {
-  const messages: ConversationMessage[] = [...initialMessages];
+  const turns: ConversationTurn[] = [...initialTurns];
   const pendingOperations = new Map<string, PendingOperation>(
     initialOps.map((op) => [op.correlationId, op]),
   );
@@ -34,8 +34,8 @@ export function createStateManager(
   let activeGatesSnapshot: GateSnapshot[] = [];
   const activeForks: { forkId: string; mode: "independent" | "child" }[] = [];
 
-  function appendMessage(msg: ConversationMessage): void {
-    messages.push(msg);
+  function appendTurn(msg: ConversationTurn): void {
+    turns.push(msg);
   }
 
   function addPendingOperation(op: PendingOperation): void {
@@ -67,8 +67,8 @@ export function createStateManager(
     if (idx !== -1) activeForks.splice(idx, 1);
   }
 
-  function getMessages(): ConversationMessage[] {
-    return messages;
+  function getTurns(): ConversationTurn[] {
+    return turns;
   }
 
   function getPendingOperations(): PendingOperation[] {
@@ -82,7 +82,7 @@ export function createStateManager(
   function snapshot(): ReactorState {
     return {
       sessionId,
-      messages: messages.map((m) => ({
+      turns: turns.map((m) => ({
         ...m,
         content: m.content.map((b) => structuredClone(b)),
       })),
@@ -100,14 +100,14 @@ export function createStateManager(
   }
 
   return {
-    appendMessage,
+    appendTurn,
     addPendingOperation,
     removePendingOperation,
     accumUsage,
     setGatesSnapshot,
     addFork,
     removeFork,
-    getMessages,
+    getTurns,
     getPendingOperations,
     getTokenUsage,
     snapshot,
