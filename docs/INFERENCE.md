@@ -272,9 +272,9 @@ Inbound messages arrive at the reactor regardless of current state. Correlated m
 
 ### INBOX Consumption
 
-The harness consumes messages from the agent's INBOX after delivering them to the reactor. Messages that belong to the active connector thread or that are responses to agent-initiated outbound sends are fetched, delivered via `reactor.deliver()`, and then flagged as deleted and expunged from the INBOX. Unsolicited messages (new threads, untracked threads) remain in the INBOX for the agent to discover via message tools.
+The harness consumes messages from the agent's INBOX after delivering them to the reactor. Messages that belong to the active connector thread or that are responses to agent-initiated outbound sends are fetched, delivered via `reactor.deliver()`, and then flagged as deleted and expunged from the INBOX. Unsolicited messages (new threads, untracked threads) remain in the INBOX for the agent to discover via mail tools.
 
-This means messages routed through the connector or matched as agent-initiated responses are not visible to `message_search` after delivery. The message content enters the conversation history through the reactor's event processing, not through the INBOX. The model cannot poll for these messages — they arrive as `message.received` events and are appended to the history by the reactor when the event is processed.
+This means messages routed through the connector or matched as agent-initiated responses are not visible to `mail_search` after delivery. The message content enters the conversation history through the reactor's event processing, not through the INBOX. The model cannot poll for these messages — they arrive as `message.received` events and are appended to the history by the reactor when the event is processed.
 
 ### Correlation
 

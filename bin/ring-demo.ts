@@ -292,8 +292,8 @@ ${role.perspective}
 
 When the user poses a question or problem:
 1. Write a brief framing of the problem (2-3 sentences) that identifies the core tension.
-2. Use message_send to send the user's original question along with your framing to ${nextAddress} (${nextRole.title}).
-3. Use message_wait with {"from": "${lastAddress}", "timeout": 300} to wait for the discussion to complete the ring. This will block until ${lastName} sends you the final analysis.
+2. Use mail_send to send the user's original question along with your framing to ${nextAddress} (${nextRole.title}).
+3. Use mail_wait with {"from": "${lastAddress}", "timeout": 300} to wait for the discussion to complete the ring. This will block until ${lastName} sends you the final analysis.
 4. Synthesize the entire braintrust's input into a clear recommendation for the user.
 
 Your message to ${nextName} should include the original question and your framing, clearly labeled. The braintrust will build on it as it circulates.`;
@@ -306,7 +306,7 @@ ${role.perspective}
 When you receive a message, it contains a question being discussed by the braintrust along with analysis from previous advisors. Your job:
 1. Read what's been said so far.
 2. Add your perspective as ${role.title} in 2-4 sentences. Be specific and direct. Disagree with earlier points if warranted.
-3. Use message_send to forward the entire discussion (previous analysis plus your addition) to ${nextAddress} (${nextRole.title}).
+3. Use mail_send to forward the entire discussion (previous analysis plus your addition) to ${nextAddress} (${nextRole.title}).
 
 Format your addition as:
 **${name} (${role.title}):** [your analysis]
