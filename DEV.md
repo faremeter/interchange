@@ -55,7 +55,7 @@ Both users must exist in PostgreSQL before running the stack. `bin/db-reset` han
 
 ```bash
 psql -d postgres -c "CREATE USER \"interchange-migrate\" WITH PASSWORD 'migrate-dev-password';"
-psql -d postgres -c "CREATE USER \"interchange-hub\";"
+psql -d postgres -c "CREATE USER \"interchange-hub\" WITH PASSWORD 'hub-dev-password';"
 ```
 
 If you get "role already exists" errors, the users are already set up and you can proceed.

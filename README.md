@@ -47,12 +47,13 @@ Default privileges are configured so that any table created by `interchange-migr
 
 ### 4. Environment files
 
-Three env files are needed, all gitignored. Copy from the examples:
+Four env files are needed, all gitignored. Copy from the examples:
 
 ```
 cp .env.example .env
 cp .env.hub.example .env.hub
 cp .env.migrate.example .env.migrate
+cp .env.sidecar.example .env.sidecar
 ```
 
 **.env** -- shared database connection:
@@ -70,7 +71,9 @@ DB_USER=interchange-hub
 DB_PASSWORD=hub-dev-password
 
 BETTER_AUTH_SECRET=<random 64-char hex string>
-BETTER_AUTH_URL=http://localhost:3000
+BETTER_AUTH_BASE_URL=http://localhost:3000
+
+HUB_DATA_DIR=./tmp/hub-data
 
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
@@ -83,6 +86,15 @@ Generate `BETTER_AUTH_SECRET` with `openssl rand -hex 32`.
 ```
 DB_USER=interchange-migrate
 DB_PASSWORD=migrate-dev-password
+```
+
+**.env.sidecar** -- sidecar config (optional, dev defaults are provided):
+
+```
+HUB_WS_URL=ws://localhost:3000/api/sidecars/ws
+SIDECAR_ID=dev-sidecar-1
+SIDECAR_TOKEN=dev-token
+SIDECAR_DATA_DIR=./tmp/sidecar-data
 ```
 
 ### 5. Run migrations
