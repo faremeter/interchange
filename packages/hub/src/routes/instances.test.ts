@@ -538,3 +538,21 @@ describe("GET /agents/instances/:instanceId/offerings", () => {
     expect(body).toMatchObject([{ id: "off_1", agentName: "Test Agent" }]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Blob endpoint routing test
+// ---------------------------------------------------------------------------
+
+describe("GET /agents/instances/blobs/:blobId", () => {
+  test("blob route is reachable and not shadowed by /:instanceId", async () => {
+    const app = createTestApp();
+    const url = `/api/tenants/${TENANT_ID}/agents/instances/blobs/bad-format`;
+    const res = await app.request(url);
+
+    // The blob handler rejects malformed IDs with 400.
+    // If /:instanceId shadowed this route, we'd get 404 (no instance "blobs").
+    expect(res.status).toBe(400);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ error: { code: "bad_request" } });
+  });
+});

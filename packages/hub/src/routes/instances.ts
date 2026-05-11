@@ -714,6 +714,136 @@ app.get(
 );
 
 app.get(
+  "/blobs/:blobId",
+  describeRoute({
+    tags: ["Instances"],
+    summary: "Fetch a blob by ID",
+    description:
+      "Returns raw bytes for a MIME part. Blob IDs are issued by the mail parsing layer.",
+    responses: {
+      200: {
+        description: "Blob bytes",
+        content: { "application/octet-stream": {} },
+      },
+      400: {
+        description: "Invalid blob ID",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      403: {
+        description: "Forbidden",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+      404: {
+        description: "Blob not found",
+        content: {
+          "application/json": { schema: resolver(ErrorResponse) },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const blobId = c.req.param("blobId");
+
+    // Blob IDs have the format: blob_<mailId>_<partPath>
+    // where partPath is an IMAP-style section specifier (digits and dots only).
+    // mailId may itself contain underscores, so we match the suffix.
+    const blobMatch = /^blob_(.+?)_(\d[\d.]*)$/.exec(blobId);
+    if (!blobMatch) {
+      return c.json(
+        { error: { code: "bad_request", message: "Invalid blob ID format" } },
+        400,
+      );
+    }
+
+    const mailId = blobMatch[1];
+    const partPath = blobMatch[2];
+
+    if (!mailId || !partPath) {
+      return c.json(
+        { error: { code: "bad_request", message: "Invalid blob ID format" } },
+        400,
+      );
+    }
+
+    const tenant = c.get("tenant");
+    const db = c.get("db");
+
+    const mailRow = await db.query.sessionMail.findFirst({
+      where: and(
+        eq(sessionMail.id, mailId),
+        eq(sessionMail.tenantId, tenant.id),
+      ),
+    });
+
+    if (!mailRow) {
+      return c.json(
+        { error: { code: "not_found", message: "Blob not found" } },
+        404,
+      );
+    }
+
+    const resolvedInstanceId = mailRow.instanceId;
+    if (!resolvedInstanceId) {
+      return c.json(
+        { error: { code: "not_found", message: "Blob not found" } },
+        404,
+      );
+    }
+
+    const principal = c.get("principal");
+    const grantStore = c.get("grantStore");
+    const conditionRegistry = c.get("conditionRegistry");
+
+    const authResult = await authorize(
+      grantStore,
+      principal.id,
+      tenant.id,
+      `instance:${resolvedInstanceId}`,
+      "read",
+      conditionRegistry,
+    );
+
+    if (authResult.effect !== "allow") {
+      return c.json(
+        {
+          error: {
+            code: "forbidden",
+            message: "You do not have permission to perform this action",
+          },
+        },
+        403,
+      );
+    }
+
+    let partBytes: Uint8Array;
+    try {
+      partBytes = extractPartByPath(mailRow.raw, partPath);
+    } catch {
+      return c.json(
+        { error: { code: "not_found", message: "Blob not found" } },
+        404,
+      );
+    }
+
+    return c.body(
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- Uint8Array.buffer.slice always returns ArrayBuffer
+      partBytes.buffer.slice(
+        partBytes.byteOffset,
+        partBytes.byteOffset + partBytes.byteLength,
+      ) as ArrayBuffer,
+      200,
+      {
+        "Content-Type": "application/octet-stream",
+      },
+    );
+  },
+);
+
+app.get(
   "/:instanceId",
   requireGrant(idResource("instance", "instanceId"), "read"),
   describeRoute({
@@ -1622,136 +1752,6 @@ app.get(
         turns.map((t) => ({ createdAt: t.startedAt, id: t.id })),
         limit,
       ),
-    );
-  },
-);
-
-app.get(
-  "/blobs/:blobId",
-  describeRoute({
-    tags: ["Instances"],
-    summary: "Fetch a blob by ID",
-    description:
-      "Returns raw bytes for a MIME part. Blob IDs are issued by the mail parsing layer.",
-    responses: {
-      200: {
-        description: "Blob bytes",
-        content: { "application/octet-stream": {} },
-      },
-      400: {
-        description: "Invalid blob ID",
-        content: {
-          "application/json": { schema: resolver(ErrorResponse) },
-        },
-      },
-      403: {
-        description: "Forbidden",
-        content: {
-          "application/json": { schema: resolver(ErrorResponse) },
-        },
-      },
-      404: {
-        description: "Blob not found",
-        content: {
-          "application/json": { schema: resolver(ErrorResponse) },
-        },
-      },
-    },
-  }),
-  async (c) => {
-    const blobId = c.req.param("blobId");
-
-    // Blob IDs have the format: blob_<mailId>_<partPath>
-    // where partPath is an IMAP-style section specifier (digits and dots only).
-    // mailId may itself contain underscores, so we match the suffix.
-    const blobMatch = /^blob_(.+?)_(\d[\d.]*)$/.exec(blobId);
-    if (!blobMatch) {
-      return c.json(
-        { error: { code: "bad_request", message: "Invalid blob ID format" } },
-        400,
-      );
-    }
-
-    const mailId = blobMatch[1];
-    const partPath = blobMatch[2];
-
-    if (!mailId || !partPath) {
-      return c.json(
-        { error: { code: "bad_request", message: "Invalid blob ID format" } },
-        400,
-      );
-    }
-
-    const tenant = c.get("tenant");
-    const db = c.get("db");
-
-    const mailRow = await db.query.sessionMail.findFirst({
-      where: and(
-        eq(sessionMail.id, mailId),
-        eq(sessionMail.tenantId, tenant.id),
-      ),
-    });
-
-    if (!mailRow) {
-      return c.json(
-        { error: { code: "not_found", message: "Blob not found" } },
-        404,
-      );
-    }
-
-    const resolvedInstanceId = mailRow.instanceId;
-    if (!resolvedInstanceId) {
-      return c.json(
-        { error: { code: "not_found", message: "Blob not found" } },
-        404,
-      );
-    }
-
-    const principal = c.get("principal");
-    const grantStore = c.get("grantStore");
-    const conditionRegistry = c.get("conditionRegistry");
-
-    const authResult = await authorize(
-      grantStore,
-      principal.id,
-      tenant.id,
-      `instance:${resolvedInstanceId}`,
-      "read",
-      conditionRegistry,
-    );
-
-    if (authResult.effect !== "allow") {
-      return c.json(
-        {
-          error: {
-            code: "forbidden",
-            message: "You do not have permission to perform this action",
-          },
-        },
-        403,
-      );
-    }
-
-    let partBytes: Uint8Array;
-    try {
-      partBytes = extractPartByPath(mailRow.raw, partPath);
-    } catch {
-      return c.json(
-        { error: { code: "not_found", message: "Blob not found" } },
-        404,
-      );
-    }
-
-    return c.body(
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- Uint8Array.buffer.slice always returns ArrayBuffer
-      partBytes.buffer.slice(
-        partBytes.byteOffset,
-        partBytes.byteOffset + partBytes.byteLength,
-      ) as ArrayBuffer,
-      200,
-      {
-        "Content-Type": "application/octet-stream",
-      },
     );
   },
 );
