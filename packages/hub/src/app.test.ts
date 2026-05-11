@@ -91,6 +91,7 @@ describe("app", () => {
       "Discovery",
       "Observability",
       "Agent Data",
+      "Sidecars",
     ];
 
     for (const tag of expectedTags) {

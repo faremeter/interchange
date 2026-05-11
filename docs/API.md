@@ -96,6 +96,11 @@
 | GET | /api/tenants/:tenantId/agents/:agentId/history/:ref | Show changes in a commit |
 | GET | /api/tenants/:tenantId/agents/:agentId/branches | List branches |
 | POST | /api/tenants/:tenantId/agents/:agentId/history/:ref/restore | Restore agent data to a previous state |
+| POST | /api/sidecars | Register or update a sidecar |
+| GET | /api/sidecars | List all sidecars |
+| GET | /api/sidecars/:id | Get a sidecar by ID |
+| DELETE | /api/sidecars/:id | Deregister a sidecar |
+| POST | /api/sidecars/:id/heartbeat | Record a sidecar heartbeat |
 
 ## User
 
@@ -907,6 +912,42 @@ Restores the agent's working directory to the state at the specified commit.
 204: (no content) -- Data restored
 404: ErrorResponse -- Commit not found
 
+## Sidecars
+
+### POST /api/sidecars
+Register or update a sidecar
+
+Upserts a sidecar record. If an id is provided and already exists, the record is updated. Used for idempotent sidecar registration by a known stable identifier.
+
+Body: CreateSidecar
+
+201: SidecarResponse -- Sidecar registered
+
+### GET /api/sidecars
+List all sidecars
+
+200: SidecarResponse[] -- List of sidecars
+
+### GET /api/sidecars/:id
+Get a sidecar by ID
+
+200: SidecarResponse -- Sidecar detail
+404: ErrorResponse -- Sidecar not found
+
+### DELETE /api/sidecars/:id
+Deregister a sidecar
+
+204: (no content) -- Sidecar deregistered
+404: ErrorResponse -- Sidecar not found
+
+### POST /api/sidecars/:id/heartbeat
+Record a sidecar heartbeat
+
+Updates the sidecar's last heartbeat timestamp and sets status to online.
+
+204: (no content) -- Heartbeat recorded
+404: ErrorResponse -- Sidecar not found
+
 ## Type Reference
 
 ### AgentHealth
@@ -986,6 +1027,12 @@ Source: packages/types/src/providers.ts
 ### CreateRole
 `{ name: string, description?: string }`
 Source: packages/types/src/roles.ts
+
+### CreateSidecar
+`{ url: string, id?: string >= 1, status?: "error" | "offline" | "online" }`
+Source: packages/types/src/sidecars.ts
+
+Register or update a sidecar. The id field supports idempotent registration by a known stable identifier; if omitted, the server generates one.
 
 ### CreateTenant
 `{ name: string, slug: string, parentId?: string | null }`
@@ -1088,6 +1135,10 @@ Source: packages/types/src/sessions.ts
 ### SessionSummary
 `{ agentId: string, agentName: string, createdAt: string, id: string, status: "ended" | "ending" | "idle", tenantId: string, tenantName: string, lastActivityAt?: string | null }`
 Source: packages/types/src/me.ts
+
+### SidecarResponse
+`{ createdAt: string, id: string, lastHeartbeat: string | null, status: "error" | "offline" | "online", updatedAt: string, url: string }`
+Source: packages/types/src/sidecars.ts
 
 ### SpanResponse
 `{ name: string, spanId: string, startTime: string, traceId: string, agentId?: string | null, attributes?: { [string]: unknown } | null, durationMs?: number | null, endTime?: string | null, parentSpanId?: string | null, status?: "error" | "ok" }`
