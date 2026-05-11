@@ -42,6 +42,7 @@
 | POST | /api/tenants/:tenantId/agents/definitions/:agentId/rollback | Rollback to a previous version |
 | POST | /api/tenants/:tenantId/agents/instances | Deploy an agent instance |
 | GET | /api/tenants/:tenantId/agents/instances | List agent instances |
+| GET | /api/tenants/:tenantId/agents/instances/blobs/:blobId | Fetch a blob by ID |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId | Get instance detail |
 | DELETE | /api/tenants/:tenantId/agents/instances/:instanceId | Stop an instance |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/health | Get instance health |
@@ -51,7 +52,6 @@
 | POST | /api/tenants/:tenantId/agents/instances/:instanceId/mail | Send mail to the agent |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/mail | List mail for an instance |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/turns | List inference turns for an instance |
-| GET | /api/tenants/:tenantId/agents/instances/blobs/:blobId | Fetch a blob by ID |
 | GET | /api/tenants/:tenantId/approvals | List pending approvals in the tenant |
 | GET | /api/tenants/:tenantId/approvals/:approvalId | Get approval details |
 | POST | /api/tenants/:tenantId/approvals/:approvalId/approve | Approve an action |
@@ -490,6 +490,16 @@ Query: agentId?, status?: deployed|running|updating|error|stopped, cursor?, limi
 
 200: unknown -- List of instances
 
+### GET /api/tenants/:tenantId/agents/instances/blobs/:blobId
+Fetch a blob by ID
+
+Returns raw bytes for a MIME part. Blob IDs are issued by the mail parsing layer.
+
+200: (no content) -- Blob bytes
+400: ErrorResponse -- Invalid blob ID
+403: ErrorResponse -- Forbidden
+404: ErrorResponse -- Blob not found
+
 ### GET /api/tenants/:tenantId/agents/instances/:instanceId
 Get instance detail
 
@@ -578,16 +588,6 @@ Query: cursor?, limit?
 
 200: unknown -- List of inference turns
 404: ErrorResponse -- Instance not found
-
-### GET /api/tenants/:tenantId/agents/instances/blobs/:blobId
-Fetch a blob by ID
-
-Returns raw bytes for a MIME part. Blob IDs are issued by the mail parsing layer.
-
-200: (no content) -- Blob bytes
-400: ErrorResponse -- Invalid blob ID
-403: ErrorResponse -- Forbidden
-404: ErrorResponse -- Blob not found
 
 ## Approvals
 
