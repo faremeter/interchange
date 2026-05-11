@@ -125,6 +125,7 @@ export function createEventCollector(
         });
         break;
       case "connector.reply":
+        if (finalized) break;
         // Only persist reply content when it originated from an error path.
         // On normal turns inference.done already persisted the text parts.
         if (pendingError) {

@@ -1149,6 +1149,34 @@ describe("EventCollector post-finalization guard", () => {
     expect(delivered!.errors).toHaveLength(0);
     expect(delivered!.hadError).toBe(false);
   });
+
+  test("connector.reply after finalization does not mutate accumulatedText", async () => {
+    const tracked = createEventCollector({
+      db: fakeDB.db,
+      sessionId: "ses_test",
+      instanceId: "ins_test",
+      tenantId: "tnt_test",
+    });
+
+    // inference.error sets pendingError = true
+    await tracked.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    await tracked.onEvent(
+      event("inference.error", 2, {
+        error: { category: "rate_limit", message: "limit reached" },
+      }),
+    );
+    // reactor.done finalizes the turn (pendingError is NOT cleared)
+    await tracked.onEvent(event("reactor.done", 3, {}));
+
+    const textAfterFinalize = tracked.getAccumulatedText();
+
+    // Late connector.reply arrives — should be ignored
+    await tracked.onEvent(
+      event("connector.reply", 4, { content: "stale reply" }),
+    );
+
+    expect(tracked.getAccumulatedText()).toBe(textAfterFinalize);
+  });
 });
 
 describe("EventCollector.getLastTurnId", () => {
