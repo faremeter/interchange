@@ -296,13 +296,16 @@ export function createInstanceSession(opts: {
         // since, determine whether the replay is stale or still active.
         // A null turnId means the server lost track of the turn (e.g.
         // collector re-created on reconnect) — the text is stale.
-        // A non-null turnId that appears in /turns means the turn already
-        // committed and we missed turn.committed — also stale.
-        // Only preserve streaming when turnId is set and NOT in hydration.
+        // A non-null turnId that appears in /turns with a terminal status
+        // (completed/failed) means the turn already committed and we
+        // missed turn.committed — also stale. A running turn in /turns
+        // means inference is still active and the replay is valid.
         if (streamingFromReplay) {
           const isActive =
             replayTurnId !== null &&
-            !hydratedTurns.some((t) => t.id === replayTurnId);
+            !hydratedTurns.some(
+              (t) => t.id === replayTurnId && t.status !== "running",
+            );
           if (!isActive) {
             streaming = "";
           }

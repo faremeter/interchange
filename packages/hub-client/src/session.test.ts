@@ -1085,6 +1085,104 @@ describe("streaming buffer", () => {
     expect(s.streaming).toBe("accumulated so far");
   });
 
+  test("replay streaming survives hydration when turn appears in /turns with running status", async () => {
+    let resolveFetch!: () => void;
+    const fetchPending = new Promise<void>((r) => {
+      resolveFetch = r;
+    });
+
+    const runningTurn = makeTurn({
+      id: "turn_active",
+      status: "running",
+      endedAt: null,
+    });
+    const bus = { emit: noop as (event: unknown) => void };
+    const transport: Transport = {
+      async fetch<T>(_method: string, path: string): Promise<T> {
+        await fetchPending;
+        if (path.includes("/mail")) return { data: [] } as T;
+        if (path.includes("/turns")) return { data: [runningTurn] } as T;
+        throw new Error(`Unexpected: ${path}`);
+      },
+      subscribe(_path: string, onEvent: (event: unknown) => void): () => void {
+        bus.emit = onEvent;
+        return () => {
+          bus.emit = noop;
+        };
+      },
+    };
+
+    const s = createInstanceSession({
+      tenantId: TENANT_ID,
+      instanceId: INSTANCE_ID,
+      transport,
+      onChange: noop,
+    });
+
+    s.start();
+
+    bus.emit({
+      type: "inference.text.replay",
+      data: { turnId: "turn_active", text: "accumulated so far" },
+    });
+    expect(s.streaming).toBe("accumulated so far");
+
+    // Hydration completes — turn_active is in /turns but with status
+    // "running", so the replay is NOT stale
+    resolveFetch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(s.streaming).toBe("accumulated so far");
+  });
+
+  test("replay is cleared when hydrated turn has status failed", async () => {
+    let resolveFetch!: () => void;
+    const fetchPending = new Promise<void>((r) => {
+      resolveFetch = r;
+    });
+
+    const failedTurn = makeTurn({
+      id: "turn_1",
+      status: "failed",
+      endedAt: "2024-01-01T01:00:01Z",
+    });
+    const bus = { emit: noop as (event: unknown) => void };
+    const transport: Transport = {
+      async fetch<T>(_method: string, path: string): Promise<T> {
+        await fetchPending;
+        if (path.includes("/mail")) return { data: [] } as T;
+        if (path.includes("/turns")) return { data: [failedTurn] } as T;
+        throw new Error(`Unexpected: ${path}`);
+      },
+      subscribe(_path: string, onEvent: (event: unknown) => void): () => void {
+        bus.emit = onEvent;
+        return () => {
+          bus.emit = noop;
+        };
+      },
+    };
+
+    const s = createInstanceSession({
+      tenantId: TENANT_ID,
+      instanceId: INSTANCE_ID,
+      transport,
+      onChange: noop,
+    });
+
+    s.start();
+
+    bus.emit({
+      type: "inference.text.replay",
+      data: { turnId: "turn_1", text: "stale text" },
+    });
+    expect(s.streaming).toBe("stale text");
+
+    resolveFetch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(s.streaming).toBe("");
+  });
+
   test("inference.error after replay clears streamingFromReplay so hydration does not double-clear", async () => {
     let resolveFetch!: () => void;
     const fetchPending = new Promise<void>((r) => {
