@@ -979,9 +979,7 @@ describe("EventCollector.getCurrentTurnId", () => {
       }),
     );
 
-    await collector.onEvent(
-      event("connector.reply", 3, { content: "hello" }),
-    );
+    await collector.onEvent(event("connector.reply", 3, { content: "hello" }));
 
     expect(collector.getCurrentTurnId()).toBeNull();
   });
@@ -1081,7 +1079,10 @@ describe("EventCollector post-finalization guard", () => {
     ).length;
 
     await collector.onEvent(
-      event("reactor.error", 4, { fatal: false, error: "context store failed" }),
+      event("reactor.error", 4, {
+        fatal: false,
+        error: "context store failed",
+      }),
     );
 
     const partsAfter = fakeDB.inserts.filter(
@@ -1114,14 +1115,14 @@ describe("EventCollector post-finalization guard", () => {
   });
 
   test("non-fatal reactor.error after finalization does not mutate delivered TurnFinalized", async () => {
-    let delivered: TurnFinalized | null = null;
+    const deliveries: TurnFinalized[] = [];
     const tracked = createEventCollector({
       db: fakeDB.db,
       sessionId: "ses_test",
       instanceId: "ins_test",
       tenantId: "tnt_test",
       onTurnFinalized: (turn) => {
-        delivered = turn;
+        deliveries.push(turn);
       },
     });
 
@@ -1138,16 +1139,18 @@ describe("EventCollector post-finalization guard", () => {
     );
     await tracked.onEvent(event("connector.reply", 3, { content: "hello" }));
 
-    expect(delivered).not.toBeNull();
-    expect(delivered!.errors).toHaveLength(0);
-    expect(delivered!.hadError).toBe(false);
+    expect(deliveries).toHaveLength(1);
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted above
+    const snapshot = deliveries[0]!;
+    expect(snapshot.errors).toHaveLength(0);
+    expect(snapshot.hadError).toBe(false);
 
     await tracked.onEvent(
       event("reactor.error", 4, { fatal: false, error: "onShutdown failed" }),
     );
 
-    expect(delivered!.errors).toHaveLength(0);
-    expect(delivered!.hadError).toBe(false);
+    expect(snapshot.errors).toHaveLength(0);
+    expect(snapshot.hadError).toBe(false);
   });
 
   test("connector.reply after finalization does not mutate accumulatedText", async () => {
@@ -1216,9 +1219,7 @@ describe("EventCollector.getLastTurnId", () => {
         usage: { input: 10, output: 5 },
       }),
     );
-    await collector.onEvent(
-      event("connector.reply", 3, { content: "hello" }),
-    );
+    await collector.onEvent(event("connector.reply", 3, { content: "hello" }));
 
     expect(collector.getCurrentTurnId()).toBeNull();
     expect(collector.getLastTurnId()).toBe(turnId);
