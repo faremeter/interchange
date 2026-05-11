@@ -5,6 +5,7 @@ import {
   GrantRequirement,
   grantEffects,
   grantOrigins,
+  sidecarStatuses,
 } from "@interchange/types";
 
 import type {
@@ -49,7 +50,6 @@ const TransactionDirectionValidator = type.enumerated(...transactionDirections);
 const transactionStatuses = ["pending", "completed", "failed"] as const;
 const TransactionStatusValidator = type.enumerated(...transactionStatuses);
 
-const sidecarStatuses = ["online", "offline", "error"] as const;
 const SidecarStatusValidator = type.enumerated(...sidecarStatuses);
 
 const turnPartTypes = [

@@ -1,18 +1,34 @@
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
+import { describeRoute, resolver, validator } from "hono-openapi";
 import type { Handler } from "hono";
 
 import { sidecar } from "@interchange/db/schema";
 import { parseSidecarStatus } from "@interchange/db";
+import {
+  CreateSidecar,
+  SidecarResponse,
+  ErrorResponse,
+} from "@interchange/types";
 
 import type { AppEnv } from "../context";
+import { first, ts } from "../format";
 
-interface SidecarRegisterBody {
-  id?: string;
-  url: string;
-  status?: string;
+function formatSidecar(row: typeof sidecar.$inferSelect) {
+  return {
+    id: row.id,
+    url: row.url,
+    status: parseSidecarStatus(row.status),
+    lastHeartbeat: row.lastHeartbeat ? ts(row.lastHeartbeat) : null,
+    createdAt: ts(row.createdAt),
+    updatedAt: ts(row.updatedAt),
+  };
 }
 
+// Sidecar management routes are system-level (not tenant-scoped) and
+// authenticated by the sidecar's registration token over the WebSocket
+// channel. The REST endpoints here are for internal tooling and are not
+// exposed through tenant authorization grants.
 export function createSidecarRoutes(wsHandler?: Handler<AppEnv>) {
   const app = new Hono<AppEnv>();
 
@@ -20,68 +36,186 @@ export function createSidecarRoutes(wsHandler?: Handler<AppEnv>) {
     app.get("/ws", wsHandler);
   }
 
-  app.post("/", async (c) => {
-    const db = c.get("db");
-    const body = await c.req.json<SidecarRegisterBody>();
-    const { id, url, status } = body;
-
-    const resolvedStatus = parseSidecarStatus(status ?? "online");
-    const [created] = await db
-      .insert(sidecar)
-      .values({
-        id: id || crypto.randomUUID(),
-        url,
-        status: resolvedStatus,
-        lastHeartbeat: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: sidecar.id,
-        set: {
-          url,
-          status: resolvedStatus,
-          lastHeartbeat: new Date(),
+  app.post(
+    "/",
+    describeRoute({
+      tags: ["Sidecars"],
+      summary: "Register or update a sidecar",
+      description:
+        "Upserts a sidecar record. If an id is provided and already exists, the record is updated. Used for idempotent sidecar registration by a known stable identifier.",
+      responses: {
+        201: {
+          description: "Sidecar registered",
+          content: {
+            "application/json": { schema: resolver(SidecarResponse) },
+          },
         },
-      })
-      .returning();
+      },
+    }),
+    validator("json", CreateSidecar),
+    async (c) => {
+      const db = c.get("db");
+      const body = c.req.valid("json");
 
-    return c.json({ data: created }, 201);
-  });
+      const resolvedStatus = body.status ?? "online";
+      const created = first(
+        await db
+          .insert(sidecar)
+          .values({
+            id: body.id || crypto.randomUUID(),
+            url: body.url,
+            status: resolvedStatus,
+            lastHeartbeat: new Date(),
+          })
+          .onConflictDoUpdate({
+            target: sidecar.id,
+            set: {
+              url: body.url,
+              status: resolvedStatus,
+              lastHeartbeat: new Date(),
+              updatedAt: new Date(),
+            },
+          })
+          .returning(),
+      );
 
-  app.get("/", async (c) => {
-    const db = c.get("db");
-    const sidecars = await db.select().from(sidecar);
-    return c.json({ data: sidecars });
-  });
+      return c.json(formatSidecar(created), 201);
+    },
+  );
 
-  app.get("/:id", async (c) => {
-    const db = c.get("db");
-    const id = c.req.param("id");
-    const [sc] = await db.select().from(sidecar).where(eq(sidecar.id, id));
+  app.get(
+    "/",
+    describeRoute({
+      tags: ["Sidecars"],
+      summary: "List all sidecars",
+      responses: {
+        200: {
+          description: "List of sidecars",
+          content: {
+            "application/json": {
+              schema: resolver(SidecarResponse.array()),
+            },
+          },
+        },
+      },
+    }),
+    async (c) => {
+      const db = c.get("db");
+      const sidecars = await db.select().from(sidecar);
+      return c.json(sidecars.map(formatSidecar));
+    },
+  );
 
-    if (!sc) {
-      return c.json({ error: "Sidecar not found" }, { status: 404 });
-    }
+  app.get(
+    "/:id",
+    describeRoute({
+      tags: ["Sidecars"],
+      summary: "Get a sidecar by ID",
+      responses: {
+        200: {
+          description: "Sidecar detail",
+          content: {
+            "application/json": { schema: resolver(SidecarResponse) },
+          },
+        },
+        404: {
+          description: "Sidecar not found",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
+      },
+    }),
+    async (c) => {
+      const db = c.get("db");
+      const id = c.req.param("id");
+      const [sc] = await db.select().from(sidecar).where(eq(sidecar.id, id));
 
-    return c.json({ data: sc });
-  });
+      if (!sc) {
+        return c.json(
+          { error: { code: "not_found", message: "Sidecar not found" } },
+          404,
+        );
+      }
 
-  app.delete("/:id", async (c) => {
-    const db = c.get("db");
-    const id = c.req.param("id");
-    await db.delete(sidecar).where(eq(sidecar.id, id));
-    return c.json({ success: true });
-  });
+      return c.json(formatSidecar(sc));
+    },
+  );
 
-  app.post("/:id/heartbeat", async (c) => {
-    const db = c.get("db");
-    const id = c.req.param("id");
-    await db
-      .update(sidecar)
-      .set({ lastHeartbeat: new Date(), status: "online" })
-      .where(eq(sidecar.id, id));
+  app.delete(
+    "/:id",
+    describeRoute({
+      tags: ["Sidecars"],
+      summary: "Deregister a sidecar",
+      responses: {
+        204: { description: "Sidecar deregistered" },
+        404: {
+          description: "Sidecar not found",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
+      },
+    }),
+    async (c) => {
+      const db = c.get("db");
+      const id = c.req.param("id");
+      const deleted = await db
+        .delete(sidecar)
+        .where(eq(sidecar.id, id))
+        .returning();
 
-    return c.json({ success: true });
-  });
+      if (deleted.length === 0) {
+        return c.json(
+          { error: { code: "not_found", message: "Sidecar not found" } },
+          404,
+        );
+      }
+
+      return c.body(null, 204);
+    },
+  );
+
+  app.post(
+    "/:id/heartbeat",
+    describeRoute({
+      tags: ["Sidecars"],
+      summary: "Record a sidecar heartbeat",
+      description:
+        "Updates the sidecar's last heartbeat timestamp and sets status to online.",
+      responses: {
+        204: { description: "Heartbeat recorded" },
+        404: {
+          description: "Sidecar not found",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
+      },
+    }),
+    async (c) => {
+      const db = c.get("db");
+      const id = c.req.param("id");
+      const updated = await db
+        .update(sidecar)
+        .set({
+          lastHeartbeat: new Date(),
+          status: "online",
+          updatedAt: new Date(),
+        })
+        .where(eq(sidecar.id, id))
+        .returning();
+
+      if (updated.length === 0) {
+        return c.json(
+          { error: { code: "not_found", message: "Sidecar not found" } },
+          404,
+        );
+      }
+
+      return c.body(null, 204);
+    },
+  );
 
   return app;
 }
