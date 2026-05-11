@@ -244,6 +244,7 @@ function createMockEventCollectors(
     has: (address) => statuses.has(address),
     getStatus: (address) => statuses.get(address),
     getAccumulatedText: () => undefined,
+    getCurrentTurnId: () => undefined,
   };
 }
 

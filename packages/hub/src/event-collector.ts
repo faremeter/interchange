@@ -29,6 +29,7 @@ export type EventCollector = {
   onEvent(event: InferenceEvent): Promise<void>;
   abandon(): Promise<void>;
   getAccumulatedText(): string;
+  getCurrentTurnId(): string | null;
 };
 
 export type EventCollectorConfig = {
@@ -58,6 +59,9 @@ export function createEventCollector(
   // from inference.done (not thinking/reasoning) are included. Reset on each
   // new turn.
   let accumulatedText = "";
+  // In-progress text from inference.text.delta events during the current
+  // inference step. Reset on inference.done (when accumulatedText takes over).
+  let streamingText = "";
   // Set when inference.error fires. Unlike pendingError (which resets on
   // connector.reply), this persists until finalization so the callback can
   // report whether an inference error occurred during the turn.
@@ -77,8 +81,12 @@ export function createEventCollector(
         await beginTurn(event.data.model);
         await insertPart("step-start", null, { model: event.data.model });
         break;
+      case "inference.text.delta":
+        streamingText += event.data.token;
+        break;
       case "inference.done":
         await handleInferenceDone(event.data.turn.content);
+        streamingText = "";
         break;
       case "tool.done": {
         const isError = event.data.result.isError ?? false;
@@ -175,6 +183,7 @@ export function createEventCollector(
     finalized = false;
     pendingError = false;
     accumulatedText = "";
+    streamingText = "";
     turnHadError = false;
     accumulatedErrors = [];
     callNames.clear();
@@ -295,8 +304,12 @@ export function createEventCollector(
   }
 
   function getAccumulatedText(): string {
-    return accumulatedText;
+    return accumulatedText + streamingText;
   }
 
-  return { onEvent, abandon, getAccumulatedText };
+  function getCurrentTurnId(): string | null {
+    return currentTurnId;
+  }
+
+  return { onEvent, abandon, getAccumulatedText, getCurrentTurnId };
 }
