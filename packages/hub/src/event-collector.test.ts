@@ -923,3 +923,295 @@ describe("EventCollectorRegistry getAccumulatedText", () => {
     expect(registry.getAccumulatedText(address)).toBe("streaming text");
   });
 });
+
+describe("EventCollector.getCurrentTurnId", () => {
+  let fakeDB: ReturnType<typeof createFakeDB>;
+  let collector: EventCollector;
+
+  beforeEach(() => {
+    fakeDB = createFakeDB();
+    collector = createEventCollector({
+      db: fakeDB.db,
+      sessionId: "ses_test",
+      instanceId: "ins_test",
+      tenantId: "tnt_test",
+    });
+  });
+
+  test("returns null before any turn starts", () => {
+    expect(collector.getCurrentTurnId()).toBeNull();
+  });
+
+  test("returns turn id after inference.start", async () => {
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    expect(collector.getCurrentTurnId()).not.toBeNull();
+    expect(collector.getCurrentTurnId()).toMatch(/^itn_/);
+  });
+
+  test("retains turn id after inference.done", async () => {
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    const turnId = collector.getCurrentTurnId();
+
+    await collector.onEvent(
+      event("inference.done", 2, {
+        turn: {
+          role: "assistant",
+          content: [{ type: "text", text: "hello" }],
+          model: "gpt-4",
+        },
+        usage: { input: 10, output: 5 },
+      }),
+    );
+
+    expect(collector.getCurrentTurnId()).toBe(turnId);
+  });
+
+  test("returns null after connector.reply finalizes the turn", async () => {
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    await collector.onEvent(
+      event("inference.done", 2, {
+        turn: {
+          role: "assistant",
+          content: [{ type: "text", text: "hello" }],
+          model: "gpt-4",
+        },
+        usage: { input: 10, output: 5 },
+      }),
+    );
+
+    await collector.onEvent(
+      event("connector.reply", 3, { content: "hello" }),
+    );
+
+    expect(collector.getCurrentTurnId()).toBeNull();
+  });
+
+  test("updates turn id when a new turn starts", async () => {
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    const firstTurnId = collector.getCurrentTurnId();
+
+    await collector.onEvent(
+      event("inference.done", 2, {
+        turn: {
+          role: "assistant",
+          content: [{ type: "text", text: "step 1" }],
+          model: "gpt-4",
+        },
+        usage: { input: 10, output: 5 },
+      }),
+    );
+
+    await collector.onEvent(event("inference.start", 3, { model: "gpt-4" }));
+    const secondTurnId = collector.getCurrentTurnId();
+
+    expect(secondTurnId).not.toBeNull();
+    expect(secondTurnId).not.toBe(firstTurnId);
+  });
+});
+
+describe("EventCollector post-finalization guard", () => {
+  let fakeDB: ReturnType<typeof createFakeDB>;
+  let collector: EventCollector;
+
+  async function finalizeTurn(c: EventCollector): Promise<void> {
+    await c.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    await c.onEvent(
+      event("inference.done", 2, {
+        turn: {
+          role: "assistant",
+          content: [{ type: "text", text: "hello" }],
+          model: "gpt-4",
+        },
+        usage: { input: 10, output: 5 },
+      }),
+    );
+    await c.onEvent(event("connector.reply", 3, { content: "hello" }));
+  }
+
+  beforeEach(() => {
+    fakeDB = createFakeDB();
+    collector = createEventCollector({
+      db: fakeDB.db,
+      sessionId: "ses_test",
+      instanceId: "ins_test",
+      tenantId: "tnt_test",
+    });
+  });
+
+  test("tool.done after finalization does not insert a part", async () => {
+    await finalizeTurn(collector);
+    const partsBefore = fakeDB.inserts.filter(
+      (i) => i.table === "turn_part",
+    ).length;
+
+    await collector.onEvent(
+      event("tool.done", 4, {
+        result: { callId: "call_1", content: "stale result", isError: false },
+      }),
+    );
+
+    const partsAfter = fakeDB.inserts.filter(
+      (i) => i.table === "turn_part",
+    ).length;
+    expect(partsAfter).toBe(partsBefore);
+  });
+
+  test("inference.error after finalization does not insert a part", async () => {
+    await finalizeTurn(collector);
+    const partsBefore = fakeDB.inserts.filter(
+      (i) => i.table === "turn_part",
+    ).length;
+
+    await collector.onEvent(
+      event("inference.error", 4, {
+        error: { category: "rate_limit", message: "too many requests" },
+      }),
+    );
+
+    const partsAfter = fakeDB.inserts.filter(
+      (i) => i.table === "turn_part",
+    ).length;
+    expect(partsAfter).toBe(partsBefore);
+  });
+
+  test("non-fatal reactor.error after finalization does not insert a part", async () => {
+    await finalizeTurn(collector);
+    const partsBefore = fakeDB.inserts.filter(
+      (i) => i.table === "turn_part",
+    ).length;
+
+    await collector.onEvent(
+      event("reactor.error", 4, { fatal: false, error: "context store failed" }),
+    );
+
+    const partsAfter = fakeDB.inserts.filter(
+      (i) => i.table === "turn_part",
+    ).length;
+    expect(partsAfter).toBe(partsBefore);
+  });
+
+  test("fatal reactor.error after finalization does not open a spurious turn", async () => {
+    await finalizeTurn(collector);
+    const turnsBefore = fakeDB.inserts.filter(
+      (i) => i.table === "inference_turn",
+    ).length;
+    const partsBefore = fakeDB.inserts.filter(
+      (i) => i.table === "turn_part",
+    ).length;
+
+    await collector.onEvent(
+      event("reactor.error", 4, { fatal: true, error: "reactor crashed" }),
+    );
+
+    const turnsAfter = fakeDB.inserts.filter(
+      (i) => i.table === "inference_turn",
+    ).length;
+    const partsAfter = fakeDB.inserts.filter(
+      (i) => i.table === "turn_part",
+    ).length;
+    expect(turnsAfter).toBe(turnsBefore);
+    expect(partsAfter).toBe(partsBefore);
+  });
+
+  test("non-fatal reactor.error after finalization does not mutate delivered TurnFinalized", async () => {
+    let delivered: TurnFinalized | null = null;
+    const tracked = createEventCollector({
+      db: fakeDB.db,
+      sessionId: "ses_test",
+      instanceId: "ins_test",
+      tenantId: "tnt_test",
+      onTurnFinalized: (turn) => {
+        delivered = turn;
+      },
+    });
+
+    await tracked.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    await tracked.onEvent(
+      event("inference.done", 2, {
+        turn: {
+          role: "assistant",
+          content: [{ type: "text", text: "hello" }],
+          model: "gpt-4",
+        },
+        usage: { input: 10, output: 5 },
+      }),
+    );
+    await tracked.onEvent(event("connector.reply", 3, { content: "hello" }));
+
+    expect(delivered).not.toBeNull();
+    expect(delivered!.errors).toHaveLength(0);
+    expect(delivered!.hadError).toBe(false);
+
+    await tracked.onEvent(
+      event("reactor.error", 4, { fatal: false, error: "onShutdown failed" }),
+    );
+
+    expect(delivered!.errors).toHaveLength(0);
+    expect(delivered!.hadError).toBe(false);
+  });
+});
+
+describe("EventCollector.getLastTurnId", () => {
+  let fakeDB: ReturnType<typeof createFakeDB>;
+  let collector: EventCollector;
+
+  beforeEach(() => {
+    fakeDB = createFakeDB();
+    collector = createEventCollector({
+      db: fakeDB.db,
+      sessionId: "ses_test",
+      instanceId: "ins_test",
+      tenantId: "tnt_test",
+    });
+  });
+
+  test("returns null before any turn starts", () => {
+    expect(collector.getLastTurnId()).toBeNull();
+  });
+
+  test("matches getCurrentTurnId during active turn", async () => {
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    expect(collector.getLastTurnId()).toBe(collector.getCurrentTurnId());
+  });
+
+  test("retains turn id after connector.reply finalizes the turn", async () => {
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    const turnId = collector.getCurrentTurnId();
+
+    await collector.onEvent(
+      event("inference.done", 2, {
+        turn: {
+          role: "assistant",
+          content: [{ type: "text", text: "hello" }],
+          model: "gpt-4",
+        },
+        usage: { input: 10, output: 5 },
+      }),
+    );
+    await collector.onEvent(
+      event("connector.reply", 3, { content: "hello" }),
+    );
+
+    expect(collector.getCurrentTurnId()).toBeNull();
+    expect(collector.getLastTurnId()).toBe(turnId);
+  });
+
+  test("updates to new turn id when a second turn starts", async () => {
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    const firstTurnId = collector.getLastTurnId();
+
+    await collector.onEvent(
+      event("inference.done", 2, {
+        turn: {
+          role: "assistant",
+          content: [{ type: "text", text: "step 1" }],
+          model: "gpt-4",
+        },
+        usage: { input: 10, output: 5 },
+      }),
+    );
+    await collector.onEvent(event("inference.start", 3, { model: "gpt-4" }));
+
+    expect(collector.getLastTurnId()).not.toBe(firstTurnId);
+  });
+});

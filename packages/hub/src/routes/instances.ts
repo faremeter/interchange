@@ -1114,7 +1114,7 @@ app.get(
       }
       const accumulatedText = eventCollectors.getAccumulatedText(row.address);
       if (accumulatedText !== undefined && accumulatedText !== "") {
-        const turnId = eventCollectors.getCurrentTurnId(row.address);
+        const turnId = eventCollectors.getLastTurnId(row.address);
         await stream.writeSSE({
           event: "agent.event",
           data: JSON.stringify({

@@ -30,6 +30,7 @@ export type EventCollectorRegistry = {
   getStatus(agentAddress: string): SessionStatus | undefined;
   getAccumulatedText(agentAddress: string): string | undefined;
   getCurrentTurnId(agentAddress: string): string | null | undefined;
+  getLastTurnId(agentAddress: string): string | null | undefined;
 };
 
 export type EventCollectorRegistryConfig = {
@@ -152,6 +153,10 @@ export function createEventCollectorRegistry(
     return collectors.get(agentAddress)?.getCurrentTurnId();
   }
 
+  function getLastTurnId(agentAddress: string): string | null | undefined {
+    return collectors.get(agentAddress)?.getLastTurnId();
+  }
+
   return {
     create,
     dispatch,
@@ -160,5 +165,6 @@ export function createEventCollectorRegistry(
     getStatus,
     getAccumulatedText,
     getCurrentTurnId,
+    getLastTurnId,
   };
 }
