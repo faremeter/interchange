@@ -80,6 +80,7 @@ export function createEventCollectorRegistry(
   function deriveStatus(event: InferenceEvent): SessionStatus | null {
     switch (event.type) {
       case "reactor.start":
+      case "inference.start":
         return { status: "busy" };
       case "connector.reply":
         return { status: "idle" };
