@@ -443,7 +443,7 @@ Body: UpdateAgent
 ### DELETE /api/tenants/:tenantId/agents/definitions/:agentId
 Retire an agent
 
-Retires the agent definition and stops all running instances. In-flight work is drained before instances stop.
+Retires the agent definition and marks all running instances as stopped. Does not signal running sidecars; in-flight sessions continue until the sidecar disconnects.
 
 204: (no content) -- Agent retirement initiated
 404: ErrorResponse -- Agent not found
