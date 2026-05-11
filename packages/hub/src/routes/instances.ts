@@ -1101,13 +1101,25 @@ app.get(
       // Emit the replay before subscribing to live events so that a
       // delta arriving between subscribe() and the replay write cannot
       // beat the catch-up text onto the stream.
+      const status = eventCollectors.getStatus(row.address);
+      if (status?.status === "busy") {
+        await stream.writeSSE({
+          event: "agent.event",
+          data: JSON.stringify({
+            type: "inference.start",
+            seq: 0,
+            data: { model: "unknown" },
+          }),
+        });
+      }
       const accumulatedText = eventCollectors.getAccumulatedText(row.address);
       if (accumulatedText !== undefined && accumulatedText !== "") {
+        const turnId = eventCollectors.getCurrentTurnId(row.address);
         await stream.writeSSE({
           event: "agent.event",
           data: JSON.stringify({
             type: "inference.text.replay",
-            data: { text: accumulatedText },
+            data: { turnId, text: accumulatedText },
           }),
         });
       }

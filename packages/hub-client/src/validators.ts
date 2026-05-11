@@ -61,6 +61,7 @@ export type TurnCommittedEvent = typeof TurnCommittedEvent.infer;
 export const InferenceTextReplayEvent = type({
   type: "'inference.text.replay'",
   data: {
+    turnId: "string | null",
     text: "string",
   },
 });

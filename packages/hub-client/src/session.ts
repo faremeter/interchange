@@ -48,6 +48,7 @@ export function createInstanceSession(opts: {
   let events: InstanceEvent[] = [];
   let streaming = "";
   let streamingFromReplay = false;
+  let replayTurnId: string | null = null;
   let activity: AgentActivity | null = null;
   let hydrated = false;
 
@@ -156,6 +157,7 @@ export function createInstanceSession(opts: {
       if (streaming === "") {
         streaming = replayEvent.data.text;
         streamingFromReplay = true;
+        replayTurnId = replayEvent.data.turnId;
         onChange();
       }
       return;
@@ -238,6 +240,7 @@ export function createInstanceSession(opts: {
       void (async () => {
         let fetchError: unknown;
         const all: InstanceEvent[] = [];
+        let hydratedTurns: InferenceTurnResponse[] = [];
 
         try {
           const [mailRes, turnsRes] = await Promise.all([
@@ -251,10 +254,11 @@ export function createInstanceSession(opts: {
             ),
           ]);
 
+          hydratedTurns = turnsRes.data;
           for (const m of mailRes.data) {
             all.push(mailToEvent(m));
           }
-          for (const t of turnsRes.data) {
+          for (const t of hydratedTurns) {
             const event = turnToEvent(t);
             if (event) all.push(event);
           }
@@ -289,11 +293,21 @@ export function createInstanceSession(opts: {
         );
 
         // If streaming was set by replay and no live deltas have arrived
-        // since, the corresponding turn is already in the hydrated events.
-        // Clear it so the UI doesn't show a stale streaming preview.
+        // since, determine whether the replay is stale or still active.
+        // A null turnId means the server lost track of the turn (e.g.
+        // collector re-created on reconnect) — the text is stale.
+        // A non-null turnId that appears in /turns means the turn already
+        // committed and we missed turn.committed — also stale.
+        // Only preserve streaming when turnId is set and NOT in hydration.
         if (streamingFromReplay) {
-          streaming = "";
+          const isActive =
+            replayTurnId !== null &&
+            !hydratedTurns.some((t) => t.id === replayTurnId);
+          if (!isActive) {
+            streaming = "";
+          }
           streamingFromReplay = false;
+          replayTurnId = null;
         }
 
         events = all;

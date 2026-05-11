@@ -873,7 +873,10 @@ describe("streaming buffer", () => {
   });
 
   test("inference.text.replay sets streaming when streaming is empty", () => {
-    mock.emit({ type: "inference.text.replay", data: { text: "hello world" } });
+    mock.emit({
+      type: "inference.text.replay",
+      data: { turnId: "turn_1", text: "hello world" },
+    });
 
     expect(session.streaming).toBe("hello world");
   });
@@ -885,7 +888,10 @@ describe("streaming buffer", () => {
       data: { token: "already here", partial: { text: "already here" } },
     });
 
-    mock.emit({ type: "inference.text.replay", data: { text: "hello world" } });
+    mock.emit({
+      type: "inference.text.replay",
+      data: { turnId: "turn_1", text: "hello world" },
+    });
 
     expect(session.streaming).toBe("already here");
   });
@@ -922,11 +928,59 @@ describe("streaming buffer", () => {
 
     s.start();
 
-    // Replay arrives before hydration completes
-    bus.emit({ type: "inference.text.replay", data: { text: "stale text" } });
+    // Replay arrives with turnId matching the committed turn in hydration
+    bus.emit({
+      type: "inference.text.replay",
+      data: { turnId: "turn_1", text: "stale text" },
+    });
     expect(s.streaming).toBe("stale text");
 
-    // Hydration completes — the turn is already finished, so replay is stale
+    // Hydration completes — turn_1 is in the response, so replay is stale
+    resolveFetch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(s.streaming).toBe("");
+  });
+
+  test("replay with null turnId is treated as stale", async () => {
+    let resolveFetch!: () => void;
+    const fetchPending = new Promise<void>((r) => {
+      resolveFetch = r;
+    });
+
+    const bus = { emit: noop as (event: unknown) => void };
+    const transport: Transport = {
+      async fetch<T>(_method: string, path: string): Promise<T> {
+        await fetchPending;
+        if (path.includes("/mail")) return { data: [] } as T;
+        if (path.includes("/turns")) return { data: [] } as T;
+        throw new Error(`Unexpected: ${path}`);
+      },
+      subscribe(_path: string, onEvent: (event: unknown) => void): () => void {
+        bus.emit = onEvent;
+        return () => {
+          bus.emit = noop;
+        };
+      },
+    };
+
+    const s = createInstanceSession({
+      tenantId: TENANT_ID,
+      instanceId: INSTANCE_ID,
+      transport,
+      onChange: noop,
+    });
+
+    s.start();
+
+    // Replay with null turnId — server lost track of the turn
+    bus.emit({
+      type: "inference.text.replay",
+      data: { turnId: null, text: "orphaned text" },
+    });
+    expect(s.streaming).toBe("orphaned text");
+
+    // Hydration completes — null turnId is always treated as stale
     resolveFetch();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -965,7 +1019,10 @@ describe("streaming buffer", () => {
     s.start();
 
     // Replay arrives, then live deltas continue
-    bus.emit({ type: "inference.text.replay", data: { text: "replay " } });
+    bus.emit({
+      type: "inference.text.replay",
+      data: { turnId: "turn_1", text: "replay " },
+    });
     bus.emit({
       type: "inference.text.delta",
       seq: 1,
@@ -979,6 +1036,53 @@ describe("streaming buffer", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(s.streaming).toBe("replay live");
+  });
+
+  test("replay streaming survives hydration when turn is still in progress", async () => {
+    let resolveFetch!: () => void;
+    const fetchPending = new Promise<void>((r) => {
+      resolveFetch = r;
+    });
+
+    // No turns in hydration response — the turn is still in progress
+    const bus = { emit: noop as (event: unknown) => void };
+    const transport: Transport = {
+      async fetch<T>(_method: string, path: string): Promise<T> {
+        await fetchPending;
+        if (path.includes("/mail")) return { data: [] } as T;
+        if (path.includes("/turns")) return { data: [] } as T;
+        throw new Error(`Unexpected: ${path}`);
+      },
+      subscribe(_path: string, onEvent: (event: unknown) => void): () => void {
+        bus.emit = onEvent;
+        return () => {
+          bus.emit = noop;
+        };
+      },
+    };
+
+    const s = createInstanceSession({
+      tenantId: TENANT_ID,
+      instanceId: INSTANCE_ID,
+      transport,
+      onChange: noop,
+    });
+
+    s.start();
+
+    // Replay arrives with a turnId not in the hydration response (in progress)
+    bus.emit({
+      type: "inference.text.replay",
+      data: { turnId: "turn_active", text: "accumulated so far" },
+    });
+    expect(s.streaming).toBe("accumulated so far");
+
+    // Hydration completes — turn_active is not in /turns, so it's still
+    // in progress and replay text must NOT be cleared
+    resolveFetch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(s.streaming).toBe("accumulated so far");
   });
 
   test("inference.error after replay clears streamingFromReplay so hydration does not double-clear", async () => {
@@ -1013,7 +1117,10 @@ describe("streaming buffer", () => {
     s.start();
 
     // Replay arrives, then inference fails
-    bus.emit({ type: "inference.text.replay", data: { text: "partial" } });
+    bus.emit({
+      type: "inference.text.replay",
+      data: { turnId: "turn_1", text: "partial" },
+    });
     expect(s.streaming).toBe("partial");
 
     bus.emit({
@@ -1065,7 +1172,10 @@ describe("streaming buffer", () => {
 
     s.start();
 
-    bus.emit({ type: "inference.text.replay", data: { text: "done text" } });
+    bus.emit({
+      type: "inference.text.replay",
+      data: { turnId: "turn_1", text: "done text" },
+    });
     expect(s.streaming).toBe("done text");
 
     bus.emit({ type: "reactor.done", seq: 1, data: {} });
