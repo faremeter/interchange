@@ -331,7 +331,7 @@ Drizzle types `jsonb()` as `unknown` and `text({ enum })` as `string`, which tem
 const skills = row.skills as string[];
 
 // Good — parseRow validates at the boundary
-const agent = parseAgentRow(row); // skills is already string[]
+const agent = parseAgentRow(row); // skills is already validated
 ```
 
 #### Parsed JSON

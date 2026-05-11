@@ -125,6 +125,12 @@ To start without the UI:
 bun bin/dev.ts --no-ui
 ```
 
+To start without the sidecar:
+
+```
+bun bin/dev.ts --no-sidecar
+```
+
 - Hub: `http://localhost:3000`
 - UI: `http://localhost:5173`
 - Seed login: `alice@example.com` / `password123`
@@ -186,6 +192,7 @@ packages/
   db/               Drizzle schema, migrations, connection pooling
   harness/          Agent harness -- deploy tree, plugin system, tool orchestration
   hub/              Hono app factory, route handlers, middleware
+  hub-client/       Browser client SDK -- transport, instance sessions, event transforms
   inference/        LLM inference -- provider adapters, streaming, audit collection
   log/              LogTape wrapper (setup, getLogger, Hono middleware)
   message-memory/   JMAP-style message memory -- mailbox, search, send, threads
@@ -225,12 +232,12 @@ docs/
 
 These are run from the repo root via `bun run`:
 
-| Script   | Command                             |
-| -------- | ----------------------------------- |
-| `check`  | `bun run check` -- type check       |
-| `lint`   | `bun run lint` -- prettier + eslint |
-| `format` | `bun run format` -- auto-format     |
-| `test`   | `bun test` -- run tests             |
+| Script   | Command                                                  |
+| -------- | -------------------------------------------------------- |
+| `check`  | `bun run check` -- type check                            |
+| `lint`   | `bun run lint` -- prettier + eslint + API docs freshness |
+| `format` | `bun run format` -- auto-format                          |
+| `test`   | `bun test` -- run tests                                  |
 
 ## API
 
