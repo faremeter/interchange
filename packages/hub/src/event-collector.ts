@@ -30,6 +30,7 @@ export type EventCollector = {
   abandon(): Promise<void>;
   getAccumulatedText(): string;
   getCurrentTurnId(): string | null;
+  getLastTurnId(): string | null;
 };
 
 export type EventCollectorConfig = {
@@ -47,8 +48,12 @@ export function createEventCollector(
 
   // Current inference turn being accumulated. A new turn is created on each
   // inference.start. Finalized on connector.reply, reactor.done,
-  // reactor.error (fatal), or abandon.
+  // reactor.error (fatal), or abandon. Null when no turn is active.
   let currentTurnId: string | null = null;
+  // Most recent turn ID, set in beginTurn. Unlike currentTurnId this is NOT
+  // cleared on finalization — the SSE replay endpoint needs the turn ID
+  // after the turn commits but before the collector is removed.
+  let lastTurnId: string | null = null;
   let ordinal = 0;
   // Prevents double-finalization when reactor.done and abandon() race.
   let finalized = false;
@@ -133,7 +138,7 @@ export function createEventCollector(
         await finalizeTurn("completed", true, false);
         break;
       case "reactor.error":
-        if (event.data.fatal) {
+        if (event.data.fatal && !finalized) {
           // The reactor failed before any inference started (e.g., context
           // store load failure), but the user needs to see why their agent
           // failed, and without a turn there is no container for the error.
@@ -150,7 +155,7 @@ export function createEventCollector(
             category: "reactor_error",
           });
           await finalizeTurn("failed", true, false);
-        } else {
+        } else if (!event.data.fatal && !finalized) {
           if (currentTurnId === null) {
             await beginTurn("unknown");
           }
@@ -179,6 +184,7 @@ export function createEventCollector(
     }
 
     currentTurnId = generateId("inferenceTurn");
+    lastTurnId = currentTurnId;
     ordinal = 0;
     finalized = false;
     pendingError = false;
@@ -258,8 +264,8 @@ export function createEventCollector(
         text: accumulatedText,
         hadReply,
         hadError: turnHadError,
-        errors: accumulatedErrors,
-        toolErrors: accumulatedToolErrors,
+        errors: [...accumulatedErrors],
+        toolErrors: [...accumulatedToolErrors],
       });
     }
 
@@ -311,5 +317,9 @@ export function createEventCollector(
     return currentTurnId;
   }
 
-  return { onEvent, abandon, getAccumulatedText, getCurrentTurnId };
+  function getLastTurnId(): string | null {
+    return lastTurnId;
+  }
+
+  return { onEvent, abandon, getAccumulatedText, getCurrentTurnId, getLastTurnId };
 }
