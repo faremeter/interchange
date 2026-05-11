@@ -327,7 +327,9 @@ export function TenantInstanceDetailPage() {
                           {msg.content}
                         </div>
                       ) : (
-                        msg.content
+                        <span className="whitespace-pre-wrap">
+                          {msg.content}
+                        </span>
                       )}
                       {msg.kind === "turn" &&
                         msg.errors &&
@@ -384,7 +386,7 @@ export function TenantInstanceDetailPage() {
                 })
               )}
               {streaming && (
-                <div className="mr-8 rounded bg-primary/10 p-2 text-sm">
+                <div className="mr-8 rounded bg-primary/10 p-2 text-sm whitespace-pre-wrap">
                   <span className="font-medium">Agent:</span> {streaming}
                 </div>
               )}
