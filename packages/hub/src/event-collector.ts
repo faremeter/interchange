@@ -322,5 +322,11 @@ export function createEventCollector(
     return lastTurnId;
   }
 
-  return { onEvent, abandon, getAccumulatedText, getCurrentTurnId, getLastTurnId };
+  return {
+    onEvent,
+    abandon,
+    getAccumulatedText,
+    getCurrentTurnId,
+    getLastTurnId,
+  };
 }
