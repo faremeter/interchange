@@ -2,8 +2,9 @@
 
 ## Prerequisites
 
-- [Bun](https://bun.sh/) runtime
-- PostgreSQL (local or remote)
+- [Bun](https://bun.sh/) (1.2+)
+- [opsh](https://github.com/alexanderguy/opsh) (v0.7+) -- for the shell scripts in `bin/`
+- PostgreSQL (15+)
 - Git hooks configured: `git config core.hooksPath .githooks`
 
 ## Quick Start
@@ -108,7 +109,7 @@ bin/db-migrate
 
 ```bash
 bun run check    # TypeScript type checking (tsc -b --noEmit)
-bun run lint     # Prettier + ESLint
+bun run lint     # Prettier + ESLint + API docs freshness
 bun run format   # Prettier auto-fix
 bun run test     # All tests
 ```
