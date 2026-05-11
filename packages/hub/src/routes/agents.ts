@@ -474,7 +474,7 @@ app.delete(
     tags: ["Agents"],
     summary: "Retire an agent",
     description:
-      "Retires the agent definition and stops all running instances. In-flight work is drained before instances stop.",
+      "Retires the agent definition and marks all running instances as stopped. Does not signal running sidecars; in-flight sessions continue until the sidecar disconnects.",
     responses: {
       204: {
         description: "Agent retirement initiated",
