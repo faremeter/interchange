@@ -1,18 +1,25 @@
-import type {
-  ToolDefinition,
-  ToolCall,
-  ToolResult,
-} from "@interchange/types/runtime";
+import path from "node:path";
+import type { ToolDefinition, ToolResult } from "@interchange/types/runtime";
 import { runEditFile } from "./edit-file";
 import { runGrep } from "./grep";
 import { runReadFile } from "./read-file";
 import { runSearchFiles } from "./search-files";
 import { runShell } from "./run-shell";
 import { runWriteFile } from "./write-file";
+import type { ToolHandler } from "./plugin";
+
+export const TOOL_NAMES = {
+  READ_FILE: "read_file",
+  WRITE_FILE: "write_file",
+  EDIT_FILE: "edit_file",
+  RUN_SHELL: "run_shell",
+  SEARCH_FILES: "search_files",
+  GREP: "grep",
+} as const;
 
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
-    name: "read_file",
+    name: TOOL_NAMES.READ_FILE,
     description:
       "Read a file from the filesystem. Returns file content with line numbers.",
     inputSchema: {
@@ -35,7 +42,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
-    name: "write_file",
+    name: TOOL_NAMES.WRITE_FILE,
     description:
       "Write content to a file. Creates parent directories if needed.",
     inputSchema: {
@@ -54,7 +61,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
-    name: "run_shell",
+    name: TOOL_NAMES.RUN_SHELL,
     description:
       "Execute a shell command. Returns combined stdout and stderr with exit code.",
     inputSchema: {
@@ -73,7 +80,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
-    name: "edit_file",
+    name: TOOL_NAMES.EDIT_FILE,
     description:
       "Make a surgical text replacement in a file. Finds old_string in the file and replaces it with new_string. The old_string must appear exactly once unless replace_all is true.",
     inputSchema: {
@@ -102,7 +109,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
-    name: "search_files",
+    name: TOOL_NAMES.SEARCH_FILES,
     description:
       "Find files matching a glob pattern. Returns matching file paths, one per line. Searches recursively from the given path or current directory. Skips node_modules and .git directories.",
     inputSchema: {
@@ -127,7 +134,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
-    name: "grep",
+    name: TOOL_NAMES.GREP,
     description:
       "Search file contents for a regex pattern. Returns matching lines with file paths and line numbers. Skips node_modules and .git directories.",
     inputSchema: {
@@ -162,8 +169,6 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
 ];
-
-type ToolHandler = (call: ToolCall, signal: AbortSignal) => Promise<ToolResult>;
 
 function makeResult(callId: string, content: string): ToolResult {
   return { callId, content };
@@ -219,122 +224,123 @@ function optionalBoolean(
   return val;
 }
 
-const handlers = new Map<string, ToolHandler>([
-  [
-    "read_file",
-    async (call, signal) => {
-      try {
-        const path = requireString(call.arguments, "path");
-        const offset = optionalNumber(call.arguments, "offset");
-        const limit = optionalNumber(call.arguments, "limit");
-        const readFileArgs =
-          offset !== undefined
-            ? limit !== undefined
-              ? { path, offset, limit }
-              : { path, offset }
-            : limit !== undefined
-              ? { path, limit }
-              : { path };
-        const content = await runReadFile(readFileArgs, signal);
-        return makeResult(call.id, content);
-      } catch (err) {
-        return makeErrorResult(call.id, err);
-      }
-    },
-  ],
-  [
-    "write_file",
-    async (call, signal) => {
-      try {
-        const path = requireString(call.arguments, "path");
-        const content = requireString(call.arguments, "content");
-        const result = await runWriteFile({ path, content }, signal);
-        return makeResult(call.id, result);
-      } catch (err) {
-        return makeErrorResult(call.id, err);
-      }
-    },
-  ],
-  [
-    "run_shell",
-    async (call, signal) => {
-      try {
-        const command = requireString(call.arguments, "command");
-        const timeout = optionalNumber(call.arguments, "timeout");
-        const shellArgs =
-          timeout !== undefined ? { command, timeout } : { command };
-        const { output, exitCode } = await runShell(shellArgs, signal);
-        const content =
-          exitCode === 0 ? output : `exit code ${exitCode}\n${output}`;
-        return makeResult(call.id, content);
-      } catch (err) {
-        return makeErrorResult(call.id, err);
-      }
-    },
-  ],
-  [
-    "edit_file",
-    async (call, signal) => {
-      try {
-        const path = requireString(call.arguments, "path");
-        const old_string = requireString(call.arguments, "old_string");
-        const new_string = requireString(call.arguments, "new_string");
-        const replace_all = optionalBoolean(call.arguments, "replace_all");
-        const editArgs =
-          replace_all !== undefined
-            ? { path, old_string, new_string, replace_all }
-            : { path, old_string, new_string };
-        const result = await runEditFile(editArgs, signal);
-        return makeResult(call.id, result);
-      } catch (err) {
-        return makeErrorResult(call.id, err);
-      }
-    },
-  ],
-  [
-    "search_files",
-    async (call, signal) => {
-      try {
-        const pattern = requireString(call.arguments, "pattern");
-        const path = optionalString(call.arguments, "path");
-        const max_results = optionalNumber(call.arguments, "max_results");
-        const searchArgs = {
-          pattern,
-          ...(path !== undefined ? { path } : {}),
-          ...(max_results !== undefined ? { max_results } : {}),
-        };
-        const result = await runSearchFiles(searchArgs, signal);
-        return makeResult(call.id, result);
-      } catch (err) {
-        return makeErrorResult(call.id, err);
-      }
-    },
-  ],
-  [
-    "grep",
-    async (call, signal) => {
-      try {
-        const pattern = requireString(call.arguments, "pattern");
-        const path = optionalString(call.arguments, "path");
-        const glob = optionalString(call.arguments, "glob");
-        const context = optionalNumber(call.arguments, "context");
-        const max_results = optionalNumber(call.arguments, "max_results");
-        const grepArgs = {
-          pattern,
-          ...(path !== undefined ? { path } : {}),
-          ...(glob !== undefined ? { glob } : {}),
-          ...(context !== undefined ? { context } : {}),
-          ...(max_results !== undefined ? { max_results } : {}),
-        };
-        const result = await runGrep(grepArgs, signal);
-        return makeResult(call.id, result);
-      } catch (err) {
-        return makeErrorResult(call.id, err);
-      }
-    },
-  ],
-]);
+const resolvePath = (raw: string, cwd: string) =>
+  path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
 
-export function getHandler(name: string): ToolHandler | undefined {
-  return handlers.get(name);
+interface RegistryContext {
+  cwd: string;
+}
+
+export function makeHandlerRegistry(
+  ctx: RegistryContext,
+): Map<string, ToolHandler> {
+  const m = new Map<string, ToolHandler>();
+
+  m.set(TOOL_NAMES.READ_FILE, async (call, signal) => {
+    try {
+      const p = resolvePath(requireString(call.arguments, "path"), ctx.cwd);
+      const offset = optionalNumber(call.arguments, "offset");
+      const limit = optionalNumber(call.arguments, "limit");
+      const readFileArgs =
+        offset !== undefined
+          ? limit !== undefined
+            ? { path: p, offset, limit }
+            : { path: p, offset }
+          : limit !== undefined
+            ? { path: p, limit }
+            : { path: p };
+      const content = await runReadFile(readFileArgs, signal);
+      return makeResult(call.id, content);
+    } catch (err) {
+      return makeErrorResult(call.id, err);
+    }
+  });
+
+  m.set(TOOL_NAMES.WRITE_FILE, async (call, signal) => {
+    try {
+      const p = resolvePath(requireString(call.arguments, "path"), ctx.cwd);
+      const content = requireString(call.arguments, "content");
+      const result = await runWriteFile({ path: p, content }, signal);
+      return makeResult(call.id, result);
+    } catch (err) {
+      return makeErrorResult(call.id, err);
+    }
+  });
+
+  m.set(TOOL_NAMES.RUN_SHELL, async (call, signal) => {
+    try {
+      const command = requireString(call.arguments, "command");
+      const timeout = optionalNumber(call.arguments, "timeout");
+      const shellArgs = {
+        command,
+        cwd: ctx.cwd,
+        ...(timeout !== undefined ? { timeout } : {}),
+      };
+      const { output, exitCode } = await runShell(shellArgs, signal);
+      const content =
+        exitCode === 0 ? output : `exit code ${exitCode}\n${output}`;
+      return makeResult(call.id, content);
+    } catch (err) {
+      return makeErrorResult(call.id, err);
+    }
+  });
+
+  m.set(TOOL_NAMES.EDIT_FILE, async (call, signal) => {
+    try {
+      const p = resolvePath(requireString(call.arguments, "path"), ctx.cwd);
+      const old_string = requireString(call.arguments, "old_string");
+      const new_string = requireString(call.arguments, "new_string");
+      const replace_all = optionalBoolean(call.arguments, "replace_all");
+      const editArgs =
+        replace_all !== undefined
+          ? { path: p, old_string, new_string, replace_all }
+          : { path: p, old_string, new_string };
+      const result = await runEditFile(editArgs, signal);
+      return makeResult(call.id, result);
+    } catch (err) {
+      return makeErrorResult(call.id, err);
+    }
+  });
+
+  m.set(TOOL_NAMES.SEARCH_FILES, async (call, signal) => {
+    try {
+      const pattern = requireString(call.arguments, "pattern");
+      const rawPath = optionalString(call.arguments, "path");
+      const p = rawPath !== undefined ? resolvePath(rawPath, ctx.cwd) : ctx.cwd;
+      const max_results = optionalNumber(call.arguments, "max_results");
+      const searchArgs = {
+        pattern,
+        path: p,
+        ...(max_results !== undefined ? { max_results } : {}),
+      };
+      const result = await runSearchFiles(searchArgs, signal);
+      return makeResult(call.id, result);
+    } catch (err) {
+      return makeErrorResult(call.id, err);
+    }
+  });
+
+  m.set(TOOL_NAMES.GREP, async (call, signal) => {
+    try {
+      const pattern = requireString(call.arguments, "pattern");
+      const rawPath = optionalString(call.arguments, "path");
+      const p = rawPath !== undefined ? resolvePath(rawPath, ctx.cwd) : ctx.cwd;
+      const glob = optionalString(call.arguments, "glob");
+      const context = optionalNumber(call.arguments, "context");
+      const max_results = optionalNumber(call.arguments, "max_results");
+      const grepArgs = {
+        pattern,
+        path: p,
+        ...(glob !== undefined ? { glob } : {}),
+        ...(context !== undefined ? { context } : {}),
+        ...(max_results !== undefined ? { max_results } : {}),
+      };
+      const result = await runGrep(grepArgs, signal);
+      return makeResult(call.id, result);
+    } catch (err) {
+      return makeErrorResult(call.id, err);
+    }
+  });
+
+  return m;
 }
