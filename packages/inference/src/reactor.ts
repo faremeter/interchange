@@ -361,6 +361,8 @@ export function createReactor(config: ReactorConfig): Reactor {
           if (lastDone.data.pacingDelayMs !== undefined) {
             pendingPacingDelayMs = lastDone.data.pacingDelayMs;
           }
+          const u = lastDone.data.usage;
+          logger.info`Inference usage: input=${String(u.input)} output=${String(u.output)} cacheRead=${String(u.cacheRead)} cacheWrite=${String(u.cacheWrite)}${lastDone.data.pacingDelayMs !== undefined ? ` pacing=${String(lastDone.data.pacingDelayMs)}ms` : ""}`;
           enqueue({
             type: "inference.done",
             turn: lastDone.data.turn,
