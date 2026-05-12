@@ -489,7 +489,7 @@ describe("EventCollector", () => {
     expect(at(parts, 2).values.content).toBe("I encountered an error.");
 
     expect(fakeDB.updates).toHaveLength(1);
-    expect(at(fakeDB.updates, 0).set.status).toBe("completed");
+    expect(at(fakeDB.updates, 0).set.status).toBe("failed");
   });
 
   describe("onTurnFinalized callback", () => {
@@ -623,7 +623,7 @@ describe("EventCollector", () => {
       );
 
       expect(notifications).toHaveLength(1);
-      expect(at(notifications, 0).status).toBe("completed");
+      expect(at(notifications, 0).status).toBe("failed");
       expect(at(notifications, 0).text).toBe("I encountered an error.");
       expect(at(notifications, 0).hadReply).toBe(true);
       expect(at(notifications, 0).hadError).toBe(true);

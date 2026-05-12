@@ -133,7 +133,7 @@ export function createEventCollector(
           await insertPart("text", event.data.content, null);
           pendingError = false;
         }
-        await finalizeTurn("completed", true, true);
+        await finalizeTurn(turnHadError ? "failed" : "completed", true, true);
         break;
       case "reactor.done":
         await finalizeTurn("completed", true, false);
