@@ -477,6 +477,53 @@ const codeReviewBotId =
     : null;
 if (codeReviewBotId) log(`  Code Review Bot ID: ${codeReviewBotId}`);
 
+const codingRoleId = await ensureRole(
+  acmeTenantId,
+  "coding-agent",
+  "Grants for the Coding Agent with full filesystem and LSP access",
+  [
+    { resource: "tool:read_file", action: "invoke", effect: "allow" },
+    { resource: "tool:write_file", action: "invoke", effect: "allow" },
+    { resource: "tool:edit_file", action: "invoke", effect: "allow" },
+    { resource: "tool:run_shell", action: "invoke", effect: "allow" },
+    { resource: "tool:search_files", action: "invoke", effect: "allow" },
+    { resource: "tool:grep", action: "invoke", effect: "allow" },
+    { resource: "tool:lsp", action: "invoke", effect: "allow" },
+    { resource: "tool:mail_*", action: "invoke", effect: "allow" },
+  ],
+  aliceCookies,
+);
+
+const { status: a4Status, data: a4Data } = await api(
+  "POST",
+  `/api/tenants/${acmeTenantId}/agents/definitions`,
+  {
+    name: "Coding Agent",
+    description:
+      "Software engineering agent with filesystem, shell, and language server access",
+    systemPrompt: `You are a software engineering agent. You have access to the filesystem, a shell, and a language server for code navigation and diagnostics.
+
+Use the file tools (read_file, write_file, edit_file, search_files, grep) to explore and modify code. Use run_shell to execute build commands, run tests, and interact with version control. Use the lsp tool for code intelligence operations like go-to-definition, find-references, hover information, and symbol search.
+
+When you edit or write files, the language server will automatically report type errors and diagnostics. Pay attention to these diagnostics and fix any issues before declaring your work complete.
+
+When you receive a task via mail, work through it methodically: understand the codebase, plan your approach, implement the changes, verify they build and pass tests, then report back with what you did.`,
+    modelConfig: { defaultModel: "claude-sonnet-4-20250514" },
+    capabilities: { coding: true, fileSystem: true, languageServer: true },
+    credentialRequirements: [
+      { providerName: "Anthropic", source: "tenant", scopes: ["chat"] },
+    ],
+    roleIds: [codingRoleId],
+  },
+  aliceCookies,
+);
+checkOrSkip("create coding agent", a4Status, 201, a4Data);
+const codingAgentId =
+  a4Status === 201
+    ? parse(AgentResponse, a4Data, "coding agent response").id
+    : null;
+if (codingAgentId) log(`  Coding Agent ID: ${codingAgentId}`);
+
 // -- Create agent role and agent in Widgets --
 
 log("Creating agent in Widgets...");
