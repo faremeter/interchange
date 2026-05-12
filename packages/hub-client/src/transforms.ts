@@ -1,6 +1,6 @@
 import type { InferenceTurnResponse, MailResponse } from "@interchange/types";
 
-import type { InstanceEvent, MailAddress } from "./types";
+import type { InstanceEvent, MailAddress, ToolCallEvent } from "./types";
 
 export function parseFromHeader(from: string): string {
   const match = from.match(/^"(.+)"\s+<.+>$/);
@@ -158,7 +158,10 @@ export function turnToEvent(turn: InferenceTurnResponse): InstanceEvent | null {
       message: p.content,
     }));
 
-  const callNames = new Map<string, string>();
+  const calls = new Map<
+    string,
+    { name: string; arguments: Record<string, unknown> }
+  >();
   for (const p of turn.parts) {
     if (
       p.type === "tool" &&
@@ -166,30 +169,49 @@ export function turnToEvent(turn: InferenceTurnResponse): InstanceEvent | null {
       typeof p.metadata.callId === "string" &&
       typeof p.metadata.name === "string"
     ) {
-      callNames.set(p.metadata.callId, p.metadata.name);
+      const rawArgs = p.metadata.arguments;
+      const args =
+        typeof rawArgs === "object" && rawArgs !== null
+          ? // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- metadata.arguments is always a JSON object from the DB
+            (rawArgs as Record<string, unknown>)
+          : {};
+      calls.set(p.metadata.callId, { name: p.metadata.name, arguments: args });
     }
   }
 
-  const toolErrors: { name: string; content: string }[] = turn.parts
-    .filter(
-      (p) =>
-        p.type === "tool" &&
-        p.metadata?.kind === "result" &&
-        p.metadata?.isError === true,
-    )
-    .map((p) => {
-      const callId =
-        typeof p.metadata?.callId === "string" ? p.metadata.callId : "";
-      const name = callNames.get(callId) ?? callId;
-      const raw = p.metadata?.content;
-      const content = typeof raw === "string" ? raw : JSON.stringify(raw);
-      return { name, content };
-    });
+  const toolCalls: ToolCallEvent[] = [];
+  const toolErrors: { name: string; content: string }[] = [];
 
-  if (errors.length === 0 && toolErrors.length === 0) return null;
+  for (const p of turn.parts) {
+    if (p.type === "tool" && p.metadata?.kind === "result") {
+      const callId =
+        typeof p.metadata.callId === "string" ? p.metadata.callId : "";
+      const call = calls.get(callId);
+      const name = call?.name ?? callId;
+      const raw = p.metadata.content;
+      const content = typeof raw === "string" ? raw : JSON.stringify(raw);
+      const isError = p.metadata.isError === true;
+
+      toolCalls.push({
+        name,
+        arguments: call?.arguments ?? {},
+        result: content,
+        isError,
+      });
+
+      if (isError) {
+        toolErrors.push({ name, content });
+      }
+    }
+  }
 
   const rawContent = textParts.map((p) => p.content).join("");
   const isError = turn.status === "failed";
+
+  if (errors.length === 0 && toolCalls.length === 0) {
+    return null;
+  }
+
   const content =
     rawContent || (isError ? "An error occurred during inference." : "");
 
@@ -200,6 +222,7 @@ export function turnToEvent(turn: InferenceTurnResponse): InstanceEvent | null {
     timestamp: turn.startedAt,
     ...(isError ? { isError: true } : {}),
     ...(errors.length > 0 ? { errors } : {}),
+    ...(toolCalls.length > 0 ? { toolCalls } : {}),
     ...(toolErrors.length > 0 ? { toolErrors } : {}),
   };
 }

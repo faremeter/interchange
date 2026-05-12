@@ -1,4 +1,9 @@
-export type { InstanceEvent, MailAddress, AgentActivity } from "./types";
+export type {
+  InstanceEvent,
+  ToolCallEvent,
+  MailAddress,
+  AgentActivity,
+} from "./types";
 export { type Transport, ApiError, createBrowserTransport } from "./transport";
 export {
   shouldShowMail,
