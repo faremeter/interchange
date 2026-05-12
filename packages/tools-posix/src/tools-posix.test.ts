@@ -1,8 +1,16 @@
 import { describe, test, expect, afterAll } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPosixTools } from "./index";
+import { matchGlob, shouldSkip } from "./glob-match";
 
 const tools = createPosixTools();
 
@@ -190,5 +198,639 @@ describe("run_shell", () => {
     const result = await promise;
     expect(result.isError).toBe(true);
     expect(result.content).toContain("aborted");
+  });
+});
+
+describe("edit_file", () => {
+  test("replaces a unique string successfully", async () => {
+    const dir = await makeTmpDir();
+    const path = join(dir, "edit-test.txt");
+    await writeFile(path, "hello world\nfoo bar\nbaz qux");
+
+    const result = await tools.run(
+      {
+        id: "e1",
+        name: "edit_file",
+        arguments: { path, old_string: "foo bar", new_string: "replaced" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("replaced 1 occurrence");
+
+    const content = await readFile(path, "utf8");
+    expect(content).toBe("hello world\nreplaced\nbaz qux");
+  });
+
+  test("fails when old_string is not found", async () => {
+    const dir = await makeTmpDir();
+    const path = join(dir, "edit-nf.txt");
+    await writeFile(path, "hello world");
+
+    const result = await tools.run(
+      {
+        id: "e2",
+        name: "edit_file",
+        arguments: { path, old_string: "missing", new_string: "x" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("not found");
+  });
+
+  test("fails when old_string has multiple occurrences without replace_all", async () => {
+    const dir = await makeTmpDir();
+    const path = join(dir, "edit-dup.txt");
+    await writeFile(path, "aaa bbb aaa ccc aaa");
+
+    const result = await tools.run(
+      {
+        id: "e3",
+        name: "edit_file",
+        arguments: { path, old_string: "aaa", new_string: "x" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("not unique");
+    expect(result.content).toContain("3 occurrences");
+  });
+
+  test("replace_all replaces all occurrences", async () => {
+    const dir = await makeTmpDir();
+    const path = join(dir, "edit-all.txt");
+    await writeFile(path, "aaa bbb aaa ccc aaa");
+
+    const result = await tools.run(
+      {
+        id: "e4",
+        name: "edit_file",
+        arguments: {
+          path,
+          old_string: "aaa",
+          new_string: "x",
+          replace_all: true,
+        },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("replaced 3 occurrence");
+
+    const content = await readFile(path, "utf8");
+    expect(content).toBe("x bbb x ccc x");
+  });
+
+  test("fails on non-existent file", async () => {
+    const result = await tools.run(
+      {
+        id: "e5",
+        name: "edit_file",
+        arguments: {
+          path: "/nonexistent/edit.txt",
+          old_string: "a",
+          new_string: "b",
+        },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("file not found");
+  });
+
+  test("handles empty new_string (deletion)", async () => {
+    const dir = await makeTmpDir();
+    const path = join(dir, "edit-del.txt");
+    await writeFile(path, "keep this remove_me keep this too");
+
+    const result = await tools.run(
+      {
+        id: "e6",
+        name: "edit_file",
+        arguments: { path, old_string: " remove_me", new_string: "" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+
+    const content = await readFile(path, "utf8");
+    expect(content).toBe("keep this keep this too");
+  });
+
+  test("fails with empty old_string", async () => {
+    const dir = await makeTmpDir();
+    const path = join(dir, "edit-empty.txt");
+    await writeFile(path, "anything");
+
+    const result = await tools.run(
+      {
+        id: "e7",
+        name: "edit_file",
+        arguments: { path, old_string: "", new_string: "x" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("must not be empty");
+  });
+
+  test("new_string with $-patterns is treated literally", async () => {
+    const dir = await makeTmpDir();
+    const path = join(dir, "edit-dollar.txt");
+    await writeFile(path, "const x = PLACEHOLDER;");
+
+    const result = await tools.run(
+      {
+        id: "e8",
+        name: "edit_file",
+        arguments: {
+          path,
+          old_string: "PLACEHOLDER",
+          new_string: "$& is not $' special",
+        },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+
+    const content = await readFile(path, "utf8");
+    expect(content).toBe("const x = $& is not $' special;");
+  });
+});
+
+describe("search_files", () => {
+  test("finds files matching a simple pattern", async () => {
+    const dir = await makeTmpDir();
+    const searchDir = join(dir, "search-simple");
+    await mkdir(searchDir);
+    await writeFile(join(searchDir, "a.ts"), "");
+    await writeFile(join(searchDir, "b.ts"), "");
+    await writeFile(join(searchDir, "c.json"), "");
+
+    const result = await tools.run(
+      {
+        id: "sf1",
+        name: "search_files",
+        arguments: { pattern: "*.ts", path: searchDir },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("a.ts");
+    expect(result.content).toContain("b.ts");
+    expect(result.content).not.toContain("c.json");
+  });
+
+  test("recursive search with ** pattern", async () => {
+    const dir = await makeTmpDir();
+    const searchDir = join(dir, "search-recursive");
+    await mkdir(join(searchDir, "sub"), { recursive: true });
+    await writeFile(join(searchDir, "root.ts"), "");
+    await writeFile(join(searchDir, "sub", "nested.ts"), "");
+    await writeFile(join(searchDir, "sub", "other.json"), "");
+
+    const result = await tools.run(
+      {
+        id: "sf2",
+        name: "search_files",
+        arguments: { pattern: "**/*.ts", path: searchDir },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("nested.ts");
+    expect(result.content).not.toContain("other.json");
+  });
+
+  test("returns no-match message when nothing matches", async () => {
+    const dir = await makeTmpDir();
+    const searchDir = join(dir, "search-empty");
+    await mkdir(searchDir);
+    await writeFile(join(searchDir, "file.txt"), "");
+
+    const result = await tools.run(
+      {
+        id: "sf3",
+        name: "search_files",
+        arguments: { pattern: "*.rs", path: searchDir },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("no files matching");
+  });
+
+  test("respects max_results", async () => {
+    const dir = await makeTmpDir();
+    const searchDir = join(dir, "search-limit");
+    await mkdir(searchDir);
+    for (let i = 0; i < 5; i++) {
+      await writeFile(join(searchDir, `file${i}.ts`), "");
+    }
+
+    const result = await tools.run(
+      {
+        id: "sf4",
+        name: "search_files",
+        arguments: { pattern: "*.ts", path: searchDir, max_results: 2 },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(typeof result.content).toBe("string");
+    const lines = String(result.content).split("\n");
+    const fileLines = lines.filter((l) => l.endsWith(".ts"));
+    expect(fileLines).toHaveLength(2);
+    expect(result.content).toContain("2 of 5 matches shown");
+  });
+
+  test("fails on non-existent directory", async () => {
+    const result = await tools.run(
+      {
+        id: "sf5",
+        name: "search_files",
+        arguments: { pattern: "*.ts", path: "/nonexistent/dir" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("not found");
+  });
+});
+
+describe("grep", () => {
+  test("finds matching lines in a file", async () => {
+    const dir = await makeTmpDir();
+    const path = join(dir, "grep-test.txt");
+    await writeFile(path, "alpha\nbeta\ngamma\ndelta\n");
+
+    const result = await tools.run(
+      {
+        id: "g1",
+        name: "grep",
+        arguments: { pattern: "beta", path },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain(":2:");
+    expect(result.content).toContain("beta");
+  });
+
+  test("supports regex patterns", async () => {
+    const dir = await makeTmpDir();
+    const path = join(dir, "grep-regex.txt");
+    await writeFile(path, "no match\nline 42 here\nanother\n100 items\n");
+
+    const result = await tools.run(
+      {
+        id: "g2",
+        name: "grep",
+        arguments: { pattern: "\\d+", path },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("42");
+    expect(result.content).toContain("100");
+    expect(result.content).not.toContain("no match");
+  });
+
+  test("reports no matches cleanly", async () => {
+    const dir = await makeTmpDir();
+    const path = join(dir, "grep-nomatch.txt");
+    await writeFile(path, "nothing here\n");
+
+    const result = await tools.run(
+      {
+        id: "g3",
+        name: "grep",
+        arguments: { pattern: "zzz", path },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("no matches");
+  });
+
+  test("respects glob filter", async () => {
+    const dir = await makeTmpDir();
+    const grepDir = join(dir, "grep-glob");
+    await mkdir(grepDir);
+    await writeFile(join(grepDir, "code.ts"), "findme\n");
+    await writeFile(join(grepDir, "data.json"), "findme\n");
+
+    const result = await tools.run(
+      {
+        id: "g4",
+        name: "grep",
+        arguments: { pattern: "findme", path: grepDir, glob: "*.ts" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("code.ts");
+    expect(result.content).not.toContain("data.json");
+  });
+
+  test("context lines work", async () => {
+    const dir = await makeTmpDir();
+    const path = join(dir, "grep-ctx.txt");
+    await writeFile(path, "aaa\nbbb\nccc\nddd\neee\n");
+
+    const result = await tools.run(
+      {
+        id: "g5",
+        name: "grep",
+        arguments: { pattern: "ccc", path, context: 1 },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("bbb");
+    expect(result.content).toContain("ccc");
+    expect(result.content).toContain("ddd");
+  });
+
+  test("fails on invalid regex", async () => {
+    const dir = await makeTmpDir();
+    const path = join(dir, "grep-badregex.txt");
+    await writeFile(path, "anything\n");
+
+    const result = await tools.run(
+      {
+        id: "g6",
+        name: "grep",
+        arguments: { pattern: "[invalid", path },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("invalid regex");
+  });
+
+  test("respects max_results", async () => {
+    const dir = await makeTmpDir();
+    const path = join(dir, "grep-limit.txt");
+    const lines = Array.from({ length: 20 }, (_, i) => `match${i}`).join("\n");
+    await writeFile(path, lines);
+
+    const result = await tools.run(
+      {
+        id: "g7",
+        name: "grep",
+        arguments: { pattern: "match", path, max_results: 3 },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(typeof result.content).toBe("string");
+    const matchLines = String(result.content)
+      .split("\n")
+      .filter((l) => l.includes(":"));
+    expect(matchLines).toHaveLength(3);
+    expect(result.content).toContain("3 of 20 matches shown");
+  });
+
+  test("searches a single file when path is a file", async () => {
+    const dir = await makeTmpDir();
+    const path = join(dir, "grep-single.txt");
+    await writeFile(path, "target line\nother\n");
+
+    const result = await tools.run(
+      {
+        id: "g8",
+        name: "grep",
+        arguments: { pattern: "target", path },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("target line");
+    expect(result.content).toContain(":1:");
+  });
+
+  test("silently skips binary files in directory search", async () => {
+    const dir = await makeTmpDir();
+    const grepDir = join(dir, "grep-binary");
+    await mkdir(grepDir);
+    await writeFile(join(grepDir, "text.txt"), "findme\n");
+    await writeFile(join(grepDir, "binary.bin"), Buffer.from([0x00, 0x01]));
+
+    const result = await tools.run(
+      {
+        id: "g9",
+        name: "grep",
+        arguments: { pattern: "findme", path: grepDir },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("text.txt");
+    expect(result.content).not.toContain("binary.bin");
+  });
+
+  test("adjacent matches do not duplicate context lines", async () => {
+    const dir = await makeTmpDir();
+    const path = join(dir, "grep-dedup.txt");
+    await writeFile(path, "aaa\nMATCH\nbbb\nMATCH\nccc\n");
+
+    const result = await tools.run(
+      {
+        id: "g10",
+        name: "grep",
+        arguments: { pattern: "MATCH", path, context: 1 },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    const output = String(result.content);
+    const bbbCount = output.split("bbb").length - 1;
+    expect(bbbCount).toBe(1);
+  });
+});
+
+describe("globToRegex", () => {
+  test("* matches within a single segment", () => {
+    expect(matchGlob("*.ts", "foo.ts")).toBe(true);
+    expect(matchGlob("*.ts", "bar.json")).toBe(false);
+    expect(matchGlob("*.ts", "sub/foo.ts")).toBe(false);
+  });
+
+  test("** matches zero or more path segments", () => {
+    expect(matchGlob("**/*.ts", "root.ts")).toBe(true);
+    expect(matchGlob("**/*.ts", "sub/nested.ts")).toBe(true);
+    expect(matchGlob("**/*.ts", "a/b/c/deep.ts")).toBe(true);
+    expect(matchGlob("**/*.ts", "foo.json")).toBe(false);
+  });
+
+  test("** at end matches everything remaining", () => {
+    expect(matchGlob("src/**", "src/foo.ts")).toBe(true);
+    expect(matchGlob("src/**", "src/a/b/c.ts")).toBe(true);
+    expect(matchGlob("src/**", "lib/foo.ts")).toBe(false);
+  });
+
+  test("standalone ** matches any path", () => {
+    expect(matchGlob("**", "anything")).toBe(true);
+    expect(matchGlob("**", "a/b/c")).toBe(true);
+  });
+
+  test("** in the middle matches intermediate segments", () => {
+    expect(matchGlob("src/**/test/*.ts", "src/test/foo.ts")).toBe(true);
+    expect(matchGlob("src/**/test/*.ts", "src/a/b/test/foo.ts")).toBe(true);
+    expect(matchGlob("src/**/test/*.ts", "src/a/b/test/foo.json")).toBe(false);
+  });
+
+  test("? matches exactly one character", () => {
+    expect(matchGlob("?.ts", "a.ts")).toBe(true);
+    expect(matchGlob("?.ts", "ab.ts")).toBe(false);
+    expect(matchGlob("?.ts", ".ts")).toBe(false);
+  });
+
+  test("literal dots are not regex wildcards", () => {
+    expect(matchGlob("file.txt", "file.txt")).toBe(true);
+    expect(matchGlob("file.txt", "filextxt")).toBe(false);
+  });
+
+  test("compound extensions work", () => {
+    expect(matchGlob("*.test.ts", "foo.test.ts")).toBe(true);
+    expect(matchGlob("*.test.ts", "foo.ts")).toBe(false);
+    expect(matchGlob("**/*.test.ts", "src/a/foo.test.ts")).toBe(true);
+  });
+
+  test("brace expansion throws a clear error", () => {
+    expect(() => matchGlob("*.{ts,tsx}", "foo.ts")).toThrow(
+      "brace expansion is not supported",
+    );
+    expect(() => matchGlob("**/*.{js,jsx}", "a/b.js")).toThrow(
+      "brace expansion is not supported",
+    );
+  });
+});
+
+describe("shouldSkip", () => {
+  test("skips node_modules at any depth", () => {
+    expect(shouldSkip("node_modules/foo")).toBe(true);
+    expect(shouldSkip("src/node_modules/bar")).toBe(true);
+  });
+
+  test("skips .git at any depth", () => {
+    expect(shouldSkip(".git/objects")).toBe(true);
+    expect(shouldSkip("sub/.git/config")).toBe(true);
+  });
+
+  test("does not skip normal paths", () => {
+    expect(shouldSkip("src/foo.ts")).toBe(false);
+    expect(shouldSkip("lib/utils/helper.ts")).toBe(false);
+  });
+});
+
+describe("search_files", () => {
+  test("** pattern matches files at root and nested levels", async () => {
+    const dir = await makeTmpDir();
+    const searchDir = join(dir, "search-depth");
+    await mkdir(join(searchDir, "sub"), { recursive: true });
+    await writeFile(join(searchDir, "root.ts"), "");
+    await writeFile(join(searchDir, "sub", "nested.ts"), "");
+
+    const result = await tools.run(
+      {
+        id: "sf6",
+        name: "search_files",
+        arguments: { pattern: "**/*.ts", path: searchDir },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("root.ts");
+    expect(result.content).toContain("nested.ts");
+  });
+
+  test("skips node_modules directories", async () => {
+    const dir = await makeTmpDir();
+    const searchDir = join(dir, "search-skip");
+    await mkdir(join(searchDir, "src"), { recursive: true });
+    await mkdir(join(searchDir, "node_modules", "pkg"), { recursive: true });
+    await writeFile(join(searchDir, "src", "app.ts"), "");
+    await writeFile(join(searchDir, "node_modules", "pkg", "index.ts"), "");
+
+    const result = await tools.run(
+      {
+        id: "sf7",
+        name: "search_files",
+        arguments: { pattern: "**/*.ts", path: searchDir },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("app.ts");
+    expect(result.content).not.toContain("node_modules");
+  });
+
+  test("does not return directory entries", async () => {
+    const dir = await makeTmpDir();
+    const searchDir = join(dir, "search-nodir");
+    await mkdir(join(searchDir, "looks-like.ts"), { recursive: true });
+    await writeFile(join(searchDir, "real.ts"), "");
+
+    const result = await tools.run(
+      {
+        id: "sf8",
+        name: "search_files",
+        arguments: { pattern: "*.ts", path: searchDir },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("real.ts");
+    expect(result.content).not.toContain("looks-like.ts");
+  });
+
+  test("includes symlinked files", async () => {
+    const dir = await makeTmpDir();
+    const searchDir = join(dir, "search-symlink");
+    await mkdir(searchDir);
+    await writeFile(join(searchDir, "real.ts"), "content");
+    await symlink(join(searchDir, "real.ts"), join(searchDir, "link.ts"));
+
+    const result = await tools.run(
+      {
+        id: "sf9",
+        name: "search_files",
+        arguments: { pattern: "*.ts", path: searchDir },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("real.ts");
+    expect(result.content).toContain("link.ts");
   });
 });
