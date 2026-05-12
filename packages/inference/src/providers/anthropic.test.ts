@@ -299,16 +299,33 @@ describe("Anthropic adapter: parseResponse", () => {
   });
 
   test("parses input_json_delta for tool arguments", () => {
-    const sseData = JSON.stringify({
-      type: "content_block_delta",
-      index: 1,
-      delta: { type: "input_json_delta", partial_json: '{"path":' },
-    });
+    const a = createAnthropicAdapter();
 
-    const events = adapter.parseResponse(sseData);
+    // Set up the tool call start first so the delta can resolve
+    a.parseResponse(
+      JSON.stringify({
+        type: "content_block_start",
+        index: 1,
+        content_block: {
+          type: "tool_use",
+          id: "toolu_test",
+          name: "write_file",
+        },
+      }),
+    );
+
+    const events = a.parseResponse(
+      JSON.stringify({
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "input_json_delta", partial_json: '{"path":' },
+      }),
+    );
+
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("inference.tool_call.delta");
     if (events[0]?.type === "inference.tool_call.delta") {
+      expect(events[0].data.callId).toBe("toolu_test");
       expect(events[0].data.argumentFragment).toBe('{"path":');
     }
   });
@@ -383,5 +400,62 @@ describe("Anthropic adapter: parseResponse", () => {
       JSON.stringify({ type: "content_block_stop", index: 0 }),
     );
     expect(events).toEqual([]);
+  });
+
+  test("tool call delta uses real callId when text precedes tool call", () => {
+    const a = createAnthropicAdapter();
+
+    // message_start resets state
+    a.parseResponse(
+      JSON.stringify({
+        type: "message_start",
+        message: {
+          usage: {
+            input_tokens: 10,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+        },
+      }),
+    );
+
+    // Text block at index 0
+    a.parseResponse(
+      JSON.stringify({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      }),
+    );
+
+    // Tool call at index 1
+    a.parseResponse(
+      JSON.stringify({
+        type: "content_block_start",
+        index: 1,
+        content_block: {
+          type: "tool_use",
+          id: "toolu_real_id",
+          name: "write_file",
+        },
+      }),
+    );
+
+    // Delta for tool call at index 1 must use the real callId
+    const events = a.parseResponse(
+      JSON.stringify({
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "input_json_delta", partial_json: '{"path":"test.ts"' },
+      }),
+    );
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe("inference.tool_call.delta");
+    if (events[0]?.type === "inference.tool_call.delta") {
+      expect(events[0].data.callId).toBe("toolu_real_id");
+      expect(events[0].data.argumentFragment).toBe('{"path":"test.ts"');
+    }
   });
 });
