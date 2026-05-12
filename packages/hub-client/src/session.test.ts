@@ -1433,6 +1433,17 @@ describe("activity state machine", () => {
     session.destroy();
     expect(session.activity).toBeNull();
   });
+
+  test("inference.text.replay clears inferring activity", () => {
+    mock.emit({ type: "inference.start", seq: 1, data: { model: "gpt-4" } });
+    expect(session.activity).toEqual({ type: "inferring" });
+
+    mock.emit({
+      type: "inference.text.replay",
+      data: { turnId: "turn_1", text: "Hello world" },
+    });
+    expect(session.activity).toBeNull();
+  });
 });
 
 // sendMail
