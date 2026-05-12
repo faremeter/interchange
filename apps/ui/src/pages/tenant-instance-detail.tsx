@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Mail, Paperclip } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronDown,
+  ChevronRight,
+  Mail,
+  Paperclip,
+} from "lucide-react";
 import {
   createBrowserTransport,
   createInstanceSession,
@@ -12,6 +18,7 @@ import {
   type AgentActivity,
   type InstanceEvent,
   type InstanceSession,
+  type ToolCallEvent,
 } from "@interchange/hub-client";
 
 import { MutationError } from "@/components/mutation-error";
@@ -24,6 +31,56 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 const transport = createBrowserTransport();
+
+function ToolCallView({ call }: { call: ToolCallEvent }) {
+  const [expanded, setExpanded] = useState(false);
+  const argsStr = formatToolArgs(call.name, call.arguments);
+
+  return (
+    <div className="my-1 rounded border border-border/50 bg-muted/30 text-xs font-mono">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center gap-1 px-2 py-1 text-left hover:bg-muted/50"
+      >
+        {expanded ? (
+          <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
+        )}
+        <span className="text-primary">{call.name}</span>
+        <span className="truncate text-muted-foreground">({argsStr})</span>
+        {call.isError && (
+          <span className="ml-auto shrink-0 text-destructive">error</span>
+        )}
+      </button>
+      {expanded && (
+        <div className="border-t border-border/50">
+          <div className="border-b border-border/30 px-2 py-1 text-muted-foreground">
+            {JSON.stringify(call.arguments, null, 2)}
+          </div>
+          <pre
+            className={`whitespace-pre-wrap px-2 py-1 ${call.isError ? "text-destructive" : ""}`}
+          >
+            {call.result}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatToolArgs(_name: string, args: Record<string, unknown>): string {
+  const entries = Object.entries(args);
+  if (entries.length === 0) return "";
+  return entries
+    .map(([k, v]) => {
+      const val = typeof v === "string" ? v : JSON.stringify(v);
+      const short = val.length > 40 ? val.slice(0, 40) + "..." : val;
+      return `${k}: ${short}`;
+    })
+    .join(", ");
+}
 
 function StatusBadge({ status }: { status: string }) {
   const variant =
@@ -331,6 +388,15 @@ export function TenantInstanceDetailPage() {
                           {msg.content}
                         </span>
                       )}
+                      {msg.kind === "turn" &&
+                        msg.toolCalls &&
+                        msg.toolCalls.length > 0 && (
+                          <div className="mt-1.5">
+                            {msg.toolCalls.map((call, i) => (
+                              <ToolCallView key={i} call={call} />
+                            ))}
+                          </div>
+                        )}
                       {msg.kind === "turn" &&
                         msg.errors &&
                         msg.errors.length > 0 && (
