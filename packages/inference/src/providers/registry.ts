@@ -2,14 +2,16 @@ import type { ProviderAdapter } from "../adapter";
 import { createAnthropicAdapter } from "./anthropic";
 import { createOpenAIAdapter } from "./openai";
 
-const registry = new Map<string, ProviderAdapter>();
+type AdapterFactory = () => ProviderAdapter;
 
-registry.set("anthropic", createAnthropicAdapter());
-registry.set("openai", createOpenAIAdapter());
-registry.set("openai-compatible", createOpenAIAdapter());
+const registry = new Map<string, AdapterFactory>();
 
-export function registerProvider(id: string, adapter: ProviderAdapter): void {
-  registry.set(id, adapter);
+registry.set("anthropic", createAnthropicAdapter);
+registry.set("openai", createOpenAIAdapter);
+registry.set("openai-compatible", createOpenAIAdapter);
+
+export function registerProvider(id: string, factory: AdapterFactory): void {
+  registry.set(id, factory);
 }
 
 export function hasProvider(id: string): boolean {
@@ -17,9 +19,9 @@ export function hasProvider(id: string): boolean {
 }
 
 export function lookupProvider(id: string): ProviderAdapter {
-  const adapter = registry.get(id);
-  if (adapter === undefined) {
+  const factory = registry.get(id);
+  if (factory === undefined) {
     throw new Error(`Unknown inference provider: ${id}`);
   }
-  return adapter;
+  return factory();
 }

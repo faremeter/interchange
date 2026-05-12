@@ -250,7 +250,10 @@ const AnthropicSSEEvent = ContentBlockDelta.or(ContentBlockStart)
   .or(MessageStop)
   .or(Ping);
 
-function parseResponse(sseData: string): InferenceEvent[] {
+function parseResponse(
+  sseData: string,
+  blockIndexToCallId: Map<number, string>,
+): InferenceEvent[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(sseData);
@@ -295,13 +298,19 @@ function parseResponse(sseData: string): InferenceEvent[] {
 
       if (delta.type === "input_json_delta") {
         const index = event.index ?? 0;
+        const callId = blockIndexToCallId.get(index);
+        if (callId === undefined) {
+          throw new Error(
+            `input_json_delta for content block ${index} with no preceding tool_use start`,
+          );
+        }
         const fragment = delta.partial_json ?? "";
         return [
           {
             type: "inference.tool_call.delta",
             seq,
             data: {
-              callId: String(index),
+              callId,
               argumentFragment: fragment,
               partial: EMPTY_PARTIAL,
             },
@@ -319,6 +328,7 @@ function parseResponse(sseData: string): InferenceEvent[] {
       if (block.type === "tool_use") {
         const index = event.index ?? 0;
         const callId = block.id ?? String(index);
+        blockIndexToCallId.set(index, callId);
         const name = block.name ?? "";
         return [
           {
@@ -352,6 +362,7 @@ function parseResponse(sseData: string): InferenceEvent[] {
     }
 
     case "message_start": {
+      blockIndexToCallId.clear();
       const msgUsage = event.message?.usage;
       if (msgUsage === undefined) return [];
 
@@ -408,9 +419,11 @@ function extractPacingDelayMs(headers: Headers): number | undefined {
 }
 
 export function createAnthropicAdapter(): ProviderAdapter {
+  const blockIndexToCallId = new Map<number, string>();
+
   return {
     buildRequest,
-    parseResponse,
+    parseResponse: (sseData) => parseResponse(sseData, blockIndexToCallId),
     extractRetryAfterMs,
     extractPacingDelayMs,
   };
