@@ -14,7 +14,7 @@ Faremeter Interchange is the foundational platform for deploying, connecting, an
 Interchange provides isolated execution environments - language runtimes, containers, or virtual machines - where agents can operate without risking the host system or each other. Operators define security policies; Interchange enforces them.
 
 **Model Flexibility**
-Agents can use any model backend - local models running on-device, remote APIs, or self-hosted inference servers. Interchange abstracts the model layer so agents remain portable across deployments.
+Agent definitions declare which models they need. Interchange supports any model backend — local models running on-device, remote APIs, or self-hosted inference servers. Operators control which models and services are accessible; the platform ensures availability and handles routing transparently. Agents remain portable across deployments without being tied to any single model service.
 
 **Agent Builder**
 Interchange provides tools to construct agents and skills with properly assembled context and prompts. The builder handles composition of system prompts, skill instructions, initial state, and runtime context into coherent agent configurations. Operators define the building blocks; the builder assembles them into deployable agents.

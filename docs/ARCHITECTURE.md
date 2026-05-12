@@ -28,6 +28,19 @@ Authorization requirements declaring which capabilities the agent needs and wher
 **Credential Requirements**
 External service credentials the agent needs, declared with a source annotation indicating whether the tenant, definition creator, or invoker should provide them. See CREDENTIALS.md for the resolution model.
 
+**Model Requirements**
+The models the agent needs for inference, declared by canonical name. Interchange maintains a global model registry with canonical identifiers for well-known models; tenants can extend the registry with custom names for private or self-hosted models. Model providers register which canonical models they serve and map them to their own internal model names where they differ.
+
+A model provider is a service that offers access to one or more models — each with its own endpoint and authentication method. A model provider authenticates via either a credential (API key, OAuth token) or a wallet (pay-per-use), but not both. This is distinct from the credential system's "provider" concept (which represents any third-party service); model providers are specifically the services that serve inference.
+
+For each model, the definition can specify model provider preferences and fallback order with source annotations, following the same three-source delegation model as grants and credentials:
+
+- **Tenant-sourced** — Tenant policies define which model providers are available and set baseline priorities. This is the outer boundary; no agent can use a model provider the tenant has not registered.
+- **Creator-sourced** — The definition author sets model provider preferences that travel with the definition. A creator can pin a definition to specific model providers (e.g., requiring Anthropic direct for a safety-critical agent) or set a preferred fallback order.
+- **Invoker-sourced** — The user launching the agent can bring their own model provider credentials at launch, adding model providers to the agent's available set or overriding priority for the session.
+
+The definition does not carry model provider configurations directly; it declares model needs and preferences that the control plane resolves at launch time. If a required model has no available model providers at resolution time, the agent fails to launch — the same behavior as an unresolvable credential requirement. See INFERENCE.md for the provider adapter architecture.
+
 **Version History**
 Definitions are tracked in git repositories on the hub. The repository contains the agent-specific resources: skills, system prompt, context builder configuration, and initial state. External skill dependencies are referenced in configuration files and resolved when the agent is deployed.
 
@@ -48,6 +61,7 @@ An agent gains at launch:
 - **Key pair** — An Ed25519 key pair for cryptographic identity and content signing.
 - **Materialized grants** — The control plane resolves the definition's grant requirements against the appropriate sources (tenant policies, creator's grants, invoker's grants) and materializes the effective grant set on the agent's principal.
 - **Resolved credentials** — The control plane resolves the definition's credential requirements and provisions the agent with the credentials it needs.
+- **Resolved model providers** — The control plane resolves the definition's model requirements against all three sources (tenant, creator, invoker), producing an ordered model provider list per model. The harness uses this list for inference routing.
 - **Inbox** — The agent's SMTP mailbox for durable message delivery.
 - **Effective offerings** — The set of offerings the agent can actually provide, determined by which credentials and grants were successfully resolved.
 
@@ -73,7 +87,15 @@ The agent harness is the core runtime component deployed for each agent. It acts
 The harness orchestrates five primary concerns:
 
 **Inference**
-The harness manages the connection to the agent's model backend - whether a local model, remote API, or self-hosted inference server. It handles request/response cycles, streaming, context management, and model-specific protocol translation. The agent's reasoning happens through this interface.
+The harness manages inference through a layered abstraction. Agent definitions declare which models they need; the control plane resolves these requirements at launch into an ordered list of model providers per model.
+
+The reactor plugin selects which model to use for each inference call (per-call, not per-session). The harness maps that model to the highest-priority available model provider, which determines everything needed for the call: protocol adapter, endpoint, and credentials. Different model providers for the same model may use entirely different protocols — one may speak the Anthropic API while another speaks an OpenAI-compatible API — so failover between model providers can mean switching the protocol adapter, not just the endpoint. The inference layer is stateless with respect to model provider selection; it executes against whatever configuration the harness provides.
+
+Model provider selection follows a priority order established at launch. If a model provider fails (network error, rate limit, authentication failure), the harness falls back to the next in the list. For model providers at equal priority, the harness can load-balance across them. The selection strategy — strict priority, weighted round-robin, or latency-based — is configurable per model requirement.
+
+The model provider list is not fixed for the agent's lifetime. The control plane can push model provider updates to running agents — adding newly available model providers, removing revoked ones, or adjusting priorities — following the same pattern as dynamic grant updates. The harness applies updates without interrupting in-flight inference calls; the updated list takes effect on the next selection.
+
+The agent is unaware of which model provider is serving a given inference call.
 
 **Tools**
 The harness exposes a standardized interface for invoking tools, whether local or remote. Local tools run within the agent's runtime - file system access, code execution, network requests, or custom tools registered by the operator. Remote tools are discovered through the control plane and invoke offerings exposed by other agents or services on the Interchange network. From the agent's perspective, local and remote tools share the same interface; the harness handles protocol negotiation, request routing, and wallet-based payment transparently. All tool invocations are subject to authorization policies.
@@ -249,7 +271,8 @@ Telemetry is tagged with agent identity, tenant, and correlation IDs. The harnes
 
 The harness maintains a record of all external identities that participate in an agent's work. This includes:
 
-- **Model backends** - Which LLMs were invoked, including model identifiers and provider information
+- **Model backends** - Which LLMs were invoked, including canonical model name, model provider identity, and model provider-specific model identifier
+- **Model provider routing decisions** - Which model provider was selected for each inference call, why (priority, fallback after failure, load balancing), and any fallback events that occurred. This data supports debugging (why did this call go to model provider X?), cost attribution (how much traffic went to each model provider?), and reliability analysis (how often does model provider Y fail?)
 - **Third-party services** - External APIs, tools, or data sources accessed during operation
 
 Each external interaction is logged with the identity of the external service, timestamp, and sufficient context to reconstruct the interaction for debugging. This record is scoped to the agent and available for audit queries. The tracking is transparent to the agent itself - the harness handles it as part of its mediation layer for all external calls.
@@ -301,7 +324,7 @@ The control plane tracks all available harnesses within a tenant. Harnesses can 
 The control plane manages agent definitions — creating, versioning, and retiring blueprints. Definitions are catalog entries that describe what an agent can do. The control plane tracks version history, supports rollback to previous versions, and enforces update policies that govern how definition changes affect running agents.
 
 **Agent Lifecycle**
-The control plane launches agents from definitions onto harnesses. When an agent is launched, the control plane selects an appropriate harness, resolves the definition's grant and credential requirements, transfers the agent package with materialized grants, and instructs the harness to initialize the agent. The control plane tracks which agents are running on which harnesses, handles redeployment when harnesses fail, and coordinates graceful shutdown during updates or retirement.
+The control plane launches agents from definitions onto harnesses. When an agent is launched, the control plane selects an appropriate harness, resolves the definition's grant, credential, and model requirements, transfers the agent package with materialized grants and resolved model providers, and instructs the harness to initialize the agent. The control plane tracks which agents are running on which harnesses, handles redeployment when harnesses fail, and coordinates graceful shutdown during updates or retirement.
 
 **Discovery**
 The control plane is the source of truth for discovery. It maintains a two-tier registry within each tenant: agent definitions as catalog entries (potential offerings that can be launched on demand) and running agents as live providers (immediately invocable with agent address and health status). The offerings endpoint returns both tiers, tagged with availability. The control plane also handles federation — publishing selected definitions and agents to other tenants and incorporating federated entries from trusted tenants into local discovery results.
@@ -314,6 +337,9 @@ The control plane manages how authority flows to agents via harnesses. Agent def
 
 **Credential Storage**
 The control plane stores API keys, OAuth tokens, and other credentials that agents need to access external services. Operators configure integrations at the tenant or agent level; the control plane securely stores credentials and distributes them to harnesses at agent launch time. Agents never access credentials directly; the harness retrieves them from the control plane and injects them into outbound requests.
+
+**Model Provider Management**
+The control plane maintains the model provider catalog for each tenant — the set of model providers available and their configurations. Operators register model providers at the tenant level, specifying the model provider's name, endpoint, supported models (mapped to canonical model names), and authentication method (credential or wallet). Model provider registrations follow the tenant hierarchy: child tenants inherit model providers from their parent and can add restrictions (e.g., disabling a model provider or narrowing its model set) but not remove inherited model providers' availability at the parent level. This differs from credential providers (see CREDENTIALS.md), which use shadowing semantics — the difference reflects distinct trust models between service integrations and inference routing. The control plane also maintains the global model registry — canonical identifiers for well-known models — which tenants can extend with custom names for private or self-hosted models. The control plane resolves agent definitions' model requirements against this catalog at launch, producing the ordered model provider list shipped to the harness. The control plane monitors model provider health and can push model provider updates to running agents when model providers become unavailable or new ones are added, following the same push model as grant updates.
 
 **Message Bus Management**
 The control plane manages the message bus infrastructure for each tenant. It configures routing rules, manages distribution lists, enforces rate limits, and handles cross-tenant federation for messaging. The message bus itself may be implemented as a separate service, but the control plane provides the configuration and policy layer.
