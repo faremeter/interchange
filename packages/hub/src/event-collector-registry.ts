@@ -38,6 +38,28 @@ export type EventCollectorRegistryConfig = {
   onTurnFinalized?: (agentAddress: string, turn: TurnFinalized) => void;
 };
 
+export function deriveStatus(event: InferenceEvent): SessionStatus | null {
+  switch (event.type) {
+    case "inference.start":
+      return { status: "busy" };
+    case "connector.reply":
+      return { status: "idle" };
+    case "reactor.gate.blocked":
+      if (event.data.reason === "approval")
+        return { status: "waiting_approval" };
+      return null;
+    case "reactor.gate.cleared":
+      return { status: "busy" };
+    case "reactor.done":
+      return { status: "idle" };
+    case "reactor.error":
+      if (event.data.fatal) return { status: "idle" };
+      return null;
+    default:
+      return null;
+  }
+}
+
 export function createEventCollectorRegistry(
   config: EventCollectorRegistryConfig,
 ): EventCollectorRegistry {
@@ -75,29 +97,6 @@ export function createEventCollectorRegistry(
   function removeCollector(agentAddress: string): void {
     collectors.delete(agentAddress);
     statuses.delete(agentAddress);
-  }
-
-  function deriveStatus(event: InferenceEvent): SessionStatus | null {
-    switch (event.type) {
-      case "reactor.start":
-      case "inference.start":
-        return { status: "busy" };
-      case "connector.reply":
-        return { status: "idle" };
-      case "reactor.gate.blocked":
-        if (event.data.reason === "approval")
-          return { status: "waiting_approval" };
-        return null;
-      case "reactor.gate.cleared":
-        return { status: "busy" };
-      case "reactor.done":
-        return { status: "idle" };
-      case "reactor.error":
-        if (event.data.fatal) return { status: "idle" };
-        return null;
-      default:
-        return null;
-    }
   }
 
   function dispatch(agentAddress: string, event: InferenceEvent): void {
