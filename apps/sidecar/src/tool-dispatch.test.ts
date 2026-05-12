@@ -14,10 +14,14 @@ function makeDeployTool(name: string, hasHandler: boolean): DeployToolInfo {
 }
 
 const signal = AbortSignal.timeout(5000);
+const cwd = process.cwd();
 
 describe("buildToolDispatch", () => {
   test("dispatches posix built-in tool", async () => {
-    const dispatch = buildToolDispatch([makeDeployTool("read_file", false)]);
+    const dispatch = buildToolDispatch(
+      [makeDeployTool("read_file", false)],
+      cwd,
+    );
     const result = await dispatch.run(
       { id: "c1", name: "read_file", arguments: { path: "/dev/null" } },
       signal,
@@ -27,7 +31,7 @@ describe("buildToolDispatch", () => {
   });
 
   test("returns error for handler tool", async () => {
-    const dispatch = buildToolDispatch([makeDeployTool("custom", true)]);
+    const dispatch = buildToolDispatch([makeDeployTool("custom", true)], cwd);
     const result = await dispatch.run(
       { id: "c2", name: "custom", arguments: {} },
       signal,
@@ -39,7 +43,10 @@ describe("buildToolDispatch", () => {
   });
 
   test("returns error for deploy tool without handler or posix match", async () => {
-    const dispatch = buildToolDispatch([makeDeployTool("exotic_tool", false)]);
+    const dispatch = buildToolDispatch(
+      [makeDeployTool("exotic_tool", false)],
+      cwd,
+    );
     const result = await dispatch.run(
       { id: "c3", name: "exotic_tool", arguments: {} },
       signal,
@@ -51,7 +58,7 @@ describe("buildToolDispatch", () => {
   });
 
   test("returns error for completely unknown tool", async () => {
-    const dispatch = buildToolDispatch([]);
+    const dispatch = buildToolDispatch([], cwd);
     const result = await dispatch.run(
       { id: "c4", name: "nonexistent", arguments: {} },
       signal,
@@ -62,7 +69,10 @@ describe("buildToolDispatch", () => {
   });
 
   test("handler tools take priority over posix names", async () => {
-    const dispatch = buildToolDispatch([makeDeployTool("read_file", true)]);
+    const dispatch = buildToolDispatch(
+      [makeDeployTool("read_file", true)],
+      cwd,
+    );
     const result = await dispatch.run(
       { id: "c5", name: "read_file", arguments: { path: "/dev/null" } },
       signal,

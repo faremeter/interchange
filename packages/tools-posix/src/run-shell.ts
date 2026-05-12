@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 export type RunShellArgs = {
   command: string;
   timeout?: number;
+  cwd?: string;
 };
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -21,6 +22,7 @@ export async function runShell(
     const child = spawn(args.command, {
       shell: true,
       stdio: ["ignore", "pipe", "pipe"],
+      cwd: args.cwd,
     });
 
     if (child.stdout === null || child.stderr === null) {

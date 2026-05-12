@@ -327,7 +327,7 @@ for (let i = 0; i < AGENT_NAMES.length; i++) {
     transport: transports[i],
     crypto: cryptoInstances[i],
     storage: stores[i],
-    tools: createPosixTools(),
+    tools: createPosixTools({ cwd: process.cwd() }),
     onEvent: makeEventLogger(name),
     directorPolicy: i !== 0 ? { mode: "reactive" } : {},
   });
