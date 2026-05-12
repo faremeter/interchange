@@ -333,10 +333,13 @@ export function createSessionManager(
           tenantId,
         });
 
+      const workDir = path.join(storeDir, "workspace");
+      await fs.promises.mkdir(workDir, { recursive: true });
+
       const deployToolDefs = deployTree.tools.map((t) => t.definition);
       const posixTools = createPosixTools({
-        cwd: storeDir,
-        plugins: [createLSPPlugin({ cwd: storeDir })],
+        cwd: workDir,
+        plugins: [createLSPPlugin({ cwd: workDir })],
       });
       const toolDispatch = buildToolDispatch(posixTools, deployTree.tools);
       const allToolDefs = [...posixTools.definitions, ...deployToolDefs];
