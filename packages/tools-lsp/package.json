@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@interchange/log": "workspace:*",
+    "@interchange/tools-posix": "workspace:*",
+    "@interchange/types": "workspace:*",
     "vscode-jsonrpc": "^8.2.0",
     "vscode-languageserver-types": "^3.17.5",
     "which": "^4.0.0"
