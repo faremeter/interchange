@@ -373,6 +373,45 @@ function parseResponse(sseData: string): InferenceEvent[] {
   }
 }
 
+function extractRetryAfterMs(headers: Headers): number | undefined {
+  const raw = headers.get("retry-after");
+  if (raw === null) return undefined;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
+  return Math.ceil(seconds * 1000);
+}
+
+function extractPacingDelayMs(headers: Headers): number | undefined {
+  // Check all rate limit dimensions and return the longest wait needed
+  const delays: number[] = [];
+
+  for (const prefix of [
+    "anthropic-ratelimit-requests",
+    "anthropic-ratelimit-input-tokens",
+    "anthropic-ratelimit-output-tokens",
+    "anthropic-ratelimit-tokens",
+  ]) {
+    const remaining = headers.get(`${prefix}-remaining`);
+    if (remaining === null) continue;
+    const n = Number(remaining);
+    if (!Number.isFinite(n) || n > 0) continue;
+
+    const reset = headers.get(`${prefix}-reset`);
+    if (reset === null) continue;
+    const resetTime = Date.parse(reset);
+    if (Number.isNaN(resetTime)) continue;
+    const delayMs = resetTime - Date.now();
+    if (delayMs > 0) delays.push(delayMs);
+  }
+
+  return delays.length > 0 ? Math.max(...delays) : undefined;
+}
+
 export function createAnthropicAdapter(): ProviderAdapter {
-  return { buildRequest, parseResponse };
+  return {
+    buildRequest,
+    parseResponse,
+    extractRetryAfterMs,
+    extractPacingDelayMs,
+  };
 }

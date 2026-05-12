@@ -29,7 +29,19 @@ export type ResponseParser = (sseData: string) => InferenceEvent[];
 
 // An adapter pairs a request builder with a response parser. Registration
 // is a map keyed by provider identifier — no class hierarchy required.
+
+// Extracts a retry delay from provider-specific response headers on a 429.
+// Returns milliseconds to wait, or undefined if no retry info is available.
+export type RetryAfterExtractor = (headers: Headers) => number | undefined;
+
+// Extracts a pacing delay from response headers on ANY response (including
+// success). Checks remaining rate limit capacity and returns how long to
+// wait before the next request, or undefined if no pacing is needed.
+export type PacingExtractor = (headers: Headers) => number | undefined;
+
 export type ProviderAdapter = {
   buildRequest: RequestBuilder;
   parseResponse: ResponseParser;
+  extractRetryAfterMs?: RetryAfterExtractor;
+  extractPacingDelayMs?: PacingExtractor;
 };
