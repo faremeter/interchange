@@ -20,7 +20,10 @@ export type RequestBuilder = (
 ) => BuiltRequest;
 
 // A response parser converts one SSE data payload string into zero or more
-// internal inference events. Pure function — all state lives in the harness.
+// internal inference events. May close over per-request state (e.g., for
+// correlating content block indices with tool call IDs). Each adapter
+// instance is created per inference call, so state does not leak across
+// requests.
 //
 // The parser may return an empty array for events it doesn't care about
 // (e.g., Anthropic's ping events). It must not throw; errors should be
