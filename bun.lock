@@ -195,6 +195,7 @@
       "name": "@interchange/tools-lsp",
       "version": "0.0.0",
       "dependencies": {
+        "@interchange/log": "workspace:*",
         "vscode-jsonrpc": "^8.2.0",
         "vscode-languageserver-types": "^3.17.5",
         "which": "^4.0.0",
