@@ -5,8 +5,8 @@ import { tenantDetailQuery } from "@/lib/queries/tenants";
 
 const NAV_ITEMS = [
   { label: "Overview", path: "" },
-  { label: "Agents", path: "/agents" },
-  { label: "Instances", path: "/instances" },
+  { label: "Agent Definitions", path: "/agents" },
+  { label: "Agents", path: "/instances" },
   { label: "Members", path: "/principals" },
   { label: "Roles", path: "/roles" },
   { label: "Grants", path: "/grants" },

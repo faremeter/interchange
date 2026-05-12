@@ -2,11 +2,12 @@ import { type SQL, eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver } from "hono-openapi";
 
-import { agent, principal } from "@interchange/db/schema";
+import { agent, agentInstance, principal } from "@interchange/db/schema";
 import {
   UserProfile,
   PrincipalSummary,
   AgentSummary,
+  InstanceSummary,
   SessionSummary,
   ApprovalSummary,
   ErrorResponse,
@@ -241,6 +242,96 @@ app.get(
       name: a.name,
       description: a.description ?? null,
       status: a.status as "deployed" | "stopped" | "updating" | "error",
+    }));
+
+    return c.json(paginatedResponse(items, rows, limit));
+  },
+);
+
+app.get(
+  "/instances",
+  describeRoute({
+    tags: ["User"],
+    summary: "List running agent instances across all tenants",
+    description:
+      "Aggregates running agent instances from all tenants the user belongs to. Each result is tagged with tenantId.",
+    parameters: [...pageParameters],
+    responses: {
+      200: {
+        description: "Instances across tenants",
+        content: {
+          "application/json": {
+            schema: resolver(paginatedSchema(InstanceSummary)),
+          },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const user = c.get("user");
+    if (!user) {
+      return c.json(
+        { error: { code: "unauthorized", message: "Authentication required" } },
+        401,
+      );
+    }
+    const db = c.get("db");
+    const { limit, cursor } = parsePageParams({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
+    });
+
+    const principals = await db.query.principal.findMany({
+      where: and(eq(principal.kind, "user"), eq(principal.refId, user.id)),
+    });
+
+    const tenantIds = principals.map((p) => p.tenantId);
+    if (tenantIds.length === 0) {
+      return c.json({ data: [], nextCursor: null });
+    }
+
+    const tenants = await db.query.tenant.findMany({
+      where: (t, { inArray }) => inArray(t.id, tenantIds),
+    });
+    const tenantMap = new Map(tenants.map((t) => [t.id, t]));
+
+    const conditions: SQL[] = [eq(agentInstance.status, "running")];
+    if (cursor) {
+      conditions.push(
+        cursorCondition(agentInstance.createdAt, agentInstance.id, cursor),
+      );
+    }
+
+    const rows = await db.query.agentInstance.findMany({
+      where: (ai, { inArray }) =>
+        and(inArray(ai.tenantId, tenantIds), ...conditions),
+      orderBy: pageOrder(agentInstance.createdAt, agentInstance.id),
+      limit,
+    });
+
+    const agentIds = [...new Set(rows.map((r) => r.agentId))];
+    const agents =
+      agentIds.length > 0
+        ? await db.query.agent.findMany({
+            where: (a, { inArray }) => inArray(a.id, agentIds),
+          })
+        : [];
+    const agentMap = new Map(agents.map((a) => [a.id, a]));
+
+    const items = rows.map((r) => ({
+      id: r.id,
+      tenantId: r.tenantId,
+      tenantName: tenantMap.get(r.tenantId)?.name ?? "Unknown",
+      agentId: r.agentId,
+      agentName: agentMap.get(r.agentId)?.name ?? "Unknown",
+      address: r.address,
+      status: r.status as
+        | "deployed"
+        | "running"
+        | "updating"
+        | "error"
+        | "stopped",
+      createdAt: ts(r.createdAt),
     }));
 
     return c.json(paginatedResponse(items, rows, limit));

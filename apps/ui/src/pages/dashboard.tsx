@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
-import { mePrincipalsQuery, meAgentsQuery } from "@/lib/queries/me";
+import { mePrincipalsQuery, meInstancesQuery } from "@/lib/queries/me";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -15,7 +15,7 @@ import {
 
 function StatusBadge({ status }: { status: string }) {
   const variant =
-    status === "active" || status === "deployed"
+    status === "active" || status === "deployed" || status === "running"
       ? "secondary"
       : status === "error" || status === "suspended"
         ? "destructive"
@@ -26,7 +26,8 @@ function StatusBadge({ status }: { status: string }) {
 export function DashboardPage() {
   const { data: principals, isLoading: loadingPrincipals } =
     useQuery(mePrincipalsQuery);
-  const { data: agents, isLoading: loadingAgents } = useQuery(meAgentsQuery);
+  const { data: instances, isLoading: loadingInstances } =
+    useQuery(meInstancesQuery);
 
   return (
     <div className="space-y-8">
@@ -73,48 +74,47 @@ export function DashboardPage() {
       )}
 
       <div>
-        <h2 className="text-xl font-semibold">Agents across tenants</h2>
+        <h2 className="text-xl font-semibold">Agents</h2>
         <p className="text-sm text-muted-foreground">
-          All agents you have visibility into.
+          Running agents across all your tenants.
         </p>
       </div>
 
-      {loadingAgents ? (
+      {loadingInstances ? (
         <p className="text-sm text-muted-foreground">Loading...</p>
-      ) : agents?.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No agents yet.</p>
+      ) : instances?.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No running agents.</p>
       ) : (
         <div className="rounded-lg border">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
+                <TableHead>Definition</TableHead>
                 <TableHead>Tenant</TableHead>
+                <TableHead>Address</TableHead>
                 <TableHead>Status</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {agents?.map((a) => (
-                <TableRow key={a.id}>
+              {instances?.map((inst) => (
+                <TableRow key={inst.id}>
                   <TableCell>
                     <Link
-                      to="/tenants/$tenantId/agents"
-                      params={{ tenantId: a.tenantId }}
+                      to="/tenants/$tenantId/instances/$instanceId"
+                      params={{ tenantId: inst.tenantId, instanceId: inst.id }}
                       className="text-primary hover:underline"
                     >
-                      {a.name}
+                      {inst.agentName}
                     </Link>
-                    {a.description && (
-                      <p className="text-xs text-muted-foreground">
-                        {a.description}
-                      </p>
-                    )}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {a.tenantName}
+                    {inst.tenantName}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {inst.address}
                   </TableCell>
                   <TableCell>
-                    <StatusBadge status={a.status} />
+                    <StatusBadge status={inst.status} />
                   </TableCell>
                 </TableRow>
               ))}

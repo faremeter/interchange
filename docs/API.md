@@ -9,6 +9,7 @@
 | GET | /api/me | Get current user profile |
 | GET | /api/me/principals | List principals across all tenants |
 | GET | /api/me/agents | List agents across all tenants |
+| GET | /api/me/instances | List running agent instances across all tenants |
 | GET | /api/me/sessions | List sessions across all tenants |
 | GET | /api/me/approvals | List pending approvals across all tenants |
 | POST | /api/tenants | Create a tenant |
@@ -128,6 +129,15 @@ Aggregates agents from all tenants the user belongs to. Each result is tagged wi
 Query: cursor?, limit?
 
 200: unknown -- Agents across tenants
+
+### GET /api/me/instances
+List running agent instances across all tenants
+
+Aggregates running agent instances from all tenants the user belongs to. Each result is tagged with tenantId.
+
+Query: cursor?, limit?
+
+200: unknown -- Instances across tenants
 
 ### GET /api/me/sessions
 List sessions across all tenants
