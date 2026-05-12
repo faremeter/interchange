@@ -158,6 +158,7 @@ export function createInstanceSession(opts: {
         streaming = replayEvent.data.text;
         streamingFromReplay = true;
         replayTurnId = replayEvent.data.turnId;
+        activity = null;
         onChange();
       }
       return;
