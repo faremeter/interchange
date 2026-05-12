@@ -1,0 +1,19 @@
+{
+  "name": "@interchange/tools-lsp",
+  "version": "0.0.0",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "vscode-languageserver-types": "^3.17.5",
+    "which": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/which": "^3.0.0"
+  }
+}
