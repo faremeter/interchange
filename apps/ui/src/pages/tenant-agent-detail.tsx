@@ -312,7 +312,7 @@ export function TenantAgentDetailPage() {
           className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="size-3.5" />
-          Agents
+          Agent Definitions
         </Link>
       </div>
 
@@ -457,17 +457,17 @@ export function TenantAgentDetailPage() {
           onClick={() => deployMut.mutate({ agentId })}
           disabled={deployMut.isPending || agent.status !== "deployed"}
         >
-          {deployMut.isPending ? "Creating..." : "New Instance"}
+          {deployMut.isPending ? "Launching..." : "Launch Agent"}
         </Button>
         <MutationError error={deployMut.error} />
       </div>
 
       {/* Instances */}
       <div className="mt-8">
-        <h3 className="text-sm font-semibold">Instances</h3>
+        <h3 className="text-sm font-semibold">Agents</h3>
         {!instances || instances.length === 0 ? (
           <p className="mt-2 text-xs text-muted-foreground">
-            No instances launched from this definition.
+            No agents launched from this definition.
           </p>
         ) : (
           <div className="mt-3 rounded-lg border">

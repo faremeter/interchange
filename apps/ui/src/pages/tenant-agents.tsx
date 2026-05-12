@@ -121,7 +121,7 @@ export function TenantAgentsPage() {
       <TenantNav tenantId={tenantId} />
 
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Agents</h2>
+        <h2 className="text-lg font-semibold">Agent Definitions</h2>
         <Button size="sm" onClick={() => setCreateOpen(true)}>
           <Plus className="size-4" />
           Create Agent
@@ -131,7 +131,9 @@ export function TenantAgentsPage() {
       {isLoading ? (
         <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
       ) : agents?.length === 0 ? (
-        <p className="mt-4 text-sm text-muted-foreground">No agents yet.</p>
+        <p className="mt-4 text-sm text-muted-foreground">
+          No agent definitions yet.
+        </p>
       ) : (
         <div className="mt-4 rounded-lg border">
           <Table>

@@ -6,8 +6,8 @@ import { Pencil } from "lucide-react";
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
 import {
-  tenantAgentsQuery,
   tenantDetailQuery,
+  tenantInstancesQuery,
   tenantPrincipalsQuery,
   tenantRolesQuery,
   updateTenantMutation,
@@ -29,7 +29,7 @@ export function TenantPage() {
   const queryClient = useQueryClient();
   const { data: tenant, isLoading } = useQuery(tenantDetailQuery(tenantId));
   const { data: principals } = useQuery(tenantPrincipalsQuery(tenantId));
-  const { data: agents } = useQuery(tenantAgentsQuery(tenantId));
+  const { data: instances } = useQuery(tenantInstancesQuery(tenantId));
   const { data: roles } = useQuery(tenantRolesQuery(tenantId));
 
   const [editOpen, setEditOpen] = useState(false);
@@ -71,7 +71,7 @@ export function TenantPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="pt-0">
-            <p className="text-2xl font-semibold">{agents?.length ?? 0}</p>
+            <p className="text-2xl font-semibold">{instances?.length ?? 0}</p>
           </CardContent>
         </Card>
         <Card>

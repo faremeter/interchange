@@ -32,6 +32,17 @@ export const AgentSummary = type({
   status: "'deployed' | 'stopped' | 'updating' | 'error'",
 });
 
+export const InstanceSummary = type({
+  id: "string",
+  tenantId: "string",
+  tenantName: "string",
+  agentId: "string",
+  agentName: "string",
+  address: "string",
+  status: "'deployed' | 'running' | 'updating' | 'error' | 'stopped'",
+  createdAt: "string",
+});
+
 export const SessionSummary = type({
   id: "string",
   tenantId: "string",

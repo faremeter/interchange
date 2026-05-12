@@ -54,3 +54,25 @@ export const meAgentsQuery = queryOptions({
     return res.data;
   },
 });
+
+type InstanceSummary = {
+  id: string;
+  tenantId: string;
+  tenantName: string;
+  agentId: string;
+  agentName: string;
+  address: string;
+  status: "deployed" | "running" | "updating" | "error" | "stopped";
+  createdAt: string;
+};
+
+export const meInstancesQuery = queryOptions({
+  queryKey: ["me", "instances"],
+  queryFn: async () => {
+    const res = await api<{ data: InstanceSummary[] }>(
+      "GET",
+      "/api/me/instances",
+    );
+    return res.data;
+  },
+});

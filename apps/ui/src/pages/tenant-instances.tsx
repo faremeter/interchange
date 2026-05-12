@@ -72,21 +72,19 @@ export function TenantInstancesPage() {
       <TenantNav tenantId={tenantId} />
 
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Instances</h2>
+        <h2 className="text-lg font-semibold">Agents</h2>
       </div>
 
       {isLoading ? (
         <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
       ) : !instances || instances.length === 0 ? (
-        <p className="mt-4 text-sm text-muted-foreground">
-          No instances found.
-        </p>
+        <p className="mt-4 text-sm text-muted-foreground">No agents found.</p>
       ) : (
         <div className="mt-4 rounded-lg border">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Agent</TableHead>
+                <TableHead>Definition</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Address</TableHead>
                 <TableHead>Created</TableHead>
