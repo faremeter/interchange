@@ -26,5 +26,13 @@ export type InstanceEvent =
       timestamp: string;
       isError?: boolean;
       errors?: { category: string; message: string }[];
+      toolCalls?: ToolCallEvent[];
       toolErrors?: { name: string; content: string }[];
     };
+
+export type ToolCallEvent = {
+  name: string;
+  arguments: Record<string, unknown>;
+  result: string;
+  isError: boolean;
+};
