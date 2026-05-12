@@ -6,9 +6,12 @@ import type {
 } from "@interchange/types/runtime";
 import { TOOL_DEFINITIONS, getHandler } from "./registry";
 
+export type { EditFileArgs } from "./edit-file";
+export type { GrepArgs } from "./grep";
 export type { ReadFileArgs } from "./read-file";
-export type { WriteFileArgs } from "./write-file";
+export type { SearchFilesArgs } from "./search-files";
 export type { RunShellArgs } from "./run-shell";
+export type { WriteFileArgs } from "./write-file";
 
 export type PosixTools = ToolRunner & {
   definitions: ToolDefinition[];
