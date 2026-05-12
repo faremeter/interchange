@@ -5,7 +5,8 @@ export type MailAddress = { name: string | null; email: string };
 export type AgentActivity =
   | { type: "inferring" }
   | { type: "tool_call"; name: string }
-  | { type: "tool_running"; name: string };
+  | { type: "tool_running"; name: string }
+  | { type: "rate_limited"; retryAfterMs: number };
 
 export type InstanceEvent =
   | {
