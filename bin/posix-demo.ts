@@ -147,8 +147,8 @@ const [storageAlpha, storageBeta] = await Promise.all([
 // Tools
 // ---------------------------------------------------------------------------
 
-const toolsAlpha = createPosixTools();
-const toolsBeta = createPosixTools();
+const toolsAlpha = createPosixTools({ cwd: process.cwd() });
+const toolsBeta = createPosixTools({ cwd: process.cwd() });
 
 // ---------------------------------------------------------------------------
 // Shutdown coordination

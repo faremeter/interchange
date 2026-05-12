@@ -1,4 +1,4 @@
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import {
   mkdtemp,
   mkdir,
@@ -9,19 +9,18 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createPosixTools } from "./index";
+import { realpathSync } from "node:fs";
+import { createPosixTools, composeMiddleware } from "./index";
+import type { PosixTools, ToolHandler, ToolPlugin } from "./index";
 import { matchGlob, shouldSkip } from "./glob-match";
 
-const tools = createPosixTools();
-
 let tmpDir: string;
+let tools: PosixTools;
 
-async function makeTmpDir(): Promise<string> {
-  if (tmpDir === undefined) {
-    tmpDir = await mkdtemp(join(tmpdir(), "tools-posix-test-"));
-  }
-  return tmpDir;
-}
+beforeAll(async () => {
+  tmpDir = await mkdtemp(join(tmpdir(), "tools-posix-test-"));
+  tools = createPosixTools({ cwd: tmpDir });
+});
 
 afterAll(async () => {
   if (tmpDir !== undefined) {
@@ -35,8 +34,7 @@ function neverAbort(): AbortSignal {
 
 describe("read_file", () => {
   test("reads an existing file and returns numbered content", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "hello.txt");
+    const path = join(tmpDir, "hello.txt");
     await tools.run(
       {
         id: "setup",
@@ -59,8 +57,7 @@ describe("read_file", () => {
   });
 
   test("read_file with offset and limit returns only requested lines", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "numbered.txt");
+    const path = join(tmpDir, "numbered.txt");
     const lines = Array.from({ length: 10 }, (_, i) => `line${i + 1}`).join(
       "\n",
     );
@@ -99,8 +96,7 @@ describe("read_file", () => {
 
 describe("write_file", () => {
   test("writes to a new file and content matches", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "output.txt");
+    const path = join(tmpDir, "output.txt");
     const content = "hello, world";
 
     const result = await tools.run(
@@ -116,8 +112,7 @@ describe("write_file", () => {
   });
 
   test("creates parent directories if they do not exist", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "deep", "nested", "dir", "file.txt");
+    const path = join(tmpDir, "deep", "nested", "dir", "file.txt");
     const content = "nested content";
 
     const result = await tools.run(
@@ -203,8 +198,7 @@ describe("run_shell", () => {
 
 describe("edit_file", () => {
   test("replaces a unique string successfully", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "edit-test.txt");
+    const path = join(tmpDir, "edit-test.txt");
     await writeFile(path, "hello world\nfoo bar\nbaz qux");
 
     const result = await tools.run(
@@ -224,8 +218,7 @@ describe("edit_file", () => {
   });
 
   test("fails when old_string is not found", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "edit-nf.txt");
+    const path = join(tmpDir, "edit-nf.txt");
     await writeFile(path, "hello world");
 
     const result = await tools.run(
@@ -242,8 +235,7 @@ describe("edit_file", () => {
   });
 
   test("fails when old_string has multiple occurrences without replace_all", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "edit-dup.txt");
+    const path = join(tmpDir, "edit-dup.txt");
     await writeFile(path, "aaa bbb aaa ccc aaa");
 
     const result = await tools.run(
@@ -261,8 +253,7 @@ describe("edit_file", () => {
   });
 
   test("replace_all replaces all occurrences", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "edit-all.txt");
+    const path = join(tmpDir, "edit-all.txt");
     await writeFile(path, "aaa bbb aaa ccc aaa");
 
     const result = await tools.run(
@@ -305,8 +296,7 @@ describe("edit_file", () => {
   });
 
   test("handles empty new_string (deletion)", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "edit-del.txt");
+    const path = join(tmpDir, "edit-del.txt");
     await writeFile(path, "keep this remove_me keep this too");
 
     const result = await tools.run(
@@ -325,8 +315,7 @@ describe("edit_file", () => {
   });
 
   test("fails with empty old_string", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "edit-empty.txt");
+    const path = join(tmpDir, "edit-empty.txt");
     await writeFile(path, "anything");
 
     const result = await tools.run(
@@ -343,8 +332,7 @@ describe("edit_file", () => {
   });
 
   test("new_string with $-patterns is treated literally", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "edit-dollar.txt");
+    const path = join(tmpDir, "edit-dollar.txt");
     await writeFile(path, "const x = PLACEHOLDER;");
 
     const result = await tools.run(
@@ -369,8 +357,7 @@ describe("edit_file", () => {
 
 describe("search_files", () => {
   test("finds files matching a simple pattern", async () => {
-    const dir = await makeTmpDir();
-    const searchDir = join(dir, "search-simple");
+    const searchDir = join(tmpDir, "search-simple");
     await mkdir(searchDir);
     await writeFile(join(searchDir, "a.ts"), "");
     await writeFile(join(searchDir, "b.ts"), "");
@@ -392,8 +379,7 @@ describe("search_files", () => {
   });
 
   test("recursive search with ** pattern", async () => {
-    const dir = await makeTmpDir();
-    const searchDir = join(dir, "search-recursive");
+    const searchDir = join(tmpDir, "search-recursive");
     await mkdir(join(searchDir, "sub"), { recursive: true });
     await writeFile(join(searchDir, "root.ts"), "");
     await writeFile(join(searchDir, "sub", "nested.ts"), "");
@@ -414,8 +400,7 @@ describe("search_files", () => {
   });
 
   test("returns no-match message when nothing matches", async () => {
-    const dir = await makeTmpDir();
-    const searchDir = join(dir, "search-empty");
+    const searchDir = join(tmpDir, "search-empty");
     await mkdir(searchDir);
     await writeFile(join(searchDir, "file.txt"), "");
 
@@ -433,8 +418,7 @@ describe("search_files", () => {
   });
 
   test("respects max_results", async () => {
-    const dir = await makeTmpDir();
-    const searchDir = join(dir, "search-limit");
+    const searchDir = join(tmpDir, "search-limit");
     await mkdir(searchDir);
     for (let i = 0; i < 5; i++) {
       await writeFile(join(searchDir, `file${i}.ts`), "");
@@ -470,12 +454,91 @@ describe("search_files", () => {
     expect(result.isError).toBe(true);
     expect(result.content).toContain("not found");
   });
+
+  test("** pattern matches files at root and nested levels", async () => {
+    const searchDir = join(tmpDir, "search-depth");
+    await mkdir(join(searchDir, "sub"), { recursive: true });
+    await writeFile(join(searchDir, "root.ts"), "");
+    await writeFile(join(searchDir, "sub", "nested.ts"), "");
+
+    const result = await tools.run(
+      {
+        id: "sf6",
+        name: "search_files",
+        arguments: { pattern: "**/*.ts", path: searchDir },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("root.ts");
+    expect(result.content).toContain("nested.ts");
+  });
+
+  test("skips node_modules directories", async () => {
+    const searchDir = join(tmpDir, "search-skip");
+    await mkdir(join(searchDir, "src"), { recursive: true });
+    await mkdir(join(searchDir, "node_modules", "pkg"), { recursive: true });
+    await writeFile(join(searchDir, "src", "app.ts"), "");
+    await writeFile(join(searchDir, "node_modules", "pkg", "index.ts"), "");
+
+    const result = await tools.run(
+      {
+        id: "sf7",
+        name: "search_files",
+        arguments: { pattern: "**/*.ts", path: searchDir },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("app.ts");
+    expect(result.content).not.toContain("node_modules");
+  });
+
+  test("does not return directory entries", async () => {
+    const searchDir = join(tmpDir, "search-nodir");
+    await mkdir(join(searchDir, "looks-like.ts"), { recursive: true });
+    await writeFile(join(searchDir, "real.ts"), "");
+
+    const result = await tools.run(
+      {
+        id: "sf8",
+        name: "search_files",
+        arguments: { pattern: "*.ts", path: searchDir },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("real.ts");
+    expect(result.content).not.toContain("looks-like.ts");
+  });
+
+  test("includes symlinked files", async () => {
+    const searchDir = join(tmpDir, "search-symlink");
+    await mkdir(searchDir);
+    await writeFile(join(searchDir, "real.ts"), "content");
+    await symlink(join(searchDir, "real.ts"), join(searchDir, "link.ts"));
+
+    const result = await tools.run(
+      {
+        id: "sf9",
+        name: "search_files",
+        arguments: { pattern: "*.ts", path: searchDir },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("real.ts");
+    expect(result.content).toContain("link.ts");
+  });
 });
 
 describe("grep", () => {
   test("finds matching lines in a file", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "grep-test.txt");
+    const path = join(tmpDir, "grep-test.txt");
     await writeFile(path, "alpha\nbeta\ngamma\ndelta\n");
 
     const result = await tools.run(
@@ -493,8 +556,7 @@ describe("grep", () => {
   });
 
   test("supports regex patterns", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "grep-regex.txt");
+    const path = join(tmpDir, "grep-regex.txt");
     await writeFile(path, "no match\nline 42 here\nanother\n100 items\n");
 
     const result = await tools.run(
@@ -513,8 +575,7 @@ describe("grep", () => {
   });
 
   test("reports no matches cleanly", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "grep-nomatch.txt");
+    const path = join(tmpDir, "grep-nomatch.txt");
     await writeFile(path, "nothing here\n");
 
     const result = await tools.run(
@@ -531,8 +592,7 @@ describe("grep", () => {
   });
 
   test("respects glob filter", async () => {
-    const dir = await makeTmpDir();
-    const grepDir = join(dir, "grep-glob");
+    const grepDir = join(tmpDir, "grep-glob");
     await mkdir(grepDir);
     await writeFile(join(grepDir, "code.ts"), "findme\n");
     await writeFile(join(grepDir, "data.json"), "findme\n");
@@ -552,8 +612,7 @@ describe("grep", () => {
   });
 
   test("context lines work", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "grep-ctx.txt");
+    const path = join(tmpDir, "grep-ctx.txt");
     await writeFile(path, "aaa\nbbb\nccc\nddd\neee\n");
 
     const result = await tools.run(
@@ -572,8 +631,7 @@ describe("grep", () => {
   });
 
   test("fails on invalid regex", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "grep-badregex.txt");
+    const path = join(tmpDir, "grep-badregex.txt");
     await writeFile(path, "anything\n");
 
     const result = await tools.run(
@@ -590,8 +648,7 @@ describe("grep", () => {
   });
 
   test("respects max_results", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "grep-limit.txt");
+    const path = join(tmpDir, "grep-limit.txt");
     const lines = Array.from({ length: 20 }, (_, i) => `match${i}`).join("\n");
     await writeFile(path, lines);
 
@@ -614,8 +671,7 @@ describe("grep", () => {
   });
 
   test("searches a single file when path is a file", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "grep-single.txt");
+    const path = join(tmpDir, "grep-single.txt");
     await writeFile(path, "target line\nother\n");
 
     const result = await tools.run(
@@ -633,8 +689,7 @@ describe("grep", () => {
   });
 
   test("silently skips binary files in directory search", async () => {
-    const dir = await makeTmpDir();
-    const grepDir = join(dir, "grep-binary");
+    const grepDir = join(tmpDir, "grep-binary");
     await mkdir(grepDir);
     await writeFile(join(grepDir, "text.txt"), "findme\n");
     await writeFile(join(grepDir, "binary.bin"), Buffer.from([0x00, 0x01]));
@@ -654,8 +709,7 @@ describe("grep", () => {
   });
 
   test("adjacent matches do not duplicate context lines", async () => {
-    const dir = await makeTmpDir();
-    const path = join(dir, "grep-dedup.txt");
+    const path = join(tmpDir, "grep-dedup.txt");
     await writeFile(path, "aaa\nMATCH\nbbb\nMATCH\nccc\n");
 
     const result = await tools.run(
@@ -749,88 +803,241 @@ describe("shouldSkip", () => {
   });
 });
 
-describe("search_files", () => {
-  test("** pattern matches files at root and nested levels", async () => {
-    const dir = await makeTmpDir();
-    const searchDir = join(dir, "search-depth");
-    await mkdir(join(searchDir, "sub"), { recursive: true });
-    await writeFile(join(searchDir, "root.ts"), "");
-    await writeFile(join(searchDir, "sub", "nested.ts"), "");
+describe("composeMiddleware", () => {
+  const signal = new AbortController().signal;
 
-    const result = await tools.run(
-      {
-        id: "sf6",
-        name: "search_files",
-        arguments: { pattern: "**/*.ts", path: searchDir },
-      },
-      neverAbort(),
+  test("empty middleware array returns base handler unchanged", async () => {
+    const base: ToolHandler = async (call) => ({
+      callId: call.id,
+      content: "base",
+    });
+    const composed = composeMiddleware([], base);
+
+    const result = await composed(
+      { id: "t1", name: "test", arguments: {} },
+      signal,
     );
-
-    expect(result.isError).toBeFalsy();
-    expect(result.content).toContain("root.ts");
-    expect(result.content).toContain("nested.ts");
+    expect(result.content).toBe("base");
   });
 
-  test("skips node_modules directories", async () => {
-    const dir = await makeTmpDir();
-    const searchDir = join(dir, "search-skip");
-    await mkdir(join(searchDir, "src"), { recursive: true });
-    await mkdir(join(searchDir, "node_modules", "pkg"), { recursive: true });
-    await writeFile(join(searchDir, "src", "app.ts"), "");
-    await writeFile(join(searchDir, "node_modules", "pkg", "index.ts"), "");
+  test("first plugin is outermost in the chain", async () => {
+    const order: string[] = [];
 
-    const result = await tools.run(
-      {
-        id: "sf7",
-        name: "search_files",
-        arguments: { pattern: "**/*.ts", path: searchDir },
-      },
-      neverAbort(),
+    const outer =
+      (next: ToolHandler): ToolHandler =>
+      async (call, sig) => {
+        order.push("outer-before");
+        const result = await next(call, sig);
+        order.push("outer-after");
+        return {
+          ...result,
+          content: `outer(${result.content})`,
+        };
+      };
+
+    const inner =
+      (next: ToolHandler): ToolHandler =>
+      async (call, sig) => {
+        order.push("inner-before");
+        const result = await next(call, sig);
+        order.push("inner-after");
+        return {
+          ...result,
+          content: `inner(${result.content})`,
+        };
+      };
+
+    const base: ToolHandler = async (call) => {
+      order.push("base");
+      return { callId: call.id, content: "base" };
+    };
+
+    const composed = composeMiddleware([outer, inner], base);
+    const result = await composed(
+      { id: "t2", name: "test", arguments: {} },
+      signal,
     );
 
-    expect(result.isError).toBeFalsy();
-    expect(result.content).toContain("app.ts");
-    expect(result.content).not.toContain("node_modules");
+    expect(result.content).toBe("outer(inner(base))");
+    expect(order).toEqual([
+      "outer-before",
+      "inner-before",
+      "base",
+      "inner-after",
+      "outer-after",
+    ]);
   });
 
-  test("does not return directory entries", async () => {
-    const dir = await makeTmpDir();
-    const searchDir = join(dir, "search-nodir");
-    await mkdir(join(searchDir, "looks-like.ts"), { recursive: true });
-    await writeFile(join(searchDir, "real.ts"), "");
+  test("middleware can short-circuit by not calling next", async () => {
+    const blocker =
+      (_next: ToolHandler): ToolHandler =>
+      async (call) => ({
+        callId: call.id,
+        content: "blocked",
+        isError: true,
+      });
 
-    const result = await tools.run(
-      {
-        id: "sf8",
-        name: "search_files",
-        arguments: { pattern: "*.ts", path: searchDir },
-      },
-      neverAbort(),
+    const base: ToolHandler = async () => {
+      throw new Error("should not be reached");
+    };
+
+    const composed = composeMiddleware([blocker], base);
+    const result = await composed(
+      { id: "t3", name: "test", arguments: {} },
+      signal,
     );
 
-    expect(result.isError).toBeFalsy();
-    expect(result.content).toContain("real.ts");
-    expect(result.content).not.toContain("looks-like.ts");
+    expect(result.content).toBe("blocked");
+    expect(result.isError).toBe(true);
+  });
+});
+
+describe("plugin wiring", () => {
+  test("plugin tools are included in definitions", () => {
+    const plugin: ToolPlugin = {
+      tools: [
+        {
+          definition: {
+            name: "custom_tool",
+            description: "A custom tool",
+            inputSchema: { type: "object", properties: {}, required: [] },
+          },
+          handler: async (call) => ({ callId: call.id, content: "custom" }),
+        },
+      ],
+    };
+
+    const pt = createPosixTools({ cwd: tmpDir, plugins: [plugin] });
+    const names = pt.definitions.map((d) => d.name);
+    expect(names).toContain("custom_tool");
+    expect(names).toContain("read_file");
   });
 
-  test("includes symlinked files", async () => {
-    const dir = await makeTmpDir();
-    const searchDir = join(dir, "search-symlink");
-    await mkdir(searchDir);
-    await writeFile(join(searchDir, "real.ts"), "content");
-    await symlink(join(searchDir, "real.ts"), join(searchDir, "link.ts"));
+  test("plugin tool handler is callable", async () => {
+    const plugin: ToolPlugin = {
+      tools: [
+        {
+          definition: {
+            name: "echo_tool",
+            description: "Echoes input",
+            inputSchema: { type: "object", properties: {}, required: [] },
+          },
+          handler: async (call) => ({
+            callId: call.id,
+            content: `echo: ${String(call.arguments.msg)}`,
+          }),
+        },
+      ],
+    };
 
-    const result = await tools.run(
-      {
-        id: "sf9",
-        name: "search_files",
-        arguments: { pattern: "*.ts", path: searchDir },
+    const pt = createPosixTools({ cwd: tmpDir, plugins: [plugin] });
+    const result = await pt.run(
+      { id: "p1", name: "echo_tool", arguments: { msg: "hello" } },
+      neverAbort(),
+    );
+
+    expect(result.content).toBe("echo: hello");
+  });
+
+  test("duplicate tool name throws", () => {
+    const plugin: ToolPlugin = {
+      tools: [
+        {
+          definition: {
+            name: "read_file",
+            description: "Duplicate",
+            inputSchema: { type: "object", properties: {}, required: [] },
+          },
+          handler: async (call) => ({ callId: call.id, content: "" }),
+        },
+      ],
+    };
+
+    expect(() => createPosixTools({ cwd: tmpDir, plugins: [plugin] })).toThrow(
+      "already registered",
+    );
+  });
+
+  test("dispose runs disposers in reverse order", async () => {
+    const order: string[] = [];
+    const pluginA: ToolPlugin = {
+      dispose: async () => {
+        order.push("a");
       },
+    };
+    const pluginB: ToolPlugin = {
+      dispose: async () => {
+        order.push("b");
+      },
+    };
+
+    const pt = createPosixTools({
+      cwd: tmpDir,
+      plugins: [pluginA, pluginB],
+    });
+    await pt.dispose();
+
+    expect(order).toEqual(["b", "a"]);
+  });
+
+  test("dispose throws AggregateError when callbacks fail", async () => {
+    const plugin: ToolPlugin = {
+      dispose: async () => {
+        throw new Error("boom");
+      },
+    };
+
+    const pt = createPosixTools({ cwd: tmpDir, plugins: [plugin] });
+
+    await expect(pt.dispose()).rejects.toThrow(AggregateError);
+  });
+
+  test("middleware exception is caught and returned as error result", async () => {
+    const plugin: ToolPlugin = {
+      middleware: (_next) => async () => {
+        throw new Error("middleware explosion");
+      },
+    };
+
+    const pt = createPosixTools({ cwd: tmpDir, plugins: [plugin] });
+    const result = await pt.run(
+      { id: "mx", name: "read_file", arguments: { path: "/dev/null" } },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("middleware explosion");
+  });
+
+  test("double dispose is a no-op", async () => {
+    let count = 0;
+    const plugin: ToolPlugin = {
+      dispose: async () => {
+        count++;
+      },
+    };
+
+    const pt = createPosixTools({ cwd: tmpDir, plugins: [plugin] });
+    await pt.dispose();
+    await pt.dispose();
+
+    expect(count).toBe(1);
+  });
+
+  test("run_shell executes in the configured cwd", async () => {
+    const pt = createPosixTools({ cwd: tmpDir });
+    const result = await pt.run(
+      { id: "cwd1", name: "run_shell", arguments: { command: "pwd" } },
       neverAbort(),
     );
 
     expect(result.isError).toBeFalsy();
-    expect(result.content).toContain("real.ts");
-    expect(result.content).toContain("link.ts");
+    expect(String(result.content).trim()).toBe(realpathSync(tmpDir));
+  });
+
+  test("invalid cwd throws at construction", () => {
+    expect(() => createPosixTools({ cwd: "/nonexistent/path" })).toThrow(
+      "cwd does not exist",
+    );
   });
 });

@@ -138,8 +138,11 @@ type ProvisionedAgent = {
   keyPair: KeyPair;
 };
 
-export function buildToolDispatch(deployTools: DeployToolInfo[]): ToolRunner {
-  const posixTools = createPosixTools();
+export function buildToolDispatch(
+  deployTools: DeployToolInfo[],
+  cwd: string,
+): ToolRunner {
+  const posixTools = createPosixTools({ cwd });
   const posixNames = new Set(posixTools.definitions.map((d) => d.name));
   const handlerIndex = new Set(
     deployTools.filter((t) => t.hasHandler).map((t) => t.definition.name),
@@ -330,7 +333,7 @@ export function createSessionManager(
         });
 
       const deployToolDefs = deployTree.tools.map((t) => t.definition);
-      const toolDispatch = buildToolDispatch(deployTree.tools);
+      const toolDispatch = buildToolDispatch(deployTree.tools, storeDir);
 
       const harness = createHarness({
         address: agentAddress,
