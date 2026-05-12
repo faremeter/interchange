@@ -463,9 +463,15 @@ export function TenantInstanceDetailPage() {
                       ? "Thinking..."
                       : activity.type === "tool_call"
                         ? `Calling ${activity.name}...`
-                        : `Running ${activity.name}...`;
+                        : activity.type === "tool_running"
+                          ? `Running ${activity.name}...`
+                          : `Rate limited, retrying in ${Math.ceil(activity.retryAfterMs / 1000)}s...`;
                   return (
-                    <div className="text-sm text-muted-foreground">{label}</div>
+                    <div
+                      className={`text-sm ${activity.type === "rate_limited" ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}
+                    >
+                      {label}
+                    </div>
                   );
                 }
                 if (isSending && !streaming) {

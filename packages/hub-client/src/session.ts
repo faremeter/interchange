@@ -195,12 +195,21 @@ export function createInstanceSession(opts: {
         activity = null;
         onChange();
         break;
-      case "inference.error":
+      case "inference.error": {
         streaming = "";
         streamingFromReplay = false;
-        activity = null;
+        const err = event.data.error;
+        if (
+          err.category === "quota_exhausted" &&
+          err.retryAfterMs !== undefined
+        ) {
+          activity = { type: "rate_limited", retryAfterMs: err.retryAfterMs };
+        } else {
+          activity = null;
+        }
         onChange();
         break;
+      }
       case "reactor.done":
         streaming = "";
         streamingFromReplay = false;
