@@ -22,6 +22,7 @@ import {
   type DeployToolInfo,
 } from "@interchange/harness";
 import { createPosixTools } from "@interchange/tools-posix";
+import { createLSPPlugin } from "@interchange/tools-lsp";
 import { hasProvider } from "@interchange/inference";
 import { createNodeCrypto, createSshSignature } from "@interchange/crypto-node";
 import {
@@ -62,6 +63,7 @@ export type AgentSession = {
   agentId: string;
   grants: { current: GrantRule[] };
   config: AgentConfig;
+  disposers: (() => Promise<void>)[];
 };
 
 export type SessionEventSink = (
@@ -139,10 +141,9 @@ type ProvisionedAgent = {
 };
 
 export function buildToolDispatch(
+  posixTools: ToolRunner & { definitions: { name: string }[] },
   deployTools: DeployToolInfo[],
-  cwd: string,
 ): ToolRunner {
-  const posixTools = createPosixTools({ cwd });
   const posixNames = new Set(posixTools.definitions.map((d) => d.name));
   const handlerIndex = new Set(
     deployTools.filter((t) => t.hasHandler).map((t) => t.definition.name),
@@ -333,7 +334,12 @@ export function createSessionManager(
         });
 
       const deployToolDefs = deployTree.tools.map((t) => t.definition);
-      const toolDispatch = buildToolDispatch(deployTree.tools, storeDir);
+      const posixTools = createPosixTools({
+        cwd: storeDir,
+        plugins: [createLSPPlugin({ cwd: storeDir })],
+      });
+      const toolDispatch = buildToolDispatch(posixTools, deployTree.tools);
+      const allToolDefs = [...posixTools.definitions, ...deployToolDefs];
 
       const harness = createHarness({
         address: agentAddress,
@@ -347,7 +353,7 @@ export function createSessionManager(
         storage,
         authorize,
         auditStore: storage,
-        deployTools: deployToolDefs,
+        deployTools: allToolDefs,
         tools: toolDispatch,
         onEvent(event: InferenceEvent) {
           if (
@@ -366,6 +372,7 @@ export function createSessionManager(
         agentId: agentConfig.agentId,
         grants: grantsRef,
         config: agentConfig,
+        disposers: [() => posixTools.dispose()],
       });
 
       harness.start();
@@ -396,6 +403,7 @@ export function createSessionManager(
       throw new Error(`No session exists for agent "${agentAddress}"`);
     }
     session.harness.stop();
+    await runDisposers(session, agentAddress);
     await drainMailQueue(agentAddress);
     sessions.delete(agentAddress);
     mailStores.delete(agentAddress);
@@ -417,11 +425,23 @@ export function createSessionManager(
       throw new Error(`No session exists for agent "${agentAddress}"`);
     }
     session.harness.stop();
+    await runDisposers(session, agentAddress);
     await drainMailQueue(agentAddress);
     sessions.delete(agentAddress);
     mailStores.delete(agentAddress);
     transport.unregisterAgent(agentAddress);
     logger.info`Aborted agent ${agentAddress}: ${reason}`;
+  }
+
+  async function runDisposers(
+    session: AgentSession,
+    agentAddress: string,
+  ): Promise<void> {
+    for (const disposer of session.disposers) {
+      await disposer().catch((err: unknown) => {
+        logger.error`Disposer failed for ${agentAddress}: ${String(err)}`;
+      });
+    }
   }
 
   function deliverMessage(agentAddress: string, message: InboundMessage): void {
