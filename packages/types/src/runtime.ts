@@ -677,6 +677,7 @@ export const InferenceError = type({
   ),
   message: "string",
   "statusCode?": "number",
+  "retryAfterMs?": "number",
   "raw?": "unknown",
 });
 export type InferenceError = typeof InferenceError.infer;
@@ -786,7 +787,11 @@ export const InferenceEvent = type({
   .or({
     type: "'inference.done'",
     seq: "number",
-    data: { turn: AssistantTurn, usage: TokenUsage },
+    data: {
+      turn: AssistantTurn,
+      usage: TokenUsage,
+      "pacingDelayMs?": "number",
+    },
   })
   .or({
     type: "'inference.error'",
@@ -927,7 +932,7 @@ export type InferenceEvent =
   | {
       type: "inference.done";
       seq: number;
-      data: { turn: AssistantTurn; usage: TokenUsage };
+      data: { turn: AssistantTurn; usage: TokenUsage; pacingDelayMs?: number };
     }
   | {
       type: "inference.error";

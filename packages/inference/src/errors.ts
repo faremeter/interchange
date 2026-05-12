@@ -6,13 +6,20 @@ export function classifyHTTPError(
   statusCode: number,
   message: string,
   raw?: unknown,
+  retryAfterMs?: number,
 ): InferenceError {
   if (statusCode === 401 || statusCode === 403) {
     return { category: "credential_failure", message, statusCode, raw };
   }
 
   if (statusCode === 429) {
-    return { category: "quota_exhausted", message, statusCode, raw };
+    return {
+      category: "quota_exhausted",
+      message,
+      statusCode,
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+      raw,
+    };
   }
 
   if (statusCode === 400) {

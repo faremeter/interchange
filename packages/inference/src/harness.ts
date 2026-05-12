@@ -167,11 +167,17 @@ export async function* runInference(
       }
     }
     const errorMessage = extractErrorMessage(errorBody) ?? response.statusText;
+    const retryAfterMs = adapter.extractRetryAfterMs?.(response.headers);
     yield {
       type: "inference.error",
       seq: nextSeq(),
       data: {
-        error: classifyHTTPError(response.status, errorMessage, errorBody),
+        error: classifyHTTPError(
+          response.status,
+          errorMessage,
+          errorBody,
+          retryAfterMs,
+        ),
         partial: snapshotPartial(partial),
       },
     };
@@ -396,10 +402,18 @@ export async function* runInference(
     timestamp: Date.now(),
   };
 
+  const pacingDelayMs = adapter.extractPacingDelayMs?.(response.headers);
+
   yield {
     type: "inference.done",
     seq: nextSeq(),
-    data: { turn: finalTurn, usage: finalUsage },
+    data: {
+      turn: finalTurn,
+      usage: finalUsage,
+      ...(pacingDelayMs !== undefined && pacingDelayMs > 0
+        ? { pacingDelayMs }
+        : {}),
+    },
   };
 }
 
