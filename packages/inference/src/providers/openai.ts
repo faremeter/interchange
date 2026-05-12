@@ -321,6 +321,64 @@ function parseResponse(sseData: string): InferenceEvent[] {
   return events;
 }
 
+function extractRetryAfterMs(headers: Headers): number | undefined {
+  // OpenAI's non-standard millisecond header takes priority
+  const retryMs = headers.get("retry-after-ms");
+  if (retryMs !== null) {
+    const ms = Number(retryMs);
+    if (Number.isFinite(ms) && ms > 0) return Math.ceil(ms);
+  }
+  const raw = headers.get("retry-after");
+  if (raw !== null) {
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return Math.ceil(seconds * 1000);
+    }
+  }
+  return undefined;
+}
+
+function extractPacingDelayMs(headers: Headers): number | undefined {
+  const remaining = headers.get("x-ratelimit-remaining-requests");
+  if (remaining === null) return undefined;
+  const n = Number(remaining);
+  if (!Number.isFinite(n) || n > 0) return undefined;
+
+  const reset = headers.get("x-ratelimit-reset-requests");
+  if (reset === null) return undefined;
+  const ms = parseDuration(reset);
+  return ms !== undefined && ms > 0 ? ms : undefined;
+}
+
+function parseDuration(value: string): number | undefined {
+  let total = 0;
+  const pattern = /(\d+(?:\.\d+)?)(ms|s|m|h)/g;
+  let match;
+  while ((match = pattern.exec(value)) !== null) {
+    const num = Number(match[1]);
+    switch (match[2]) {
+      case "ms":
+        total += num;
+        break;
+      case "s":
+        total += num * 1000;
+        break;
+      case "m":
+        total += num * 60_000;
+        break;
+      case "h":
+        total += num * 3_600_000;
+        break;
+    }
+  }
+  return total > 0 ? Math.ceil(total) : undefined;
+}
+
 export function createOpenAIAdapter(): ProviderAdapter {
-  return { buildRequest, parseResponse };
+  return {
+    buildRequest,
+    parseResponse,
+    extractRetryAfterMs,
+    extractPacingDelayMs,
+  };
 }

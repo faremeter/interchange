@@ -297,6 +297,8 @@ export function createReactor(config: ReactorConfig): Reactor {
   // Action execution
   // -------------------------------------------------------------------------
 
+  let pendingPacingDelayMs = 0;
+
   async function executeInfer(
     model: string,
     options: InferenceOptions | undefined,
@@ -304,48 +306,108 @@ export function createReactor(config: ReactorConfig): Reactor {
     if (stateManager === null) return;
 
     const signal = operationController.signal;
+
+    // Proactive pacing: if the previous inference response indicated we are
+    // at the rate limit, wait before sending the next request.
+    if (pendingPacingDelayMs > 0 && !signal.aborted) {
+      const delayMs = pendingPacingDelayMs;
+      pendingPacingDelayMs = 0;
+      logger.info`Pacing: waiting ${String(delayMs)}ms before next inference request`;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, delayMs);
+        const onAbort = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+      if (signal.aborted) return;
+    }
+
     const turns = stateManager.getTurns();
 
     const p = (async () => {
-      const harnessOpts = buildHarnessOpts(
-        turns,
-        model,
-        config.providerConfig,
-        options,
-        signal,
-        nextSeq,
-      );
+      const maxRetries = 3;
+      const defaultRetryMs = 60_000;
 
-      let lastDone:
-        | Extract<InferenceEvent, { type: "inference.done" }>
-        | undefined;
-      let lastError:
-        | Extract<InferenceEvent, { type: "inference.error" }>
-        | undefined;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const harnessOpts = buildHarnessOpts(
+          turns,
+          model,
+          config.providerConfig,
+          options,
+          signal,
+          nextSeq,
+        );
 
-      for await (const event of inferenceRunner(harnessOpts)) {
-        emit(event);
-        if (event.type === "inference.done") lastDone = event;
-        else if (event.type === "inference.error") lastError = event;
-      }
+        let lastDone:
+          | Extract<InferenceEvent, { type: "inference.done" }>
+          | undefined;
+        let lastError:
+          | Extract<InferenceEvent, { type: "inference.error" }>
+          | undefined;
 
-      if (lastDone !== undefined) {
-        if (stateManager !== null) {
-          stateManager.appendTurn(lastDone.data.turn);
-          stateManager.accumUsage(lastDone.data.usage);
+        for await (const event of inferenceRunner(harnessOpts)) {
+          emit(event);
+          if (event.type === "inference.done") lastDone = event;
+          else if (event.type === "inference.error") lastError = event;
         }
-        enqueue({
-          type: "inference.done",
-          turn: lastDone.data.turn,
-          usage: lastDone.data.usage,
-        });
-      } else if (lastError !== undefined) {
-        enqueue({
-          type: "inference.error",
-          error: lastError.data.error,
-          partial: lastError.data.partial,
-        });
-      } else {
+
+        if (lastDone !== undefined) {
+          if (stateManager !== null) {
+            stateManager.appendTurn(lastDone.data.turn);
+            stateManager.accumUsage(lastDone.data.usage);
+          }
+          if (lastDone.data.pacingDelayMs !== undefined) {
+            pendingPacingDelayMs = lastDone.data.pacingDelayMs;
+          }
+          enqueue({
+            type: "inference.done",
+            turn: lastDone.data.turn,
+            usage: lastDone.data.usage,
+          });
+          return;
+        }
+
+        if (lastError !== undefined) {
+          const err = lastError.data.error;
+          if (
+            err.category === "quota_exhausted" &&
+            attempt < maxRetries &&
+            !signal.aborted
+          ) {
+            const delayMs = err.retryAfterMs ?? defaultRetryMs;
+            logger.warn`Rate limited (attempt ${String(attempt + 1)}/${String(maxRetries)}), retrying after ${String(delayMs)}ms`;
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, delayMs);
+              const onAbort = () => {
+                clearTimeout(timer);
+                resolve();
+              };
+              signal.addEventListener("abort", onAbort, { once: true });
+            });
+            if (signal.aborted) {
+              enqueue({
+                type: "inference.error",
+                error: {
+                  category: "aborted",
+                  message: "inference aborted during rate limit backoff",
+                },
+                partial: lastError.data.partial,
+              });
+              return;
+            }
+            continue;
+          }
+
+          enqueue({
+            type: "inference.error",
+            error: err,
+            partial: lastError.data.partial,
+          });
+          return;
+        }
+
         emitError("Inference runner returned without a terminal event", true);
         enqueue({
           type: "inference.error",
@@ -355,6 +417,7 @@ export function createReactor(config: ReactorConfig): Reactor {
           },
           partial: { text: "" },
         });
+        return;
       }
     })();
 
