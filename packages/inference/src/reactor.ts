@@ -1,15 +1,15 @@
 // Agent reactor: the event-driven dispatch loop.
 //
-// The reactor processes one event at a time, asks the plugin for the next
+// The reactor processes one event at a time, asks the director for the next
 // action, validates the action set, and executes. It manages the streaming
 // harness for inference, dispatches tool calls, handles gates and correlation,
 // and emits all session events with monotonic sequence numbers.
 //
-// Suspension semantics: when the plugin returns a suspend action, the reactor
+// Suspension semantics: when the director returns a suspend action, the reactor
 // registers the gate and continues processing events. Inbound messages during
-// suspension reach the plugin as message.received events (plugin decides:
+// suspension reach the director as message.received events (director decides:
 // queue, fork, or ignore). When the gate clears, a reactor.gate.cleared event
-// is enqueued and the plugin gets to decide next steps.
+// is enqueued and the director gets to decide next steps.
 //
 // (INFERENCE.md § Agent Reactor)
 
@@ -18,7 +18,7 @@ import type {
   InferenceEvent,
   InferenceOptions,
   ProviderConfig,
-  ReactorPlugin,
+  ReactorDirector,
   ReactorInboundEvent,
   ContextStore,
   ToolRunner,
@@ -34,7 +34,7 @@ import type {
 import { getLogger } from "@interchange/log";
 import { runInference } from "./harness";
 import type { InferenceHarnessOptions } from "./harness";
-import { createCapabilities } from "./plugin";
+import { createCapabilities } from "./director";
 import { createGateManager } from "./gates";
 import { createCorrelationRegistry } from "./correlation";
 import { createStateManager } from "./state";
@@ -75,7 +75,7 @@ export type ReactorEmittedEvent =
 
 export type ReactorConfig = {
   sessionId: string;
-  plugin: ReactorPlugin;
+  director: ReactorDirector;
   providerConfig: ProviderConfig;
   toolRunner: ToolRunner;
   contextStore: ContextStore;
@@ -110,7 +110,7 @@ const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
 export function createReactor(config: ReactorConfig): Reactor {
   const {
     sessionId,
-    plugin,
+    director,
     toolRunner,
     contextStore,
     correlationValidator,
@@ -463,7 +463,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       const event = dequeueNext();
       if (event === undefined) continue;
 
-      // Handle abort events: initiate shutdown regardless of plugin.
+      // Handle abort events: initiate shutdown regardless of director.
       if (event.type === "abort") {
         if (!shutdownStarted) {
           done = true;
@@ -482,7 +482,7 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       let actions;
       try {
-        actions = await plugin.decide(
+        actions = await director.decide(
           event,
           stateManager.snapshot(),
           capabilities,
@@ -490,8 +490,8 @@ export function createReactor(config: ReactorConfig): Reactor {
       } catch (cause) {
         const msg = cause instanceof Error ? cause.message : String(cause);
 
-        logger.error`Plugin threw during decide: ${cause}`;
-        emitError(`Plugin exception: ${msg}`, true);
+        logger.error`Director threw during decide: ${cause}`;
+        emitError(`Director exception: ${msg}`, true);
         done = true;
         await initiateShutdown();
         break;
@@ -523,7 +523,7 @@ export function createReactor(config: ReactorConfig): Reactor {
           const blocked = reserved.some((p) => action.eventType.startsWith(p));
           if (blocked) {
             emitError(
-              `Plugin tried to emit reserved event type: ${action.eventType}`,
+              `Director tried to emit reserved event type: ${action.eventType}`,
               false,
             );
             continue;
@@ -591,7 +591,7 @@ export function createReactor(config: ReactorConfig): Reactor {
         if (stateManager !== null) {
           stateManager.setGatesSnapshot(gates.snapshot());
         }
-        // Loop continues — plugin will receive the gate.cleared event later.
+        // Loop continues — director will receive the gate.cleared event later.
         continue;
       }
 

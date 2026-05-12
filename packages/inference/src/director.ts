@@ -1,10 +1,10 @@
-// Plugin interface types and capabilities factory.
+// Director interface types and capabilities factory.
 //
-// The capabilities object is passed to the plugin on every decision call.
+// The capabilities object is passed to the director on every decision call.
 // It provides a type-safe API for constructing reactor actions without
-// requiring the plugin to import or construct action literals directly.
+// requiring the director to import or construct action literals directly.
 //
-// (INFERENCE.md § Reactor Plugin › Core Plugin)
+// (INFERENCE.md § Reactor Director › Core Director)
 
 import type {
   ReactorAction,

@@ -6,7 +6,7 @@ import { createCorrelationRegistry } from "./correlation";
 import { createReactor } from "./reactor";
 
 import type {
-  ReactorPlugin,
+  ReactorDirector,
   ReactorAction,
   ReactorInboundEvent,
   ReactorState,
@@ -151,30 +151,30 @@ function makeInboundMessage(correlationId?: string): InboundMessage {
 
 let testSessionCounter = 0;
 
-type PluginHandler<E> = (
+type DirectorHandler<E> = (
   event: E,
   state: ReactorState,
   caps: ReactorCapabilities,
 ) => ReactorAction | ReactorAction[] | Promise<ReactorAction | ReactorAction[]>;
 
-type PluginTable = {
-  [K in ReactorInboundEvent["type"]]?: PluginHandler<
+type DirectorTable = {
+  [K in ReactorInboundEvent["type"]]?: DirectorHandler<
     Extract<ReactorInboundEvent, { type: K }>
   >;
 };
 
-function pluginFromTable(
-  table: PluginTable,
+function directorFromTable(
+  table: DirectorTable,
   defaultAction: "done" | "wait" = "done",
-): ReactorPlugin {
+): ReactorDirector {
   return {
     async decide(event, state, caps) {
       // TypeScript cannot correlate the runtime key with the mapped type's
       // per-key handler signature (correlated union problem): table[event.type]
       // is typed as a union of all handlers, but we know it matches this event.
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- correlated union: table[event.type] is guaranteed to be typed for this event.type by the PluginTable mapped type
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- correlated union: table[event.type] is guaranteed to be typed for this event.type by the DirectorTable mapped type
       const handler = table[event.type] as
-        | PluginHandler<typeof event>
+        | DirectorHandler<typeof event>
         | undefined;
       if (handler !== undefined) {
         return handler(event, state, caps);
@@ -185,7 +185,7 @@ function pluginFromTable(
 }
 
 type TestReactorOverrides = {
-  plugin?: ReactorPlugin;
+  director?: ReactorDirector;
   toolRunner?: ToolRunner;
   contextStore?: ContextStore;
   correlationValidator?: CorrelationValidator;
@@ -217,7 +217,7 @@ function createTestReactor(
 
   const config: ReactorConfig = {
     sessionId,
-    plugin: overrides.plugin ?? pluginFromTable({}),
+    director: overrides.director ?? directorFromTable({}),
     providerConfig: {
       provider: "anthropic",
       baseURL: "https://api.anthropic.com",
@@ -806,7 +806,7 @@ describe("createReactor — basic flow", () => {
 
   test("sequence numbers are monotonically increasing", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => [
           caps.emit("custom.test", { x: 1 }),
           caps.done(),
@@ -829,22 +829,22 @@ describe("createReactor — basic flow", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5. Plugin exception handling
+// 5. Director exception handling
 // ---------------------------------------------------------------------------
 
-describe("createReactor — plugin exception", () => {
-  test("plugin exception emits reactor.error and shuts down", async () => {
+describe("createReactor — director exception", () => {
+  test("director exception emits reactor.error and shuts down", async () => {
     const { events, onEvent } = collectEvents();
 
-    const plugin: ReactorPlugin = {
+    const director: ReactorDirector = {
       async decide() {
-        throw new Error("plugin blew up");
+        throw new Error("director blew up");
       },
     };
 
     const reactor = createReactor({
       sessionId: "sess-err",
-      plugin,
+      director,
       providerConfig: {
         provider: "anthropic",
         baseURL: "https://api.anthropic.com",
@@ -865,7 +865,7 @@ describe("createReactor — plugin exception", () => {
     if (errorEvent === undefined || errorEvent.type !== "reactor.error") {
       throw new Error("expected reactor.error");
     }
-    expect(errorEvent.data.error).toMatch(/plugin blew up/);
+    expect(errorEvent.data.error).toMatch(/director blew up/);
     expect(errorEvent.data.fatal).toBe(true);
   });
 });
@@ -877,7 +877,7 @@ describe("createReactor — plugin exception", () => {
 describe("createReactor — gate lifecycle", () => {
   test("suspend registers gate and reactor shuts down on abort", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) =>
           caps.suspend({
             type: "approval",
@@ -910,7 +910,7 @@ describe("createReactor — gate lifecycle", () => {
   test("gate timeout fires reactor.gate.cleared with reason=timeout", async () => {
     const { reactor, events, waitFor } = createTestReactor({
       shutdownTimeoutMs: 500,
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) =>
           caps.suspend({
             type: "approval",
@@ -933,7 +933,7 @@ describe("createReactor — gate lifecycle", () => {
   test("gate with timeoutMs: 0 falls back to session-level gateTimeout", async () => {
     const { reactor, events, waitFor } = createTestReactor({
       gateTimeout: 80,
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) =>
           caps.suspend({
             type: "approval",
@@ -963,7 +963,7 @@ describe("createReactor — tool execution", () => {
   test("execute_tools dispatches tools and returns results", async () => {
     const toolsRun: string[] = [];
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) =>
           caps.executeTools(
             [
@@ -1003,9 +1003,9 @@ describe("createReactor — correlation", () => {
     let delivered = false;
 
     // Multi-phase state machine: deliver → execute_tools → suspend with
-    // correlation → deliver correlated response → done. Kept as raw plugin
-    // because the `delivered` flag makes pluginFromTable awkward.
-    const plugin: ReactorPlugin = {
+    // correlation → deliver correlated response → done. Kept as raw director
+    // because the `delivered` flag makes directorFromTable awkward.
+    const director: ReactorDirector = {
       async decide(event, _state, caps) {
         if (event.type === "message.received" && !delivered) {
           delivered = true;
@@ -1029,7 +1029,7 @@ describe("createReactor — correlation", () => {
     };
 
     const { reactor, events, waitFor } = createTestReactor({
-      plugin,
+      director,
       shutdownTimeoutMs: 500,
       toolRunner: makeToolRunner(async (call) => {
         return {
@@ -1062,7 +1062,7 @@ describe("createReactor — correlation", () => {
 
   test("message with non-matching correlationId passes through uncorrelated", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => caps.done(),
       }),
     });
@@ -1084,7 +1084,7 @@ describe("createReactor — correlation", () => {
 describe("test harness helpers", () => {
   test("createTestReactor produces a working reactor with defaults", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => caps.done(),
       }),
     });
@@ -1118,14 +1118,14 @@ describe("test harness helpers", () => {
     );
   });
 
-  test("pluginFromTable with wait default falls through on unhandled events", async () => {
+  test("directorFromTable with wait default falls through on unhandled events", async () => {
     // Suspend produces a reactor.gate.cleared event. That event type is
     // NOT in the table, so the defaultAction "wait" fallthrough fires.
     // The reactor stays alive because of the fallthrough, then a second
     // message triggers done via the table handler.
     let messageCount = 0;
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable(
+      director: directorFromTable(
         {
           "message.received": (_e, _s, caps) => {
             messageCount++;
@@ -1192,7 +1192,7 @@ describe("createReactor — context store failures", () => {
 describe("createReactor — tool runner failures", () => {
   test("tool runner that throws triggers fatal error and shutdown", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) =>
           caps.executeTools([{ id: "c1", name: "boom", arguments: {} }]),
       }),
@@ -1210,9 +1210,9 @@ describe("createReactor — tool runner failures", () => {
     expect(errorEvent.data.fatal).toBe(true);
   });
 
-  test("tool runner returning isError propagates error result to plugin", async () => {
+  test("tool runner returning isError propagates error result to director", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) =>
           caps.executeTools([{ id: "c1", name: "bad_tool", arguments: {} }]),
         "tool.done": (_e, _s, caps) => caps.done(),
@@ -1241,7 +1241,7 @@ describe("createReactor — tool runner failures", () => {
   test("sequential tool execution runs tools in order", async () => {
     const order: string[] = [];
     const { reactor, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) =>
           caps.executeTools(
             [
@@ -1300,7 +1300,7 @@ describe("createReactor — tool runner failures", () => {
 
     const { reactor, waitFor } = createTestReactor({
       contextStore: capturingStore,
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) =>
           caps.executeTools(
             [{ id: "c1", name: "ghost_tool", arguments: {} }],
@@ -1334,13 +1334,13 @@ describe("createReactor — tool runner failures", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 12. Plugin misbehavior
+// 12. Director misbehavior
 // ---------------------------------------------------------------------------
 
-describe("createReactor — plugin misbehavior", () => {
-  test("reactor shuts down when plugin returns invalid action set", async () => {
+describe("createReactor — director misbehavior", () => {
+  test("reactor shuts down when director returns invalid action set", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => [
           caps.infer("gpt-4"),
           caps.done(),
@@ -1357,9 +1357,9 @@ describe("createReactor — plugin misbehavior", () => {
     expect(errorEvent.data.fatal).toBe(true);
   });
 
-  test("plugin emitting reserved namespace inference.* produces non-fatal error", async () => {
+  test("director emitting reserved namespace inference.* produces non-fatal error", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => [
           // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- intentionally passing a reserved-namespace string to test that the reactor rejects it
           caps.emit("inference.hijack" as `custom.${string}`, {}),
@@ -1377,9 +1377,9 @@ describe("createReactor — plugin misbehavior", () => {
     expect(errorEvent.data.fatal).toBe(false);
   });
 
-  test("plugin emitting reserved namespace tool.* produces non-fatal error", async () => {
+  test("director emitting reserved namespace tool.* produces non-fatal error", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => [
           // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- intentionally passing a reserved-namespace string to test that the reactor rejects it
           caps.emit("tool.fake" as `custom.${string}`, {}),
@@ -1397,9 +1397,9 @@ describe("createReactor — plugin misbehavior", () => {
     expect(errorEvent.data.fatal).toBe(false);
   });
 
-  test("plugin emitting reserved namespace reactor.* produces non-fatal error", async () => {
+  test("director emitting reserved namespace reactor.* produces non-fatal error", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => [
           // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- intentionally passing a reserved-namespace string to test that the reactor rejects it
           caps.emit("reactor.fake" as `custom.${string}`, {}),
@@ -1417,9 +1417,9 @@ describe("createReactor — plugin misbehavior", () => {
     expect(errorEvent.data.fatal).toBe(false);
   });
 
-  test("plugin emitting reserved namespace fork.* produces non-fatal error", async () => {
+  test("director emitting reserved namespace fork.* produces non-fatal error", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => [
           // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- intentionally passing a reserved-namespace string to test that the reactor rejects it
           caps.emit("fork.fake" as `custom.${string}`, {}),
@@ -1439,7 +1439,7 @@ describe("createReactor — plugin misbehavior", () => {
 
   test("fork action emits non-fatal unsupported error", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => [
           caps.fork("independent", "fork-1"),
           caps.done(),
@@ -1459,7 +1459,7 @@ describe("createReactor — plugin misbehavior", () => {
   test("wait action keeps reactor alive without shutdown", async () => {
     let messageCount = 0;
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => {
           messageCount++;
           if (messageCount >= 2) return caps.done();
@@ -1490,7 +1490,7 @@ describe("createReactor — reply action", () => {
   test("reply action emits connector.reply and reactor stays alive", async () => {
     let messageCount = 0;
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => {
           messageCount++;
           if (messageCount >= 2) return caps.done();
@@ -1549,7 +1549,7 @@ describe("createReactor — checkpoint failure", () => {
     let messageCount = 0;
     const { reactor, events, waitFor } = createTestReactor({
       contextStore: failingStore,
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => {
           messageCount++;
           if (messageCount === 1) return [caps.checkpoint(), caps.wait()];
@@ -1582,10 +1582,10 @@ describe("createReactor — checkpoint failure", () => {
 
 describe("createReactor — abort handling", () => {
   test("abort event is processed with priority over queued events", async () => {
-    // Track how many message.received events the plugin processed.
+    // Track how many message.received events the director processed.
     let messagesProcessed = 0;
     const { reactor, waitFor } = createTestReactor({
-      plugin: pluginFromTable(
+      director: directorFromTable(
         {
           "message.received": (_e, _s, caps) => {
             messagesProcessed++;
@@ -1603,21 +1603,21 @@ describe("createReactor — abort handling", () => {
     await waitFor("message.received");
 
     // Queue more messages and an abort. The abort should jump the queue
-    // and shut down before the extra messages reach the plugin.
+    // and shut down before the extra messages reach the director.
     reactor.deliver(makeInboundMessage());
     reactor.deliver(makeInboundMessage());
     reactor.abort("admin_kill");
 
     await waitFor("reactor.done");
 
-    // Only the first message should have been processed by the plugin.
+    // Only the first message should have been processed by the director.
     // The abort jumped ahead of the two queued messages.
     expect(messagesProcessed).toBe(1);
   });
 
   test("multiple abort calls do not cause double shutdown", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable(
+      director: directorFromTable(
         {
           "message.received": (_e, _s, caps) => caps.wait(),
         },
@@ -1642,7 +1642,7 @@ describe("createReactor — abort handling", () => {
 
   test("abort before start shuts down immediately when start is called", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable(
+      director: directorFromTable(
         {
           "message.received": (_e, _s, caps) => caps.wait(),
         },
@@ -1710,7 +1710,7 @@ describe("createReactor — dequeue priority", () => {
 
     const { reactor, waitFor } = createTestReactor({
       contextStore: makeContextStore(seededTurns),
-      plugin: {
+      director: {
         async decide(event, _state, caps) {
           order.push(event.type);
           if (event.type === "message.received") {
@@ -1769,7 +1769,7 @@ describe("createReactor — correlation validator", () => {
           return false;
         },
       },
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => {
           if (toolDoneSeen) return caps.done();
           return caps.executeTools([
@@ -1826,7 +1826,7 @@ describe("createReactor — correlation validator", () => {
           throw new Error("validator crashed");
         },
       },
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => {
           if (toolDoneSeen) return caps.done();
           return caps.executeTools([
@@ -1888,7 +1888,7 @@ describe("createReactor — correlation validator", () => {
           return true;
         },
       },
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => {
           if (toolDoneSeen) return caps.done();
           return caps.executeTools([
@@ -1966,7 +1966,7 @@ describe("createReactor — state snapshot inspection", () => {
   test("state.turns contains delivered message text", async () => {
     let capturedTurns: ConversationTurn[] = [];
     const { reactor, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, state, caps) => {
           capturedTurns = state.turns;
           return caps.done();
@@ -1993,7 +1993,7 @@ describe("createReactor — state snapshot inspection", () => {
     let capturedOps: PendingOperation[] = [];
 
     const { reactor, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) =>
           caps.executeTools([{ id: "tc1", name: "send_msg", arguments: {} }]),
         "tool.done": (_e, state, caps) => {
@@ -2031,7 +2031,7 @@ describe("createReactor — state snapshot inspection", () => {
     let messageCount = 0;
 
     const { reactor, waitFor } = createTestReactor({
-      plugin: {
+      director: {
         async decide(event, state, caps) {
           if (event.type === "message.received") {
             messageCount++;
@@ -2080,7 +2080,7 @@ describe("createReactor — state snapshot inspection", () => {
   test("state.tokenUsage has initial zero values without inference", async () => {
     let capturedUsage: TokenUsage | undefined;
     const { reactor, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, state, caps) => {
           capturedUsage = state.tokenUsage;
           return caps.done();
@@ -2100,12 +2100,12 @@ describe("createReactor — state snapshot inspection", () => {
     expect(capturedUsage.thinking).toBe(0);
   });
 
-  test("plugin cannot corrupt reactor state by mutating snapshot content blocks", async () => {
+  test("director cannot corrupt reactor state by mutating snapshot content blocks", async () => {
     let secondSnapshot: ReactorState | undefined;
     let messageCount = 0;
 
     const { reactor, waitFor } = createTestReactor({
-      plugin: {
+      director: {
         async decide(event, state, caps) {
           if (event.type === "message.received") {
             messageCount++;
@@ -2153,7 +2153,7 @@ describe("createReactor — state snapshot inspection", () => {
 describe("createReactor — deliver after done", () => {
   test("reactor.done is emitted exactly once even when messages arrive after shutdown", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => caps.done(),
       }),
     });
@@ -2217,7 +2217,7 @@ function makeInferenceRunner(
 }
 
 describe("createReactor — inference path", () => {
-  test("infer action drives inference.done through to plugin and accumulates usage", async () => {
+  test("infer action drives inference.done through to director and accumulates usage", async () => {
     const inferUsage: TokenUsage = {
       input: 100,
       output: 50,
@@ -2230,7 +2230,7 @@ describe("createReactor — inference path", () => {
     let stateAtInferenceDone: ReactorState | undefined;
 
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => caps.infer("mock-model"),
         "inference.done": (_e, state, caps) => {
           stateAtInferenceDone = state;
@@ -2256,10 +2256,10 @@ describe("createReactor — inference path", () => {
     });
     expect(inferDone.data.usage).toEqual(inferUsage);
 
-    // The plugin should have received the inference.done event with
+    // The director should have received the inference.done event with
     // accumulated token usage visible in the state snapshot.
     if (stateAtInferenceDone === undefined)
-      throw new Error("plugin never received inference.done");
+      throw new Error("director never received inference.done");
     expect(stateAtInferenceDone.tokenUsage).toEqual(inferUsage);
 
     // The assistant message should have been appended to the conversation.
@@ -2273,7 +2273,7 @@ describe("createReactor — inference path", () => {
     });
   });
 
-  test("infer action with inference.error delivers error event to plugin", async () => {
+  test("infer action with inference.error delivers error event to director", async () => {
     const inferError: InferenceError = {
       category: "retryable",
       message: "rate limited",
@@ -2283,7 +2283,7 @@ describe("createReactor — inference path", () => {
     let capturedError: { category: string; message: string } | undefined;
 
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => caps.infer("mock-model"),
         "inference.error": (e, _s, caps) => {
           capturedError = {
@@ -2304,9 +2304,9 @@ describe("createReactor — inference path", () => {
     reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
-    // Verify the plugin received the error event with correct fields.
+    // Verify the director received the error event with correct fields.
     if (capturedError === undefined)
-      throw new Error("plugin never received inference.error");
+      throw new Error("director never received inference.error");
     expect(capturedError.category).toBe("retryable");
     expect(capturedError.message).toBe("rate limited");
 
@@ -2320,7 +2320,7 @@ describe("createReactor — inference path", () => {
     let capturedError: { category: string; message: string } | undefined;
 
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => caps.infer("mock-model"),
         "inference.error": (e, _s, caps) => {
           capturedError = {
@@ -2344,9 +2344,9 @@ describe("createReactor — inference path", () => {
     expect(reactorErr.data.fatal).toBe(true);
     expect(reactorErr.data.error).toContain("without a terminal event");
 
-    // The plugin should have received inference.error with category "fatal".
+    // The director should have received inference.error with category "fatal".
     if (capturedError === undefined)
-      throw new Error("plugin never received inference.error");
+      throw new Error("director never received inference.error");
     expect(capturedError.category).toBe("fatal");
     expect(capturedError.message).toContain("without a terminal event");
   });
@@ -2397,7 +2397,7 @@ describe("createReactor — beforeToolExtensions", () => {
     const toolsRun: string[] = [];
 
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => caps.infer("test-model"),
         "inference.done": (_e, _s, caps) =>
           caps.executeTools(
@@ -2434,7 +2434,7 @@ describe("createReactor — beforeToolExtensions", () => {
     const toolsRun: string[] = [];
 
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => caps.infer("test-model"),
         "inference.done": (_e, _s, caps) =>
           caps.executeTools(
@@ -2492,7 +2492,7 @@ describe("createReactor — beforeToolExtensions", () => {
     };
 
     const { reactor, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => caps.infer("test-model"),
         "inference.done": (_e, _s, caps) =>
           caps.executeTools(
@@ -2522,7 +2522,7 @@ describe("createReactor — beforeToolExtensions", () => {
     const toolsRun: string[] = [];
 
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => caps.infer("test-model"),
         "inference.done": (_e, _s, caps) =>
           caps.executeTools(
@@ -2574,7 +2574,7 @@ describe("createReactor — beforeToolExtensions", () => {
     };
 
     const { reactor, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => caps.infer("test-model"),
         "inference.done": (_e, _s, caps) =>
           caps.executeTools(
@@ -2605,7 +2605,7 @@ describe("createReactor — beforeToolExtensions", () => {
     };
 
     const { reactor, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => caps.infer("test-model"),
         "inference.done": (_e, _s, caps) =>
           caps.executeTools(
@@ -2661,7 +2661,7 @@ describe("createReactor — beforeToolExtensions", () => {
 
     let toolDoneCount = 0;
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable(
+      director: directorFromTable(
         {
           "message.received": (_e, _s, caps) => caps.infer("test-model"),
           "inference.done": (_e, _s, caps) =>
@@ -2744,7 +2744,7 @@ describe("createReactor — afterCheckpoint", () => {
     let afterCheckpointCalled = false;
 
     const { reactor, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => [caps.checkpoint(), caps.done()],
       }),
       afterCheckpoint: async () => {
@@ -2774,7 +2774,7 @@ describe("createReactor — afterCheckpoint", () => {
 
     const { reactor, waitFor } = createTestReactor({
       contextStore: store,
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => [caps.checkpoint(), caps.done()],
       }),
       afterCheckpoint: async () => {
@@ -2790,7 +2790,7 @@ describe("createReactor — afterCheckpoint", () => {
 
   test("afterCheckpoint failure emits non-fatal reactor.error", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => [caps.checkpoint(), caps.done()],
       }),
       afterCheckpoint: async () => {
@@ -2824,7 +2824,7 @@ describe("createReactor — onShutdown", () => {
     const callOrder: string[] = [];
 
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => caps.done(),
       }),
       onShutdown: async () => {
@@ -2852,7 +2852,7 @@ describe("createReactor — onShutdown", () => {
 
   test("onShutdown failure emits non-fatal reactor.error and reactor.done still fires", async () => {
     const { reactor, events, waitFor } = createTestReactor({
-      plugin: pluginFromTable({
+      director: directorFromTable({
         "message.received": (_e, _s, caps) => caps.done(),
       }),
       onShutdown: async () => {
@@ -2881,7 +2881,7 @@ describe("createReactor — onShutdown", () => {
     let shutdownCalled = false;
 
     const { reactor, waitFor } = createTestReactor({
-      plugin: pluginFromTable(
+      director: directorFromTable(
         {
           "message.received": (_e, _s, caps) => caps.wait(),
         },

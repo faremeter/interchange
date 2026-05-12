@@ -12,9 +12,9 @@ The inference package (`@interchange/inference`) is the provider-agnostic LLM la
 
 **One event protocol.** The inference event stream is the session channel protocol. Events emitted by the inference layer are the same events that flow to session channel subscribers. There is no internal format that gets translated into an external format. One protocol, end to end.
 
-**Event-driven, not request-driven.** The agent reactor processes events from multiple sources — humans, other agents, the system, tool completions — and asks the plugin what to do next. It can suspend for external reasons (approval gates, payment, credential refresh) and resume from where it left off. Suspension is a first-class concept, not an error.
+**Event-driven, not request-driven.** The agent reactor processes events from multiple sources — humans, other agents, the system, tool completions — and asks the director what to do next. It can suspend for external reasons (approval gates, payment, credential refresh) and resume from where it left off. Suspension is a first-class concept, not an error.
 
-**Pluggable by default.** The reactor, tool execution, context management, and compaction are all plugin-driven. The inference package provides the machinery; consumers provide the policy. But the reactor enforces safety invariants regardless of plugin behavior — it validates actions, catches plugin exceptions, and prevents resource leaks.
+**Pluggable by default.** The reactor, tool execution, context management, and compaction are all director-driven. The inference package provides the machinery; consumers provide the policy. But the reactor enforces safety invariants regardless of director behavior — it validates actions, catches director exceptions, and prevents resource leaks.
 
 ## Providers
 
@@ -148,14 +148,14 @@ Transformation runs automatically when the target model differs from a message's
 
 ## Agent Reactor
 
-The inference package provides an event-driven reactor, not a request-response loop. An interchange agent is a long-lived entity that receives messages from multiple sources, reasons about them, and acts. The reactor processes events as they arrive and asks the plugin what to do next.
+The inference package provides an event-driven reactor, not a request-response loop. An interchange agent is a long-lived entity that receives messages from multiple sources, reasons about them, and acts. The reactor processes events as they arrive and asks the director what to do next.
 
 ### Terminology
 
 This document uses "context" in three distinct senses:
 
 - **Message history** — The array of messages (user, assistant, tool results, system) that form the conversation. This is what gets sent to the model and stored in git.
-- **Reactor state** — The full state visible to the plugin: message history plus active forks, pending gates, async operations, and token accounting. This is the `state` parameter to the plugin decision function.
+- **Reactor state** — The full state visible to the director: message history plus active forks, pending gates, async operations, and token accounting. This is the `state` parameter to the director decision function.
 - **Context store** — The git-backed persistent store that holds the message history and reactor metadata. This is the storage layer.
 
 When the distinction matters, this document uses the specific term. When it doesn't, "context" refers to the message history.
@@ -164,7 +164,7 @@ When the distinction matters, this document uses the specific term. When it does
 
 The harness (described in ARCHITECTURE.md) is the agent's runtime. The inference package is a library the harness uses. The harness:
 
-- Instantiates the reactor with a plugin, context store, provider configuration, and plugin policy
+- Instantiates the reactor with a director, context store, provider configuration, and director policy
 - Delivers inbound messages from the message bus to the reactor
 - Routes reactor events to session channel subscribers
 - Manages the agent's credential lifecycle (the reactor requests credentials via gates; the harness fulfills them)
@@ -185,10 +185,10 @@ A loop that checks a queue "between turns" can't serve these use cases without f
 
 ### Reactor Structure
 
-The reactor processes one event at a time and asks the plugin for the next action:
+The reactor processes one event at a time and asks the director for the next action:
 
 ```
-Event arrives → Plugin decides → Reactor executes → Next event
+Event arrives → Director decides → Reactor executes → Next event
 ```
 
 **Inbound events** (things that happen to the agent):
@@ -200,7 +200,7 @@ Event arrives → Plugin decides → Reactor executes → Next event
 - `reactor.gate.cleared` — A suspension condition resolved (with gate result)
 - `abort` — The reactor should shut down (with reason)
 
-**Actions** (things the reactor can do, as directed by the plugin):
+**Actions** (things the reactor can do, as directed by the director):
 
 - `infer` — Call a model with a message history, model, and options
 - `execute_tools` — Execute tool calls (sequential or parallel)
@@ -211,11 +211,11 @@ Event arrives → Plugin decides → Reactor executes → Next event
 - `wait` — Return to the event loop without shutting down (idle until next event)
 - `done` — Reactor is finished (terminal, no further events processed)
 
-The reactor is a thin dispatch layer. It doesn't decide what to do — the plugin does. The reactor executes actions reliably: manages the streaming harness for inference, dispatches tool calls, handles suspension mechanics, manages fork lifecycle.
+The reactor is a thin dispatch layer. It doesn't decide what to do — the director does. The reactor executes actions reliably: manages the streaming harness for inference, dispatches tool calls, handles suspension mechanics, manages fork lifecycle.
 
 ### Event Ordering
 
-Events from multiple sources can land in the reactor's queue simultaneously. During an `executeInfer` call, an inbound message may arrive (via `deliver`) before the inference completes and enqueues its `inference.done` event. Naive FIFO processing would hand the `message.received` event to the plugin first, which appends a user text message to the conversation history — but the preceding assistant message contains tool calls whose results have not been appended yet. The provider rejects the next inference call because the tool call / tool result pairing is broken.
+Events from multiple sources can land in the reactor's queue simultaneously. During an `executeInfer` call, an inbound message may arrive (via `deliver`) before the inference completes and enqueues its `inference.done` event. Naive FIFO processing would hand the `message.received` event to the director first, which appends a user text message to the conversation history — but the preceding assistant message contains tool calls whose results have not been appended yet. The provider rejects the next inference call because the tool call / tool result pairing is broken.
 
 The reactor enforces a priority invariant: when the last message in the conversation history is an assistant message with tool calls (meaning tool results have not yet been appended), inference-cycle events (`inference.done`, `inference.error`, `tool.done`) are dequeued before other events. This ensures the tool-call cycle always completes before inbound messages are interleaved into the history. Once tool results are in place, the reactor reverts to FIFO ordering so inbound messages are processed promptly.
 
@@ -223,19 +223,19 @@ The reactor enforces a priority invariant: when the last message in the conversa
 
 ### The `emit` Action
 
-The plugin can emit custom events to session channel subscribers via the `emit` action. Custom events use a `custom.*` type namespace and carry arbitrary data. They receive sequence numbers like all other events. They are ephemeral — not persisted to the context store. Use cases: progress indicators, debug information, UI hints.
+The director can emit custom events to session channel subscribers via the `emit` action. Custom events use a `custom.*` type namespace and carry arbitrary data. They receive sequence numbers like all other events. They are ephemeral — not persisted to the context store. Use cases: progress indicators, debug information, UI hints.
 
-The plugin cannot emit events in the `inference.*`, `tool.*`, `reactor.*`, or `fork.*` namespaces. Those are reserved for the reactor.
+The director cannot emit events in the `inference.*`, `tool.*`, `reactor.*`, or `fork.*` namespaces. Those are reserved for the reactor.
 
-### Plugin Decision Function
+### Director Decision Function
 
-The plugin is a single function:
+The director is a single function:
 
 ```
 (event, state, capabilities) → action | action[]
 ```
 
-The plugin receives:
+The director receives:
 
 - **event** — What just happened
 - **state** — The current message history, active forks, pending gates, async operations, token accounting
@@ -243,11 +243,11 @@ The plugin receives:
 
 It returns one or more actions. Multiple actions execute concurrently where possible (parallel tool calls, fork + continue).
 
-**If the plugin throws an exception**, the reactor catches it, emits `reactor.error` with the exception details, and initiates graceful shutdown. The plugin is user-provided code and must not be able to crash the reactor without a clean terminal event.
+**If the director throws an exception**, the reactor catches it, emits `reactor.error` with the exception details, and initiates graceful shutdown. The director is user-provided code and must not be able to crash the reactor without a clean terminal event.
 
 ### Action Validation
 
-The reactor validates the action set returned by the plugin before executing:
+The reactor validates the action set returned by the director before executing:
 
 - **No conflicting actions** — At most one `infer` action. At most one `done`. `infer` + `done` is invalid.
 - **Fork is composable** — `fork` can appear alongside `infer` or `execute_tools` (fork happens concurrently).
@@ -260,7 +260,7 @@ Invalid action sets produce a `reactor.error` event with a diagnostic message. T
 
 ### Message Handling
 
-Inbound messages arrive at the reactor regardless of current state. Correlated messages (responses to pending outbound requests) are matched and resolved by the reactor before the plugin sees them (see Correlation). Non-correlated messages are delivered to the plugin as `message.received` events. The plugin decides how to handle them:
+Inbound messages arrive at the reactor regardless of current state. Correlated messages (responses to pending outbound requests) are matched and resolved by the reactor before the director sees them (see Correlation). Non-correlated messages are delivered to the director as `message.received` events. The director decides how to handle them:
 
 **Queue** — Add to the message history for the next model call. The model sees the message when the current action completes. This is the simple case: a human sends a follow-up while the model is generating.
 
@@ -282,21 +282,21 @@ Correlation connects outbound async tool calls to inbound responses. The reactor
 
 **Registration.** When a tool returns a pending marker, the reactor registers the correlation ID in its async state. The pending marker may include additional matching criteria beyond the correlation ID; these are protocol-specific and opaque to the reactor's core. The reactor delegates validation of those criteria to a correlation validator provided at startup.
 
-**Matching.** When an inbound event carries a correlation ID, the reactor checks it against registered correlations before delivering it to the plugin. The reactor calls the correlation validator with the registered state and the inbound event. The validator returns whether the match is authentic. If validation fails, the event is delivered to the plugin as a regular uncorrelated event.
+**Matching.** When an inbound event carries a correlation ID, the reactor checks it against registered correlations before delivering it to the director. The reactor calls the correlation validator with the registered state and the inbound event. The validator returns whether the match is authentic. If validation fails, the event is delivered to the director as a regular uncorrelated event.
 
 For message correlation specifically, the validator enforces sender identity and cryptographic signature verification. See MESSAGE.md for the full security model.
 
-**On match.** The reactor clears the corresponding gate, injects the response as a resolution into the message history, and emits a `message.correlated` event. The plugin sees the correlated event and decides the next action (infer, done, fork) but does not participate in the matching itself.
+**On match.** The reactor clears the corresponding gate, injects the response as a resolution into the message history, and emits a `message.correlated` event. The director sees the correlated event and decides the next action (infer, done, fork) but does not participate in the matching itself.
 
-**Duplicate responses** (same correlation ID, already resolved) are delivered to the plugin as regular uncorrelated events. The reactor does not deduplicate — the plugin decides whether to process or ignore.
+**Duplicate responses** (same correlation ID, already resolved) are delivered to the director as regular uncorrelated events. The reactor does not deduplicate — the director decides whether to process or ignore.
 
 **Orphaned correlations** (pending operations whose responses never arrive) are cleaned up by gate timeouts.
 
 ### Forking
 
-When the plugin returns a `fork` action, the reactor creates a new reactor instance. Two fork modes are supported:
+When the director returns a `fork` action, the reactor creates a new reactor instance. Two fork modes are supported:
 
-**Independent** — The new reactor gets a full copy of the message history up to the fork point. After that, the two reactors share nothing. Each has its own message history, its own plugin state, its own lifecycle, its own token accounting. In git terms, this is a branch that diverges immediately. The harness manages both reactors. Use case: handling a completely separate conversation.
+**Independent** — The new reactor gets a full copy of the message history up to the fork point. After that, the two reactors share nothing. Each has its own message history, its own director state, its own lifecycle, its own token accounting. In git terms, this is a branch that diverges immediately. The harness manages both reactors. Use case: handling a completely separate conversation.
 
 **Child** — The new reactor gets a copy of the message history and reports results back to the parent. The parent can wait for the child (`suspend` on a child-completion gate) or continue working. When the child completes, its result is delivered to the parent as a `fork.done` event. The child's token usage is tracked independently but the parent can query aggregate usage. In git terms, this is a branch that gets merged back. Use case: delegating a subtask to a cheaper model or a specialized tool set.
 
@@ -305,9 +305,9 @@ In both modes, the fork receives:
 - A copy of the message history (not a reference — mutations are independent)
 - A fresh token accounting counter (starting from zero)
 - A fresh async state (no inherited pending operations)
-- Plugin state initialized by the fork policy callback
+- Director state initialized by the fork policy callback
 
-Fork lifecycle is managed by the reactor. Forks emit their own events (tagged with the fork ID for session channel routing). Forks can be aborted independently. The plugin tracks active forks via the state object.
+Fork lifecycle is managed by the reactor. Forks emit their own events (tagged with the fork ID for session channel routing). Forks can be aborted independently. The director tracks active forks via the state object.
 
 ### Tool Execution Semantics
 
@@ -319,25 +319,25 @@ Tools that need to wait for something external (a response from another agent, a
 2. The tool returns immediately with a pending marker: `{ status: "pending", correlationId: "abc123" }`.
 3. The reactor registers the correlation ID in its async state.
 4. The `tool.done` event fires with the pending result.
-5. The plugin sees the pending marker and decides what to do.
+5. The director sees the pending marker and decides what to do.
 
-The plugin has several options when it sees a pending result:
+The director has several options when it sees a pending result:
 
 **Suspend** — Enter a gate that waits for the correlated response. The reactor suspends but continues receiving messages. When the reactor resolves the correlation, it clears the gate and injects the resolution into the message history.
 
-**Continue** — Infer with partial results. The model sees "message sent, awaiting response" as the tool result and can do other work while waiting. When the reactor resolves the correlation later, it emits a `message.correlated` event and the plugin handles it normally (queue, inject, fork).
+**Continue** — Infer with partial results. The model sees "message sent, awaiting response" as the tool result and can do other work while waiting. When the reactor resolves the correlation later, it emits a `message.correlated` event and the director handles it normally (queue, inject, fork).
 
 **Fork** — Spawn a child fork that suspends at the gate while the parent continues working. When the reactor resolves the correlation, the child processes it and reports the result back to the parent.
 
-This pattern is uniform across all async operations: message passing, payment requests, approval gates, credential refresh. The tool does the immediate action; the reactor owns matching responses to pending correlations; the plugin manages the wait strategy.
+This pattern is uniform across all async operations: message passing, payment requests, approval gates, credential refresh. The tool does the immediate action; the reactor owns matching responses to pending correlations; the director manages the wait strategy.
 
-**Parallel execution with mixed sync/async tools** works naturally. If the model calls `read_file`, `send_message`, and `grep` in one turn, all three execute concurrently. The sync tools complete and return results. The async tool returns a pending marker. The reactor registers the correlation. All three `tool.done` events fire. The plugin sees two complete results and one pending, and decides how to proceed.
+**Parallel execution with mixed sync/async tools** works naturally. If the model calls `read_file`, `send_message`, and `grep` in one turn, all three execute concurrently. The sync tools complete and return results. The async tool returns a pending marker. The reactor registers the correlation. All three `tool.done` events fire. The director sees two complete results and one pending, and decides how to proceed.
 
 ### Async State Awareness
 
 The model needs to know what async operations are pending and when they resolve. Two mechanisms work together:
 
-**Synthetic resolution messages** — When an async operation resolves (a response arrives, a payment confirms, an approval is granted), the plugin injects a synthetic message into the conversation history. This is a real message, stored in git, part of the persistent context. The model sees it in the natural conversation flow and can reason about it:
+**Synthetic resolution messages** — When an async operation resolves (a response arrives, a payment confirms, an approval is granted), the director injects a synthetic message into the conversation history. This is a real message, stored in git, part of the persistent context. The model sees it in the natural conversation flow and can reason about it:
 
 ```
 [system: async_resolution] Agent X responded to your review request (r1):
@@ -350,7 +350,7 @@ The model needs to know what async operations are pending and when they resolve.
 [pending: agent-y "check database schema" (sent 4m ago)]
 ```
 
-Pending status injection is opt-in via the context transform extension. Plugins that don't need it (coding assistants with no async operations) pay no context window cost.
+Pending status injection is opt-in via the context transform extension. Directors that don't need it (coding assistants with no async operations) pay no context window cost.
 
 **Persistence model:**
 
@@ -374,18 +374,18 @@ When a gate blocks, the reactor emits `reactor.gate.blocked` and suspends. It re
 - **Approval** — Tool call requires human approval. The reactor suspends, the request flows through the message bus, resumes on approval or terminates on denial.
 - **Payment** — Next action requires payment. Suspends until wallet is funded.
 - **Credential** — Provider credential expired. Suspends while sidecar refreshes via control plane.
-- **Budget** — Cost/turn/token threshold exceeded. Plugin decides: compact, pause, or terminate.
+- **Budget** — Cost/turn/token threshold exceeded. Director decides: compact, pause, or terminate.
 - **Child completion** — Parent waiting for a child fork to finish.
 - **Message response** — Waiting for a correlated response from another agent or human. The gate holds a correlation ID; when a `message.received` event matches, the gate clears with the response.
 
 ### Gate Timeouts
 
-Every gate has a timeout. The plugin sets the timeout when defining the gate. If no timeout is specified, the reactor enforces a default maximum (configurable at reactor initialization, default 1 hour).
+Every gate has a timeout. The director sets the timeout when defining the gate. If no timeout is specified, the reactor enforces a default maximum (configurable at reactor initialization, default 1 hour).
 
 When a gate times out:
 
 1. The reactor emits `reactor.gate.cleared` with a `reason: "timeout"` field
-2. The plugin receives the event and decides the response — retry, fail, switch to a different strategy
+2. The director receives the event and decides the response — retry, fail, switch to a different strategy
 3. The timed-out gate is removed from the active gates list
 
 Gates without timeouts are resource leaks. The reactor prevents them.
@@ -394,16 +394,16 @@ Gates without timeouts are resource leaks. The reactor prevents them.
 
 Gates are checked before action execution, not polled. The reactor yields and is resumed by the gate's resolution mechanism.
 
-Inbound messages are still delivered to the plugin during gate suspension. The plugin can queue them, fork to handle them, or ignore them. Suspension doesn't mean deaf.
+Inbound messages are still delivered to the director during gate suspension. The director can queue them, fork to handle them, or ignore them. Suspension doesn't mean deaf.
 
-If multiple gates are active simultaneously (possible when the plugin suspends at a compound gate or multiple gates from different operations), they resolve independently. The reactor delivers `reactor.gate.cleared` events in the order gates clear. If two clear simultaneously, delivery order is unspecified but both are delivered.
+If multiple gates are active simultaneously (possible when the director suspends at a compound gate or multiple gates from different operations), they resolve independently. The reactor delivers `reactor.gate.cleared` events in the order gates clear. If two clear simultaneously, delivery order is unspecified but both are delivered.
 
 ### Suspension, Checkpoint, and Resumption
 
 **Suspend** and **checkpoint** are distinct operations:
 
 - **Checkpoint** commits the current reactor state (message history, async state, token accounting) to the context store without stopping the reactor. The reactor continues processing events after the commit completes.
-- **Suspend** stops the reactor at a gate. The reactor is idle until the gate clears. Suspension does not automatically checkpoint — if the plugin wants durability across process restarts, it should return `[checkpoint, suspend]` as a compound action.
+- **Suspend** stops the reactor at a gate. The reactor is idle until the gate clears. Suspension does not automatically checkpoint — if the director wants durability across process restarts, it should return `[checkpoint, suspend]` as a compound action.
 
 When the reactor suspends, its resumable state is:
 
@@ -418,39 +418,39 @@ If this state has been checkpointed, the harness process can restart and the rea
 
 ### Shutdown
 
-When the reactor receives an `abort` event or the plugin returns `done` (note: `wait` does _not_ trigger shutdown — it returns to the event loop):
+When the reactor receives an `abort` event or the director returns `done` (note: `wait` does _not_ trigger shutdown — it returns to the event loop):
 
-1. The plugin receives the terminal event and returns cleanup actions
+1. The director receives the terminal event and returns cleanup actions
 2. In-flight inference calls are aborted (AbortSignal fires)
 3. In-flight tool executions are aborted (AbortSignal fires) — tools must handle this gracefully
 4. Active gates are cleared with `reason: "shutdown"`
-5. Child forks receive abort propagation (the plugin can override per-fork — independent forks may outlive their parent)
+5. Child forks receive abort propagation (the director can override per-fork — independent forks may outlive their parent)
 6. The reactor emits `reactor.done` or `reactor.error` as the terminal event
 7. No further events are processed after the terminal event
 
 **Cleanup time limit**: the reactor enforces a maximum shutdown duration (configurable, default 30 seconds). If cleanup exceeds this, remaining operations are force-killed and the terminal event fires immediately.
 
-**Cleanup actions cannot trigger new gates.** If the plugin returns a `suspend` during shutdown, it is ignored. Shutdown is not interruptible.
+**Cleanup actions cannot trigger new gates.** If the director returns a `suspend` during shutdown, it is ignored. Shutdown is not interruptible.
 
 ### Keeping It Simple
 
 The reactor is small. It is not a workflow engine, a state machine library, or an actor framework. It is a dispatch loop:
 
 1. Wait for an event
-2. Give it to the plugin (catch exceptions)
+2. Give it to the director (catch exceptions)
 3. Validate the returned action(s)
 4. Execute the action(s)
 5. Repeat
 
-The complexity lives in plugins, not in the reactor. A coding assistant's plugin is roughly 50 lines of decision logic. A collaborative agent's plugin is larger. The reactor itself is the same either way.
+The complexity lives in directors, not in the reactor. A coding assistant's director is roughly 50 lines of decision logic. A collaborative agent's director is larger. The reactor itself is the same either way.
 
-## Reactor Plugin
+## Reactor Director
 
-The reactor plugin is the consumer's orchestration policy. One core plugin is required; optional extension hooks layer on top.
+The reactor director is the consumer's orchestration policy. One core director is required; optional extension hooks layer on top.
 
-### Core Plugin
+### Core Director
 
-The core plugin is a decision function. It receives an event and returns action(s):
+The core director is a decision function. It receives an event and returns action(s):
 
 - On `message.received` — Decide: infer, fork, queue, ignore. Choose the model.
 - On `inference.done` with tool calls — Decide: execute tools (which ones, sequential or parallel), or stop.
@@ -460,23 +460,23 @@ The core plugin is a decision function. It receives an event and returns action(
 - On `reactor.gate.cleared` — Resume the suspended action, or take a different action based on the gate result.
 - On `message.received` while suspended — Decide: queue, fork, or ignore.
 
-The plugin also provides:
+The director also provides:
 
 - **Tool execution** — The actual tool runner. Receives tool calls, returns results. How and where tools run is the consumer's problem.
 - **Gate definitions** — Which gates to check before which actions. Can be static or dynamic.
 - **Model selection** — Which model for each inference call. Per-call, not per-session. Enables cost-based routing, fallback, and capability matching.
-- **Fork policy** — How to initialize a new fork's plugin state. Called when a fork action is executed.
+- **Fork policy** — How to initialize a new fork's director state. Called when a fork action is executed.
 - **Commit policy** — When to auto-commit to the context store. Default: lifecycle boundaries (suspension, compaction, shutdown). Can be configured to per-turn or per-message for agents that need more granularity.
 
 ### Extension Hooks
 
-Extensions layer on top of the core plugin without replacing it:
+Extensions layer on top of the core director without replacing it:
 
 - **Before tool execution** — Can block a tool call with a reason (authorization, policy). The first extension that blocks wins — the chain short-circuits and the tool call produces an error result with the blocking reason. Later extensions in the chain do not see blocked calls.
 - **After tool execution** — Can modify tool result content, details, or error flag. Extensions run in order; each sees the output of the previous. Enables redaction, enrichment, or audit logging.
 - **Context transform** — Modify the message array before each inference call. This is where pending status injection lives (if enabled). Extensions run in order; each sees the output of the previous. Modifications are ephemeral — they affect the inference call but are not committed to the context store.
 - **Provider request intercept** — Inspect or modify the raw provider request before sending. Enables header injection, payload logging, or tenant-specific modifications.
-- **Message routing** — Intercept inbound messages before the core plugin sees them. Can filter, transform, or drop messages. Enables cross-cutting concerns like logging, rate limiting, or content safety filtering. The first extension that drops a message prevents further processing.
+- **Message routing** — Intercept inbound messages before the core director sees them. Can filter, transform, or drop messages. Enables cross-cutting concerns like logging, rate limiting, or content safety filtering. The first extension that drops a message prevents further processing.
 
 ## Tool Interaction Patterns
 
@@ -526,7 +526,7 @@ Tool results enter the message history and stay there. Over a long session, old 
 
 **Tool result clearing.** The context transform extension can clear old tool results before each inference call. Cleared results are replaced with a placeholder indicating that the result existed but was removed. The model knows the tool was called and completed, but does not see the full output. Clearing is ephemeral — it affects the inference call but not the persisted message history in the context store.
 
-Clearing strategy: prioritize clearing the oldest and largest tool results first. Results from the current step (the most recent tool call/response cycle) should never be cleared. Results from older steps that have been superseded by newer information (a file was read again, a search was re-run) are safe to clear. The plugin controls the clearing policy.
+Clearing strategy: prioritize clearing the oldest and largest tool results first. Results from the current step (the most recent tool call/response cycle) should never be cleared. Results from older steps that have been superseded by newer information (a file was read again, a search was re-run) are safe to clear. The director controls the clearing policy.
 
 **Post-success collapse.** When a tool fails and the model retries, the failure sequence (error result, model apology, retry call, success result) pollutes the conversation. After a successful retry, the failure sequence can be collapsed into a compact annotation on the successful result: "Applied successfully. 2 prior attempts failed: missing required field, invalid reference format." The model retains the lesson without the verbose error/retry/apology turns consuming context.
 
@@ -575,7 +575,7 @@ The reactor accepts any implementation that satisfies the interface. This keeps 
 
 If the context store fails to read on reactor startup, the reactor cannot initialize. It emits `reactor.error` and terminates.
 
-If the context store fails to write during a checkpoint or commit, the reactor continues operating with in-memory state. The failure is reported as an event (`reactor.error` with a non-fatal flag). The plugin decides whether to retry the commit, continue without persistence, or shut down. The reactor does not silently lose data — if a commit fails, the plugin knows.
+If the context store fails to write during a checkpoint or commit, the reactor continues operating with in-memory state. The failure is reported as an event (`reactor.error` with a non-fatal flag). The director decides whether to retry the commit, continue without persistence, or shut down. The reactor does not silently lose data — if a commit fails, the director knows.
 
 For the in-memory git backend with remote sync: if the sync fails, the commit succeeds locally (data is not lost) and the sync failure is reported. The reactor continues. The next commit retries the sync.
 
@@ -597,7 +597,7 @@ The message history is stored in the agent's git-backed local storage. This is n
 
 During active operation, the reactor works with an in-memory representation of the message history for performance. Git captures snapshots at commit points. On resume after suspension, the reactor reconstructs state from the last git commit.
 
-Commit frequency is controlled by the plugin's commit policy. The default commits on lifecycle boundaries (suspension, compaction, shutdown), matching the commit policy described in ARCHITECTURE.md's Change History section. Plugins can configure more frequent commits (per-turn, per-message) when durability requirements are higher.
+Commit frequency is controlled by the director's commit policy. The default commits on lifecycle boundaries (suspension, compaction, shutdown), matching the commit policy described in ARCHITECTURE.md's Change History section. Directors can configure more frequent commits (per-turn, per-message) when durability requirements are higher.
 
 ### Context Window Tracking
 
@@ -617,11 +617,11 @@ Compaction can be triggered by multiple conditions:
 - **Cost** — The per-request input token cost exceeds a threshold. A conversation spending $0.50/request on input tokens when it could spend $0.10 after compaction is wasting wallet balance. The cost threshold is configured by the tenant or agent policy.
 - **Overflow recovery** — The model rejects a request as too long. One automatic compaction attempt, then fail. No infinite loops.
 - **Quality** — Context length has crossed a threshold where model performance is measurably degraded. This is distinct from capacity (which triggers near the hard limit) and cost (which triggers on per-request spend). A quality trigger fires earlier, compacting proactively to maintain reasoning accuracy rather than waiting for the context to approach overflow. The threshold is model-dependent and configured by the agent policy.
-- **Explicit** — The reactor plugin or an extension requests compaction directly.
+- **Explicit** — The reactor director or an extension requests compaction directly.
 
 ### Compaction Contract
 
-The compaction plugin receives the current message history, trigger reason, and wallet balance context. It returns a compacted message history that must satisfy:
+The compaction director receives the current message history, trigger reason, and wallet balance context. It returns a compacted message history that must satisfy:
 
 - Tool call / tool result pairing is preserved. Every tool call in the compacted output has a corresponding tool result. Orphaned calls or results are not permitted.
 - Message ordering is preserved. The compacted output is a valid conversation that the target model can process.
@@ -639,15 +639,15 @@ Provider errors are classified into categories that determine the reactor's resp
 - **Retryable** — Rate limits (429), server errors (500, 502, 503, 504), overload, network failures. Response: exponential backoff with retry.
 - **Context overflow** — Request exceeds the model's context window. Each provider phrases this differently (20+ known patterns). Response: trigger compaction, not retry.
 - **Credential failure** — Authentication rejected, token expired. Response: emit a credential gate, suspend the reactor for credential refresh. In a platform with managed credentials, expiry is expected and recoverable.
-- **Quota exhausted** — Provider-level usage limit hit (distinct from transient rate limits). Response: fail or switch model, depending on plugin policy.
+- **Quota exhausted** — Provider-level usage limit hit (distinct from transient rate limits). Response: fail or switch model, depending on director policy.
 - **Fatal** — Invalid request, unsupported model, malformed content. Response: fail immediately with diagnostic information.
 - **Aborted** — Caller cancelled via AbortSignal. Response: clean termination.
 
-The classifier inspects HTTP status codes, error response bodies, and provider-specific error message patterns. The classified error is delivered to the plugin as an `inference.error` event, and the plugin decides the response — retry, compact, switch model, suspend, or fail. The error categories inform the plugin's decision but do not hardcode the response.
+The classifier inspects HTTP status codes, error response bodies, and provider-specific error message patterns. The classified error is delivered to the director as an `inference.error` event, and the director decides the response — retry, compact, switch model, suspend, or fail. The error categories inform the director's decision but do not hardcode the response.
 
 ### Retry Behavior
 
-Retryable errors use exponential backoff: `baseDelay * 2^attempt`. The plugin controls maximum attempts and total budget. Failed attempts are removed from the message history before retrying — the model should not see its own error responses.
+Retryable errors use exponential backoff: `baseDelay * 2^attempt`. The director controls maximum attempts and total budget. Failed attempts are removed from the message history before retrying — the model should not see its own error responses.
 
 ## Abort Handling
 
@@ -659,13 +659,13 @@ When abort fires, every layer produces clean termination: streams emit error eve
 
 Interchange has more abort sources than a single-user tool, and the reason determines cleanup behavior:
 
-- **User disconnect** — May or may not mean "stop." A background agent should continue. An interactive session should pause. The plugin decides.
+- **User disconnect** — May or may not mean "stop." A background agent should continue. An interactive session should pause. The director decides.
 - **Wallet exhaustion** — Hard stop. No more inference calls or paid tool invocations. Checkpoint state for resumption when funded.
 - **Admin kill** — Hard stop. The harness is shutting down. No checkpoint.
 - **Session timeout** — The session channel has been idle too long. Checkpoint and suspend.
 - **Credential revocation** — The creator revoked a capability. Stop exercising it immediately.
 
-The reactor receives abort as an `abort` event with a reason. The plugin returns the appropriate cleanup action: checkpoint and suspend, terminate immediately, or signal forks to abort.
+The reactor receives abort as an `abort` event with a reason. The director returns the appropriate cleanup action: checkpoint and suspend, terminate immediately, or signal forks to abort.
 
 ## Token Accounting
 
@@ -713,7 +713,7 @@ The reactor should not inject ephemeral data (pending status, dynamic context) i
 
 Tool definitions are part of the cached prefix. Their token cost compounds: a set of 15 tools with moderately complex parameters consumes roughly 5,000-6,000 tokens, sent and cached on every turn.
 
-For agents with dynamic capabilities (tools from remote registries, plugin-provided tools), the mitigation is a stable core with deferred loading: a small, fixed set of always-available tools lives in the tool definition array (stable, always cached). Tools that are not always needed are excluded from the array entirely. When the model needs a deferred tool, it discovers it through a search/discovery tool in the core set, and the discovered tool's definition is injected inline as a tool reference in the message history. The tool prefix stays stable; discovered tools are part of the message stream, not the tool array.
+For agents with dynamic capabilities (tools from remote registries, extension-provided tools), the mitigation is a stable core with deferred loading: a small, fixed set of always-available tools lives in the tool definition array (stable, always cached). Tools that are not always needed are excluded from the array entirely. When the model needs a deferred tool, it discovers it through a search/discovery tool in the core set, and the discovered tool's definition is injected inline as a tool reference in the message history. The tool prefix stays stable; discovered tools are part of the message stream, not the tool array.
 
 The cost of dynamic tool sets without these mitigations is severe. Each MCP server adds 1,500-12,000 tokens to the tool prefix. Three to four servers can add 10,000-18,000 tokens of overhead per turn. Every connect/disconnect event invalidates the entire cache.
 
@@ -748,9 +748,9 @@ Reasoning is configured per-agent as part of the agent definition, not per-reque
 
 The budget is a ceiling, not a target. The provider adapter translates the on/off + budget into the provider-specific mechanism (Anthropic's `thinking` parameter, OpenAI's `reasoning_effort`, provider-variant formats for OpenRouter, z.ai, Qwen).
 
-The reactor plugin can override reasoning configuration per-call if needed (for example, enabling reasoning for a complex planning step and disabling it for simple tool result processing). But the default comes from the agent definition, not from the inference package.
+The reactor director can override reasoning configuration per-call if needed (for example, enabling reasoning for a complex planning step and disabling it for simple tool result processing). But the default comes from the agent definition, not from the inference package.
 
-**Cache interaction.** Changing the thinking budget between turns invalidates the message cache. Tool and system prompt caches survive, but all message-level cache entries are rebuilt. If the plugin toggles reasoning on and off per-call, each toggle pays a cache rebuild cost. For cost-sensitive agents, holding a consistent thinking budget across the session is preferable to dynamic adjustment. If variable reasoning depth is needed, achieve it through prompt engineering (instructing the model to think briefly vs. deeply) rather than through the API parameter, preserving the cache.
+**Cache interaction.** Changing the thinking budget between turns invalidates the message cache. Tool and system prompt caches survive, but all message-level cache entries are rebuilt. If the director toggles reasoning on and off per-call, each toggle pays a cache rebuild cost. For cost-sensitive agents, holding a consistent thinking budget across the session is preferable to dynamic adjustment. If variable reasoning depth is needed, achieve it through prompt engineering (instructing the model to think briefly vs. deeply) rather than through the API parameter, preserving the cache.
 
 ### Thinking Content
 

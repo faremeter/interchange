@@ -5,7 +5,7 @@ export type { HarnessConfig } from "./config";
 export { validateConfig } from "./config";
 export type { BeforeToolExtension } from "@interchange/types/runtime";
 
-export { createDefaultPlugin, DefaultPlugin } from "./plugin";
+export { createDefaultDirector, DefaultDirector } from "./director";
 
 export { buildMailToolHandlers, buildCombinedRunner } from "./tools";
 export type { MailToolName } from "./tools";

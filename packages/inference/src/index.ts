@@ -33,7 +33,7 @@ export { createCorrelationRegistry } from "./correlation";
 export type { CorrelationRegistry, CorrelationValidator } from "./correlation";
 export { createStateManager } from "./state";
 export type { ReactorStateManager } from "./state";
-export { createCapabilities } from "./plugin";
+export { createCapabilities } from "./director";
 export { createAuthzExtension } from "./authz-extension";
 export type {
   AuthzCallResult,

@@ -34,14 +34,14 @@ import type { AuditRecord, ErrorRecord } from "@interchange/types/audit";
 import type { AuthzCallResult } from "@interchange/inference";
 import type {
   ReactorInboundEvent,
-  ReactorPlugin,
+  ReactorDirector,
   ReactorState,
   ReactorCapabilities,
 } from "@interchange/types/runtime";
 
 import { createHarness } from "./harness";
 import { buildMailToolHandlers, buildCombinedRunner } from "./tools";
-import { createDefaultPlugin } from "./plugin";
+import { createDefaultDirector } from "./director";
 import type { HarnessConfig } from "./config";
 
 // ---------------------------------------------------------------------------
@@ -414,8 +414,8 @@ describe("Message delivery pipeline", () => {
     const events: InferenceEvent[] = [];
     let deliveredCount = 0;
 
-    // Plugin that signals delivery by returning done() on message.received.
-    const plugin: ReactorPlugin = {
+    // Director that signals delivery by returning done() on message.received.
+    const director: ReactorDirector = {
       async decide(
         event: ReactorInboundEvent,
         _state: ReactorState,
@@ -433,7 +433,7 @@ describe("Message delivery pipeline", () => {
     transport.enqueueMessage(inboundMsg.ref, inboundMsg);
 
     const harness = createHarness(
-      makeConfig(transport, { onEvent: (e) => events.push(e), plugin }),
+      makeConfig(transport, { onEvent: (e) => events.push(e), director }),
     );
     harness.start();
 
@@ -444,7 +444,7 @@ describe("Message delivery pipeline", () => {
       headers: inboundMsg.headers,
     });
 
-    // reactor.done signals the plugin received the message.
+    // reactor.done signals the director received the message.
     await waitForEvent(events, (e) => e.type === "reactor.done");
     expect(deliveredCount).toBe(1);
 
@@ -455,8 +455,8 @@ describe("Message delivery pipeline", () => {
     const transport = makeMockTransport();
     let deliveredCount = 0;
 
-    // Plugin that counts message.received deliveries.
-    const plugin: ReactorPlugin = {
+    // Director that counts message.received deliveries.
+    const director: ReactorDirector = {
       async decide(
         event: ReactorInboundEvent,
         _state: ReactorState,
@@ -470,7 +470,7 @@ describe("Message delivery pipeline", () => {
       },
     };
 
-    const harness = createHarness(makeConfig(transport, { plugin }));
+    const harness = createHarness(makeConfig(transport, { director }));
     harness.start();
 
     transport.fireWatch({ type: "flagsChanged", uid: 1, flags: ["\\Seen"] });
@@ -489,7 +489,7 @@ describe("Message delivery pipeline", () => {
     const events: InferenceEvent[] = [];
     let deliveredCount = 0;
 
-    const plugin: ReactorPlugin = {
+    const director: ReactorDirector = {
       async decide(
         event: ReactorInboundEvent,
         _state: ReactorState,
@@ -504,7 +504,7 @@ describe("Message delivery pipeline", () => {
     };
 
     const harness = createHarness(
-      makeConfig(transport, { onEvent: (e) => events.push(e), plugin }),
+      makeConfig(transport, { onEvent: (e) => events.push(e), director }),
     );
     harness.start();
 
@@ -514,7 +514,7 @@ describe("Message delivery pipeline", () => {
     const msg = makeInboundMessage();
     harness.deliver(msg);
 
-    // reactor.done signals the plugin received the message.
+    // reactor.done signals the director received the message.
     await waitForEvent(events, (e) => e.type === "reactor.done");
     expect(deliveredCount).toBe(1);
 
@@ -891,10 +891,10 @@ describe("mail_read tool", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 8. Default plugin decision logic
+// 8. Default director decision logic
 // ---------------------------------------------------------------------------
 
-describe("Default plugin", () => {
+describe("Default director", () => {
   function makeCapabilities() {
     return {
       calls: [] as { type: string; args: unknown[] }[],
@@ -964,7 +964,7 @@ describe("Default plugin", () => {
   }
 
   test("message.received triggers infer action", async () => {
-    const plugin = createDefaultPlugin("claude-test", "You are helpful.");
+    const director = createDefaultDirector("claude-test", "You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -973,14 +973,14 @@ describe("Default plugin", () => {
       message: makeInboundMessage(),
     };
 
-    const actions = await plugin.decide(event, state, caps);
+    const actions = await director.decide(event, state, caps);
 
     const normalized = Array.isArray(actions) ? actions : [actions];
     expect(normalized.some((a) => a.type === "infer")).toBe(true);
   });
 
   test("inference.done with tool calls triggers checkpoint and execute_tools", async () => {
-    const plugin = createDefaultPlugin("claude-test", "You are helpful.");
+    const director = createDefaultDirector("claude-test", "You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1002,14 +1002,14 @@ describe("Default plugin", () => {
       usage: emptyUsage(),
     };
 
-    const actions = await plugin.decide(event, state, caps);
+    const actions = await director.decide(event, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
     expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
     expect(normalized.some((a) => a.type === "execute_tools")).toBe(true);
   });
 
   test("inference.done without tool calls returns checkpoint and reply", async () => {
-    const plugin = createDefaultPlugin("claude-test", "You are helpful.");
+    const director = createDefaultDirector("claude-test", "You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1024,7 +1024,7 @@ describe("Default plugin", () => {
       usage: emptyUsage(),
     };
 
-    const actions = await plugin.decide(doneEvent, state, caps);
+    const actions = await director.decide(doneEvent, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
 
     expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
@@ -1036,7 +1036,7 @@ describe("Default plugin", () => {
   });
 
   test("tool.done triggers checkpoint and re-infer", async () => {
-    const plugin = createDefaultPlugin("claude-test", "You are helpful.");
+    const director = createDefaultDirector("claude-test", "You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1045,14 +1045,14 @@ describe("Default plugin", () => {
       result: { callId: "tc1", content: "file contents" },
     };
 
-    const actions = await plugin.decide(event, state, caps);
+    const actions = await director.decide(event, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
     expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
     expect(normalized.some((a) => a.type === "infer")).toBe(true);
   });
 
   test("inference.error returns checkpoint and reply with error message", async () => {
-    const plugin = createDefaultPlugin("claude-test", "You are helpful.");
+    const director = createDefaultDirector("claude-test", "You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1066,7 +1066,7 @@ describe("Default plugin", () => {
       partial: { text: "" },
     };
 
-    const actions = await plugin.decide(event, state, caps);
+    const actions = await director.decide(event, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
     expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
 
@@ -1079,7 +1079,7 @@ describe("Default plugin", () => {
   });
 
   test("abort returns done", async () => {
-    const plugin = createDefaultPlugin("claude-test", "You are helpful.");
+    const director = createDefaultDirector("claude-test", "You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1088,13 +1088,13 @@ describe("Default plugin", () => {
       reason: "user_disconnect",
     };
 
-    const actions = await plugin.decide(event, state, caps);
+    const actions = await director.decide(event, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
     expect(normalized.some((a) => a.type === "done")).toBe(true);
   });
 
   test("inference.done with empty content returns checkpoint and wait", async () => {
-    const plugin = createDefaultPlugin("claude-test", "You are helpful.");
+    const director = createDefaultDirector("claude-test", "You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1109,7 +1109,7 @@ describe("Default plugin", () => {
       usage: emptyUsage(),
     };
 
-    const actions = await plugin.decide(event, state, caps);
+    const actions = await director.decide(event, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
     expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
     expect(normalized.some((a) => a.type === "wait")).toBe(true);
@@ -1118,7 +1118,7 @@ describe("Default plugin", () => {
   });
 
   test("inference.done with whitespace-only text returns checkpoint and wait", async () => {
-    const plugin = createDefaultPlugin("claude-test", "You are helpful.");
+    const director = createDefaultDirector("claude-test", "You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1133,7 +1133,7 @@ describe("Default plugin", () => {
       usage: emptyUsage(),
     };
 
-    const actions = await plugin.decide(event, state, caps);
+    const actions = await director.decide(event, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
     expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
     expect(normalized.some((a) => a.type === "wait")).toBe(true);
@@ -1142,9 +1142,14 @@ describe("Default plugin", () => {
   });
 
   test("reactive mode inference.done returns checkpoint and wait", async () => {
-    const plugin = createDefaultPlugin("claude-test", "You are helpful.", [], {
-      mode: "reactive",
-    });
+    const director = createDefaultDirector(
+      "claude-test",
+      "You are helpful.",
+      [],
+      {
+        mode: "reactive",
+      },
+    );
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1159,16 +1164,21 @@ describe("Default plugin", () => {
       usage: emptyUsage(),
     };
 
-    const actions = await plugin.decide(event, state, caps);
+    const actions = await director.decide(event, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
     expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
     expect(normalized.some((a) => a.type === "wait")).toBe(true);
   });
 
   test("reactive mode tool.done returns checkpoint and wait", async () => {
-    const plugin = createDefaultPlugin("claude-test", "You are helpful.", [], {
-      mode: "reactive",
-    });
+    const director = createDefaultDirector(
+      "claude-test",
+      "You are helpful.",
+      [],
+      {
+        mode: "reactive",
+      },
+    );
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1177,7 +1187,7 @@ describe("Default plugin", () => {
       result: { callId: "tc1", content: "result" },
     };
 
-    const actions = await plugin.decide(event, state, caps);
+    const actions = await director.decide(event, state, caps);
     const normalized = Array.isArray(actions) ? actions : [actions];
     expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
     expect(normalized.some((a) => a.type === "wait")).toBe(true);
@@ -1185,7 +1195,7 @@ describe("Default plugin", () => {
   });
 
   test("tool.done batching waits for all results before checkpoint", async () => {
-    const plugin = createDefaultPlugin("claude-test", "You are helpful.");
+    const director = createDefaultDirector("claude-test", "You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1213,14 +1223,14 @@ describe("Default plugin", () => {
       },
       usage: emptyUsage(),
     };
-    await plugin.decide(inferDone, state, caps);
+    await director.decide(inferDone, state, caps);
 
     // First tool.done — should return empty (still waiting for tc2).
     const toolDone1: ReactorInboundEvent = {
       type: "tool.done",
       result: { callId: "tc1", content: "result1" },
     };
-    const actions1 = await plugin.decide(toolDone1, state, caps);
+    const actions1 = await director.decide(toolDone1, state, caps);
     const normalized1 = Array.isArray(actions1) ? actions1 : [actions1];
     expect(normalized1).toEqual([]);
 
@@ -1229,7 +1239,7 @@ describe("Default plugin", () => {
       type: "tool.done",
       result: { callId: "tc2", content: "result2" },
     };
-    const actions2 = await plugin.decide(toolDone2, state, caps);
+    const actions2 = await director.decide(toolDone2, state, caps);
     const normalized2 = Array.isArray(actions2) ? actions2 : [actions2];
     expect(normalized2.some((a) => a.type === "checkpoint")).toBe(true);
     expect(normalized2.some((a) => a.type === "infer")).toBe(true);
@@ -1350,13 +1360,13 @@ describe("Audit integration", () => {
     });
   }
 
-  // A plugin that executes a single tool call on message.received,
+  // A director that executes a single tool call on message.received,
   // then checkpoints and shuts down on tool.done. This exercises
   // the full audit pipeline without needing a real LLM.
-  function makeToolExecPlugin(
+  function makeToolExecDirector(
     toolName: string,
     toolArgs: Record<string, unknown>,
-  ): ReactorPlugin {
+  ): ReactorDirector {
     return {
       async decide(
         event: { type: string },
@@ -1404,7 +1414,7 @@ describe("Audit integration", () => {
         auditStore,
         authorize: () => allowAll(),
         onEvent: (e) => events.push(e),
-        plugin: makeToolExecPlugin("test_tool", { key: "value" }),
+        director: makeToolExecDirector("test_tool", { key: "value" }),
       }),
     );
 
@@ -1450,7 +1460,7 @@ describe("Audit integration", () => {
         auditStore,
         authorize: () => denyAll(),
         onEvent: (e) => events.push(e),
-        plugin: makeToolExecPlugin("secret_tool", { path: "/etc/shadow" }),
+        director: makeToolExecDirector("secret_tool", { path: "/etc/shadow" }),
       }),
     );
 
@@ -1481,9 +1491,9 @@ describe("Audit integration", () => {
     const auditStore = makeAuditStore();
     const events: InferenceEvent[] = [];
 
-    // Plugin that executes tools but does NOT checkpoint before done.
+    // Director that executes tools but does NOT checkpoint before done.
     // Records should still be flushed via onShutdown.
-    const plugin: ReactorPlugin = {
+    const director: ReactorDirector = {
       async decide(
         event: { type: string },
         _state: ReactorState,
@@ -1506,7 +1516,7 @@ describe("Audit integration", () => {
         auditStore,
         authorize: () => allowAll(),
         onEvent: (e) => events.push(e),
-        plugin,
+        director,
       }),
     );
 
@@ -1526,14 +1536,14 @@ describe("Audit integration", () => {
     const auditStore = makeAuditStore();
     const events: InferenceEvent[] = [];
 
-    // Plugin checkpoints before done — both afterCheckpoint and onShutdown
+    // Director checkpoints before done — both afterCheckpoint and onShutdown
     // fire. The second flush should be a no-op.
     const harness = createHarness(
       makeConfig(transport, {
         auditStore,
         authorize: () => allowAll(),
         onEvent: (e) => events.push(e),
-        plugin: makeToolExecPlugin("test_tool", { x: 1 }),
+        director: makeToolExecDirector("test_tool", { x: 1 }),
       }),
     );
 
@@ -1560,7 +1570,7 @@ describe("Audit integration", () => {
           throw new Error("authz service unavailable");
         },
         onEvent: (e) => events.push(e),
-        plugin: makeToolExecPlugin("risky_tool", { cmd: "rm -rf /" }),
+        director: makeToolExecDirector("risky_tool", { cmd: "rm -rf /" }),
       }),
     );
 
@@ -1639,9 +1649,9 @@ describe("Error flushing", () => {
     const auditStore = makeErrorAuditStore();
     const events: InferenceEvent[] = [];
 
-    // Plugin that triggers inference (which will fail due to invalid provider
+    // Director that triggers inference (which will fail due to invalid provider
     // URL) and then checkpoints + completes on inference.error.
-    const plugin: ReactorPlugin = {
+    const director: ReactorDirector = {
       async decide(
         event: { type: string },
         _state: ReactorState,
@@ -1670,7 +1680,7 @@ describe("Error flushing", () => {
         auditStore,
         authorize: () => allowAll(),
         onEvent: (e) => events.push(e),
-        plugin,
+        director,
       }),
     );
 
@@ -1694,11 +1704,11 @@ describe("Error flushing", () => {
     const auditStore = makeErrorAuditStore();
     const events: InferenceEvent[] = [];
 
-    // Plugin that throws on message.received, causing a fatal reactor.error.
-    const plugin: ReactorPlugin = {
+    // Director that throws on message.received, causing a fatal reactor.error.
+    const director: ReactorDirector = {
       async decide(event: { type: string }, _state: ReactorState) {
         if (event.type === "message.received") {
-          throw new Error("plugin explosion");
+          throw new Error("director explosion");
         }
         return { type: "done" as const };
       },
@@ -1709,7 +1719,7 @@ describe("Error flushing", () => {
         auditStore,
         authorize: () => allowAll(),
         onEvent: (e) => events.push(e),
-        plugin,
+        director,
       }),
     );
 
@@ -1724,7 +1734,7 @@ describe("Error flushing", () => {
     expect(record.source).toBe("reactor");
     expect(record.category).toBe("reactor_error");
     expect(record.fatal).toBe(true);
-    expect(record.message).toContain("plugin explosion");
+    expect(record.message).toContain("director explosion");
     expect(record.sessionId).toBeDefined();
   });
 
@@ -1733,8 +1743,8 @@ describe("Error flushing", () => {
     const auditStore = makeErrorAuditStore();
     const events: InferenceEvent[] = [];
 
-    // Plugin that completes without errors.
-    const plugin: ReactorPlugin = {
+    // Director that completes without errors.
+    const director: ReactorDirector = {
       async decide(
         event: { type: string },
         _state: ReactorState,
@@ -1752,7 +1762,7 @@ describe("Error flushing", () => {
         auditStore,
         authorize: () => allowAll(),
         onEvent: (e) => events.push(e),
-        plugin,
+        director,
       }),
     );
 
@@ -1768,11 +1778,11 @@ describe("Error flushing", () => {
     const auditStore = makeErrorAuditStore();
     const events: InferenceEvent[] = [];
 
-    // Plugin that triggers a checkpoint (which succeeds) then completes.
+    // Director that triggers a checkpoint (which succeeds) then completes.
     // The reactor emits a non-fatal reactor.error for afterCheckpoint
-    // hook failures, but we can simulate by using a plugin that causes
+    // hook failures, but we can simulate by using a director that causes
     // inference (which fails) and then checkpoints + completes.
-    const plugin: ReactorPlugin = {
+    const director: ReactorDirector = {
       async decide(
         event: { type: string },
         _state: ReactorState,
@@ -1799,7 +1809,7 @@ describe("Error flushing", () => {
         auditStore,
         authorize: () => allowAll(),
         onEvent: (e) => events.push(e),
-        plugin,
+        director,
       }),
     );
 
@@ -1840,10 +1850,10 @@ describe("Error flushing", () => {
     };
     const events: InferenceEvent[] = [];
 
-    // Plugin that triggers inference (fails due to bad URL), then
+    // Director that triggers inference (fails due to bad URL), then
     // checkpoints (commitErrors throws on first call), then completes
     // (commitErrors succeeds on shutdown flush with the retained records).
-    const plugin: ReactorPlugin = {
+    const director: ReactorDirector = {
       async decide(
         event: { type: string },
         _state: ReactorState,
@@ -1870,7 +1880,7 @@ describe("Error flushing", () => {
         auditStore,
         authorize: () => allowAll(),
         onEvent: (e) => events.push(e),
-        plugin,
+        director,
       }),
     );
 
@@ -1891,10 +1901,10 @@ describe("Error flushing", () => {
     const auditStore = makeErrorAuditStore();
     const events: InferenceEvent[] = [];
 
-    // Plugin that throws — reactor.error is emitted and then shutdown
+    // Director that throws — reactor.error is emitted and then shutdown
     // happens (no explicit checkpoint). Errors must be flushed via
     // onShutdown.
-    const plugin: ReactorPlugin = {
+    const director: ReactorDirector = {
       async decide(event: { type: string }, _state: ReactorState) {
         if (event.type === "message.received") {
           throw new Error("shutdown flush test");
@@ -1908,7 +1918,7 @@ describe("Error flushing", () => {
         auditStore,
         authorize: () => allowAll(),
         onEvent: (e) => events.push(e),
-        plugin,
+        director,
       }),
     );
 

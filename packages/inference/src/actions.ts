@@ -1,6 +1,6 @@
 // Action types and validation for the agent reactor.
 //
-// The reactor validates the set of actions returned by the plugin before
+// The reactor validates the set of actions returned by the director before
 // executing any of them. Invalid combinations produce a reactor.error rather
 // than partial execution — the reactor does not guess intent.
 //
@@ -32,7 +32,7 @@ export type ValidationResult =
   | { ok: false; error: string };
 
 /**
- * Validate and normalize a set of actions returned by the plugin.
+ * Validate and normalize a set of actions returned by the director.
  *
  * On success, returns the normalized action list with multiple `execute_tools`
  * collapsed into a single batched action. On failure, returns a diagnostic

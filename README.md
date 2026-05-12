@@ -190,7 +190,7 @@ packages/
   authz/            Authorization engine -- pattern matching, specificity, evaluation
   crypto-node/      Cryptographic primitives -- signing, verification, PGP, SSH signatures
   db/               Drizzle schema, migrations, connection pooling
-  harness/          Agent harness -- deploy tree, plugin system, tool orchestration
+  harness/          Agent harness -- deploy tree, director system, tool orchestration
   hub/              Hono app factory, route handlers, middleware
   hub-client/       Browser client SDK -- transport, instance sessions, event transforms
   inference/        LLM inference -- provider adapters, streaming, audit collection

@@ -34,7 +34,7 @@ import {
   type ConnectorThreadState,
   type InboundMessage,
   type Unsubscribe,
-  type ReactorPlugin,
+  type ReactorDirector,
 } from "@interchange/types/runtime";
 
 import type { ErrorRecord } from "@interchange/types/audit";
@@ -46,7 +46,7 @@ import {
   buildCombinedRunner,
   getMailToolDefinitions,
 } from "./tools";
-import { createDefaultPlugin } from "./plugin";
+import { createDefaultDirector } from "./director";
 import { type } from "arktype";
 
 const logger = getLogger(["interchange", "harness"]);
@@ -85,20 +85,20 @@ export function createHarness(config: HarnessConfig): Harness {
 
   const deployToolDefs = config.deployTools ?? [];
 
-  let plugin: ReactorPlugin;
-  if (config.plugin !== undefined) {
-    plugin = config.plugin;
+  let director: ReactorDirector;
+  if (config.director !== undefined) {
+    director = config.director;
   } else {
     if (provider.model === undefined) {
       throw new Error(
-        "provider.model is required when using the default plugin",
+        "provider.model is required when using the default director",
       );
     }
-    plugin = createDefaultPlugin(
+    director = createDefaultDirector(
       provider.model,
       config.systemPrompt,
       [...getMailToolDefinitions(), ...deployToolDefs],
-      config.pluginPolicy ?? {},
+      config.directorPolicy ?? {},
     );
   }
 
@@ -360,7 +360,7 @@ export function createHarness(config: HarnessConfig): Harness {
   // so mutating this object hot-swaps credentials without restarting.
   const reactorConfig: Parameters<typeof createReactor>[0] = {
     sessionId,
-    plugin,
+    director,
     providerConfig: provider,
     toolRunner: combinedRunner,
     contextStore,
