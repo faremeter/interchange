@@ -329,7 +329,7 @@ for (let i = 0; i < AGENT_NAMES.length; i++) {
     storage: stores[i],
     tools: createPosixTools(),
     onEvent: makeEventLogger(name),
-    pluginPolicy: i !== 0 ? { mode: "reactive" } : {},
+    directorPolicy: i !== 0 ? { mode: "reactive" } : {},
   });
   harnesses.push(h);
 }

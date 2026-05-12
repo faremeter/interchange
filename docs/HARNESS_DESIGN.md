@@ -189,7 +189,7 @@ If the sidecar discovers agent repositories but has no key pairs for them (e.g.,
 
 Mail is the first-class communication primitive. The sidecar persists outbound mail from agents via `mail.outbound` frames sent to the hub. The hub persists inbound mail sent by users via `POST .../instances/:instanceId/mail` and dispatches it to the sidecar as a `mail.delivered` agent event.
 
-The `onEvent` callback in `HarnessConfig` receives `InferenceEvent` values, which cover inference activity, tool execution, reactor lifecycle, and fork events. `message.received` is a `ReactorInboundEvent` — it is delivered directly to the reactor plugin and is not forwarded to session channel subscribers. This keeps the external event stream focused on observable inference activity rather than internal routing signals.
+The `onEvent` callback in `HarnessConfig` receives `InferenceEvent` values, which cover inference activity, tool execution, reactor lifecycle, and fork events. `message.received` is a `ReactorInboundEvent` — it is delivered directly to the reactor director and is not forwarded to session channel subscribers. This keeps the external event stream focused on observable inference activity rather than internal routing signals.
 
 Inference traces are stored separately from mail. The hub records one `inference_turn` per inference cycle and one or more `turn_part` rows per turn. The `/turns` endpoint serves these to UI clients independently of the `/mail` endpoint.
 

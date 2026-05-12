@@ -1,10 +1,10 @@
 // Reactor state management: turn history, async operations, usage tracking.
 //
-// The state object is the authoritative view the plugin receives on every
-// decision. It is mutable by the reactor only — the plugin receives a
+// The state object is the authoritative view the director receives on every
+// decision. It is mutable by the reactor only — the director receives a
 // snapshot so it cannot corrupt the reactor's internal state.
 //
-// (INFERENCE.md § Agent Reactor › Plugin Decision Function)
+// (INFERENCE.md § Agent Reactor › Director Decision Function)
 
 import type {
   ConversationTurn,
@@ -18,7 +18,7 @@ export type ReactorStateManager = ReturnType<typeof createStateManager>;
 
 /**
  * Creates a mutable state container. All mutations go through explicit methods;
- * the `snapshot()` method produces an immutable view for the plugin.
+ * the `snapshot()` method produces an immutable view for the director.
  */
 export function createStateManager(
   sessionId: string,

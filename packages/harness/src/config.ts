@@ -7,7 +7,7 @@ import type {
   ToolDefinition,
   ProviderConfig,
   InferenceEvent,
-  ReactorPlugin,
+  ReactorDirector,
   BeforeToolExtension,
 } from "@interchange/types/runtime";
 import type { AuthzCallResult } from "@interchange/inference";
@@ -45,17 +45,17 @@ export type HarnessConfig = {
   onEvent: (event: InferenceEvent) => void;
 
   /**
-   * Optional custom plugin. When omitted, the default conversational plugin
+   * Optional custom director. When omitted, the default conversational director
    * is used (message.received → infer → execute_tools loop → reply → wait).
    */
-  plugin?: ReactorPlugin;
+  director?: ReactorDirector;
 
   /**
-   * Policy overrides for the default plugin. Ignored when a custom plugin is
-   * provided. Each field controls a specific decision point in the plugin's
+   * Policy overrides for the default director. Ignored when a custom director is
+   * provided. Each field controls a specific decision point in the director's
    * event handling loop.
    */
-  pluginPolicy?: PluginPolicy;
+  directorPolicy?: DirectorPolicy;
 
   /**
    * Extensions that run before each tool call. Return a string to block the
@@ -86,12 +86,12 @@ export type HarnessConfig = {
   /**
    * Tool definitions from the deploy tree. These are checked for name
    * collisions with the harness's built-in message tools and included
-   * in the plugin's tool list for inference calls.
+   * in the director's tool list for inference calls.
    */
   deployTools?: ToolDefinition[];
 };
 
-export type PluginPolicy = {
+export type DirectorPolicy = {
   /**
    * Controls the agent's behavior after inference completes.
    *

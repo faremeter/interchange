@@ -535,7 +535,7 @@ export type ToolResult = typeof ToolResult.infer;
 
 /**
  * The tool runner interface. The harness implements this; the reactor calls
- * it when the plugin requests tool execution.
+ * it when the director requests tool execution.
  *
  * Parallel execution is modeled by calling `run` concurrently for each call
  * in a batch — the interface is per-call, not per-batch.
@@ -662,7 +662,7 @@ export type AssistantTurn = typeof AssistantTurn.infer;
 
 /**
  * Classified inference error. The category determines the reactor's default
- * response; the plugin can override per its policy.
+ * response; the director can override per its policy.
  *
  * (INFERENCE.md § Error Classification)
  */
@@ -1028,9 +1028,9 @@ export type PendingOperation = {
 };
 
 /**
- * Complete reactor state visible to the plugin decision function.
+ * Complete reactor state visible to the director decision function.
  *
- * (INFERENCE.md § Agent Reactor › Plugin Decision Function)
+ * (INFERENCE.md § Agent Reactor › Director Decision Function)
  */
 export type ReactorState = {
   turns: ConversationTurn[];
@@ -1042,7 +1042,7 @@ export type ReactorState = {
 };
 
 /**
- * Actions the plugin can direct the reactor to take.
+ * Actions the director can direct the reactor to take.
  *
  * (INFERENCE.md § Agent Reactor › Actions)
  */
@@ -1086,10 +1086,10 @@ export type ReactorAction =
   | { type: "done" };
 
 /**
- * The capabilities object passed to the plugin. Mirrors the `ReactorAction`
- * union — provides a type-safe way for the plugin to construct actions.
+ * The capabilities object passed to the director. Mirrors the `ReactorAction`
+ * union — provides a type-safe way for the director to construct actions.
  *
- * (INFERENCE.md § Agent Reactor › Plugin Decision Function)
+ * (INFERENCE.md § Agent Reactor › Director Decision Function)
  */
 export type ReactorCapabilities = {
   infer(model: string, options?: InferenceOptions): ReactorAction;
@@ -1116,7 +1116,7 @@ export type ReactorCapabilities = {
 };
 
 /**
- * The inbound events delivered to the plugin decision function.
+ * The inbound events delivered to the director decision function.
  *
  * (INFERENCE.md § Agent Reactor › Reactor Structure)
  */
@@ -1133,15 +1133,15 @@ export type ReactorInboundEvent =
   | { type: "abort"; reason: AbortReason };
 
 /**
- * The core plugin is a single decision function: given an event and the
+ * The core director is a single decision function: given an event and the
  * current reactor state, return one or more actions.
  *
- * If the plugin throws, the reactor catches the exception, emits
+ * If the director throws, the reactor catches the exception, emits
  * `reactor.error`, and initiates graceful shutdown.
  *
- * (INFERENCE.md § Reactor Plugin › Core Plugin)
+ * (INFERENCE.md § Reactor Director › Core Director)
  */
-export interface ReactorPlugin {
+export interface ReactorDirector {
   decide(
     event: ReactorInboundEvent,
     state: ReactorState,
@@ -1150,7 +1150,7 @@ export interface ReactorPlugin {
 }
 
 // ---------------------------------------------------------------------------
-// Plugin Extension Hooks (INFERENCE.md § Reactor Plugin › Extension Hooks)
+// Director Extension Hooks (INFERENCE.md § Reactor Director › Extension Hooks)
 // ---------------------------------------------------------------------------
 
 /**

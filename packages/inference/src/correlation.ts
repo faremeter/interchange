@@ -1,7 +1,7 @@
 // Correlation registry and validator interface for the agent reactor.
 //
 // Correlation connects outbound async tool calls to inbound responses. The
-// reactor owns the matching; the plugin does not participate.
+// reactor owns the matching; the director does not participate.
 //
 // (INFERENCE.md § Correlation)
 

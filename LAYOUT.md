@@ -41,13 +41,13 @@ Distributed across many environments: containers, VMs, local processes, Cloudfla
 
 Uses `fetch` and `ReadableStream` exclusively. No Node APIs, no filesystem assumptions, no native bindings. Ships once, works everywhere.
 
-| Package                       | Purpose                                                                                                                                                                                                                                          |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@interchange/inference`      | Provider adapters (Anthropic, OpenAI-compatible), streaming harness, reactor, plugin system, context management, compaction, error classification, token accounting, cross-provider message transformation, test provider. The reasoning engine. |
-| `@interchange/wallet`         | Payment tool definitions (`wallet.pay`, `wallet.request_payment`, etc.), spending policy enforcement, payment backend plugin interface. Policy logic is arithmetic and pattern matching.                                                         |
-| `@interchange/harness`        | Agent lifecycle, event routing, tool dispatch, content safety, session channel logic. Composes inference, wallet, and authz with environment-specific implementations injected at startup.                                                       |
-| `@interchange/mime`           | MIME message construction, multipart assembly, PGP detached signature generation, RFC 2822 formatting, and MIME parsing. Used by message transports.                                                                                             |
-| `@interchange/pack-transport` | Git pack protocol chunking and reassembly. Transfers git object data between the hub and sidecars over WebSocket or HTTP.                                                                                                                        |
+| Package                       | Purpose                                                                                                                                                                                                                                            |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@interchange/inference`      | Provider adapters (Anthropic, OpenAI-compatible), streaming harness, reactor, director system, context management, compaction, error classification, token accounting, cross-provider message transformation, test provider. The reasoning engine. |
+| `@interchange/wallet`         | Payment tool definitions (`wallet.pay`, `wallet.request_payment`, etc.), spending policy enforcement, payment backend plugin interface. Policy logic is arithmetic and pattern matching.                                                           |
+| `@interchange/harness`        | Agent lifecycle, event routing, tool dispatch, content safety, session channel logic. Composes inference, wallet, and authz with environment-specific implementations injected at startup.                                                         |
+| `@interchange/mime`           | MIME message construction, multipart assembly, PGP detached signature generation, RFC 2822 formatting, and MIME parsing. Used by message transports.                                                                                               |
+| `@interchange/pack-transport` | Git pack protocol chunking and reassembly. Transfers git object data between the hub and sidecars over WebSocket or HTTP.                                                                                                                          |
 
 ### Environment-Specific Implementations
 

@@ -1,6 +1,6 @@
-// Default conversational plugin for the agent harness.
+// Default conversational director for the agent harness.
 //
-// Implements the decision table from INFERENCE.md § Plugin Decision Function:
+// Implements the decision table from INFERENCE.md § Director Decision Function:
 //
 //   message.received          → infer
 //   inference.done (tools)    → checkpoint + execute_tools
@@ -10,12 +10,12 @@
 //   abort                     → done
 //   reactor.gate.cleared      → checkpoint + infer (resume after gate)
 //
-// The plugin never throws. Inference errors are surfaced to the user as a
+// The director never throws. Inference errors are surfaced to the user as a
 // reply so the problem is visible, and the agent remains alive for retries.
 
 import { getLogger } from "@interchange/log";
 import type {
-  ReactorPlugin,
+  ReactorDirector,
   ReactorInboundEvent,
   ReactorState,
   ReactorCapabilities,
@@ -24,9 +24,9 @@ import type {
   ToolCall,
   ToolDefinition,
 } from "@interchange/types/runtime";
-import type { PluginPolicy } from "./config";
+import type { DirectorPolicy } from "./config";
 
-const logger = getLogger(["interchange", "harness", "plugin"]);
+const logger = getLogger(["interchange", "harness", "director"]);
 
 function extractToolCalls(turn: AssistantTurn): ToolCall[] {
   const calls: ToolCall[] = [];
@@ -77,11 +77,11 @@ function formatInferenceError(error: {
   return `${preamble}${status}: ${error.message}`;
 }
 
-export class DefaultPlugin implements ReactorPlugin {
+export class DefaultDirector implements ReactorDirector {
   private readonly model: string;
   private readonly systemPrompt: string;
   private readonly toolDefinitions: ToolDefinition[];
-  private readonly policy: PluginPolicy;
+  private readonly policy: DirectorPolicy;
 
   // Track outstanding tool results so we only re-infer once per batch.
   private pendingToolResults = 0;
@@ -90,7 +90,7 @@ export class DefaultPlugin implements ReactorPlugin {
     model: string,
     systemPrompt: string,
     toolDefinitions: ToolDefinition[] = [],
-    policy: PluginPolicy = {},
+    policy: DirectorPolicy = {},
   ) {
     this.model = model;
     this.systemPrompt = systemPrompt;
@@ -168,7 +168,7 @@ export class DefaultPlugin implements ReactorPlugin {
             ? ` [HTTP ${event.error.statusCode}]`
             : "";
 
-        logger.error`Inference error in default plugin: ${event.error.message}${statusDetail} (category: ${event.error.category})`;
+        logger.error`Inference error in default director: ${event.error.message}${statusDetail} (category: ${event.error.category})`;
 
         const userMessage = formatInferenceError(event.error);
         return [
@@ -194,11 +194,11 @@ export class DefaultPlugin implements ReactorPlugin {
   }
 }
 
-export function createDefaultPlugin(
+export function createDefaultDirector(
   model: string,
   systemPrompt: string,
   toolDefinitions: ToolDefinition[] = [],
-  policy: PluginPolicy = {},
-): ReactorPlugin {
-  return new DefaultPlugin(model, systemPrompt, toolDefinitions, policy);
+  policy: DirectorPolicy = {},
+): ReactorDirector {
+  return new DefaultDirector(model, systemPrompt, toolDefinitions, policy);
 }
