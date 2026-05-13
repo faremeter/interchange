@@ -73,6 +73,10 @@ export function createCapabilities(): ReactorCapabilities {
       };
     },
 
+    compact(compactor: string, reason: string): ReactorAction {
+      return { type: "compact", compactor, reason };
+    },
+
     wait(): ReactorAction {
       return { type: "wait" };
     },

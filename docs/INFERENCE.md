@@ -239,7 +239,7 @@ The director receives:
 
 - **event** — What just happened
 - **state** — The current message history, active forks, pending gates, async operations, token accounting
-- **capabilities** — What the reactor can do (infer, execute tools, fork, suspend, emit, checkpoint, wait, done)
+- **capabilities** — What the reactor can do (infer, execute tools, fork, suspend, emit, checkpoint, compact, wait, done)
 
 It returns one or more actions. Multiple actions execute concurrently where possible (parallel tool calls, fork + continue).
 
@@ -254,6 +254,7 @@ The reactor validates the action set returned by the director before executing:
 - **Multiple tool executions collapse** — Multiple `execute_tools` actions are merged into a single parallel batch.
 - **Suspend is exclusive** — `suspend` cannot appear alongside `infer` or `execute_tools`. You either do work or you wait.
 - **Checkpoint is composable** — At most one `checkpoint` per action set; it can appear alongside any other action (it fires before the other action executes). The checkpoint carries a `message` string used as the git commit message.
+- **Compact selects a registered compactor** — The `compact` action carries a `compactor` name (resolved against the reactor's compactor registry) and a `reason` string recorded in the manifest. Composition rules with other actions are defined in [Context Transforms and Compactors](#context-transforms-and-compactors); the Phase 1 type surface declares the action but does not yet execute it.
 - **Wait is exclusive** — `wait` returns to the event loop immediately. It cannot appear alongside `infer` or `execute_tools`.
 
 Invalid action sets produce a `reactor.error` event with a diagnostic message. The reactor does not guess intent.
@@ -344,13 +345,13 @@ The model needs to know what async operations are pending and when they resolve.
 "The auth module looks good, but the token refresh logic has a race condition on line 42."
 ```
 
-**Pending status injection (optional)** — The context transform extension can inject a compact summary of still-pending operations before each inference call. This is ephemeral — generated from the reactor's live async state, never stored in git, never committed. It is stripped before messages are persisted:
+**Pending status injection (optional)** — A `ContextTransform` can inject a compact summary of still-pending operations before each inference call. This is ephemeral — generated from the reactor's live async state, never written to `turns.jsonl`. It lands in the materialized prompt (`prompt.jsonl`) and is regenerated on each cycle:
 
 ```
 [pending: agent-y "check database schema" (sent 4m ago)]
 ```
 
-Pending status injection is opt-in via the context transform extension. Directors that don't need it (coding assistants with no async operations) pay no context window cost.
+Pending status injection is opt-in via the context transform chain. Directors that don't need it (coding assistants with no async operations) pay no context window cost.
 
 **Persistence model:**
 
@@ -363,7 +364,7 @@ Pending status injection is opt-in via the context transform extension. Director
 
 After compaction, the original pending marker and resolution message are summarized together ("Sent review request to agent-x, received feedback about race condition"). The pending status injection is unaffected — it's regenerated from the reactor's async state metadata, which persists independently of conversation history.
 
-On reactor resume after suspension or restart, the async state is restored from git. Pending operations that haven't resolved are re-injected as status lines (if the context transform extension is active). Resolved operations are already in the conversation history as synthetic messages.
+On reactor resume after suspension or restart, the async state is restored from git. Pending operations that haven't resolved are re-injected as status lines (if a context transform is active for that role). Resolved operations are already in the conversation history as synthetic messages.
 
 ### Gates
 
@@ -470,13 +471,24 @@ The director also provides:
 
 ### Extension Hooks
 
-Extensions layer on top of the core director without replacing it:
+Extensions layer on top of the core director without replacing it. Extensions are guard-style hooks that block or allow rather than mutate content. Content-mutating roles use the Transform / Compactor surface described in [Context Transforms and Compactors](#context-transforms-and-compactors) — the term `Extension` is reserved for hooks that gate.
 
 - **Before tool execution** — Can block a tool call with a reason (authorization, policy). The first extension that blocks wins — the chain short-circuits and the tool call produces an error result with the blocking reason. Later extensions in the chain do not see blocked calls.
 - **After tool execution** — Can modify tool result content, details, or error flag. Extensions run in order; each sees the output of the previous. Enables redaction, enrichment, or audit logging.
-- **Context transform** — Modify the message array before each inference call. This is where pending status injection lives (if enabled). Extensions run in order; each sees the output of the previous. Modifications are ephemeral — they affect the inference call but are not committed to the context store.
 - **Provider request intercept** — Inspect or modify the raw provider request before sending. Enables header injection, payload logging, or tenant-specific modifications.
 - **Message routing** — Intercept inbound messages before the core director sees them. Can filter, transform, or drop messages. Enables cross-cutting concerns like logging, rate limiting, or content safety filtering. The first extension that drops a message prevents further processing.
+
+### Context Transforms and Compactors
+
+Three role-specific abstractions describe how content flowing into and out of the conversation is mutated. They share a common shape — each takes a typed input, produces a typed output, and emits a `TransformRecord` documenting what was done — but differ in where they fire and which file in the context store's working tree their output lands in. Type definitions live in `@interchange/types/runtime` (Phase 1 — interfaces only; runtime wiring lands in later phases).
+
+- **`ToolResultTransform`** — Runs on each tool result entering history. Today's truncation policy becomes one of these. Output is appended to `turns.jsonl` via the normal ingest path; any blobs the transform emits (e.g. the full body of a truncated tool result) are persisted to `tool-output/` in the context store's working tree.
+- **`ContextTransform`** — Runs in order before every inference call, producing the materialized prompt. Output is written to `prompt.jsonl` for the cycle; the durable history in `turns.jsonl` is untouched. Pending status injection, aged-result clearing, and post-success collapse are all describable as `ContextTransform`s.
+- **`Compactor`** — Named, registered in a registry, invoked explicitly by the director via the `compact` action. Output overwrites `turns.jsonl`; the `TransformRecord` is appended to the per-cycle manifest. The director chooses _when_ to compact based on signals it observes (capacity, cost, overflow recovery); the reactor enforces the mechanics.
+
+Every invocation produces a `TransformRecord` carrying the strategy name, version, parameters, reason, and decision details. Records are written to `manifest.jsonl` so a future operator can `git log` the manifest and reconstruct exactly which strategy made which change to any past prompt.
+
+`ToolResultTransform` and `ContextTransform` are configured as ordered chains on the reactor. `Compactor`s are configured as a name-keyed registry; the director selects one by name when returning a `compact` action.
 
 ## Tool Interaction Patterns
 
@@ -524,7 +536,7 @@ Examples: a language server (LSP) validating code, a JSON schema validator check
 
 Tool results enter the message history and stay there. Over a long session, old tool results accumulate — file contents that have since changed, search results that are no longer relevant, error messages from issues that were resolved turns ago. This has two costs: token spend (every old result is re-sent on each inference call) and context degradation (model performance measurably worsens as context grows — see Context Window Tracking for measurements). Old tool results sitting in the middle of a long conversation are in the worst position for both cost and retrieval quality.
 
-**Tool result clearing.** The context transform extension can clear old tool results before each inference call. Cleared results are replaced with a placeholder indicating that the result existed but was removed. The model knows the tool was called and completed, but does not see the full output. Clearing is ephemeral — it affects the inference call but not the persisted message history in the context store.
+**Tool result clearing.** A `ContextTransform` can clear old tool results before each inference call. Cleared results are replaced with a placeholder indicating that the result existed but was removed. The model knows the tool was called and completed, but does not see the full output. Clearing is ephemeral — it affects the materialized prompt for the cycle but not the durable history in `turns.jsonl`.
 
 Clearing strategy: prioritize clearing the oldest and largest tool results first. Results from the current step (the most recent tool call/response cycle) should never be cleared. Results from older steps that have been superseded by newer information (a file was read again, a search was re-run) are safe to clear. The director controls the clearing policy.
 
@@ -611,13 +623,13 @@ The implication for context window tracking is that the token count is not just 
 
 ### Compaction Triggers
 
-Compaction can be triggered by multiple conditions:
+Compaction is invoked by the director via the `compact` action, which selects a named `Compactor` from the reactor's registry (see [Context Transforms and Compactors](#context-transforms-and-compactors)). The director chooses _when_ to compact based on signals it observes:
 
 - **Capacity** — Context usage approaches the model's window limit. This is the standard trigger.
 - **Cost** — The per-request input token cost exceeds a threshold. A conversation spending $0.50/request on input tokens when it could spend $0.10 after compaction is wasting wallet balance. The cost threshold is configured by the tenant or agent policy.
 - **Overflow recovery** — The model rejects a request as too long. One automatic compaction attempt, then fail. No infinite loops.
 - **Quality** — Context length has crossed a threshold where model performance is measurably degraded. This is distinct from capacity (which triggers near the hard limit) and cost (which triggers on per-request spend). A quality trigger fires earlier, compacting proactively to maintain reasoning accuracy rather than waiting for the context to approach overflow. The threshold is model-dependent and configured by the agent policy.
-- **Explicit** — The reactor director or an extension requests compaction directly.
+- **Explicit** — The director requests compaction directly.
 
 ### Compaction Contract
 
@@ -707,7 +719,7 @@ Stable content goes first, variable content goes last. This is a hard constraint
 2. **System prompt** — Stable for the session duration. Do not inject per-request data (timestamps, mode flags, dynamic context) into the system prompt. Put variable context into messages instead.
 3. **Message history** — Grows each turn. The existing prefix is cached; new messages extend it. Modifications to earlier messages (compaction, collapse, clearing) invalidate the cache from the modification point forward.
 
-The reactor should not inject ephemeral data (pending status, dynamic context) into the system prompt. The context transform extension handles ephemeral injection by modifying the message array, leaving the system prompt cache intact.
+The reactor should not inject ephemeral data (pending status, dynamic context) into the system prompt. The context transform chain handles ephemeral injection by modifying the message array, leaving the system prompt cache intact.
 
 ### Tool Definition Stability
 

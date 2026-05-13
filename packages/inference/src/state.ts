@@ -96,6 +96,7 @@ export function createStateManager(
       })),
       activeForks: activeForks.map((f) => ({ ...f })),
       tokenUsage: { ...tokenUsage },
+      lastCycleUsage: null,
     };
   }
 

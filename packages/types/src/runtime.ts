@@ -1035,6 +1035,12 @@ export type PendingOperation = {
 /**
  * Complete reactor state visible to the director decision function.
  *
+ * `tokenUsage` is the cumulative usage across the session; `lastCycleUsage`
+ * is the usage reported by the most recent inference call, or null if no
+ * inference call has completed yet. The per-cycle value supports
+ * compaction triggers that key off recent input cost rather than session
+ * totals.
+ *
  * (INFERENCE.md § Agent Reactor › Director Decision Function)
  */
 export type ReactorState = {
@@ -1043,6 +1049,7 @@ export type ReactorState = {
   pendingOperations: PendingOperation[];
   activeGates: { gateId: string; type: GateType; timeoutAt: number }[];
   tokenUsage: TokenUsage;
+  lastCycleUsage: TokenUsage | null;
   sessionId: string;
 };
 
@@ -1087,6 +1094,7 @@ export type ReactorAction =
       content: string;
     }
   | { type: "checkpoint"; message: string }
+  | { type: "compact"; compactor: string; reason: string }
   | { type: "wait" }
   | { type: "done" };
 
@@ -1116,6 +1124,7 @@ export type ReactorCapabilities = {
   ): ReactorAction;
   reply(content: string): ReactorAction;
   checkpoint(message?: string): ReactorAction;
+  compact(compactor: string, reason: string): ReactorAction;
   wait(): ReactorAction;
   done(): ReactorAction;
 };
@@ -1183,19 +1192,111 @@ export interface AfterToolExtension {
   ): Promise<ToolResult>;
 }
 
+// ---------------------------------------------------------------------------
+// Context Strategies: Transforms and Compactors
+// (INFERENCE.md § Context Management, § Tool Result Lifecycle)
+// ---------------------------------------------------------------------------
+
 /**
- * Extension that transforms the turn array before each inference call.
- * Modifications are ephemeral — they affect the inference call but are not
- * committed to the context store. Extensions run in order.
+ * Durable description of a single strategy invocation. Written to the
+ * per-cycle manifest in the context store so that future operators can
+ * reconstruct exactly which strategy made which change, with what
+ * parameters, and why.
+ *
+ * - `strategy` is the implementation name (e.g. `"size-cap"`).
+ * - `version` is the implementation version. Changes to the strategy's
+ *   behavior bump the version so old manifest entries remain unambiguous.
+ * - `parameters` records the configuration the strategy ran with.
+ * - `reason` is a short machine-readable cause label
+ *   (e.g. `"exceeded-cap"`, `"overflow-recovery"`).
+ * - `decisions` records strategy-specific details about what was actually
+ *   done (e.g. the keep count, the spill key, the original byte size).
+ */
+export const TransformRecord = type({
+  strategy: "string",
+  version: "string",
+  parameters: "Record<string, unknown>",
+  reason: "string",
+  decisions: "Record<string, unknown>",
+});
+export type TransformRecord = typeof TransformRecord.infer;
+
+/**
+ * Per-invocation context passed to every `ContextStrategy.apply` call.
+ * `state` is the reactor's snapshot at the moment the strategy runs;
+ * `trigger` is a short label describing why the strategy was invoked
+ * (e.g. `"tool-result-ingest"`, `"pre-inference"`, `"director-request"`).
+ */
+export interface StrategyContext {
+  readonly state: ReactorState;
+  readonly trigger: string;
+}
+
+/**
+ * Optional blob attachment emitted by a strategy. The reactor writes each
+ * blob to the context store's working tree via `ContextStore.writeBlob`
+ * (Phase 2) so the data is durable and migrates with the conversation.
+ */
+export type StrategyBlob = {
+  key: string;
+  bytes: Uint8Array;
+  contentType?: string;
+};
+
+/**
+ * Result returned by `ContextStrategy.apply`. Carries the transformed
+ * output, a `TransformRecord` describing what happened, and any blobs
+ * that should be persisted in the context store.
+ */
+export interface StrategyResult<O> {
+  output: O;
+  record: TransformRecord;
+  blobs?: StrategyBlob[];
+}
+
+/**
+ * Generic base interface for content-mutating strategies. The role-specific
+ * aliases below specialize `I` and `O` for tool-result ingestion, pre-
+ * inference context shaping, and explicit compaction.
+ *
+ * Strategies are pure with respect to the context store: they describe what
+ * should change via their return value. The reactor decides where to write
+ * the result (history, prompt, manifest) and which blobs to persist.
+ */
+export interface ContextStrategy<I, O> {
+  readonly name: string;
+  readonly version: string;
+  apply(input: I, ctx: StrategyContext): Promise<StrategyResult<O>>;
+}
+
+/**
+ * Runs on each tool result entering history. Output is appended to the
+ * conversation; any emitted blobs are written to the context store's
+ * `tool-output/` directory.
+ */
+export type ToolResultTransform = ContextStrategy<
+  { call: ToolCall; result: ToolResult },
+  ToolResult
+>;
+
+/**
+ * Runs in order before every inference call, producing the materialized
+ * prompt. Output is written to `prompt.jsonl` for that cycle; the durable
+ * history in `turns.jsonl` is left untouched.
  *
  * (INFERENCE.md § Async State Awareness › Pending Status Injection)
  */
-export interface ContextTransformExtension {
-  transformContext(
-    turns: ConversationTurn[],
-    state: ReactorState,
-  ): Promise<ConversationTurn[]>;
-}
+export type ContextTransform = ContextStrategy<
+  ConversationTurn[],
+  ConversationTurn[]
+>;
+
+/**
+ * Named compaction strategy. Registered in a registry on the reactor and
+ * invoked explicitly via the director's `compact` action. Output overwrites
+ * `turns.jsonl`; a `TransformRecord` is appended to the manifest.
+ */
+export type Compactor = ContextStrategy<ConversationTurn[], ConversationTurn[]>;
 
 // ---------------------------------------------------------------------------
 // Abort Reasons (INFERENCE.md § Abort Handling)

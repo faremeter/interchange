@@ -24,6 +24,7 @@ function makeState(): ReactorState {
     pendingOperations: [],
     activeGates: [],
     tokenUsage: emptyUsage(),
+    lastCycleUsage: null,
   };
 }
 
