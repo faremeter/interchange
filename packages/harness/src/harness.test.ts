@@ -52,7 +52,11 @@ function emptyUsage(): TokenUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
 }
 
-function makeContextStore(): ContextStore {
+function makeContextStore(
+  opts: { blobs?: Map<string, Uint8Array> } = {},
+): ContextStore {
+  const blobs = opts.blobs;
+
   function commit(
     options: { message: string },
     signal?: AbortSignal,
@@ -98,11 +102,21 @@ function makeContextStore(): ContextStore {
     async readAt(): Promise<ConversationTurn[]> {
       return [];
     },
-    async writeBlob() {
-      throw new Error("not implemented");
+    async writeBlob(key, bytes) {
+      if (blobs === undefined) {
+        throw new Error("not implemented");
+      }
+      blobs.set(key, bytes);
     },
-    async readBlob() {
-      throw new Error("not implemented");
+    async readBlob(key) {
+      if (blobs === undefined) {
+        throw new Error("not implemented");
+      }
+      const bytes = blobs.get(key);
+      if (bytes === undefined) {
+        throw new Error(`Blob not found for key: ${key}`);
+      }
+      return bytes;
     },
     async writePrompt() {
       throw new Error("not implemented");
@@ -1969,5 +1983,67 @@ describe("Error flushing", () => {
     const batches = auditStore.getCommittedErrors();
     expect(batches.length).toBe(1);
     expect(batches[0]?.[0]?.source).toBe("reactor");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. BlobReader
+// ---------------------------------------------------------------------------
+
+describe("Harness blobReader", () => {
+  test("resolves a tool-output URI through the wrapped context store", async () => {
+    const blobs = new Map<string, Uint8Array>();
+    blobs.set("abc123", new TextEncoder().encode("spilled bytes"));
+
+    const transport = makeMockTransport();
+    const harness = createHarness(
+      makeConfig(transport, {
+        storage: makeContextStore({ blobs }),
+      }),
+    );
+
+    const bytes = await harness.blobReader.read("tool-output:///abc123");
+    expect(new TextDecoder().decode(bytes)).toBe("spilled bytes");
+  });
+
+  test("throws when the underlying store has no matching blob", async () => {
+    const blobs = new Map<string, Uint8Array>();
+    const transport = makeMockTransport();
+    const harness = createHarness(
+      makeConfig(transport, {
+        storage: makeContextStore({ blobs }),
+      }),
+    );
+
+    let thrown: Error | undefined;
+    try {
+      await harness.blobReader.read("tool-output:///missing");
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("Blob not found");
+  });
+
+  test("throws on malformed tool-output URIs without reading from the store", async () => {
+    let readCount = 0;
+    const blobs = new Map<string, Uint8Array>();
+    const wrapped = makeContextStore({ blobs });
+    const originalReadBlob = wrapped.readBlob.bind(wrapped);
+    wrapped.readBlob = async (key, signal) => {
+      readCount++;
+      return originalReadBlob(key, signal);
+    };
+
+    const transport = makeMockTransport();
+    const harness = createHarness(makeConfig(transport, { storage: wrapped }));
+
+    let thrown: Error | undefined;
+    try {
+      await harness.blobReader.read("file:///abc");
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("invalid tool-output URI scheme");
+    expect(readCount).toBe(0);
   });
 });

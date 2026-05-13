@@ -30,6 +30,8 @@ import type {
 } from "@interchange/inference";
 import {
   ProviderConfig,
+  createBlobReader,
+  type BlobReader,
   type ContextStore,
   type ContextCommit,
   type ConnectorThreadState,
@@ -80,6 +82,14 @@ export type Harness = {
    * call — in-flight calls continue with the previous config.
    */
   setProviderConfig(config: ProviderConfig): void;
+
+  /**
+   * Read-only blob reader backed by this harness's context store. Pass it to
+   * the tool factory (e.g. `createPosixTools({ blobReader })`) so the agent
+   * can resolve `tool-output:///{callId}` URIs through the same store the
+   * reactor commits to.
+   */
+  readonly blobReader: BlobReader;
 };
 
 export function createHarness(config: HarnessConfig): Harness {
@@ -260,6 +270,11 @@ export function createHarness(config: HarnessConfig): Harness {
       return storage.readManifestHistory(limit, signal);
     },
   };
+
+  // BlobReader resolves tool-output:///{callId} URIs through the wrapped
+  // context store. Exposed on the Harness so the caller can wire it into
+  // its tool factory (e.g. `createPosixTools({ blobReader })`).
+  const blobReader = createBlobReader(contextStore);
 
   /**
    * Determine whether a message belongs to the active connector thread.
@@ -521,5 +536,5 @@ export function createHarness(config: HarnessConfig): Harness {
     reactorConfig.providerConfig = parsed;
   }
 
-  return { start, stop, deliver, setProviderConfig };
+  return { start, stop, deliver, setProviderConfig, blobReader };
 }

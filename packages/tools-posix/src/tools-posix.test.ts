@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realpathSync } from "node:fs";
+import { createBlobReader, type BlobReader } from "@interchange/types/runtime";
 import { createPosixTools, composeMiddleware } from "./index";
 import type { PosixTools, ToolHandler, ToolPlugin } from "./index";
 import { matchGlob, shouldSkip } from "./glob-match";
@@ -91,6 +92,225 @@ describe("read_file", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("file not found");
+  });
+});
+
+describe("read_file tool-output URIs", () => {
+  function makeBlobReader(entries: Record<string, Uint8Array>): BlobReader {
+    return createBlobReader({
+      async readBlob(key) {
+        const bytes = entries[key];
+        if (bytes === undefined) {
+          throw new Error(`Blob not found for key: ${key}`);
+        }
+        return bytes;
+      },
+    });
+  }
+
+  test("resolves a tool-output URI through the configured BlobReader", async () => {
+    const encoder = new TextEncoder();
+    const reader = makeBlobReader({
+      abc123: encoder.encode("first\nsecond\nthird"),
+    });
+    const pt = createPosixTools({ cwd: tmpDir, blobReader: reader });
+
+    const result = await pt.run(
+      {
+        id: "blob1",
+        name: "read_file",
+        arguments: { path: "tool-output:///abc123" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("first");
+    expect(result.content).toContain("second");
+    expect(result.content).toContain("third");
+  });
+
+  test("preserves callId case during URI resolution", async () => {
+    const encoder = new TextEncoder();
+    const reader = makeBlobReader({
+      AbC123: encoder.encode("case-preserved"),
+    });
+    const pt = createPosixTools({ cwd: tmpDir, blobReader: reader });
+
+    const result = await pt.run(
+      {
+        id: "blob-case",
+        name: "read_file",
+        arguments: { path: "tool-output:///AbC123" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("case-preserved");
+  });
+
+  test("offset and limit slice the decoded blob content", async () => {
+    const encoder = new TextEncoder();
+    const lines = Array.from({ length: 10 }, (_, i) => `line${i + 1}`).join(
+      "\n",
+    );
+    const reader = makeBlobReader({ slice: encoder.encode(lines) });
+    const pt = createPosixTools({ cwd: tmpDir, blobReader: reader });
+
+    const result = await pt.run(
+      {
+        id: "blob-slice",
+        name: "read_file",
+        arguments: { path: "tool-output:///slice", offset: 2, limit: 3 },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("line3");
+    expect(result.content).toContain("line4");
+    expect(result.content).toContain("line5");
+    expect(result.content).not.toContain("line1");
+    expect(result.content).not.toContain("line6");
+  });
+
+  test("propagates missing-blob errors as tool errors", async () => {
+    const reader = makeBlobReader({});
+    const pt = createPosixTools({ cwd: tmpDir, blobReader: reader });
+
+    const result = await pt.run(
+      {
+        id: "blob-missing",
+        name: "read_file",
+        arguments: { path: "tool-output:///does-not-exist" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("Blob not found");
+  });
+
+  test("rejects a binary blob (contains NUL)", async () => {
+    const reader = makeBlobReader({
+      bin: Uint8Array.from([0x68, 0x00, 0x69]),
+    });
+    const pt = createPosixTools({ cwd: tmpDir, blobReader: reader });
+
+    const result = await pt.run(
+      {
+        id: "blob-bin",
+        name: "read_file",
+        arguments: { path: "tool-output:///bin" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("refusing to read binary");
+  });
+
+  test("returns a clear error when no BlobReader is configured", async () => {
+    const pt = createPosixTools({ cwd: tmpDir });
+
+    const result = await pt.run(
+      {
+        id: "blob-nopath",
+        name: "read_file",
+        arguments: { path: "tool-output:///abc" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("no blob reader is configured");
+  });
+
+  test("rejects the two-slash form (hostname lowercased by URL)", async () => {
+    const reader = makeBlobReader({
+      AbC: new TextEncoder().encode("nope"),
+    });
+    const pt = createPosixTools({ cwd: tmpDir, blobReader: reader });
+
+    const result = await pt.run(
+      {
+        id: "blob-two-slash",
+        name: "read_file",
+        arguments: { path: "tool-output://AbC" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("authority must be empty");
+  });
+
+  test("rejects extra path components", async () => {
+    const reader = makeBlobReader({ abc: new Uint8Array() });
+    const pt = createPosixTools({ cwd: tmpDir, blobReader: reader });
+
+    const result = await pt.run(
+      {
+        id: "blob-extra",
+        name: "read_file",
+        arguments: { path: "tool-output:///abc/extra" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("single callId segment");
+  });
+
+  test("rejects a query string", async () => {
+    const reader = makeBlobReader({ abc: new Uint8Array() });
+    const pt = createPosixTools({ cwd: tmpDir, blobReader: reader });
+
+    const result = await pt.run(
+      {
+        id: "blob-query",
+        name: "read_file",
+        arguments: { path: "tool-output:///abc?q=1" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("query string is not allowed");
+  });
+
+  test("rejects a fragment", async () => {
+    const reader = makeBlobReader({ abc: new Uint8Array() });
+    const pt = createPosixTools({ cwd: tmpDir, blobReader: reader });
+
+    const result = await pt.run(
+      {
+        id: "blob-frag",
+        name: "read_file",
+        arguments: { path: "tool-output:///abc#x" },
+      },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("fragment is not allowed");
+  });
+
+  test("filesystem reads work normally when a BlobReader is configured", async () => {
+    const reader = makeBlobReader({});
+    const pt = createPosixTools({ cwd: tmpDir, blobReader: reader });
+
+    const path = join(tmpDir, "blob-fs-coexist.txt");
+    await writeFile(path, "hello\n");
+
+    const result = await pt.run(
+      { id: "fs-coexist", name: "read_file", arguments: { path } },
+      neverAbort(),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("hello");
   });
 });
 
