@@ -941,6 +941,10 @@ describe("Default director", () => {
           message: message ?? "checkpoint",
         };
       },
+      compact(compactor: string, reason: string) {
+        this.calls.push({ type: "compact", args: [compactor, reason] });
+        return { type: "compact" as const, compactor, reason };
+      },
       wait() {
         this.calls.push({ type: "wait", args: [] });
         return { type: "wait" as const };
@@ -959,6 +963,7 @@ describe("Default director", () => {
       pendingOperations: [],
       activeGates: [],
       tokenUsage: emptyUsage(),
+      lastCycleUsage: null,
       sessionId: "test-session",
     };
   }
