@@ -240,12 +240,17 @@ export class IsogitStore implements ContextStore, AuditStore {
     const planned: { record: AuditRecordType; filepath: string }[] = [];
     for (const record of records) {
       assertSafeSegment(record.sessionId, "sessionId");
-      assertSafeSegment(record.callId, "callId");
+      if (record.callId.includes("..") || record.callId.includes("/")) {
+        throw new Error(
+          `callId contains unsafe characters: ${JSON.stringify(record.callId)}`,
+        );
+      }
+      const safeCallId = record.callId.replace(/[^a-zA-Z0-9_-]/g, "_");
 
       const filepath = path.join(
         AUDIT_DIR,
         record.sessionId,
-        `${record.callId}.json`,
+        `${safeCallId}.json`,
       );
       const fullPath = path.join(this.dir, filepath);
 
