@@ -41,8 +41,10 @@ export async function initRepo(dir: string): Promise<void> {
 
 /**
  * Initialize a sidecar-side agent repository with the state/ directory
- * structure. Creates a single initial commit containing .gitignore and
- * state/context.json.
+ * structure. Creates a single initial commit containing only `.gitignore`;
+ * subsequent reactor cycles overwrite the per-cycle files (`turns.jsonl`,
+ * `prompt.jsonl`, `response.jsonl`, `manifest.jsonl`, `metadata.json`) at the
+ * repository root and commit them via `commit({ message })`.
  *
  * Idempotent: safe to call on a directory that already contains a git repo.
  */
@@ -57,27 +59,6 @@ export async function initAgentRepo(dir: string): Promise<void> {
   await fs.promises.writeFile(path.join(dir, ".gitignore"), "keys/\n");
   await git.add({ fs, dir, filepath: ".gitignore" });
 
-  const contextPath = path.join(dir, "state", "context.json");
-  await fs.promises.writeFile(
-    contextPath,
-    JSON.stringify(
-      {
-        turns: [],
-        pendingOperations: [],
-        tokenUsage: {
-          input: 0,
-          output: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          thinking: 0,
-        },
-      },
-      null,
-      2,
-    ),
-  );
-
-  await git.add({ fs, dir, filepath: "state/context.json" });
   await git.commit({
     fs,
     dir,

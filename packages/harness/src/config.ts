@@ -89,13 +89,6 @@ export type HarnessConfig = {
    * in the director's tool list for inference calls.
    */
   deployTools?: ToolDefinition[];
-
-  /**
-   * Directory for writing truncated tool output files. When a tool result
-   * exceeds the size limit, the full output is saved here so the agent can
-   * read it with read_file.
-   */
-  toolOutputDir?: string;
 };
 
 export type DirectorPolicy = {

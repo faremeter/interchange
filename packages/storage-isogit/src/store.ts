@@ -24,7 +24,6 @@ import { AUTHOR } from "./init";
 import type { CommitSigner } from "./signer";
 import { buildSigningArgs } from "./commit-helpers";
 
-const CONTEXT_FILE = "state/context.json";
 const TURNS_FILE = "turns.jsonl";
 const PROMPT_FILE = "prompt.jsonl";
 const RESPONSE_FILE = "response.jsonl";
@@ -64,30 +63,37 @@ const PendingOperationSchema = type({
   gateId: "string",
 });
 
-const ContextDataSchema = type({
-  turns: ConversationTurnSchema.array(),
+const MetadataSchema = type({
   pendingOperations: PendingOperationSchema.array(),
   tokenUsage: TokenUsage,
-  "connectorState?": type("null").or(ConnectorThreadStateSchema),
+  connectorState: type("null").or(ConnectorThreadStateSchema),
 });
 
-type ContextData = {
-  turns: ConversationTurn[];
+type MetadataData = {
   pendingOperations: PendingOperation[];
   tokenUsage: TokenUsage;
   connectorState: ConnectorThreadState | null;
 };
 
-function parseContextData(raw: unknown): ContextData {
-  const result = ContextDataSchema(raw);
+const EMPTY_USAGE: TokenUsage = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  thinking: 0,
+};
+
+function parseMetadata(raw: unknown): MetadataData {
+  const result = MetadataSchema(raw);
   if (result instanceof type.errors) {
-    throw new Error(`context data has unexpected structure: ${result.summary}`);
+    throw new Error(
+      `metadata.json has unexpected structure: ${result.summary}`,
+    );
   }
   return {
-    turns: result.turns,
     pendingOperations: result.pendingOperations,
     tokenUsage: result.tokenUsage,
-    connectorState: result.connectorState ?? null,
+    connectorState: result.connectorState,
   };
 }
 
@@ -159,13 +165,51 @@ function decodeJsonlLines(text: string): unknown[] {
   return lines.map((line) => JSON.parse(line) as unknown);
 }
 
+async function readBlobAtCommit(
+  dir: string,
+  oid: string,
+  filepath: string,
+): Promise<Uint8Array | null> {
+  try {
+    const { blob } = await git.readBlob({ fs, dir, oid, filepath });
+    return blob;
+  } catch (cause) {
+    if (
+      cause instanceof Error &&
+      "code" in cause &&
+      (cause.code === "NotFoundError" || cause.code === "ENOENT")
+    ) {
+      return null;
+    }
+    return null;
+  }
+}
+
+function parseTurns(text: string): ConversationTurn[] {
+  const lines = decodeJsonlLines(text);
+  const turns: ConversationTurn[] = [];
+  for (const raw of lines) {
+    const result = ConversationTurnSchema(raw);
+    if (result instanceof type.errors) {
+      throw new Error(
+        `turns.jsonl has unexpected structure: ${result.summary}`,
+      );
+    }
+    turns.push(result);
+  }
+  return turns;
+}
+
 /**
  * isomorphic-git-backed implementation of ContextStore and AuditStore.
  *
- * Context state is serialized into `state/context.json`. Audit records are
- * written as individual JSON files under `state/audit/{sessionId}/`. Both
- * are tracked by the git repository at `dir`. The caller is responsible
- * for calling `initAgentRepo(dir)` before constructing.
+ * Conversation state lives in `turns.jsonl`; per-cycle prompt/response/manifest
+ * data lives in `prompt.jsonl`, `response.jsonl`, and `manifest.jsonl`. Pending
+ * operations, token usage, and connector state are serialized into
+ * `metadata.json`. Audit records are written as individual JSON files under
+ * `state/audit/{sessionId}/`. All files are tracked by the git repository at
+ * `dir`. The caller is responsible for calling `initAgentRepo(dir)` before
+ * constructing.
  */
 export class IsogitStore implements ContextStore, AuditStore {
   private readonly dir: string;
@@ -191,104 +235,35 @@ export class IsogitStore implements ContextStore, AuditStore {
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
   }> {
-    const entries = await git.log({ fs, dir: this.dir, depth: 50 });
-    for (const entry of entries) {
-      let blob: Uint8Array;
-      try {
-        ({ blob } = await git.readBlob({
-          fs,
-          dir: this.dir,
-          oid: entry.oid,
-          filepath: CONTEXT_FILE,
-        }));
-      } catch {
-        continue;
-      }
-      const text = new TextDecoder().decode(blob);
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        continue;
-      }
-      try {
-        return parseContextData(parsed);
-      } catch {
-        continue;
-      }
+    const turnsPath = path.join(this.dir, TURNS_FILE);
+    const metadataPath = path.join(this.dir, METADATA_FILE);
+
+    let turns: ConversationTurn[] = [];
+    if (await pathExists(turnsPath)) {
+      const text = await fs.promises.readFile(turnsPath, "utf-8");
+      turns = parseTurns(text);
     }
-    throw new Error(
-      "No parseable context.json found in any commit in the git log",
-    );
+
+    let pendingOperations: PendingOperation[] = [];
+    let tokenUsage: TokenUsage = { ...EMPTY_USAGE };
+    let connectorState: ConnectorThreadState | null = null;
+
+    if (await pathExists(metadataPath)) {
+      const text = await fs.promises.readFile(metadataPath, "utf-8");
+      const parsed: unknown = JSON.parse(text);
+      const data = parseMetadata(parsed);
+      pendingOperations = data.pendingOperations;
+      tokenUsage = data.tokenUsage;
+      connectorState = data.connectorState;
+    }
+
+    return { turns, pendingOperations, tokenUsage, connectorState };
   }
 
-  commit(
-    options: { message: string },
-    signal?: AbortSignal,
-  ): Promise<ContextCommit>;
-  commit(
-    turns: ConversationTurn[],
-    pendingOperations: PendingOperation[],
-    tokenUsage: TokenUsage,
-    message: string,
-    signal?: AbortSignal,
-  ): Promise<ContextCommit>;
   async commit(
-    first: { message: string } | ConversationTurn[],
-    secondOrSignal?: PendingOperation[] | AbortSignal,
-    tokenUsage?: TokenUsage,
-    message?: string,
+    options: { message: string },
     _signal?: AbortSignal,
   ): Promise<ContextCommit> {
-    if (Array.isArray(first)) {
-      if (
-        secondOrSignal === undefined ||
-        !Array.isArray(secondOrSignal) ||
-        tokenUsage === undefined ||
-        message === undefined
-      ) {
-        throw new Error(
-          "commit(turns, ops, usage, message): missing arguments",
-        );
-      }
-      return this.commitLegacyContext(
-        first,
-        secondOrSignal,
-        tokenUsage,
-        message,
-      );
-    }
-    return this.commitWorkingTree(first.message);
-  }
-
-  private async commitLegacyContext(
-    turns: ConversationTurn[],
-    pendingOperations: PendingOperation[],
-    tokenUsage: TokenUsage,
-    message: string,
-  ): Promise<ContextCommit> {
-    const data: ContextData = {
-      turns,
-      pendingOperations,
-      tokenUsage,
-      connectorState: this.pendingConnectorState,
-    };
-    const contextPath = path.join(this.dir, CONTEXT_FILE);
-    await fs.promises.writeFile(contextPath, JSON.stringify(data, null, 2));
-
-    await git.add({ fs, dir: this.dir, filepath: CONTEXT_FILE });
-    const oid = await git.commit({
-      fs,
-      dir: this.dir,
-      message,
-      author: AUTHOR,
-      ...this.signingArgs(),
-    });
-
-    return this.describeHead(oid, message);
-  }
-
-  private async commitWorkingTree(message: string): Promise<ContextCommit> {
     const tracked = [
       TURNS_FILE,
       PROMPT_FILE,
@@ -318,12 +293,12 @@ export class IsogitStore implements ContextStore, AuditStore {
     const oid = await git.commit({
       fs,
       dir: this.dir,
-      message,
+      message: options.message,
       author: AUTHOR,
       ...this.signingArgs(),
     });
 
-    return this.describeHead(oid, message);
+    return this.describeHead(oid, options.message);
   }
 
   private async describeHead(
@@ -358,16 +333,10 @@ export class IsogitStore implements ContextStore, AuditStore {
     hash: string,
     _signal?: AbortSignal,
   ): Promise<ConversationTurn[]> {
-    const { blob } = await git.readBlob({
-      fs,
-      dir: this.dir,
-      oid: hash,
-      filepath: CONTEXT_FILE,
-    });
+    const blob = await readBlobAtCommit(this.dir, hash, TURNS_FILE);
+    if (blob === null) return [];
     const text = new TextDecoder().decode(blob);
-    const parsed = JSON.parse(text) as unknown;
-    const data = parseContextData(parsed);
-    return data.turns;
+    return parseTurns(text);
   }
 
   async writeBlob(
@@ -447,6 +416,30 @@ export class IsogitStore implements ContextStore, AuditStore {
     await fs.promises.writeFile(
       path.join(this.dir, TURNS_FILE),
       encodeJsonlLines(turns),
+    );
+  }
+
+  /**
+   * Write `metadata.json` containing pending operations, token usage, and the
+   * currently-buffered connector state. The reactor calls this once per cycle
+   * before issuing the working-tree commit so the file is staged atomically
+   * with the per-cycle conversation data.
+   */
+  async writeMetadata(
+    metadata: {
+      pendingOperations: PendingOperation[];
+      tokenUsage: TokenUsage;
+    },
+    _signal?: AbortSignal,
+  ): Promise<void> {
+    const payload: MetadataData = {
+      pendingOperations: metadata.pendingOperations,
+      tokenUsage: metadata.tokenUsage,
+      connectorState: this.pendingConnectorState,
+    };
+    await fs.promises.writeFile(
+      path.join(this.dir, METADATA_FILE),
+      JSON.stringify(payload, null, 2),
     );
   }
 

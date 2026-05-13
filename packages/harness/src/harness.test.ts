@@ -119,16 +119,19 @@ function makeContextStore(
       return bytes;
     },
     async writePrompt() {
-      throw new Error("not implemented");
+      /* noop */
     },
     async writeResponse() {
-      throw new Error("not implemented");
+      /* noop */
     },
     async writeManifest() {
-      throw new Error("not implemented");
+      /* noop */
     },
     async writeTurns() {
-      throw new Error("not implemented");
+      /* noop */
+    },
+    async writeMetadata() {
+      /* noop */
     },
     async readManifestHistory() {
       throw new Error("not implemented");

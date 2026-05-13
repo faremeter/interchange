@@ -1522,26 +1522,13 @@ export interface ContextStore {
 
   /**
    * Commit whatever currently lives in the working tree, using the supplied
-   * commit message. Phase 4 routes the reactor's per-cycle checkpoint through
-   * this overload after writing the per-cycle files via `writeTurns`,
+   * commit message. The reactor's per-cycle checkpoint routes through this
+   * overload after writing the per-cycle files via `writeTurns`,
    * `writePrompt`, `writeResponse`, `writeManifest`, and any `writeBlob`
    * calls produced by transforms.
    */
   commit(
     options: { message: string },
-    signal?: AbortSignal,
-  ): Promise<ContextCommit>;
-  /**
-   * Legacy commit signature: serialize the supplied turn history, pending
-   * operations, and token usage into `state/context.json` and commit. Kept
-   * working alongside the new working-tree-only overload until Phase 4 cuts
-   * the reactor over to the new path.
-   */
-  commit(
-    turns: ConversationTurn[],
-    pendingOperations: PendingOperation[],
-    tokenUsage: TokenUsage,
-    message: string,
     signal?: AbortSignal,
   ): Promise<ContextCommit>;
 
@@ -1612,6 +1599,21 @@ export interface ContextStore {
    * `ConversationTurn` per line. Staged at the next `commit({ message })`.
    */
   writeTurns(turns: ConversationTurn[], signal?: AbortSignal): Promise<void>;
+
+  /**
+   * Overwrite `metadata.json` with non-turn-shaped reactor state needed for
+   * restart: pending async operations and cumulative token usage. The store
+   * combines this with the most recently buffered connector state (from
+   * `setConnectorState`) and writes the merged payload. Staged at the next
+   * `commit({ message })`.
+   */
+  writeMetadata(
+    metadata: {
+      pendingOperations: PendingOperation[];
+      tokenUsage: TokenUsage;
+    },
+    signal?: AbortSignal,
+  ): Promise<void>;
 
   /**
    * Read manifest entries from the most recent `limit` commits that contain

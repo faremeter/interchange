@@ -182,10 +182,10 @@ describe("AgentRepoStore", () => {
     await git.init({ fs, dir: sourceDir, defaultBranch: "main" });
     await fs.promises.mkdir(path.join(sourceDir, "state"), { recursive: true });
     await fs.promises.writeFile(
-      path.join(sourceDir, "state", "context.json"),
+      path.join(sourceDir, "state", "turns.jsonl"),
       '{"messages":[]}',
     );
-    await git.add({ fs, dir: sourceDir, filepath: "state/context.json" });
+    await git.add({ fs, dir: sourceDir, filepath: "state/turns.jsonl" });
     const stateCommit = await git.commit({
       fs,
       dir: sourceDir,
@@ -221,11 +221,11 @@ describe("AgentRepoStore", () => {
     await fs.promises.writeFile(path.join(sourceDir, ".gitignore"), "keys/\n");
     await fs.promises.mkdir(path.join(sourceDir, "state"), { recursive: true });
     await fs.promises.writeFile(
-      path.join(sourceDir, "state", "context.json"),
+      path.join(sourceDir, "state", "turns.jsonl"),
       "{}",
     );
     await git.add({ fs, dir: sourceDir, filepath: ".gitignore" });
-    await git.add({ fs, dir: sourceDir, filepath: "state/context.json" });
+    await git.add({ fs, dir: sourceDir, filepath: "state/turns.jsonl" });
     const stateCommit = await git.commit({
       fs,
       dir: sourceDir,
@@ -294,14 +294,14 @@ describe("AgentRepoStore", () => {
       recursive: true,
     });
     await fs.promises.writeFile(
-      path.join(sourceDir, "state", "context.json"),
+      path.join(sourceDir, "state", "turns.jsonl"),
       "{}",
     );
     await fs.promises.writeFile(
       path.join(sourceDir, "deploy", "prompt.md"),
       "evil",
     );
-    await git.add({ fs, dir: sourceDir, filepath: "state/context.json" });
+    await git.add({ fs, dir: sourceDir, filepath: "state/turns.jsonl" });
     await git.add({ fs, dir: sourceDir, filepath: "deploy/prompt.md" });
     const badCommit = await git.commit({
       fs,

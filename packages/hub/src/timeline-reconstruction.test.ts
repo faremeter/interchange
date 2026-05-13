@@ -28,15 +28,6 @@ afterAll(async () => {
   }
 });
 
-const NO_OPS: [] = [];
-const NO_USAGE = {
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  thinking: 0,
-};
-
 function userMessage(text: string, timestamp = Date.now()): ConversationTurn {
   return { role: "user", content: [{ type: "text", text }], timestamp };
 }
@@ -116,12 +107,9 @@ describe("reconstructTimeline", () => {
       userMessage("Hello", t),
       assistantMessage("Hi there", t + 1000),
     ];
-    await store.commit(
-      messages,
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: inference-done",
-    );
+    await store.writeTurns(messages);
+
+    await store.commit({ message: "checkpoint: inference-done" });
 
     const result = await reconstructTimeline(dir);
 
@@ -146,12 +134,9 @@ describe("reconstructTimeline", () => {
       userMessage("Hello", t),
       assistantMessage("Hi there", t + 1000),
     ];
-    await store.commit(
-      messages1,
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: inference-done",
-    );
+    await store.writeTurns(messages1);
+
+    await store.commit({ message: "checkpoint: inference-done" });
 
     // Second turn (appends to the same message array)
     const messages2: ConversationTurn[] = [
@@ -159,12 +144,9 @@ describe("reconstructTimeline", () => {
       userMessage("How are you?", t + 5000),
       assistantMessage("I'm doing well", t + 6000),
     ];
-    await store.commit(
-      messages2,
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: inference-done",
-    );
+    await store.writeTurns(messages2);
+
+    await store.commit({ message: "checkpoint: inference-done" });
 
     const result = await reconstructTimeline(dir);
 
@@ -189,12 +171,9 @@ describe("reconstructTimeline", () => {
       toolResultMessage("call-1", "72F and sunny"),
       assistantMessage("The weather in SF is 72F and sunny."),
     ];
-    await store.commit(
-      messages,
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: inference-done",
-    );
+    await store.writeTurns(messages);
+
+    await store.commit({ message: "checkpoint: inference-done" });
 
     const result = await reconstructTimeline(dir);
 
@@ -258,12 +237,11 @@ describe("reconstructTimeline", () => {
       userMessage("Hello", t),
       assistantMessage("Hi there", t + 1000),
     ];
-    const commit = await store.commit(
-      messages,
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: inference-done",
-    );
+    await store.writeTurns(messages);
+
+    const commit = await store.commit({
+      message: "checkpoint: inference-done",
+    });
 
     const mailStore = await createMailAuditStore(dir);
     const outbound = buildRawMessage({
@@ -297,12 +275,9 @@ describe("reconstructTimeline", () => {
       userMessage("Do something risky"),
       assistantMessage("Attempting..."),
     ];
-    await store.commit(
-      messages,
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: inference-done",
-    );
+    await store.writeTurns(messages);
+
+    await store.commit({ message: "checkpoint: inference-done" });
 
     // Write error records (committed to git by the store)
     const errors: ErrorRecord[] = [
@@ -343,24 +318,18 @@ describe("reconstructTimeline", () => {
       userMessage("More"),
       assistantMessage("Sure"),
     ];
-    await store.commit(
-      messages1,
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: inference-done",
-    );
+    await store.writeTurns(messages1);
+
+    await store.commit({ message: "checkpoint: inference-done" });
 
     // Second checkpoint with only 2 messages (regression)
     const messages2: ConversationTurn[] = [
       userMessage("Fresh start"),
       assistantMessage("OK"),
     ];
-    await store.commit(
-      messages2,
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: inference-done",
-    );
+    await store.writeTurns(messages2);
+
+    await store.commit({ message: "checkpoint: inference-done" });
 
     const result = await reconstructTimeline(dir);
 
@@ -393,12 +362,9 @@ describe("reconstructTimeline", () => {
       userMessage("Hello"),
       assistantMessage("Hi there"),
     ];
-    await store.commit(
-      messages,
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: inference-done",
-    );
+    await store.writeTurns(messages);
+
+    await store.commit({ message: "checkpoint: inference-done" });
 
     const result = await reconstructTimeline(dir);
 
@@ -426,12 +392,9 @@ describe("reconstructTimeline", () => {
       userMessage("Hello", t),
       assistantMessage("Hi", t + 1000),
     ];
-    await store.commit(
-      messages,
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: inference-done",
-    );
+    await store.writeTurns(messages);
+
+    await store.commit({ message: "checkpoint: inference-done" });
 
     const result = await reconstructTimeline(dir);
 
@@ -448,12 +411,9 @@ describe("reconstructTimeline", () => {
       userMessage("Hello", t),
       assistantMessage("Something went wrong", t + 1000),
     ];
-    await store.commit(
-      messages,
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: inference-error",
-    );
+    await store.writeTurns(messages);
+
+    await store.commit({ message: "checkpoint: inference-error" });
 
     const result = await reconstructTimeline(dir);
 
@@ -473,12 +433,9 @@ describe("reconstructTimeline", () => {
       userMessage("What's the weather?", t),
       toolCallMessage("call-1", "get_weather", { city: "SF" }, t + 1000),
     ];
-    await store.commit(
-      messages,
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: tool-execution",
-    );
+    await store.writeTurns(messages);
+
+    await store.commit({ message: "checkpoint: tool-execution" });
 
     // Add tool result and final response
     const messages2: ConversationTurn[] = [
@@ -486,12 +443,9 @@ describe("reconstructTimeline", () => {
       toolResultMessage("call-1", "72F", t + 2000),
       assistantMessage("It's 72F in SF", t + 3000),
     ];
-    await store.commit(
-      messages2,
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: inference-done",
-    );
+    await store.writeTurns(messages2);
+
+    await store.commit({ message: "checkpoint: inference-done" });
 
     const result = await reconstructTimeline(dir);
 
@@ -522,17 +476,14 @@ describe("reconstructTimeline", () => {
       userMessage("Hello"),
       assistantMessage("Hi"),
     ];
-    await store.commit(
-      messages,
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: inference-done",
-    );
+    await store.writeTurns(messages);
+
+    await store.commit({ message: "checkpoint: inference-done" });
 
     // Write a corrupt checkpoint directly via git
-    const contextPath = path.join(dir, "state/context.json");
-    await fs.promises.writeFile(contextPath, "NOT VALID JSON");
-    await git.add({ fs, dir, filepath: "state/context.json" });
+    const turnsPath = path.join(dir, "turns.jsonl");
+    await fs.promises.writeFile(turnsPath, "NOT VALID JSON");
+    await git.add({ fs, dir, filepath: "turns.jsonl" });
     await git.commit({
       fs,
       dir,
@@ -558,12 +509,8 @@ describe("reconstructTimeline", () => {
     await initAgentRepo(dir);
     const store = new IsogitStore(dir);
 
-    await store.commit(
-      [userMessage("Hello"), assistantMessage("Hi")],
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: inference-done",
-    );
+    await store.writeTurns([userMessage("Hello"), assistantMessage("Hi")]);
+    await store.commit({ message: "checkpoint: inference-done" });
 
     // Commit a valid error record via the store
     await store.commitErrors([
@@ -637,40 +584,47 @@ describe("reconstructTimeline", () => {
       userMessage("What is the weather in SF and NYC?", t),
       toolCallMessage("call-1", "get_weather", { city: "SF" }, t + 1000),
     ];
-    await store.commit(msgs1, NO_OPS, NO_USAGE, "checkpoint: tool-execution");
+    await store.writeTurns(msgs1);
+
+    await store.commit({ message: "checkpoint: tool-execution" });
 
     // 3. Tool result comes back
     const msgs2: ConversationTurn[] = [
       ...msgs1,
       toolResultMessage("call-1", "72F and sunny", t + 2000),
     ];
-    await store.commit(msgs2, NO_OPS, NO_USAGE, "checkpoint: tool-done");
+    await store.writeTurns(msgs2);
+
+    await store.commit({ message: "checkpoint: tool-done" });
 
     // 4. Second inference: agent calls another tool
     const msgs3: ConversationTurn[] = [
       ...msgs2,
       toolCallMessage("call-2", "get_weather", { city: "NYC" }, t + 3000),
     ];
-    await store.commit(msgs3, NO_OPS, NO_USAGE, "checkpoint: tool-execution");
+    await store.writeTurns(msgs3);
+
+    await store.commit({ message: "checkpoint: tool-execution" });
 
     // 5. Second tool result
     const msgs4: ConversationTurn[] = [
       ...msgs3,
       toolResultMessage("call-2", "55F and rainy", t + 4000),
     ];
-    await store.commit(msgs4, NO_OPS, NO_USAGE, "checkpoint: tool-done");
+    await store.writeTurns(msgs4);
+
+    await store.commit({ message: "checkpoint: tool-done" });
 
     // 6. Final inference: agent composes reply
     const msgs5: ConversationTurn[] = [
       ...msgs4,
       assistantMessage("SF is 72F and sunny. NYC is 55F and rainy.", t + 5000),
     ];
-    const finalCommit = await store.commit(
-      msgs5,
-      NO_OPS,
-      NO_USAGE,
-      "checkpoint: inference-done",
-    );
+    await store.writeTurns(msgs5);
+
+    const finalCommit = await store.commit({
+      message: "checkpoint: inference-done",
+    });
 
     // 7. Outbound mail sent with checkpoint linkage
     const outbound = buildRawMessage({
@@ -690,7 +644,9 @@ describe("reconstructTimeline", () => {
       userMessage("What about London?", t + 10000),
       assistantMessage("Let me check London weather.", t + 11000),
     ];
-    await store.commit(msgs6, NO_OPS, NO_USAGE, "checkpoint: inference-error");
+    await store.writeTurns(msgs6);
+
+    await store.commit({ message: "checkpoint: inference-error" });
 
     // 9. Error record committed
     await store.commitErrors([
@@ -778,9 +734,9 @@ describe("reconstructTimeline", () => {
 
     // Write two corrupt checkpoints
     for (let i = 0; i < 2; i++) {
-      const contextPath = path.join(dir, "state/context.json");
-      await fs.promises.writeFile(contextPath, `CORRUPT ${i}`);
-      await git.add({ fs, dir, filepath: "state/context.json" });
+      const turnsPath = path.join(dir, "turns.jsonl");
+      await fs.promises.writeFile(turnsPath, `CORRUPT ${String(i)}`);
+      await git.add({ fs, dir, filepath: "turns.jsonl" });
       await git.commit({
         fs,
         dir,

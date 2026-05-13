@@ -24,6 +24,10 @@
 // - At most one `wait` action.
 // - Multiple `execute_tools` are merged into a single parallel batch.
 // - `emit` is always valid and composable.
+// - At most one `compact` action; composable with `checkpoint`, `emit`, and
+//   `fork`. Not composable with `infer`, `execute_tools`, `reply`, `suspend`,
+//   `wait`, or `done`. Context-overflow recovery runs compaction in its own
+//   cycle and re-infers on the next director invocation.
 
 import type { ReactorAction, ToolCall } from "@interchange/types/runtime";
 
@@ -61,6 +65,7 @@ export function validateActions(
   const forkActions = list.filter((a) => a.type === "fork");
   const emitActions = list.filter((a) => a.type === "emit");
   const checkpointActions = list.filter((a) => a.type === "checkpoint");
+  const compactActions = list.filter((a) => a.type === "compact");
 
   if (checkpointActions.length > 1) {
     return {
@@ -147,6 +152,34 @@ export function validateActions(
     }
   }
 
+  if (compactActions.length > 1) {
+    return { ok: false, error: "Multiple compact actions are not allowed" };
+  }
+
+  if (compactActions.length > 0) {
+    if (inferActions.length > 0) {
+      return { ok: false, error: "compact and infer cannot appear together" };
+    }
+    if (executeActions.length > 0) {
+      return {
+        ok: false,
+        error: "compact and execute_tools cannot appear together",
+      };
+    }
+    if (replyActions.length > 0) {
+      return { ok: false, error: "compact and reply cannot appear together" };
+    }
+    if (suspendActions.length > 0) {
+      return { ok: false, error: "compact and suspend cannot appear together" };
+    }
+    if (waitActions.length > 0) {
+      return { ok: false, error: "compact and wait cannot appear together" };
+    }
+    if (doneActions.length > 0) {
+      return { ok: false, error: "compact and done cannot appear together" };
+    }
+  }
+
   // Verify fork actions have unique IDs.
   const forkIds = forkActions.map(
     (a) => (a as Extract<ReactorAction, { type: "fork" }>).forkId,
@@ -168,6 +201,10 @@ export function validateActions(
   }
 
   for (const a of forkActions) {
+    normalized.push(a);
+  }
+
+  for (const a of compactActions) {
     normalized.push(a);
   }
 
