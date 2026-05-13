@@ -14,7 +14,7 @@
     "check": "tsc -b --noEmit",
     "lint": "prettier -c . && eslint --cache . && bun run check:docs",
     "format": "prettier -w .",
-    "test": "bun test",
+    "test": "bun test && bun test test/integration/",
     "docs": "bun bin/gen-api-docs.ts",
     "check:docs": "bun bin/gen-api-docs.ts --check"
   },
