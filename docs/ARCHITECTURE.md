@@ -474,6 +474,23 @@ Runtime state lives under `state/` in the same repository that holds the deploye
 
 The harness checkpoints conversation context (`state/context.json`) at inference and tool cycle boundaries — after each inference completion, after tool results arrive, and on shutdown. Audit records (`state/audit/`) are committed separately after each checkpoint and on shutdown. The agent has no awareness of or control over when checkpoints occur (see Trust Boundary).
 
+### Per-Cycle Working Tree
+
+The context store interface also exposes per-cycle writers and a commit overload that snapshots the working tree. The target layout, served by `@interchange/storage-isogit`, is:
+
+```
+turns.jsonl              durable conversation history
+prompt.jsonl             what was sent to inference for the most recent cycle
+response.jsonl           what came back for the most recent cycle
+manifest.jsonl           ordered transform records produced for the most recent cycle
+tool-output/             spill blobs from oversized tool results, keyed by tool call id
+metadata.json            session id, agent id, provider, model (introduced in a later phase)
+```
+
+Per-cycle files are overwritten each cycle; prior versions live in git commits. `git log -- prompt.jsonl` shows every inference call's input; `git log -- turns.jsonl` shows when the durable history changed. Spill blobs live in `tool-output/` and migrate with the conversation; the agent reaches them through a read capability that resolves `tool-output://{callId}` URIs to the working-tree path.
+
+The store exposes both the legacy `commit(turns, ops, usage, message)` (writes `state/context.json`) and a new `commit({ message })` overload (snapshots whatever is currently in the working tree). The legacy overload continues to back the existing per-cycle checkpoint until the reactor is migrated to write the per-cycle files directly.
+
 ### Operator Inspection
 
 The control plane exposes the agent's change history to operators through the Agent Data API. Operators can list files, read content, browse commit history, and inspect individual commits. This provides visibility into what the agent was doing and when, useful for debugging, auditing, and incident response. The agent itself cannot access this history — it is a platform-level inspection surface, not an agent-facing capability.

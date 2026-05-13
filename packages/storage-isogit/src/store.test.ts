@@ -13,7 +13,12 @@ import {
 } from "./index";
 import { IsogitStore } from "./store";
 import { initAgentRepo } from "./init";
-import type { ConversationTurn, TokenUsage } from "@interchange/types/runtime";
+import type {
+  AssistantTurn,
+  ConversationTurn,
+  TokenUsage,
+  TransformRecord,
+} from "@interchange/types/runtime";
 import type { AuditRecord, ErrorRecord } from "@interchange/types/audit";
 
 const ZERO_USAGE: TokenUsage = {
@@ -810,5 +815,532 @@ describe("commit signing", () => {
     const { commit } = await git.readCommit({ fs, dir, oid: entry.oid });
     expect(commit.gpgsig).toBeDefined();
     expect(commit.gpgsig).toContain("BEGIN SSH SIGNATURE");
+  });
+});
+
+function makeTransformRecord(
+  overrides: Partial<TransformRecord> = {},
+): TransformRecord {
+  return {
+    strategy: "size-cap",
+    version: "1",
+    parameters: { maxChars: 10000 },
+    reason: "exceeded-cap",
+    decisions: { callId: "c1", originalBytes: 50000, kept: 10000 },
+    ...overrides,
+  };
+}
+
+describe("writeBlob / readBlob", () => {
+  test("round-trips arbitrary bytes for a callId", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    const bytes = new Uint8Array([1, 2, 3, 4, 5, 250]);
+    await store.writeBlob("call-abc", bytes);
+    const read = await store.readBlob("call-abc");
+
+    expect(Array.from(read)).toEqual(Array.from(bytes));
+  });
+
+  test("text/plain content type yields .txt extension", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    const bytes = new TextEncoder().encode("hello world");
+    await store.writeBlob("text-call", bytes, "text/plain");
+
+    const expectedPath = path.join(dir, "tool-output", "text-call.txt");
+    expect(fs.existsSync(expectedPath)).toBe(true);
+  });
+
+  test("application/json content type yields .json extension", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    const bytes = new TextEncoder().encode('{"ok":true}');
+    await store.writeBlob("json-call", bytes, "application/json");
+
+    const expectedPath = path.join(dir, "tool-output", "json-call.json");
+    expect(fs.existsSync(expectedPath)).toBe(true);
+  });
+
+  test("unknown content type yields no extension", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    const bytes = new Uint8Array([0xff, 0xee]);
+    await store.writeBlob("raw-call", bytes, "application/octet-stream");
+
+    const expectedPath = path.join(dir, "tool-output", "raw-call");
+    expect(fs.existsSync(expectedPath)).toBe(true);
+  });
+
+  test("readBlob throws a clear error when the key has no blob", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    let thrown: Error | undefined;
+    try {
+      await store.readBlob("missing");
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("Blob not found for key");
+  });
+
+  test("readBlob throws a clear error when tool-output/ does not exist", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    let thrown: Error | undefined;
+    try {
+      await store.readBlob("call-x");
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("Blob not found for key");
+  });
+
+  test("writeBlob rejects callIds containing path traversal", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    let thrownTraversal: Error | undefined;
+    try {
+      await store.writeBlob("../escape", new Uint8Array());
+    } catch (cause) {
+      thrownTraversal =
+        cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrownTraversal?.message).toContain("unsafe characters");
+
+    let thrownSlash: Error | undefined;
+    try {
+      await store.writeBlob("a/b", new Uint8Array());
+    } catch (cause) {
+      thrownSlash = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrownSlash?.message).toContain("unsafe characters");
+  });
+
+  test("writeBlob sanitizes other unsafe characters in the filename", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    await store.writeBlob("call!@#xyz", new Uint8Array([7]));
+
+    const expectedPath = path.join(dir, "tool-output", "call___xyz");
+    expect(fs.existsSync(expectedPath)).toBe(true);
+
+    // The same sanitization applies on read.
+    const read = await store.readBlob("call!@#xyz");
+    expect(Array.from(read)).toEqual([7]);
+  });
+
+  test("writeBlob overwrites the file when the same key is written twice", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    await store.writeBlob("dup", new Uint8Array([1, 2, 3]));
+    await store.writeBlob("dup", new Uint8Array([9, 8]));
+
+    const read = await store.readBlob("dup");
+    expect(Array.from(read)).toEqual([9, 8]);
+  });
+});
+
+describe("writeTurns / writePrompt / writeResponse / writeManifest", () => {
+  test("writeTurns writes parseable JSONL to turns.jsonl", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    const turns: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "hi" }],
+        timestamp: 1000,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "hello" }],
+        model: "m",
+        timestamp: 2000,
+      },
+    ];
+    await store.writeTurns(turns);
+
+    const raw = await fs.promises.readFile(
+      path.join(dir, "turns.jsonl"),
+      "utf-8",
+    );
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    expect(lines.length).toBe(2);
+    expect(JSON.parse(lines[0] ?? "")).toEqual(turns[0]);
+    expect(JSON.parse(lines[1] ?? "")).toEqual(turns[1]);
+  });
+
+  test("writeTurns with an empty array produces an empty file", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    await store.writeTurns([]);
+
+    const raw = await fs.promises.readFile(
+      path.join(dir, "turns.jsonl"),
+      "utf-8",
+    );
+    expect(raw).toBe("");
+  });
+
+  test("writePrompt writes JSONL to prompt.jsonl", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    const turns: ConversationTurn[] = [
+      {
+        role: "system",
+        content: [{ type: "text", text: "be nice" }],
+        timestamp: 100,
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: "do the thing" }],
+        timestamp: 200,
+      },
+    ];
+    await store.writePrompt(turns);
+
+    const raw = await fs.promises.readFile(
+      path.join(dir, "prompt.jsonl"),
+      "utf-8",
+    );
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    expect(lines.length).toBe(2);
+    expect(JSON.parse(lines[0] ?? "")).toEqual(turns[0]);
+    expect(JSON.parse(lines[1] ?? "")).toEqual(turns[1]);
+  });
+
+  test("writeResponse writes single-line JSONL with an AssistantTurn", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    const turn: AssistantTurn = {
+      role: "assistant",
+      content: [{ type: "text", text: "done" }],
+      model: "test-model",
+      timestamp: 5000,
+    };
+    await store.writeResponse(turn);
+
+    const raw = await fs.promises.readFile(
+      path.join(dir, "response.jsonl"),
+      "utf-8",
+    );
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    expect(lines.length).toBe(1);
+    expect(JSON.parse(lines[0] ?? "")).toEqual(turn);
+  });
+
+  test("writeManifest writes TransformRecord entries in order", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    const records = [
+      makeTransformRecord({ strategy: "first", reason: "r1" }),
+      makeTransformRecord({ strategy: "second", reason: "r2" }),
+    ];
+    await store.writeManifest(records);
+
+    const raw = await fs.promises.readFile(
+      path.join(dir, "manifest.jsonl"),
+      "utf-8",
+    );
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    expect(lines.length).toBe(2);
+    expect(JSON.parse(lines[0] ?? "")).toEqual(records[0]);
+    expect(JSON.parse(lines[1] ?? "")).toEqual(records[1]);
+  });
+});
+
+describe("commit({ message }) overload", () => {
+  test("commits the working-tree files written via the new writers", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    const turns: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "first" }],
+        timestamp: 1000,
+      },
+    ];
+    await store.writeTurns(turns);
+    await store.writeManifest([makeTransformRecord()]);
+
+    const result = await store.commit({ message: "cycle 1" });
+
+    expect(typeof result.hash).toBe("string");
+    expect(result.message).toBe("cycle 1");
+
+    // turns.jsonl is in the commit tree.
+    const { blob } = await git.readBlob({
+      fs,
+      dir,
+      oid: result.hash,
+      filepath: "turns.jsonl",
+    });
+    const text = new TextDecoder().decode(blob);
+    expect(text.includes("first")).toBe(true);
+  });
+
+  test("does not write state/context.json", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    // initAgentRepo already wrote an initial state/context.json. Capture the
+    // original blob via git so we can confirm the new commit overload leaves
+    // it untouched.
+    const beforeRaw = await fs.promises.readFile(
+      path.join(dir, "state", "context.json"),
+      "utf-8",
+    );
+    const beforeData: unknown = JSON.parse(beforeRaw);
+    if (
+      typeof beforeData !== "object" ||
+      beforeData === null ||
+      !("turns" in beforeData)
+    ) {
+      throw new Error("unexpected context.json shape");
+    }
+    expect(beforeData.turns).toEqual([]);
+
+    await store.writeTurns([
+      {
+        role: "user",
+        content: [{ type: "text", text: "x" }],
+        timestamp: 100,
+      },
+    ]);
+    await store.commit({ message: "wt only" });
+
+    const afterRaw = await fs.promises.readFile(
+      path.join(dir, "state", "context.json"),
+      "utf-8",
+    );
+    expect(afterRaw).toBe(beforeRaw);
+  });
+
+  test("two consecutive working-tree commits yield two distinct commits", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    await store.writeTurns([
+      {
+        role: "user",
+        content: [{ type: "text", text: "v1" }],
+        timestamp: 100,
+      },
+    ]);
+    const c1 = await store.commit({ message: "cycle one" });
+
+    await store.writeTurns([
+      {
+        role: "user",
+        content: [{ type: "text", text: "v1" }],
+        timestamp: 100,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "v2" }],
+        model: "m",
+        timestamp: 200,
+      },
+    ]);
+    const c2 = await store.commit({ message: "cycle two" });
+
+    expect(c1.hash).not.toBe(c2.hash);
+    expect(c2.parentHash).toBe(c1.hash);
+
+    const entries = await store.log(5);
+    const messages = entries.map((e) => e.message);
+    expect(messages).toContain("cycle one");
+    expect(messages).toContain("cycle two");
+
+    // The latest turns.jsonl reflects the second write.
+    const { blob } = await git.readBlob({
+      fs,
+      dir,
+      oid: c2.hash,
+      filepath: "turns.jsonl",
+    });
+    const text = new TextDecoder().decode(blob);
+    expect(text.includes("v2")).toBe(true);
+  });
+
+  test("blobs written via writeBlob land in the commit tree", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    await store.writeBlob(
+      "spill-1",
+      new TextEncoder().encode("big payload"),
+      "text/plain",
+    );
+    const result = await store.commit({ message: "with spill" });
+
+    const { blob } = await git.readBlob({
+      fs,
+      dir,
+      oid: result.hash,
+      filepath: "tool-output/spill-1.txt",
+    });
+    expect(new TextDecoder().decode(blob)).toBe("big payload");
+  });
+
+  test("legacy commit(turns, ops, usage, message) still writes state/context.json", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    const turns: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "legacy" }],
+        timestamp: 100,
+      },
+    ];
+    await store.commit(turns, [], ZERO_USAGE, "legacy commit");
+
+    const { turns: loaded } = await store.load();
+    expect(loaded).toEqual(turns);
+
+    const raw = await fs.promises.readFile(
+      path.join(dir, "state", "context.json"),
+      "utf-8",
+    );
+    const data: unknown = JSON.parse(raw);
+    if (typeof data !== "object" || data === null || !("turns" in data)) {
+      throw new Error("unexpected context.json shape");
+    }
+    expect(data.turns).toEqual(turns);
+  });
+
+  test("both overloads can be mixed within a single session", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    const turns: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "ctx" }],
+        timestamp: 100,
+      },
+    ];
+    await store.commit(turns, [], ZERO_USAGE, "legacy write");
+
+    await store.writeTurns(turns);
+    await store.commit({ message: "wt write" });
+
+    const entries = await store.log(5);
+    const messages = entries.map((e) => e.message);
+    expect(messages).toContain("legacy write");
+    expect(messages).toContain("wt write");
+
+    // The legacy load() path still resolves the most recent state/context.json.
+    const { turns: loaded } = await store.load();
+    expect(loaded).toEqual(turns);
+  });
+});
+
+describe("readManifestHistory", () => {
+  test("returns records from the most recent commits, newest first", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    const r1 = makeTransformRecord({ strategy: "first" });
+    await store.writeManifest([r1]);
+    await store.commit({ message: "c1" });
+
+    const r2 = makeTransformRecord({ strategy: "second" });
+    await store.writeManifest([r2]);
+    await store.commit({ message: "c2" });
+
+    const r3a = makeTransformRecord({ strategy: "third-a" });
+    const r3b = makeTransformRecord({ strategy: "third-b" });
+    await store.writeManifest([r3a, r3b]);
+    await store.commit({ message: "c3" });
+
+    const history = await store.readManifestHistory(5);
+
+    // Newest commit first; within a commit, natural file order.
+    expect(history.map((r) => r.strategy)).toEqual([
+      "third-a",
+      "third-b",
+      "second",
+      "first",
+    ]);
+  });
+
+  test("respects the limit parameter", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    for (let i = 0; i < 3; i++) {
+      await store.writeManifest([
+        makeTransformRecord({ strategy: `cycle-${String(i)}` }),
+      ]);
+      await store.commit({ message: `c${String(i)}` });
+    }
+
+    const limited = await store.readManifestHistory(2);
+    expect(limited.map((r) => r.strategy)).toEqual(["cycle-2", "cycle-1"]);
+  });
+
+  test("returns empty array when limit is zero", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    await store.writeManifest([makeTransformRecord()]);
+    await store.commit({ message: "c" });
+
+    const history = await store.readManifestHistory(0);
+    expect(history).toEqual([]);
+  });
+
+  test("skips commits that lack manifest.jsonl", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    // The initial commit from initAgentRepo and the legacy commit below both
+    // have no manifest.jsonl, so they should be skipped.
+    await store.commit([], [], ZERO_USAGE, "legacy");
+
+    const r = makeTransformRecord();
+    await store.writeManifest([r]);
+    await store.commit({ message: "with manifest" });
+
+    const history = await store.readManifestHistory(10);
+    expect(history).toEqual([r]);
+  });
+
+  test("rejects a manifest with an invalid record", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    // Hand-write a corrupt manifest.jsonl and commit it via the working-tree
+    // overload so it lands in git without going through writeManifest.
+    await fs.promises.writeFile(
+      path.join(dir, "manifest.jsonl"),
+      JSON.stringify({ strategy: "bogus" }) + "\n",
+    );
+    await store.commit({ message: "corrupt" });
+
+    let thrown: Error | undefined;
+    try {
+      await store.readManifestHistory(5);
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toMatch(/Invalid manifest record/);
   });
 });

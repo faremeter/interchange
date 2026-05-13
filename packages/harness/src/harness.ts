@@ -31,8 +31,12 @@ import type {
 import {
   ProviderConfig,
   type ContextStore,
+  type ContextCommit,
   type ConnectorThreadState,
+  type ConversationTurn,
   type InboundMessage,
+  type PendingOperation,
+  type TokenUsage,
   type Unsubscribe,
   type ReactorDirector,
 } from "@interchange/types/runtime";
@@ -179,6 +183,42 @@ export function createHarness(config: HarnessConfig): Harness {
 
   // Wrap the context store so load() restores connector state and commit()
   // persists the current connector state alongside the conversation context.
+  function wrappedCommit(
+    options: { message: string },
+    signal?: AbortSignal,
+  ): Promise<ContextCommit>;
+  function wrappedCommit(
+    turns: ConversationTurn[],
+    pendingOperations: PendingOperation[],
+    tokenUsage: TokenUsage,
+    message: string,
+    signal?: AbortSignal,
+  ): Promise<ContextCommit>;
+  async function wrappedCommit(
+    first: { message: string } | ConversationTurn[],
+    second?: PendingOperation[] | AbortSignal,
+    third?: TokenUsage,
+    fourth?: string,
+    fifth?: AbortSignal,
+  ): Promise<ContextCommit> {
+    storage.setConnectorState(currentConnectorState());
+    if (Array.isArray(first)) {
+      if (
+        second === undefined ||
+        !Array.isArray(second) ||
+        third === undefined ||
+        fourth === undefined
+      ) {
+        throw new Error(
+          "commit(turns, ops, usage, message): missing arguments",
+        );
+      }
+      return storage.commit(first, second, third, fourth, fifth);
+    }
+    const signal = second instanceof AbortSignal ? second : undefined;
+    return storage.commit(first, signal);
+  }
+
   const contextStore: ContextStore = {
     async load(signal) {
       const loaded = await storage.load(signal);
@@ -188,16 +228,7 @@ export function createHarness(config: HarnessConfig): Harness {
     setConnectorState(state) {
       storage.setConnectorState(state);
     },
-    async commit(messages, pendingOperations, tokenUsage, message, signal) {
-      storage.setConnectorState(currentConnectorState());
-      return storage.commit(
-        messages,
-        pendingOperations,
-        tokenUsage,
-        message,
-        signal,
-      );
-    },
+    commit: wrappedCommit,
     async branch(name, signal) {
       return storage.branch(name, signal);
     },
@@ -206,6 +237,27 @@ export function createHarness(config: HarnessConfig): Harness {
     },
     async readAt(hash, signal) {
       return storage.readAt(hash, signal);
+    },
+    async writeBlob(key, bytes, contentType, signal) {
+      return storage.writeBlob(key, bytes, contentType, signal);
+    },
+    async readBlob(key, signal) {
+      return storage.readBlob(key, signal);
+    },
+    async writePrompt(turns, signal) {
+      return storage.writePrompt(turns, signal);
+    },
+    async writeResponse(turn, signal) {
+      return storage.writeResponse(turn, signal);
+    },
+    async writeManifest(records, signal) {
+      return storage.writeManifest(records, signal);
+    },
+    async writeTurns(turns, signal) {
+      return storage.writeTurns(turns, signal);
+    },
+    async readManifestHistory(limit, signal) {
+      return storage.readManifestHistory(limit, signal);
     },
   };
 
