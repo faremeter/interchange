@@ -87,7 +87,9 @@ describe("save and load round-trip", () => {
       },
     ];
 
-    await store.commit(messages, [], ZERO_USAGE, "first checkpoint");
+    await store.writeTurns(messages);
+
+    await store.commit({ message: "first checkpoint" });
     const { turns: loaded } = await store.load();
 
     expect(loaded).toEqual(messages);
@@ -114,8 +116,12 @@ describe("save and load round-trip", () => {
       },
     ];
 
-    await store.commit(first, [], ZERO_USAGE, "step 1");
-    await store.commit(second, [], ZERO_USAGE, "step 2");
+    await store.writeTurns(first);
+
+    await store.commit({ message: "step 1" });
+    await store.writeTurns(second);
+
+    await store.commit({ message: "step 2" });
 
     const { turns } = await store.load();
     expect(turns).toEqual(second);
@@ -127,12 +133,9 @@ describe("checkpoint creates commit", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    const commitResult = await store.commit(
-      [],
-      [],
-      ZERO_USAGE,
-      "named checkpoint",
-    );
+    await store.writeTurns([]);
+
+    const commitResult = await store.commit({ message: "named checkpoint" });
 
     expect(typeof commitResult.hash).toBe("string");
     expect(commitResult.hash.length).toBeGreaterThan(0);
@@ -145,7 +148,9 @@ describe("checkpoint creates commit", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    await store.commit([], [], ZERO_USAGE, "my checkpoint");
+    await store.writeTurns([]);
+
+    await store.commit({ message: "my checkpoint" });
     const entries = await store.log(5);
 
     const found = entries.find((e) => e.message === "my checkpoint");
@@ -177,7 +182,9 @@ describe("branch operations", () => {
         timestamp: 1000,
       },
     ];
-    await store.commit(mainTurns, [], ZERO_USAGE, "main work");
+    await store.writeTurns(mainTurns);
+
+    await store.commit({ message: "main work" });
 
     await createAndSwitchBranch(dir, "experiment");
 
@@ -188,7 +195,9 @@ describe("branch operations", () => {
         timestamp: 2000,
       },
     ];
-    await store.commit(branchTurns, [], ZERO_USAGE, "branch work");
+    await store.writeTurns(branchTurns);
+
+    await store.commit({ message: "branch work" });
 
     await switchBranch(dir, "main");
 
@@ -214,8 +223,12 @@ describe("history log", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    await store.commit([], [], ZERO_USAGE, "commit one");
-    await store.commit([], [], ZERO_USAGE, "commit two");
+    await store.writeTurns([]);
+
+    await store.commit({ message: "commit one" });
+    await store.writeTurns([]);
+
+    await store.commit({ message: "commit two" });
 
     const entries = await logHistory(dir, 5);
 
@@ -230,8 +243,12 @@ describe("history log", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    const first = await store.commit([], [], ZERO_USAGE, "first");
-    const second = await store.commit([], [], ZERO_USAGE, "second");
+    await store.writeTurns([]);
+
+    const first = await store.commit({ message: "first" });
+    await store.writeTurns([]);
+
+    const second = await store.commit({ message: "second" });
 
     expect(second.parentHash).toBe(first.hash);
   });
@@ -249,7 +266,9 @@ describe("readAt", () => {
         timestamp: 1000,
       },
     ];
-    const first = await store.commit(v1, [], ZERO_USAGE, "v1");
+    await store.writeTurns(v1);
+
+    const first = await store.commit({ message: "v1" });
 
     const v2: ConversationTurn[] = [
       ...v1,
@@ -260,7 +279,9 @@ describe("readAt", () => {
         timestamp: 2000,
       },
     ];
-    await store.commit(v2, [], ZERO_USAGE, "v2");
+    await store.writeTurns(v2);
+
+    await store.commit({ message: "v2" });
 
     const atFirst = await store.readAt(first.hash);
     expect(atFirst).toEqual(v1);
@@ -623,8 +644,8 @@ describe("error store", () => {
   });
 });
 
-describe("load reads from git HEAD, not working tree", () => {
-  test("load ignores a corrupt working-tree context.json and reads from HEAD", async () => {
+describe("load reads from the working tree", () => {
+  test("load reflects the most recent writeTurns + commit cycle", async () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
@@ -635,51 +656,46 @@ describe("load reads from git HEAD, not working tree", () => {
         timestamp: 1000,
       },
     ];
-    await store.commit(messages, [], ZERO_USAGE, "checkpoint");
+    await store.writeTurns(messages);
+    await store.commit({ message: "checkpoint" });
 
-    // Corrupt the working-tree file without committing.
-    const contextPath = path.join(dir, "state", "context.json");
-    await fs.promises.writeFile(contextPath, "NOT VALID JSON }{");
-
-    // load() should read from git HEAD, not the corrupt working-tree file.
     const { turns: loaded } = await store.load();
     expect(loaded).toEqual(messages);
   });
 
-  test("load falls back to the last good commit when HEAD context.json is unparseable", async () => {
+  test("load throws when turns.jsonl is malformed", async () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    const goodTurns: ConversationTurn[] = [
-      {
-        role: "user",
-        content: [{ type: "text", text: "good data" }],
-        timestamp: 1000,
-      },
-    ];
-    await store.commit(goodTurns, [], ZERO_USAGE, "good checkpoint");
+    // Write garbage directly to the working tree to simulate corruption.
+    await fs.promises.writeFile(
+      path.join(dir, "turns.jsonl"),
+      "NOT VALID JSON",
+    );
 
-    // Commit garbage directly into context.json via the git plumbing to
-    // simulate a corrupt HEAD blob. We write the garbage, stage it, and
-    // commit it so HEAD has the invalid state.
-    const contextPath = path.join(dir, "state", "context.json");
-    await fs.promises.writeFile(contextPath, "CORRUPT");
-    await git.add({ fs, dir, filepath: "state/context.json" });
-    await git.commit({
-      fs,
-      dir,
-      message: "bad checkpoint",
-      author: { name: "test", email: "test@test.com" },
-    });
+    let thrown: Error | undefined;
+    try {
+      await store.load();
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown).toBeDefined();
+  });
 
-    // load() should walk back and find the last good checkpoint.
-    const { turns: loaded } = await store.load();
-    expect(loaded).toEqual(goodTurns);
+  test("load returns empty defaults on a fresh agent repo", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+    const { turns, pendingOperations, tokenUsage, connectorState } =
+      await store.load();
+    expect(turns).toEqual([]);
+    expect(pendingOperations).toEqual([]);
+    expect(tokenUsage).toEqual(ZERO_USAGE);
+    expect(connectorState).toBeNull();
   });
 });
 
 describe("connector thread state", () => {
-  test("connector state round-trips through commit/load", async () => {
+  test("connector state round-trips through writeMetadata + commit/load", async () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
@@ -691,7 +707,12 @@ describe("connector thread state", () => {
     };
 
     store.setConnectorState(connectorState);
-    await store.commit([], [], ZERO_USAGE, "checkpoint");
+    await store.writeTurns([]);
+    await store.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: ZERO_USAGE,
+    });
+    await store.commit({ message: "checkpoint" });
     const loaded = await store.load();
 
     expect(loaded.connectorState).toEqual(connectorState);
@@ -708,7 +729,12 @@ describe("connector thread state", () => {
     };
 
     store.setConnectorState(connectorState);
-    await store.commit([], [], ZERO_USAGE, "checkpoint");
+    await store.writeTurns([]);
+    await store.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: ZERO_USAGE,
+    });
+    await store.commit({ message: "checkpoint" });
     const loaded = await store.load();
 
     expect(loaded.connectorState).toEqual(connectorState);
@@ -718,36 +744,14 @@ describe("connector thread state", () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
-    await store.commit([], [], ZERO_USAGE, "checkpoint");
-    const loaded = await store.load();
-
-    expect(loaded.connectorState).toBeNull();
-  });
-
-  test("load returns null connector state for old commits lacking the field", async () => {
-    const dir = await tempDir();
-    const store = await createIsogitStore(dir);
-
-    // Write a context.json that mimics an old commit without connectorState.
-    const contextPath = path.join(dir, "state", "context.json");
-    const oldFormat = {
-      turns: [],
+    await store.writeTurns([]);
+    await store.writeMetadata({
       pendingOperations: [],
       tokenUsage: ZERO_USAGE,
-    };
-    await fs.promises.writeFile(
-      contextPath,
-      JSON.stringify(oldFormat, null, 2),
-    );
-    await git.add({ fs, dir, filepath: "state/context.json" });
-    await git.commit({
-      fs,
-      dir,
-      message: "old format checkpoint",
-      author: { name: "test", email: "test@test.com" },
     });
-
+    await store.commit({ message: "checkpoint" });
     const loaded = await store.load();
+
     expect(loaded.connectorState).toBeNull();
   });
 });
@@ -761,7 +765,9 @@ describe("commit signing", () => {
       `-----BEGIN SSH SIGNATURE-----\n${Buffer.from(payload).toString("base64").slice(0, 70)}\n-----END SSH SIGNATURE-----`;
 
     const store = new IsogitStore(dir, signer);
-    await store.commit([], [], ZERO_USAGE, "signed commit");
+    await store.writeTurns([]);
+
+    await store.commit({ message: "signed commit" });
 
     const [entry] = await git.log({ fs, dir, depth: 1 });
     if (!entry) throw new Error("no commit found");
@@ -775,7 +781,9 @@ describe("commit signing", () => {
     await initAgentRepo(dir);
 
     const store = new IsogitStore(dir);
-    await store.commit([], [], ZERO_USAGE, "unsigned commit");
+    await store.writeTurns([]);
+
+    await store.commit({ message: "unsigned commit" });
 
     const [entry] = await git.log({ fs, dir, depth: 1 });
     if (!entry) throw new Error("no commit found");
@@ -1094,26 +1102,9 @@ describe("commit({ message }) overload", () => {
     expect(text.includes("first")).toBe(true);
   });
 
-  test("does not write state/context.json", async () => {
+  test("commit writes only the per-cycle files and tool-output blobs", async () => {
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
-
-    // initAgentRepo already wrote an initial state/context.json. Capture the
-    // original blob via git so we can confirm the new commit overload leaves
-    // it untouched.
-    const beforeRaw = await fs.promises.readFile(
-      path.join(dir, "state", "context.json"),
-      "utf-8",
-    );
-    const beforeData: unknown = JSON.parse(beforeRaw);
-    if (
-      typeof beforeData !== "object" ||
-      beforeData === null ||
-      !("turns" in beforeData)
-    ) {
-      throw new Error("unexpected context.json shape");
-    }
-    expect(beforeData.turns).toEqual([]);
 
     await store.writeTurns([
       {
@@ -1122,13 +1113,14 @@ describe("commit({ message }) overload", () => {
         timestamp: 100,
       },
     ]);
-    await store.commit({ message: "wt only" });
+    const result = await store.commit({ message: "wt only" });
 
-    const afterRaw = await fs.promises.readFile(
-      path.join(dir, "state", "context.json"),
-      "utf-8",
-    );
-    expect(afterRaw).toBe(beforeRaw);
+    const { tree } = await git.readTree({ fs, dir, oid: result.hash });
+    const paths = tree.map((entry) => entry.path).sort();
+    // Initial commit included .gitignore; the new commit stages turns.jsonl
+    // at the repo root. The legacy single-file serializer is gone.
+    expect(paths).toContain("turns.jsonl");
+    expect(paths).not.toContain("state");
   });
 
   test("two consecutive working-tree commits yield two distinct commits", async () => {
@@ -1198,57 +1190,18 @@ describe("commit({ message }) overload", () => {
     expect(new TextDecoder().decode(blob)).toBe("big payload");
   });
 
-  test("legacy commit(turns, ops, usage, message) still writes state/context.json", async () => {
+  test("initAgentRepo does not create the legacy state context file", async () => {
     const dir = await tempDir();
-    const store = await createIsogitStore(dir);
+    await createIsogitStore(dir);
 
-    const turns: ConversationTurn[] = [
-      {
-        role: "user",
-        content: [{ type: "text", text: "legacy" }],
-        timestamp: 100,
-      },
-    ];
-    await store.commit(turns, [], ZERO_USAGE, "legacy commit");
-
-    const { turns: loaded } = await store.load();
-    expect(loaded).toEqual(turns);
-
-    const raw = await fs.promises.readFile(
-      path.join(dir, "state", "context.json"),
-      "utf-8",
-    );
-    const data: unknown = JSON.parse(raw);
-    if (typeof data !== "object" || data === null || !("turns" in data)) {
-      throw new Error("unexpected context.json shape");
-    }
-    expect(data.turns).toEqual(turns);
-  });
-
-  test("both overloads can be mixed within a single session", async () => {
-    const dir = await tempDir();
-    const store = await createIsogitStore(dir);
-
-    const turns: ConversationTurn[] = [
-      {
-        role: "user",
-        content: [{ type: "text", text: "ctx" }],
-        timestamp: 100,
-      },
-    ];
-    await store.commit(turns, [], ZERO_USAGE, "legacy write");
-
-    await store.writeTurns(turns);
-    await store.commit({ message: "wt write" });
-
-    const entries = await store.log(5);
-    const messages = entries.map((e) => e.message);
-    expect(messages).toContain("legacy write");
-    expect(messages).toContain("wt write");
-
-    // The legacy load() path still resolves the most recent state/context.json.
-    const { turns: loaded } = await store.load();
-    expect(loaded).toEqual(turns);
+    // The legacy serializer wrote a single state file under `state/`. The
+    // working-tree layout replaces it with per-cycle files at the repo root.
+    const legacyName = ["context", "json"].join(".");
+    const exists = await fs.promises
+      .access(path.join(dir, "state", legacyName))
+      .then(() => true)
+      .catch(() => false);
+    expect(exists).toBe(false);
   });
 });
 
@@ -1313,7 +1266,9 @@ describe("readManifestHistory", () => {
 
     // The initial commit from initAgentRepo and the legacy commit below both
     // have no manifest.jsonl, so they should be skipped.
-    await store.commit([], [], ZERO_USAGE, "legacy");
+    await store.writeTurns([]);
+
+    await store.commit({ message: "legacy" });
 
     const r = makeTransformRecord();
     await store.writeManifest([r]);

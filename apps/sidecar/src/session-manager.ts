@@ -45,6 +45,7 @@ import type {
   ToolRunner,
   HarnessConfig as AgentConfig,
 } from "@interchange/types/runtime";
+import { createBlobReader } from "@interchange/types/runtime";
 
 import {
   loadOrGenerateKeyPair,
@@ -337,9 +338,11 @@ export function createSessionManager(
       await fs.promises.mkdir(workDir, { recursive: true });
 
       const deployToolDefs = deployTree.tools.map((t) => t.definition);
+      const blobReader = createBlobReader(storage);
       const posixTools = createPosixTools({
         cwd: workDir,
         plugins: [createLSPPlugin({ cwd: workDir })],
+        blobReader,
       });
       const toolDispatch = buildToolDispatch(posixTools, deployTree.tools);
       const allToolDefs = [...posixTools.definitions, ...deployToolDefs];
@@ -358,7 +361,6 @@ export function createSessionManager(
         auditStore: storage,
         deployTools: allToolDefs,
         tools: toolDispatch,
-        toolOutputDir: workDir,
         onEvent(event: InferenceEvent) {
           if (
             event.type === "connector.reply" &&

@@ -470,26 +470,26 @@ Payments between agents in different tenants work through standard x402 flows. T
 
 ## Change History
 
-Runtime state lives under `state/` in the same repository that holds the deployed definition under `deploy/`. This unified repository means the full history — what the agent was running and what it did — is available in a single DAG.
+Runtime state lives at the repository root alongside the deployed definition under `deploy/`. This unified repository means the full history — what the agent was running and what it did — is available in a single DAG.
 
-The harness checkpoints conversation context (`state/context.json`) at inference and tool cycle boundaries — after each inference completion, after tool results arrive, and on shutdown. Audit records (`state/audit/`) are committed separately after each checkpoint and on shutdown. The agent has no awareness of or control over when checkpoints occur (see Trust Boundary).
+The reactor auto-commits at every cycle boundary (after each inference completes, after a batch of tool calls completes, after a compaction runs). The director's `checkpoint` action no longer decides _whether_ a commit happens; it supplies the human-meaningful message for the next auto-commit. Audit records (`state/audit/`) and error records (`state/errors/`) are still committed separately by the audit store on its existing schedule (`afterCheckpoint` and `onShutdown`). The agent has no awareness of or control over when commits occur (see Trust Boundary).
 
 ### Per-Cycle Working Tree
 
-The context store interface also exposes per-cycle writers and a commit overload that snapshots the working tree. The target layout, served by `@interchange/storage-isogit`, is:
+The context store records every cycle's content as a snapshot of these top-level files:
 
 ```
 turns.jsonl              durable conversation history
 prompt.jsonl             what was sent to inference for the most recent cycle
 response.jsonl           what came back for the most recent cycle
 manifest.jsonl           ordered transform records produced for the most recent cycle
+metadata.json            pending operations, cumulative token usage, connector thread state
 tool-output/             spill blobs from oversized tool results, keyed by tool call id
-metadata.json            session id, agent id, provider, model (introduced in a later phase)
 ```
 
-Per-cycle files are overwritten each cycle; prior versions live in git commits. `git log -- prompt.jsonl` shows every inference call's input; `git log -- turns.jsonl` shows when the durable history changed. Spill blobs live in `tool-output/` and migrate with the conversation; the agent reaches them through a read capability that resolves `tool-output://{callId}` URIs to the working-tree path.
+Per-cycle files are overwritten each cycle; prior versions live in git commits. `git log -- prompt.jsonl` shows every inference call's input; `git log -- turns.jsonl` shows when the durable history changed. Spill blobs live in `tool-output/` and migrate with the conversation; the agent reaches them through the `BlobReader` capability that resolves `tool-output:///{callId}` URIs to the working-tree path.
 
-The store exposes both the legacy `commit(turns, ops, usage, message)` (writes `state/context.json`) and a new `commit({ message })` overload (snapshots whatever is currently in the working tree). The legacy overload continues to back the existing per-cycle checkpoint until the reactor is migrated to write the per-cycle files directly.
+`ContextStore` exposes per-cycle writers (`writeTurns`, `writePrompt`, `writeResponse`, `writeManifest`, `writeBlob`, `writeMetadata`) and a single `commit({ message })` overload that snapshots the working tree. The reactor writes through each transform's output immediately so the working tree is the live state, then issues one commit per cycle. The legacy `commit(turns, ops, usage, message)` signature and the `state/context.json` serializer are gone.
 
 ### Operator Inspection
 

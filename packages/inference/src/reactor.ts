@@ -29,6 +29,12 @@ import type {
   AbortReason,
   BeforeToolExtension,
   ReactorAction,
+  ToolResultTransform,
+  ContextTransform,
+  Compactor,
+  TransformRecord,
+  StrategyContext,
+  StrategyResult,
 } from "@interchange/types/runtime";
 
 import { getLogger } from "@interchange/log";
@@ -85,7 +91,9 @@ export type ReactorConfig = {
     opts: InferenceHarnessOptions,
   ) => AsyncGenerator<InferenceEvent>;
   beforeToolExtensions?: BeforeToolExtension[];
-  toolOutputDir?: string;
+  toolResultTransforms?: ToolResultTransform[];
+  contextTransforms?: ContextTransform[];
+  compactors?: Record<string, Compactor>;
   afterCheckpoint?: () => Promise<void>;
   onShutdown?: () => Promise<void>;
   gateTimeout?: number;
@@ -118,6 +126,9 @@ export function createReactor(config: ReactorConfig): Reactor {
     onEvent,
     inferenceRunner = runInference,
     beforeToolExtensions = [],
+    toolResultTransforms = [],
+    contextTransforms = [],
+    compactors = {},
     afterCheckpoint,
     onShutdown,
     gateTimeout = DEFAULT_GATE_TIMEOUT_MS,
@@ -212,6 +223,19 @@ export function createReactor(config: ReactorConfig): Reactor {
   let done = false;
   let shutdownStarted = false;
 
+  // Per-cycle accumulator of TransformRecord entries produced by every
+  // transform invocation (tool result, context, compactor). Flushed via
+  // contextStore.writeManifest at cycle boundaries.
+  let manifestBuffer: TransformRecord[] = [];
+
+  // Tracks how the current cycle should be summarized in the commit message.
+  let cycleInferred = false;
+  let cycleToolCallsExecuted = 0;
+  let cycleCompactorName: string | null = null;
+
+  // Director-supplied checkpoint message override; consumed exactly once.
+  let pendingMessage: string | null = null;
+
   // AbortController for in-flight inference/tool operations.
   let operationController = new AbortController();
 
@@ -300,6 +324,22 @@ export function createReactor(config: ReactorConfig): Reactor {
 
   let pendingPacingDelayMs = 0;
 
+  function buildStrategyContext(trigger: string): StrategyContext {
+    if (stateManager === null) {
+      throw new Error("State manager not initialized");
+    }
+    return { state: stateManager.snapshot(), trigger };
+  }
+
+  async function persistBlobs(
+    blobs: StrategyResult<unknown>["blobs"],
+  ): Promise<void> {
+    if (blobs === undefined) return;
+    for (const blob of blobs) {
+      await contextStore.writeBlob(blob.key, blob.bytes, blob.contentType);
+    }
+  }
+
   async function executeInfer(
     model: string,
     options: InferenceOptions | undefined,
@@ -325,7 +365,25 @@ export function createReactor(config: ReactorConfig): Reactor {
       if (signal.aborted) return;
     }
 
-    const turns = stateManager.getTurns();
+    // Run the context transform chain to produce the materialized prompt.
+    let prompt: ConversationTurn[] = stateManager.getTurns();
+    for (const transform of contextTransforms) {
+      const ctx = buildStrategyContext("pre-inference");
+      const result = await transform.apply(prompt, ctx);
+      prompt = result.output;
+      manifestBuffer.push(result.record);
+      await persistBlobs(result.blobs);
+    }
+
+    try {
+      await contextStore.writePrompt(prompt);
+    } catch (cause) {
+      logger.error`writePrompt failed: ${cause}`;
+      emitError(
+        `writePrompt failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        false,
+      );
+    }
 
     const p = (async () => {
       const maxRetries = 3;
@@ -333,7 +391,7 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         const harnessOpts = buildHarnessOpts(
-          turns,
+          prompt,
           model,
           config.providerConfig,
           options,
@@ -358,6 +416,17 @@ export function createReactor(config: ReactorConfig): Reactor {
           if (stateManager !== null) {
             stateManager.appendTurn(lastDone.data.turn);
             stateManager.accumUsage(lastDone.data.usage);
+            stateManager.setLastCycleUsage(lastDone.data.usage);
+          }
+          cycleInferred = true;
+          try {
+            await contextStore.writeResponse(lastDone.data.turn);
+          } catch (cause) {
+            logger.error`writeResponse failed: ${cause}`;
+            emitError(
+              `writeResponse failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+              false,
+            );
           }
           if (lastDone.data.pacingDelayMs !== undefined) {
             pendingPacingDelayMs = lastDone.data.pacingDelayMs;
@@ -468,11 +537,11 @@ export function createReactor(config: ReactorConfig): Reactor {
       }
 
       emit({ type: "tool.start", seq: nextSeq(), data: { call } });
-      const result = await toolRunner.run(call, signal);
-      emit({ type: "tool.done", seq: nextSeq(), data: { result } });
+      const rawResult = await toolRunner.run(call, signal);
+      emit({ type: "tool.done", seq: nextSeq(), data: { result: rawResult } });
 
-      if (result.pendingMarker !== undefined && stateManager !== null) {
-        const marker = result.pendingMarker;
+      if (rawResult.pendingMarker !== undefined && stateManager !== null) {
+        const marker = rawResult.pendingMarker;
         const gateId = `pending-${marker.correlationId}`;
         const op: import("@interchange/types/runtime").PendingOperation = {
           correlationId: marker.correlationId,
@@ -486,7 +555,19 @@ export function createReactor(config: ReactorConfig): Reactor {
         stateManager.addPendingOperation(op);
       }
 
-      return result;
+      // Apply the tool-result transform chain. Each transform's output is fed
+      // into the next; emitted blobs are persisted immediately so downstream
+      // transforms can rely on the spill being available.
+      let current = rawResult;
+      for (const transform of toolResultTransforms) {
+        const ctx = buildStrategyContext("tool-result-ingest");
+        const tr = await transform.apply({ call, result: current }, ctx);
+        manifestBuffer.push(tr.record);
+        await persistBlobs(tr.blobs);
+        current = tr.output;
+      }
+
+      return current;
     };
 
     let results: ToolResult[];
@@ -503,20 +584,132 @@ export function createReactor(config: ReactorConfig): Reactor {
       }
     }
 
+    cycleToolCallsExecuted += results.length;
+
     if (addToHistory && stateManager !== null) {
-      stateManager.appendTurn(
-        createToolResultTurn(
-          results,
-          config.toolOutputDir !== undefined
-            ? { outputDir: config.toolOutputDir }
-            : undefined,
-        ),
-      );
+      stateManager.appendTurn(createToolResultTurn(results));
     }
 
     for (const result of results) {
       enqueue({ type: "tool.done", result });
     }
+  }
+
+  async function executeCompact(
+    compactorName: string,
+    reason: string,
+  ): Promise<void> {
+    if (stateManager === null) return;
+    const compactor = compactors[compactorName];
+    if (compactor === undefined) {
+      throw new Error(
+        `executeCompact: no compactor registered for name ${JSON.stringify(compactorName)}`,
+      );
+    }
+
+    const ctx: StrategyContext = {
+      state: stateManager.snapshot(),
+      trigger: `director:${reason}`,
+    };
+    const result = await compactor.apply(stateManager.getTurns(), ctx);
+
+    stateManager.replaceTurns(result.output);
+    await contextStore.writeTurns(result.output);
+    await persistBlobs(result.blobs);
+    manifestBuffer.push(result.record);
+    cycleCompactorName = compactor.name;
+
+    logger.info`Compaction by ${compactor.name} reduced history (reason: ${reason})`;
+  }
+
+  // -------------------------------------------------------------------------
+  // Cycle boundary commit
+  // -------------------------------------------------------------------------
+
+  function buildCycleMessage(): string {
+    if (pendingMessage !== null) {
+      const msg = pendingMessage;
+      pendingMessage = null;
+      return msg;
+    }
+
+    if (cycleCompactorName !== null) {
+      return `Cycle: compaction by ${cycleCompactorName}`;
+    }
+
+    const parts: string[] = [];
+    if (cycleInferred) parts.push("inferred");
+    if (cycleToolCallsExecuted > 0) {
+      const noun = cycleToolCallsExecuted === 1 ? "tool call" : "tool calls";
+      parts.push(`${String(cycleToolCallsExecuted)} ${noun}`);
+    }
+
+    if (parts.length === 0) return "Cycle: no-op";
+    return `Cycle: ${parts.join(" + ")}`;
+  }
+
+  function resetCycleAccumulators(): void {
+    manifestBuffer = [];
+    cycleInferred = false;
+    cycleToolCallsExecuted = 0;
+    cycleCompactorName = null;
+  }
+
+  async function commitCycle(): Promise<void> {
+    if (stateManager === null) return;
+
+    // Only commit when the cycle did real work or the director set an
+    // override message. An empty cycle (no inference, no tools, no compact,
+    // no override) commits nothing.
+    const hasWork =
+      cycleInferred ||
+      cycleToolCallsExecuted > 0 ||
+      cycleCompactorName !== null;
+    const hasOverride = pendingMessage !== null;
+    if (!hasWork && !hasOverride) {
+      resetCycleAccumulators();
+      return;
+    }
+
+    const message = buildCycleMessage();
+
+    try {
+      await contextStore.writeTurns(stateManager.getTurns());
+      await contextStore.writeManifest(manifestBuffer);
+      await writeMetadata();
+      const commit = await contextStore.commit({ message });
+      lastCheckpointHash = commit.hash;
+    } catch (cause) {
+      logger.error`Cycle commit failed: ${cause}`;
+      emitError(
+        `Cycle commit failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        false,
+      );
+      resetCycleAccumulators();
+      return;
+    }
+
+    resetCycleAccumulators();
+
+    if (afterCheckpoint !== undefined) {
+      try {
+        await afterCheckpoint();
+      } catch (cause) {
+        logger.error`afterCheckpoint failed: ${cause}`;
+        emitError(
+          `afterCheckpoint failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          false,
+        );
+      }
+    }
+  }
+
+  async function writeMetadata(): Promise<void> {
+    if (stateManager === null) return;
+    await contextStore.writeMetadata({
+      pendingOperations: stateManager.getPendingOperations(),
+      tokenUsage: stateManager.getTokenUsage(),
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -580,13 +773,13 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       const normalized = validation.normalized;
 
-      // Checkpoint fires before everything else.
+      // Checkpoint sets the next cycle's commit message.
       const checkpointAction = normalized.find(
         (a): a is Extract<ReactorAction, { type: "checkpoint" }> =>
           a.type === "checkpoint",
       );
       if (checkpointAction !== undefined) {
-        await executeCheckpoint(checkpointAction.message);
+        pendingMessage = checkpointAction.message;
       }
 
       // Emit custom events (validated type namespace).
@@ -614,13 +807,18 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       // Handle done.
       if (normalized.some((a) => a.type === "done")) {
+        // Flush the cycle (in case the director paired done with checkpoint
+        // or other work) before shutting down.
+        await commitCycle();
         done = true;
         await initiateShutdown();
         break;
       }
 
-      // Handle wait: return to the event loop without shutting down.
+      // Handle wait: commit the cycle (if work happened) and return to the
+      // event loop without shutting down.
       if (normalized.some((a) => a.type === "wait")) {
+        await commitCycle();
         continue;
       }
 
@@ -664,13 +862,19 @@ export function createReactor(config: ReactorConfig): Reactor {
         if (stateManager !== null) {
           stateManager.setGatesSnapshot(gates.snapshot());
         }
-        // Loop continues — director will receive the gate.cleared event later.
+
+        // Commit before the loop continues so the suspended-state turns are
+        // durable across restart.
+        await commitCycle();
         continue;
       }
 
       // Handle reply — emit the content for the harness/supervisor to send.
       const replyAction = normalized.find((a) => a.type === "reply");
       if (replyAction !== undefined && replyAction.type === "reply") {
+        // Flush any pending cycle work before signaling the reply so the
+        // emitted checkpointHash matches the visible state.
+        await commitCycle();
         emit({
           type: "connector.reply",
           seq: nextSeq(),
@@ -682,6 +886,26 @@ export function createReactor(config: ReactorConfig): Reactor {
           },
         });
         // After replying, wait for the next inbound message.
+        continue;
+      }
+
+      // Handle compact (its own cycle; runs before any infer can be requested
+      // in the same director invocation — validation forbids that pairing).
+      const compactAction = normalized.find((a) => a.type === "compact");
+      if (compactAction !== undefined && compactAction.type === "compact") {
+        try {
+          await executeCompact(compactAction.compactor, compactAction.reason);
+        } catch (cause) {
+          logger.error`Compaction failed: ${cause}`;
+          emitError(
+            `Compaction failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+            true,
+          );
+          done = true;
+          await initiateShutdown();
+          break;
+        }
+        await commitCycle();
         continue;
       }
 
@@ -700,6 +924,10 @@ export function createReactor(config: ReactorConfig): Reactor {
         await executeTools(toolsAction.calls, parallel, addToHistory);
         continue;
       }
+
+      // No infer/tools/reply/suspend/wait/compact action — if a checkpoint
+      // override was set on its own (or alongside emit/fork), the next event
+      // will pick it up. Nothing to flush here.
     }
   }
 
@@ -712,40 +940,6 @@ export function createReactor(config: ReactorConfig): Reactor {
   }
 
   let lastCheckpointHash: string | undefined;
-
-  async function executeCheckpoint(message: string): Promise<void> {
-    if (stateManager === null) return;
-    // Clear before attempting so a failed checkpoint never leaves a stale
-    // hash from a previous turn attached to the next connector.reply.
-    lastCheckpointHash = undefined;
-    try {
-      const commit = await contextStore.commit(
-        stateManager.getTurns(),
-        stateManager.getPendingOperations(),
-        stateManager.getTokenUsage(),
-        message,
-      );
-      lastCheckpointHash = commit.hash;
-    } catch (cause) {
-      logger.error`Checkpoint failed: ${cause}`;
-      emitError(
-        `Checkpoint failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-        false,
-      );
-      return;
-    }
-    if (afterCheckpoint !== undefined) {
-      try {
-        await afterCheckpoint();
-      } catch (cause) {
-        logger.error`afterCheckpoint failed: ${cause}`;
-        emitError(
-          `afterCheckpoint failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-          false,
-        );
-      }
-    }
-  }
 
   async function initiateShutdown(): Promise<void> {
     if (shutdownStarted) return;

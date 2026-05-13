@@ -26,16 +26,21 @@ export function createStateManager(
   initialOps: PendingOperation[],
   initialUsage: TokenUsage,
 ) {
-  const turns: ConversationTurn[] = [...initialTurns];
+  let turns: ConversationTurn[] = [...initialTurns];
   const pendingOperations = new Map<string, PendingOperation>(
     initialOps.map((op) => [op.correlationId, op]),
   );
   const tokenUsage: TokenUsage = { ...initialUsage };
+  let lastCycleUsage: TokenUsage | null = null;
   let activeGatesSnapshot: GateSnapshot[] = [];
   const activeForks: { forkId: string; mode: "independent" | "child" }[] = [];
 
   function appendTurn(msg: ConversationTurn): void {
     turns.push(msg);
+  }
+
+  function replaceTurns(next: ConversationTurn[]): void {
+    turns = [...next];
   }
 
   function addPendingOperation(op: PendingOperation): void {
@@ -52,6 +57,10 @@ export function createStateManager(
     tokenUsage.cacheRead += usage.cacheRead;
     tokenUsage.cacheWrite += usage.cacheWrite;
     tokenUsage.thinking += usage.thinking;
+  }
+
+  function setLastCycleUsage(usage: TokenUsage): void {
+    lastCycleUsage = { ...usage };
   }
 
   function setGatesSnapshot(gates: GateSnapshot[]): void {
@@ -96,15 +105,17 @@ export function createStateManager(
       })),
       activeForks: activeForks.map((f) => ({ ...f })),
       tokenUsage: { ...tokenUsage },
-      lastCycleUsage: null,
+      lastCycleUsage: lastCycleUsage !== null ? { ...lastCycleUsage } : null,
     };
   }
 
   return {
     appendTurn,
+    replaceTurns,
     addPendingOperation,
     removePendingOperation,
     accumUsage,
+    setLastCycleUsage,
     setGatesSnapshot,
     addFork,
     removeFork,

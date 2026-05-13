@@ -574,7 +574,7 @@ async function makeRepoWithPaths(
 describe("receivePackObjects tree validation", () => {
   test("accepts a state-only tree when validator requires state", async () => {
     const source = await makeRepoWithPaths([
-      { filepath: "state/context.json", content: "{}" },
+      { filepath: "state/turns.jsonl", content: "" },
     ]);
     const pack = await createPackFromRepo(source.dir, source.oids);
 
@@ -603,7 +603,7 @@ describe("receivePackObjects tree validation", () => {
 
   test("rejects a tree with deploy/ when validator requires state only", async () => {
     const source = await makeRepoWithPaths([
-      { filepath: "state/context.json", content: "{}" },
+      { filepath: "state/turns.jsonl", content: "" },
       { filepath: "deploy/prompt.md", content: "evil" },
     ]);
     const pack = await createPackFromRepo(source.dir, source.oids);
@@ -628,7 +628,7 @@ describe("receivePackObjects tree validation", () => {
 
   test("accepts any tree when no validator is provided", async () => {
     const source = await makeRepoWithPaths([
-      { filepath: "state/context.json", content: "{}" },
+      { filepath: "state/turns.jsonl", content: "" },
       { filepath: "deploy/prompt.md", content: "anything" },
     ]);
     const pack = await createPackFromRepo(source.dir, source.oids);

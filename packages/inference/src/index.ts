@@ -43,3 +43,5 @@ export type {
 } from "./authz-extension";
 export { createAuditCollector } from "./audit-collector";
 export type { AuditCollector } from "./audit-collector";
+export { createSizeCapTransform } from "./transforms";
+export type { SizeCapTransformOptions } from "./transforms";

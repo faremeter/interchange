@@ -1,5 +1,3 @@
-import { writeFileSync, mkdirSync } from "node:fs";
-import path from "node:path";
 import type {
   ConversationTurn,
   ContentBlock,
@@ -68,47 +66,14 @@ export function createInboundTurn(
   };
 }
 
-const MAX_TOOL_RESULT_CHARS = 10_000;
-
-function truncateToolResult(
-  text: string,
-  callId: string,
-  outputDir?: string,
-): string {
-  if (text.length <= MAX_TOOL_RESULT_CHARS) return text;
-  const omitted = text.length - MAX_TOOL_RESULT_CHARS;
-
-  if (outputDir !== undefined) {
-    const dir = path.join(outputDir, ".tool-output");
-    mkdirSync(dir, { recursive: true });
-    const filePath = path.join(dir, `${callId}.txt`);
-    writeFileSync(filePath, text);
-    return `${text.slice(0, MAX_TOOL_RESULT_CHARS)}\n[Tool output truncated: omitted ${omitted} chars. Full output saved to ${filePath} -- use read_file to see the rest.]`;
-  }
-
-  return `${text.slice(0, MAX_TOOL_RESULT_CHARS)}\n[Tool output truncated: omitted ${omitted} chars]`;
-}
-
-export interface ToolResultTurnOptions {
-  outputDir?: string;
-}
-
-export function createToolResultTurn(
-  results: ToolResult[],
-  options?: ToolResultTurnOptions,
-): ConversationTurn {
+export function createToolResultTurn(results: ToolResult[]): ConversationTurn {
   const blocks: ContentBlock[] = results.map((r) => {
     const raw =
       typeof r.content === "string" ? r.content : JSON.stringify(r.content);
     const block: Extract<ContentBlock, { type: "tool_result" }> = {
       type: "tool_result",
       callId: r.callId,
-      content: [
-        {
-          type: "text" as const,
-          text: truncateToolResult(raw, r.callId, options?.outputDir),
-        },
-      ],
+      content: [{ type: "text" as const, text: raw }],
     };
     if (r.detail !== undefined) {
       block.detail = r.detail;

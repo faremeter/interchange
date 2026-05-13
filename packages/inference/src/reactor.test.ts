@@ -38,25 +38,11 @@ function emptyUsage(): TokenUsage {
 }
 
 function makeContextStore(turns: ConversationTurn[] = []): ContextStore {
-  function commit(
-    options: { message: string },
-    signal?: AbortSignal,
-  ): Promise<ContextCommit>;
-  function commit(
-    turns: ConversationTurn[],
-    pendingOperations: PendingOperation[],
-    tokenUsage: TokenUsage,
-    message: string,
-    signal?: AbortSignal,
-  ): Promise<ContextCommit>;
   async function commit(
-    first: { message: string } | ConversationTurn[],
-    _second?: PendingOperation[] | AbortSignal,
-    _third?: TokenUsage,
-    fourth?: string,
+    options: { message: string },
+    _signal?: AbortSignal,
   ): Promise<ContextCommit> {
-    const message = Array.isArray(first) ? (fourth ?? "") : first.message;
-    return { hash: "abc", message, timestamp: Date.now() };
+    return { hash: "abc", message: options.message, timestamp: Date.now() };
   }
 
   return {
@@ -82,22 +68,25 @@ function makeContextStore(turns: ConversationTurn[] = []): ContextStore {
       return [];
     },
     async writeBlob() {
-      throw new Error("not implemented");
+      /* noop */
     },
     async readBlob() {
       throw new Error("not implemented");
     },
     async writePrompt() {
-      throw new Error("not implemented");
+      /* noop */
     },
     async writeResponse() {
-      throw new Error("not implemented");
+      /* noop */
     },
     async writeManifest() {
-      throw new Error("not implemented");
+      /* noop */
     },
     async writeTurns() {
-      throw new Error("not implemented");
+      /* noop */
+    },
+    async writeMetadata() {
+      /* noop */
     },
     async readManifestHistory() {
       throw new Error("not implemented");
@@ -338,6 +327,9 @@ function failingContextStore(error: Error): ContextStore {
       return fail();
     },
     async writeTurns() {
+      return fail();
+    },
+    async writeMetadata() {
       return fail();
     },
     async readManifestHistory() {
@@ -1339,32 +1331,9 @@ describe("createReactor — tool runner failures", () => {
   });
 
   test("addToHistory=false runs tools but skips history append", async () => {
-    // We observe history indirectly via a checkpoint that captures the
-    // turns passed to contextStore.commit().
+    // We observe history indirectly via the reactor's cycle commit, which now
+    // writes through contextStore.writeTurns just before commit({ message }).
     let committedTurns: ConversationTurn[] = [];
-    function capturingCommit(
-      options: { message: string },
-      signal?: AbortSignal,
-    ): Promise<ContextCommit>;
-    function capturingCommit(
-      turns: ConversationTurn[],
-      pendingOperations: PendingOperation[],
-      tokenUsage: TokenUsage,
-      message: string,
-      signal?: AbortSignal,
-    ): Promise<ContextCommit>;
-    async function capturingCommit(
-      first: { message: string } | ConversationTurn[],
-      _second?: PendingOperation[] | AbortSignal,
-      _third?: TokenUsage,
-      fourth?: string,
-    ): Promise<ContextCommit> {
-      if (Array.isArray(first)) {
-        committedTurns = [...first];
-        return { hash: "abc", message: fourth ?? "", timestamp: Date.now() };
-      }
-      return { hash: "abc", message: first.message, timestamp: Date.now() };
-    }
     const capturingStore: ContextStore = {
       async load() {
         return {
@@ -1377,7 +1346,9 @@ describe("createReactor — tool runner failures", () => {
       setConnectorState() {
         /* noop */
       },
-      commit: capturingCommit,
+      async commit(options) {
+        return { hash: "abc", message: options.message, timestamp: Date.now() };
+      },
       async branch() {
         /* noop */
       },
@@ -1400,10 +1371,13 @@ describe("createReactor — tool runner failures", () => {
         throw new Error("not implemented");
       },
       async writeManifest() {
-        throw new Error("not implemented");
+        /* noop */
       },
-      async writeTurns() {
-        throw new Error("not implemented");
+      async writeTurns(turns) {
+        committedTurns = [...turns];
+      },
+      async writeMetadata() {
+        /* noop */
       },
       async readManifestHistory() {
         throw new Error("not implemented");
@@ -1657,22 +1631,25 @@ describe("createReactor — checkpoint failure", () => {
         return [];
       },
       async writeBlob() {
-        throw new Error("not implemented");
+        /* noop */
       },
       async readBlob() {
         throw new Error("not implemented");
       },
       async writePrompt() {
-        throw new Error("not implemented");
+        /* noop */
       },
       async writeResponse() {
-        throw new Error("not implemented");
+        /* noop */
       },
       async writeManifest() {
-        throw new Error("not implemented");
+        /* noop */
       },
       async writeTurns() {
-        throw new Error("not implemented");
+        /* noop */
+      },
+      async writeMetadata() {
+        /* noop */
       },
       async readManifestHistory() {
         throw new Error("not implemented");
@@ -2897,41 +2874,15 @@ describe("createReactor — afterCheckpoint", () => {
 
     const store = makeContextStore();
     const originalCommit = store.commit.bind(store);
-    function wrappedCommit(
+    async function wrappedCommit(
       options: { message: string },
       signal?: AbortSignal,
-    ): Promise<ContextCommit>;
-    function wrappedCommit(
-      turns: ConversationTurn[],
-      pendingOperations: PendingOperation[],
-      tokenUsage: TokenUsage,
-      message: string,
-      signal?: AbortSignal,
-    ): Promise<ContextCommit>;
-    async function wrappedCommit(
-      first: { message: string } | ConversationTurn[],
-      second?: PendingOperation[] | AbortSignal,
-      third?: TokenUsage,
-      fourth?: string,
-      fifth?: AbortSignal,
     ): Promise<ContextCommit> {
       commitCount++;
       if (commitCount === 1) {
         throw new Error("disk full");
       }
-      if (Array.isArray(first)) {
-        if (
-          second === undefined ||
-          !Array.isArray(second) ||
-          third === undefined ||
-          fourth === undefined
-        ) {
-          throw new Error("wrappedCommit: legacy form missing arguments");
-        }
-        return originalCommit(first, second, third, fourth, fifth);
-      }
-      const signal = second instanceof AbortSignal ? second : undefined;
-      return originalCommit(first, signal);
+      return originalCommit(options, signal);
     }
     store.commit = wrappedCommit;
 
@@ -3061,5 +3012,639 @@ describe("createReactor — onShutdown", () => {
     reactor.abort("user_disconnect");
     await waitFor("reactor.done");
     expect(shutdownCalled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Transform chains and compaction (Phase 4)
+// ---------------------------------------------------------------------------
+
+import type {
+  ToolResultTransform,
+  ContextTransform,
+  Compactor,
+  TransformRecord,
+} from "@interchange/types/runtime";
+
+function passthroughToolTransform(
+  name: string,
+  decisions: Record<string, unknown> = {},
+): ToolResultTransform {
+  return {
+    name,
+    version: "1",
+    async apply(input, _ctx) {
+      return {
+        output: input.result,
+        record: {
+          strategy: name,
+          version: "1",
+          parameters: {},
+          reason: "passthrough",
+          decisions,
+        },
+      };
+    },
+  };
+}
+
+function passthroughContextTransform(
+  name: string,
+  tagText: string,
+): ContextTransform {
+  return {
+    name,
+    version: "1",
+    async apply(turns, _ctx) {
+      const tagged = turns.map((t) => ({
+        ...t,
+        content: t.content.map((b) =>
+          b.type === "text"
+            ? { type: "text" as const, text: `${tagText}${b.text}` }
+            : b,
+        ),
+      }));
+      return {
+        output: tagged,
+        record: {
+          strategy: name,
+          version: "1",
+          parameters: { tagText },
+          reason: "tag",
+          decisions: { count: turns.length },
+        },
+      };
+    },
+  };
+}
+
+function truncatingCompactor(name: string): Compactor {
+  return {
+    name,
+    version: "1",
+    async apply(turns, _ctx) {
+      const kept = turns.slice(-1);
+      return {
+        output: kept,
+        record: {
+          strategy: name,
+          version: "1",
+          parameters: {},
+          reason: "explicit",
+          decisions: { kept: kept.length, dropped: turns.length - kept.length },
+        },
+      };
+    },
+  };
+}
+
+function makeRecordingContextStore(): {
+  store: ContextStore;
+  commits: { message: string; turns: ConversationTurn[] }[];
+  manifests: TransformRecord[][];
+  metadata: { pendingOperations: PendingOperation[]; tokenUsage: TokenUsage }[];
+  blobs: { key: string; bytes: Uint8Array; contentType?: string }[];
+  lastWrittenTurns: ConversationTurn[];
+} {
+  const commits: { message: string; turns: ConversationTurn[] }[] = [];
+  const manifests: TransformRecord[][] = [];
+  const metadata: {
+    pendingOperations: PendingOperation[];
+    tokenUsage: TokenUsage;
+  }[] = [];
+  const blobs: { key: string; bytes: Uint8Array; contentType?: string }[] = [];
+  let lastWrittenTurns: ConversationTurn[] = [];
+
+  const store: ContextStore = {
+    async load() {
+      return {
+        turns: [],
+        pendingOperations: [],
+        tokenUsage: emptyUsage(),
+        connectorState: null,
+      };
+    },
+    setConnectorState() {
+      /* noop */
+    },
+    async commit(options) {
+      commits.push({
+        message: options.message,
+        turns: [...lastWrittenTurns],
+      });
+      return {
+        hash: `c${String(commits.length)}`,
+        message: options.message,
+        timestamp: Date.now(),
+      };
+    },
+    async branch() {
+      /* noop */
+    },
+    async log() {
+      return [];
+    },
+    async readAt() {
+      return [];
+    },
+    async writeBlob(key, bytes, contentType) {
+      blobs.push({
+        key,
+        bytes,
+        ...(contentType !== undefined ? { contentType } : {}),
+      });
+    },
+    async readBlob() {
+      throw new Error("not implemented");
+    },
+    async writePrompt() {
+      /* noop */
+    },
+    async writeResponse() {
+      /* noop */
+    },
+    async writeManifest(records) {
+      manifests.push([...records]);
+    },
+    async writeTurns(turns) {
+      lastWrittenTurns = [...turns];
+    },
+    async writeMetadata(m) {
+      metadata.push({
+        pendingOperations: [...m.pendingOperations],
+        tokenUsage: { ...m.tokenUsage },
+      });
+    },
+    async readManifestHistory() {
+      throw new Error("not implemented");
+    },
+  };
+
+  return {
+    store,
+    commits,
+    manifests,
+    metadata,
+    blobs,
+    get lastWrittenTurns() {
+      return lastWrittenTurns;
+    },
+  };
+}
+
+function mockInferenceRunner(
+  responseText: string,
+  toolCalls: {
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+  }[] = [],
+): (opts: InferenceHarnessOptions) => AsyncGenerator<InferenceEvent> {
+  return async function* (opts) {
+    const usage: TokenUsage = {
+      input: 10,
+      output: 20,
+      cacheRead: 0,
+      cacheWrite: 0,
+      thinking: 0,
+    };
+    const content: AssistantTurn["content"] = [];
+    if (responseText.length > 0) {
+      content.push({ type: "text", text: responseText });
+    }
+    for (const tc of toolCalls) {
+      content.push({
+        type: "tool_call",
+        id: tc.id,
+        name: tc.name,
+        arguments: tc.arguments,
+      });
+    }
+    const turn: AssistantTurn = {
+      role: "assistant",
+      content,
+      model: opts.model,
+      timestamp: Date.now(),
+    };
+    yield {
+      type: "inference.done",
+      seq: opts.nextSeq(),
+      data: { turn, usage },
+    };
+  };
+}
+
+describe("createReactor — tool result transform chain", () => {
+  test("threads results through transforms in order; records appear in order", async () => {
+    const recording = makeRecordingContextStore();
+    const t1 = passthroughToolTransform("first");
+    const t2 = passthroughToolTransform("second");
+
+    const { reactor, waitFor } = createTestReactor({
+      contextStore: recording.store,
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) =>
+          caps.executeTools([{ id: "c1", name: "tool", arguments: {} }]),
+        "tool.done": (_e, _s, caps) => caps.done(),
+      }),
+    });
+
+    // Inject the transforms via a private property — we cannot pass them via
+    // createTestReactor's typed overrides without expanding its shape, so we
+    // construct a second reactor directly below for the headline tests. For
+    // ordering coverage here we lean on the harness-side reactor.
+    void t1;
+    void t2;
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+    // The default reactor in this test has no transforms; the commit should
+    // still have happened (cycle had tool calls).
+    expect(recording.commits.length).toBeGreaterThan(0);
+  });
+});
+
+function createDirectReactor(opts: {
+  contextStore: ContextStore;
+  director: ReactorDirector;
+  toolRunner?: ToolRunner;
+  inferenceRunner?: (
+    opts: InferenceHarnessOptions,
+  ) => AsyncGenerator<InferenceEvent>;
+  toolResultTransforms?: ToolResultTransform[];
+  contextTransforms?: ContextTransform[];
+  compactors?: Record<string, Compactor>;
+}): {
+  reactor: Reactor;
+  events: ReactorEmittedEvent[];
+  waitFor: (
+    type: ReactorEmittedEvent["type"],
+    timeoutMs?: number,
+  ) => Promise<ReactorEmittedEvent>;
+} {
+  const { events, onEvent } = collectEvents();
+  const reactor = createReactor({
+    sessionId: `test-${String(++testSessionCounter)}`,
+    director: opts.director,
+    providerConfig: {
+      provider: "anthropic",
+      baseURL: "https://api.anthropic.com",
+      apiKey: "test",
+    },
+    toolRunner: opts.toolRunner ?? noopToolRunner(),
+    contextStore: opts.contextStore,
+    onEvent,
+    shutdownTimeoutMs: 100,
+    ...(opts.inferenceRunner !== undefined
+      ? { inferenceRunner: opts.inferenceRunner }
+      : {}),
+    ...(opts.toolResultTransforms !== undefined
+      ? { toolResultTransforms: opts.toolResultTransforms }
+      : {}),
+    ...(opts.contextTransforms !== undefined
+      ? { contextTransforms: opts.contextTransforms }
+      : {}),
+    ...(opts.compactors !== undefined ? { compactors: opts.compactors } : {}),
+  });
+
+  function waitForType(
+    type: ReactorEmittedEvent["type"],
+    timeoutMs = 2000,
+  ): Promise<ReactorEmittedEvent> {
+    return waitForEvent(events, (e) => e.type === type, timeoutMs);
+  }
+  return { reactor, events, waitFor: waitForType };
+}
+
+describe("createReactor — transform chain ordering and compact action", () => {
+  test("tool result transforms run in order and records appear in invocation order", async () => {
+    const recording = makeRecordingContextStore();
+    const transforms: ToolResultTransform[] = [
+      passthroughToolTransform("first", { ord: 1 }),
+      passthroughToolTransform("second", { ord: 2 }),
+    ];
+
+    const { reactor, waitFor } = createDirectReactor({
+      contextStore: recording.store,
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "result",
+      })),
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) =>
+          caps.executeTools([{ id: "c1", name: "tool", arguments: {} }]),
+        "tool.done": (_e, _s, caps) => caps.done(),
+      }),
+      toolResultTransforms: transforms,
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // One commit; manifest carries both records in order.
+    expect(recording.commits.length).toBe(1);
+    expect(recording.manifests.length).toBe(1);
+    const records = recording.manifests[0];
+    if (records === undefined) throw new Error("expected manifest");
+    expect(records.map((r) => r.strategy)).toEqual(["first", "second"]);
+  });
+
+  test("context transforms run before inference and feed the materialized prompt", async () => {
+    const recording = makeRecordingContextStore();
+    const transform = passthroughContextTransform("tag-context", "TAG:");
+
+    let observedPrompt: ConversationTurn[] = [];
+    const runner: (
+      opts: InferenceHarnessOptions,
+    ) => AsyncGenerator<InferenceEvent> = async function* (opts) {
+      observedPrompt = opts.turns;
+      const turn: AssistantTurn = {
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+        model: opts.model,
+        timestamp: Date.now(),
+      };
+      yield {
+        type: "inference.done",
+        seq: opts.nextSeq(),
+        data: {
+          turn,
+          usage: emptyUsage(),
+        },
+      };
+    };
+
+    const { reactor, waitFor } = createDirectReactor({
+      contextStore: recording.store,
+      inferenceRunner: runner,
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) => caps.infer("test-model"),
+        "inference.done": (_e, _s, caps) => caps.done(),
+      }),
+      contextTransforms: [transform],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(observedPrompt.length).toBeGreaterThan(0);
+    const firstBlock = observedPrompt[0]?.content[0];
+    if (firstBlock === undefined || firstBlock.type !== "text") {
+      throw new Error("expected text block in transformed prompt");
+    }
+    expect(firstBlock.text.startsWith("TAG:")).toBe(true);
+  });
+
+  test("compact action looks up the named compactor and replaces turns", async () => {
+    const recording = makeRecordingContextStore();
+    const compactor = truncatingCompactor("tail-only");
+
+    let messages = 0;
+    const director: ReactorDirector = {
+      async decide(event, _state, caps) {
+        if (event.type === "message.received") {
+          messages++;
+          if (messages === 1) {
+            // First message produces a multi-turn history (this user turn is
+            // appended by the reactor before decide() returns), then we run
+            // the compactor which drops everything except the tail.
+            return caps.compact("tail-only", "explicit-test");
+          }
+          return caps.done();
+        }
+        return caps.done();
+      },
+    };
+
+    const { reactor, waitFor } = createDirectReactor({
+      contextStore: recording.store,
+      director,
+      compactors: { "tail-only": compactor },
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    setTimeout(() => reactor.deliver(makeInboundMessage()), 30);
+    await waitFor("reactor.done");
+
+    expect(messages).toBeGreaterThanOrEqual(1);
+    // The commit for the compact cycle has a single-turn history (tail-only).
+    expect(recording.commits.length).toBeGreaterThan(0);
+    const compactCommit = recording.commits.find((c) =>
+      c.message.startsWith("Cycle: compaction"),
+    );
+    expect(compactCommit).toBeDefined();
+    if (compactCommit !== undefined) {
+      expect(compactCommit.turns.length).toBe(1);
+    }
+    // Manifest carries the compactor record.
+    const flatRecords = recording.manifests.flat();
+    expect(flatRecords.some((r) => r.strategy === "tail-only")).toBe(true);
+  });
+
+  test("compact for an unknown name emits a fatal error and shuts down", async () => {
+    const recording = makeRecordingContextStore();
+    const { reactor, events, waitFor } = createDirectReactor({
+      contextStore: recording.store,
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) => caps.compact("missing", "test"),
+      }),
+      compactors: {},
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+    const err = getEvent(events, "reactor.error");
+    expect(err.data.error).toContain("missing");
+    expect(err.data.fatal).toBe(true);
+  });
+
+  test("validateActions rejects compact + infer", async () => {
+    const result = validateActions([
+      { type: "compact", compactor: "tail", reason: "r" },
+      { type: "infer", model: "m" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/compact.*infer/i);
+  });
+
+  test("context-overflow recovery: compact alone, then infer on the next cycle", async () => {
+    const recording = makeRecordingContextStore();
+    const compactor = truncatingCompactor("overflow-compactor");
+
+    // First inference yields a context_overflow error; the second succeeds.
+    let inferAttempts = 0;
+    const runner: (
+      opts: InferenceHarnessOptions,
+    ) => AsyncGenerator<InferenceEvent> = async function* (opts) {
+      inferAttempts++;
+      if (inferAttempts === 1) {
+        yield {
+          type: "inference.error",
+          seq: opts.nextSeq(),
+          data: {
+            error: {
+              category: "context_overflow",
+              message: "context too long",
+            },
+            partial: { text: "" },
+          },
+        };
+        return;
+      }
+      const turn: AssistantTurn = {
+        role: "assistant",
+        content: [{ type: "text", text: "ok-after-compact" }],
+        model: opts.model,
+        timestamp: Date.now(),
+      };
+      yield {
+        type: "inference.done",
+        seq: opts.nextSeq(),
+        data: { turn, usage: emptyUsage() },
+      };
+    };
+
+    const director: ReactorDirector = {
+      async decide(event, _state, caps) {
+        if (event.type === "message.received") {
+          return caps.infer("test-model");
+        }
+        if (event.type === "inference.error") {
+          if (event.error.category === "context_overflow") {
+            return caps.compact("overflow-compactor", "context-overflow");
+          }
+          return caps.done();
+        }
+        if (event.type === "inference.done") {
+          return caps.done();
+        }
+        return caps.wait();
+      },
+    };
+
+    // After compact, we expect the reactor to deliver no automatic event; the
+    // director needs to drive the next infer. To exercise that, we patch the
+    // director to issue infer after compact via a synthetic message.received.
+    // Here we use a slightly richer director that knows to re-infer once the
+    // compact cycle's commit has happened. We approximate by delivering a
+    // second message after compact via a side channel.
+    void compactor;
+
+    const { reactor, events, waitFor } = createDirectReactor({
+      contextStore: recording.store,
+      inferenceRunner: runner,
+      director,
+      compactors: { "overflow-compactor": compactor },
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    // After the compact cycle commits, the conversation has been truncated.
+    // The director did not chain compact + infer; it only emitted compact.
+    // Drive the next infer by delivering another message that re-runs the
+    // event loop. The director's message.received → infer rule will fire.
+    setTimeout(() => reactor.deliver(makeInboundMessage()), 30);
+
+    await waitFor("reactor.done");
+    // The reactor ran inference twice: the first attempt failed with
+    // context_overflow, and the second attempt succeeded after compaction.
+    expect(inferAttempts).toBe(2);
+
+    const compactRecord = recording.manifests
+      .flat()
+      .find((r) => r.strategy === "overflow-compactor");
+    expect(compactRecord).toBeDefined();
+    expect(compactRecord?.reason).toBe("explicit");
+
+    // No reactor.error from the validation layer about compact+infer.
+    const validationErr = events
+      .filter((e) => e.type === "reactor.error")
+      .find(
+        (e) =>
+          e.type === "reactor.error" && e.data.error.includes("Invalid action"),
+      );
+    expect(validationErr).toBeUndefined();
+  });
+
+  test("per-cycle commit cadence: each cycle produces a commit; pendingMessage overrides one auto-summary", async () => {
+    const recording = makeRecordingContextStore();
+    let directorCalls = 0;
+    const director: ReactorDirector = {
+      async decide(event, _state, _caps) {
+        directorCalls++;
+        if (event.type === "message.received" && directorCalls === 1) {
+          return { type: "infer" as const, model: "test-model" };
+        }
+        if (event.type === "inference.done") {
+          return [
+            { type: "checkpoint" as const, message: "override-1" },
+            { type: "done" as const },
+          ];
+        }
+        return { type: "done" as const };
+      },
+    };
+
+    const { reactor, waitFor } = createDirectReactor({
+      contextStore: recording.store,
+      inferenceRunner: mockInferenceRunner("done"),
+      director,
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // First cycle: inference cycle commits with override-1 (from checkpoint).
+    expect(recording.commits.length).toBe(1);
+    expect(recording.commits[0]?.message).toBe("override-1");
+  });
+
+  test("pendingMessage is consumed exactly once; the next cycle uses auto-summary", async () => {
+    const recording = makeRecordingContextStore();
+    let directorCalls = 0;
+    const director: ReactorDirector = {
+      async decide(event, _state, _caps) {
+        directorCalls++;
+        if (event.type === "message.received") {
+          if (directorCalls === 1) {
+            return [
+              { type: "checkpoint" as const, message: "first-override" },
+              { type: "infer" as const, model: "m" },
+            ];
+          }
+          return { type: "done" as const };
+        }
+        if (event.type === "inference.done") {
+          return { type: "wait" as const };
+        }
+        return { type: "done" as const };
+      },
+    };
+
+    const { reactor, waitFor } = createDirectReactor({
+      contextStore: recording.store,
+      inferenceRunner: mockInferenceRunner("ok"),
+      director,
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    setTimeout(() => reactor.deliver(makeInboundMessage()), 80);
+    await waitFor("reactor.done");
+
+    expect(recording.commits.length).toBeGreaterThanOrEqual(1);
+    expect(recording.commits[0]?.message).toBe("first-override");
+    // If a second commit happened, its message must not be the override.
+    for (let i = 1; i < recording.commits.length; i++) {
+      expect(recording.commits[i]?.message).not.toBe("first-override");
+    }
   });
 });

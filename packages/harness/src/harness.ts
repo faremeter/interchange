@@ -22,6 +22,7 @@ import {
   createReactor,
   createAuditCollector,
   createAuthzExtension,
+  createSizeCapTransform,
 } from "@interchange/inference";
 import type {
   Reactor,
@@ -33,12 +34,8 @@ import {
   createBlobReader,
   type BlobReader,
   type ContextStore,
-  type ContextCommit,
   type ConnectorThreadState,
-  type ConversationTurn,
   type InboundMessage,
-  type PendingOperation,
-  type TokenUsage,
   type Unsubscribe,
   type ReactorDirector,
 } from "@interchange/types/runtime";
@@ -191,44 +188,10 @@ export function createHarness(config: HarnessConfig): Harness {
     }
   }
 
-  // Wrap the context store so load() restores connector state and commit()
-  // persists the current connector state alongside the conversation context.
-  function wrappedCommit(
-    options: { message: string },
-    signal?: AbortSignal,
-  ): Promise<ContextCommit>;
-  function wrappedCommit(
-    turns: ConversationTurn[],
-    pendingOperations: PendingOperation[],
-    tokenUsage: TokenUsage,
-    message: string,
-    signal?: AbortSignal,
-  ): Promise<ContextCommit>;
-  async function wrappedCommit(
-    first: { message: string } | ConversationTurn[],
-    second?: PendingOperation[] | AbortSignal,
-    third?: TokenUsage,
-    fourth?: string,
-    fifth?: AbortSignal,
-  ): Promise<ContextCommit> {
-    storage.setConnectorState(currentConnectorState());
-    if (Array.isArray(first)) {
-      if (
-        second === undefined ||
-        !Array.isArray(second) ||
-        third === undefined ||
-        fourth === undefined
-      ) {
-        throw new Error(
-          "commit(turns, ops, usage, message): missing arguments",
-        );
-      }
-      return storage.commit(first, second, third, fourth, fifth);
-    }
-    const signal = second instanceof AbortSignal ? second : undefined;
-    return storage.commit(first, signal);
-  }
-
+  // Wrap the context store so load() restores connector state and the reactor's
+  // per-cycle writeMetadata picks up the live connector state via the underlying
+  // store's setConnectorState buffer (Phase 4: connector state rides along with
+  // metadata.json rather than being injected during commit).
   const contextStore: ContextStore = {
     async load(signal) {
       const loaded = await storage.load(signal);
@@ -238,7 +201,9 @@ export function createHarness(config: HarnessConfig): Harness {
     setConnectorState(state) {
       storage.setConnectorState(state);
     },
-    commit: wrappedCommit,
+    async commit(options, signal) {
+      return storage.commit(options, signal);
+    },
     async branch(name, signal) {
       return storage.branch(name, signal);
     },
@@ -265,6 +230,14 @@ export function createHarness(config: HarnessConfig): Harness {
     },
     async writeTurns(turns, signal) {
       return storage.writeTurns(turns, signal);
+    },
+    async writeMetadata(metadata, signal) {
+      // Flush the current in-memory connector state into the wrapped store's
+      // buffer so writeMetadata picks it up alongside pendingOperations and
+      // tokenUsage. This is the reactor's per-cycle moment to durably record
+      // connector thread state.
+      storage.setConnectorState(currentConnectorState());
+      return storage.writeMetadata(metadata, signal);
     },
     async readManifestHistory(limit, signal) {
       return storage.readManifestHistory(limit, signal);
@@ -423,6 +396,11 @@ export function createHarness(config: HarnessConfig): Harness {
     accumulatedErrors.splice(0, count);
   }
 
+  const sizeCapTransform = createSizeCapTransform({
+    maxChars: 10_000,
+    contextStore,
+  });
+
   // The reactor reads config.providerConfig lazily at each inference call,
   // so mutating this object hot-swaps credentials without restarting.
   const reactorConfig: Parameters<typeof createReactor>[0] = {
@@ -433,9 +411,7 @@ export function createHarness(config: HarnessConfig): Harness {
     contextStore,
     onEvent: handleEvent,
     beforeToolExtensions,
-    ...(config.toolOutputDir !== undefined
-      ? { toolOutputDir: config.toolOutputDir }
-      : {}),
+    toolResultTransforms: [sizeCapTransform],
   };
 
   if (auditCollector !== undefined) {

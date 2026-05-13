@@ -186,6 +186,20 @@ export function createAgentRepoStore(config: {
   ): Promise<void> {
     const dir = await ensureRepo(agentId);
     const transferId = crypto.randomUUID().replace(/-/g, "");
+    // Allow the per-cycle working-tree files written by the reactor at the
+    // repository root alongside `state/` and `.gitignore`. Anything outside
+    // this allowlist (notably `deploy/`) is rejected. The pack must contain
+    // at least one state-bearing path beyond `.gitignore`.
+    const allowedTopLevel = new Set([
+      "state",
+      ".gitignore",
+      "turns.jsonl",
+      "prompt.jsonl",
+      "response.jsonl",
+      "manifest.jsonl",
+      "metadata.json",
+      "tool-output",
+    ]);
     await receivePackObjects(
       dir,
       pack,
@@ -193,8 +207,8 @@ export function createAgentRepoStore(config: {
       commitSha,
       transferId,
       (paths) =>
-        paths.includes("state") &&
-        paths.every((p) => p === "state" || p === ".gitignore"),
+        paths.every((p) => allowedTopLevel.has(p)) &&
+        paths.some((p) => p !== ".gitignore"),
     );
   }
 
