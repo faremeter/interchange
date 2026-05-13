@@ -68,7 +68,7 @@ export function createInboundTurn(
   };
 }
 
-const MAX_TOOL_RESULT_CHARS = 50_000;
+const MAX_TOOL_RESULT_CHARS = 10_000;
 
 function truncateToolResult(
   text: string,

@@ -664,6 +664,7 @@ describe("SSE event processing", () => {
         hadReply: false,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -687,6 +688,7 @@ describe("SSE event processing", () => {
         hadReply: false,
         hadError: true,
         errors: [{ category: "timeout", message: "Timed out" }],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -712,6 +714,7 @@ describe("SSE event processing", () => {
         hadReply: false,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     };
@@ -786,6 +789,7 @@ describe("streaming buffer", () => {
         hadReply: false,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -803,6 +807,7 @@ describe("streaming buffer", () => {
         hadReply: false,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -831,6 +836,7 @@ describe("streaming buffer", () => {
         hadReply: false,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -1420,6 +1426,7 @@ describe("activity state machine", () => {
         hadReply: false,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -1511,6 +1518,7 @@ describe("onChange callback", () => {
         hadReply: false,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -1596,6 +1604,7 @@ describe("agent reply lifecycle", () => {
         hadReply: true,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -1626,6 +1635,7 @@ describe("agent reply lifecycle", () => {
         hadReply: true,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -1710,6 +1720,7 @@ describe("multi-turn conversation", () => {
         hadReply: true,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -1745,6 +1756,7 @@ describe("multi-turn conversation", () => {
         hadReply: true,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -1816,6 +1828,7 @@ describe("multi-turn conversation", () => {
         hadReply: true,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -1878,6 +1891,7 @@ describe("hydration edge cases", () => {
         hadReply: false,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -2059,6 +2073,7 @@ describe("turn edge cases", () => {
         hadReply: false,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [{ name: "search", content: "API rate limited" }],
       },
     });
@@ -2066,7 +2081,7 @@ describe("turn edge cases", () => {
     const turns = session.events.filter((e) => e.kind === "turn");
     expect(turns).toHaveLength(1);
     const turn = turns[0]!;
-    expect(turn.content).toBe("An error occurred during inference.");
+    expect(turn.content).toBe("");
     if (turn.kind === "turn") {
       expect(turn.toolErrors).toEqual([
         { name: "search", content: "API rate limited" },
@@ -2084,6 +2099,7 @@ describe("turn edge cases", () => {
         hadReply: false,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -2101,6 +2117,7 @@ describe("turn edge cases", () => {
         hadReply: false,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -2130,6 +2147,7 @@ describe("turn edge cases", () => {
         hadReply: true,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });
@@ -2146,6 +2164,7 @@ describe("turn edge cases", () => {
         hadReply: true,
         hadError: false,
         errors: [],
+        toolCalls: [],
         toolErrors: [],
       },
     });

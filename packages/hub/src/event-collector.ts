@@ -15,6 +15,13 @@ import { generateId } from "./ids";
 
 const log = getLogger(["hub", "event-collector"]);
 
+export type TurnToolCall = {
+  name: string;
+  arguments: Record<string, unknown>;
+  result: string;
+  isError: boolean;
+};
+
 export type TurnFinalized = {
   turnId: string;
   status: "completed" | "failed";
@@ -22,6 +29,7 @@ export type TurnFinalized = {
   hadReply: boolean;
   hadError: boolean;
   errors: { category: string; message: string }[];
+  toolCalls: TurnToolCall[];
   toolErrors: { name: string; content: string }[];
 };
 
@@ -77,6 +85,9 @@ export function createEventCollector(
   // Maps tool call IDs to tool names for correlating tool results with their
   // originating calls. Populated from inference.done tool_call blocks.
   const callNames = new Map<string, string>();
+  const callArgs = new Map<string, Record<string, unknown>>();
+  // Tool calls accumulated for TurnFinalized.
+  let accumulatedToolCalls: TurnToolCall[] = [];
   // Tool results that reported isError, accumulated for TurnFinalized.
   let accumulatedToolErrors: { name: string; content: string }[] = [];
 
@@ -94,18 +105,24 @@ export function createEventCollector(
         streamingText = "";
         break;
       case "tool.done": {
+        const callId = event.data.result.callId;
         const isError = event.data.result.isError ?? false;
         await insertPart("tool", null, {
           kind: "result",
-          callId: event.data.result.callId,
+          callId,
           content: event.data.result.content,
           isError,
         });
+        const name = callNames.get(callId) ?? callId;
+        const raw = event.data.result.content;
+        const content = typeof raw === "string" ? raw : JSON.stringify(raw);
+        accumulatedToolCalls.push({
+          name,
+          arguments: callArgs.get(callId) ?? {},
+          result: content,
+          isError,
+        });
         if (isError) {
-          const name =
-            callNames.get(event.data.result.callId) ?? event.data.result.callId;
-          const raw = event.data.result.content;
-          const content = typeof raw === "string" ? raw : JSON.stringify(raw);
           accumulatedToolErrors.push({ name, content });
         }
         break;
@@ -194,6 +211,8 @@ export function createEventCollector(
     turnHadError = false;
     accumulatedErrors = [];
     callNames.clear();
+    callArgs.clear();
+    accumulatedToolCalls = [];
     accumulatedToolErrors = [];
 
     await db.insert(inferenceTurn).values({
@@ -219,6 +238,7 @@ export function createEventCollector(
           break;
         case "tool_call":
           callNames.set(block.id, block.name);
+          callArgs.set(block.id, block.arguments);
           await insertPart("tool", null, {
             kind: "call",
             callId: block.id,
@@ -266,6 +286,7 @@ export function createEventCollector(
         hadReply,
         hadError: turnHadError,
         errors: [...accumulatedErrors],
+        toolCalls: [...accumulatedToolCalls],
         toolErrors: [...accumulatedToolErrors],
       });
     }
