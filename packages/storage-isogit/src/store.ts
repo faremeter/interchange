@@ -4,6 +4,9 @@ import git from "isomorphic-git";
 import {
   ContentBlock,
   TokenUsage,
+  TransformRecord,
+  type AssistantTurn,
+  type TransformRecord as TransformRecordType,
   type ContextStore,
   type AuditStore,
   type ContextCommit,
@@ -22,6 +25,23 @@ import type { CommitSigner } from "./signer";
 import { buildSigningArgs } from "./commit-helpers";
 
 const CONTEXT_FILE = "state/context.json";
+const TURNS_FILE = "turns.jsonl";
+const PROMPT_FILE = "prompt.jsonl";
+const RESPONSE_FILE = "response.jsonl";
+const MANIFEST_FILE = "manifest.jsonl";
+const METADATA_FILE = "metadata.json";
+const TOOL_OUTPUT_DIR = "tool-output";
+
+const BLOB_EXTENSIONS: Readonly<Record<string, string>> = {
+  "text/plain": ".txt",
+  "application/json": ".json",
+};
+
+function blobExtensionFor(contentType: string | undefined): string {
+  if (contentType === undefined) return "";
+  const ext = BLOB_EXTENSIONS[contentType];
+  return ext ?? "";
+}
 
 const ConnectorThreadStateSchema = type({
   threadRoot: "string",
@@ -91,6 +111,7 @@ const AUDIT_DIR = "state/audit";
 const ERRORS_DIR = "state/errors";
 
 const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
+const UNSAFE_FILENAME_CHARS = /[^a-zA-Z0-9_-]/g;
 
 function assertSafeSegment(value: string, label: string): void {
   if (!SAFE_PATH_SEGMENT.test(value)) {
@@ -98,6 +119,44 @@ function assertSafeSegment(value: string, label: string): void {
       `${label} contains unsafe characters: ${JSON.stringify(value)}`,
     );
   }
+}
+
+/**
+ * Validate a callId for use in a filesystem path and return the sanitized
+ * form used as the filename. Rejects path traversal (`..`, `/`) outright;
+ * other unsafe characters are replaced with `_`.
+ */
+function sanitizeCallId(callId: string): string {
+  if (callId.includes("..") || callId.includes("/")) {
+    throw new Error(
+      `callId contains unsafe characters: ${JSON.stringify(callId)}`,
+    );
+  }
+  return callId.replace(UNSAFE_FILENAME_CHARS, "_");
+}
+
+async function pathExists(fullPath: string): Promise<boolean> {
+  try {
+    await fs.promises.access(fullPath);
+    return true;
+  } catch (cause) {
+    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") {
+      return false;
+    }
+    throw cause;
+  }
+}
+
+function encodeJsonlLines(records: readonly unknown[]): string {
+  if (records.length === 0) return "";
+  return records.map((r) => JSON.stringify(r)).join("\n") + "\n";
+}
+
+function decodeJsonlLines(text: string): unknown[] {
+  if (text.length === 0) return [];
+  const lines = text.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines.map((line) => JSON.parse(line) as unknown);
 }
 
 /**
@@ -163,12 +222,50 @@ export class IsogitStore implements ContextStore, AuditStore {
     );
   }
 
-  async commit(
+  commit(
+    options: { message: string },
+    signal?: AbortSignal,
+  ): Promise<ContextCommit>;
+  commit(
     turns: ConversationTurn[],
     pendingOperations: PendingOperation[],
     tokenUsage: TokenUsage,
     message: string,
+    signal?: AbortSignal,
+  ): Promise<ContextCommit>;
+  async commit(
+    first: { message: string } | ConversationTurn[],
+    secondOrSignal?: PendingOperation[] | AbortSignal,
+    tokenUsage?: TokenUsage,
+    message?: string,
     _signal?: AbortSignal,
+  ): Promise<ContextCommit> {
+    if (Array.isArray(first)) {
+      if (
+        secondOrSignal === undefined ||
+        !Array.isArray(secondOrSignal) ||
+        tokenUsage === undefined ||
+        message === undefined
+      ) {
+        throw new Error(
+          "commit(turns, ops, usage, message): missing arguments",
+        );
+      }
+      return this.commitLegacyContext(
+        first,
+        secondOrSignal,
+        tokenUsage,
+        message,
+      );
+    }
+    return this.commitWorkingTree(first.message);
+  }
+
+  private async commitLegacyContext(
+    turns: ConversationTurn[],
+    pendingOperations: PendingOperation[],
+    tokenUsage: TokenUsage,
+    message: string,
   ): Promise<ContextCommit> {
     const data: ContextData = {
       turns,
@@ -188,16 +285,61 @@ export class IsogitStore implements ContextStore, AuditStore {
       ...this.signingArgs(),
     });
 
+    return this.describeHead(oid, message);
+  }
+
+  private async commitWorkingTree(message: string): Promise<ContextCommit> {
+    const tracked = [
+      TURNS_FILE,
+      PROMPT_FILE,
+      RESPONSE_FILE,
+      MANIFEST_FILE,
+      METADATA_FILE,
+    ];
+    for (const filepath of tracked) {
+      const fullPath = path.join(this.dir, filepath);
+      if (await pathExists(fullPath)) {
+        await git.add({ fs, dir: this.dir, filepath });
+      }
+    }
+
+    const blobsDir = path.join(this.dir, TOOL_OUTPUT_DIR);
+    if (await pathExists(blobsDir)) {
+      const entries = await fs.promises.readdir(blobsDir);
+      for (const entry of entries) {
+        await git.add({
+          fs,
+          dir: this.dir,
+          filepath: `${TOOL_OUTPUT_DIR}/${entry}`,
+        });
+      }
+    }
+
+    const oid = await git.commit({
+      fs,
+      dir: this.dir,
+      message,
+      author: AUTHOR,
+      ...this.signingArgs(),
+    });
+
+    return this.describeHead(oid, message);
+  }
+
+  private async describeHead(
+    expectedOid: string,
+    message: string,
+  ): Promise<ContextCommit> {
     const entries = await git.log({ fs, dir: this.dir, depth: 2 });
     const entry = entries[0];
-    if (entry === undefined || entry.oid !== oid) {
+    if (entry === undefined || entry.oid !== expectedOid) {
       throw new Error(
-        `Unexpected log state after commit: expected ${oid} as HEAD`,
+        `Unexpected log state after commit: expected ${expectedOid} as HEAD`,
       );
     }
     const parentOid = entries[1]?.oid;
     const base = {
-      hash: oid,
+      hash: expectedOid,
       message: message.trimEnd(),
       timestamp: entry.commit.author.timestamp * 1000,
     };
@@ -228,6 +370,120 @@ export class IsogitStore implements ContextStore, AuditStore {
     return data.turns;
   }
 
+  async writeBlob(
+    key: string,
+    bytes: Uint8Array,
+    contentType?: string,
+    _signal?: AbortSignal,
+  ): Promise<void> {
+    const safeKey = sanitizeCallId(key);
+    const filename = `${safeKey}${blobExtensionFor(contentType)}`;
+    const dirPath = path.join(this.dir, TOOL_OUTPUT_DIR);
+    await fs.promises.mkdir(dirPath, { recursive: true });
+    await fs.promises.writeFile(path.join(dirPath, filename), bytes);
+  }
+
+  async readBlob(key: string, _signal?: AbortSignal): Promise<Uint8Array> {
+    const safeKey = sanitizeCallId(key);
+    const dirPath = path.join(this.dir, TOOL_OUTPUT_DIR);
+    let entries: string[];
+    try {
+      entries = await fs.promises.readdir(dirPath);
+    } catch (cause) {
+      if (
+        cause instanceof Error &&
+        "code" in cause &&
+        cause.code === "ENOENT"
+      ) {
+        throw new Error(`Blob not found for key: ${JSON.stringify(key)}`);
+      }
+      throw cause;
+    }
+
+    const match = entries.find(
+      (entry) => entry === safeKey || entry.startsWith(`${safeKey}.`),
+    );
+    if (match === undefined) {
+      throw new Error(`Blob not found for key: ${JSON.stringify(key)}`);
+    }
+    const buf = await fs.promises.readFile(path.join(dirPath, match));
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+
+  async writePrompt(
+    turns: ConversationTurn[],
+    _signal?: AbortSignal,
+  ): Promise<void> {
+    await fs.promises.writeFile(
+      path.join(this.dir, PROMPT_FILE),
+      encodeJsonlLines(turns),
+    );
+  }
+
+  async writeResponse(
+    turn: AssistantTurn,
+    _signal?: AbortSignal,
+  ): Promise<void> {
+    await fs.promises.writeFile(
+      path.join(this.dir, RESPONSE_FILE),
+      encodeJsonlLines([turn]),
+    );
+  }
+
+  async writeManifest(
+    records: TransformRecordType[],
+    _signal?: AbortSignal,
+  ): Promise<void> {
+    await fs.promises.writeFile(
+      path.join(this.dir, MANIFEST_FILE),
+      encodeJsonlLines(records),
+    );
+  }
+
+  async writeTurns(
+    turns: ConversationTurn[],
+    _signal?: AbortSignal,
+  ): Promise<void> {
+    await fs.promises.writeFile(
+      path.join(this.dir, TURNS_FILE),
+      encodeJsonlLines(turns),
+    );
+  }
+
+  async readManifestHistory(
+    limit: number,
+    _signal?: AbortSignal,
+  ): Promise<TransformRecordType[]> {
+    if (limit <= 0) return [];
+    const entries = await git.log({ fs, dir: this.dir, depth: limit });
+    const collected: TransformRecordType[] = [];
+    for (const entry of entries) {
+      let blob: Uint8Array;
+      try {
+        ({ blob } = await git.readBlob({
+          fs,
+          dir: this.dir,
+          oid: entry.oid,
+          filepath: MANIFEST_FILE,
+        }));
+      } catch {
+        continue;
+      }
+      const text = new TextDecoder().decode(blob);
+      const parsedLines = decodeJsonlLines(text);
+      for (const raw of parsedLines) {
+        const result = TransformRecord(raw);
+        if (result instanceof type.errors) {
+          throw new Error(
+            `Invalid manifest record at commit ${entry.oid}: ${result.summary}`,
+          );
+        }
+        collected.push(result);
+      }
+    }
+    return collected;
+  }
+
   async commitAudit(
     records: AuditRecordType[],
     _signal?: AbortSignal,
@@ -240,12 +496,7 @@ export class IsogitStore implements ContextStore, AuditStore {
     const planned: { record: AuditRecordType; filepath: string }[] = [];
     for (const record of records) {
       assertSafeSegment(record.sessionId, "sessionId");
-      if (record.callId.includes("..") || record.callId.includes("/")) {
-        throw new Error(
-          `callId contains unsafe characters: ${JSON.stringify(record.callId)}`,
-        );
-      }
-      const safeCallId = record.callId.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const safeCallId = sanitizeCallId(record.callId);
 
       const filepath = path.join(
         AUDIT_DIR,

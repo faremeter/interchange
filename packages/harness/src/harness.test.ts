@@ -53,6 +53,27 @@ function emptyUsage(): TokenUsage {
 }
 
 function makeContextStore(): ContextStore {
+  function commit(
+    options: { message: string },
+    signal?: AbortSignal,
+  ): Promise<ContextCommit>;
+  function commit(
+    turns: ConversationTurn[],
+    pendingOperations: PendingOperation[],
+    tokenUsage: TokenUsage,
+    message: string,
+    signal?: AbortSignal,
+  ): Promise<ContextCommit>;
+  async function commit(
+    first: { message: string } | ConversationTurn[],
+    _second?: PendingOperation[] | AbortSignal,
+    _third?: TokenUsage,
+    fourth?: string,
+  ): Promise<ContextCommit> {
+    const message = Array.isArray(first) ? (fourth ?? "") : first.message;
+    return { hash: "mock-hash", message, timestamp: Date.now() };
+  }
+
   return {
     async load() {
       const turns: ConversationTurn[] = [];
@@ -67,14 +88,7 @@ function makeContextStore(): ContextStore {
     setConnectorState() {
       /* noop */
     },
-    async commit(
-      _msgs: ConversationTurn[],
-      _ops: PendingOperation[],
-      _usage: TokenUsage,
-      message: string,
-    ): Promise<ContextCommit> {
-      return { hash: "mock-hash", message, timestamp: Date.now() };
-    },
+    commit,
     async branch(): Promise<void> {
       /* noop */
     },
@@ -83,6 +97,27 @@ function makeContextStore(): ContextStore {
     },
     async readAt(): Promise<ConversationTurn[]> {
       return [];
+    },
+    async writeBlob() {
+      throw new Error("not implemented");
+    },
+    async readBlob() {
+      throw new Error("not implemented");
+    },
+    async writePrompt() {
+      throw new Error("not implemented");
+    },
+    async writeResponse() {
+      throw new Error("not implemented");
+    },
+    async writeManifest() {
+      throw new Error("not implemented");
+    },
+    async writeTurns() {
+      throw new Error("not implemented");
+    },
+    async readManifestHistory() {
+      throw new Error("not implemented");
     },
   };
 }

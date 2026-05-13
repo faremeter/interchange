@@ -38,6 +38,27 @@ function emptyUsage(): TokenUsage {
 }
 
 function makeContextStore(turns: ConversationTurn[] = []): ContextStore {
+  function commit(
+    options: { message: string },
+    signal?: AbortSignal,
+  ): Promise<ContextCommit>;
+  function commit(
+    turns: ConversationTurn[],
+    pendingOperations: PendingOperation[],
+    tokenUsage: TokenUsage,
+    message: string,
+    signal?: AbortSignal,
+  ): Promise<ContextCommit>;
+  async function commit(
+    first: { message: string } | ConversationTurn[],
+    _second?: PendingOperation[] | AbortSignal,
+    _third?: TokenUsage,
+    fourth?: string,
+  ): Promise<ContextCommit> {
+    const message = Array.isArray(first) ? (fourth ?? "") : first.message;
+    return { hash: "abc", message, timestamp: Date.now() };
+  }
+
   return {
     async load() {
       return {
@@ -50,9 +71,7 @@ function makeContextStore(turns: ConversationTurn[] = []): ContextStore {
     setConnectorState() {
       /* noop */
     },
-    async commit(_msgs, _ops, _usage, message): Promise<ContextCommit> {
-      return { hash: "abc", message, timestamp: Date.now() };
-    },
+    commit,
     async branch() {
       /* noop */
     },
@@ -61,6 +80,27 @@ function makeContextStore(turns: ConversationTurn[] = []): ContextStore {
     },
     async readAt() {
       return [];
+    },
+    async writeBlob() {
+      throw new Error("not implemented");
+    },
+    async readBlob() {
+      throw new Error("not implemented");
+    },
+    async writePrompt() {
+      throw new Error("not implemented");
+    },
+    async writeResponse() {
+      throw new Error("not implemented");
+    },
+    async writeManifest() {
+      throw new Error("not implemented");
+    },
+    async writeTurns() {
+      throw new Error("not implemented");
+    },
+    async readManifestHistory() {
+      throw new Error("not implemented");
     },
   };
 }
@@ -280,6 +320,27 @@ function failingContextStore(error: Error): ContextStore {
       return fail();
     },
     async readAt() {
+      return fail();
+    },
+    async writeBlob() {
+      return fail();
+    },
+    async readBlob() {
+      return fail();
+    },
+    async writePrompt() {
+      return fail();
+    },
+    async writeResponse() {
+      return fail();
+    },
+    async writeManifest() {
+      return fail();
+    },
+    async writeTurns() {
+      return fail();
+    },
+    async readManifestHistory() {
       return fail();
     },
   };
@@ -1281,6 +1342,29 @@ describe("createReactor — tool runner failures", () => {
     // We observe history indirectly via a checkpoint that captures the
     // turns passed to contextStore.commit().
     let committedTurns: ConversationTurn[] = [];
+    function capturingCommit(
+      options: { message: string },
+      signal?: AbortSignal,
+    ): Promise<ContextCommit>;
+    function capturingCommit(
+      turns: ConversationTurn[],
+      pendingOperations: PendingOperation[],
+      tokenUsage: TokenUsage,
+      message: string,
+      signal?: AbortSignal,
+    ): Promise<ContextCommit>;
+    async function capturingCommit(
+      first: { message: string } | ConversationTurn[],
+      _second?: PendingOperation[] | AbortSignal,
+      _third?: TokenUsage,
+      fourth?: string,
+    ): Promise<ContextCommit> {
+      if (Array.isArray(first)) {
+        committedTurns = [...first];
+        return { hash: "abc", message: fourth ?? "", timestamp: Date.now() };
+      }
+      return { hash: "abc", message: first.message, timestamp: Date.now() };
+    }
     const capturingStore: ContextStore = {
       async load() {
         return {
@@ -1293,10 +1377,7 @@ describe("createReactor — tool runner failures", () => {
       setConnectorState() {
         /* noop */
       },
-      async commit(msgs, _ops, _usage, message): Promise<ContextCommit> {
-        committedTurns = [...msgs];
-        return { hash: "abc", message, timestamp: Date.now() };
-      },
+      commit: capturingCommit,
       async branch() {
         /* noop */
       },
@@ -1305,6 +1386,27 @@ describe("createReactor — tool runner failures", () => {
       },
       async readAt() {
         return [];
+      },
+      async writeBlob() {
+        throw new Error("not implemented");
+      },
+      async readBlob() {
+        throw new Error("not implemented");
+      },
+      async writePrompt() {
+        throw new Error("not implemented");
+      },
+      async writeResponse() {
+        throw new Error("not implemented");
+      },
+      async writeManifest() {
+        throw new Error("not implemented");
+      },
+      async writeTurns() {
+        throw new Error("not implemented");
+      },
+      async readManifestHistory() {
+        throw new Error("not implemented");
       },
     };
 
@@ -1553,6 +1655,27 @@ describe("createReactor — checkpoint failure", () => {
       },
       async readAt() {
         return [];
+      },
+      async writeBlob() {
+        throw new Error("not implemented");
+      },
+      async readBlob() {
+        throw new Error("not implemented");
+      },
+      async writePrompt() {
+        throw new Error("not implemented");
+      },
+      async writeResponse() {
+        throw new Error("not implemented");
+      },
+      async writeManifest() {
+        throw new Error("not implemented");
+      },
+      async writeTurns() {
+        throw new Error("not implemented");
+      },
+      async readManifestHistory() {
+        throw new Error("not implemented");
       },
     };
 
@@ -2774,13 +2897,43 @@ describe("createReactor — afterCheckpoint", () => {
 
     const store = makeContextStore();
     const originalCommit = store.commit.bind(store);
-    store.commit = async (...args) => {
+    function wrappedCommit(
+      options: { message: string },
+      signal?: AbortSignal,
+    ): Promise<ContextCommit>;
+    function wrappedCommit(
+      turns: ConversationTurn[],
+      pendingOperations: PendingOperation[],
+      tokenUsage: TokenUsage,
+      message: string,
+      signal?: AbortSignal,
+    ): Promise<ContextCommit>;
+    async function wrappedCommit(
+      first: { message: string } | ConversationTurn[],
+      second?: PendingOperation[] | AbortSignal,
+      third?: TokenUsage,
+      fourth?: string,
+      fifth?: AbortSignal,
+    ): Promise<ContextCommit> {
       commitCount++;
       if (commitCount === 1) {
         throw new Error("disk full");
       }
-      return originalCommit(...args);
-    };
+      if (Array.isArray(first)) {
+        if (
+          second === undefined ||
+          !Array.isArray(second) ||
+          third === undefined ||
+          fourth === undefined
+        ) {
+          throw new Error("wrappedCommit: legacy form missing arguments");
+        }
+        return originalCommit(first, second, third, fourth, fifth);
+      }
+      const signal = second instanceof AbortSignal ? second : undefined;
+      return originalCommit(first, signal);
+    }
+    store.commit = wrappedCommit;
 
     const { reactor, waitFor } = createTestReactor({
       contextStore: store,

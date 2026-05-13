@@ -1411,8 +1411,21 @@ export interface ContextStore {
   setConnectorState(state: ConnectorThreadState | null): void;
 
   /**
-   * Commit the current turn history and reactor metadata to the store.
-   * May be called during a checkpoint, suspension, compaction, or shutdown.
+   * Commit whatever currently lives in the working tree, using the supplied
+   * commit message. Phase 4 routes the reactor's per-cycle checkpoint through
+   * this overload after writing the per-cycle files via `writeTurns`,
+   * `writePrompt`, `writeResponse`, `writeManifest`, and any `writeBlob`
+   * calls produced by transforms.
+   */
+  commit(
+    options: { message: string },
+    signal?: AbortSignal,
+  ): Promise<ContextCommit>;
+  /**
+   * Legacy commit signature: serialize the supplied turn history, pending
+   * operations, and token usage into `state/context.json` and commit. Kept
+   * working alongside the new working-tree-only overload until Phase 4 cuts
+   * the reactor over to the new path.
    */
   commit(
     turns: ConversationTurn[],
@@ -1438,6 +1451,67 @@ export interface ContextStore {
    * inspection and rollback.
    */
   readAt(hash: string, signal?: AbortSignal): Promise<ConversationTurn[]>;
+
+  /**
+   * Write an opaque blob to the working tree under `tool-output/`. Used by
+   * `ToolResultTransform`s that spill oversized payloads out of the inline
+   * conversation. The file is staged at the next `commit({ message })`.
+   *
+   * `key` is sanitized for filesystem safety; callers should pass the tool
+   * call id. `contentType` selects a file extension when known.
+   */
+  writeBlob(
+    key: string,
+    bytes: Uint8Array,
+    contentType?: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
+
+  /**
+   * Read a blob previously written via `writeBlob`. Throws if no blob with
+   * that key exists.
+   */
+  readBlob(key: string, signal?: AbortSignal): Promise<Uint8Array>;
+
+  /**
+   * Overwrite `prompt.jsonl` with the materialized prompt for the current
+   * inference cycle. One `ConversationTurn` per line. Staged at the next
+   * `commit({ message })`.
+   */
+  writePrompt(turns: ConversationTurn[], signal?: AbortSignal): Promise<void>;
+
+  /**
+   * Overwrite `response.jsonl` with the assistant turn returned for the
+   * current cycle. Single-line JSONL for consistency with the per-cycle file
+   * conventions. Staged at the next `commit({ message })`.
+   */
+  writeResponse(turn: AssistantTurn, signal?: AbortSignal): Promise<void>;
+
+  /**
+   * Overwrite `manifest.jsonl` with the ordered transform records produced
+   * for the current cycle. One `TransformRecord` per line. Staged at the
+   * next `commit({ message })`.
+   */
+  writeManifest(
+    records: TransformRecord[],
+    signal?: AbortSignal,
+  ): Promise<void>;
+
+  /**
+   * Overwrite `turns.jsonl` with the durable conversation history. One
+   * `ConversationTurn` per line. Staged at the next `commit({ message })`.
+   */
+  writeTurns(turns: ConversationTurn[], signal?: AbortSignal): Promise<void>;
+
+  /**
+   * Read manifest entries from the most recent `limit` commits that contain
+   * a `manifest.jsonl`. Newest commit first; records within a commit are
+   * returned in their natural in-file order (chronological per-cycle).
+   */
+  readManifestHistory(
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<TransformRecord[]>;
 }
 
 // ---------------------------------------------------------------------------
