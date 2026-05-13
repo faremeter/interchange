@@ -50,6 +50,12 @@ export const TurnCommittedEvent = type({
       category: "string",
       message: "string",
     }).array(),
+    toolCalls: type({
+      name: "string",
+      arguments: "Record<string, unknown>",
+      result: "string",
+      isError: "boolean",
+    }).array(),
     toolErrors: type({
       name: "string",
       content: "string",
