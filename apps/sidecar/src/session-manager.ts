@@ -358,6 +358,7 @@ export function createSessionManager(
         auditStore: storage,
         deployTools: allToolDefs,
         tools: toolDispatch,
+        toolOutputDir: workDir,
         onEvent(event: InferenceEvent) {
           if (
             event.type === "connector.reply" &&
