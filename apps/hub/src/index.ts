@@ -43,6 +43,7 @@ const eventCollectors = createEventCollectorRegistry({
         hadReply: turn.hadReply,
         hadError: turn.hadError,
         errors: turn.errors,
+        toolCalls: turn.toolCalls,
         toolErrors: turn.toolErrors,
       },
     });

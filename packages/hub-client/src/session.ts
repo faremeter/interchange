@@ -105,6 +105,7 @@ export function createInstanceSession(opts: {
         hadReply: _,
         hadError,
         errors,
+        toolCalls,
         toolErrors,
       } = turnEvent.data;
 
@@ -117,14 +118,16 @@ export function createInstanceSession(opts: {
         sseBuffer.some((e) => e.kind === "turn" && e.turnId === turnId);
 
       if (!alreadyInEvents && !alreadyInBuffer) {
-        if (text || isError || toolErrors.length > 0) {
+        if (text || isError || toolCalls.length > 0 || toolErrors.length > 0) {
           const newEvent: InstanceEvent = {
             kind: "turn",
             turnId,
-            content: text || "An error occurred during inference.",
+            content:
+              text || (isError ? "An error occurred during inference." : ""),
             timestamp: new Date().toISOString(),
             ...(isError ? { isError: true } : {}),
             ...(errors.length > 0 ? { errors } : {}),
+            ...(toolCalls.length > 0 ? { toolCalls } : {}),
             ...(toolErrors.length > 0 ? { toolErrors } : {}),
           };
           // Inline push/buffer instead of pushOrBuffer to avoid a double
