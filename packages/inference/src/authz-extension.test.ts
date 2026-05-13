@@ -179,9 +179,13 @@ describe("createAuthzExtension", () => {
       onDecision: (d) => decisions.push(d),
     });
 
-    await expect(
-      ext.beforeTool(makeCall(), makeState(), signal),
-    ).rejects.toThrow("DB connection failed");
+    let thrown: Error | undefined;
+    try {
+      await ext.beforeTool(makeCall(), makeState(), signal);
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toBe("DB connection failed");
 
     const d = getDecision(decisions);
     expect(d.callId).toBe("call-1");
@@ -256,8 +260,12 @@ describe("createAuthzExtension", () => {
       },
     });
 
-    await expect(
-      ext.beforeTool(makeCall(), makeState(), signal),
-    ).rejects.toThrow("DB connection failed");
+    let thrown: Error | undefined;
+    try {
+      await ext.beforeTool(makeCall(), makeState(), signal);
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toBe("DB connection failed");
   });
 });

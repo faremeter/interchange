@@ -1100,15 +1100,25 @@ describe("test harness helpers", () => {
 
   test("failingContextStore rejects on load", async () => {
     const store = failingContextStore(new Error("disk on fire"));
-    await expect(store.load()).rejects.toThrow("disk on fire");
+    let thrown: Error | undefined;
+    try {
+      await store.load();
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("disk on fire");
   });
 
   test("throwingToolRunner throws on run", async () => {
     const runner = throwingToolRunner(new Error("tool exploded"));
     const signal = new AbortController().signal;
-    await expect(
-      runner.run({ id: "c1", name: "t", arguments: {} }, signal),
-    ).rejects.toThrow("tool exploded");
+    let thrown: Error | undefined;
+    try {
+      await runner.run({ id: "c1", name: "t", arguments: {} }, signal);
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("tool exploded");
   });
 
   test("getEvent throws when event is missing", () => {
