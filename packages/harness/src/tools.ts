@@ -461,7 +461,7 @@ export function getMailToolDefinitions(): ToolDefinition[] {
     {
       name: "mail_send",
       description:
-        "Send mail to another agent or address. Use this to initiate conversations or send information to other agents.",
+        "Send mail to another agent or address. Use this to initiate conversations or send mail to other agents.",
       inputSchema: {
         type: "object",
         properties: {
@@ -471,11 +471,11 @@ export function getMailToolDefinitions(): ToolDefinition[] {
           },
           content: {
             type: "string",
-            description: "Message text content",
+            description: "Mail text content",
           },
           type: {
             type: "string",
-            description: "Message type (default: conversation.message)",
+            description: "Mail type (default: conversation.message)",
             default: "conversation.message",
           },
           subject: {
@@ -484,7 +484,7 @@ export function getMailToolDefinitions(): ToolDefinition[] {
           },
           inReplyTo: {
             type: "string",
-            description: "Message-ID of the message being replied to",
+            description: "Message-ID of the mail being replied to",
           },
         },
         required: ["to", "content"],
@@ -493,13 +493,13 @@ export function getMailToolDefinitions(): ToolDefinition[] {
     {
       name: "mail_reply",
       description:
-        "Reply to mail by reference. Addresses the reply to the original sender and sets inReplyTo for threading.",
+        "Reply to a mail by reference. Addresses the reply to the original sender and sets inReplyTo for threading.",
       inputSchema: {
         type: "object",
         properties: {
           ref: {
             type: "object",
-            description: "Message reference { uid, mailbox }",
+            description: "Mail reference { uid, mailbox }",
             properties: {
               uid: { type: "number" },
               mailbox: { type: "string" },
@@ -508,11 +508,11 @@ export function getMailToolDefinitions(): ToolDefinition[] {
           },
           content: {
             type: "string",
-            description: "Reply text content",
+            description: "Reply mail text content",
           },
           type: {
             type: "string",
-            description: "Message type (default: conversation.message)",
+            description: "Mail type (default: conversation.message)",
             default: "conversation.message",
           },
         },
@@ -521,13 +521,13 @@ export function getMailToolDefinitions(): ToolDefinition[] {
     },
     {
       name: "mail_search",
-      description: "Search mail in a mailbox. Returns message summaries.",
+      description: "Search mail in a mailbox. Returns mail summaries.",
       inputSchema: {
         type: "object",
         properties: {
           mailbox: {
             type: "string",
-            description: "Mailbox to search (default: INBOX)",
+            description: "Mailbox to search",
             default: "INBOX",
           },
           query: {
@@ -536,7 +536,7 @@ export function getMailToolDefinitions(): ToolDefinition[] {
           },
           limit: {
             type: "number",
-            description: "Maximum results to return (default: 20)",
+            description: "Maximum results to return",
             default: 20,
           },
         },
@@ -544,13 +544,13 @@ export function getMailToolDefinitions(): ToolDefinition[] {
     },
     {
       name: "mail_read",
-      description: "Read a specific mail message by reference.",
+      description: "Read a specific mail by reference.",
       inputSchema: {
         type: "object",
         properties: {
           ref: {
             type: "object",
-            description: "Message reference { uid, mailbox }",
+            description: "Mail reference { uid, mailbox }",
             properties: {
               uid: { type: "number" },
               mailbox: { type: "string" },
@@ -570,24 +570,24 @@ export function getMailToolDefinitions(): ToolDefinition[] {
     {
       name: "mail_wait",
       description:
-        "Wait for a message matching a query to arrive. Blocks until a matching message is delivered or the timeout expires. Use this instead of polling mail_search in a loop.",
+        "Wait for mail matching a query to arrive. Blocks until matching mail is delivered or the timeout expires. Use this instead of polling mail_search in a loop.",
       inputSchema: {
         type: "object",
         properties: {
           query: {
             type: "object",
             description:
-              "Search criteria for the message to wait for (e.g. { from: 'agent@...' })",
+              "Search criteria for the mail to wait for (e.g. { from: 'agent@...' })",
           },
           timeout: {
             type: "number",
             description:
-              "Maximum seconds to wait before returning a timeout error (default: 120)",
+              "Maximum seconds to wait before returning a timeout error",
             default: 120,
           },
           mailbox: {
             type: "string",
-            description: "Mailbox to watch (default: INBOX)",
+            description: "Mailbox to watch",
             default: "INBOX",
           },
         },
