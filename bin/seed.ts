@@ -508,10 +508,10 @@ Use the file tools (read_file, write_file, edit_file, search_files, grep) to exp
 When you edit or write files, the language server will automatically report type errors and diagnostics. Pay attention to these diagnostics and fix any issues before declaring your work complete.
 
 When you receive a task via mail, work through it methodically: understand the codebase, plan your approach, implement the changes, verify they build and pass tests, then report back with what you did.`,
-    modelConfig: { defaultModel: "claude-sonnet-4-20250514" },
+    modelConfig: { defaultModel: "kimi-k2.6" },
     capabilities: { coding: true, fileSystem: true, languageServer: true },
     credentialRequirements: [
-      { providerName: "Anthropic", source: "tenant", scopes: ["chat"] },
+      { providerName: "OpenCode Go", source: "tenant", scopes: ["chat"] },
     ],
     roleIds: [codingRoleId],
   },
@@ -674,6 +674,21 @@ const { status: prv3Status, data: prv3Data } = await api(
 );
 checkOrSkip("create stripe provider", prv3Status, 201, prv3Data);
 
+const { status: prv4Status, data: prv4Data } = await api(
+  "POST",
+  `/api/tenants/${acmeTenantId}/providers`,
+  {
+    name: "OpenCode Go",
+    plugin: "openai-compatible",
+    metadata: {
+      baseURL: "https://opencode.ai/zen/go/v1",
+      defaultModel: "kimi-k2.6",
+    },
+  },
+  aliceCookies,
+);
+checkOrSkip("create opencode-go provider", prv4Status, 201, prv4Data);
+
 // Look up provider IDs (handles re-runs where providers already exist)
 const { data: acmeProviders } = await api(
   "GET",
@@ -688,6 +703,9 @@ const providerList = parse(
 );
 const anthropicProvider = providerList.data.find((p) => p.name === "Anthropic");
 const githubProvider = providerList.data.find((p) => p.name === "GitHub");
+const opencodeGoProvider = providerList.data.find(
+  (p) => p.name === "OpenCode Go",
+);
 
 const { data: widgetProviders } = await api(
   "GET",
@@ -780,6 +798,23 @@ if (stripeProvider) {
     aliceCookies,
   );
   checkOrSkip("create stripe credential", cred3Status, 201, cred3Data);
+}
+
+if (opencodeGoProvider) {
+  const { status: cred4Status, data: cred4Data } = await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/credentials`,
+    {
+      name: "OpenCode Go API Key",
+      type: "api_key",
+      providerId: opencodeGoProvider.id,
+      description: "OpenCode Go key for coding agents",
+      secret: "REPLACE_WITH_YOUR_OPENCODE_GO_KEY",
+      scopes: ["chat"],
+    },
+    aliceCookies,
+  );
+  checkOrSkip("create opencode-go credential", cred4Status, 201, cred4Data);
 }
 
 // -- Create wallets --
