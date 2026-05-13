@@ -989,7 +989,13 @@ describe("plugin wiring", () => {
 
     const pt = createPosixTools({ cwd: tmpDir, plugins: [plugin] });
 
-    await expect(pt.dispose()).rejects.toThrow(AggregateError);
+    let thrown: unknown;
+    try {
+      await pt.dispose();
+    } catch (cause) {
+      thrown = cause;
+    }
+    expect(thrown).toBeInstanceOf(AggregateError);
   });
 
   test("middleware exception is caught and returned as error result", async () => {

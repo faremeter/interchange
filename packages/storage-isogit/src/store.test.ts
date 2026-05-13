@@ -427,9 +427,13 @@ describe("audit store", () => {
     );
     await fs.promises.writeFile(corruptPath, JSON.stringify({ garbage: true }));
 
-    await expect(store.loadAudit("session-1")).rejects.toThrow(
-      "Invalid audit record",
-    );
+    let thrown: Error | undefined;
+    try {
+      await store.loadAudit("session-1");
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("Invalid audit record");
   });
 
   test("rejects sessionId with path traversal", async () => {
@@ -437,9 +441,13 @@ describe("audit store", () => {
     const store = await createAuditStore(dir);
 
     const record = makeAuditRecord({ sessionId: "../escape" });
-    await expect(store.commitAudit([record])).rejects.toThrow(
-      "unsafe characters",
-    );
+    let thrown: Error | undefined;
+    try {
+      await store.commitAudit([record]);
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("unsafe characters");
   });
 
   test("rejects callId with path traversal", async () => {
@@ -447,18 +455,26 @@ describe("audit store", () => {
     const store = await createAuditStore(dir);
 
     const record = makeAuditRecord({ callId: "../escape" });
-    await expect(store.commitAudit([record])).rejects.toThrow(
-      "unsafe characters",
-    );
+    let thrown: Error | undefined;
+    try {
+      await store.commitAudit([record]);
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("unsafe characters");
   });
 
   test("rejects sessionId with path traversal on load", async () => {
     const dir = await tempDir();
     const store = await createAuditStore(dir);
 
-    await expect(store.loadAudit("../escape")).rejects.toThrow(
-      "unsafe characters",
-    );
+    let thrown: Error | undefined;
+    try {
+      await store.loadAudit("../escape");
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("unsafe characters");
   });
 
   test("rejects duplicate callId within a session", async () => {
@@ -466,9 +482,13 @@ describe("audit store", () => {
     const store = await createAuditStore(dir);
 
     await store.commitAudit([makeAuditRecord({ callId: "c1", seq: 0 })]);
-    await expect(
-      store.commitAudit([makeAuditRecord({ callId: "c1", seq: 1 })]),
-    ).rejects.toThrow("Duplicate audit record");
+    let thrown: Error | undefined;
+    try {
+      await store.commitAudit([makeAuditRecord({ callId: "c1", seq: 1 })]);
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("Duplicate audit record");
   });
 
   test("commitAudit duplicate in batch leaves no orphaned files", async () => {
@@ -481,9 +501,13 @@ describe("audit store", () => {
     // reject before writing the new record to disk.
     const fresh = makeAuditRecord({ callId: "c2", seq: 1 });
     const dup = makeAuditRecord({ callId: "c1", seq: 2 });
-    await expect(store.commitAudit([fresh, dup])).rejects.toThrow(
-      "Duplicate audit record",
-    );
+    let thrown: Error | undefined;
+    try {
+      await store.commitAudit([fresh, dup]);
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("Duplicate audit record");
 
     const freshPath = path.join(dir, "state", "audit", "session-1", "c2.json");
     expect(fs.existsSync(freshPath)).toBe(false);
@@ -540,9 +564,13 @@ describe("error store", () => {
 
     const record = makeErrorRecord({ seq: 1, category: "credential_failure" });
     await store.commitErrors([record]);
-    await expect(store.commitErrors([record])).rejects.toThrow(
-      "Duplicate error record",
-    );
+    let thrown: Error | undefined;
+    try {
+      await store.commitErrors([record]);
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("Duplicate error record");
   });
 
   test("commitErrors duplicate in batch leaves no orphaned files", async () => {
@@ -556,9 +584,13 @@ describe("error store", () => {
     // The duplicate should be caught in pre-flight before any writes.
     const dup = makeErrorRecord({ seq: 1, category: "first" });
     const extra = makeErrorRecord({ seq: 2, category: "second" });
-    await expect(store.commitErrors([extra, dup])).rejects.toThrow(
-      "Duplicate error record",
-    );
+    let thrown: Error | undefined;
+    try {
+      await store.commitErrors([extra, dup]);
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("Duplicate error record");
 
     // The non-duplicate record from the failed batch must not exist on disk.
     const extraPath = path.join(
@@ -576,9 +608,13 @@ describe("error store", () => {
     const store = await createAuditStore(dir);
 
     const record = makeErrorRecord({ sessionId: "../evil" });
-    await expect(store.commitErrors([record])).rejects.toThrow(
-      "unsafe characters",
-    );
+    let thrown: Error | undefined;
+    try {
+      await store.commitErrors([record]);
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("unsafe characters");
   });
 });
 
