@@ -366,6 +366,9 @@ export function createHarness(config: HarnessConfig): Harness {
     contextStore,
     onEvent: handleEvent,
     beforeToolExtensions,
+    ...(config.toolOutputDir !== undefined
+      ? { toolOutputDir: config.toolOutputDir }
+      : {}),
   };
 
   if (auditCollector !== undefined) {

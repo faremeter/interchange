@@ -85,6 +85,7 @@ export type ReactorConfig = {
     opts: InferenceHarnessOptions,
   ) => AsyncGenerator<InferenceEvent>;
   beforeToolExtensions?: BeforeToolExtension[];
+  toolOutputDir?: string;
   afterCheckpoint?: () => Promise<void>;
   onShutdown?: () => Promise<void>;
   gateTimeout?: number;
@@ -503,7 +504,14 @@ export function createReactor(config: ReactorConfig): Reactor {
     }
 
     if (addToHistory && stateManager !== null) {
-      stateManager.appendTurn(createToolResultTurn(results));
+      stateManager.appendTurn(
+        createToolResultTurn(
+          results,
+          config.toolOutputDir !== undefined
+            ? { outputDir: config.toolOutputDir }
+            : undefined,
+        ),
+      );
     }
 
     for (const result of results) {
