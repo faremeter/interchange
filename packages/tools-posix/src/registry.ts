@@ -1,5 +1,9 @@
 import path from "node:path";
-import type { ToolDefinition, ToolResult } from "@interchange/types/runtime";
+import type {
+  BlobReader,
+  ToolDefinition,
+  ToolResult,
+} from "@interchange/types/runtime";
 import { runEditFile } from "./edit-file";
 import { runGrep } from "./grep";
 import { runReadFile } from "./read-file";
@@ -7,6 +11,8 @@ import { runSearchFiles } from "./search-files";
 import { runShell } from "./run-shell";
 import { runWriteFile } from "./write-file";
 import type { ToolHandler } from "./plugin";
+
+const TOOL_OUTPUT_URI_PREFIX = "tool-output:";
 
 export const TOOL_NAMES = {
   READ_FILE: "read_file",
@@ -21,13 +27,14 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: TOOL_NAMES.READ_FILE,
     description:
-      "Read a file from the filesystem. Returns file content with line numbers.",
+      "Read a file and return its content with line numbers. The path argument accepts either a filesystem path or a tool-output URI of the form tool-output:///{callId} that references a prior tool result.",
     inputSchema: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description: "Absolute or relative path to the file to read",
+          description:
+            "Absolute or relative filesystem path, or a tool-output:///{callId} URI",
         },
         offset: {
           type: "number",
@@ -229,6 +236,7 @@ const resolvePath = (raw: string, cwd: string) =>
 
 interface RegistryContext {
   cwd: string;
+  blobReader?: BlobReader;
 }
 
 export function makeHandlerRegistry(
@@ -238,7 +246,10 @@ export function makeHandlerRegistry(
 
   m.set(TOOL_NAMES.READ_FILE, async (call, signal) => {
     try {
-      const p = resolvePath(requireString(call.arguments, "path"), ctx.cwd);
+      const rawPath = requireString(call.arguments, "path");
+      const p = rawPath.startsWith(TOOL_OUTPUT_URI_PREFIX)
+        ? rawPath
+        : resolvePath(rawPath, ctx.cwd);
       const offset = optionalNumber(call.arguments, "offset");
       const limit = optionalNumber(call.arguments, "limit");
       const readFileArgs =
@@ -249,7 +260,7 @@ export function makeHandlerRegistry(
           : limit !== undefined
             ? { path: p, limit }
             : { path: p };
-      const content = await runReadFile(readFileArgs, signal);
+      const content = await runReadFile(readFileArgs, signal, ctx.blobReader);
       return makeResult(call.id, content);
     } catch (err) {
       return makeErrorResult(call.id, err);

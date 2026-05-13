@@ -1,5 +1,9 @@
 import { statSync } from "node:fs";
-import type { ToolRunner, ToolDefinition } from "@interchange/types/runtime";
+import type {
+  BlobReader,
+  ToolRunner,
+  ToolDefinition,
+} from "@interchange/types/runtime";
 import { TOOL_DEFINITIONS, makeHandlerRegistry } from "./registry";
 import {
   composeMiddleware,
@@ -22,6 +26,12 @@ export { TOOL_NAMES } from "./registry";
 export interface PosixToolsOptions {
   cwd: string;
   plugins?: ToolPlugin[];
+  /**
+   * Optional blob reader used to resolve `tool-output:///{callId}` URIs passed
+   * to the read tool. When omitted, attempting to read a `tool-output:` URI
+   * throws a clear error; filesystem reads are unaffected.
+   */
+  blobReader?: BlobReader;
 }
 
 export interface PosixTools extends ToolRunner {
@@ -42,7 +52,10 @@ export function createPosixTools(opts: PosixToolsOptions): PosixTools {
     throw err;
   }
 
-  const handlers = makeHandlerRegistry({ cwd: opts.cwd });
+  const handlers = makeHandlerRegistry({
+    cwd: opts.cwd,
+    ...(opts.blobReader !== undefined ? { blobReader: opts.blobReader } : {}),
+  });
 
   const definitions = [...TOOL_DEFINITIONS];
   const middleware: Middleware[] = [];

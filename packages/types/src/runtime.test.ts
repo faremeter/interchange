@@ -7,6 +7,10 @@ import {
   type Compactor,
   type ReactorAction,
   type ReactorCapabilities,
+  type BlobReader,
+  type BlobSource,
+  createBlobReader,
+  parseToolOutputURI,
 } from "./runtime";
 
 // ---------------------------------------------------------------------------
@@ -243,5 +247,143 @@ describe("ContextTransform vs ToolResultTransform assignability", () => {
 
     const asContextTransform: ContextTransform = compactor;
     expect(asContextTransform.name).toBe("summarize-tail");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. BlobReader URI parsing and dispatch
+// ---------------------------------------------------------------------------
+
+describe("parseToolOutputURI", () => {
+  test("extracts the callId from a well-formed three-slash URI", () => {
+    expect(parseToolOutputURI("tool-output:///abc123")).toBe("abc123");
+  });
+
+  test("preserves case in the callId", () => {
+    expect(parseToolOutputURI("tool-output:///AbC123")).toBe("AbC123");
+  });
+
+  test("rejects the two-slash form because hostnames are lowercased", () => {
+    let thrown: Error | undefined;
+    try {
+      parseToolOutputURI("tool-output://abc123");
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("authority must be empty");
+  });
+
+  test("rejects a non-tool-output scheme", () => {
+    let thrown: Error | undefined;
+    try {
+      parseToolOutputURI("file:///abc123");
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain('expected "tool-output:"');
+  });
+
+  test("rejects extra path segments", () => {
+    let thrown: Error | undefined;
+    try {
+      parseToolOutputURI("tool-output:///abc/extra");
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("single callId segment");
+  });
+
+  test("rejects an empty callId", () => {
+    let thrown: Error | undefined;
+    try {
+      parseToolOutputURI("tool-output:///");
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("missing callId");
+  });
+
+  test("rejects a URI with a query string", () => {
+    let thrown: Error | undefined;
+    try {
+      parseToolOutputURI("tool-output:///abc?x=1");
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("query string is not allowed");
+  });
+
+  test("rejects a URI with a fragment", () => {
+    let thrown: Error | undefined;
+    try {
+      parseToolOutputURI("tool-output:///abc#x");
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("fragment is not allowed");
+  });
+
+  test("rejects a non-URI string", () => {
+    let thrown: Error | undefined;
+    try {
+      parseToolOutputURI("not a uri");
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("invalid tool-output URI");
+  });
+});
+
+describe("createBlobReader", () => {
+  test("delegates to source.readBlob with the parsed callId", async () => {
+    const seen: string[] = [];
+    const source: BlobSource = {
+      async readBlob(key) {
+        seen.push(key);
+        return new TextEncoder().encode(`bytes-for-${key}`);
+      },
+    };
+    const reader: BlobReader = createBlobReader(source);
+
+    const bytes = await reader.read("tool-output:///CallId123");
+    expect(seen).toEqual(["CallId123"]);
+    expect(new TextDecoder().decode(bytes)).toBe("bytes-for-CallId123");
+  });
+
+  test("propagates errors from source.readBlob", async () => {
+    const source: BlobSource = {
+      async readBlob() {
+        throw new Error("Blob not found for key: missing");
+      },
+    };
+    const reader = createBlobReader(source);
+
+    let thrown: Error | undefined;
+    try {
+      await reader.read("tool-output:///missing");
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("Blob not found");
+  });
+
+  test("throws on malformed URIs without touching the source", async () => {
+    let touched = false;
+    const source: BlobSource = {
+      async readBlob() {
+        touched = true;
+        return new Uint8Array();
+      },
+    };
+    const reader = createBlobReader(source);
+
+    let thrown: Error | undefined;
+    try {
+      await reader.read("file:///abc");
+    } catch (cause) {
+      thrown = cause instanceof Error ? cause : new Error(String(cause));
+    }
+    expect(thrown?.message).toContain("invalid tool-output URI scheme");
+    expect(touched).toBe(false);
   });
 });

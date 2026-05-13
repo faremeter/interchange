@@ -1299,6 +1299,116 @@ export type ContextTransform = ContextStrategy<
 export type Compactor = ContextStrategy<ConversationTurn[], ConversationTurn[]>;
 
 // ---------------------------------------------------------------------------
+// Blob Reader (INFERENCE.md § Tool Result Lifecycle)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read-only capability for resolving `tool-output:///{callId}` URIs to the
+ * underlying blob bytes. A `ToolResultTransform` that spills oversized tool
+ * output writes a blob via `ContextStore.writeBlob` and returns a pointer of
+ * the form `tool-output:///{callId}`; the agent's read tool reaches the spill
+ * by calling `BlobReader.read(uri)`.
+ *
+ * The URI scheme is deliberately rigid:
+ *
+ * - Scheme: `tool-output`
+ * - Authority: empty (the `///` makes pathname carry the callId)
+ * - Path: `/{callId}` — preserves case so provider-assigned callIds with
+ *   uppercase letters survive parsing
+ * - Query and fragment: rejected
+ *
+ * Any deviation (different scheme, missing or non-empty hostname, extra path
+ * segments, search string, or fragment) throws. Missing blobs throw.
+ * `BlobReader` never accepts a filesystem path; the agent has no direct view
+ * of the context store's working tree.
+ */
+export interface BlobReader {
+  /**
+   * Resolve `uri` to the underlying blob bytes. Throws if the URI is not a
+   * well-formed `tool-output:///{callId}` reference or if no blob exists for
+   * the extracted callId.
+   */
+  read(uri: string): Promise<Uint8Array>;
+}
+
+/** Source for blob bytes used by `createBlobReader`. */
+export interface BlobSource {
+  readBlob(key: string, signal?: AbortSignal): Promise<Uint8Array>;
+}
+
+/**
+ * Parse a `tool-output:///{callId}` URI and return the callId. Throws on any
+ * deviation from the documented shape: wrong scheme, non-empty authority,
+ * missing or extra path components, search string, or fragment.
+ *
+ * The two-slash form `tool-output://abc` is rejected because the URL parser
+ * lowercases the hostname, which silently corrupts provider-assigned callIds
+ * that contain uppercase letters. The three-slash form puts the callId in
+ * `pathname`, where case is preserved.
+ */
+export function parseToolOutputURI(uri: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(uri);
+  } catch (cause) {
+    throw new Error(`invalid tool-output URI: ${uri}`, { cause });
+  }
+  if (parsed.protocol !== "tool-output:") {
+    throw new Error(
+      `invalid tool-output URI scheme: expected "tool-output:", got "${parsed.protocol}"`,
+    );
+  }
+  if (parsed.hostname !== "") {
+    throw new Error(
+      `invalid tool-output URI: authority must be empty (use the form tool-output:///{callId}), got "${parsed.hostname}"`,
+    );
+  }
+  if (parsed.search !== "") {
+    throw new Error(
+      `invalid tool-output URI: query string is not allowed, got "${parsed.search}"`,
+    );
+  }
+  if (parsed.hash !== "") {
+    throw new Error(
+      `invalid tool-output URI: fragment is not allowed, got "${parsed.hash}"`,
+    );
+  }
+  const path = parsed.pathname;
+  if (!path.startsWith("/")) {
+    throw new Error(`invalid tool-output URI: empty path: ${uri}`);
+  }
+  const callId = path.slice(1);
+  if (callId === "") {
+    throw new Error(`invalid tool-output URI: missing callId: ${uri}`);
+  }
+  if (callId.includes("/")) {
+    throw new Error(
+      `invalid tool-output URI: path must contain a single callId segment, got "${callId}"`,
+    );
+  }
+  return callId;
+}
+
+/**
+ * Construct a `BlobReader` that resolves `tool-output:///{callId}` URIs by
+ * delegating to `source.readBlob(callId)`. The most common source is a
+ * `ContextStore` (Phase 2 added `readBlob` to that interface), but any object
+ * implementing `BlobSource` works — this keeps tests trivial.
+ *
+ * URI parsing is performed in this layer; the source only ever sees the
+ * extracted callId. Missing blobs surface as whatever error the source
+ * raises (`ContextStore.readBlob` already throws for unknown keys).
+ */
+export function createBlobReader(source: BlobSource): BlobReader {
+  return {
+    async read(uri: string): Promise<Uint8Array> {
+      const callId = parseToolOutputURI(uri);
+      return source.readBlob(callId);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Abort Reasons (INFERENCE.md § Abort Handling)
 // ---------------------------------------------------------------------------
 

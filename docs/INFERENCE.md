@@ -552,6 +552,8 @@ The implication: collapse is cheapest when the failure sequence is near the end 
 
 Tool-internal retry works for: format validation failures, mechanical fixes from validation authorities, transient errors (network timeouts, lock contention), and idempotent operations that can be re-attempted safely. It does not work for failures that require the model to reason about a different approach — those must enter the conversation so the model can adapt.
 
+**Tool-output spills.** When a tool result exceeds the inline budget, a `ToolResultTransform` can spill the full payload to the context store and substitute a pointer for the inline content. The pointer takes the form `tool-output:///{callId}` — three slashes, empty authority, callId in the path so case is preserved. The agent's read tool recognizes this URI scheme and resolves it through a `BlobReader` capability that the harness backs with the context store. Any other scheme, missing or non-empty authority, extra path components, query string, or fragment is rejected; missing blobs throw. The agent has no direct path into the context store's working tree — the URI is the only handle, and it does not encode a filesystem location. The size-cap transform itself lands in Phase 4; the reader surface is in place ahead of it.
+
 ### Mutation Transactions
 
 Tools that mutate state should support transactional semantics: checkpoint before mutation, roll back on failure. The mechanism depends on the mutation target:
