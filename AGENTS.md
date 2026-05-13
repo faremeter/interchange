@@ -29,15 +29,21 @@ This is the single command to get a clean, running system with seed data. It dro
 
 ### Common Operations
 
-| Task                        | Command                                         |
-| --------------------------- | ----------------------------------------------- |
-| Start stack (no seed)       | `bun bin/dev.ts`                                |
-| Start stack with seed       | `bun bin/dev.ts --seed`                         |
-| Start stack without UI      | `bun bin/dev.ts --no-ui`                        |
-| Full database reset         | `bin/db-reset`                                  |
-| Apply migrations only       | `bin/db-migrate`                                |
-| Seed (requires running hub) | `bun bin/seed.ts`                               |
-| Full build verification     | `bun run check && bun run lint && bun run test` |
+| Task                          | Command                                         |
+| ----------------------------- | ----------------------------------------------- |
+| Start stack (no seed)         | `bun bin/dev.ts`                                |
+| Start stack with seed         | `bun bin/dev.ts --seed`                         |
+| Start stack without UI        | `bun bin/dev.ts --no-ui`                        |
+| Full database reset           | `bin/db-reset`                                  |
+| Full reset (DB + agent state) | `bin/db-reset --clean`                          |
+| Apply migrations only         | `bin/db-migrate`                                |
+| Seed (requires running hub)   | `bun bin/seed.ts`                               |
+| Full build verification       | `bun run check && bun run lint && bun run test` |
+
+`bin/db-reset` only resets postgres. `--clean` additionally wipes
+`HUB_DATA_DIR` and `SIDECAR_DATA_DIR` so the sidecar does not try to
+reconnect stale agent instances against a fresh database. Use it after
+any reset where the sidecar disk state no longer matches the DB.
 
 ### Database
 

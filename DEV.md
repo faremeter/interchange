@@ -97,6 +97,14 @@ Migrations live in `packages/db`. The `bin/db-migrate` script runs `drizzle-kit 
 
 This is the correct way to get a clean database. Do not attempt the steps manually.
 
+Pass `--clean` to additionally wipe the hub and sidecar on-disk state directories (`HUB_DATA_DIR`, `SIDECAR_DATA_DIR`) before resetting the database:
+
+```bash
+bin/db-reset --clean
+```
+
+Without `--clean`, the postgres tables are wiped but the sidecar's per-agent git repos and key pairs stay on disk. On the next start the sidecar tries to reconnect those orphaned agents and the hub rejects the challenge with `Unknown agent address`. Use `--clean` whenever you want a fresh stack with no leftover agent state.
+
 ### Applying Migrations Only
 
 If the database already exists and you just need to apply new migrations:
@@ -120,19 +128,19 @@ The pre-commit hook runs `bun run lint` against staged files.
 
 All scripts live in `bin/`. Shell scripts that start with `#!/usr/bin/env opsh` use the bundled `opsh` shell framework (`bin/opsh`).
 
-| Script                | Usage                                            | Description                                                              |
-| --------------------- | ------------------------------------------------ | ------------------------------------------------------------------------ |
-| `bin/dev.ts`          | `bun bin/dev.ts [flags]`                         | Dev orchestrator (see above)                                             |
-| `bin/hub`             | `bin/hub`                                        | Run the hub server standalone (loads `.env` and `.env.hub`)              |
-| `bin/db-migrate`      | `bin/db-migrate`                                 | Generate and apply database migrations (loads `.env` and `.env.migrate`) |
-| `bin/db-reset`        | `bin/db-reset`                                   | Drop, recreate, migrate, and grant permissions (full DB reset)           |
-| `bin/seed.ts`         | `bun bin/seed.ts`                                | Seed the database via the hub API (requires running hub, uses `HUB_URL`) |
-| `bin/add-package`     | `bin/add-package <name>`                         | Scaffold a new `@interchange/<name>` package                             |
-| `bin/check-env`       | `bin/check-env`                                  | Verify git hooks are configured                                          |
-| `bin/audit`           | `bin/audit --dir <path> --session <id> [--json]` | Inspect an agent's tool authorization audit trail                        |
-| `bin/gen-api-docs.ts` | `bun bin/gen-api-docs.ts`                        | Generate API documentation from route schemas                            |
-| `bin/posix-demo`      | `bin/posix-demo`                                 | Run the POSIX agent demo (uses `.env` for provider config)               |
-| `bin/ring-demo`       | `bin/ring-demo`                                  | Run the ring agent demo (uses `.env` for provider config)                |
+| Script                | Usage                                            | Description                                                                                             |
+| --------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| `bin/dev.ts`          | `bun bin/dev.ts [flags]`                         | Dev orchestrator (see above)                                                                            |
+| `bin/hub`             | `bin/hub`                                        | Run the hub server standalone (loads `.env` and `.env.hub`)                                             |
+| `bin/db-migrate`      | `bin/db-migrate`                                 | Generate and apply database migrations (loads `.env` and `.env.migrate`)                                |
+| `bin/db-reset`        | `bin/db-reset [--clean]`                         | Drop, recreate, migrate, and grant permissions. `--clean` also wipes the hub and sidecar on-disk state. |
+| `bin/seed.ts`         | `bun bin/seed.ts`                                | Seed the database via the hub API (requires running hub, uses `HUB_URL`)                                |
+| `bin/add-package`     | `bin/add-package <name>`                         | Scaffold a new `@interchange/<name>` package                                                            |
+| `bin/check-env`       | `bin/check-env`                                  | Verify git hooks are configured                                                                         |
+| `bin/audit`           | `bin/audit --dir <path> --session <id> [--json]` | Inspect an agent's tool authorization audit trail                                                       |
+| `bin/gen-api-docs.ts` | `bun bin/gen-api-docs.ts`                        | Generate API documentation from route schemas                                                           |
+| `bin/posix-demo`      | `bin/posix-demo`                                 | Run the POSIX agent demo (uses `.env` for provider config)                                              |
+| `bin/ring-demo`       | `bin/ring-demo`                                  | Run the ring agent demo (uses `.env` for provider config)                                               |
 
 ## Seed Data
 

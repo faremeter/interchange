@@ -7,6 +7,14 @@ lib::import step-runner
 REPODIR=$(git rev-parse --show-toplevel)
 DBPKG="$REPODIR/packages/db"
 
+CLEAN=false
+for arg in "$@"; do
+	case "$arg" in
+		--clean) CLEAN=true ;;
+		*) log::fatal "unknown argument: $arg (use --clean to also wipe agent data dirs)" ;;
+	esac
+done
+
 # Source shared env, then migration-specific overrides
 if [[ -f "$REPODIR/.env" ]]; then
 	# shellcheck disable=SC1091
@@ -28,11 +36,35 @@ fi
 HUB_DB_USER=$(grep -E '^DB_USER=' "$REPODIR/.env.hub" 2>/dev/null | cut -d= -f2)
 MIGRATE_DB_USER=$(grep -E '^DB_USER=' "$REPODIR/.env.migrate" 2>/dev/null | cut -d= -f2)
 
+# Resolve agent-state directories the same way the runtime does, so --clean
+# wipes the dirs the hub and sidecar actually write to. The `|| true` guard
+# keeps a missing match from tripping set -e -o pipefail.
+HUB_DATA_DIR_VAL=$( { grep -E '^HUB_DATA_DIR=' "$REPODIR/.env.hub" 2>/dev/null || true; } | cut -d= -f2)
+SIDECAR_DATA_DIR_VAL=$( { grep -E '^SIDECAR_DATA_DIR=' "$REPODIR/.env.sidecar" 2>/dev/null || true; } | cut -d= -f2)
+HUB_DATA_DIR_VAL="${HUB_DATA_DIR_VAL:-tmp/hub-data}"
+SIDECAR_DATA_DIR_VAL="${SIDECAR_DATA_DIR_VAL:-tmp/sidecar-data}"
+
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-5432}"
 DB_NAME="${DB_NAME:-interchange}"
 
 PSQL_CONN=(-h "$DB_HOST" -p "$DB_PORT")
+
+step::05::clean_data_dirs() {
+	if [[ "$CLEAN" != "true" ]]; then
+		return 0
+	fi
+
+	for path in "$HUB_DATA_DIR_VAL" "$SIDECAR_DATA_DIR_VAL"; do
+		# Resolve relative paths against the repo root so a stray cwd does
+		# not silently wipe (or skip) the wrong directory.
+		if [[ "$path" != /* ]]; then
+			path="$REPODIR/$path"
+		fi
+		log::info "removing $path..."
+		rm -rf "$path" || log::fatal "failed to remove $path"
+	done
+}
 
 step::10::drop_database() {
 	log::info "dropping database $DB_NAME..."

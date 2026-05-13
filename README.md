@@ -178,6 +178,14 @@ bin/db-reset && bun bin/dev.ts --seed
 
 This drops and recreates the database, runs migrations, grants permissions, and starts all services with seed data.
 
+If the sidecar has stale agent state on disk from a previous run (per-agent git repos and key pairs in `SIDECAR_DATA_DIR`), pair `--clean` with the reset so the disk state goes with the database:
+
+```
+bin/db-reset --clean && bun bin/dev.ts --seed
+```
+
+Without `--clean`, the sidecar tries to reconnect orphaned agents and the hub rejects them with `Unknown agent address`.
+
 ## Project structure
 
 ```
@@ -205,7 +213,7 @@ packages/
 bin/
   hub               Start the hub server (sources .env + .env.hub)
   db-migrate        Generate and apply Drizzle migrations
-  db-reset          Drop and recreate the database, run migrations, grant permissions
+  db-reset          Drop and recreate the database, run migrations, grant permissions; `--clean` also wipes hub/sidecar on-disk state
   dev.ts            Start the full stack (hub + sidecar + UI) with file watching
   seed.ts           Seed test data via the HTTP API
   gen-api-docs.ts   Generate docs/API.md from OpenAPI spec + ArkType introspection
