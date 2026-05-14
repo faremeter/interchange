@@ -171,6 +171,55 @@ describe("OpenAI adapter: buildRequest", () => {
     expect(toolMsg.content).toBe("Sunny, 22°C");
   });
 
+  test("wraps error tool results in <error> and emits no is_error field", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            callId: "call_xyz",
+            content: [{ type: "text", text: "file not found" }],
+            isError: true,
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    const toolMsg = OpenAIPlainMessage.assert(body.messages[0]);
+    expect(toolMsg.role).toBe("tool");
+    expect(toolMsg.tool_call_id).toBe("call_xyz");
+    expect(toolMsg.content).toBe("<error>\nfile not found\n</error>");
+    // The OpenAI tool-message schema rejects unknown fields; is_error must
+    // not appear on the wire even when the source block has isError=true.
+    expect(req.body).not.toContain("is_error");
+  });
+
+  test("does not wrap non-error tool results", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            callId: "call_ok",
+            content: [{ type: "text", text: "ok" }],
+            isError: false,
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    const toolMsg = OpenAIPlainMessage.assert(body.messages[0]);
+    expect(toolMsg.content).toBe("ok");
+  });
+
   test("uses max_tokens from options", () => {
     const messages: ConversationTurn[] = [
       {
