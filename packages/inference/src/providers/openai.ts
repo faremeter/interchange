@@ -81,16 +81,20 @@ function toOpenAIMessage(msg: ConversationTurn): unknown[] {
         b.type === "tool_result",
     );
     if (toolResults.length > 0) {
-      // One tool role message per result.
-      return toolResults.map((r) => ({
-        role: "tool",
-        tool_call_id: r.callId,
-        content: r.content
+      // One tool role message per result. The OpenAI Chat Completions schema
+      // for `role: "tool"` only permits role/tool_call_id/content — there is
+      // no `is_error` field — so error status is encoded inside `content`.
+      return toolResults.map((r) => {
+        const text = r.content
           .filter((c): c is { type: "text"; text: string } => c.type === "text")
           .map((c) => c.text)
-          .join("\n"),
-        ...(r.isError ? { is_error: true } : {}),
-      }));
+          .join("\n");
+        return {
+          role: "tool",
+          tool_call_id: r.callId,
+          content: r.isError ? `<error>\n${text}\n</error>` : text,
+        };
+      });
     }
 
     const parts = msg.content.map(toOpenAIContentPart);
