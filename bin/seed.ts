@@ -403,7 +403,7 @@ const researchRoleId = await ensureRole(
   [
     { resource: "documents:*", action: "read", effect: "allow" },
     { resource: "documents:*", action: "write", effect: "ask" },
-    { resource: "tool:message_*", action: "invoke", effect: "allow" },
+    { resource: "tool:mail_*", action: "invoke", effect: "allow" },
   ],
   aliceCookies,
 );
@@ -415,7 +415,7 @@ const codeReviewRoleId = await ensureRole(
   [
     { resource: "repos:*", action: "read", effect: "allow" },
     { resource: "repos:*", action: "comment", effect: "allow" },
-    { resource: "tool:message_*", action: "invoke", effect: "allow" },
+    { resource: "tool:mail_*", action: "invoke", effect: "allow" },
   ],
   aliceCookies,
 );
@@ -536,7 +536,7 @@ const supportRoleId = await ensureRole(
     { resource: "tickets:*", action: "*", effect: "allow" },
     { resource: "billing:*", action: "read", effect: "allow" },
     { resource: "billing:*", action: "refund", effect: "ask" },
-    { resource: "tool:message_*", action: "invoke", effect: "allow" },
+    { resource: "tool:mail_*", action: "invoke", effect: "allow" },
   ],
   aliceCookies,
 );
