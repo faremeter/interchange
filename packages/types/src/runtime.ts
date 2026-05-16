@@ -481,13 +481,13 @@ export interface MessageTransport {
 
   subscribe(
     listAddress: string,
-    agentAddress: string,
+    subscriberAddress: string,
     signal?: AbortSignal,
   ): Promise<void>;
 
   unsubscribe(
     listAddress: string,
-    agentAddress: string,
+    subscriberAddress: string,
     signal?: AbortSignal,
   ): Promise<void>;
 }

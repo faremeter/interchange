@@ -1,11 +1,9 @@
-/* eslint-disable @typescript-eslint/no-non-null-assertion -- Map.get()! after validation that agent is registered */
 import type {
   OutboundMessage,
   SendReceipt,
-  CryptoProvider,
   MailboxEvent,
 } from "@interchange/types/runtime";
-import type { AgentMailboxEntry, StoredEnvelope } from "./mailbox";
+import type { AddressEntry, StoredEnvelope } from "./mailbox";
 import { appendToMailbox } from "./mailbox";
 import {
   assembleSignedContent,
@@ -83,17 +81,17 @@ export type MessageSentHandler = (ctx: MessageSentContext) => Promise<void>;
 export async function executeSend(
   senderAddress: string,
   message: OutboundMessage,
-  agentMailboxes: Map<string, AgentMailboxEntry>,
-  cryptoProviders: Map<string, CryptoProvider>,
+  entries: Map<string, AddressEntry>,
   onRemoteSend?: RemoteSendHandler,
   onMessageSent?: MessageSentHandler,
 ): Promise<SendReceipt> {
-  const senderCrypto = cryptoProviders.get(senderAddress);
-  if (senderCrypto === undefined) {
+  const senderEntry = entries.get(senderAddress);
+  if (senderEntry === undefined) {
     throw new Error(
       `Sender "${senderAddress}" is not registered with this transport`,
     );
   }
+  const senderCrypto = senderEntry.crypto;
 
   const recipients = Array.isArray(message.to) ? message.to : [message.to];
   if (recipients.length === 0) {
@@ -108,9 +106,7 @@ export async function executeSend(
       : [];
 
   const allAddressees = [...new Set([...recipients, ...ccAddressList])];
-  const remoteRecipients = allAddressees.filter(
-    (addr) => !agentMailboxes.has(addr),
-  );
+  const remoteRecipients = allAddressees.filter((addr) => !entries.has(addr));
 
   if (remoteRecipients.length > 0 && onRemoteSend === undefined) {
     throw new Error(
@@ -204,19 +200,26 @@ export async function executeSend(
   // Deliver to each local recipient's INBOX.
   const deliveredUids: { address: string; uid: number }[] = [];
   for (const recipient of allAddressees) {
-    if (!agentMailboxes.has(recipient)) continue;
-    const entry = agentMailboxes.get(recipient)!;
-    const store = entry.mailboxes.get("INBOX")!;
-    const uid = appendToMailbox(store, rawBytes, envelope, []);
+    const entry = entries.get(recipient);
+    if (entry === undefined) continue;
+    const inbox = entry.mailboxes.get("INBOX");
+    if (inbox === undefined) {
+      throw new Error(
+        `Mailbox "INBOX" does not exist for recipient "${recipient}"`,
+      );
+    }
+    const uid = appendToMailbox(inbox, rawBytes, envelope, []);
     deliveredUids.push({ address: recipient, uid });
   }
 
   // Append copy to sender's Sent mailbox.
-  {
-    const senderEntry = agentMailboxes.get(senderAddress)!;
-    const sentStore = senderEntry.mailboxes.get("Sent")!;
-    appendToMailbox(sentStore, rawBytes, envelope, ["\\Seen"]);
+  const sentStore = senderEntry.mailboxes.get("Sent");
+  if (sentStore === undefined) {
+    throw new Error(
+      `Mailbox "Sent" does not exist for sender "${senderAddress}"`,
+    );
   }
+  appendToMailbox(sentStore, rawBytes, envelope, ["\\Seen"]);
 
   // Fire local recipient watch callbacks ASYNCHRONOUSLY (per MESSAGE.md
   // requirement). queueMicrotask ensures callbacks never run synchronously
@@ -227,7 +230,12 @@ export async function executeSend(
   const msgHeaders = buildMessageHeaders(parsedHeaders);
 
   for (const { address, uid } of deliveredUids) {
-    const entry = agentMailboxes.get(address)!;
+    const entry = entries.get(address);
+    if (entry === undefined) {
+      throw new Error(
+        `Entry for "${address}" disappeared between delivery and callback dispatch`,
+      );
+    }
     const callbacks = entry.watchCallbacks.get("INBOX");
     if (callbacks === undefined || callbacks.size === 0) continue;
 

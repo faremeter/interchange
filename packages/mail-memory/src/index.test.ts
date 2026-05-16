@@ -450,6 +450,58 @@ describe("error handling", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Registration lifecycle — guards the single-entry-map invariant.
+// ---------------------------------------------------------------------------
+
+describe("registration lifecycle", () => {
+  test("unregister then re-register works (entry is fully removed)", async () => {
+    const transport = createInMemoryTransport();
+    const kp = await generateKeyPair();
+    const crypto = createNodeCrypto(kp);
+
+    transport.registerAgent("alpha@test.interchange", crypto);
+    transport.unregisterAgent("alpha@test.interchange");
+    expect(() =>
+      transport.registerAgent("alpha@test.interchange", crypto),
+    ).not.toThrow();
+  });
+
+  test("send from a scoped transport whose address was deregistered throws", async () => {
+    const { transport, alphaTransport } = await createTestTransport();
+    transport.unregisterAgent("alpha@test.interchange");
+
+    await expect(
+      alphaTransport.send({
+        to: "beta@test.interchange",
+        type: "conversation.message",
+        content: "hi",
+      }),
+    ).rejects.toThrow(/deregistered|not registered/);
+  });
+
+  test("fetchFull returns signatureStatus 'unknown' after sender is unregistered", async () => {
+    const { transport, alphaTransport, betaTransport } =
+      await createTestTransport();
+
+    await alphaTransport.send({
+      to: "beta@test.interchange",
+      type: "conversation.message",
+      content: "hi",
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    const refs = await betaTransport.search("INBOX", {});
+    expect(refs.length).toBe(1);
+
+    transport.unregisterAgent("alpha@test.interchange");
+
+    const full = await betaTransport.fetchFull(refs[0]!);
+    expect(full.signatureStatus).toBe("unknown");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Additional: mailbox management
 // ---------------------------------------------------------------------------
 
