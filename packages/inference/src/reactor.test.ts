@@ -4,6 +4,7 @@ import { validateActions } from "./actions";
 import { createGateManager } from "./gates";
 import { createCorrelationRegistry } from "./correlation";
 import { createReactor } from "./reactor";
+import { createDefaultDependencies } from "./harness";
 
 import type {
   ReactorDirector,
@@ -255,6 +256,7 @@ function createTestReactor(
     toolRunner: overrides.toolRunner ?? noopToolRunner(),
     contextStore: overrides.contextStore ?? makeContextStore(),
     onEvent,
+    deps: createDefaultDependencies(),
     shutdownTimeoutMs: overrides.shutdownTimeoutMs ?? 100,
     ...(overrides.correlationValidator !== undefined
       ? { correlationValidator: overrides.correlationValidator }
@@ -906,6 +908,7 @@ describe("createReactor — director exception", () => {
       toolRunner: noopToolRunner(),
       contextStore: makeContextStore(),
       onEvent,
+      deps: createDefaultDependencies(),
       shutdownTimeoutMs: 100,
     });
 
@@ -3295,6 +3298,7 @@ function createDirectReactor(opts: {
     toolRunner: opts.toolRunner ?? noopToolRunner(),
     contextStore: opts.contextStore,
     onEvent,
+    deps: createDefaultDependencies(),
     shutdownTimeoutMs: 100,
     ...(opts.inferenceRunner !== undefined
       ? { inferenceRunner: opts.inferenceRunner }
