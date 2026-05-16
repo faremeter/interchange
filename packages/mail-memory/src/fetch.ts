@@ -109,7 +109,7 @@ export function fetchPart(
 export async function fetchFull(
   ref: MessageRef,
   store: MailboxStore,
-  cryptoProviders: Map<string, CryptoProvider>,
+  getCrypto: (fromAddress: string) => CryptoProvider | undefined,
 ): Promise<InboundMessage> {
   const msg = requireMessage(store, ref.uid, ref.mailbox);
   const { headers } = parseHeaderSection(msg.raw);
@@ -125,7 +125,7 @@ export async function fetchFull(
   const signatureStatus = await verifyMessageSignature(
     msg.raw,
     parsedHeaders.from,
-    cryptoProviders,
+    getCrypto,
   );
 
   const result: InboundMessage = {
@@ -164,9 +164,9 @@ export async function fetchFull(
 async function verifyMessageSignature(
   raw: Uint8Array,
   fromAddress: string,
-  cryptoProviders: Map<string, CryptoProvider>,
+  getCrypto: (fromAddress: string) => CryptoProvider | undefined,
 ): Promise<SignatureStatus> {
-  const senderCrypto = cryptoProviders.get(fromAddress);
+  const senderCrypto = getCrypto(fromAddress);
   if (senderCrypto === undefined) {
     return "unknown";
   }
