@@ -69,11 +69,11 @@ Each package implements an interface defined in `@interchange/types`. The harnes
 
 **Message Transport** (implements `MessageTransport`):
 
-| Package                       | Environment | Implementation                                                                                                   |
-| ----------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------- |
-| `@interchange/message-smtp`   | Server      | SMTP/IMAP client over TCP. TLS, MIME parsing, SPF/DKIM/DMARC. Requires raw socket access.                        |
-| `@interchange/message-http`   | Constrained | HTTP relay through the hub. For environments that cannot open TCP sockets.                                       |
-| `@interchange/message-memory` | Testing     | In-memory message transport for single-process and test environments. Agents register and exchange mail locally. |
+| Package                     | Environment | Implementation                                                                                                                       |
+| --------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `@interchange/message-smtp` | Server      | SMTP/IMAP client over TCP. TLS, MIME parsing, SPF/DKIM/DMARC. Requires raw socket access.                                            |
+| `@interchange/message-http` | Constrained | HTTP relay through the hub. For environments that cannot open TCP sockets.                                                           |
+| `@interchange/mail-memory`  | Testing     | In-memory mail transport for single-process and test environments. Addresses register and exchange mail locally via local mailboxes. |
 
 **Payment Backends** (implements `WalletBackend`):
 

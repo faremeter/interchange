@@ -34,7 +34,7 @@
         "@interchange/crypto-node": "workspace:*",
         "@interchange/harness": "workspace:*",
         "@interchange/log": "workspace:*",
-        "@interchange/message-memory": "workspace:*",
+        "@interchange/mail-memory": "workspace:*",
         "@interchange/pack-transport": "workspace:*",
         "@interchange/storage-isogit": "workspace:*",
         "@interchange/tools-lsp": "workspace:*",
@@ -157,8 +157,8 @@
         "hono",
       ],
     },
-    "packages/message-memory": {
-      "name": "@interchange/message-memory",
+    "packages/mail-memory": {
+      "name": "@interchange/mail-memory",
       "version": "0.0.0",
       "dependencies": {
         "@interchange/crypto-node": "workspace:*",
@@ -428,7 +428,7 @@
 
     "@interchange/log": ["@interchange/log@workspace:packages/log"],
 
-    "@interchange/message-memory": ["@interchange/message-memory@workspace:packages/message-memory"],
+    "@interchange/mail-memory": ["@interchange/mail-memory@workspace:packages/mail-memory"],
 
     "@interchange/mime": ["@interchange/mime@workspace:packages/mime"],
 

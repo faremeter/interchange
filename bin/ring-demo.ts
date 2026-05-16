@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { setup, getLogger } from "@interchange/log";
-import { createInMemoryTransport } from "@interchange/message-memory";
+import { createInMemoryTransport } from "@interchange/mail-memory";
 import { generateKeyPair, createNodeCrypto } from "@interchange/crypto-node";
 import { createIsogitStore } from "@interchange/storage-isogit";
 import { createPosixTools } from "@interchange/tools-posix";

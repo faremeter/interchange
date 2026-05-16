@@ -10,7 +10,7 @@ import {
   importPrivateKeyBytes,
   verifySshSignature,
 } from "@interchange/crypto-node";
-import type { InMemoryTransport } from "@interchange/message-memory";
+import type { InMemoryTransport } from "@interchange/mail-memory";
 import { type } from "arktype";
 import {
   HubFrame,

@@ -7,7 +7,7 @@ import {
   type SidecarRouter,
   type WsHandle,
 } from "@interchange/hub";
-import { createInMemoryTransport } from "@interchange/message-memory";
+import { createInMemoryTransport } from "@interchange/mail-memory";
 import type {
   HarnessConfig,
   InboundMessage,

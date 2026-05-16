@@ -203,7 +203,7 @@ packages/
   hub-client/       Browser client SDK -- transport, instance sessions, event transforms
   inference/        LLM inference -- provider adapters, streaming, audit collection
   log/              LogTape wrapper (setup, getLogger, Hono middleware)
-  message-memory/   JMAP-style message memory -- mailbox, search, send, threads
+  mail-memory/      JMAP-style message memory -- mailbox, search, send, threads
   mime/             MIME message construction and PGP signing
   pack-transport/   Git pack protocol -- chunked transport for pack send/receive
   storage-isogit/   Git object storage -- isogit-backed mail store, history, pack ops
