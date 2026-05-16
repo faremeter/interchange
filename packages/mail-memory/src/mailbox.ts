@@ -1,4 +1,4 @@
-import type { MailboxEvent } from "@interchange/types/runtime";
+import type { CryptoProvider, MailboxEvent } from "@interchange/types/runtime";
 
 /**
  * Pre-parsed envelope extracted from MIME headers at delivery time.
@@ -36,9 +36,10 @@ export type MailboxStore = {
   uidValidity: number;
 };
 
-export type AgentMailboxEntry = {
+export type AddressEntry = {
   mailboxes: Map<string, MailboxStore>;
   watchCallbacks: Map<string, Set<(event: MailboxEvent) => void>>;
+  crypto: CryptoProvider;
 };
 
 export const DEFAULT_MAILBOXES = [
@@ -58,7 +59,7 @@ export function createMailboxStore(): MailboxStore {
   };
 }
 
-export function createAgentEntry(): AgentMailboxEntry {
+export function createAddressEntry(crypto: CryptoProvider): AddressEntry {
   const mailboxes = new Map<string, MailboxStore>();
   for (const name of DEFAULT_MAILBOXES) {
     mailboxes.set(name, createMailboxStore());
@@ -66,6 +67,7 @@ export function createAgentEntry(): AgentMailboxEntry {
   return {
     mailboxes,
     watchCallbacks: new Map(),
+    crypto,
   };
 }
 

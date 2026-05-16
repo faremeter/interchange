@@ -468,8 +468,8 @@ Distribution list management (subscribe, unsubscribe, moderation) is handled by 
 ```
 createList(address: string, name: string): Promise<ListInfo>
 listMembers(address: string): Promise<string[]>
-subscribe(listAddress: string, agentAddress: string): Promise<void>
-unsubscribe(listAddress: string, agentAddress: string): Promise<void>
+subscribe(listAddress: string, subscriberAddress: string): Promise<void>
+unsubscribe(listAddress: string, subscriberAddress: string): Promise<void>
 ```
 
 `ListInfo` includes: address, name, member count, creation date. When an agent joins a conversation via `conversation.join`, the harness subscribes the agent to the corresponding list. When it leaves via `conversation.leave`, the harness unsubscribes.

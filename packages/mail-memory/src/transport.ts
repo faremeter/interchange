@@ -19,11 +19,11 @@ import type {
   CryptoProvider,
 } from "@interchange/types/runtime";
 import {
-  createAgentEntry,
+  createAddressEntry,
   createMailboxStore,
   requireMessage,
   appendToMailbox,
-  type AgentMailboxEntry,
+  type AddressEntry,
 } from "./mailbox";
 import { parseHeaderSection } from "@interchange/mime";
 import { buildMessageHeaders } from "./headers";
@@ -51,8 +51,7 @@ import {
  * Agents must be registered before sending or receiving messages.
  */
 export class InMemoryTransport implements MessageTransport {
-  readonly #agentMailboxes = new Map<string, AgentMailboxEntry>();
-  readonly #cryptoProviders = new Map<string, CryptoProvider>();
+  readonly #entries = new Map<string, AddressEntry>();
   #remoteSendHandler: RemoteSendHandler | undefined;
   readonly #messageSentHandlers = new Set<MessageSentHandler>();
 
@@ -83,11 +82,10 @@ export class InMemoryTransport implements MessageTransport {
    * Throws if the address is already registered.
    */
   registerAgent(address: string, crypto: CryptoProvider): void {
-    if (this.#agentMailboxes.has(address)) {
+    if (this.#entries.has(address)) {
       throw new Error(`Agent "${address}" is already registered`);
     }
-    this.#agentMailboxes.set(address, createAgentEntry());
-    this.#cryptoProviders.set(address, crypto);
+    this.#entries.set(address, createAddressEntry(crypto));
   }
 
   /**
@@ -95,8 +93,7 @@ export class InMemoryTransport implements MessageTransport {
    * is destroyed so the address can be re-registered later.
    */
   unregisterAgent(address: string): void {
-    this.#agentMailboxes.delete(address);
-    this.#cryptoProviders.delete(address);
+    this.#entries.delete(address);
   }
 
   // ---------------------------------------------------------------------------
@@ -260,7 +257,7 @@ export class InMemoryTransport implements MessageTransport {
 
   async subscribe(
     _listAddress: string,
-    _agentAddress: string,
+    _subscriberAddress: string,
     _signal?: AbortSignal,
   ): Promise<void> {
     throw new Error("Distribution list management is not implemented");
@@ -268,7 +265,7 @@ export class InMemoryTransport implements MessageTransport {
 
   async unsubscribe(
     _listAddress: string,
-    _agentAddress: string,
+    _subscriberAddress: string,
     _signal?: AbortSignal,
   ): Promise<void> {
     throw new Error("Distribution list management is not implemented");
@@ -288,7 +285,7 @@ export class InMemoryTransport implements MessageTransport {
    * Throws if the agent is not registered.
    */
   deliver(agentAddress: string, message: Uint8Array): void {
-    const entry = this.#agentMailboxes.get(agentAddress);
+    const entry = this.#entries.get(agentAddress);
     if (entry === undefined) {
       throw new Error(
         `Agent "${agentAddress}" is not registered — cannot deliver mail`,
@@ -363,15 +360,14 @@ export class InMemoryTransport implements MessageTransport {
    * The harness calls this to obtain a transport that acts as a specific agent.
    */
   getTransportForAgent(address: string): MessageTransport {
-    if (!this.#agentMailboxes.has(address)) {
+    if (!this.#entries.has(address)) {
       throw new Error(
         `Agent "${address}" is not registered — call registerAgent() first`,
       );
     }
-    return new AgentMessageTransport(
+    return new ScopedMessageTransport(
       address,
-      this.#agentMailboxes,
-      this.#cryptoProviders,
+      this.#entries,
       () => this.#remoteSendHandler,
       () => this.#messageSentHandlers,
     );
@@ -382,29 +378,26 @@ export class InMemoryTransport implements MessageTransport {
  * Agent-scoped MessageTransport. All operations are scoped to one agent's
  * mailboxes. Constructed via InMemoryTransport.getTransportForAgent().
  */
-class AgentMessageTransport implements MessageTransport {
+class ScopedMessageTransport implements MessageTransport {
   readonly #address: string;
-  readonly #agentMailboxes: Map<string, AgentMailboxEntry>;
-  readonly #cryptoProviders: Map<string, CryptoProvider>;
+  readonly #entries: Map<string, AddressEntry>;
   readonly #getRemoteSendHandler: () => RemoteSendHandler | undefined;
   readonly #getMessageSentHandlers: () => Set<MessageSentHandler>;
 
   constructor(
     address: string,
-    agentMailboxes: Map<string, AgentMailboxEntry>,
-    cryptoProviders: Map<string, CryptoProvider>,
+    entries: Map<string, AddressEntry>,
     getRemoteSendHandler: () => RemoteSendHandler | undefined,
     getMessageSentHandlers: () => Set<MessageSentHandler>,
   ) {
     this.#address = address;
-    this.#agentMailboxes = agentMailboxes;
-    this.#cryptoProviders = cryptoProviders;
+    this.#entries = entries;
     this.#getRemoteSendHandler = getRemoteSendHandler;
     this.#getMessageSentHandlers = getMessageSentHandlers;
   }
 
-  get #entry(): AgentMailboxEntry {
-    const e = this.#agentMailboxes.get(this.#address);
+  get #entry(): AddressEntry {
+    const e = this.#entries.get(this.#address);
     if (e === undefined) {
       throw new Error(`Agent "${this.#address}" has been deregistered`);
     }
@@ -425,6 +418,11 @@ class AgentMessageTransport implements MessageTransport {
     message: OutboundMessage,
     _signal?: AbortSignal,
   ): Promise<SendReceipt> {
+    // Trip the deregistered guard so callers using a stale scoped handle
+    // see a precise error rather than the generic "sender is not
+    // registered" thrown by executeSend.
+    void this.#entry;
+
     const handlers = this.#getMessageSentHandlers();
     const aggregatedHandler: MessageSentHandler | undefined =
       handlers.size > 0
@@ -435,8 +433,7 @@ class AgentMessageTransport implements MessageTransport {
     return executeSend(
       this.#address,
       message,
-      this.#agentMailboxes,
-      this.#cryptoProviders,
+      this.#entries,
       this.#getRemoteSendHandler(),
       aggregatedHandler,
     );
@@ -561,7 +558,7 @@ class AgentMessageTransport implements MessageTransport {
     _signal?: AbortSignal,
   ): Promise<InboundMessage> {
     const store = this.#requireMailbox(ref.mailbox);
-    return doFetchFull(ref, store, this.#cryptoProviders);
+    return doFetchFull(ref, store, (addr) => this.#entries.get(addr)?.crypto);
   }
 
   async setFlags(
@@ -718,7 +715,7 @@ class AgentMessageTransport implements MessageTransport {
 
   async subscribe(
     _listAddress: string,
-    _agentAddress: string,
+    _subscriberAddress: string,
     _signal?: AbortSignal,
   ): Promise<void> {
     throw new Error("Distribution list management is not implemented");
@@ -726,7 +723,7 @@ class AgentMessageTransport implements MessageTransport {
 
   async unsubscribe(
     _listAddress: string,
-    _agentAddress: string,
+    _subscriberAddress: string,
     _signal?: AbortSignal,
   ): Promise<void> {
     throw new Error("Distribution list management is not implemented");
