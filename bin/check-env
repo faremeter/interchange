@@ -3,15 +3,35 @@
 opsh::version::require v0.7.0
 lib::import step-runner
 
+REQUIRED_BUN_VERSION=1.2.0
+
 explain-githooks() {
 	log::fatal "Please configure your git hooks: git config core.hooksPath .githooks"
 }
 
-step::10::check_git_hooks() {
+step::10::check_git_repo() {
 	git rev-parse --git-dir >/dev/null 2>&1 || log::fatal "Not inside a git repository"
+}
+
+step::20::check_git_hooks() {
 	hookspath=$(git config core.hooksPath) || explain-githooks
 	[[ $hookspath = .githooks ]] || explain-githooks
 	[[ -d "$hookspath" ]] || log::fatal "Hooks directory does not exist: $hookspath"
+}
+
+step::30::check_bun() {
+	command -v bun >/dev/null 2>&1 \
+		|| log::fatal "bun not found on PATH (see DEV.md; install from https://bun.sh/)"
+	local version
+	version=$(bun --version) \
+		|| log::fatal "failed to invoke 'bun --version'"
+	semver::test "$version" -ge "$REQUIRED_BUN_VERSION" \
+		|| log::fatal "bun >=$REQUIRED_BUN_VERSION required (have $version)"
+}
+
+step::40::check_node_modules() {
+	[[ -d node_modules ]] \
+		|| log::fatal "node_modules missing - run 'bun install'"
 }
 
 steps::run step
