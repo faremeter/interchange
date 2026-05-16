@@ -35,7 +35,7 @@ import {
   type CommitVerifier,
   type MailAuditStore,
 } from "@interchange/storage-isogit";
-import type { InMemoryTransport } from "@interchange/message-memory";
+import type { InMemoryTransport } from "@interchange/mail-memory";
 import type { GrantRule } from "@interchange/types/authz";
 import type {
   InboundMessage,
