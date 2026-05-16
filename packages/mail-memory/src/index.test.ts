@@ -16,13 +16,11 @@ async function createTestTransport() {
   const cryptoA = createNodeCrypto(kpA);
   const cryptoB = createNodeCrypto(kpB);
 
-  transport.registerAgent("alpha@test.interchange", cryptoA);
-  transport.registerAgent("beta@test.interchange", cryptoB);
+  transport.register("alpha@test.interchange", cryptoA);
+  transport.register("beta@test.interchange", cryptoB);
 
-  const alphaTransport = transport.getTransportForAgent(
-    "alpha@test.interchange",
-  );
-  const betaTransport = transport.getTransportForAgent("beta@test.interchange");
+  const alphaTransport = transport.getTransportFor("alpha@test.interchange");
+  const betaTransport = transport.getTransportFor("beta@test.interchange");
 
   return { transport, alphaTransport, betaTransport, cryptoA, cryptoB };
 }
@@ -431,21 +429,21 @@ describe("error handling", () => {
     ).rejects.toThrow(/not found/);
   });
 
-  test("registerAgent throws on duplicate registration", async () => {
+  test("register throws on duplicate registration", async () => {
     const transport = createInMemoryTransport();
     const kp = await generateKeyPair();
     const crypto = createNodeCrypto(kp);
-    transport.registerAgent("alpha@test.interchange", crypto);
-    expect(() =>
-      transport.registerAgent("alpha@test.interchange", crypto),
-    ).toThrow(/already registered/);
+    transport.register("alpha@test.interchange", crypto);
+    expect(() => transport.register("alpha@test.interchange", crypto)).toThrow(
+      /already registered/,
+    );
   });
 
-  test("getTransportForAgent throws for unregistered agent", () => {
+  test("getTransportFor throws for unregistered address", () => {
     const transport = createInMemoryTransport();
-    expect(() =>
-      transport.getTransportForAgent("nobody@test.interchange"),
-    ).toThrow(/not registered/);
+    expect(() => transport.getTransportFor("nobody@test.interchange")).toThrow(
+      /not registered/,
+    );
   });
 });
 
@@ -459,16 +457,16 @@ describe("registration lifecycle", () => {
     const kp = await generateKeyPair();
     const crypto = createNodeCrypto(kp);
 
-    transport.registerAgent("alpha@test.interchange", crypto);
-    transport.unregisterAgent("alpha@test.interchange");
+    transport.register("alpha@test.interchange", crypto);
+    transport.unregister("alpha@test.interchange");
     expect(() =>
-      transport.registerAgent("alpha@test.interchange", crypto),
+      transport.register("alpha@test.interchange", crypto),
     ).not.toThrow();
   });
 
   test("send from a scoped transport whose address was deregistered throws", async () => {
     const { transport, alphaTransport } = await createTestTransport();
-    transport.unregisterAgent("alpha@test.interchange");
+    transport.unregister("alpha@test.interchange");
 
     await expect(
       alphaTransport.send({
@@ -494,7 +492,7 @@ describe("registration lifecycle", () => {
     const refs = await betaTransport.search("INBOX", {});
     expect(refs.length).toBe(1);
 
-    transport.unregisterAgent("alpha@test.interchange");
+    transport.unregister("alpha@test.interchange");
 
     const full = await betaTransport.fetchFull(refs[0]!);
     expect(full.signatureStatus).toBe("unknown");
@@ -610,9 +608,7 @@ describe("deliver", () => {
 
   test("delivers a well-formed message to INBOX", async () => {
     const { transport } = await createTestTransport();
-    const alphaTransport = transport.getTransportForAgent(
-      "alpha@test.interchange",
-    );
+    const alphaTransport = transport.getTransportFor("alpha@test.interchange");
 
     transport.deliver("alpha@test.interchange", VALID_MESSAGE);
 
@@ -625,9 +621,7 @@ describe("deliver", () => {
 
   test("fires watch callback on delivery", async () => {
     const { transport } = await createTestTransport();
-    const alphaTransport = transport.getTransportForAgent(
-      "alpha@test.interchange",
-    );
+    const alphaTransport = transport.getTransportFor("alpha@test.interchange");
 
     const events: MailboxEvent[] = [];
     alphaTransport.watch("INBOX", (event) => events.push(event));
@@ -640,7 +634,7 @@ describe("deliver", () => {
     expect(events[0]!.type).toBe("exists");
   });
 
-  test("throws for unregistered agent", async () => {
+  test("throws for unregistered address", async () => {
     const { transport } = await createTestTransport();
 
     expect(() =>

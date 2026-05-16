@@ -126,13 +126,13 @@ const ALPHA_ADDRESS = "alpha@local.interchange";
 const BETA_ADDRESS = "beta@local.interchange";
 const USER_ADDRESS = "user@local.interchange";
 
-sharedTransport.registerAgent(ALPHA_ADDRESS, cryptoAlpha);
-sharedTransport.registerAgent(BETA_ADDRESS, cryptoBeta);
-sharedTransport.registerAgent(USER_ADDRESS, cryptoUser);
+sharedTransport.register(ALPHA_ADDRESS, cryptoAlpha);
+sharedTransport.register(BETA_ADDRESS, cryptoBeta);
+sharedTransport.register(USER_ADDRESS, cryptoUser);
 
-const transportAlpha = sharedTransport.getTransportForAgent(ALPHA_ADDRESS);
-const transportBeta = sharedTransport.getTransportForAgent(BETA_ADDRESS);
-const transportUser = sharedTransport.getTransportForAgent(USER_ADDRESS);
+const transportAlpha = sharedTransport.getTransportFor(ALPHA_ADDRESS);
+const transportBeta = sharedTransport.getTransportFor(BETA_ADDRESS);
+const transportUser = sharedTransport.getTransportFor(USER_ADDRESS);
 
 // ---------------------------------------------------------------------------
 // Storage
