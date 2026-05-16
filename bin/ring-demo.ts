@@ -113,21 +113,18 @@ const cryptoInstances = keyPairs.map((kp) => createNodeCrypto(kp));
 
 // Register all agents and the user.
 for (let i = 0; i < AGENT_NAMES.length; i++) {
-  sharedTransport.registerAgent(
-    agentAddress(AGENT_NAMES[i]),
-    cryptoInstances[i],
-  );
+  sharedTransport.register(agentAddress(AGENT_NAMES[i]), cryptoInstances[i]);
 }
-sharedTransport.registerAgent(
+sharedTransport.register(
   USER_ADDRESS,
   cryptoInstances[cryptoInstances.length - 1],
 );
 
 // Per-agent transports.
 const transports = AGENT_NAMES.map((name) =>
-  sharedTransport.getTransportForAgent(agentAddress(name)),
+  sharedTransport.getTransportFor(agentAddress(name)),
 );
-const transportUser = sharedTransport.getTransportForAgent(USER_ADDRESS);
+const transportUser = sharedTransport.getTransportFor(USER_ADDRESS);
 
 // ---------------------------------------------------------------------------
 // Storage

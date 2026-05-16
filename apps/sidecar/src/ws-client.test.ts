@@ -463,7 +463,7 @@ describe("sidecar↔hub integration", () => {
       "@interchange/crypto-node"
     );
     const kp = await generateKeyPair();
-    transport.registerAgent("agent-1@test.interchange", createNodeCrypto(kp));
+    transport.register("agent-1@test.interchange", createNodeCrypto(kp));
 
     const client = createWsClient({
       hubUrl: `ws://localhost:${env.server.port}/ws`,
@@ -485,7 +485,7 @@ describe("sidecar↔hub integration", () => {
       expect(routed).toBe(true);
 
       // Wait for the message to be delivered to the agent's INBOX.
-      const agentTransport = transport.getTransportForAgent(
+      const agentTransport = transport.getTransportFor(
         "agent-1@test.interchange",
       );
       await waitFor(async () => {
@@ -512,7 +512,7 @@ describe("sidecar↔hub integration", () => {
       "@interchange/crypto-node"
     );
     const kp = await generateKeyPair();
-    transport.registerAgent("sender@test.interchange", createNodeCrypto(kp));
+    transport.register("sender@test.interchange", createNodeCrypto(kp));
 
     const startLength = env.outboundMail.length;
     const client = createWsClient({
@@ -530,7 +530,7 @@ describe("sidecar↔hub integration", () => {
         env.router.getConnectedSidecars().includes("sc-mail-out"),
       );
 
-      const senderTransport = transport.getTransportForAgent(
+      const senderTransport = transport.getTransportFor(
         "sender@test.interchange",
       );
       await senderTransport.send({
@@ -560,14 +560,14 @@ describe("sidecar↔hub integration", () => {
     const sessionsA = createMockSessionManager();
     sessionsA.addresses.push("alice@test.interchange");
     const kpA = await generateKeyPair();
-    transportA.registerAgent("alice@test.interchange", createNodeCrypto(kpA));
+    transportA.register("alice@test.interchange", createNodeCrypto(kpA));
 
     // Sidecar B
     const transportB = createInMemoryTransport();
     const sessionsB = createMockSessionManager();
     sessionsB.addresses.push("bob@test.interchange");
     const kpB = await generateKeyPair();
-    transportB.registerAgent("bob@test.interchange", createNodeCrypto(kpB));
+    transportB.register("bob@test.interchange", createNodeCrypto(kpB));
 
     const clientA = createWsClient({
       hubUrl: `ws://localhost:${env.server.port}/ws`,
@@ -595,7 +595,7 @@ describe("sidecar↔hub integration", () => {
       );
 
       // Alice sends a message to Bob.
-      const aliceTransport = transportA.getTransportForAgent(
+      const aliceTransport = transportA.getTransportFor(
         "alice@test.interchange",
       );
       await aliceTransport.send({
@@ -605,9 +605,7 @@ describe("sidecar↔hub integration", () => {
       });
 
       // Bob should receive it in his INBOX.
-      const bobTransport = transportB.getTransportForAgent(
-        "bob@test.interchange",
-      );
+      const bobTransport = transportB.getTransportFor("bob@test.interchange");
       await waitFor(async () => {
         const refs = await bobTransport.search("INBOX", {});
         return refs.length > 0;

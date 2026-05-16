@@ -8,14 +8,14 @@ export type {
 /**
  * Create a fresh in-memory transport instance.
  *
- * The returned transport is shared across all agents in a single process.
- * Register agents before sending messages:
+ * The returned transport is shared across all addresses in a single
+ * process. Register addresses before sending messages:
  *
  *   const transport = createInMemoryTransport();
- *   transport.registerAgent("alpha@local.interchange", cryptoProviderA);
- *   transport.registerAgent("beta@local.interchange", cryptoProviderB);
+ *   transport.register("alpha@local.interchange", cryptoProviderA);
+ *   transport.register("beta@local.interchange", cryptoProviderB);
  *
- *   const alphaTransport = transport.getTransportForAgent("alpha@local.interchange");
+ *   const alphaTransport = transport.getTransportFor("alpha@local.interchange");
  *   await alphaTransport.send({ to: "beta@local.interchange", ... });
  */
 import { InMemoryTransport } from "./transport";
