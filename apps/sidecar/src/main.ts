@@ -1,5 +1,5 @@
 import { setup, getLogger } from "@interchange/log";
-import { createInMemoryTransport } from "@interchange/message-memory";
+import { createInMemoryTransport } from "@interchange/mail-memory";
 import type { InferenceEvent } from "@interchange/types/runtime";
 
 import { createSessionManager } from "./session-manager";

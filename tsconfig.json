@@ -12,7 +12,7 @@
     { "path": "packages/tools-posix" },
     { "path": "packages/tools-lsp" },
     { "path": "packages/mime" },
-    { "path": "packages/message-memory" },
+    { "path": "packages/mail-memory" },
     { "path": "packages/pack-transport" },
     { "path": "packages/hub-client" },
     { "path": "packages/harness" },

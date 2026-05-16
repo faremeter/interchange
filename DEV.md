@@ -156,7 +156,7 @@ apps/
 packages/
   db/           Drizzle ORM schema and migrations
   types/        Shared TypeScript types (arktype validators)
-  message-memory/  In-memory IMAP-like message transport
+  mail-memory/  In-memory IMAP-like message transport
   storage-isogit/  Git-backed agent state (isomorphic-git)
   inference/    LLM inference reactor
   harness/      Agent harness (tools, transport, audit)

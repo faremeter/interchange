@@ -8,7 +8,7 @@
     "@interchange/crypto-node": "workspace:*",
     "@interchange/harness": "workspace:*",
     "@interchange/log": "workspace:*",
-    "@interchange/message-memory": "workspace:*",
+    "@interchange/mail-memory": "workspace:*",
     "@interchange/pack-transport": "workspace:*",
     "@interchange/storage-isogit": "workspace:*",
     "@interchange/tools-lsp": "workspace:*",
