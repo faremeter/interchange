@@ -18,6 +18,7 @@
     { "path": "packages/harness" },
     { "path": "apps/hub" },
     { "path": "apps/ui" },
-    { "path": "apps/sidecar" }
+    { "path": "apps/sidecar" },
+    { "path": "packages/inference-testing" }
   ]
 }
