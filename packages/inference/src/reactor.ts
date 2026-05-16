@@ -39,7 +39,7 @@ import type {
 
 import { getLogger } from "@interchange/log";
 import { runInference } from "./harness";
-import type { InferenceHarnessOptions } from "./harness";
+import type { Dependencies, InferenceHarnessOptions } from "./harness";
 import { createCapabilities } from "./director";
 import { createGateManager } from "./gates";
 import { createCorrelationRegistry } from "./correlation";
@@ -57,6 +57,7 @@ function buildHarnessOpts(
   options: InferenceOptions | undefined,
   signal: AbortSignal,
   nextSeq: () => number,
+  deps: Dependencies,
 ): InferenceHarnessOptions {
   if (options !== undefined) {
     return {
@@ -66,9 +67,10 @@ function buildHarnessOpts(
       inferenceOptions: options,
       signal,
       nextSeq,
+      deps,
     };
   }
-  return { turns, model, providerConfig, signal, nextSeq };
+  return { turns, model, providerConfig, signal, nextSeq, deps };
 }
 
 export type ReactorEmittedEvent =
@@ -87,6 +89,7 @@ export type ReactorConfig = {
   contextStore: ContextStore;
   correlationValidator?: CorrelationValidator;
   onEvent: (event: ReactorEmittedEvent) => void;
+  deps: Dependencies;
   inferenceRunner?: (
     opts: InferenceHarnessOptions,
   ) => AsyncGenerator<InferenceEvent>;
@@ -124,6 +127,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     contextStore,
     correlationValidator,
     onEvent,
+    deps,
     inferenceRunner = runInference,
     beforeToolExtensions = [],
     toolResultTransforms = [],
@@ -397,6 +401,7 @@ export function createReactor(config: ReactorConfig): Reactor {
           options,
           signal,
           nextSeq,
+          deps,
         );
 
         let lastDone:

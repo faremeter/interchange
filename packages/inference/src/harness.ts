@@ -35,6 +35,36 @@ import {
   classifyStreamError,
 } from "./errors";
 
+export const HarnessId: unique symbol = Symbol("HarnessId");
+
+/**
+ * Runtime dependencies injected into `runInference`. Code-only — not part of
+ * any persisted schema. Test harnesses substitute `fetch` (and stamp the
+ * `[HarnessId]` tag for per-harness identity) so production `runInference`
+ * never reaches `globalThis.fetch`.
+ *
+ * `fetch` is intentionally typed as a plain function rather than
+ * `typeof globalThis.fetch` — the latter is augmented per-runtime (Bun adds
+ * `preconnect`; Node and the DOM lib do not) and `runInference` only ever
+ * invokes the call signature.
+ *
+ * The `[HarnessId]` tag is enumerable via `Object.getOwnPropertySymbols`
+ * (and `Reflect.ownKeys`, which is the superset). Do not pass `Dependencies`
+ * instances through reflective serializers or expose them across trust
+ * boundaries. (`JSON.stringify` is safe — it walks string keys only.)
+ */
+export type Dependencies = {
+  readonly fetch: (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => Promise<Response>;
+  readonly [HarnessId]?: symbol;
+};
+
+export function createDefaultDependencies(): Dependencies {
+  return { fetch: globalThis.fetch.bind(globalThis) };
+}
+
 export type InferenceHarnessOptions = {
   turns: ConversationTurn[];
   model: string;
@@ -43,6 +73,7 @@ export type InferenceHarnessOptions = {
   signal?: AbortSignal;
   // Sequence number allocator — called once per event to get the next seq.
   nextSeq: () => number;
+  deps: Dependencies;
 };
 
 export async function* runInference(
@@ -55,7 +86,19 @@ export async function* runInference(
     inferenceOptions = {},
     signal,
     nextSeq,
+    deps,
   } = opts;
+
+  // Defensive guard for callers that bypass the type system (JS, `any`,
+  // unchecked casts). Missing or malformed `deps.fetch` is a programmer
+  // bug — surface it as an unhandled throw before any `yield`, so it does
+  // not get caught by the network try/catch below and misclassified as a
+  // retryable transport failure that callers might paper over with retries.
+  if (typeof deps?.fetch !== "function") {
+    throw new Error(
+      `runInference: deps.fetch must be a function (got ${typeof deps?.fetch}); pass createDefaultDependencies() or a test harness Dependencies object`,
+    );
+  }
 
   // Emit inference.start immediately.
   yield { type: "inference.start", seq: nextSeq(), data: { model } };
@@ -126,7 +169,7 @@ export async function* runInference(
 
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await deps.fetch(url, {
       method: "POST",
       headers,
       body: builtRequest.body,
