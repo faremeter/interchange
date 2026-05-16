@@ -238,14 +238,19 @@ docs/
 
 ## Scripts
 
-These are run from the repo root via `bun run`:
+Build verbs are exposed through the `Makefile` at the repo root. The
+Makefile first verifies the environment (`bin/check-env`) and then
+delegates to the underlying `bun run` scripts.
 
-| Script   | Command                                                  |
-| -------- | -------------------------------------------------------- |
-| `check`  | `bun run check` -- type check                            |
-| `lint`   | `bun run lint` -- prettier + eslint + API docs freshness |
-| `format` | `bun run format` -- auto-format                          |
-| `test`   | `bun test` -- run tests                                  |
+| Target        | Description                                              |
+| ------------- | -------------------------------------------------------- |
+| `make all`    | lint + build + test (full verification)                  |
+| `make build`  | type check (`tsc -b --noEmit`)                           |
+| `make lint`   | prettier + eslint + API docs freshness                   |
+| `make format` | auto-format                                              |
+| `make test`   | run tests                                                |
+| `make docs`   | regenerate API documentation                             |
+| `make clean`  | remove `tsbuildinfo`, `dist/` directories, and env stamp |
 
 ## API
 
