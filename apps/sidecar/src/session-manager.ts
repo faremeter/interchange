@@ -311,8 +311,8 @@ export function createSessionManager(
     try {
       const crypto = createNodeCrypto(keyPair);
 
-      transport.registerAgent(agentAddress, crypto);
-      const agentTransport = transport.getTransportForAgent(agentAddress);
+      transport.register(agentAddress, crypto);
+      const agentTransport = transport.getTransportFor(agentAddress);
 
       const sessionId = agentConfig.sessionId;
 
@@ -388,7 +388,7 @@ export function createSessionManager(
       mailStores.delete(agentAddress);
       mailCommitQueues.delete(agentAddress);
       try {
-        transport.unregisterAgent(agentAddress);
+        transport.unregister(agentAddress);
       } catch (cleanupErr) {
         // Best-effort cleanup; don't mask the original error.
         logger.error`Failed to unregister transport for ${agentAddress}: ${String(cleanupErr)}`;
@@ -413,7 +413,7 @@ export function createSessionManager(
     await drainMailQueue(agentAddress);
     sessions.delete(agentAddress);
     mailStores.delete(agentAddress);
-    transport.unregisterAgent(agentAddress);
+    transport.unregister(agentAddress);
     logger.info`Stopped session for ${agentAddress}`;
   }
 
@@ -435,7 +435,7 @@ export function createSessionManager(
     await drainMailQueue(agentAddress);
     sessions.delete(agentAddress);
     mailStores.delete(agentAddress);
-    transport.unregisterAgent(agentAddress);
+    transport.unregister(agentAddress);
     logger.info`Aborted agent ${agentAddress}: ${reason}`;
   }
 

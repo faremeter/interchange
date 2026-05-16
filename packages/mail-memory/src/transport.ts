@@ -48,7 +48,7 @@ import {
  * Every outbound message is PGP/MIME signed with the sender's CryptoProvider.
  * Signature verification runs on fetchFull().
  *
- * Agents must be registered before sending or receiving messages.
+ * Addresses must be registered before sending or receiving messages.
  */
 export class InMemoryTransport implements MessageTransport {
   readonly #entries = new Map<string, AddressEntry>();
@@ -76,23 +76,23 @@ export class InMemoryTransport implements MessageTransport {
   }
 
   /**
-   * Register an agent with its address and CryptoProvider. Creates the
-   * default set of mailboxes (INBOX, Sent, Drafts, Archive, Trash).
+   * Register an address with its CryptoProvider. Creates the default set
+   * of mailboxes (INBOX, Sent, Drafts, Archive, Trash).
    *
    * Throws if the address is already registered.
    */
-  registerAgent(address: string, crypto: CryptoProvider): void {
+  register(address: string, crypto: CryptoProvider): void {
     if (this.#entries.has(address)) {
-      throw new Error(`Agent "${address}" is already registered`);
+      throw new Error(`Address "${address}" is already registered`);
     }
     this.#entries.set(address, createAddressEntry(crypto));
   }
 
   /**
-   * Remove an agent's mailboxes and crypto provider. Called when a session
-   * is destroyed so the address can be re-registered later.
+   * Remove an address's mailboxes and crypto provider. Called when a
+   * session is destroyed so the address can be re-registered later.
    */
-  unregisterAgent(address: string): void {
+  unregister(address: string): void {
     this.#entries.delete(address);
   }
 
@@ -105,7 +105,7 @@ export class InMemoryTransport implements MessageTransport {
     _signal?: AbortSignal,
   ): Promise<SendReceipt> {
     throw new Error(
-      "Use createInMemoryTransport().getTransportForAgent(address) to send messages",
+      "Use createInMemoryTransport().getTransportFor(address) to send messages",
     );
   }
 
@@ -116,31 +116,31 @@ export class InMemoryTransport implements MessageTransport {
     _signal?: AbortSignal,
   ): Promise<MessageRef> {
     throw new Error(
-      "Use createInMemoryTransport().getTransportForAgent(address) to append messages",
+      "Use createInMemoryTransport().getTransportFor(address) to append messages",
     );
   }
 
   // ---------------------------------------------------------------------------
-  // Mailbox management (agent-scoped — use getTransportForAgent)
+  // Mailbox management (per-address — use getTransportFor)
   // ---------------------------------------------------------------------------
 
   async listMailboxes(_signal?: AbortSignal): Promise<Mailbox[]> {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   async createMailbox(_name: string, _signal?: AbortSignal): Promise<Mailbox> {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   async deleteMailbox(_name: string, _signal?: AbortSignal): Promise<void> {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   async getMailboxStatus(
     _name: string,
     _signal?: AbortSignal,
   ): Promise<MailboxStatus> {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   async search(
@@ -148,7 +148,7 @@ export class InMemoryTransport implements MessageTransport {
     _query: SearchQuery,
     _signal?: AbortSignal,
   ): Promise<MessageRef[]> {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   async thread(
@@ -157,21 +157,21 @@ export class InMemoryTransport implements MessageTransport {
     _query?: SearchQuery,
     _signal?: AbortSignal,
   ): Promise<Thread[]> {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   async fetchHeaders(
     _ref: MessageRef,
     _signal?: AbortSignal,
   ): Promise<MessageHeaders> {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   async fetchStructure(
     _ref: MessageRef,
     _signal?: AbortSignal,
   ): Promise<BodyStructure> {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   async fetchPart(
@@ -179,14 +179,14 @@ export class InMemoryTransport implements MessageTransport {
     _partPath: string,
     _signal?: AbortSignal,
   ): Promise<MessagePart> {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   async fetchFull(
     _ref: MessageRef,
     _signal?: AbortSignal,
   ): Promise<InboundMessage> {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   async setFlags(
@@ -194,7 +194,7 @@ export class InMemoryTransport implements MessageTransport {
     _flags: string[],
     _signal?: AbortSignal,
   ): Promise<void> {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   async clearFlags(
@@ -202,7 +202,7 @@ export class InMemoryTransport implements MessageTransport {
     _flags: string[],
     _signal?: AbortSignal,
   ): Promise<void> {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   async move(
@@ -210,7 +210,7 @@ export class InMemoryTransport implements MessageTransport {
     _toMailbox: string,
     _signal?: AbortSignal,
   ): Promise<void> {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   async copy(
@@ -218,18 +218,18 @@ export class InMemoryTransport implements MessageTransport {
     _toMailbox: string,
     _signal?: AbortSignal,
   ): Promise<void> {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   async expunge(_mailbox: string, _signal?: AbortSignal): Promise<void> {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   watch(
     _mailbox: string,
     _callback: (event: MailboxEvent) => void,
   ): Unsubscribe {
-    throw new Error("Use getTransportForAgent(address) for agent operations");
+    throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
   async sync(
@@ -276,24 +276,24 @@ export class InMemoryTransport implements MessageTransport {
   // ---------------------------------------------------------------------------
 
   /**
-   * Deliver a signed MIME message to an agent's INBOX. Used by the
+   * Deliver a signed MIME message to an address's INBOX. Used by the
    * federation layer when a message arrives from the hub over the
    * websocket — the message is already assembled and signed by the
-   * originating agent, so no further processing is needed beyond
+   * originating sender, so no further processing is needed beyond
    * envelope parsing and storage.
    *
-   * Throws if the agent is not registered.
+   * Throws if the address is not registered.
    */
-  deliver(agentAddress: string, message: Uint8Array): void {
-    const entry = this.#entries.get(agentAddress);
+  deliver(address: string, message: Uint8Array): void {
+    const entry = this.#entries.get(address);
     if (entry === undefined) {
       throw new Error(
-        `Agent "${agentAddress}" is not registered — cannot deliver mail`,
+        `Address "${address}" is not registered — cannot deliver mail`,
       );
     }
     const inbox = entry.mailboxes.get("INBOX");
     if (inbox === undefined) {
-      throw new Error(`Agent "${agentAddress}" has no INBOX`);
+      throw new Error(`Address "${address}" has no INBOX`);
     }
 
     const { headers } = parseHeaderSection(message);
@@ -352,17 +352,17 @@ export class InMemoryTransport implements MessageTransport {
   }
 
   // ---------------------------------------------------------------------------
-  // Internal: agent-scoped view
+  // Internal: per-address view
   // ---------------------------------------------------------------------------
 
   /**
-   * Returns an agent-scoped MessageTransport bound to the given address.
-   * The harness calls this to obtain a transport that acts as a specific agent.
+   * Returns a MessageTransport scoped to the given address. Callers use
+   * this to send and read mail as that address.
    */
-  getTransportForAgent(address: string): MessageTransport {
+  getTransportFor(address: string): MessageTransport {
     if (!this.#entries.has(address)) {
       throw new Error(
-        `Agent "${address}" is not registered — call registerAgent() first`,
+        `Address "${address}" is not registered — call register() first`,
       );
     }
     return new ScopedMessageTransport(
@@ -375,8 +375,8 @@ export class InMemoryTransport implements MessageTransport {
 }
 
 /**
- * Agent-scoped MessageTransport. All operations are scoped to one agent's
- * mailboxes. Constructed via InMemoryTransport.getTransportForAgent().
+ * MessageTransport scoped to a single address. All operations target that
+ * address's mailboxes. Constructed via InMemoryTransport.getTransportFor().
  */
 class ScopedMessageTransport implements MessageTransport {
   readonly #address: string;
@@ -399,7 +399,7 @@ class ScopedMessageTransport implements MessageTransport {
   get #entry(): AddressEntry {
     const e = this.#entries.get(this.#address);
     if (e === undefined) {
-      throw new Error(`Agent "${this.#address}" has been deregistered`);
+      throw new Error(`Address "${this.#address}" has been deregistered`);
     }
     return e;
   }
@@ -408,7 +408,7 @@ class ScopedMessageTransport implements MessageTransport {
     const store = this.#entry.mailboxes.get(name);
     if (store === undefined) {
       throw new Error(
-        `Mailbox "${name}" does not exist for agent "${this.#address}"`,
+        `Mailbox "${name}" does not exist for address "${this.#address}"`,
       );
     }
     return store;
@@ -477,7 +477,7 @@ class ScopedMessageTransport implements MessageTransport {
   async createMailbox(name: string, _signal?: AbortSignal): Promise<Mailbox> {
     if (this.#entry.mailboxes.has(name)) {
       throw new Error(
-        `Mailbox "${name}" already exists for agent "${this.#address}"`,
+        `Mailbox "${name}" already exists for address "${this.#address}"`,
       );
     }
     this.#entry.mailboxes.set(name, createMailboxStore());
@@ -487,7 +487,7 @@ class ScopedMessageTransport implements MessageTransport {
   async deleteMailbox(name: string, _signal?: AbortSignal): Promise<void> {
     if (!this.#entry.mailboxes.has(name)) {
       throw new Error(
-        `Mailbox "${name}" does not exist for agent "${this.#address}"`,
+        `Mailbox "${name}" does not exist for address "${this.#address}"`,
       );
     }
     this.#entry.mailboxes.delete(name);
