@@ -115,14 +115,22 @@ bin/db-migrate
 
 ## Build Pipeline
 
+The Makefile is the canonical entry point for the build verbs. It also
+runs `bin/check-env` (via `.env-checked`) to verify the environment
+before each build, which the raw `bun run` scripts do not.
+
 ```bash
-bun run check    # TypeScript type checking (tsc -b --noEmit)
-bun run lint     # Prettier + ESLint + API docs freshness
-bun run format   # Prettier auto-fix
-bun run test     # All tests
+make all       # lint + build + test (full verification)
+make build     # TypeScript type checking (tsc -b --noEmit)
+make lint      # Prettier + ESLint + API docs freshness
+make format    # Prettier auto-fix
+make test      # All tests
+make docs      # Regenerate API documentation
+make clean     # Remove tsbuildinfo, dist directories, env stamp
 ```
 
-The pre-commit hook runs `bun run lint` against staged files.
+The pre-commit hook invokes `bun run lint` directly against the staged
+tree (it bypasses make because it operates on a temporary checkout).
 
 ## Bin Scripts
 

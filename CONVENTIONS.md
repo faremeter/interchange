@@ -36,18 +36,23 @@ Do not create standalone TypeScript files in the repository root.
 
 ## Build and Development Commands
 
-```bash
-# Full build verification (run all three in order)
-bun run check && bun run lint && bun run test
+Use the `Makefile` at the repo root for build, lint, test, format, and
+docs. The Makefile verifies the environment via `bin/check-env` before
+each build and then delegates to the underlying `bun run` scripts.
 
-# Individual commands
-bun run check    # tsc -b --noEmit (validates entire TypeScript project graph)
-bun run lint     # Prettier + ESLint + API docs freshness
-bun run format   # Auto-format with Prettier
-bun run test     # Run bun tests
+```bash
+# Full build verification
+make all
+
+# Individual targets
+make build     # tsc -b --noEmit (validates entire TypeScript project graph)
+make lint      # Prettier + ESLint + API docs freshness
+make format    # Auto-format with Prettier
+make test      # Run bun tests
+make docs      # Regenerate API documentation
 ```
 
-`bun run check` uses TypeScript project references (`tsc -b`). It validates the entire monorepo dependency graph, not just a single package. Changes to shared packages (types, authz, log) may break downstream consumers that `tsc -b` will catch.
+`make build` uses TypeScript project references (`tsc -b`). It validates the entire monorepo dependency graph, not just a single package. Changes to shared packages (types, authz, log) may break downstream consumers that `tsc -b` will catch.
 
 ---
 
@@ -63,8 +68,8 @@ bun run test     # Run bun tests
 - Use `{ cause }` when re-throwing errors
 - Use the package logger, never `console`
 - Co-locate tests with source files
-- Run `bun run format` before committing
-- Run `bun run docs` after changing routes or type descriptions
+- Run `make format` before committing
+- Run `make docs` after changing routes or type descriptions
 - Let TypeScript infer types when obvious
 
 ### Don't
@@ -77,7 +82,7 @@ bun run test     # Run bun tests
 - Use `any` type (use `unknown` and narrow)
 - Use type assertions (`as Type`) - they indicate interface problems
 - Skip runtime validation in favor of type assertions (use arktype)
-- Commit without running `bun run lint`
+- Commit without running `make lint`
 - Over-type code with explicit annotations the compiler can infer
 
 ---
@@ -105,7 +110,7 @@ Key formatting rules:
 - **Semicolons**: Required
 - **Trailing commas**: Always (including function parameters)
 
-Run `bun run format` to auto-format all files.
+Run `make format` to auto-format all files.
 
 ---
 

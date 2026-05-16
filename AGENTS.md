@@ -29,16 +29,25 @@ This is the single command to get a clean, running system with seed data. It dro
 
 ### Common Operations
 
-| Task                          | Command                                         |
-| ----------------------------- | ----------------------------------------------- |
-| Start stack (no seed)         | `bun bin/dev.ts`                                |
-| Start stack with seed         | `bun bin/dev.ts --seed`                         |
-| Start stack without UI        | `bun bin/dev.ts --no-ui`                        |
-| Full database reset           | `bin/db-reset`                                  |
-| Full reset (DB + agent state) | `bin/db-reset --clean`                          |
-| Apply migrations only         | `bin/db-migrate`                                |
-| Seed (requires running hub)   | `bun bin/seed.ts`                               |
-| Full build verification       | `bun run check && bun run lint && bun run test` |
+| Task                          | Command                  |
+| ----------------------------- | ------------------------ |
+| Start stack (no seed)         | `bun bin/dev.ts`         |
+| Start stack with seed         | `bun bin/dev.ts --seed`  |
+| Start stack without UI        | `bun bin/dev.ts --no-ui` |
+| Full database reset           | `bin/db-reset`           |
+| Full reset (DB + agent state) | `bin/db-reset --clean`   |
+| Apply migrations only         | `bin/db-migrate`         |
+| Seed (requires running hub)   | `bun bin/seed.ts`        |
+| Full build verification       | `make all`               |
+| Type check only               | `make build`             |
+| Lint only                     | `make lint`              |
+| Run tests only                | `make test`              |
+| Auto-format                   | `make format`            |
+| Regenerate API docs           | `make docs`              |
+
+Use the `make` targets above for build, lint, test, format, and docs.
+Do not invoke the underlying `bun run` scripts directly -- the Makefile
+also runs `bin/check-env` to verify the environment before each build.
 
 `bin/db-reset` only resets postgres. `--clean` additionally wipes
 `HUB_DATA_DIR` and `SIDECAR_DATA_DIR` so the sidecar does not try to
@@ -56,10 +65,14 @@ If you need to reset the database while the stack is running, stop the stack fir
 You must run the full build pipeline before declaring any task complete:
 
 ```bash
-bun run check && bun run lint && bun run test
+make all
 ```
 
-- `bun run check` validates the entire TypeScript project graph via `tsc -b`
+This runs lint, type check (`tsc -b`), and tests in order, after verifying
+the environment via `bin/check-env`. Do not substitute `bun run check`,
+`bun run lint`, or `bun run test` for `make all`.
+
+- `make build` validates the entire TypeScript project graph via `tsc -b`
 - Individual package builds do not guarantee the full tree will build
 - Type exports and imports may not be available until the full tree is built
 - Tests may fail if dependent packages are not rebuilt
