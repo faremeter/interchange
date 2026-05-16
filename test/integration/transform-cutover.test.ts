@@ -14,6 +14,7 @@ import git from "isomorphic-git";
 
 import { createIsogitStore, initAgentRepo } from "@interchange/storage-isogit";
 import {
+  createDefaultDependencies,
   createReactor,
   createSizeCapTransform,
   type Reactor,
@@ -176,6 +177,7 @@ async function startReactor(opts: {
     toolRunner: opts.toolRunner,
     contextStore,
     onEvent: (e) => events.push(e),
+    deps: createDefaultDependencies(),
     shutdownTimeoutMs: 200,
     toolResultTransforms: [sizeCap],
     ...(opts.inferenceRunner !== undefined

@@ -22,6 +22,7 @@ import {
   createReactor,
   createAuditCollector,
   createAuthzExtension,
+  createDefaultDependencies,
   createSizeCapTransform,
 } from "@interchange/inference";
 import type {
@@ -410,6 +411,7 @@ export function createHarness(config: HarnessConfig): Harness {
     toolRunner: combinedRunner,
     contextStore,
     onEvent: handleEvent,
+    deps: createDefaultDependencies(),
     beforeToolExtensions,
     toolResultTransforms: [sizeCapTransform],
   };
