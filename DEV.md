@@ -129,8 +129,9 @@ make docs      # Regenerate API documentation
 make clean     # Remove tsbuildinfo, dist directories, env stamp
 ```
 
-The pre-commit hook invokes `bun run lint` directly against the staged
-tree (it bypasses make because it operates on a temporary checkout).
+The pre-commit hook checks out the staged tree into a temporary
+directory and runs `make lint` against it, so only committed content
+is validated.
 
 ## Bin Scripts
 

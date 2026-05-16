@@ -834,7 +834,7 @@ Configure git hooks before making commits:
 git config core.hooksPath .githooks
 ```
 
-The pre-commit hook checks out the full staged tree into a temporary directory and runs `bun run lint` against it, ensuring only committed content is validated. The commit-msg hook enforces line length limits.
+The pre-commit hook checks out the full staged tree into a temporary directory and runs `make lint` against it, ensuring only committed content is validated. The commit-msg hook enforces line length limits.
 
 ### Lockfile Artifacts
 
