@@ -1,7 +1,13 @@
 import { type } from "arktype";
 import { describe, test, expect } from "bun:test";
+import { wire } from "@interchange/inference-testing";
+import { parseSSE } from "../sse";
 import { createAnthropicAdapter } from "./anthropic";
-import type { ConversationTurn } from "@interchange/types/runtime";
+import type { ProviderAdapter } from "../adapter";
+import type {
+  ConversationTurn,
+  InferenceEvent,
+} from "@interchange/types/runtime";
 
 const adapter = createAnthropicAdapter();
 
@@ -46,6 +52,27 @@ const AnthropicRequestBody = type({
   "tools?": AnthropicTool.array(),
   "temperature?": "number",
 });
+
+// Drives a sequence of wire DSL chunks (full SSE-framed Uint8Arrays) through
+// the production SSE parser and the supplied adapter's parseResponse, mirroring
+// the harness's pipeline. Returns the flattened sequence of emitted events so
+// the test site can assert on them.
+async function parseWire(
+  adapterInstance: ProviderAdapter,
+  chunks: Uint8Array[],
+): Promise<InferenceEvent[]> {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  const events: InferenceEvent[] = [];
+  for await (const payload of parseSSE(stream)) {
+    events.push(...adapterInstance.parseResponse(payload));
+  }
+  return events;
+}
 
 describe("Anthropic adapter: buildRequest", () => {
   test("builds a request with required fields", () => {
@@ -262,19 +289,23 @@ describe("Anthropic adapter: buildRequest", () => {
 });
 
 describe("Anthropic adapter: parseResponse", () => {
-  test("returns empty array for non-JSON input", () => {
-    const events = adapter.parseResponse("not json");
+  test("returns empty array for non-JSON input", async () => {
+    // Non-JSON data payload — the structured DSL helpers serialize JSON, so
+    // `wire.anthropic.raw` is the right tool for genuinely-adversarial bytes.
+    const events = await parseWire(adapter, [
+      wire.anthropic.raw("event: x\ndata: not json\n\n"),
+    ]);
     expect(events).toEqual([]);
   });
 
-  test("parses text_delta", () => {
-    const sseData = JSON.stringify({
-      type: "content_block_delta",
-      index: 0,
-      delta: { type: "text_delta", text: "Hello" },
-    });
-
-    const events = adapter.parseResponse(sseData);
+  test("parses text_delta", async () => {
+    const events = await parseWire(adapter, [
+      wire.anthropic.contentBlockDelta({
+        index: 0,
+        kind: "text_delta",
+        text: "Hello",
+      }),
+    ]);
     expect(events).toHaveLength(1);
     const evt = events[0];
     expect(evt?.type).toBe("inference.text.delta");
@@ -283,14 +314,14 @@ describe("Anthropic adapter: parseResponse", () => {
     }
   });
 
-  test("parses thinking_delta", () => {
-    const sseData = JSON.stringify({
-      type: "content_block_delta",
-      index: 0,
-      delta: { type: "thinking_delta", thinking: "reasoning..." },
-    });
-
-    const events = adapter.parseResponse(sseData);
+  test("parses thinking_delta", async () => {
+    const events = await parseWire(adapter, [
+      wire.anthropic.contentBlockDelta({
+        index: 0,
+        kind: "thinking_delta",
+        thinking: "reasoning...",
+      }),
+    ]);
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("inference.thinking.delta");
     if (events[0]?.type === "inference.thinking.delta") {
@@ -298,46 +329,47 @@ describe("Anthropic adapter: parseResponse", () => {
     }
   });
 
-  test("parses input_json_delta for tool arguments", () => {
+  test("parses input_json_delta for tool arguments", async () => {
+    // Per-test adapter instance: state for tool_use block index 1 must
+    // come from the same adapter consuming the start event.
     const a = createAnthropicAdapter();
-
-    // Set up the tool call start first so the delta can resolve
-    a.parseResponse(
-      JSON.stringify({
-        type: "content_block_start",
+    const events = await parseWire(a, [
+      wire.anthropic.contentBlockStart({
         index: 1,
-        content_block: {
-          type: "tool_use",
-          id: "toolu_test",
-          name: "write_file",
-        },
+        kind: "tool_use",
+        id: "toolu_test",
+        name: "write_file",
       }),
-    );
-
-    const events = a.parseResponse(
-      JSON.stringify({
-        type: "content_block_delta",
+      wire.anthropic.contentBlockDelta({
         index: 1,
-        delta: { type: "input_json_delta", partial_json: '{"path":' },
+        kind: "input_json_delta",
+        partialJson: '{"path":',
       }),
-    );
+    ]);
 
-    expect(events).toHaveLength(1);
-    expect(events[0]?.type).toBe("inference.tool_call.delta");
-    if (events[0]?.type === "inference.tool_call.delta") {
-      expect(events[0].data.callId).toBe("toolu_test");
-      expect(events[0].data.argumentFragment).toBe('{"path":');
+    // Two events emitted: the start, then the delta. The original test only
+    // asserted on the delta because it called parseResponse with the start
+    // event in isolation first; the delta still carries the correct callId.
+    const deltaEvents = events.filter(
+      (e) => e.type === "inference.tool_call.delta",
+    );
+    expect(deltaEvents).toHaveLength(1);
+    const evt = deltaEvents[0];
+    if (evt?.type === "inference.tool_call.delta") {
+      expect(evt.data.callId).toBe("toolu_test");
+      expect(evt.data.argumentFragment).toBe('{"path":');
     }
   });
 
-  test("parses content_block_start for tool_use", () => {
-    const sseData = JSON.stringify({
-      type: "content_block_start",
-      index: 0,
-      content_block: { type: "tool_use", id: "toolu_01", name: "read_file" },
-    });
-
-    const events = adapter.parseResponse(sseData);
+  test("parses content_block_start for tool_use", async () => {
+    const events = await parseWire(adapter, [
+      wire.anthropic.contentBlockStart({
+        index: 0,
+        kind: "tool_use",
+        id: "toolu_01",
+        name: "read_file",
+      }),
+    ]);
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("inference.tool_call.start");
     if (events[0]?.type === "inference.tool_call.start") {
@@ -346,20 +378,17 @@ describe("Anthropic adapter: parseResponse", () => {
     }
   });
 
-  test("parses message_start with usage", () => {
-    const sseData = JSON.stringify({
-      type: "message_start",
-      message: {
+  test("parses message_start with usage", async () => {
+    const events = await parseWire(adapter, [
+      wire.anthropic.messageStart({
         usage: {
-          input_tokens: 100,
-          output_tokens: 0,
-          cache_read_input_tokens: 50,
-          cache_creation_input_tokens: 0,
+          inputTokens: 100,
+          outputTokens: 0,
+          cacheReadInputTokens: 50,
+          cacheCreationInputTokens: 0,
         },
-      },
-    });
-
-    const events = adapter.parseResponse(sseData);
+      }),
+    ]);
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("inference.usage");
     if (events[0]?.type === "inference.usage") {
@@ -368,14 +397,13 @@ describe("Anthropic adapter: parseResponse", () => {
     }
   });
 
-  test("parses message_delta with output usage", () => {
-    const sseData = JSON.stringify({
-      type: "message_delta",
-      delta: { stop_reason: "end_turn" },
-      usage: { output_tokens: 42 },
-    });
-
-    const events = adapter.parseResponse(sseData);
+  test("parses message_delta with output usage", async () => {
+    const events = await parseWire(adapter, [
+      wire.anthropic.messageDelta({
+        stopReason: "end_turn",
+        outputTokens: 42,
+      }),
+    ]);
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("inference.usage");
     if (events[0]?.type === "inference.usage") {
@@ -383,79 +411,58 @@ describe("Anthropic adapter: parseResponse", () => {
     }
   });
 
-  test("returns empty for ping events", () => {
-    const events = adapter.parseResponse(JSON.stringify({ type: "ping" }));
+  test("returns empty for ping events", async () => {
+    const events = await parseWire(adapter, [wire.anthropic.ping()]);
     expect(events).toEqual([]);
   });
 
-  test("returns empty for message_stop", () => {
-    const events = adapter.parseResponse(
-      JSON.stringify({ type: "message_stop" }),
-    );
+  test("returns empty for message_stop", async () => {
+    const events = await parseWire(adapter, [wire.anthropic.messageStop()]);
     expect(events).toEqual([]);
   });
 
-  test("returns empty for content_block_stop", () => {
-    const events = adapter.parseResponse(
-      JSON.stringify({ type: "content_block_stop", index: 0 }),
-    );
+  test("returns empty for content_block_stop", async () => {
+    const events = await parseWire(adapter, [
+      wire.anthropic.contentBlockStop({ index: 0 }),
+    ]);
     expect(events).toEqual([]);
   });
 
-  test("tool call delta uses real callId when text precedes tool call", () => {
+  test("tool call delta uses real callId when text precedes tool call", async () => {
     const a = createAnthropicAdapter();
-
-    // message_start resets state
-    a.parseResponse(
-      JSON.stringify({
-        type: "message_start",
-        message: {
-          usage: {
-            input_tokens: 10,
-            output_tokens: 0,
-            cache_read_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-          },
+    const events = await parseWire(a, [
+      wire.anthropic.messageStart({
+        usage: {
+          inputTokens: 10,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
         },
       }),
-    );
-
-    // Text block at index 0
-    a.parseResponse(
-      JSON.stringify({
-        type: "content_block_start",
-        index: 0,
-        content_block: { type: "text", text: "" },
-      }),
-    );
-
-    // Tool call at index 1
-    a.parseResponse(
-      JSON.stringify({
-        type: "content_block_start",
+      wire.anthropic.contentBlockStart({ index: 0, kind: "text", text: "" }),
+      wire.anthropic.contentBlockStart({
         index: 1,
-        content_block: {
-          type: "tool_use",
-          id: "toolu_real_id",
-          name: "write_file",
-        },
+        kind: "tool_use",
+        id: "toolu_real_id",
+        name: "write_file",
       }),
-    );
-
-    // Delta for tool call at index 1 must use the real callId
-    const events = a.parseResponse(
-      JSON.stringify({
-        type: "content_block_delta",
+      wire.anthropic.contentBlockDelta({
         index: 1,
-        delta: { type: "input_json_delta", partial_json: '{"path":"test.ts"' },
+        kind: "input_json_delta",
+        partialJson: '{"path":"test.ts"',
       }),
-    );
+    ]);
 
-    expect(events).toHaveLength(1);
-    expect(events[0]?.type).toBe("inference.tool_call.delta");
-    if (events[0]?.type === "inference.tool_call.delta") {
-      expect(events[0].data.callId).toBe("toolu_real_id");
-      expect(events[0].data.argumentFragment).toBe('{"path":"test.ts"');
+    // The delta event is the assertion target; other events (usage, start)
+    // are emitted earlier in the sequence.
+    const deltaEvents = events.filter(
+      (e) => e.type === "inference.tool_call.delta",
+    );
+    expect(deltaEvents).toHaveLength(1);
+    const evt = deltaEvents[0];
+    if (evt?.type === "inference.tool_call.delta") {
+      expect(evt.data.callId).toBe("toolu_real_id");
+      expect(evt.data.argumentFragment).toBe('{"path":"test.ts"');
     }
   });
 });
