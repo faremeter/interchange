@@ -84,11 +84,14 @@ export type Scenario = {
     opts?: WhenRequestMatchesOpts,
   ): void;
   /**
-   * Register a handler for the tool named `name`. The handler runs when the
-   * harness observes a tool call by that name (in v1 this is wired via the
-   * test-author-invoked `invokeTool` helper below; future slices will
-   * autodetect tool-call frames in served wire bytes). At most one handler
-   * may be registered per tool name; re-registering throws.
+   * Register a handler for the tool named `name`. On the default path,
+   * `harness.runInference` observes `inference.tool_call.end` events from
+   * the production reactor and auto-dispatches the registered handler with
+   * the parsed arguments — tests need only register the handler. The
+   * manual escape hatch is `scenario.invokeTool`, for tests that want to
+   * drive dispatch by hand (e.g., dispatch-ordering or error-path
+   * assertions). At most one handler may be registered per tool name;
+   * re-registering throws.
    *
    * See `ToolHandlerReturn` for the three accepted return shapes (sync,
    * delayed envelope, promise) and the in-flight-quiescence rules tied to
