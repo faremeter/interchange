@@ -47,6 +47,13 @@ export type WhenRequestMatchesOpts = {
  * single-use matcher (see the TSDoc on the function below). The other
  * methods drive tool-handler orchestration and abort scheduling against
  * the harness's virtual clock.
+ *
+ * `lastToolDispatch(name)` returns the most-recent result the handler
+ * registered for `name` produced when the auto-dispatch path of
+ * `harness.runInference` (or an explicit `invokeTool` call) fired. Returns
+ * `undefined` if the handler has not yet dispatched a result. Tests assert
+ * against this when they want to verify the result the harness piped into
+ * a tool dispatch without instrumenting the handler closure itself.
  */
 export type Scenario = {
   createStream(): SimulatedStream;
@@ -89,18 +96,35 @@ export type Scenario = {
    */
   onTool(name: string, handler: ToolHandler): void;
   /**
-   * Invoke a previously-registered tool handler and pipe its result into
-   * the supplied `dispatch` callback. Exposed as a v1 hook so test authors
-   * can drive the tool-handler orchestration directly until 6c lands the
-   * automatic wire-byte autodetect. `dispatch` is called once per resolved
-   * tool result, on the same tick (sync return), at a virtual deadline
-   * (delayed envelope), or after promise resolution.
+   * Manual escape hatch for driving tool-handler orchestration directly.
+   * Invokes the previously-registered handler and pipes its result into
+   * the supplied `dispatch` callback. Most tests should prefer the
+   * default flow through `harness.runInference`, which observes
+   * `inference.tool_call.end` events emitted by the production reactor
+   * and auto-fires the handler with no test-author plumbing. Reach for
+   * `invokeTool` only when the test specifically wants to drive dispatch
+   * by hand — for example, to assert dispatch ordering relative to clock
+   * advances the test controls, or to exercise an error path that the
+   * auto-dispatch wrapper would swallow.
+   *
+   * `dispatch` is called once per resolved tool result, on the same tick
+   * (sync return), at a virtual deadline (delayed envelope), or after
+   * promise resolution.
    *
    * Throws synchronously if no handler is registered for `name`. Returns
    * synchronously; the harness's `run()` / `advanceTo()` loop is what
    * awaits any in-flight promise produced by the handler.
    */
   invokeTool(name: string, args: unknown, dispatch: DispatchToolResult): void;
+  /**
+   * Returns the most-recent result produced by the handler registered for
+   * `name`, or `undefined` if no dispatch has fired for that tool yet. The
+   * harness records the dispatched result every time a handler fires —
+   * whether through `harness.runInference`'s auto-dispatch path or an
+   * explicit `invokeTool` call. Tests use this to assert on the resolved
+   * tool result without instrumenting the handler closure directly.
+   */
+  lastToolDispatch(name: string): unknown;
   /**
    * Schedules `controller.abort()` to fire at the supplied virtual time.
    * The caller supplies the `AbortController` they want aborted —

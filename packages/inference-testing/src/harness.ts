@@ -1,4 +1,10 @@
-import { HarnessId, type Dependencies } from "@interchange/inference";
+import {
+  HarnessId,
+  runInference,
+  type Dependencies,
+  type InferenceHarnessOptions,
+} from "@interchange/inference";
+import type { InferenceEvent } from "@interchange/types/runtime";
 
 import {
   ClockWallClockOverrunError,
@@ -92,6 +98,34 @@ export type Harness = {
    * harness, or if the stream is already in a terminal state.
    */
   abortBefore(streamId: StreamId): void;
+  /**
+   * Default driver for production `runInference` through the harness's
+   * `deps`. The wrapper:
+   *
+   * 1. Calls `@interchange/inference`'s real `runInference` with `opts`
+   *    plus `harness.deps` automatically injected (callers do not — and
+   *    must not — pass `deps` themselves).
+   * 2. Yields every `InferenceEvent` the underlying iterator emits.
+   * 3. When the event is `inference.tool_call.end`, looks up the handler
+   *    registered for that tool name and dispatches it with the parsed
+   *    arguments. The dispatched result is captured on the harness and
+   *    is available via `scenario.lastToolDispatch(name)`.
+   *
+   * If no handler is registered for a tool name observed in an
+   * `inference.tool_call.end`, the wrapper throws synchronously from the
+   * iterator with a message naming the unregistered tool. This is the
+   * defensive-coding choice: a tool call the test did not script for is
+   * always a setup bug, never a runtime fallback.
+   *
+   * Escape hatch: tests that want to drive tool dispatch by hand (for
+   * dispatch-ordering or error-path assertions) can call the underlying
+   * `runInference` directly with `deps: harness.deps`. That bypasses the
+   * auto-dispatch path; the test is then responsible for calling
+   * `scenario.invokeTool` itself.
+   */
+  runInference(
+    opts: Omit<InferenceHarnessOptions, "deps">,
+  ): AsyncIterable<InferenceEvent>;
   /**
    * Closes every open simulated stream and releases per-fetch resources.
    * Safe to call multiple times; subsequent calls are no-ops. Tests should
@@ -282,6 +316,17 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
   };
 
   const toolRegistry = createToolHandlerRegistry({ clock, trackInFlight });
+  const lastToolDispatchByName = new Map<string, unknown>();
+
+  const recordingDispatch = (
+    name: string,
+    inner: DispatchToolResult,
+  ): DispatchToolResult => {
+    return (result: unknown): void => {
+      lastToolDispatchByName.set(name, result);
+      inner(result);
+    };
+  };
 
   const onTool = (name: string, handler: ToolHandler): void => {
     if (disposed) {
@@ -303,7 +348,11 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
         "Harness.scenario.invokeTool: dispatch must be a function",
       );
     }
-    toolRegistry.invoke(name, args, dispatch);
+    toolRegistry.invoke(name, args, recordingDispatch(name, dispatch));
+  };
+
+  const lastToolDispatch = (name: string): unknown => {
+    return lastToolDispatchByName.get(name);
   };
 
   const abortAt = (virtualMs: number, controller: AbortController): void => {
@@ -349,6 +398,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     whenRequestMatches,
     onTool,
     invokeTool,
+    lastToolDispatch,
     abortAt,
     abortAfter,
   };
@@ -602,6 +652,30 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     checkQuiescence();
   };
 
+  const harnessRunInference = (
+    opts: Omit<InferenceHarnessOptions, "deps">,
+  ): AsyncIterable<InferenceEvent> => {
+    if (disposed) {
+      throw new Error("Harness.runInference: harness has been disposed");
+    }
+    const noopDispatch: DispatchToolResult = () => undefined;
+    async function* iterate(): AsyncGenerator<InferenceEvent> {
+      const inner = runInference({ ...opts, deps });
+      for await (const event of inner) {
+        yield event;
+        if (event.type !== "inference.tool_call.end") continue;
+        const { name, arguments: args } = event.data;
+        if (!toolRegistry.has(name)) {
+          throw new Error(
+            `Harness.runInference: inference.tool_call.end observed for tool "${name}" but no handler was registered via scenario.onTool. Register a handler or drop to the runInference escape hatch and dispatch manually.`,
+          );
+        }
+        toolRegistry.invoke(name, args, recordingDispatch(name, noopDispatch));
+      }
+    }
+    return iterate();
+  };
+
   const abortBefore = (streamId: StreamId): void => {
     if (disposed) {
       throw new Error("Harness.abortBefore: harness has been disposed");
@@ -647,6 +721,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     inFlightToolHandlers.clear();
     inFlightErrors.length = 0;
     abortAfterRegistrations.length = 0;
+    lastToolDispatchByName.clear();
   };
 
   return {
@@ -656,6 +731,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     assertDeps,
     run,
     advanceTo,
+    runInference: harnessRunInference,
     abortBefore,
     dispose,
   };
