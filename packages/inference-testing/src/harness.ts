@@ -1,7 +1,25 @@
 import { HarnessId, type Dependencies } from "@interchange/inference";
 
-import { createClock, type Clock } from "./clock";
-import { WrongHarnessError } from "./errors";
+import {
+  createClock,
+  type AdvanceOpts,
+  type Clock,
+  type RunOpts,
+} from "./clock";
+import {
+  UnmatchedFetchError,
+  WrongHarnessError,
+  type UnmatchedFetchInfo,
+} from "./errors";
+import {
+  captureMatcherSource,
+  createMatcherTable,
+  scanWaitingSet,
+  type RequestPredicate,
+  type Scenario,
+  type WaitingFetch,
+  type WhenRequestMatchesOpts,
+} from "./scenario";
 import {
   createSimulatedStream,
   toStreamId,
@@ -9,34 +27,6 @@ import {
   type SimulatedStreamHandle,
   type StreamId,
 } from "./simulated-stream";
-
-/**
- * Scenario seam exposed by the harness. This slice (1a) gives tests a
- * `createStream()` factory plus a `nextResponse(stream)` arming method —
- * either pre-arms the next fetch with a specific `SimulatedStream`.
- *
- * **This is a placeholder.** Slice 2a replaces this seam with
- * `whenRequestMatches(predicate, responseStream)` — a matcher table the
- * fetch stub walks per-request. The shape below is deliberately minimal so
- * 2a can swap it without churning consumers' imports.
- */
-export type HarnessScenario = {
-  /**
-   * Mint a new `SimulatedStream`. The stream is registered with the harness
-   * for `dispose()` teardown automatically. Tests use this to construct a
-   * response body, then either drive bytes into it via the stream's own
-   * methods or pre-arm it via `nextResponse`.
-   */
-  createStream(): SimulatedStream;
-  /**
-   * Pre-arm the next `deps.fetch(...)` call with `stream`. The harness's
-   * fetch stub will consume the armed stream FIFO; calling `nextResponse`
-   * twice before any fetch arms two streams in order. If a fetch occurs
-   * without an armed stream, the fetch stub throws — this slice does no
-   * matcher routing.
-   */
-  nextResponse(stream: SimulatedStream): void;
-};
 
 /**
  * The deterministic inference test harness returned by `setupHarness`. It
@@ -51,7 +41,7 @@ export type HarnessScenario = {
 export type Harness = {
   readonly clock: Clock;
   readonly deps: Dependencies;
-  readonly scenario: HarnessScenario;
+  readonly scenario: Scenario;
   /**
    * Asserts that `candidate` was produced by this harness. Use at test
    * boundaries that take a `Dependencies` from an external source to catch
@@ -62,6 +52,19 @@ export type Harness = {
    * harness's symbol.
    */
   assertDeps(candidate: Dependencies): void;
+  /**
+   * Delegates to `clock.run()` and then verifies the waiting-fetch set is
+   * empty. If any fetch is still parked on a matcher at quiescence, throws
+   * `UnmatchedFetchError`. This is the third of the three scan triggers
+   * documented in the locked spec.
+   */
+  run(opts?: RunOpts): Promise<void>;
+  /**
+   * Delegates to `clock.advanceTo()` and then verifies the waiting-fetch
+   * set is empty, throwing `UnmatchedFetchError` if not. Mirrors `run()`'s
+   * quiescence check at a bounded virtual deadline.
+   */
+  advanceTo(virtualMs: number, opts?: AdvanceOpts): Promise<void>;
   /**
    * Closes every open simulated stream and releases per-fetch resources.
    * Safe to call multiple times; subsequent calls are no-ops. Tests should
@@ -98,7 +101,8 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
 
   let nextStreamSeq = 0;
   const openStreams = new Set<SimulatedStreamHandle>();
-  const armedStreams: SimulatedStream[] = [];
+  const waiting: WaitingFetch[] = [];
+  const matcherTable = createMatcherTable();
   let disposed = false;
 
   const streamIdToHandle = new Map<StreamId, SimulatedStreamHandle>();
@@ -130,47 +134,145 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     return handle.stream;
   };
 
-  const nextResponse = (stream: SimulatedStream): void => {
+  const routeWaitingFetch = (
+    wf: WaitingFetch,
+    stream: SimulatedStream,
+    opts: WhenRequestMatchesOpts | undefined,
+  ): void => {
+    wf.settled = true;
+    const idx = waiting.indexOf(wf);
+    if (idx >= 0) waiting.splice(idx, 1);
+    const status = opts?.status ?? 200;
+    const defaultContentType =
+      status >= 200 && status < 300 ? "text/event-stream" : "application/json";
+    const headers: Record<string, string> = {
+      "content-type": defaultContentType,
+    };
+    if (opts?.headers !== undefined) {
+      for (const [k, v] of Object.entries(opts.headers)) {
+        headers[k] = v;
+      }
+    }
+    wf.resolve(new Response(stream.body, { status, headers }));
+  };
+
+  const runScan = (): void => {
+    scanWaitingSet(waiting, matcherTable, routeWaitingFetch);
+    // Drop any fetches that were settled by scanWaitingSet (ambiguity case).
+    for (let i = waiting.length - 1; i >= 0; i--) {
+      const entry = waiting[i];
+      if (entry !== undefined && entry.settled) {
+        waiting.splice(i, 1);
+      }
+    }
+  };
+
+  const whenRequestMatches = (
+    predicate: RequestPredicate,
+    responseStream: SimulatedStream,
+    opts?: WhenRequestMatchesOpts,
+  ): void => {
     if (disposed) {
       throw new Error(
-        "Harness.scenario.nextResponse: harness has been disposed",
+        "Harness.scenario.whenRequestMatches: harness has been disposed",
       );
     }
-    if (!mintedStreams.has(stream)) {
+    if (typeof predicate !== "function") {
       throw new Error(
-        `Harness.scenario.nextResponse: stream ${String(stream.streamId)} was not minted by this harness`,
+        "Harness.scenario.whenRequestMatches: predicate must be a function",
       );
     }
-    armedStreams.push(stream);
+    if (!mintedStreams.has(responseStream)) {
+      throw new Error(
+        `Harness.scenario.whenRequestMatches: stream ${String(responseStream.streamId)} was not minted by this harness`,
+      );
+    }
+    // Skip frames: 0 = the Error itself, 1 = captureMatcherSource, 2 = this
+    // whenRequestMatches body, 3 = the caller. The captureMatcherSource
+    // helper counts frames AFTER the Error message line, so passing `2`
+    // here lands on the immediate caller.
+    const source = captureMatcherSource(2);
+    matcherTable.register(predicate, responseStream, source, opts);
+    runScan();
   };
 
-  const scenario: HarnessScenario = {
+  const scenario: Scenario = {
     createStream,
-    nextResponse,
+    whenRequestMatches,
   };
 
-  // `runInference` invokes `deps.fetch(url, init)` exactly once per call. The
-  // stub returns a `Response` whose body is the FIFO-next armed stream's
-  // body. Matcher-table routing arrives in slice 2a; until then, a fetch
-  // without an armed stream is a programmer error.
+  const buildRequest = (
+    input: string | URL | Request,
+    init: RequestInit | undefined,
+  ): Request => {
+    if (input instanceof Request) {
+      return init === undefined ? input : new Request(input, init);
+    }
+    const url = input instanceof URL ? input.toString() : input;
+    return new Request(url, init);
+  };
+
+  const extractSignal = (
+    input: string | URL | Request,
+    init: RequestInit | undefined,
+  ): AbortSignal | undefined => {
+    const fromInit = init?.signal;
+    if (fromInit !== undefined && fromInit !== null) return fromInit;
+    if (input instanceof Request) return input.signal;
+    return undefined;
+  };
+
   const stubFetch = async (
-    _input: string | URL | Request,
-    _init?: RequestInit,
+    input: string | URL | Request,
+    init?: RequestInit,
   ): Promise<Response> => {
     if (disposed) {
       throw new Error("Harness fetch: harness has been disposed");
     }
-    const next = armedStreams.shift();
-    if (next === undefined) {
-      throw new Error(
-        "Harness fetch: no armed SimulatedStream; call " +
-          "scenario.nextResponse(stream) before triggering a fetch " +
-          "(matcher-table routing arrives in slice 2a)",
-      );
+    const signal = extractSignal(input, init);
+    if (signal?.aborted === true) {
+      throw new DOMException("aborted", "AbortError");
     }
-    return new Response(next.body, {
-      status: 200,
-      headers: { "content-type": "text/event-stream" },
+    const request = buildRequest(input, init);
+    return await new Promise<Response>((resolve, reject) => {
+      const entry: WaitingFetch = {
+        request,
+        signal: signal ?? undefined,
+        resolve,
+        reject,
+        settled: false,
+      };
+      if (signal !== undefined) {
+        const onAbort = (): void => {
+          if (entry.settled) return;
+          entry.settled = true;
+          const idx = waiting.indexOf(entry);
+          if (idx >= 0) waiting.splice(idx, 1);
+          reject(new DOMException("aborted", "AbortError"));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+      waiting.push(entry);
+      try {
+        runScan();
+      } catch (err) {
+        // scanWaitingSet rejects conflicting waiting fetches itself before
+        // throwing. If this fetch wasn't part of the conflict, it remains
+        // in the waiting set unchanged. Propagate the error to whoever
+        // triggered the scan (here, the fetch caller) only if this fetch
+        // was the conflict's settler. Otherwise swallow the throw — the
+        // conflict's victims have already been rejected with the error.
+        if (!entry.settled) {
+          // We pushed this fetch in the same call and the new arrival
+          // triggered the scan that surfaced the ambiguity. Settle this
+          // fetch with the error too so the caller's await rejects rather
+          // than waiting forever.
+          entry.settled = true;
+          const idx = waiting.indexOf(entry);
+          if (idx >= 0) waiting.splice(idx, 1);
+          reject(err);
+        }
+      }
     });
   };
 
@@ -186,17 +288,60 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     }
   };
 
-  // If a scheduled callback (e.g. `streamEnqueue`/`streamClose`) throws
-  // synchronously inside `advanceTo`/`run`, the clock surfaces the error via
-  // its `onSyncCallbackError` hook before propagating. Use that to mark the
-  // offending stream terminated so `dispose()` does not double-close it.
   clock.onSyncCallbackError(() => {
-    // The hook fires per-throwing-callback, but we do not have a back-pointer
-    // from the error to the stream. `dispose()` already tolerates already-
-    // terminated handles (forceClose is idempotent), so the hook is a no-op
-    // for now. Slice 2a/3a may enrich this when reactor error paths arrive.
+    // `forceClose` is idempotent and `dispose()` already tolerates streams
+    // that errored synchronously inside a fired callback. Reserved for a
+    // future slice if reactor error paths need to attribute errors to
+    // specific streams.
     return;
   });
+
+  const collectUnmatched = (): UnmatchedFetchInfo[] => {
+    const infos: UnmatchedFetchInfo[] = [];
+    for (const wf of waiting) {
+      if (wf.settled) continue;
+      const headers: Record<string, string> = {};
+      wf.request.headers.forEach((value, key) => {
+        headers[key] = value;
+      });
+      infos.push({
+        url: wf.request.url,
+        method: wf.request.method,
+        headers,
+      });
+    }
+    return infos;
+  };
+
+  const checkQuiescence = (): void => {
+    const unmatched = collectUnmatched();
+    if (unmatched.length === 0) return;
+    // Settle every unmatched fetch with the same error so awaiters reject
+    // rather than hang. The thrown error also surfaces to the test's
+    // `await harness.run()` / `await harness.advanceTo(...)` site.
+    const err = new UnmatchedFetchError(unmatched);
+    for (let i = waiting.length - 1; i >= 0; i--) {
+      const wf = waiting[i];
+      if (wf === undefined || wf.settled) continue;
+      wf.settled = true;
+      waiting.splice(i, 1);
+      wf.reject(err);
+    }
+    throw err;
+  };
+
+  const run = async (runOpts?: RunOpts): Promise<void> => {
+    await clock.run(runOpts);
+    checkQuiescence();
+  };
+
+  const advanceTo = async (
+    virtualMs: number,
+    advanceOpts?: AdvanceOpts,
+  ): Promise<void> => {
+    await clock.advanceTo(virtualMs, advanceOpts);
+    checkQuiescence();
+  };
 
   const dispose = (): void => {
     if (disposed) return;
@@ -205,8 +350,16 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
       handle.forceClose();
     }
     openStreams.clear();
-    armedStreams.length = 0;
     streamIdToHandle.clear();
+    // Reject any still-waiting fetches so awaiters don't hang after
+    // dispose; dispose is a hard teardown, not a quiescence check.
+    for (const wf of waiting) {
+      if (wf.settled) continue;
+      wf.settled = true;
+      wf.reject(new Error("Harness fetch: harness has been disposed"));
+    }
+    waiting.length = 0;
+    matcherTable.entries.length = 0;
   };
 
   return {
@@ -214,6 +367,8 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     deps,
     scenario,
     assertDeps,
+    run,
+    advanceTo,
     dispose,
   };
 }

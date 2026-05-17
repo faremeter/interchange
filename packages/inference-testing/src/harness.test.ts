@@ -33,11 +33,11 @@ describe("setupHarness", () => {
     }
   });
 
-  test("fetch returns a Response whose body is the armed stream's body", async () => {
+  test("fetch returns a Response whose body is the matched stream's body", async () => {
     const harness = setupHarness();
     try {
       const stream = harness.scenario.createStream();
-      harness.scenario.nextResponse(stream);
+      harness.scenario.whenRequestMatches(() => true, stream);
       stream.enqueueAt(10, utf8("event: hello\n\n"));
       stream.closeAt(20);
 
@@ -55,35 +55,24 @@ describe("setupHarness", () => {
     }
   });
 
-  test("fetch without an armed stream throws", async () => {
-    const harness = setupHarness();
-    try {
-      expect(harness.deps.fetch("https://example/test")).rejects.toThrow(
-        /no armed SimulatedStream/,
-      );
-    } finally {
-      harness.dispose();
-    }
-  });
-
   test("dispose closes open streams and prevents further use", async () => {
     const harness = setupHarness();
     const stream = harness.scenario.createStream();
-    harness.scenario.nextResponse(stream);
+    harness.scenario.whenRequestMatches(() => true, stream);
 
     const fetchPromise = harness.deps.fetch("https://example/test");
     stream.enqueueAt(10, utf8("partial"));
     await harness.clock.advanceTo(15);
     const response = await fetchPromise;
 
-    // Don't drive a closeAt — dispose must force-close the controller so
-    // the reader observes end-of-stream rather than hanging the test.
     harness.dispose();
 
     expect(await drainResponse(response)).toBe("partial");
 
     expect(() => harness.scenario.createStream()).toThrow(/disposed/);
-    expect(() => harness.scenario.nextResponse(stream)).toThrow(/disposed/);
+    expect(() =>
+      harness.scenario.whenRequestMatches(() => true, stream),
+    ).toThrow(/disposed/);
     expect(harness.deps.fetch("https://example/test")).rejects.toThrow(
       /disposed/,
     );
@@ -99,7 +88,7 @@ describe("setupHarness", () => {
     const harness = setupHarness();
     try {
       const stream = harness.scenario.createStream();
-      harness.scenario.nextResponse(stream);
+      harness.scenario.whenRequestMatches(() => true, stream);
       stream.enqueueAt(10, utf8("done"));
       stream.closeAt(20);
 
@@ -108,10 +97,8 @@ describe("setupHarness", () => {
       const response = await fetchPromise;
       expect(await drainResponse(response)).toBe("done");
 
-      // dispose should now have nothing to forcibly close.
       harness.dispose();
     } finally {
-      // safe no-op if already disposed
       harness.dispose();
     }
   });
@@ -122,7 +109,6 @@ describe("setupHarness", () => {
     try {
       expect(() => a.assertDeps(b.deps)).toThrow(WrongHarnessError);
       expect(() => b.assertDeps(a.deps)).toThrow(WrongHarnessError);
-      // sanity: each harness accepts its own deps
       expect(() => a.assertDeps(a.deps)).not.toThrow();
       expect(() => b.assertDeps(b.deps)).not.toThrow();
     } finally {
@@ -176,50 +162,22 @@ describe("setupHarness", () => {
     }
   });
 
-  test("two harnesses do not share streams", async () => {
+  test("two harnesses do not share streams", () => {
     const a = setupHarness();
     const b = setupHarness();
     try {
       const streamA = a.scenario.createStream();
       const streamB = b.scenario.createStream();
 
-      // streamA was minted by `a`; passing it to `b.nextResponse` must fail
-      // — it confirms the absence of any shared module-level registry.
-      expect(() => b.scenario.nextResponse(streamA)).toThrow(
+      expect(() => b.scenario.whenRequestMatches(() => true, streamA)).toThrow(
         /was not minted by this harness/,
       );
-      expect(() => a.scenario.nextResponse(streamB)).toThrow(
+      expect(() => a.scenario.whenRequestMatches(() => true, streamB)).toThrow(
         /was not minted by this harness/,
       );
     } finally {
       a.dispose();
       b.dispose();
-    }
-  });
-
-  test("each fetch gets a distinct stream (per-fetch controller)", async () => {
-    const harness = setupHarness();
-    try {
-      const s1 = harness.scenario.createStream();
-      const s2 = harness.scenario.createStream();
-      harness.scenario.nextResponse(s1);
-      harness.scenario.nextResponse(s2);
-
-      s1.enqueueAt(10, utf8("first"));
-      s1.closeAt(20);
-      s2.enqueueAt(10, utf8("second"));
-      s2.closeAt(20);
-
-      const f1 = harness.deps.fetch("https://example/1");
-      const f2 = harness.deps.fetch("https://example/2");
-      await harness.clock.advanceTo(30);
-      const [r1, r2] = await Promise.all([f1, f2]);
-
-      expect(await drainResponse(r1)).toBe("first");
-      expect(await drainResponse(r2)).toBe("second");
-      expect(s1.streamId).not.toBe(s2.streamId);
-    } finally {
-      harness.dispose();
     }
   });
 });
