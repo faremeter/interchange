@@ -20,10 +20,12 @@ import {
   type Scenario,
   type WaitingFetch,
   type WhenRequestMatchesOpts,
+  type WireEventPredicate,
 } from "./scenario";
 import {
   createSimulatedStream,
   toStreamId,
+  type ChunkFiredEvent,
   type SimulatedStream,
   type SimulatedStreamHandle,
   type StreamId,
@@ -72,6 +74,25 @@ export type Harness = {
    */
   advanceTo(virtualMs: number, opts?: AdvanceOpts): Promise<void>;
   /**
+   * Cancels every pending (not-yet-fired) scheduled callback for the
+   * stream identified by `streamId` and errors that stream's controller
+   * with an `AbortError` at `clock.now()`. Used by tool handlers whose
+   * own previously-scheduled chunks should NOT land — for example, a
+   * handler that detected an upstream failure mid-response and wants to
+   * abort before the rest of the body arrives.
+   *
+   * The seq-ordering correctness argument: pending entries are tagged
+   * cancelled BEFORE the abort fires. Whether the clock pops the abort
+   * before or after the (cancelled) chunk entries, the chunk callbacks
+   * are now no-ops, so the test-visible body never sees them. The abort
+   * itself takes effect synchronously when this method returns; the
+   * stream's controller is in the errored state immediately.
+   *
+   * Throws if no stream with the given `streamId` was minted by this
+   * harness, or if the stream is already in a terminal state.
+   */
+  abortBefore(streamId: StreamId): void;
+  /**
    * Closes every open simulated stream and releases per-fetch resources.
    * Safe to call multiple times; subsequent calls are no-ops. Tests should
    * call `dispose()` in an `afterEach` to prevent bun:test from logging
@@ -112,7 +133,24 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
   let disposed = false;
 
   const streamIdToHandle = new Map<StreamId, SimulatedStreamHandle>();
-  const mintedStreams = new WeakSet<SimulatedStream>();
+  const streamToHandle = new WeakMap<SimulatedStream, SimulatedStreamHandle>();
+
+  type AbortAfterRegistration = {
+    readonly predicate: WireEventPredicate;
+    readonly controller: AbortController;
+    fired: boolean;
+  };
+  const abortAfterRegistrations: AbortAfterRegistration[] = [];
+
+  const handleChunkFired = (event: ChunkFiredEvent): void => {
+    if (abortAfterRegistrations.length === 0) return;
+    for (const reg of abortAfterRegistrations) {
+      if (reg.fired) continue;
+      if (!reg.predicate(event)) continue;
+      reg.fired = true;
+      reg.controller.abort();
+    }
+  };
 
   const createStream = (): SimulatedStream => {
     if (disposed) {
@@ -132,11 +170,12 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
           openStreams.delete(handleRef.current);
         }
       },
+      onChunkFired: handleChunkFired,
     });
     handleRef.current = handle;
     openStreams.add(handle);
     streamIdToHandle.set(streamId, handle);
-    mintedStreams.add(handle.stream);
+    streamToHandle.set(handle.stream, handle);
     return handle.stream;
   };
 
@@ -148,6 +187,24 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     wf.settled = true;
     const idx = waiting.indexOf(wf);
     if (idx >= 0) waiting.splice(idx, 1);
+    // Per-call abort isolation on the matched stream: once a fetch has
+    // been bound to a stream, an abort on its signal must error ONLY
+    // that stream's controller. We attach the listener here (the
+    // pre-route abort path in `stubFetch` already handled the waiting
+    // case) so the listener targets the stream the test reader is about
+    // to consume.
+    const signal = wf.signal;
+    if (signal !== undefined && !signal.aborted) {
+      const handle = streamToHandle.get(stream);
+      if (handle !== undefined) {
+        const onAbort = (): void => {
+          if (handle.isClosed()) return;
+          handle.cancelPending();
+          handle.forceError(new DOMException("aborted", "AbortError"));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
     const status = opts?.status ?? 200;
     const defaultContentType =
       status >= 200 && status < 300 ? "text/event-stream" : "application/json";
@@ -188,7 +245,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
         "Harness.scenario.whenRequestMatches: predicate must be a function",
       );
     }
-    if (!mintedStreams.has(responseStream)) {
+    if (!streamToHandle.has(responseStream)) {
       throw new Error(
         `Harness.scenario.whenRequestMatches: stream ${String(responseStream.streamId)} was not minted by this harness`,
       );
@@ -249,11 +306,51 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     toolRegistry.invoke(name, args, dispatch);
   };
 
+  const abortAt = (virtualMs: number, controller: AbortController): void => {
+    if (disposed) {
+      throw new Error("Harness.scenario.abortAt: harness has been disposed");
+    }
+    if (!(controller instanceof AbortController)) {
+      throw new Error(
+        "Harness.scenario.abortAt: controller must be an AbortController instance",
+      );
+    }
+    clock.schedule(virtualMs, function scenarioAbort() {
+      controller.abort();
+    });
+  };
+
+  const abortAfter = (
+    predicate: WireEventPredicate,
+    controller: AbortController,
+  ): void => {
+    if (disposed) {
+      throw new Error("Harness.scenario.abortAfter: harness has been disposed");
+    }
+    if (typeof predicate !== "function") {
+      throw new Error(
+        "Harness.scenario.abortAfter: predicate must be a function",
+      );
+    }
+    if (!(controller instanceof AbortController)) {
+      throw new Error(
+        "Harness.scenario.abortAfter: controller must be an AbortController instance",
+      );
+    }
+    abortAfterRegistrations.push({
+      predicate,
+      controller,
+      fired: false,
+    });
+  };
+
   const scenario: Scenario = {
     createStream,
     whenRequestMatches,
     onTool,
     invokeTool,
+    abortAt,
+    abortAfter,
   };
 
   const buildRequest = (
@@ -343,12 +440,15 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     }
   };
 
-  clock.onSyncCallbackError(() => {
-    // `forceClose` is idempotent and `dispose()` already tolerates streams
-    // that errored synchronously inside a fired callback. Reserved for a
-    // future slice if reactor error paths need to attribute errors to
-    // specific streams.
-    return;
+  clock.onSyncCallbackError((err) => {
+    // A scheduled callback threw synchronously inside `advanceTo`/`run`.
+    // Error every still-open simulated stream so the next test does not
+    // inherit dangling readers parked on a never-completing `read()`.
+    // `forceError` is idempotent; streams already terminated naturally
+    // (or errored by the throwing callback itself) are skipped.
+    for (const handle of openStreams) {
+      handle.forceError(err);
+    }
   });
 
   const collectUnmatched = (): UnmatchedFetchInfo[] => {
@@ -502,6 +602,31 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     checkQuiescence();
   };
 
+  const abortBefore = (streamId: StreamId): void => {
+    if (disposed) {
+      throw new Error("Harness.abortBefore: harness has been disposed");
+    }
+    const handle = streamIdToHandle.get(streamId);
+    if (handle === undefined) {
+      throw new Error(
+        `Harness.abortBefore: no stream with id ${String(streamId)} was minted by this harness`,
+      );
+    }
+    if (handle.isClosed()) {
+      throw new Error(
+        `Harness.abortBefore: stream ${String(streamId)} is already in a terminal state`,
+      );
+    }
+    // Cancel every pending heap entry for this stream first. The entries
+    // remain on the clock heap but the closures now check `cancelled`
+    // before doing anything, so when the clock eventually pops them they
+    // are no-ops. This is the seq-ordering workaround: we cannot inject
+    // a lower seq into the heap from outside the clock, so instead we
+    // make every later-seq entry for this stream inert.
+    handle.cancelPending();
+    handle.forceError(new DOMException("aborted", "AbortError"));
+  };
+
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
@@ -521,6 +646,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     matcherTable.entries.length = 0;
     inFlightToolHandlers.clear();
     inFlightErrors.length = 0;
+    abortAfterRegistrations.length = 0;
   };
 
   return {
@@ -530,6 +656,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     assertDeps,
     run,
     advanceTo,
+    abortBefore,
     dispose,
   };
 }
