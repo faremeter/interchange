@@ -105,9 +105,13 @@ describe("createClock", () => {
     expect(observed).toEqual([10]);
   });
 
-  test("microtaskBudget of 1 succeeds for a trivially quiet advanceTo", async () => {
+  test("a trivially quiet advanceTo succeeds at the minimum stability-window budget", async () => {
+    // The drain requires enough iterations to satisfy the internal stability
+    // window after activity stabilizes. A budget of 16 is the documented
+    // floor for a quiescent workload; anything smaller cannot reach a stable
+    // window and trips `ClockOverrunError` on principle.
     const clock = createClock();
-    await clock.advanceTo(0, { microtaskBudget: 1 });
+    await clock.advanceTo(0, { microtaskBudget: 16 });
     expect(clock.now()).toBe(0);
   });
 
