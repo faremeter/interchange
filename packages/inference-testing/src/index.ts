@@ -22,6 +22,12 @@ export type {
   WhenRequestMatchesOpts,
 } from "./scenario";
 
+export type {
+  ToolHandler,
+  ToolHandlerReturn,
+  DispatchToolResult,
+} from "./tool-handler";
+
 export {
   WrongHarnessError,
   UnmatchedFetchError,
