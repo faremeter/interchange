@@ -3730,12 +3730,8 @@ describe("createReactor — inference path [wire-driven]", () => {
         headUsage,
         tailUsage,
       });
-      let when = 10;
-      for (const chunk of chunks) {
-        stream.enqueueAt(when, chunk);
-        when += 1;
-      }
-      stream.closeAt(when);
+      stream.enqueueAll(chunks, { startAt: 10 });
+      const when = 10 + chunks.length;
 
       let stateAtInferenceDone: ReactorState | undefined;
       const { reactor, events, waitFor } = createTestReactor({
@@ -3808,12 +3804,8 @@ describe("createReactor — inference path [wire-driven]", () => {
         text: "Hello from the model",
         tailUsage,
       });
-      let when = 10;
-      for (const chunk of chunks) {
-        stream.enqueueAt(when, chunk);
-        when += 1;
-      }
-      stream.closeAt(when);
+      stream.enqueueAll(chunks, { startAt: 10 });
+      const when = 10 + chunks.length;
 
       let stateAtInferenceDone: ReactorState | undefined;
       const { reactor, events, waitFor } = createTestReactor({
