@@ -1,12 +1,11 @@
 // Regression test for the clock's default `microtaskBudget` against a
-// representative `parseSSE` workload. The clock's budget (256) is sized for
-// ~2 microtask flushes per parseSSE chunk in Bun 1.2.22; this test fires the
-// budget at a multi-chunk transcript and asserts neither
-// `ClockOverrunError` nor `ClockWallClockOverrunError` surfaces.
-//
-// The test asserts the contract — "the default budget is sufficient for a
-// real-world inference workload" — not the implementation detail of how
-// many microtasks parseSSE actually queues per chunk.
+// representative `parseSSE` workload. The clock's budget (256) absorbs
+// today's `parseSSE` consumer chain (≈2 microtask waves per chunk) plus
+// the drain's internal stability window with comfortable headroom. The
+// budget is load-bearing in both directions: bloated consumer chains
+// trip `ClockOverrunError` (see `consumer-chain-budget.test.ts`), and a
+// runaway scheduler trips it via the same mechanism (see the gating
+// probe below).
 //
 // CORRECTNESS CONTRACT for the wiring: the `parseSSE` iterator must be
 // started BEFORE the `harness.run()` call so its per-chunk
@@ -184,14 +183,16 @@ describe("parseSSE microtask budget", () => {
     // construct a scenario that explicitly chains new clock schedules
     // from a microtask (the same pattern `clock.test.ts` uses to verify
     // the budget mechanism) and confirm that a small budget surfaces
-    // `ClockOverrunError`. The default `microtaskBudget=256` succeeds for
-    // the parseSSE workloads above; this probe ensures a future refactor
-    // cannot accidentally short-circuit the budget by, say, hard-coding
-    // Infinity. If parseSSE later starts triggering chained schedule
-    // calls from its consumer microtasks (the failure mode the original
-    // regression-test phrasing targets), this probe's machinery is what
-    // catches it: the same `microtaskBudget` knob that gates the runaway
-    // here is what would gate the regressed parseSSE there.
+    // `ClockOverrunError`. Each chained `clock.schedule` bumps the
+    // activity counter, so the drain's stability window never advances
+    // past zero — the outer budget is what trips. The default
+    // `microtaskBudget=256` succeeds for the parseSSE workloads above;
+    // this probe ensures a future refactor cannot accidentally
+    // short-circuit the budget by, say, hard-coding Infinity. The
+    // companion `consumer-chain-budget.test.ts` covers the other
+    // failure mode the budget gates: a consumer chain that bumps
+    // activity for too many sequential microtask waves per fired
+    // chunk.
     const harness = setupHarness();
     try {
       const stream = harness.scenario.createStream();

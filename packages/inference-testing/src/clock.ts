@@ -4,23 +4,49 @@ export type RunOpts = { microtaskBudget?: number; wallClockBudgetMs?: number };
 export interface Clock {
   now(): number;
   schedule(virtualMs: number, fn: () => void): void;
+  /**
+   * Advance the virtual clock to `virtualMs`, firing every scheduled
+   * callback whose virtual time is at or before that point and draining
+   * the microtask queue after each fire.
+   *
+   * `opts.microtaskBudget` (default 256) bounds the number of microtask
+   * waves the drain will flush per fired callback. The drain keeps
+   * flushing while the activity counter advances (`schedule()`,
+   * `fireOne()`, `notifyActivity()` all bump it) AND for an internal
+   * stability window of additional waves after the last activity bump.
+   * The stability window lets consumer microtask chains (reader.read ->
+   * parser yield -> awaiting test) settle inside the drain rather than
+   * leaking past it; if those chains inflate past the budget the drain
+   * throws `ClockOverrunError`.
+   */
   advanceTo(virtualMs: number, opts?: AdvanceOpts): Promise<void>;
+  /**
+   * Drive the clock until the scheduled-callback heap empties and the
+   * microtask queue stays quiescent through the stability window.
+   *
+   * `opts.microtaskBudget` (default 256) bounds the number of microtask
+   * waves the drain will flush per fired callback (see `advanceTo` for
+   * the stability-window contract). `opts.wallClockBudgetMs` (default
+   * 250) bounds the real time `run()` is allowed to consume; a handler
+   * blocked on a real-time primitive surfaces as
+   * `ClockWallClockOverrunError` instead of hanging the test.
+   */
   run(opts?: RunOpts): Promise<void>;
   onSyncCallbackError(hook: (err: unknown) => void): void;
   /**
    * Externally signal that consumer-observable work has landed (for
    * example, bytes pushed into a `ReadableStream` controller from a
    * fired callback). This bumps the activity counter that
-   * `drainMicrotasks` watches, so the drain keeps flushing until the
-   * downstream consumer's microtask chain (reader.read -> parser yield
-   * -> awaiting test) has fully settled.
+   * `drainMicrotasks` watches, resetting the stability-window countdown
+   * so the drain keeps flushing while the downstream consumer's
+   * microtask chain (reader.read -> parser yield -> awaiting test) is
+   * still making progress.
    *
-   * Without this hook the drain exits as soon as a single microtask
-   * pass shows no new `schedule()`/`fireOne()` activity, even though
-   * the consumer chain triggered by the callback's side effect has not
-   * yet caught up. The result is that a single conceptual `advanceTo`
-   * may only deliver the first of several scheduled chunks to a
-   * pre-attached reader.
+   * The drain exits once the activity counter has been stable across
+   * the internal stability window of microtask waves. Without the
+   * `notifyActivity` signal a single-shot fired callback would not
+   * appear as activity at all, and a multi-chunk delivery would settle
+   * only the first chunk inside `clock.run()`.
    *
    * Callers must invoke this ONLY in response to genuine
    * consumer-observable work. Calling it gratuitously (every
@@ -203,38 +229,41 @@ type WallClockWatchdog = {
   check: () => void;
 };
 
-// Per drain iteration, flush the microtask queue several times before
-// declaring quiescence. A single `await queueMicrotask(resolve)` pumps
-// the JS microtask queue through two rounds; consumer chains that
-// thread through async-generator composition (e.g.
-// `reader.read` -> `parseSSE` yield -> `runInference` yield -> `reactor`
-// consume) span more rounds per fired callback. Without the inner flush
-// loop a drain iteration leaves the consumer mid-chain, the activity
-// counter does not move (consumer-side settlement does not bump
-// `activity` on its own), and the outer loop exits before the consumer
-// has settled. The `microtaskBudget` still bounds the number of "saw
-// new scheduling activity" cycles — the runaway-scheduler probe in
+// Stability window: number of microtask waves to keep flushing AFTER the
+// activity counter last moved. Consumer chains that thread through
+// async-generator composition (e.g. `reader.read` -> `parseSSE` yield ->
+// `runInference` yield -> `reactor` consume) span many microtask rounds
+// per fired callback without bumping `activity` themselves; treating one
+// stable flush as quiescence let those rounds settle outside the clock's
+// accounting. By draining `STABILITY_WINDOW` extra waves after the last
+// activity bump, the consumer's chain lands inside `drainMicrotasks` —
+// and a chain that inflates past the budget trips `ClockOverrunError`
+// instead of silently shipping past it. `microtaskBudget` still bounds
+// the total iteration count, so the runaway-scheduler probe in
 // `clock.test.ts` and the `parsesse-regression` probe continue to gate
-// on it.
-const MICROTASK_FLUSHES_PER_ITERATION = 8;
+// on it: chained `schedule()` calls keep `stableCount` at zero, so the
+// outer budget exhausts on the same schedule as before.
+const STABILITY_WINDOW = 16;
 
 async function drainMicrotasks(
   state: ClockState,
   microtaskBudget: number,
   watchdog: WallClockWatchdog | null,
 ): Promise<void> {
+  let stableCount = 0;
   for (let iterations = 0; iterations < microtaskBudget; iterations++) {
     const activityBefore = state.activity;
-    for (let i = 0; i < MICROTASK_FLUSHES_PER_ITERATION; i++) {
-      await new Promise<void>((resolve) => {
-        queueMicrotask(resolve);
-      });
-    }
+    await new Promise<void>((resolve) => {
+      queueMicrotask(resolve);
+    });
     if (watchdog !== null) {
       watchdog.check();
     }
     if (state.activity === activityBefore) {
-      return;
+      stableCount += 1;
+      if (stableCount >= STABILITY_WINDOW) return;
+    } else {
+      stableCount = 0;
     }
   }
   const schedulerName =
