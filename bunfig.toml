@@ -1,6 +1,6 @@
 [test]
 
-# The deploy-flow integration test spawns real servers and uses
-# isomorphic-git operations that can interfere with other git-based
-# tests when run concurrently. Run it separately after the main suite.
-exclude = ["test/integration/**"]
+# These tests spawn real servers or use isomorphic-git operations that
+# can interfere with other git-based tests when run concurrently. They
+# run as a separate pass after the main suite.
+exclude = ["test/integration/**", "tests/inference/transform-cutover.test.ts"]

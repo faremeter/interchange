@@ -238,7 +238,7 @@ try {
 }
 ```
 
-`test/integration/multi-turn-harness.test.ts` exercises the full
+`tests/inference-testing/multi-turn-harness.test.ts` exercises the full
 turn-1 → tool-dispatch → turn-2 round-trip with captured request bodies
 proving the tool-result block propagates into the turn-2 wire payload.
 

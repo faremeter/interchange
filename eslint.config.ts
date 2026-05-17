@@ -52,6 +52,8 @@ export default defineConfig(
             "bin/*.ts",
             "packages/db/drizzle.config.ts",
             "test/integration/*.ts",
+            "tests/inference-testing/*.ts",
+            "tests/inference/transform-cutover.test.ts",
           ],
           maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 16,
         },
