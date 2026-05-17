@@ -36,3 +36,15 @@ export {
   AmbiguousRequestError,
 } from "./errors";
 export type { UnmatchedFetchInfo, AmbiguousFetchInfo } from "./errors";
+
+export * as wire from "./wire";
+
+export { expectEvents, expectToolCalls, expectToolCall } from "./matchers";
+export type {
+  EventAssertion,
+  EventPartial,
+  ToolCallsAssertion,
+  ToolCallPartial,
+  CollectedToolCall,
+  SingleToolCallAssertion,
+} from "./matchers";
