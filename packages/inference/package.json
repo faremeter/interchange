@@ -13,8 +13,5 @@
     "@interchange/log": "workspace:*",
     "@interchange/types": "workspace:*",
     "arktype": "catalog:"
-  },
-  "devDependencies": {
-    "@interchange/inference-testing": "workspace:*"
   }
 }
