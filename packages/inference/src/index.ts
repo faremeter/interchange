@@ -45,3 +45,5 @@ export { createAuditCollector } from "./audit-collector";
 export type { AuditCollector } from "./audit-collector";
 export { createSizeCapTransform } from "./transforms";
 export type { SizeCapTransformOptions } from "./transforms";
+export { createReactorAssembly } from "./assembly";
+export type { ReactorAssembly, ReactorAssemblyConfig } from "./assembly";
