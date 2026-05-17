@@ -704,11 +704,9 @@ Two locations are used for tests:
 
 - **Co-located unit tests**: `packages/<name>/src/*.test.ts`. These tests cover a single package's internals using mocks and synthetic inputs. The default for all per-module tests.
 
-- **Integration-shaped tests**: `tests/<package-name>/`. Tests that target a package's behavior but need the `@interchange/inference-testing` harness, or that span multiple packages, live here. Co-locating harness-driven tests in `packages/<name>/src/` would force the package to depend on `@interchange/inference-testing`, creating a workspace dependency cycle (because the harness depends on the package). The `tests/` tree breaks that cycle. Tests spanning multiple packages live under `tests/<primary-target-package>/`; the "primary target" is whatever package's behavior the test is asserting, with the other packages as setup dependencies.
+- **Integration-shaped tests**: `tests/<package-name>/`. Tests that target a package's behavior but need the `@interchange/inference-testing` harness, span multiple packages, or spawn real servers and subprocesses live here. Co-locating harness-driven tests in `packages/<name>/src/` would force the package to depend on `@interchange/inference-testing`, creating a workspace dependency cycle (because the harness depends on the package). The `tests/` tree breaks that cycle. Tests spanning multiple packages live under `tests/<primary-target-package>/`; the "primary target" is whatever package's behavior the test is asserting, with the other packages as setup dependencies.
 
-The legacy `test/integration/` directory still hosts `deploy-flow.test.ts`, which spawns real servers and is out of scope for current cleanup. New tests should not go there.
-
-Tests that are not parallel-safe (e.g. spawn servers, perform real `isomorphic-git` operations against `os.tmpdir()`) are excluded per-file via `bunfig.toml` and run as a second `bun test` invocation after the main suite. The exclude pattern is a per-file marker, not a directory convention. The `test` script in the root `package.json` runs the excluded files in a second pass.
+Tests that are not parallel-safe (e.g. spawn servers, perform real `isomorphic-git` operations against `os.tmpdir()`) are excluded per-file via the `[test].exclude` list in `bunfig.toml`. That list is a flat enumeration of individual files, not a directory convention; each entry is an explicit marker that the file cannot run in the main parallel pass. The `test` script in the root `package.json` reruns those files in a second `bun test` invocation after the main suite.
 
 ---
 

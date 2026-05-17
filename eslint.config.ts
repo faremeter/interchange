@@ -51,7 +51,7 @@ export default defineConfig(
             "apps/ui/vite.config.ts",
             "bin/*.ts",
             "packages/db/drizzle.config.ts",
-            "test/integration/*.ts",
+            "tests/sidecar/*.ts",
             "tests/inference-testing/*.ts",
             "tests/inference/transform-cutover.test.ts",
           ],
