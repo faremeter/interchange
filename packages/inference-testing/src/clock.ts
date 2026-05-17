@@ -7,6 +7,28 @@ export interface Clock {
   advanceTo(virtualMs: number, opts?: AdvanceOpts): Promise<void>;
   run(opts?: RunOpts): Promise<void>;
   onSyncCallbackError(hook: (err: unknown) => void): void;
+  /**
+   * Externally signal that consumer-observable work has landed (for
+   * example, bytes pushed into a `ReadableStream` controller from a
+   * fired callback). This bumps the activity counter that
+   * `drainMicrotasks` watches, so the drain keeps flushing until the
+   * downstream consumer's microtask chain (reader.read -> parser yield
+   * -> awaiting test) has fully settled.
+   *
+   * Without this hook the drain exits as soon as a single microtask
+   * pass shows no new `schedule()`/`fireOne()` activity, even though
+   * the consumer chain triggered by the callback's side effect has not
+   * yet caught up. The result is that a single conceptual `advanceTo`
+   * may only deliver the first of several scheduled chunks to a
+   * pre-attached reader.
+   *
+   * Callers must invoke this ONLY in response to genuine
+   * consumer-observable work. Calling it gratuitously (every
+   * microtask, every internal bookkeeping step) defeats the budget's
+   * purpose: the drain exists to bound runaway scheduling, and a
+   * spurious activity bump can mask an actual infinite loop.
+   */
+  notifyActivity(): void;
 }
 
 type HeapEntry = {
@@ -181,6 +203,21 @@ type WallClockWatchdog = {
   check: () => void;
 };
 
+// Per drain iteration, flush the microtask queue several times before
+// declaring quiescence. A single `await queueMicrotask(resolve)` pumps
+// the JS microtask queue through two rounds; consumer chains that
+// thread through async-generator composition (e.g.
+// `reader.read` -> `parseSSE` yield -> `runInference` yield -> `reactor`
+// consume) span more rounds per fired callback. Without the inner flush
+// loop a drain iteration leaves the consumer mid-chain, the activity
+// counter does not move (consumer-side settlement does not bump
+// `activity` on its own), and the outer loop exits before the consumer
+// has settled. The `microtaskBudget` still bounds the number of "saw
+// new scheduling activity" cycles — the runaway-scheduler probe in
+// `clock.test.ts` and the `parsesse-regression` probe continue to gate
+// on it.
+const MICROTASK_FLUSHES_PER_ITERATION = 8;
+
 async function drainMicrotasks(
   state: ClockState,
   microtaskBudget: number,
@@ -188,9 +225,11 @@ async function drainMicrotasks(
 ): Promise<void> {
   for (let iterations = 0; iterations < microtaskBudget; iterations++) {
     const activityBefore = state.activity;
-    await new Promise<void>((resolve) => {
-      queueMicrotask(resolve);
-    });
+    for (let i = 0; i < MICROTASK_FLUSHES_PER_ITERATION; i++) {
+      await new Promise<void>((resolve) => {
+        queueMicrotask(resolve);
+      });
+    }
     if (watchdog !== null) {
       watchdog.check();
     }
@@ -375,12 +414,17 @@ export function createClockInternal(opts: ClockInternalOpts): Clock {
     state.errorHook = hook;
   };
 
+  const notifyActivity = (): void => {
+    state.activity += 1;
+  };
+
   const clock: Clock = {
     now: () => state.now,
     schedule,
     advanceTo,
     run,
     onSyncCallbackError,
+    notifyActivity,
   };
   return clock;
 }
