@@ -42,6 +42,39 @@ export type SimulatedStream = {
   enqueueAt(virtualMs: number, bytes: Uint8Array): void;
   closeAt(virtualMs: number): void;
   errorAt(virtualMs: number, err: unknown): void;
+  /**
+   * Schedules a contiguous batch of chunks at evenly-spaced virtual times,
+   * then (by default) closes the stream one virtual ms after the last
+   * chunk. This collapses the common "enqueueAt in a loop then closeAt"
+   * pattern from test scaffolding into a single call.
+   *
+   * The first chunk lands at `opts.startAt`; each subsequent chunk lands
+   * `opts.stepMs` virtual ms later (default 1ms). When `opts.autoClose` is
+   * true (the default) the stream is closed at the virtual time of the
+   * last chunk plus `stepMs`; pass `false` if the caller wants to enqueue
+   * additional chunks afterward and close the stream manually.
+   *
+   * Passing an empty `chunks` array is a no-op: nothing is scheduled and
+   * the stream is NOT auto-closed (an empty batch has no last chunk to
+   * anchor the close against, and silently closing would be surprising).
+   */
+  enqueueAll(chunks: readonly Uint8Array[], opts: EnqueueAllOpts): void;
+};
+
+/**
+ * Options for `SimulatedStream.enqueueAll`.
+ */
+export type EnqueueAllOpts = {
+  /** Virtual ms at which the first chunk lands. */
+  readonly startAt: number;
+  /** Virtual ms gap between successive chunks. Defaults to 1. */
+  readonly stepMs?: number;
+  /**
+   * Whether to close the stream automatically one `stepMs` after the last
+   * chunk. Defaults to true; set to false when the test wants to enqueue
+   * more chunks afterward and close the stream manually.
+   */
+  readonly autoClose?: boolean;
 };
 
 /**
@@ -235,6 +268,28 @@ export function createSimulatedStream(
     });
   };
 
+  const enqueueAll = (
+    chunks: readonly Uint8Array[],
+    opts: EnqueueAllOpts,
+  ): void => {
+    if (chunks.length === 0) return;
+    const stepMs = opts.stepMs ?? 1;
+    if (!Number.isFinite(stepMs) || stepMs < 0) {
+      throw new Error(
+        `SimulatedStream.enqueueAll: stepMs must be a non-negative finite number, got ${String(stepMs)}`,
+      );
+    }
+    const autoClose = opts.autoClose ?? true;
+    let when = opts.startAt;
+    for (const chunk of chunks) {
+      enqueueAt(when, chunk);
+      when += stepMs;
+    }
+    if (autoClose) {
+      closeAt(when);
+    }
+  };
+
   const stream: SimulatedStream = {
     streamId,
     body,
@@ -242,6 +297,7 @@ export function createSimulatedStream(
     enqueueAt,
     closeAt,
     errorAt,
+    enqueueAll,
   };
 
   const forceClose = (): void => {
