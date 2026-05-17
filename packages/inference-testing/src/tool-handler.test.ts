@@ -1,8 +1,62 @@
 import { describe, test, expect } from "bun:test";
 
+import { runInference } from "@interchange/inference";
+import type {
+  ConversationTurn,
+  InferenceEvent,
+  ProviderConfig,
+} from "@interchange/types/runtime";
+
 import { ClockWallClockOverrunError } from "./clock";
 import { UnmatchedFetchError } from "./errors";
-import { setupHarness } from "./harness";
+import { setupHarness, type Harness } from "./harness";
+import * as wire from "./wire";
+
+const ANTHROPIC_PROVIDER_CONFIG: ProviderConfig = {
+  provider: "anthropic",
+  baseURL: "https://api.anthropic.com",
+  apiKey: "test",
+};
+
+const HEAD_USAGE = {
+  input: 10,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  thinking: 0,
+};
+const TAIL_USAGE = {
+  input: 0,
+  output: 5,
+  cacheRead: 0,
+  cacheWrite: 0,
+  thinking: 0,
+};
+
+function userTurn(text: string): ConversationTurn {
+  return {
+    role: "user",
+    content: [{ type: "text", text }],
+    timestamp: 0,
+  };
+}
+
+function scriptToolCallTurn(
+  harness: Harness,
+  callId: string,
+  toolName: string,
+  argsJSON: string,
+): { close: number } {
+  const stream = harness.scenario.createStream();
+  const chunks = wire.completeResponse("anthropic", {
+    toolCalls: [{ callId, name: toolName, argsJSON }],
+    headUsage: HEAD_USAGE,
+    tailUsage: TAIL_USAGE,
+  });
+  stream.enqueueAll(chunks, { startAt: 10 });
+  harness.scenario.whenRequestMatches(() => true, stream);
+  return { close: 10 + chunks.length };
+}
 
 describe("scenario.onTool: sync return", () => {
   test("dispatches the result synchronously within the registering tick", () => {
@@ -352,6 +406,135 @@ describe("inFlightErrors aggregation contract", () => {
       const matchedSecond = caught.message.includes("second-failure");
       expect(matchedFirst || matchedSecond).toBe(true);
       expect(matchedFirst && matchedSecond).toBe(false);
+    } finally {
+      harness.dispose();
+    }
+  });
+});
+
+describe("harness.runInference auto-dispatch", () => {
+  test("fires the registered handler when tool_call.end is observed", async () => {
+    const harness = setupHarness();
+    try {
+      const handlerCalls: { args: unknown }[] = [];
+      harness.scenario.onTool("weather", (args) => {
+        handlerCalls.push({ args });
+        return { temperatureF: 68 };
+      });
+
+      const { close } = scriptToolCallTurn(
+        harness,
+        "call_w_1",
+        "weather",
+        '{"location":"SF"}',
+      );
+
+      let seq = 0;
+      const events: InferenceEvent[] = [];
+      const collected = (async () => {
+        for await (const ev of harness.runInference({
+          turns: [userTurn("weather?")],
+          model: "claude-test",
+          providerConfig: ANTHROPIC_PROVIDER_CONFIG,
+          nextSeq: () => ++seq,
+        })) {
+          events.push(ev);
+        }
+      })();
+      await harness.advanceTo(close + 10);
+      await collected;
+
+      // The handler fired automatically with the parsed args; no
+      // `scenario.invokeTool` call appeared in this test.
+      expect(handlerCalls).toEqual([{ args: { location: "SF" } }]);
+      expect(harness.scenario.lastToolDispatch("weather")).toEqual({
+        temperatureF: 68,
+      });
+      // Sanity: the iterator yielded the tool_call.end the auto-dispatch
+      // path observed.
+      const toolEnd = events.find((e) => e.type === "inference.tool_call.end");
+      expect(toolEnd).toBeDefined();
+    } finally {
+      harness.dispose();
+    }
+  });
+
+  test("direct runInference({deps: harness.deps}) does NOT auto-fire (escape hatch)", async () => {
+    const harness = setupHarness();
+    try {
+      const handlerCalls: { args: unknown }[] = [];
+      harness.scenario.onTool("weather", (args) => {
+        handlerCalls.push({ args });
+        return { temperatureF: 68 };
+      });
+
+      const { close } = scriptToolCallTurn(
+        harness,
+        "call_w_2",
+        "weather",
+        '{"location":"SF"}',
+      );
+
+      let seq = 0;
+      const collected = (async () => {
+        for await (const _ev of runInference({
+          turns: [userTurn("weather?")],
+          model: "claude-test",
+          providerConfig: ANTHROPIC_PROVIDER_CONFIG,
+          nextSeq: () => ++seq,
+          deps: harness.deps,
+        })) {
+          // Intentionally swallow events; we only care that the handler
+          // does NOT auto-fire on this path.
+        }
+      })();
+      await harness.advanceTo(close + 10);
+      await collected;
+
+      // The handler is registered but the production runInference path
+      // bypasses the auto-dispatch wrapper. The handler must NOT have
+      // fired, and no dispatch record exists.
+      expect(handlerCalls).toEqual([]);
+      expect(harness.scenario.lastToolDispatch("weather")).toBeUndefined();
+    } finally {
+      harness.dispose();
+    }
+  });
+
+  test("throws if tool_call.end names a tool with no registered handler", async () => {
+    const harness = setupHarness();
+    try {
+      // Note: no `onTool("unknown", ...)` registration.
+      const { close } = scriptToolCallTurn(
+        harness,
+        "call_u_1",
+        "unknown",
+        "{}",
+      );
+
+      let seq = 0;
+      let caught: unknown;
+      const collected = (async () => {
+        try {
+          for await (const _ev of harness.runInference({
+            turns: [userTurn("?")],
+            model: "claude-test",
+            providerConfig: ANTHROPIC_PROVIDER_CONFIG,
+            nextSeq: () => ++seq,
+          })) {
+            // drain
+          }
+        } catch (err) {
+          caught = err;
+        }
+      })();
+      await harness.advanceTo(close + 10);
+      await collected;
+
+      expect(caught).toBeInstanceOf(Error);
+      if (!(caught instanceof Error)) throw new Error("unreachable");
+      expect(caught.message).toMatch(/no handler was registered/);
+      expect(caught.message).toContain('"unknown"');
     } finally {
       harness.dispose();
     }
