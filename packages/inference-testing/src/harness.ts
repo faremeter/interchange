@@ -105,11 +105,14 @@ export type Harness = {
    * 1. Calls `@interchange/inference`'s real `runInference` with `opts`
    *    plus `harness.deps` automatically injected (callers do not — and
    *    must not — pass `deps` themselves).
-   * 2. Yields every `InferenceEvent` the underlying iterator emits.
-   * 3. When the event is `inference.tool_call.end`, looks up the handler
-   *    registered for that tool name and dispatches it with the parsed
-   *    arguments. The dispatched result is captured on the harness and
-   *    is available via `scenario.lastToolDispatch(name)`.
+   * 2. When the underlying iterator emits `inference.tool_call.end`,
+   *    looks up the handler registered for that tool name and dispatches
+   *    it with the parsed arguments BEFORE yielding the event. The
+   *    dispatched result is captured on the harness and is available via
+   *    `scenario.lastToolDispatch(name)`. Dispatching before the yield
+   *    guarantees the handler fires even if the consumer breaks out of
+   *    the `for await` loop on `inference.tool_call.end`.
+   * 3. Yields every `InferenceEvent` the underlying iterator emits.
    *
    * If no handler is registered for a tool name observed in an
    * `inference.tool_call.end`, the wrapper throws synchronously from the
@@ -662,15 +665,20 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     async function* iterate(): AsyncGenerator<InferenceEvent> {
       const inner = runInference({ ...opts, deps });
       for await (const event of inner) {
-        yield event;
-        if (event.type !== "inference.tool_call.end") continue;
-        const { name, arguments: args } = event.data;
-        if (!toolRegistry.has(name)) {
-          throw new Error(
-            `Harness.runInference: inference.tool_call.end observed for tool "${name}" but no handler was registered via scenario.onTool. Register a handler or drop to the runInference escape hatch and dispatch manually.`,
+        if (event.type === "inference.tool_call.end") {
+          const { name, arguments: args } = event.data;
+          if (!toolRegistry.has(name)) {
+            throw new Error(
+              `Harness.runInference: inference.tool_call.end observed for tool "${name}" but no handler was registered via scenario.onTool. Register a handler or drop to the runInference escape hatch and dispatch manually.`,
+            );
+          }
+          toolRegistry.invoke(
+            name,
+            args,
+            recordingDispatch(name, noopDispatch),
           );
         }
-        toolRegistry.invoke(name, args, recordingDispatch(name, noopDispatch));
+        yield event;
       }
     }
     return iterate();

@@ -501,6 +501,52 @@ describe("harness.runInference auto-dispatch", () => {
     }
   });
 
+  test("dispatches the handler even when the consumer breaks on tool_call.end", async () => {
+    // Pins the contract that auto-dispatch runs BEFORE the event is
+    // yielded. If a future change moves dispatch back after the yield, a
+    // consumer that breaks out of the `for await` loop on
+    // `inference.tool_call.end` would silently never see the handler
+    // fire — a sharp edge this test exists to catch.
+    const harness = setupHarness();
+    try {
+      const handlerCalls: { args: unknown }[] = [];
+      harness.scenario.onTool("weather", (args) => {
+        handlerCalls.push({ args });
+        return { temperatureF: 72 };
+      });
+
+      const { close } = scriptToolCallTurn(
+        harness,
+        "call_w_break",
+        "weather",
+        '{"location":"NYC"}',
+      );
+
+      let seq = 0;
+      const collected = (async () => {
+        for await (const ev of harness.runInference({
+          turns: [userTurn("weather?")],
+          model: "claude-test",
+          providerConfig: ANTHROPIC_PROVIDER_CONFIG,
+          nextSeq: () => ++seq,
+        })) {
+          if (ev.type === "inference.tool_call.end") {
+            break;
+          }
+        }
+      })();
+      await harness.advanceTo(close + 10);
+      await collected;
+
+      expect(handlerCalls).toEqual([{ args: { location: "NYC" } }]);
+      expect(harness.scenario.lastToolDispatch("weather")).toEqual({
+        temperatureF: 72,
+      });
+    } finally {
+      harness.dispose();
+    }
+  });
+
   test("throws if tool_call.end names a tool with no registered handler", async () => {
     const harness = setupHarness();
     try {
