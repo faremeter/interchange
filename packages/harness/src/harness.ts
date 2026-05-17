@@ -18,21 +18,10 @@
 // (ARCHITECTURE.md § Agent Harness, INFERENCE.md § Relationship to Harness)
 
 import { getLogger } from "@interchange/log";
-import {
-  createReactor,
-  createAuditCollector,
-  createAuthzExtension,
-  createDefaultDependencies,
-  createSizeCapTransform,
-} from "@interchange/inference";
-import type {
-  Reactor,
-  AuditCollector,
-  ReactorEmittedEvent,
-} from "@interchange/inference";
+import { createReactorAssembly } from "@interchange/inference";
+import type { ReactorEmittedEvent } from "@interchange/inference";
 import {
   ProviderConfig,
-  createBlobReader,
   type BlobReader,
   type ContextStore,
   type ConnectorThreadState,
@@ -126,29 +115,10 @@ export function createHarness(config: HarnessConfig): Harness {
 
   const sessionId = crypto.randomUUID();
 
-  // -------------------------------------------------------------------------
-  // Audit collector: correlates tool events with authz decisions.
-  // -------------------------------------------------------------------------
-
   const auditStore = config.auditStore;
-  const auditCollector: AuditCollector | undefined =
-    auditStore !== undefined ? createAuditCollector(sessionId) : undefined;
 
   const accumulatedErrors: ErrorRecord[] = [];
   let errorSeq = 0;
-
-  const authzExtension =
-    config.authorize !== undefined
-      ? createAuthzExtension({
-          authorize: config.authorize,
-          onDecision: (d) => auditCollector?.onDecision(d),
-        })
-      : undefined;
-
-  const beforeToolExtensions = [
-    ...(authzExtension !== undefined ? [authzExtension] : []),
-    ...(config.beforeToolExtensions ?? []),
-  ];
 
   // -------------------------------------------------------------------------
   // Connector state: track which thread(s) this reactor owns.
@@ -193,7 +163,7 @@ export function createHarness(config: HarnessConfig): Harness {
   // per-cycle writeMetadata picks up the live connector state via the underlying
   // store's setConnectorState buffer (Phase 4: connector state rides along with
   // metadata.json rather than being injected during commit).
-  const contextStore: ContextStore = {
+  const wrappedStore: ContextStore = {
     async load(signal) {
       const loaded = await storage.load(signal);
       restoreConnectorState(loaded.connectorState);
@@ -244,11 +214,6 @@ export function createHarness(config: HarnessConfig): Harness {
       return storage.readManifestHistory(limit, signal);
     },
   };
-
-  // BlobReader resolves tool-output:///{callId} URIs through the wrapped
-  // context store. Exposed on the Harness so the caller can wire it into
-  // its tool factory (e.g. `createPosixTools({ blobReader })`).
-  const blobReader = createBlobReader(contextStore);
 
   /**
    * Determine whether a message belongs to the active connector thread.
@@ -308,10 +273,6 @@ export function createHarness(config: HarnessConfig): Harness {
   // -------------------------------------------------------------------------
 
   function handleEvent(event: ReactorEmittedEvent): void {
-    if (event.type !== "message.received" && auditCollector !== undefined) {
-      auditCollector.onEvent(event);
-    }
-
     // Handle connector.reply: send the reply via transport.
     if (
       event.type === "connector.reply" &&
@@ -376,19 +337,6 @@ export function createHarness(config: HarnessConfig): Harness {
   // Reactor
   // -------------------------------------------------------------------------
 
-  async function flushAudit(): Promise<void> {
-    if (auditCollector === undefined) return;
-    if (auditStore === undefined) {
-      throw new Error(
-        "auditStore must be defined when auditCollector is present",
-      );
-    }
-    const records = auditCollector.flush();
-    if (records.length > 0) {
-      await auditStore.commitAudit(records);
-    }
-  }
-
   async function flushErrors(): Promise<void> {
     if (accumulatedErrors.length === 0) return;
     if (auditStore === undefined) return;
@@ -397,41 +345,33 @@ export function createHarness(config: HarnessConfig): Harness {
     accumulatedErrors.splice(0, count);
   }
 
-  const sizeCapTransform = createSizeCapTransform({
-    maxChars: 10_000,
-    contextStore,
-  });
+  // providerConfig is held as a single mutable object whose reference is
+  // shared with the reactor's config (via the assembly helper). The reactor
+  // reads providerConfig lazily at each inference call, so mutating the
+  // fields on this object hot-swaps credentials without restarting.
+  const providerConfig: ProviderConfig = { ...provider };
 
-  // The reactor reads config.providerConfig lazily at each inference call,
-  // so mutating this object hot-swaps credentials without restarting.
-  const reactorConfig: Parameters<typeof createReactor>[0] = {
+  const { reactor, blobReader } = createReactorAssembly({
     sessionId,
     director,
-    providerConfig: provider,
+    providerConfig,
     toolRunner: combinedRunner,
-    contextStore,
+    contextStore: wrappedStore,
     onEvent: handleEvent,
-    deps: createDefaultDependencies(),
-    beforeToolExtensions,
-    toolResultTransforms: [sizeCapTransform],
-  };
-
-  if (auditCollector !== undefined) {
-    reactorConfig.afterCheckpoint = async () => {
-      await flushAudit();
-      await flushErrors();
-    };
-    reactorConfig.onShutdown = async () => {
-      const inflight = auditCollector.pending();
-      if (inflight > 0) {
-        logger.warn`${inflight} audit records in flight at shutdown, these tool calls will not be recorded`;
-      }
-      await flushAudit();
-      await flushErrors();
-    };
-  }
-
-  const reactor: Reactor = createReactor(reactorConfig);
+    ...(config.authorize !== undefined ? { authorize: config.authorize } : {}),
+    ...(config.auditStore !== undefined
+      ? { auditStore: config.auditStore }
+      : {}),
+    ...(config.beforeToolExtensions !== undefined
+      ? { beforeToolExtensions: config.beforeToolExtensions }
+      : {}),
+    // flushErrors only runs when audit is wired — preserves today's
+    // behavior where harness.ts only invokes flushErrors inside the
+    // auditCollector branch.
+    ...(config.auditStore !== undefined
+      ? { afterCheckpoint: flushErrors, onShutdown: flushErrors }
+      : {}),
+  });
 
   let unsubscribe: Unsubscribe | null = null;
   let started = false;
@@ -511,7 +451,17 @@ export function createHarness(config: HarnessConfig): Harness {
     if (parsed instanceof type.errors) {
       throw new Error(`Invalid ProviderConfig: ${parsed.summary}`);
     }
-    reactorConfig.providerConfig = parsed;
+    // Mutate the shared providerConfig object in place so the reactor's
+    // next inference call (which reads providerConfig lazily through the
+    // same reference held by the assembly helper) observes the new fields.
+    providerConfig.provider = parsed.provider;
+    providerConfig.baseURL = parsed.baseURL;
+    providerConfig.apiKey = parsed.apiKey;
+    if (parsed.model !== undefined) {
+      providerConfig.model = parsed.model;
+    } else {
+      delete providerConfig.model;
+    }
   }
 
   return { start, stop, deliver, setProviderConfig, blobReader };
