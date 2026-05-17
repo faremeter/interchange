@@ -700,15 +700,15 @@ Do not write tests that merely verify functionality provided by external librari
 
 ### Test File Locations
 
-Three locations are used for tests, distinguished by what the test exercises:
+Two locations are used for tests:
 
 - **Co-located unit tests**: `packages/<name>/src/*.test.ts`. These tests cover a single package's internals using mocks and synthetic inputs. The default for all per-module tests.
 
-- **Package-targeting harness tests**: `tests/<package-name>/`. Tests that target a single package's behavior but need the `@interchange/inference-testing` harness (wire DSL, virtual clock, stubbed fetch) live here, not co-located. Co-locating them in `packages/<name>/src/` would force the package to depend on `@interchange/inference-testing`, creating a workspace dependency cycle (because the harness package itself depends on the package being tested). Putting the tests in a top-level `tests/` tree breaks that cycle.
+- **Integration-shaped tests**: `tests/<package-name>/`. Tests that target a package's behavior but need the `@interchange/inference-testing` harness, or that span multiple packages, live here. Co-locating harness-driven tests in `packages/<name>/src/` would force the package to depend on `@interchange/inference-testing`, creating a workspace dependency cycle (because the harness depends on the package). The `tests/` tree breaks that cycle. Tests spanning multiple packages live under `tests/<primary-target-package>/`; the "primary target" is whatever package's behavior the test is asserting, with the other packages as setup dependencies.
 
-- **Cross-package integration tests**: `test/integration/`. Tests that span multiple packages (deploy flows, multi-turn harness, transform cutover) and don't target any single package live here. These are run as a separate `bun test test/integration/` invocation after the main suite because some of them spawn real servers or perform git operations that don't parallelise cleanly.
+The legacy `test/integration/` directory still hosts `deploy-flow.test.ts`, which spawns real servers and is out of scope for current cleanup. New tests should not go there.
 
-The singular `test/` vs plural `tests/` distinction is load-bearing: `test/integration/**` is excluded from `bun test` via `bunfig.toml` so it runs in its own pass, while `tests/` is part of the main `bun test` invocation.
+Tests that are not parallel-safe (e.g. spawn servers, perform real `isomorphic-git` operations against `os.tmpdir()`) are excluded per-file via `bunfig.toml` and run as a second `bun test` invocation after the main suite. The exclude pattern is a per-file marker, not a directory convention. The `test` script in the root `package.json` runs the excluded files in a second pass.
 
 ---
 
