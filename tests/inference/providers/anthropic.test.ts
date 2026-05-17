@@ -1,9 +1,11 @@
 import { type } from "arktype";
 import { describe, test, expect } from "bun:test";
 import { wire } from "@interchange/inference-testing";
-import { parseSSE } from "../sse";
-import { createAnthropicAdapter } from "./anthropic";
-import type { ProviderAdapter } from "../adapter";
+import {
+  parseSSE,
+  createAnthropicAdapter,
+  type ProviderAdapter,
+} from "@interchange/inference";
 import type {
   ConversationTurn,
   InferenceEvent,
