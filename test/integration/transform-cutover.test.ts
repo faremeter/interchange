@@ -2,9 +2,10 @@
 //
 // These tests wire the real `IsogitStore`, the real `createSizeCapTransform`,
 // the real `read_file` POSIX tool, and a real `BlobReader`, against a
-// temporary git repo. The inference runner is mocked so we exercise every
-// production code path except the live inference provider and live SMTP
-// transport.
+// temporary git repo. The inference HTTP path is driven by the
+// `@interchange/inference-testing` harness so every production code path
+// (the real adapter, the real SSE parser, the real reactor) runs end to end;
+// only the live network and live SMTP transports are stubbed.
 
 import { describe, test, expect, afterAll, afterEach } from "bun:test";
 import fs from "node:fs";
@@ -19,12 +20,11 @@ import {
   createSizeCapTransform,
   type Reactor,
   type ReactorEmittedEvent,
+  type Dependencies,
 } from "@interchange/inference";
 import type {
-  AssistantTurn,
   AuditStore,
   ContextStore,
-  InferenceEvent,
   ReactorDirector,
   ToolRunner,
   TokenUsage,
@@ -32,6 +32,8 @@ import type {
 } from "@interchange/types/runtime";
 import { createBlobReader } from "@interchange/types/runtime";
 import { createPosixTools } from "@interchange/tools-posix";
+import { setupHarness, wire } from "@interchange/inference-testing";
+import type { Harness } from "@interchange/inference-testing";
 
 const tempDirs: string[] = [];
 
@@ -59,49 +61,47 @@ function emptyUsage(): TokenUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
 }
 
-function emittedDoneRunner(opts: {
-  text: string;
-  toolCalls?: {
-    id: string;
-    name: string;
-    arguments: Record<string, unknown>;
-  }[];
-  usage?: TokenUsage;
-}): (
-  inferOpts: import("@interchange/inference").InferenceHarnessOptions,
-) => AsyncGenerator<InferenceEvent> {
-  return async function* (inferOpts) {
-    const content: AssistantTurn["content"] = [];
-    if (opts.text.length > 0) {
-      content.push({ type: "text", text: opts.text });
-    }
-    for (const tc of opts.toolCalls ?? []) {
-      content.push({
-        type: "tool_call",
-        id: tc.id,
-        name: tc.name,
-        arguments: tc.arguments,
-      });
-    }
-    const turn: AssistantTurn = {
-      role: "assistant",
-      content,
-      model: inferOpts.model,
-      timestamp: Date.now(),
-    };
-    const usage: TokenUsage = opts.usage ?? {
-      input: 10,
-      output: 20,
-      cacheRead: 0,
-      cacheWrite: 0,
-      thinking: 0,
-    };
-    yield {
-      type: "inference.done",
-      seq: inferOpts.nextSeq(),
-      data: { turn, usage },
-    };
-  };
+// The wire-driven inference cycles below use the Anthropic provider; the
+// harness creates the SSE stream, registers the matcher, and serves
+// `wire.completeResponse("anthropic", ...)` bytes whose head + tail usage
+// frames decode to a positive `tokenUsage.input`/`tokenUsage.output`. This
+// matches the original `emittedDoneRunner` default of `{ input: 10,
+// output: 20 }` so Test C's `tokenUsage > 0` assertion still holds.
+const HEAD_USAGE: TokenUsage = {
+  input: 10,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  thinking: 0,
+};
+const TAIL_USAGE: TokenUsage = {
+  input: 0,
+  output: 20,
+  cacheRead: 0,
+  cacheWrite: 0,
+  thinking: 0,
+};
+
+function enqueueAnthropicTextResponse(
+  harness: Harness,
+  text: string,
+): {
+  stream: ReturnType<Harness["scenario"]["createStream"]>;
+  closeAt: number;
+} {
+  const stream = harness.scenario.createStream();
+  const chunks = wire.completeResponse("anthropic", {
+    text,
+    headUsage: HEAD_USAGE,
+    tailUsage: TAIL_USAGE,
+  });
+  let when = 10;
+  for (const chunk of chunks) {
+    stream.enqueueAt(when, chunk);
+    when += 1;
+  }
+  stream.closeAt(when);
+  return { stream, closeAt: when };
 }
 
 function makeInboundMessage(
@@ -156,9 +156,7 @@ async function startReactor(opts: {
   dir: string;
   director: ReactorDirector;
   toolRunner: ToolRunner;
-  inferenceRunner?: (
-    o: import("@interchange/inference").InferenceHarnessOptions,
-  ) => AsyncGenerator<InferenceEvent>;
+  deps?: Dependencies;
   store?: ContextStore & AuditStore;
 }): Promise<RunHandle> {
   const store = opts.store ?? (await createIsogitStore(opts.dir));
@@ -177,12 +175,9 @@ async function startReactor(opts: {
     toolRunner: opts.toolRunner,
     contextStore,
     onEvent: (e) => events.push(e),
-    deps: createDefaultDependencies(),
+    deps: opts.deps ?? createDefaultDependencies(),
     shutdownTimeoutMs: 200,
     toolResultTransforms: [sizeCap],
-    ...(opts.inferenceRunner !== undefined
-      ? { inferenceRunner: opts.inferenceRunner }
-      : {}),
   });
 
   function waitFor(
@@ -346,7 +341,11 @@ describe("Phase 4 headline tests", () => {
     expect(loaded.tokenUsage).toEqual(emptyUsage());
     expect(loaded.connectorState).toBeNull();
 
-    // Run one inference cycle.
+    // Run one inference cycle driven by real wire bytes from the testing
+    // harness. The director asks for inference on `message.received` and
+    // calls done on `inference.done`; the harness serves a complete
+    // Anthropic SSE response carrying the assistant text plus head/tail
+    // usage frames.
     const director: ReactorDirector = {
       async decide(event, _state, caps) {
         if (event.type === "message.received") {
@@ -365,15 +364,27 @@ describe("Phase 4 headline tests", () => {
       },
     };
 
-    const handle = await startReactor({
-      dir,
-      director,
-      toolRunner: noopRunner,
-      inferenceRunner: emittedDoneRunner({ text: "hello back" }),
-      store,
-    });
-    handle.reactor.deliver(makeInboundMessage("hi"));
-    await handle.waitFor("reactor.done");
+    const harness = setupHarness();
+    try {
+      const { closeAt, stream } = enqueueAnthropicTextResponse(
+        harness,
+        "hello back",
+      );
+      harness.scenario.whenRequestMatches(() => true, stream);
+
+      const handle = await startReactor({
+        dir,
+        director,
+        toolRunner: noopRunner,
+        deps: harness.deps,
+        store,
+      });
+      handle.reactor.deliver(makeInboundMessage("hi"));
+      await harness.advanceTo(closeAt + 10);
+      await handle.waitFor("reactor.done");
+    } finally {
+      harness.dispose();
+    }
 
     const after = await git.log({ fs, dir, depth: 10 });
     // Exactly one new commit on top of the baseline.
@@ -433,15 +444,27 @@ describe("Phase 4 headline tests", () => {
           return { callId: c.id, content: "" };
         },
       };
-      const handle = await startReactor({
-        dir,
-        director,
-        toolRunner: noop,
-        inferenceRunner: emittedDoneRunner({ text: responseText }),
-        store,
-      });
-      handle.reactor.deliver(makeInboundMessage(`cycle:${responseText}`));
-      await handle.waitFor("reactor.done");
+      const harness = setupHarness();
+      try {
+        const { closeAt, stream } = enqueueAnthropicTextResponse(
+          harness,
+          responseText,
+        );
+        harness.scenario.whenRequestMatches(() => true, stream);
+
+        const handle = await startReactor({
+          dir,
+          director,
+          toolRunner: noop,
+          deps: harness.deps,
+          store,
+        });
+        handle.reactor.deliver(makeInboundMessage(`cycle:${responseText}`));
+        await harness.advanceTo(closeAt + 10);
+        await handle.waitFor("reactor.done");
+      } finally {
+        harness.dispose();
+      }
     }
 
     {
