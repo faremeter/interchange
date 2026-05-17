@@ -55,18 +55,48 @@ export type SimulatedStream = {
 export type SimulatedStreamHandle = {
   readonly stream: SimulatedStream;
   /**
-   * Called by the harness `dispose()` to force-close any controller that
-   * is still open. Safe to invoke multiple times; subsequent calls are
-   * no-ops. The harness must remove the handle from its open-stream set
-   * when `closeAt`/`errorAt` fire naturally so that `dispose()` only
-   * touches streams that genuinely leaked past test completion.
+   * Force-close any controller that is still open and invoke `onTerminate`
+   * if the stream has not yet transitioned to a terminal state. Safe to
+   * invoke multiple times; subsequent calls are no-ops. Used by the
+   * harness's `dispose()` teardown for streams that leaked past test
+   * completion.
    */
   forceClose(): void;
   /**
+   * Force the underlying controller into the errored state and invoke
+   * `onTerminate` if the stream has not yet transitioned. Used by the
+   * harness for per-call abort isolation on matched streams, by
+   * `abortBefore`, and by the `clock.onSyncCallbackError` hook when a
+   * scheduled callback throws. Safe to invoke multiple times; subsequent
+   * calls are no-ops.
+   */
+  forceError(err: unknown): void;
+  /**
+   * Cancel every pending scheduled callback for this stream that has not
+   * yet fired. Cancelled callbacks remain on the clock heap but turn into
+   * no-ops when popped, so the chunks/close/error they would have driven
+   * never reach the controller. Used by `harness.abortBefore` to suppress
+   * already-scheduled chunks ahead of an abort.
+   */
+  cancelPending(): void;
+  /**
    * Whether the underlying controller has been closed/errored (either
-   * naturally via a fired `closeAt`/`errorAt` or by `forceClose`).
+   * naturally via a fired `closeAt`/`errorAt` or by `forceClose`/
+   * `forceError`).
    */
   isClosed(): boolean;
+};
+
+/**
+ * Event fired by `SimulatedStream` when a previously-scheduled wire byte
+ * chunk lands in the controller. The harness uses this to drive
+ * `scenario.abortAfter` matchers; the predicate inspects the bytes and
+ * may request the harness to abort an associated `AbortController`.
+ */
+export type ChunkFiredEvent = {
+  readonly streamId: StreamId;
+  readonly virtualMs: number;
+  readonly bytes: Uint8Array;
 };
 
 /**
@@ -86,6 +116,17 @@ export type CreateSimulatedStreamOpts = {
    * close an already-finished controller.
    */
   onTerminate: () => void;
+  /**
+   * Invoked synchronously each time a scheduled `enqueue`/`enqueueAt`
+   * chunk is delivered to the controller. The harness subscribes here to
+   * implement wire-event observation for `scenario.abortAfter`. Optional
+   * because not every consumer wants the cross-cut.
+   */
+  onChunkFired?: (event: ChunkFiredEvent) => void;
+};
+
+type PendingEntry = {
+  cancelled: boolean;
 };
 
 /**
@@ -99,10 +140,17 @@ export type CreateSimulatedStreamOpts = {
 export function createSimulatedStream(
   opts: CreateSimulatedStreamOpts,
 ): SimulatedStreamHandle {
-  const { clock, streamId, onTerminate } = opts;
+  const { clock, streamId, onTerminate, onChunkFired } = opts;
 
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
   let closed = false;
+
+  // Tracks every scheduled enqueue/close/error callback that has not yet
+  // fired. `harness.abortBefore` flips every entry's `cancelled` flag so
+  // when the clock pops them they turn into no-ops. We do not remove
+  // entries from the heap (the clock owns the heap); we rely on the
+  // callback closures to check this flag.
+  const pending = new Set<PendingEntry>();
 
   const body = new ReadableStream<Uint8Array>({
     start(c) {
@@ -131,7 +179,11 @@ export function createSimulatedStream(
     if (!(bytes instanceof Uint8Array)) {
       throw new Error("SimulatedStream.enqueueAt: bytes must be a Uint8Array");
     }
+    const entry: PendingEntry = { cancelled: false };
+    pending.add(entry);
     clock.schedule(virtualMs, function streamEnqueue() {
+      pending.delete(entry);
+      if (entry.cancelled) return;
       if (closed) {
         throw new Error(
           `SimulatedStream(${String(streamId)}): enqueue after terminal state`,
@@ -139,6 +191,9 @@ export function createSimulatedStream(
       }
       requireController().enqueue(bytes);
       clock.notifyActivity();
+      if (onChunkFired !== undefined) {
+        onChunkFired({ streamId, virtualMs: clock.now(), bytes });
+      }
     });
   };
 
@@ -147,7 +202,11 @@ export function createSimulatedStream(
   };
 
   const closeAt = (virtualMs: number): void => {
+    const entry: PendingEntry = { cancelled: false };
+    pending.add(entry);
     clock.schedule(virtualMs, function streamClose() {
+      pending.delete(entry);
+      if (entry.cancelled) return;
       if (closed) {
         throw new Error(
           `SimulatedStream(${String(streamId)}): closeAt after terminal state`,
@@ -160,7 +219,11 @@ export function createSimulatedStream(
   };
 
   const errorAt = (virtualMs: number, err: unknown): void => {
+    const entry: PendingEntry = { cancelled: false };
+    pending.add(entry);
     clock.schedule(virtualMs, function streamError() {
+      pending.delete(entry);
+      if (entry.cancelled) return;
       if (closed) {
         throw new Error(
           `SimulatedStream(${String(streamId)}): errorAt after terminal state`,
@@ -184,14 +247,36 @@ export function createSimulatedStream(
   const forceClose = (): void => {
     if (closed) return;
     const c = controller;
-    closed = true;
     if (c !== null) {
       c.close();
       clock.notifyActivity();
     }
+    markTerminated();
+  };
+
+  const forceError = (err: unknown): void => {
+    if (closed) return;
+    const c = controller;
+    if (c !== null) {
+      c.error(err);
+    }
+    markTerminated();
+  };
+
+  const cancelPending = (): void => {
+    for (const entry of pending) {
+      entry.cancelled = true;
+    }
+    pending.clear();
   };
 
   const isClosed = (): boolean => closed;
 
-  return { stream, forceClose, isClosed };
+  return {
+    stream,
+    forceClose,
+    forceError,
+    cancelPending,
+    isClosed,
+  };
 }
