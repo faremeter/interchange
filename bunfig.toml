@@ -2,5 +2,9 @@
 
 # These tests spawn real servers or use isomorphic-git operations that
 # can interfere with other git-based tests when run concurrently. They
-# run as a separate pass after the main suite.
-exclude = ["test/integration/**", "tests/inference/transform-cutover.test.ts"]
+# run as a separate pass after the main suite via package.json's `test`
+# script.
+exclude = [
+  "tests/sidecar/deploy-flow.test.ts",
+  "tests/inference/transform-cutover.test.ts",
+]
