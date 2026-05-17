@@ -698,6 +698,18 @@ Focus test coverage on logic specific to this codebase:
 
 Do not write tests that merely verify functionality provided by external libraries. Trust well-maintained libraries to do their job.
 
+### Test File Locations
+
+Three locations are used for tests, distinguished by what the test exercises:
+
+- **Co-located unit tests**: `packages/<name>/src/*.test.ts`. These tests cover a single package's internals using mocks and synthetic inputs. The default for all per-module tests.
+
+- **Package-targeting harness tests**: `tests/<package-name>/`. Tests that target a single package's behavior but need the `@interchange/inference-testing` harness (wire DSL, virtual clock, stubbed fetch) live here, not co-located. Co-locating them in `packages/<name>/src/` would force the package to depend on `@interchange/inference-testing`, creating a workspace dependency cycle (because the harness package itself depends on the package being tested). Putting the tests in a top-level `tests/` tree breaks that cycle.
+
+- **Cross-package integration tests**: `test/integration/`. Tests that span multiple packages (deploy flows, multi-turn harness, transform cutover) and don't target any single package live here. These are run as a separate `bun test test/integration/` invocation after the main suite because some of them spawn real servers or perform git operations that don't parallelise cleanly.
+
+The singular `test/` vs plural `tests/` distinction is load-bearing: `test/integration/**` is excluded from `bun test` via `bunfig.toml` so it runs in its own pass, while `tests/` is part of the main `bun test` invocation.
+
 ---
 
 ## Logging
