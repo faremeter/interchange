@@ -1,5 +1,6 @@
 import { AmbiguousRequestError, type AmbiguousFetchInfo } from "./errors";
 import type { SimulatedStream } from "./simulated-stream";
+import type { DispatchToolResult, ToolHandler } from "./tool-handler";
 
 /**
  * Predicate run against a constructed `Request` to decide whether a matcher
@@ -66,6 +67,31 @@ export type Scenario = {
     responseStream: SimulatedStream,
     opts?: WhenRequestMatchesOpts,
   ): void;
+  /**
+   * Register a handler for the tool named `name`. The handler runs when the
+   * harness observes a tool call by that name (in v1 this is wired via the
+   * test-author-invoked `invokeTool` helper below; future slices will
+   * autodetect tool-call frames in served wire bytes). At most one handler
+   * may be registered per tool name; re-registering throws.
+   *
+   * See `ToolHandlerReturn` for the three accepted return shapes (sync,
+   * delayed envelope, promise) and the in-flight-quiescence rules tied to
+   * the promise shape.
+   */
+  onTool(name: string, handler: ToolHandler): void;
+  /**
+   * Invoke a previously-registered tool handler and pipe its result into
+   * the supplied `dispatch` callback. Exposed as a v1 hook so test authors
+   * can drive the tool-handler orchestration directly until 6c lands the
+   * automatic wire-byte autodetect. `dispatch` is called once per resolved
+   * tool result, on the same tick (sync return), at a virtual deadline
+   * (delayed envelope), or after promise resolution.
+   *
+   * Throws synchronously if no handler is registered for `name`. Returns
+   * synchronously; the harness's `run()` / `advanceTo()` loop is what
+   * awaits any in-flight promise produced by the handler.
+   */
+  invokeTool(name: string, args: unknown, dispatch: DispatchToolResult): void;
 };
 
 /**

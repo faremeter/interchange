@@ -1,6 +1,7 @@
 import { HarnessId, type Dependencies } from "@interchange/inference";
 
 import {
+  ClockWallClockOverrunError,
   createClock,
   type AdvanceOpts,
   type Clock,
@@ -27,6 +28,11 @@ import {
   type SimulatedStreamHandle,
   type StreamId,
 } from "./simulated-stream";
+import {
+  createToolHandlerRegistry,
+  type DispatchToolResult,
+  type ToolHandler,
+} from "./tool-handler";
 
 /**
  * The deterministic inference test harness returned by `setupHarness`. It
@@ -196,9 +202,58 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     runScan();
   };
 
+  const inFlightToolHandlers = new Set<Promise<void>>();
+  // Collects rejections from in-flight tool handler promises so the
+  // quiescence loop can re-throw them deterministically. Without this,
+  // a rejection that lands between the `Promise.all` await and the next
+  // loop iteration would be lost (the handler was removed from the
+  // in-flight set by its own `finally` before Promise.all could observe
+  // it).
+  const inFlightErrors: unknown[] = [];
+
+  const trackInFlight = (promise: Promise<void>): void => {
+    const tracked: Promise<void> = promise.then(
+      () => {
+        inFlightToolHandlers.delete(tracked);
+      },
+      (err: unknown) => {
+        inFlightToolHandlers.delete(tracked);
+        inFlightErrors.push(err);
+      },
+    );
+    inFlightToolHandlers.add(tracked);
+  };
+
+  const toolRegistry = createToolHandlerRegistry({ clock, trackInFlight });
+
+  const onTool = (name: string, handler: ToolHandler): void => {
+    if (disposed) {
+      throw new Error("Harness.scenario.onTool: harness has been disposed");
+    }
+    toolRegistry.register(name, handler);
+  };
+
+  const invokeTool = (
+    name: string,
+    args: unknown,
+    dispatch: DispatchToolResult,
+  ): void => {
+    if (disposed) {
+      throw new Error("Harness.scenario.invokeTool: harness has been disposed");
+    }
+    if (typeof dispatch !== "function") {
+      throw new Error(
+        "Harness.scenario.invokeTool: dispatch must be a function",
+      );
+    }
+    toolRegistry.invoke(name, args, dispatch);
+  };
+
   const scenario: Scenario = {
     createStream,
     whenRequestMatches,
+    onTool,
+    invokeTool,
   };
 
   const buildRequest = (
@@ -330,8 +385,95 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     throw err;
   };
 
+  const DEFAULT_WALL_CLOCK_BUDGET_MS = 250;
+
+  const takeInFlightError = (): unknown => {
+    if (inFlightErrors.length === 0) return undefined;
+    // Surface the first rejection; additional ones (rare — would require
+    // multiple in-flight handlers rejecting in the same tick) are dropped
+    // to keep the contract simple. A future slice can extend to
+    // AggregateError if real tests need it.
+    const [first] = inFlightErrors.splice(0, inFlightErrors.length);
+    return first;
+  };
+
+  const drainInFlight = async (
+    startWall: number,
+    wallClockBudgetMs: number,
+  ): Promise<void> => {
+    // Repeatedly await any in-flight tool handler promises. A handler may
+    // schedule additional clock work or register further handlers on
+    // resolution, so the run/advanceTo callers re-enter the clock loop
+    // after this returns to pick that work up.
+    //
+    // The drain races each batch against a real-time timer so a handler
+    // that's blocked on a real wall-clock timer (e.g., setTimeout(...))
+    // surfaces as a ClockWallClockOverrunError instead of hanging the
+    // test. This mirrors the budget the clock itself enforces inside
+    // `clock.run()`.
+    while (inFlightToolHandlers.size > 0) {
+      if (wallClockBudgetMs === Infinity) {
+        await Promise.all([...inFlightToolHandlers]);
+        continue;
+      }
+      const elapsed = performance.now() - startWall;
+      const remaining = wallClockBudgetMs - elapsed;
+      if (remaining <= 0) {
+        throw new ClockWallClockOverrunError(
+          `Harness.run exceeded wall-clock budget of ${String(wallClockBudgetMs)}ms while awaiting in-flight tool handlers (elapsed=${String(elapsed)}ms)`,
+          `in-flight tool handlers: ${String(inFlightToolHandlers.size)}`,
+        );
+      }
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const budgetExpired = new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => {
+          resolve("timeout");
+        }, remaining);
+      });
+      const allDone = Promise.all([...inFlightToolHandlers]).then(
+        () => "done" as const,
+      );
+      const outcome = await Promise.race([allDone, budgetExpired]);
+      if (timer !== null) clearTimeout(timer);
+      if (outcome === "timeout") {
+        const elapsedNow = performance.now() - startWall;
+        throw new ClockWallClockOverrunError(
+          `Harness.run exceeded wall-clock budget of ${String(wallClockBudgetMs)}ms while awaiting in-flight tool handlers (elapsed=${String(elapsedNow)}ms)`,
+          `in-flight tool handlers: ${String(inFlightToolHandlers.size)}`,
+        );
+      }
+    }
+  };
+
+  const clearInFlightState = (): void => {
+    inFlightToolHandlers.clear();
+    inFlightErrors.length = 0;
+  };
+
   const run = async (runOpts?: RunOpts): Promise<void> => {
-    await clock.run(runOpts);
+    const wallClockBudgetMs =
+      runOpts?.wallClockBudgetMs ?? DEFAULT_WALL_CLOCK_BUDGET_MS;
+    const startWall = performance.now();
+    try {
+      for (;;) {
+        await clock.run(runOpts);
+        const err = takeInFlightError();
+        if (err !== undefined) throw err;
+        if (inFlightToolHandlers.size === 0) break;
+        await drainInFlight(startWall, wallClockBudgetMs);
+        const errAfter = takeInFlightError();
+        if (errAfter !== undefined) throw errAfter;
+        // Loop: handler resolution may have scheduled new heap entries or
+        // registered new matchers; let `clock.run()` settle them before we
+        // declare quiescence.
+      }
+    } catch (err) {
+      // The harness is intended to be one-shot, but defensively clear any
+      // tracked in-flight handlers and queued rejections so a caller that
+      // re-uses this harness after a throw does not inherit stale state.
+      clearInFlightState();
+      throw err;
+    }
     checkQuiescence();
   };
 
@@ -339,7 +481,24 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     virtualMs: number,
     advanceOpts?: AdvanceOpts,
   ): Promise<void> => {
-    await clock.advanceTo(virtualMs, advanceOpts);
+    // advanceTo's wall-clock budget mirrors run()'s default. AdvanceOpts
+    // does not expose a wallClockBudgetMs knob today; the in-flight drain
+    // uses the default so a stuck handler still surfaces as an overrun.
+    const startWall = performance.now();
+    try {
+      for (;;) {
+        await clock.advanceTo(virtualMs, advanceOpts);
+        const err = takeInFlightError();
+        if (err !== undefined) throw err;
+        if (inFlightToolHandlers.size === 0) break;
+        await drainInFlight(startWall, DEFAULT_WALL_CLOCK_BUDGET_MS);
+        const errAfter = takeInFlightError();
+        if (errAfter !== undefined) throw errAfter;
+      }
+    } catch (err) {
+      clearInFlightState();
+      throw err;
+    }
     checkQuiescence();
   };
 
@@ -360,6 +519,8 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     }
     waiting.length = 0;
     matcherTable.entries.length = 0;
+    inFlightToolHandlers.clear();
+    inFlightErrors.length = 0;
   };
 
   return {
