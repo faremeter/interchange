@@ -143,6 +143,13 @@
         "arktype": "catalog:",
       },
     },
+    "packages/inference-testing": {
+      "name": "@interchange/inference-testing",
+      "version": "0.0.0",
+      "dependencies": {
+        "@interchange/inference": "workspace:*",
+      },
+    },
     "packages/log": {
       "name": "@interchange/log",
       "version": "0.0.0",
@@ -425,6 +432,8 @@
     "@interchange/hub-client": ["@interchange/hub-client@workspace:packages/hub-client"],
 
     "@interchange/inference": ["@interchange/inference@workspace:packages/inference"],
+
+    "@interchange/inference-testing": ["@interchange/inference-testing@workspace:packages/inference-testing"],
 
     "@interchange/log": ["@interchange/log@workspace:packages/log"],
 
