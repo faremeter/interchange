@@ -15,6 +15,7 @@ export type {
   StreamId,
   CreateSimulatedStreamOpts,
   ChunkFiredEvent,
+  EnqueueAllOpts,
 } from "./simulated-stream";
 
 export type {
