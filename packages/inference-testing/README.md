@@ -150,6 +150,10 @@ harness.scenario.onTool("rate_limited", (args) => ({
 }));
 ```
 
+Handlers fire automatically through `harness.runInference` (see the
+[Tool round-trip](#tool-round-trip) section below); use
+`scenario.invokeTool` only when a test wants to drive dispatch by hand.
+
 ### Abort scenarios
 
 ```ts
@@ -169,6 +173,74 @@ mid-response.
 
 Compose multiple matchers and call `runInference` once per turn. The
 harness preserves all state across calls until `dispose()`.
+
+### Tool round-trip
+
+The default driver `harness.runInference` wraps the production
+`runInference`, injects `harness.deps` automatically, and fires registered
+`onTool` handlers when it observes `inference.tool_call.end` events. Tests
+do not need to call `scenario.invokeTool` to drive the round-trip:
+
+```ts
+const harness = setupHarness();
+try {
+  harness.scenario.onTool("weather", (args) => ({ temperatureF: 68 }));
+
+  const turn1 = harness.scenario.createStream();
+  turn1.enqueueAll(
+    wire.completeResponse("anthropic", {
+      toolCalls: [
+        {
+          callId: "call_w_1",
+          name: "weather",
+          argsJSON: '{"location":"SF"}',
+        },
+      ],
+      headUsage,
+      tailUsage,
+    }),
+    { startAt: 10 },
+  );
+  harness.scenario.whenRequestMatches(() => true, turn1);
+
+  const turn2 = harness.scenario.createStream();
+  turn2.enqueueAll(
+    wire.completeResponse("anthropic", {
+      text: "It is 68F in SF.",
+      headUsage,
+      tailUsage,
+    }),
+    { startAt: 100 },
+  );
+  harness.scenario.whenRequestMatches(() => true, turn2);
+
+  let seq = 0;
+  const events: InferenceEvent[] = [];
+  const collect = (async () => {
+    for await (const ev of harness.runInference({
+      turns: [userTurn("weather?")],
+      model: "claude-test",
+      providerConfig,
+      nextSeq: () => ++seq,
+    })) {
+      events.push(ev);
+    }
+  })();
+  await harness.run();
+  await collect;
+
+  // The handler fired automatically; its result is captured here.
+  expect(harness.scenario.lastToolDispatch("weather")).toEqual({
+    temperatureF: 68,
+  });
+} finally {
+  harness.dispose();
+}
+```
+
+`test/integration/multi-turn-harness.test.ts` exercises the full
+turn-1 → tool-dispatch → turn-2 round-trip with captured request bodies
+proving the tool-result block propagates into the turn-2 wire payload.
 
 ## Wire DSL
 
@@ -292,6 +364,49 @@ boundaries.
 Do not pass `Dependencies` through reflective serializers. Do not log
 them across process boundaries. Do not expose them in test fixtures that
 are themselves shared with code outside the test harness's boundary.
+
+## Driving the clock
+
+The harness exposes two complementary entry points for advancing the
+virtual clock to quiescence.
+
+### Choosing `run` vs `advanceTo`
+
+- `harness.advanceTo(virtualMs, opts?)` advances the clock to a bounded
+  virtual deadline, draining in-flight tool handlers along the way, and
+  then asserts the waiting-fetch set is empty. Use it when the test
+  knows the schedule's deadline — typically `closeTime + slack` derived
+  from the times the test scheduled chunks at.
+- `harness.run(opts?)` advances until the clock heap is empty AND
+  quiescence holds (no parked fetches, no in-flight handlers). Use it
+  for "drive everything to completion": tests that don't want to compute
+  a deadline themselves and just want the harness to settle.
+
+Both methods perform the same drain + quiescence check; the only
+difference is the stopping criterion. Prefer `advanceTo` when the
+schedule's deadline is part of the test's intent (e.g., asserting that
+something has NOT fired by a particular virtual time); prefer `run`
+otherwise.
+
+### Wall-clock budget opt-out
+
+`run()` and the in-flight drain inside `advanceTo()` race their progress
+against a real-time watchdog so a tool handler blocked on a real-time
+primitive (`setTimeout`, network I/O) surfaces as
+`ClockWallClockOverrunError` instead of hanging the test. The default
+budget is 250ms.
+
+For tests that legitimately need to do real I/O inside a handler — for
+example, an integration test that talks to a real downstream service
+through the handler — pass `wallClockBudgetMs: Infinity` to opt out:
+
+```ts
+await harness.run({ wallClockBudgetMs: Infinity });
+```
+
+This should be rare. The default 250ms catches the common bug class
+(`setTimeout` smuggled into a handler) without inconveniencing
+microtask-only handlers.
 
 ## Architectural notes
 
