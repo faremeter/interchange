@@ -6,7 +6,7 @@ export {
 export type { Clock, AdvanceOpts, RunOpts } from "./clock";
 
 export { setupHarness } from "./harness";
-export type { Harness, HarnessScenario, SetupHarnessOpts } from "./harness";
+export type { Harness, SetupHarnessOpts } from "./harness";
 
 export { createSimulatedStream, toStreamId } from "./simulated-stream";
 export type {
@@ -16,4 +16,15 @@ export type {
   CreateSimulatedStreamOpts,
 } from "./simulated-stream";
 
-export { WrongHarnessError } from "./errors";
+export type {
+  Scenario,
+  RequestPredicate,
+  WhenRequestMatchesOpts,
+} from "./scenario";
+
+export {
+  WrongHarnessError,
+  UnmatchedFetchError,
+  AmbiguousRequestError,
+} from "./errors";
+export type { UnmatchedFetchInfo, AmbiguousFetchInfo } from "./errors";
