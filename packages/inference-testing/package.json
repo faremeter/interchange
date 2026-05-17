@@ -10,6 +10,7 @@
     }
   },
   "dependencies": {
-    "@interchange/inference": "workspace:*"
+    "@interchange/inference": "workspace:*",
+    "@interchange/types": "workspace:*"
   }
 }
