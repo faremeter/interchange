@@ -207,3 +207,123 @@ describe("createSimulatedStream", () => {
     expect(snapshotAtError).toEqual(["first", "second", "third"]);
   });
 });
+
+describe("SimulatedStream.enqueueAll", () => {
+  test("schedules chunks at monotonically-increasing virtual times and auto-closes", async () => {
+    const clock = createClock();
+    let terminated = false;
+    const { stream } = createSimulatedStream({
+      clock,
+      streamId: toStreamId(0),
+      onTerminate: () => {
+        terminated = true;
+      },
+    });
+
+    stream.enqueueAll([utf8("a"), utf8("b"), utf8("c")], { startAt: 10 });
+
+    await clock.advanceTo(20);
+    expect(await drain(stream.body)).toBe("abc");
+    expect(terminated).toBe(true);
+  });
+
+  test("respects an explicit stepMs gap between chunks", async () => {
+    const clock = createClock();
+    const { stream } = createSimulatedStream({
+      clock,
+      streamId: toStreamId(0),
+      onTerminate: () => {
+        return;
+      },
+    });
+
+    const observed: { at: number; chunk: string }[] = [];
+    const decoder = new TextDecoder();
+
+    const consumer = (async () => {
+      const reader = stream.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        if (value !== undefined) {
+          observed.push({ at: clock.now(), chunk: decoder.decode(value) });
+        }
+      }
+    })();
+
+    stream.enqueueAll([utf8("a"), utf8("b"), utf8("c")], {
+      startAt: 10,
+      stepMs: 5,
+    });
+
+    await clock.advanceTo(30);
+    await consumer;
+
+    expect(observed.map((e) => e.chunk).join("")).toBe("abc");
+    expect(observed.map((e) => e.at)).toEqual([10, 15, 20]);
+  });
+
+  test("autoClose: false leaves the stream open for additional enqueues", async () => {
+    const clock = createClock();
+    let terminated = false;
+    const { stream } = createSimulatedStream({
+      clock,
+      streamId: toStreamId(0),
+      onTerminate: () => {
+        terminated = true;
+      },
+    });
+
+    stream.enqueueAll([utf8("a"), utf8("b")], {
+      startAt: 10,
+      autoClose: false,
+    });
+    stream.enqueueAt(15, utf8("c"));
+    stream.closeAt(20);
+
+    await clock.advanceTo(30);
+    expect(await drain(stream.body)).toBe("abc");
+    expect(terminated).toBe(true);
+  });
+
+  test("empty chunks array is a no-op and does NOT auto-close", async () => {
+    const clock = createClock();
+    let terminated = false;
+    const { stream } = createSimulatedStream({
+      clock,
+      streamId: toStreamId(0),
+      onTerminate: () => {
+        terminated = true;
+      },
+    });
+
+    stream.enqueueAll([], { startAt: 10 });
+
+    // Verify the stream remains open by advancing the clock and then
+    // closing it manually; if `enqueueAll` had auto-closed, the manual
+    // closeAt below would throw "closeAt after terminal state".
+    await clock.advanceTo(20);
+    expect(terminated).toBe(false);
+    stream.closeAt(25);
+    await clock.advanceTo(30);
+    expect(terminated).toBe(true);
+    expect(await drain(stream.body)).toBe("");
+  });
+
+  test("rejects non-finite or negative stepMs", () => {
+    const clock = createClock();
+    const { stream } = createSimulatedStream({
+      clock,
+      streamId: toStreamId(0),
+      onTerminate: () => {
+        return;
+      },
+    });
+    expect(() =>
+      stream.enqueueAll([utf8("a")], { startAt: 10, stepMs: -1 }),
+    ).toThrow(/non-negative finite/);
+    expect(() =>
+      stream.enqueueAll([utf8("a")], { startAt: 10, stepMs: Infinity }),
+    ).toThrow(/non-negative finite/);
+  });
+});
