@@ -1,6 +1,15 @@
 import { AmbiguousRequestError, type AmbiguousFetchInfo } from "./errors";
-import type { SimulatedStream } from "./simulated-stream";
+import type { ChunkFiredEvent, SimulatedStream } from "./simulated-stream";
 import type { DispatchToolResult, ToolHandler } from "./tool-handler";
+
+/**
+ * Predicate evaluated against wire-event chunks the harness sees being
+ * delivered by simulated streams. Used by `scenario.abortAfter` for v1:
+ * the harness does not currently observe reactor-side `InferenceEvent`s
+ * directly, so wire-event observation is the closest reusable signal
+ * available at this layer.
+ */
+export type WireEventPredicate = (event: ChunkFiredEvent) => boolean;
 
 /**
  * Predicate run against a constructed `Request` to decide whether a matcher
@@ -92,6 +101,30 @@ export type Scenario = {
    * awaits any in-flight promise produced by the handler.
    */
   invokeTool(name: string, args: unknown, dispatch: DispatchToolResult): void;
+  /**
+   * Schedules `controller.abort()` to fire at the supplied virtual time.
+   * The caller supplies the `AbortController` they want aborted —
+   * typically the same one whose `signal` was threaded into a fetch via
+   * `inferenceOptions.signal`. The harness does NOT create or own the
+   * controller; this keeps the public API explicit (option 1 from the
+   * spec) and avoids hidden state shared across scenarios.
+   *
+   * Throws if `virtualMs` is in the past relative to `clock.now()`; the
+   * harness rejects past-time scheduling at the clock level and this
+   * surfaces the same error eagerly.
+   */
+  abortAt(virtualMs: number, controller: AbortController): void;
+  /**
+   * Registers a reactive abort: whenever a simulated stream owned by
+   * this harness delivers a chunk for which `predicate` returns true,
+   * the harness calls `controller.abort()` synchronously in the same
+   * tick. The matcher fires at most once; subsequent chunks that would
+   * match are ignored. v1 observes WIRE EVENTS (chunks served by
+   * `SimulatedStream.enqueue`/`enqueueAt`) rather than reactor-side
+   * `InferenceEvent`s — the harness sits below the reactor and does not
+   * see those today.
+   */
+  abortAfter(predicate: WireEventPredicate, controller: AbortController): void;
 };
 
 /**

@@ -14,12 +14,14 @@ export type {
   SimulatedStreamHandle,
   StreamId,
   CreateSimulatedStreamOpts,
+  ChunkFiredEvent,
 } from "./simulated-stream";
 
 export type {
   Scenario,
   RequestPredicate,
   WhenRequestMatchesOpts,
+  WireEventPredicate,
 } from "./scenario";
 
 export type {
