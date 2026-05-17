@@ -142,6 +142,9 @@
         "@interchange/types": "workspace:*",
         "arktype": "catalog:",
       },
+      "devDependencies": {
+        "@interchange/inference-testing": "workspace:*",
+      },
     },
     "packages/inference-testing": {
       "name": "@interchange/inference-testing",

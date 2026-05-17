@@ -1,7 +1,13 @@
 import { type } from "arktype";
 import { describe, test, expect } from "bun:test";
+import { wire } from "@interchange/inference-testing";
+import { parseSSE } from "../sse";
 import { createOpenAIAdapter } from "./openai";
-import type { ConversationTurn } from "@interchange/types/runtime";
+import type { ProviderAdapter } from "../adapter";
+import type {
+  ConversationTurn,
+  InferenceEvent,
+} from "@interchange/types/runtime";
 
 const adapter = createOpenAIAdapter();
 
@@ -38,6 +44,27 @@ const OpenAIRequestBody = type({
   "temperature?": "number",
   "tools?": "unknown[]",
 });
+
+// Drives a sequence of wire DSL chunks (full SSE-framed Uint8Arrays) through
+// the production SSE parser and the supplied adapter's parseResponse, mirroring
+// the harness's pipeline. Returns the flattened sequence of emitted events so
+// the test site can assert on them.
+async function parseWire(
+  adapterInstance: ProviderAdapter,
+  chunks: Uint8Array[],
+): Promise<InferenceEvent[]> {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  const events: InferenceEvent[] = [];
+  for await (const payload of parseSSE(stream)) {
+    events.push(...adapterInstance.parseResponse(payload));
+  }
+  return events;
+}
 
 describe("OpenAI adapter: buildRequest", () => {
   test("builds a request with required fields", () => {
@@ -236,25 +263,19 @@ describe("OpenAI adapter: buildRequest", () => {
 });
 
 describe("OpenAI adapter: parseResponse", () => {
-  test("returns empty array for non-JSON input", () => {
-    const events = adapter.parseResponse("not json");
+  test("returns empty array for non-JSON input", async () => {
+    // Non-JSON data payload — the structured DSL helpers serialize JSON, so
+    // `wire.openai.raw` is the right tool for genuinely-adversarial bytes.
+    const events = await parseWire(adapter, [
+      wire.openai.raw("data: not json\n\n"),
+    ]);
     expect(events).toEqual([]);
   });
 
-  test("parses text delta from choices", () => {
-    const sseData = JSON.stringify({
-      id: "chatcmpl-abc",
-      object: "chat.completion.chunk",
-      choices: [
-        {
-          index: 0,
-          delta: { role: "assistant", content: "Hello" },
-          finish_reason: null,
-        },
-      ],
-    });
-
-    const events = adapter.parseResponse(sseData);
+  test("parses text delta from choices", async () => {
+    const events = await parseWire(adapter, [
+      wire.openai.chunk({ content: "Hello" }),
+    ]);
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("inference.text.delta");
     if (events[0]?.type === "inference.text.delta") {
@@ -262,41 +283,17 @@ describe("OpenAI adapter: parseResponse", () => {
     }
   });
 
-  test("returns empty for null content delta", () => {
-    const sseData = JSON.stringify({
-      choices: [
-        {
-          index: 0,
-          delta: { role: "assistant", content: null },
-          finish_reason: null,
-        },
-      ],
-    });
-    const events = adapter.parseResponse(sseData);
+  test("returns empty for null content delta", async () => {
+    const events = await parseWire(adapter, [
+      wire.openai.chunk({ contentNull: true }),
+    ]);
     expect(events).toEqual([]);
   });
 
-  test("parses tool_call start with id and name", () => {
-    const sseData = JSON.stringify({
-      choices: [
-        {
-          index: 0,
-          delta: {
-            tool_calls: [
-              {
-                index: 0,
-                id: "call_xyz",
-                type: "function",
-                function: { name: "search", arguments: "" },
-              },
-            ],
-          },
-          finish_reason: null,
-        },
-      ],
-    });
-
-    const events = adapter.parseResponse(sseData);
+  test("parses tool_call start with id and name", async () => {
+    const events = await parseWire(adapter, [
+      wire.openai.toolCallStart(0, "call_xyz", "search"),
+    ]);
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("inference.tool_call.start");
     if (events[0]?.type === "inference.tool_call.start") {
@@ -305,25 +302,10 @@ describe("OpenAI adapter: parseResponse", () => {
     }
   });
 
-  test("parses tool_call argument fragment", () => {
-    const sseData = JSON.stringify({
-      choices: [
-        {
-          index: 0,
-          delta: {
-            tool_calls: [
-              {
-                index: 0,
-                function: { arguments: '{"q":"' },
-              },
-            ],
-          },
-          finish_reason: null,
-        },
-      ],
-    });
-
-    const events = adapter.parseResponse(sseData);
+  test("parses tool_call argument fragment", async () => {
+    const events = await parseWire(adapter, [
+      wire.openai.toolCallArgumentsDelta(0, '{"q":"'),
+    ]);
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("inference.tool_call.delta");
     if (events[0]?.type === "inference.tool_call.delta") {
@@ -331,13 +313,10 @@ describe("OpenAI adapter: parseResponse", () => {
     }
   });
 
-  test("parses usage from final chunk", () => {
-    const sseData = JSON.stringify({
-      choices: [],
-      usage: { prompt_tokens: 50, completion_tokens: 20 },
-    });
-
-    const events = adapter.parseResponse(sseData);
+  test("parses usage from final chunk", async () => {
+    const events = await parseWire(adapter, [
+      wire.openai.usageChunk({ promptTokens: 50, completionTokens: 20 }),
+    ]);
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("inference.usage");
     if (events[0]?.type === "inference.usage") {
@@ -346,8 +325,13 @@ describe("OpenAI adapter: parseResponse", () => {
     }
   });
 
-  test("returns empty for empty choices array with no usage", () => {
-    const events = adapter.parseResponse(JSON.stringify({ choices: [] }));
+  test("returns empty for empty choices array with no usage", async () => {
+    // The `chunk()` helper always emits a non-empty choices entry unless a
+    // usage block is supplied (in which case it also adds a usage object).
+    // Emitting `{choices: []}` with no other fields requires `raw()`.
+    const events = await parseWire(adapter, [
+      wire.openai.raw('data: {"choices":[]}\n\n'),
+    ]);
     expect(events).toEqual([]);
   });
 });
