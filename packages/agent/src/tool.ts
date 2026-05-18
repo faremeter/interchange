@@ -66,6 +66,26 @@ export function stringTool(args: {
   };
 }
 
+/**
+ * Adapt a pre-built ToolRunner (e.g. the one returned by
+ * `createPosixTools`) into a list of AgentTools that can be passed to
+ * `createAgent({ tools })`. Each definition becomes a full-handler
+ * AgentTool that delegates to the runner's `run`.
+ *
+ * Use this when integrating tool packages whose public surface is a
+ * single ToolRunner rather than individual handlers.
+ */
+export function fromToolRunner(runner: {
+  readonly definitions: readonly ToolDefinition[];
+  run: ToolRunner["run"];
+}): AgentTool[] {
+  return runner.definitions.map((definition) => ({
+    kind: "full",
+    definition,
+    handler: (call, signal) => runner.run(call, signal),
+  }));
+}
+
 export class DuplicateToolError extends Error {
   readonly toolName: string;
 
