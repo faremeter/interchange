@@ -103,6 +103,16 @@
         "@interchange/types": "workspace:*",
       },
     },
+    "examples/agent-multi-provider": {
+      "name": "@interchange/example-agent-multi-provider",
+      "version": "0.0.0",
+      "dependencies": {
+        "@interchange/agent": "workspace:*",
+        "@interchange/example-agent-common": "workspace:*",
+        "@interchange/inference": "workspace:*",
+        "@interchange/types": "workspace:*",
+      },
+    },
     "examples/agent-quickstart": {
       "name": "@interchange/example-agent-quickstart",
       "version": "0.0.0",
@@ -521,6 +531,8 @@
     "@interchange/example-agent-blob-spill": ["@interchange/example-agent-blob-spill@workspace:examples/agent-blob-spill"],
 
     "@interchange/example-agent-common": ["@interchange/example-agent-common@workspace:examples/agent-common"],
+
+    "@interchange/example-agent-multi-provider": ["@interchange/example-agent-multi-provider@workspace:examples/agent-multi-provider"],
 
     "@interchange/example-agent-quickstart": ["@interchange/example-agent-quickstart@workspace:examples/agent-quickstart"],
 
