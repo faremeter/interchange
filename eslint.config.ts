@@ -55,6 +55,7 @@ export default defineConfig(
             "tests/inference-testing/*.ts",
             "tests/inference/transform-cutover.test.ts",
             "tests/agent/*.ts",
+            "tests/coding-agent/*.ts",
           ],
           maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 16,
         },
