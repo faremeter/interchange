@@ -73,6 +73,16 @@
         "vite": "^6.3.5",
       },
     },
+    "examples/agent-blob-spill": {
+      "name": "@interchange/example-agent-blob-spill",
+      "version": "0.0.0",
+      "dependencies": {
+        "@interchange/agent": "workspace:*",
+        "@interchange/example-agent-common": "workspace:*",
+        "@interchange/inference": "workspace:*",
+        "@interchange/types": "workspace:*",
+      },
+    },
     "examples/agent-common": {
       "name": "@interchange/example-agent-common",
       "version": "0.0.0",
@@ -493,6 +503,8 @@
     "@interchange/crypto-node": ["@interchange/crypto-node@workspace:packages/crypto-node"],
 
     "@interchange/db": ["@interchange/db@workspace:packages/db"],
+
+    "@interchange/example-agent-blob-spill": ["@interchange/example-agent-blob-spill@workspace:examples/agent-blob-spill"],
 
     "@interchange/example-agent-common": ["@interchange/example-agent-common@workspace:examples/agent-common"],
 
