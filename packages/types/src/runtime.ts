@@ -91,26 +91,31 @@ export type MessageRef = {
 /**
  * Interchange payload types as defined in MESSAGE.md § Payload Types.
  * The type field in structured messages matches the Interchange-Type header.
+ *
+ * Exposed as both an arktype validator (for runtime validation at parse
+ * boundaries and tool-argument schemas) and a derived TypeScript union.
  */
-export type InterchangeType =
-  | "conversation.message"
-  | "conversation.join"
-  | "conversation.leave"
-  | "offering.request"
-  | "offering.response"
-  | "offering.error"
-  | "offering.discover"
-  | "offering.catalog"
-  | "payment.required"
-  | "payment.receipt"
-  | "payment.verified"
-  | "approval.request"
-  | "approval.granted"
-  | "approval.denied"
-  | "system.health"
-  | "system.register"
-  | "system.deregister"
-  | "system.credential.refresh";
+export const InterchangeType = type.enumerated(
+  "conversation.message",
+  "conversation.join",
+  "conversation.leave",
+  "offering.request",
+  "offering.response",
+  "offering.error",
+  "offering.discover",
+  "offering.catalog",
+  "payment.required",
+  "payment.receipt",
+  "payment.verified",
+  "approval.request",
+  "approval.granted",
+  "approval.denied",
+  "system.health",
+  "system.register",
+  "system.deregister",
+  "system.credential.refresh",
+);
+export type InterchangeType = typeof InterchangeType.infer;
 
 /**
  * Attachment for an outbound message. Content is raw bytes; the transport
@@ -213,7 +218,13 @@ export type MessageHeaders = {
  *
  * (MESSAGE.md § Transport Interface › fetchFull)
  */
-export type SignatureStatus = "valid" | "invalid" | "unknown" | "missing";
+export const SignatureStatus = type.enumerated(
+  "valid",
+  "invalid",
+  "unknown",
+  "missing",
+);
+export type SignatureStatus = typeof SignatureStatus.infer;
 
 /**
  * A parsed MIME part returned by `fetchPart()`.
