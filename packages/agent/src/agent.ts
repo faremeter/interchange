@@ -15,6 +15,7 @@ import { createDefaultDirector } from "@interchange/harness";
 import {
   createReactorAssembly,
   type AuthzExtensionOptions,
+  type Dependencies,
   type ReactorEmittedEvent,
 } from "@interchange/inference";
 import { createInboundMessage } from "@interchange/mime";
@@ -94,6 +95,16 @@ export type AgentConfig = {
    * consumers are unaffected. Defaults to 1024.
    */
   streamBufferMax?: number;
+
+  /**
+   * Inference dependencies (notably `fetch`) for the reactor's underlying
+   * `runInference` call. Production callers should leave this undefined —
+   * the assembly falls back to `createDefaultDependencies()` which binds
+   * `globalThis.fetch`. Pass `setupHarness().deps` from
+   * `@interchange/inference-testing` in tests to swap the fetch
+   * implementation for a deterministic stub.
+   */
+  deps?: Dependencies;
 };
 
 export type SendOptions = {
@@ -283,6 +294,7 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     ...(config.sizeCapMaxChars !== undefined
       ? { sizeCapMaxChars: config.sizeCapMaxChars }
       : {}),
+    ...(config.deps !== undefined ? { deps: config.deps } : {}),
   });
 
   sendQueue = createSendQueue<InboundMessage, SendResult>({
@@ -320,7 +332,13 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     content: string | InboundMessage,
     opts?: SendOptions,
   ): Promise<SendResult> {
-    ensureOpen();
+    // Closed-agent errors come back as rejections so callers can handle
+    // them with `.catch()` instead of having to defensively wrap every
+    // `agent.send(...)` in a try/catch. `SendQueueFullError` from
+    // `sendQueue.enqueue` is left as a synchronous throw — it signals a
+    // programmer error (the caller exceeded the configured queue cap)
+    // and per the design must fail loud.
+    if (closed) return Promise.reject(new AgentClosedError());
     const message = buildInboundMessage(content, opts);
     return sendQueue.enqueue(message, opts?.signal);
   }
