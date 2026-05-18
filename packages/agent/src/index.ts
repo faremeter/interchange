@@ -31,6 +31,6 @@ export {
   type SendResult,
   AgentClosedError,
   AgentConfigError,
-  ConcurrentSendError,
   createAgent,
 } from "./agent";
+export { SendQueueFullError } from "./send-queue";
