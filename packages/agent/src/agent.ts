@@ -34,11 +34,13 @@ import type {
 import { acquireContextDirLock, type ContextDirLock } from "./lock";
 import { createProviderRegistry, type ProviderRegistry } from "./provider";
 import { createSendQueue, type SendQueue } from "./send-queue";
+import { createStreamConsumer, type StreamConsumer } from "./stream";
 import { createToolRunner, type AgentTool, type AgentToolRunner } from "./tool";
 
 const DEFAULT_SEND_FROM = "user@local";
 const DEFAULT_SEND_TO = "agent@local";
 const DEFAULT_SEND_QUEUE_MAX = 16;
+const DEFAULT_STREAM_BUFFER_MAX = 1024;
 
 export type AgentConfig = {
   /**
@@ -84,6 +86,14 @@ export type AgentConfig = {
    * Defaults to 16.
    */
   sendQueueMax?: number;
+
+  /**
+   * Maximum events any single `stream()` consumer may buffer. When a
+   * consumer falls more than this many events behind the next read on
+   * that consumer's iterator throws `StreamBackpressureError`; other
+   * consumers are unaffected. Defaults to 1024.
+   */
+  streamBufferMax?: number;
 };
 
 export type SendOptions = {
@@ -203,10 +213,8 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
 
   const sessionId = config.sessionId ?? crypto.randomUUID();
 
-  // Stream fan-out. Commit 8 replaces this naive callback set with a
-  // bounded per-consumer buffer.
-  type EventListener = (event: ReactorEmittedEvent) => void;
-  const streamConsumers = new Set<EventListener>();
+  const streamBufferMax = config.streamBufferMax ?? DEFAULT_STREAM_BUFFER_MAX;
+  const streamConsumers = new Set<StreamConsumer>();
 
   // Per-active-cycle bookkeeping for send(). The reactor produces one or
   // more inference.done events during a cycle; we keep the most recent
@@ -256,7 +264,10 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     }
 
     for (const consumer of streamConsumers) {
-      consumer(event);
+      consumer.push(event);
+      if (consumer.closed) {
+        streamConsumers.delete(consumer);
+      }
     }
   }
 
@@ -314,13 +325,11 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     return sendQueue.enqueue(message, opts?.signal);
   }
 
-  // eslint-disable-next-line require-yield -- placeholder iterator; commit 8 replaces with bounded fan-out
-  async function* stream(): AsyncIterable<ReactorEmittedEvent> {
+  function stream(): AsyncIterable<ReactorEmittedEvent> {
     ensureOpen();
-    // Placeholder until commit 8 wires the bounded per-consumer buffer.
-    // Returning an immediately-finishing iterator keeps the type honest
-    // without yielding events.
-    return;
+    const consumer = createStreamConsumer(streamBufferMax);
+    streamConsumers.add(consumer);
+    return consumer.iterator();
   }
 
   function deliver(message: InboundMessage): void {
@@ -352,6 +361,7 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     reactor.abort("user_disconnect");
     sendQueue.drain(new AgentClosedError());
     activeCycle = null;
+    for (const consumer of streamConsumers) consumer.close();
     streamConsumers.clear();
     if (lock !== undefined) lock.release();
   }
