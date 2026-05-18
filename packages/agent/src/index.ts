@@ -18,3 +18,9 @@ export {
   stringTool,
   tool,
 } from "./tool";
+export {
+  type ProviderRegistry,
+  InvalidProviderConfigError,
+  ProviderNotFoundError,
+  createProviderRegistry,
+} from "./provider";
