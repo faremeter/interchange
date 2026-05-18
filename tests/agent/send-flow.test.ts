@@ -18,11 +18,7 @@ import {
   SendQueueFullError,
   type Agent,
 } from "@interchange/agent";
-import {
-  setupHarness,
-  wire,
-  type Harness,
-} from "@interchange/inference-testing";
+import { setupHarness, type Harness } from "@interchange/inference-testing";
 import type {
   ConversationTurn,
   ProviderConfig,
@@ -34,36 +30,6 @@ const PROVIDER: ProviderConfig = {
   apiKey: "sk-test-send-flow",
   model: "claude-3-5-sonnet",
 };
-
-const USAGE_HEAD = {
-  input: 10,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  thinking: 0,
-};
-
-const USAGE_TAIL = {
-  input: 0,
-  output: 5,
-  cacheRead: 0,
-  cacheWrite: 0,
-  thinking: 0,
-};
-
-function wireSingleReply(harness: Harness, text: string): void {
-  const stream = harness.scenario.createStream();
-  const chunks = wire.completeResponse("anthropic", {
-    text,
-    headUsage: USAGE_HEAD,
-    tailUsage: USAGE_TAIL,
-  });
-  // Schedule the chunks relative to the harness's current virtual time
-  // so multiple wireSingleReply calls in the same test never schedule
-  // into the past after an earlier round-trip has advanced the clock.
-  stream.enqueueAll(chunks, { startAt: harness.clock.now() + 10 });
-  harness.scenario.whenRequestMatches(() => true, stream);
-}
 
 describe("@interchange/agent send-flow integration", () => {
   let workDir: string;
@@ -80,7 +46,7 @@ describe("@interchange/agent send-flow integration", () => {
   });
 
   test("end-to-end send round-trips to a connector.reply", async () => {
-    wireSingleReply(harness, "Hi there!");
+    harness.scenario.replyOnce("anthropic", { text: "Hi there!" });
 
     const agent = await createAgent({
       contextDir: join(workDir, "ctx"),
@@ -103,7 +69,7 @@ describe("@interchange/agent send-flow integration", () => {
   });
 
   test("persists the assistant turn so history() and reopened agents see it", async () => {
-    wireSingleReply(harness, "Persisted reply");
+    harness.scenario.replyOnce("anthropic", { text: "Persisted reply" });
 
     const dir = join(workDir, "ctx");
     const agent = await createAgent({
@@ -150,7 +116,7 @@ describe("@interchange/agent send-flow integration", () => {
   });
 
   test("readAt returns the conversation at the recorded commit hash", async () => {
-    wireSingleReply(harness, "Checkpoint reply");
+    harness.scenario.replyOnce("anthropic", { text: "Checkpoint reply" });
 
     const agent = await createAgent({
       contextDir: join(workDir, "ctx"),
@@ -180,7 +146,7 @@ describe("@interchange/agent send-flow integration", () => {
   });
 
   test("close-while-pending rejects queued sends with AgentClosedError", async () => {
-    wireSingleReply(harness, "should never observe");
+    harness.scenario.replyOnce("anthropic", { text: "should never observe" });
 
     const agent: Agent = await createAgent({
       contextDir: join(workDir, "ctx"),
@@ -214,7 +180,7 @@ describe("@interchange/agent send-flow integration", () => {
   });
 
   test("setProvider hot-swaps credentials before the next inference", async () => {
-    wireSingleReply(harness, "first-provider reply");
+    harness.scenario.replyOnce("anthropic", { text: "first-provider reply" });
 
     const agent = await createAgent({
       contextDir: join(workDir, "ctx"),
@@ -239,31 +205,25 @@ describe("@interchange/agent send-flow integration", () => {
         model: PROVIDER.model ?? "claude-3-5-sonnet",
       });
 
-      let observedKey: string | undefined;
-      const stream = harness.scenario.createStream();
-      const chunks = wire.completeResponse("anthropic", {
-        text: "rotated reply",
-        headUsage: USAGE_HEAD,
-        tailUsage: USAGE_TAIL,
-      });
-      stream.enqueueAll(chunks, { startAt: harness.clock.now() + 10 });
-      harness.scenario.whenRequestMatches((req) => {
-        observedKey = req.headers.get("x-api-key") ?? undefined;
-        return true;
-      }, stream);
+      harness.scenario.replyOnce("anthropic", { text: "rotated reply" });
 
       const second = agent.send("Hello again");
       await harness.run();
       const r = await second;
       expect(r.reply).toBe("rotated reply");
-      expect(observedKey).toBe("sk-rotated");
+
+      const matched = harness.scenario.lastRequest();
+      if (matched === undefined) {
+        throw new Error("expected a matched request after setProvider swap");
+      }
+      expect(matched.headers.get("x-api-key")).toBe("sk-rotated");
     } finally {
       await agent.close();
     }
   });
 
   test("setProvider rotates the model in the next inference request", async () => {
-    wireSingleReply(harness, "first-model reply");
+    harness.scenario.replyOnce("anthropic", { text: "first-model reply" });
 
     const agent = await createAgent({
       contextDir: join(workDir, "ctx"),
@@ -290,30 +250,20 @@ describe("@interchange/agent send-flow integration", () => {
         model: NEW_MODEL,
       });
 
-      let observedRequest: Request | undefined;
-      const stream = harness.scenario.createStream();
-      const chunks = wire.completeResponse("anthropic", {
+      harness.scenario.replyOnce("anthropic", {
         text: "second-model reply",
-        headUsage: USAGE_HEAD,
-        tailUsage: USAGE_TAIL,
       });
-      stream.enqueueAll(chunks, { startAt: harness.clock.now() + 10 });
-      // The matcher predicate must be synchronous, so clone the request
-      // and read its body after the round-trip completes.
-      harness.scenario.whenRequestMatches((req) => {
-        observedRequest = req.clone();
-        return true;
-      }, stream);
 
       const second = agent.send("Hello again");
       await harness.run();
       const r = await second;
       expect(r.reply).toBe("second-model reply");
 
-      if (observedRequest === undefined) {
-        throw new Error("matcher did not capture a request");
+      const matched = harness.scenario.lastRequest();
+      if (matched === undefined) {
+        throw new Error("expected a matched request after model swap");
       }
-      const body: unknown = await observedRequest.json();
+      const body: unknown = await matched.json();
       if (typeof body !== "object" || body === null || !("model" in body)) {
         throw new Error("expected inference request body to include `model`");
       }
@@ -324,7 +274,7 @@ describe("@interchange/agent send-flow integration", () => {
   });
 
   test("abort signal on in-flight send rejects without blocking the agent", async () => {
-    wireSingleReply(harness, "abandoned reply");
+    harness.scenario.replyOnce("anthropic", { text: "abandoned reply" });
 
     const agent = await createAgent({
       contextDir: join(workDir, "ctx"),
@@ -355,7 +305,7 @@ describe("@interchange/agent send-flow integration", () => {
       await harness.run();
 
       // Wire a fresh reply for the next send.
-      wireSingleReply(harness, "post-abort reply");
+      harness.scenario.replyOnce("anthropic", { text: "post-abort reply" });
       const next = agent.send("Round two");
       await harness.run();
       const result = await next;
@@ -366,7 +316,7 @@ describe("@interchange/agent send-flow integration", () => {
   });
 
   test("synchronously throws SendQueueFullError past the configured cap", async () => {
-    wireSingleReply(harness, "stalled response");
+    harness.scenario.replyOnce("anthropic", { text: "stalled response" });
 
     const agent = await createAgent({
       contextDir: join(workDir, "ctx"),

@@ -10,11 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { main } from "@interchange/example-coding-agent";
-import {
-  setupHarness,
-  wire,
-  type Harness,
-} from "@interchange/inference-testing";
+import { setupHarness, type Harness } from "@interchange/inference-testing";
 import type { ProviderConfig } from "@interchange/types/runtime";
 
 const PROVIDER: ProviderConfig = {
@@ -23,33 +19,6 @@ const PROVIDER: ProviderConfig = {
   apiKey: "sk-test-cli",
   model: "claude-3-5-sonnet",
 };
-
-const USAGE_HEAD = {
-  input: 10,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  thinking: 0,
-};
-
-const USAGE_TAIL = {
-  input: 0,
-  output: 5,
-  cacheRead: 0,
-  cacheWrite: 0,
-  thinking: 0,
-};
-
-function wireReply(harness: Harness, text: string): void {
-  const stream = harness.scenario.createStream();
-  const chunks = wire.completeResponse("anthropic", {
-    text,
-    headUsage: USAGE_HEAD,
-    tailUsage: USAGE_TAIL,
-  });
-  stream.enqueueAll(chunks, { startAt: harness.clock.now() + 10 });
-  harness.scenario.whenRequestMatches(() => true, stream);
-}
 
 describe("coding-agent CLI", () => {
   let workDir: string;
@@ -70,7 +39,7 @@ describe("coding-agent CLI", () => {
   });
 
   test("runs end-to-end: parses argv, drives reactor, prints reply, exits 0", async () => {
-    wireReply(harness, "Hello from the model");
+    harness.scenario.replyOnce("anthropic", { text: "Hello from the model" });
 
     const contextDir = join(workDir, "ctx");
     const argv = [
@@ -150,7 +119,7 @@ describe("coding-agent CLI", () => {
     const argv = ["--cwd", workDir, "--context-dir", contextDir];
 
     // First run.
-    wireReply(harness, "first reply");
+    harness.scenario.replyOnce("anthropic", { text: "first reply" });
     const firstRun = main(
       [...argv, "first prompt"],
       { ANTHROPIC_API_KEY: "x" },
@@ -175,7 +144,7 @@ describe("coding-agent CLI", () => {
     // the example's persistence really does survive process death.
     harness.dispose();
     harness = setupHarness();
-    wireReply(harness, "second reply");
+    harness.scenario.replyOnce("anthropic", { text: "second reply" });
 
     const secondRun = main(
       [...argv, "second prompt"],
