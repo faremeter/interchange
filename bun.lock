@@ -181,6 +181,7 @@
       "dependencies": {
         "@interchange/crypto-node": "workspace:*",
         "@interchange/types": "workspace:*",
+        "arktype": "catalog:",
       },
     },
     "packages/pack-transport": {
