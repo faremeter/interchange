@@ -20,16 +20,16 @@
 //     the singleton-per-`contextDir` lock so another agent can open the
 //     same directory.
 //
-// `setProvider` caveat: the default director captures `model` at
-// construction time and passes it into `capabilities.infer(model, ...)`
-// on every cycle. `ReactorDirector.decide` is not handed
-// `providerConfig`, so a model swap via `setProvider` rotates only the
-// fields the reactor reads lazily off the shared `providerConfig`
-// object — `provider`, `baseURL`, `apiKey`. To change the model
-// mid-conversation, close the agent and reopen it with a different
-// `defaultModel`, or supply a custom `director` that closes over the
-// agent's provider registry itself and substitutes the live model in
-// its own `infer` action.
+// `setProvider` covers all of `provider`/`baseURL`/`apiKey`/`model`.
+// Credentials rotate via the shared `providerConfig` object the reactor
+// reads lazily at the start of each inference call. The model rotates
+// via a thin wrapper the agent puts around the director's
+// `capabilities`: every `capabilities.infer(model, ...)` call the
+// director makes is rewritten to use the active provider's current
+// model, regardless of which model the director itself captured. This
+// makes the rotation invisible to both the default director and any
+// caller-supplied director that just relays the model it was
+// constructed with.
 
 import { createDefaultDirector } from "@interchange/harness";
 import {
@@ -49,6 +49,7 @@ import type {
   ConversationTurn,
   InboundMessage,
   ProviderConfig,
+  ReactorCapabilities,
   ReactorDirector,
 } from "@interchange/types/runtime";
 
@@ -172,14 +173,29 @@ export type Agent = {
   close(): Promise<void>;
   /**
    * Replace the active provider's fields in place. Picked up at the
-   * start of the next inference call. Note: the default director
-   * captures `model` at construction; mutating model via setProvider has
-   * no effect unless a custom director is supplied. See the file
-   * header for details.
+   * start of the next inference call. `model` is rotated alongside
+   * `provider`/`baseURL`/`apiKey`: the agent wraps the director so
+   * every `capabilities.infer(model, ...)` call uses the active
+   * provider's current model.
    */
   setProvider(config: ProviderConfig): void;
+  /**
+   * Project conversation history from the underlying context store.
+   * Remains callable after `close()` — reads do not need the reactor
+   * and the store is not destroyed by close. Returns the full-fidelity
+   * `ConversationTurn[]` from the store's latest committed state.
+   */
   history(): Promise<ConversationTurn[]>;
+  /**
+   * List recent checkpoints from the context store. Remains callable
+   * after `close()` for the same reason as `history()`.
+   */
   checkpoints(limit?: number): Promise<ContextCommit[]>;
+  /**
+   * Read the conversation turns recorded at a specific commit hash.
+   * Remains callable after `close()` for the same reason as
+   * `history()`.
+   */
   readAt(hash: string): Promise<ConversationTurn[]>;
   readonly blobReader: BlobReader;
 };
@@ -241,23 +257,46 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     throw cause;
   }
 
-  let director: ReactorDirector;
+  // Capture the initial model so the capabilities wrapper has a safe
+  // fallback if a setProvider call ever leaves active.model undefined.
+  if (providerRegistry.active.model === undefined) {
+    if (lock !== undefined) lock.release();
+    throw new AgentConfigError("active provider must have model defined");
+  }
+  const initialModel = providerRegistry.active.model;
+
+  let baseDirector: ReactorDirector;
   if (config.director !== undefined) {
-    director = config.director;
+    baseDirector = config.director;
   } else {
-    if (providerRegistry.active.model === undefined) {
-      if (lock !== undefined) lock.release();
-      throw new AgentConfigError(
-        "active provider must have model defined when using the default director",
-      );
-    }
-    director = createDefaultDirector(
-      providerRegistry.active.model,
+    baseDirector = createDefaultDirector(
+      initialModel,
       config.systemPrompt,
       [...toolRunner.definitions],
       {},
     );
   }
+
+  // Wrap the director's `capabilities` so every `infer(model, ...)` call
+  // uses the live model from providerRegistry.active. This lets
+  // setProvider rotate `model` (alongside provider/baseURL/apiKey)
+  // without requiring the inner director to know about it. The default
+  // director captures `model` at construction; this wrapper substitutes
+  // the live value at action-build time.
+  const director: ReactorDirector = {
+    async decide(event, state, capabilities) {
+      const wrappedCapabilities: ReactorCapabilities = {
+        ...capabilities,
+        infer: (_requestedModel, options) => {
+          const liveModel = providerRegistry.active.model ?? initialModel;
+          return options === undefined
+            ? capabilities.infer(liveModel)
+            : capabilities.infer(liveModel, options);
+        },
+      };
+      return baseDirector.decide(event, state, wrappedCapabilities);
+    },
+  };
 
   const sessionId = config.sessionId ?? crypto.randomUUID();
 

@@ -262,6 +262,67 @@ describe("@interchange/agent send-flow integration", () => {
     }
   });
 
+  test("setProvider rotates the model in the next inference request", async () => {
+    wireSingleReply(harness, "first-model reply");
+
+    const agent = await createAgent({
+      contextDir: join(workDir, "ctx"),
+      providers: [PROVIDER],
+      defaultModel: PROVIDER.model ?? "claude-3-5-sonnet",
+      systemPrompt: "send-flow test",
+      tools: [],
+      deps: harness.deps,
+    });
+
+    try {
+      const first = agent.send("Hello");
+      await harness.run();
+      await first;
+
+      // Swap to a completely different model. The wrapped director's
+      // capabilities.infer substitutes the live model on each call, so
+      // the next request body should carry the new model name.
+      const NEW_MODEL = "claude-3-5-haiku";
+      agent.setProvider({
+        provider: "anthropic",
+        baseURL: "https://api.anthropic.com",
+        apiKey: PROVIDER.apiKey,
+        model: NEW_MODEL,
+      });
+
+      let observedRequest: Request | undefined;
+      const stream = harness.scenario.createStream();
+      const chunks = wire.completeResponse("anthropic", {
+        text: "second-model reply",
+        headUsage: USAGE_HEAD,
+        tailUsage: USAGE_TAIL,
+      });
+      stream.enqueueAll(chunks, { startAt: harness.clock.now() + 10 });
+      // The matcher predicate must be synchronous, so clone the request
+      // and read its body after the round-trip completes.
+      harness.scenario.whenRequestMatches((req) => {
+        observedRequest = req.clone();
+        return true;
+      }, stream);
+
+      const second = agent.send("Hello again");
+      await harness.run();
+      const r = await second;
+      expect(r.reply).toBe("second-model reply");
+
+      if (observedRequest === undefined) {
+        throw new Error("matcher did not capture a request");
+      }
+      const body: unknown = await observedRequest.json();
+      if (typeof body !== "object" || body === null || !("model" in body)) {
+        throw new Error("expected inference request body to include `model`");
+      }
+      expect(body.model).toBe(NEW_MODEL);
+    } finally {
+      await agent.close();
+    }
+  });
+
   test("abort signal on in-flight send rejects without blocking the agent", async () => {
     wireSingleReply(harness, "abandoned reply");
 
