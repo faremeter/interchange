@@ -26,3 +26,11 @@ export type {
 } from "./mime";
 
 export { createDetachedSignatureFromProvider } from "./pgp-sign";
+
+export { createInboundMessage, createOutboundMessage } from "./mail-builder";
+
+export type {
+  CreateInboundMessageOpts,
+  CreateOutboundMessageOpts,
+  InboundPayloadInput,
+} from "./mail-builder";
