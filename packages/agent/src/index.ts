@@ -8,3 +8,13 @@
 // in-process calls.
 
 export { AgentInUseError } from "./lock";
+export {
+  type AgentTool,
+  type AgentToolRunner,
+  type StringToolHandler,
+  type ToolHandler,
+  DuplicateToolError,
+  createToolRunner,
+  stringTool,
+  tool,
+} from "./tool";
