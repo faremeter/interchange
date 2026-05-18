@@ -16,6 +16,7 @@
     { "path": "packages/pack-transport" },
     { "path": "packages/hub-client" },
     { "path": "packages/harness" },
+    { "path": "packages/agent" },
     { "path": "apps/hub" },
     { "path": "apps/ui" },
     { "path": "apps/sidecar" },
