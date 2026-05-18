@@ -34,3 +34,4 @@ export {
   createAgent,
 } from "./agent";
 export { SendQueueFullError } from "./send-queue";
+export { StreamBackpressureError } from "./stream";
