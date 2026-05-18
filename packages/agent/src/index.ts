@@ -6,3 +6,5 @@
 // drives the reactor from a mail transport (INBOX watch, connector threads,
 // outbound replies via MessageTransport) while the agent drives it from
 // in-process calls.
+
+export { AgentInUseError } from "./lock";
