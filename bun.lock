@@ -73,6 +73,16 @@
         "vite": "^6.3.5",
       },
     },
+    "examples/coding-agent": {
+      "name": "@interchange/example-coding-agent",
+      "version": "0.0.0",
+      "dependencies": {
+        "@interchange/agent": "workspace:*",
+        "@interchange/tools-lsp": "workspace:*",
+        "@interchange/tools-posix": "workspace:*",
+        "@interchange/types": "workspace:*",
+      },
+    },
     "packages/agent": {
       "name": "@interchange/agent",
       "version": "0.0.0",
@@ -444,6 +454,8 @@
     "@interchange/crypto-node": ["@interchange/crypto-node@workspace:packages/crypto-node"],
 
     "@interchange/db": ["@interchange/db@workspace:packages/db"],
+
+    "@interchange/example-coding-agent": ["@interchange/example-coding-agent@workspace:examples/coding-agent"],
 
     "@interchange/harness": ["@interchange/harness@workspace:packages/harness"],
 
