@@ -2,7 +2,13 @@ import { describe, test, expect } from "bun:test";
 
 import type { ToolDefinition } from "@interchange/types/runtime";
 
-import { createToolRunner, DuplicateToolError, stringTool, tool } from "./tool";
+import {
+  createToolRunner,
+  DuplicateToolError,
+  fromToolRunner,
+  stringTool,
+  tool,
+} from "./tool";
 
 const DEF_A: ToolDefinition = {
   name: "a",
@@ -150,6 +156,43 @@ describe("createToolRunner", () => {
     await runner.run({ id: "c6", name: "a", arguments: {} }, ctl.signal);
 
     expect(received).toBe(ctl.signal);
+  });
+
+  test("fromToolRunner wraps each definition as a full-handler AgentTool", async () => {
+    const calls: string[] = [];
+    const stubRunner = {
+      definitions: [DEF_A, DEF_B] as const,
+      run: async (call: {
+        id: string;
+        name: string;
+        arguments: Record<string, unknown>;
+      }) => {
+        calls.push(call.name);
+        return Promise.resolve({
+          callId: call.id,
+          content: `ran ${call.name}`,
+        });
+      },
+    };
+
+    const tools = fromToolRunner(stubRunner);
+    const runner = createToolRunner(tools);
+
+    expect(runner.definitions.map((d) => d.name)).toEqual(["a", "b"]);
+
+    const ra = await runner.run(
+      { id: "c8", name: "a", arguments: {} },
+      new AbortController().signal,
+    );
+    expect(ra).toEqual({ callId: "c8", content: "ran a" });
+
+    const rb = await runner.run(
+      { id: "c9", name: "b", arguments: {} },
+      new AbortController().signal,
+    );
+    expect(rb).toEqual({ callId: "c9", content: "ran b" });
+
+    expect(calls).toEqual(["a", "b"]);
   });
 
   test("string handler receives the parsed arguments object", async () => {

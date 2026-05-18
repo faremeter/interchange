@@ -15,6 +15,7 @@ export {
   type ToolHandler,
   DuplicateToolError,
   createToolRunner,
+  fromToolRunner,
   stringTool,
   tool,
 } from "./tool";
