@@ -9,6 +9,7 @@
 import { mkdirSync } from "node:fs";
 
 import { createAgent, fromToolRunner, type Agent } from "@interchange/agent";
+import type { Dependencies } from "@interchange/inference";
 import { createLSPPlugin } from "@interchange/tools-lsp";
 import { createPosixTools, type PosixTools } from "@interchange/tools-posix";
 import type { ProviderConfig } from "@interchange/types/runtime";
@@ -36,6 +37,12 @@ export type CodingAgentOptions = {
    * ignored.
    */
   providerOverride?: ProviderConfig;
+  /**
+   * Inference dependencies for the underlying agent. Production callers
+   * leave this undefined; tests pass `setupHarness().deps` from
+   * `@interchange/inference-testing` to swap the fetch implementation.
+   */
+  deps?: Dependencies;
 };
 
 export type CodingAgent = {
@@ -89,6 +96,7 @@ export async function createCodingAgent(
       defaultModel: provider.model,
       systemPrompt: CODING_AGENT_SYSTEM_PROMPT,
       tools: fromToolRunner(posixTools),
+      ...(opts.deps !== undefined ? { deps: opts.deps } : {}),
     });
   } catch (cause) {
     await posixTools.dispose();

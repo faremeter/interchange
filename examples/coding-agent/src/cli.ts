@@ -14,7 +14,8 @@
 
 import { parseArgs } from "node:util";
 
-import type { ReactorEmittedEvent } from "@interchange/inference";
+import type { Dependencies, ReactorEmittedEvent } from "@interchange/inference";
+import type { ProviderConfig } from "@interchange/types/runtime";
 
 import { createCodingAgent } from "./agent";
 import { defaultContextDir, defaultRepoRoot } from "./paths";
@@ -26,7 +27,18 @@ type CliArgs = {
   model: string | undefined;
 };
 
-function parseCliArgs(argv: string[]): CliArgs {
+export type MainOptions = {
+  /** Replace stdout (defaults to `process.stdout.write`). */
+  stdout?: (chunk: string) => void;
+  /** Replace stderr (defaults to `process.stderr.write`). */
+  stderr?: (chunk: string) => void;
+  /** Inject inference deps (for tests using `@interchange/inference-testing`). */
+  deps?: Dependencies;
+  /** Skip credential parsing and use this provider directly. */
+  providerOverride?: ProviderConfig;
+};
+
+export function parseCliArgs(argv: string[]): CliArgs {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -50,53 +62,75 @@ function parseCliArgs(argv: string[]): CliArgs {
   };
 }
 
-async function main(argv: string[]): Promise<void> {
-  const apiKey = process.env["ANTHROPIC_API_KEY"];
-  if (apiKey === undefined || apiKey === "") {
-    process.stderr.write("ANTHROPIC_API_KEY is required\n");
-    process.exit(1);
+async function pumpStreamToStderr(
+  events: AsyncIterable<ReactorEmittedEvent>,
+  stderr: (chunk: string) => void,
+): Promise<void> {
+  for await (const event of events) {
+    stderr(`[${event.type}] seq=${String(event.seq)}\n`);
+  }
+}
+
+/**
+ * Execute one CLI run. Returns an exit code (0 success, non-zero failure).
+ * Pure with respect to globals when callers supply `stdout`/`stderr`/
+ * `providerOverride`/`deps` — that's the seam tests use.
+ */
+export async function main(
+  argv: string[],
+  env: NodeJS.ProcessEnv,
+  opts: MainOptions = {},
+): Promise<number> {
+  const stdout = opts.stdout ?? ((s) => void process.stdout.write(s));
+  const stderr = opts.stderr ?? ((s) => void process.stderr.write(s));
+
+  const apiKey = env["ANTHROPIC_API_KEY"];
+  if (
+    opts.providerOverride === undefined &&
+    (apiKey === undefined || apiKey === "")
+  ) {
+    stderr("ANTHROPIC_API_KEY is required\n");
+    return 1;
   }
 
   let args: CliArgs;
   try {
     args = parseCliArgs(argv);
   } catch (err) {
-    process.stderr.write(
-      (err instanceof Error ? err.message : String(err)) + "\n",
-    );
-    process.exit(1);
+    stderr((err instanceof Error ? err.message : String(err)) + "\n");
+    return 1;
   }
 
   const { agent, close } = await createCodingAgent({
     contextDir: args.contextDir,
     cwd: args.cwd,
-    apiKey,
+    ...(apiKey !== undefined ? { apiKey } : {}),
     ...(args.model !== undefined ? { model: args.model } : {}),
+    ...(opts.providerOverride !== undefined
+      ? { providerOverride: opts.providerOverride }
+      : {}),
+    ...(opts.deps !== undefined ? { deps: opts.deps } : {}),
   });
 
   // Mirror the reactor's event stream to stderr so the user can watch
   // tool calls, inference deltas, and checkpoints land in real time
   // while the send() resolves on stdout. The pump runs concurrently
   // with the send and terminates when agent.close() is called.
-  const streamPump = pumpStreamToStderr(agent.stream());
+  const streamPump = pumpStreamToStderr(agent.stream(), stderr);
 
   try {
     const { reply } = await agent.send(args.prompt);
-    process.stdout.write(reply + "\n");
+    stdout(reply + "\n");
+    return 0;
   } finally {
     await close();
     await streamPump;
   }
 }
 
-async function pumpStreamToStderr(
-  events: AsyncIterable<ReactorEmittedEvent>,
-): Promise<void> {
-  for await (const event of events) {
-    // Format one event per line; keep the payload compact so the
-    // example output is readable.
-    process.stderr.write(`[${event.type}] seq=${String(event.seq)}\n`);
-  }
+// Top-level invocation when run directly (not when imported by tests).
+// Bun sets `import.meta.main` true for the entry module.
+if (import.meta.main) {
+  const code = await main(process.argv.slice(2), process.env);
+  if (code !== 0) process.exit(code);
 }
-
-await main(process.argv.slice(2));

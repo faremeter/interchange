@@ -13,3 +13,4 @@ export {
 } from "./agent";
 export { CODING_AGENT_SYSTEM_PROMPT } from "./prompt";
 export { defaultContextDir, defaultRepoRoot } from "./paths";
+export { main, parseCliArgs, type MainOptions } from "./cli";
