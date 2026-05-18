@@ -81,6 +81,16 @@
         "@interchange/types": "workspace:*",
       },
     },
+    "examples/agent-quickstart": {
+      "name": "@interchange/example-agent-quickstart",
+      "version": "0.0.0",
+      "dependencies": {
+        "@interchange/agent": "workspace:*",
+        "@interchange/example-agent-common": "workspace:*",
+        "@interchange/inference": "workspace:*",
+        "@interchange/types": "workspace:*",
+      },
+    },
     "examples/coding-agent": {
       "name": "@interchange/example-coding-agent",
       "version": "0.0.0",
@@ -464,6 +474,8 @@
     "@interchange/db": ["@interchange/db@workspace:packages/db"],
 
     "@interchange/example-agent-common": ["@interchange/example-agent-common@workspace:examples/agent-common"],
+
+    "@interchange/example-agent-quickstart": ["@interchange/example-agent-quickstart@workspace:examples/agent-quickstart"],
 
     "@interchange/example-coding-agent": ["@interchange/example-coding-agent@workspace:examples/coding-agent"],
 
