@@ -77,6 +77,7 @@
       "name": "@interchange/agent",
       "version": "0.0.0",
       "dependencies": {
+        "@interchange/harness": "workspace:*",
         "@interchange/inference": "workspace:*",
         "@interchange/mime": "workspace:*",
         "@interchange/storage-isogit": "workspace:*",
