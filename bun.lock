@@ -73,6 +73,17 @@
         "vite": "^6.3.5",
       },
     },
+    "packages/agent": {
+      "name": "@interchange/agent",
+      "version": "0.0.0",
+      "dependencies": {
+        "@interchange/inference": "workspace:*",
+        "@interchange/mime": "workspace:*",
+        "@interchange/storage-isogit": "workspace:*",
+        "@interchange/types": "workspace:*",
+        "arktype": "catalog:",
+      },
+    },
     "packages/authz": {
       "name": "@interchange/authz",
       "version": "0.0.0",
@@ -424,6 +435,8 @@
     "@inquirer/figures": ["@inquirer/figures@1.0.15", "", {}, "sha512-t2IEY+unGHOzAaVM5Xx6DEWKeXlDDcNPeDyUpsRc6CUhBfU3VQOEl+Vssh7VNp1dR8MdUJBWhuObjXCsVpjN5g=="],
 
     "@inquirer/type": ["@inquirer/type@3.0.10", "", { "peerDependencies": { "@types/node": ">=18" }, "optionalPeers": ["@types/node"] }, "sha512-BvziSRxfz5Ov8ch0z/n3oijRSEcEsHnhggm4xFZe93DHcUCTlutlq9Ox4SVENAfcRD22UQq7T/atg9Wr3k09eA=="],
+
+    "@interchange/agent": ["@interchange/agent@workspace:packages/agent"],
 
     "@interchange/authz": ["@interchange/authz@workspace:packages/authz"],
 
