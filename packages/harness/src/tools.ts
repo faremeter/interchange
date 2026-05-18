@@ -16,34 +16,13 @@ import type {
   OutboundMessage,
   SearchQuery,
 } from "@interchange/types/runtime";
+import { InterchangeType } from "@interchange/types/runtime";
 
 type ToolHandler = (call: ToolCall, signal: AbortSignal) => Promise<ToolResult>;
 
 // ---------------------------------------------------------------------------
 // Argument schemas
 // ---------------------------------------------------------------------------
-
-const InterchangeType = type.enumerated(
-  "conversation.message",
-  "conversation.join",
-  "conversation.leave",
-  "offering.request",
-  "offering.response",
-  "offering.error",
-  "offering.discover",
-  "offering.catalog",
-  "payment.required",
-  "payment.receipt",
-  "payment.verified",
-  "approval.request",
-  "approval.granted",
-  "approval.denied",
-  "system.health",
-  "system.register",
-  "system.deregister",
-  "system.credential.refresh",
-);
-type InterchangeType = typeof InterchangeType.infer;
 
 const SendArgs = type({
   to: "string | string[]",

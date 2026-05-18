@@ -9,6 +9,7 @@ import type {
   CryptoProvider,
   MessageRef,
 } from "@interchange/types/runtime";
+import { InterchangeType } from "@interchange/types/runtime";
 import type { MailboxStore } from "./mailbox";
 import { requireMessage } from "./mailbox";
 import {
@@ -22,26 +23,7 @@ import { buildMessageHeaders } from "./headers";
 import { verifyDetachedSignature } from "@interchange/crypto-node";
 
 const MessagePayload = type({
-  type: type.enumerated(
-    "conversation.message",
-    "conversation.join",
-    "conversation.leave",
-    "offering.request",
-    "offering.response",
-    "offering.error",
-    "offering.discover",
-    "offering.catalog",
-    "payment.required",
-    "payment.receipt",
-    "payment.verified",
-    "approval.request",
-    "approval.granted",
-    "approval.denied",
-    "system.health",
-    "system.register",
-    "system.deregister",
-    "system.credential.refresh",
-  ),
+  type: InterchangeType,
   version: "string",
   body: "Record<string, unknown>",
 });
