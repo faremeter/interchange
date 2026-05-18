@@ -106,6 +106,9 @@
         "@interchange/types": "workspace:*",
         "arktype": "catalog:",
       },
+      "devDependencies": {
+        "@interchange/mime": "workspace:*",
+      },
     },
     "packages/hub": {
       "name": "@interchange/hub",
@@ -141,6 +144,9 @@
         "@interchange/log": "workspace:*",
         "@interchange/types": "workspace:*",
         "arktype": "catalog:",
+      },
+      "devDependencies": {
+        "@interchange/mime": "workspace:*",
       },
     },
     "packages/inference-testing": {

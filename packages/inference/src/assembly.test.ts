@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
 import { createReactorAssembly } from "./assembly";
+import { createInboundMessage } from "@interchange/mime";
 import type { AuthzCallResult } from "./authz-extension";
 import type { ReactorEmittedEvent } from "./reactor";
 
@@ -110,18 +111,11 @@ function makeToolRunner(content: string | Record<string, unknown>): ToolRunner {
 }
 
 function makeInboundMessage(): InboundMessage {
-  return {
-    ref: { uid: 1, mailbox: "INBOX" },
-    headers: {
-      from: "test@example.com",
-      to: ["agent@example.com"],
-      date: new Date().toISOString(),
-      messageId: `msg-${Math.random()}`,
-    },
-    flags: [],
+  return createInboundMessage({
+    from: "test@example.com",
+    to: "agent@example.com",
     content: "hello",
-    signatureStatus: "missing",
-  };
+  });
 }
 
 // Director that executes a single tool call on message.received and ends on
