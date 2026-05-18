@@ -1,6 +1,7 @@
 import { AmbiguousRequestError, type AmbiguousFetchInfo } from "./errors";
 import type { ChunkFiredEvent, SimulatedStream } from "./simulated-stream";
 import type { DispatchToolResult, ToolHandler } from "./tool-handler";
+import type { Provider } from "./wire/agnostic";
 
 /**
  * Predicate evaluated against wire-event chunks the harness sees being
@@ -20,6 +21,38 @@ export type WireEventPredicate = (event: ChunkFiredEvent) => boolean;
  * cannot enforce purity.
  */
 export type RequestPredicate = (req: Request) => boolean;
+
+/**
+ * Options for `scenario.replyOnce`. `text` and `toolCalls` are the response
+ * payload (passed through to `wire.completeResponse`); `headUsage` and
+ * `tailUsage` are optional usage frames. `predicate` narrows which fetch
+ * the matcher routes to (defaults to match-any). `responseOpts` shapes
+ * the HTTP envelope of the `Response` the matcher produces.
+ */
+export type ReplyOnceOpts = {
+  readonly text?: string;
+  readonly toolCalls?: {
+    callId: string;
+    name: string;
+    argsJSON: string;
+  }[];
+  readonly headUsage?: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    thinking: number;
+  };
+  readonly tailUsage?: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    thinking: number;
+  };
+  readonly predicate?: RequestPredicate;
+  readonly responseOpts?: WhenRequestMatchesOpts;
+};
 
 /**
  * Optional response shape for `whenRequestMatches`. The default behavior is
@@ -128,6 +161,37 @@ export type Scenario = {
    * tool result without instrumenting the handler closure directly.
    */
   lastToolDispatch(name: string): unknown;
+  /**
+   * Returns a clone of the most-recently matched `Request`, or `undefined`
+   * if no fetch has been routed by a matcher yet. The harness records
+   * every routed request so tests can `await req.json()` after the fact
+   * to assert on the body shape — the matcher predicate itself is
+   * synchronous on purpose (it runs on every scan pass) and so cannot
+   * read the body, but `lastRequest` is the post-match seam.
+   *
+   * The returned `Request` is a clone so the test can consume its body
+   * without affecting the original (the production reactor will still
+   * read the body via the `Response` returned through the stream).
+   */
+  lastRequest(): Request | undefined;
+  /**
+   * Convenience wrapper that creates a stream, builds a complete
+   * single-turn response for `provider`, enqueues it at the next safe
+   * virtual time (`clock.now() + 1`), and registers a single-use
+   * match-any matcher routing the next fetch to it. Returns the stream
+   * so tests that need to enqueue additional chunks or capture the
+   * handle can still do so.
+   *
+   * The optional `predicate` narrows the match (defaults to `() => true`).
+   * The optional `responseOpts` shapes the `Response` envelope (status,
+   * headers) just like `whenRequestMatches`. The optional `whenOpts`
+   * passes through to `whenRequestMatches`.
+   *
+   * Use this for the common "drive one round-trip with this reply" test
+   * shape. For richer scenarios (multiple turns, custom chunk timing,
+   * tool calls), use `createStream` + `whenRequestMatches` directly.
+   */
+  replyOnce(provider: Provider, opts: ReplyOnceOpts): SimulatedStream;
   /**
    * Schedules `controller.abort()` to fire at the supplied virtual time.
    * The caller supplies the `AbortController` they want aborted —
