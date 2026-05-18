@@ -33,10 +33,12 @@ import type {
 
 import { acquireContextDirLock, type ContextDirLock } from "./lock";
 import { createProviderRegistry, type ProviderRegistry } from "./provider";
+import { createSendQueue, type SendQueue } from "./send-queue";
 import { createToolRunner, type AgentTool, type AgentToolRunner } from "./tool";
 
 const DEFAULT_SEND_FROM = "user@local";
 const DEFAULT_SEND_TO = "agent@local";
+const DEFAULT_SEND_QUEUE_MAX = 16;
 
 export type AgentConfig = {
   /**
@@ -75,9 +77,25 @@ export type AgentConfig = {
 
   /** Override the auto-generated session ID. */
   sessionId?: string;
+
+  /**
+   * Maximum number of pending sends (active + queued). Once reached,
+   * additional `send()` calls throw `SendQueueFullError` synchronously.
+   * Defaults to 16.
+   */
+  sendQueueMax?: number;
 };
 
 export type SendOptions = {
+  /**
+   * Abort signal for this send. When the signal fires before processing
+   * the call is dropped from the queue and the promise rejects with the
+   * signal's reason. When it fires mid-cycle the promise rejects
+   * immediately, but the underlying reactor cycle keeps running because
+   * the reactor does not expose per-cycle cancellation — the next queued
+   * send waits for that cycle to finish before starting. The reply (if
+   * any) is still visible via `stream()` and `history()`.
+   */
   signal?: AbortSignal;
   /** Override the default "from" header on the synthetic inbound message. */
   from?: string;
@@ -119,13 +137,6 @@ export class AgentClosedError extends Error {
   constructor() {
     super("agent is closed");
     this.name = "AgentClosedError";
-  }
-}
-
-export class ConcurrentSendError extends Error {
-  constructor() {
-    super("send() is already in flight; queueing lands in a later change");
-    this.name = "ConcurrentSendError";
   }
 }
 
@@ -192,16 +203,58 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
 
   const sessionId = config.sessionId ?? crypto.randomUUID();
 
-  // Event listeners. Commits 7 and 8 replace these naive callback sets with
-  // a FIFO send queue and a bounded per-consumer stream buffer.
+  // Stream fan-out. Commit 8 replaces this naive callback set with a
+  // bounded per-consumer buffer.
   type EventListener = (event: ReactorEmittedEvent) => void;
   const streamConsumers = new Set<EventListener>();
-  let activeSendListener: EventListener | undefined;
+
+  // Per-active-cycle bookkeeping for send(). The reactor produces one or
+  // more inference.done events during a cycle; we keep the most recent
+  // assistant turn so the final connector.reply can be paired with the
+  // full-fidelity turn (rather than a synthesized text-only fallback).
+  type ActiveCycle = { lastAssistantTurn: AssistantTurn | undefined };
+  let activeCycle: ActiveCycle | null = null;
+
+  // sendQueue is built after the reactor (since its `start` callback
+  // delivers into the reactor), but handleEvent — which is wired into the
+  // reactor's assembly — needs to see sendQueue. Assigned exactly once
+  // after the reactor exists and before reactor.start(); no event can
+  // reach handleEvent before the queue is wired.
+  // eslint-disable-next-line prefer-const -- forward declaration; const cannot express this ordering
+  let sendQueue: SendQueue<InboundMessage, SendResult>;
+
+  function buildSyntheticTurn(text: string): ConversationTurn {
+    return {
+      role: "assistant",
+      content: [{ type: "text", text }],
+      ...(providerRegistry.active.model !== undefined
+        ? { model: providerRegistry.active.model }
+        : {}),
+      timestamp: Date.now(),
+    };
+  }
 
   function handleEvent(event: ReactorEmittedEvent): void {
-    if (activeSendListener !== undefined) {
-      activeSendListener(event);
+    if (activeCycle !== null && event.type === "inference.done") {
+      activeCycle.lastAssistantTurn = event.data.turn;
     }
+
+    if (activeCycle !== null) {
+      if (event.type === "connector.reply") {
+        const turn: ConversationTurn =
+          activeCycle.lastAssistantTurn ??
+          buildSyntheticTurn(event.data.content);
+        activeCycle = null;
+        sendQueue.resolveActive({ reply: event.data.content, turn });
+      } else if (event.type === "reactor.error") {
+        activeCycle = null;
+        sendQueue.rejectActive(new Error(`reactor error: ${event.data.error}`));
+      } else if (event.type === "reactor.done") {
+        activeCycle = null;
+        sendQueue.rejectActive(new AgentClosedError());
+      }
+    }
+
     for (const consumer of streamConsumers) {
       consumer(event);
     }
@@ -221,10 +274,17 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
       : {}),
   });
 
+  sendQueue = createSendQueue<InboundMessage, SendResult>({
+    maxDepth: config.sendQueueMax ?? DEFAULT_SEND_QUEUE_MAX,
+    start: (message) => {
+      activeCycle = { lastAssistantTurn: undefined };
+      reactor.deliver(message);
+    },
+  });
+
   reactor.start();
 
   let closed = false;
-  let sendInFlight = false;
 
   function ensureOpen(): void {
     if (closed) throw new AgentClosedError();
@@ -250,51 +310,8 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     opts?: SendOptions,
   ): Promise<SendResult> {
     ensureOpen();
-    if (sendInFlight) {
-      return Promise.reject(new ConcurrentSendError());
-    }
-    sendInFlight = true;
-
     const message = buildInboundMessage(content, opts);
-
-    return new Promise<SendResult>((resolve, reject) => {
-      let lastAssistantTurn: AssistantTurn | undefined;
-
-      activeSendListener = (event) => {
-        if (event.type === "inference.done") {
-          lastAssistantTurn = event.data.turn;
-          return;
-        }
-        if (event.type === "connector.reply") {
-          activeSendListener = undefined;
-          sendInFlight = false;
-          const turn: ConversationTurn = lastAssistantTurn ?? {
-            role: "assistant",
-            content: [{ type: "text", text: event.data.content }],
-            ...(providerRegistry.active.model !== undefined
-              ? { model: providerRegistry.active.model }
-              : {}),
-            timestamp: Date.now(),
-          };
-          resolve({ reply: event.data.content, turn });
-          return;
-        }
-        if (event.type === "reactor.error") {
-          activeSendListener = undefined;
-          sendInFlight = false;
-          reject(new Error(`reactor error: ${event.data.error}`));
-          return;
-        }
-        if (event.type === "reactor.done") {
-          activeSendListener = undefined;
-          sendInFlight = false;
-          reject(new AgentClosedError());
-          return;
-        }
-      };
-
-      reactor.deliver(message);
-    });
+    return sendQueue.enqueue(message, opts?.signal);
   }
 
   // eslint-disable-next-line require-yield -- placeholder iterator; commit 8 replaces with bounded fan-out
@@ -333,8 +350,9 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     if (closed) return;
     closed = true;
     reactor.abort("user_disconnect");
+    sendQueue.drain(new AgentClosedError());
+    activeCycle = null;
     streamConsumers.clear();
-    activeSendListener = undefined;
     if (lock !== undefined) lock.release();
   }
 
