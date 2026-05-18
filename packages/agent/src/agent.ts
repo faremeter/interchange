@@ -4,12 +4,32 @@
 // dispatcher, wires `createReactorAssembly`, and exposes the public Agent
 // surface. The agent owns the active provider config object so
 // `setProvider` can mutate it in place and the reactor's lazy read at the
-// start of each inference call picks up the swap.
+// start of each inference call picks up the new credentials.
 //
-// This module implements the baseline shape: `deliver`, `setProvider`,
-// `history`, `checkpoints`, `readAt`, `blobReader`, and a single-in-flight
-// `send`. The FIFO queue + AbortSignal on `send`, the bounded fan-out for
-// `stream`, and the full `close` lifecycle land in subsequent commits.
+// Composition:
+//   - `send()` enqueues into a FIFO `SendQueue` capped at `sendQueueMax`.
+//     Per-send `AbortSignal` removes queued items or rejects in-flight
+//     callers while letting the reactor cycle finish in the background.
+//   - `stream()` returns a bounded `StreamConsumer` iterator; consumers
+//     buffer independently and noisy backpressure poisons only the
+//     affected iterator.
+//   - `close()` aborts the reactor, drains the send queue with
+//     `AgentClosedError`, terminates every active stream iterator, waits
+//     up to `closeTimeoutMs` for the reactor's shutdown sequence to
+//     complete (audit flush, in-flight commits), and finally releases
+//     the singleton-per-`contextDir` lock so another agent can open the
+//     same directory.
+//
+// `setProvider` caveat: the default director captures `model` at
+// construction time and passes it into `capabilities.infer(model, ...)`
+// on every cycle. `ReactorDirector.decide` is not handed
+// `providerConfig`, so a model swap via `setProvider` rotates only the
+// fields the reactor reads lazily off the shared `providerConfig`
+// object — `provider`, `baseURL`, `apiKey`. To change the model
+// mid-conversation, close the agent and reopen it with a different
+// `defaultModel`, or supply a custom `director` that closes over the
+// agent's provider registry itself and substitutes the live model in
+// its own `infer` action.
 
 import { createDefaultDirector } from "@interchange/harness";
 import {
@@ -42,6 +62,7 @@ const DEFAULT_SEND_FROM = "user@local";
 const DEFAULT_SEND_TO = "agent@local";
 const DEFAULT_SEND_QUEUE_MAX = 16;
 const DEFAULT_STREAM_BUFFER_MAX = 1024;
+const DEFAULT_CLOSE_TIMEOUT_MS = 5000;
 
 export type AgentConfig = {
   /**
@@ -105,6 +126,15 @@ export type AgentConfig = {
    * implementation for a deterministic stub.
    */
   deps?: Dependencies;
+
+  /**
+   * Maximum milliseconds `close()` waits for the reactor's shutdown
+   * sequence (which flushes audit and any pending commits) before
+   * releasing the singleton `contextDir` lock and returning. Defaults
+   * to 5000ms. Set to 0 to release immediately without waiting (useful
+   * for tests where the reactor's shutdown is intentionally blocked).
+   */
+  closeTimeoutMs?: number;
 };
 
 export type SendOptions = {
@@ -140,6 +170,13 @@ export type Agent = {
   stream(): AsyncIterable<ReactorEmittedEvent>;
   deliver(message: InboundMessage): void;
   close(): Promise<void>;
+  /**
+   * Replace the active provider's fields in place. Picked up at the
+   * start of the next inference call. Note: the default director
+   * captures `model` at construction; mutating model via setProvider has
+   * no effect unless a custom director is supplied. See the file
+   * header for details.
+   */
   setProvider(config: ProviderConfig): void;
   history(): Promise<ConversationTurn[]>;
   checkpoints(limit?: number): Promise<ContextCommit[]>;
@@ -242,6 +279,22 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
   // eslint-disable-next-line prefer-const -- forward declaration; const cannot express this ordering
   let sendQueue: SendQueue<InboundMessage, SendResult>;
 
+  // shutdownComplete resolves from the assembly's onShutdown hook
+  // (composed after audit flush by the assembly) or, as a fallback, from
+  // handleEvent observing the reactor's terminal `reactor.done` event.
+  // close() awaits this (with a timeout) before releasing the
+  // contextDir lock so a subsequent createAgent on the same directory
+  // sees a quiesced store.
+  let resolveShutdown: () => void = () => {
+    // Reassigned by the Promise constructor below; seed a no-op so the
+    // forward-referenced call in handleEvent is safe even if the
+    // Promise constructor has not yet run (it does, synchronously, on
+    // the next line).
+  };
+  const shutdownComplete = new Promise<void>((resolve) => {
+    resolveShutdown = resolve;
+  });
+
   function buildSyntheticTurn(text: string): ConversationTurn {
     return {
       role: "assistant",
@@ -265,7 +318,12 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
           buildSyntheticTurn(event.data.content);
         activeCycle = null;
         sendQueue.resolveActive({ reply: event.data.content, turn });
-      } else if (event.type === "reactor.error") {
+      } else if (event.type === "reactor.error" && event.data.fatal) {
+        // Only fatal reactor errors terminate the active send. Non-fatal
+        // errors (e.g. transient write/commit failures the reactor is
+        // recovering from) are surfaced via stream() but must not
+        // resolve send() — the cycle is still running and may yet
+        // produce connector.reply or a fatal error.
         activeCycle = null;
         sendQueue.rejectActive(new Error(`reactor error: ${event.data.error}`));
       } else if (event.type === "reactor.done") {
@@ -274,7 +332,19 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
       }
     }
 
-    for (const consumer of streamConsumers) {
+    // reactor.done is the reactor's terminal event. Resolve
+    // shutdownComplete here in addition to the onShutdown hook so close()
+    // does not hang for the full closeTimeoutMs on paths where the hook
+    // never fires (e.g. the reactor's context-store load fails during
+    // start, or the composed onShutdown wrapper throws during audit
+    // flush). resolveShutdown is idempotent.
+    if (event.type === "reactor.done") {
+      resolveShutdown();
+    }
+
+    // Iterate a snapshot so removing closed consumers mid-iteration is
+    // not just relying on Set's iteration tolerance.
+    for (const consumer of Array.from(streamConsumers)) {
       consumer.push(event);
       if (consumer.closed) {
         streamConsumers.delete(consumer);
@@ -289,6 +359,9 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     toolRunner,
     contextStore,
     onEvent: handleEvent,
+    onShutdown: async () => {
+      resolveShutdown();
+    },
     ...(auditStore !== undefined ? { auditStore } : {}),
     ...(config.authorize !== undefined ? { authorize: config.authorize } : {}),
     ...(config.sizeCapMaxChars !== undefined
@@ -381,6 +454,26 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     activeCycle = null;
     for (const consumer of streamConsumers) consumer.close();
     streamConsumers.clear();
+
+    // Wait for the reactor's shutdown sequence (audit flush, in-flight
+    // commits) before releasing the lock so a subsequent createAgent on
+    // the same contextDir does not race with background writers against
+    // the same .git directory. The timeout is a backstop: if the
+    // reactor's shutdown is genuinely stuck (e.g. a parked test fetch
+    // that never resolves) we release the lock anyway rather than
+    // deadlock the caller. `closeTimeoutMs: 0` disables the wait.
+    const timeoutMs = config.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
+    if (timeoutMs > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      });
+      try {
+        await Promise.race([shutdownComplete, timeout]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    }
     if (lock !== undefined) lock.release();
   }
 
