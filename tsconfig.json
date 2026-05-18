@@ -26,6 +26,7 @@
     { "path": "examples/agent-quickstart" },
     { "path": "examples/agent-resume" },
     { "path": "examples/agent-rewind" },
-    { "path": "examples/agent-blob-spill" }
+    { "path": "examples/agent-blob-spill" },
+    { "path": "examples/agent-audit-log" }
   ]
 }
