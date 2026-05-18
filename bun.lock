@@ -144,6 +144,18 @@
         "isomorphic-git": "^1.27.2",
       },
     },
+    "examples/agent-rich-tool": {
+      "name": "@interchange/example-agent-rich-tool",
+      "version": "0.0.0",
+      "dependencies": {
+        "@interchange/agent": "workspace:*",
+        "@interchange/example-agent-common": "workspace:*",
+        "@interchange/inference": "workspace:*",
+        "@interchange/mime": "workspace:*",
+        "@interchange/types": "workspace:*",
+        "arktype": "catalog:",
+      },
+    },
     "examples/coding-agent": {
       "name": "@interchange/example-coding-agent",
       "version": "0.0.0",
@@ -539,6 +551,8 @@
     "@interchange/example-agent-resume": ["@interchange/example-agent-resume@workspace:examples/agent-resume"],
 
     "@interchange/example-agent-rewind": ["@interchange/example-agent-rewind@workspace:examples/agent-rewind"],
+
+    "@interchange/example-agent-rich-tool": ["@interchange/example-agent-rich-tool@workspace:examples/agent-rich-tool"],
 
     "@interchange/example-coding-agent": ["@interchange/example-coding-agent@workspace:examples/coding-agent"],
 
