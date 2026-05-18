@@ -1,0 +1,23 @@
+{
+  "name": "@interchange/example-agent-rewind",
+  "version": "0.0.0",
+  "license": "GPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts"
+  },
+  "dependencies": {
+    "@interchange/agent": "workspace:*",
+    "@interchange/example-agent-common": "workspace:*",
+    "@interchange/inference": "workspace:*",
+    "@interchange/types": "workspace:*",
+    "isomorphic-git": "^1.27.2"
+  }
+}

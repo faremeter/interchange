@@ -24,6 +24,7 @@
     { "path": "examples/coding-agent" },
     { "path": "examples/agent-common" },
     { "path": "examples/agent-quickstart" },
-    { "path": "examples/agent-resume" }
+    { "path": "examples/agent-resume" },
+    { "path": "examples/agent-rewind" }
   ]
 }
