@@ -1,31 +1,9 @@
-import type {
-  MessageHeaders,
-  InterchangeType,
-} from "@interchange/types/runtime";
-
-const INTERCHANGE_TYPES = new Set<string>([
-  "conversation.message",
-  "conversation.join",
-  "conversation.leave",
-  "offering.request",
-  "offering.response",
-  "offering.error",
-  "offering.discover",
-  "offering.catalog",
-  "payment.required",
-  "payment.receipt",
-  "payment.verified",
-  "approval.request",
-  "approval.granted",
-  "approval.denied",
-  "system.health",
-  "system.register",
-  "system.deregister",
-  "system.credential.refresh",
-]);
+import { type } from "arktype";
+import type { MessageHeaders } from "@interchange/types/runtime";
+import { InterchangeType } from "@interchange/types/runtime";
 
 function isInterchangeType(s: string): s is InterchangeType {
-  return INTERCHANGE_TYPES.has(s);
+  return !(InterchangeType(s) instanceof type.errors);
 }
 
 /**
