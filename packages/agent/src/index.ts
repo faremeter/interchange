@@ -24,3 +24,13 @@ export {
   ProviderNotFoundError,
   createProviderRegistry,
 } from "./provider";
+export {
+  type Agent,
+  type AgentConfig,
+  type SendOptions,
+  type SendResult,
+  AgentClosedError,
+  AgentConfigError,
+  ConcurrentSendError,
+  createAgent,
+} from "./agent";
