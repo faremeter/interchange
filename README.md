@@ -1,259 +1,74 @@
 # Interchange
 
-Multi-tenant control plane for agent orchestration. Manages tenants, principals (users and agents under a unified authorization model), roles, capability grants, and agent lifecycle.
+An agentic operating system.
 
-## Prerequisites
+The hub — a multi-tenant control plane — manages tenants,
+principals (users and agents under one authorization model),
+capability grants, credentials, and agent lifecycle. Agents under
+hub management run in sidecars that drive a harness on the hub's
+behalf. The agent runtime — [`@interchange/agent`](./packages/agent)
+and the family of packages around it — runs anywhere from a
+long-lived server to a Cloudflare Worker, swapping implementations
+of storage, cryptography, message transport, tools, and payments to
+match the environment. Both ends share the type definitions in
+[`@interchange/types`](./packages/types).
 
-- [Bun](https://bun.sh/) (1.2+)
-- [opsh](https://github.com/alexanderguy/opsh) (v0.7+) -- for the shell scripts in `bin/`
-- PostgreSQL (15+)
+What you build on top is up to you. A coding assistant. A
+mail-driven workflow agent. An autonomous trader. A research
+harness.
 
-## Setup
+## Start here
 
-### 1. Install dependencies
+| You want to…                                    | Go to                                                                        |
+| ----------------------------------------------- | ---------------------------------------------------------------------------- |
+| Use the agent runtime in your own program       | [`examples/`](./examples/README.md)                                          |
+| Understand how the packages fit together        | [`LAYOUT.md`](./LAYOUT.md)                                                   |
+| Run the full stack (hub + sidecar + UI) locally | [`DEV.md`](./DEV.md)                                                         |
+| Write code in this repository                   | [`CONVENTIONS.md`](./CONVENTIONS.md), [`AGENTS.md`](./AGENTS.md)             |
+| Read the system design                          | [`docs/`](./docs) — [`ARCHITECTURE.md`](./docs/ARCHITECTURE.md), and friends |
 
-```
-bun install
-```
+## The impatient path
 
-### 2. Configure git hooks
+Run the full stack with seed data:
 
-```
-git config core.hooksPath .githooks
-```
-
-Verify with `bin/check-env`.
-
-### 3. Create the database
-
-Connect as a Postgres superuser and create the database:
-
-```sql
-CREATE DATABASE interchange;
-```
-
-Then run the init script to create service roles and set up permissions:
-
-```
-psql -d interchange -f db/init.sql
-```
-
-This creates two roles:
-
-- **interchange-migrate** -- owns the schema and runs migrations (DDL)
-- **interchange-hub** -- application role with DML access to all tables
-
-Default privileges are configured so that any table created by `interchange-migrate` is automatically accessible to `interchange-hub`.
-
-### 4. Environment files
-
-Four env files are needed, all gitignored. Copy from the examples:
-
-```
-cp .env.example .env
-cp .env.hub.example .env.hub
-cp .env.migrate.example .env.migrate
-cp .env.sidecar.example .env.sidecar
-```
-
-**.env** -- shared database connection:
-
-```
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=interchange
-```
-
-**.env.hub** -- hub server config:
-
-```
-DB_USER=interchange-hub
-DB_PASSWORD=hub-dev-password
-
-BETTER_AUTH_SECRET=<random 64-char hex string>
-BETTER_AUTH_BASE_URL=http://localhost:3000
-
-HUB_DATA_DIR=./tmp/hub-data
-
-GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
-```
-
-Generate `BETTER_AUTH_SECRET` with `openssl rand -hex 32`.
-
-**.env.migrate** -- migration credentials:
-
-```
-DB_USER=interchange-migrate
-DB_PASSWORD=migrate-dev-password
-```
-
-**.env.sidecar** -- sidecar config (optional, dev defaults are provided):
-
-```
-HUB_WS_URL=ws://localhost:3000/api/sidecars/ws
-SIDECAR_ID=dev-sidecar-1
-SIDECAR_TOKEN=dev-token
-SIDECAR_DATA_DIR=./tmp/sidecar-data
-```
-
-### 5. Run migrations
-
-```
-bin/db-migrate
-```
-
-This runs a type check, generates any new Drizzle migration files, and applies them to the database as `interchange-migrate`.
-
-## Running
-
-### Full stack (recommended)
-
-```
-bun bin/dev.ts --seed
-```
-
-Starts hub, sidecar, and UI with file watching, and seeds test data. To skip seeding:
-
-```
-bun bin/dev.ts
-```
-
-To start without the UI:
-
-```
-bun bin/dev.ts --no-ui
-```
-
-To start without the sidecar:
-
-```
-bun bin/dev.ts --no-sidecar
-```
-
-- Hub: `http://localhost:3000`
-- UI: `http://localhost:5173`
-- Seed login: `alice@example.com` / `password123`
-
-### Hub only
-
-```
-bin/hub
-```
-
-Starts the Hono API server on `http://localhost:3000` with file watching. Verify with:
-
-```
-curl http://localhost:3000/status
-```
-
-### UI only
-
-In a second terminal (with the hub already running):
-
-```
-cd apps/ui
-bunx vite
-```
-
-Opens on `http://localhost:5173`. The Vite dev server proxies `/api` requests to the hub on port 3000.
-
-### Seed data
-
-With the hub running, seed the database with test data:
-
-```
-bun bin/seed.ts
-```
-
-Creates 3 users (alice/bob/carol, all with password `password123`), 2 tenants, 3 agents, roles, grants, credentials, wallets, offerings, and a federation trust. The seed is idempotent -- it signs in existing users and skips resources that already exist (409).
-
-### Full database reset
-
-To start completely fresh:
-
-```
+```bash
 bin/db-reset && bun bin/dev.ts --seed
 ```
 
-This drops and recreates the database, runs migrations, grants permissions, and starts all services with seed data.
+Starts the hub, sidecar, and UI — entry points in
+[`apps/`](./apps).
 
-If the sidecar has stale agent state on disk from a previous run (per-agent git repos and key pairs in `SIDECAR_DATA_DIR`), pair `--clean` with the reset so the disk state goes with the database:
+Requires [Bun](https://bun.sh/) 1.2+,
+[opsh](https://github.com/alexanderguy/opsh) 0.7+, and PostgreSQL
+15+. See [`DEV.md`](./DEV.md) for everything else — environment
+files, role setup, default ports, seed credentials, partial-stack
+variants, reset recipes.
 
-```
-bin/db-reset --clean && bun bin/dev.ts --seed
-```
+## Build verbs
 
-Without `--clean`, the sidecar tries to reconnect orphaned agents and the hub rejects them with `Unknown agent address`.
+Build, lint, test, and format go through the `Makefile` at the repo
+root, which verifies the environment via
+[`bin/check-env`](./bin/check-env) before delegating to the
+underlying `bun run` scripts.
 
-## Project structure
+| Target        | Description                                  |
+| ------------- | -------------------------------------------- |
+| `make all`    | lint + build + test (full verification)      |
+| `make build`  | type check (`tsc -b --noEmit`)               |
+| `make lint`   | prettier + eslint + API docs freshness       |
+| `make format` | auto-format                                  |
+| `make test`   | run tests                                    |
+| `make docs`   | regenerate [`docs/API.md`](./docs/API.md)    |
+| `make clean`  | remove `tsbuildinfo`, `dist/`, and env stamp |
 
-```
-apps/
-  hub/              Entry point -- starts the Hono server, wires DB + auth
-  sidecar/          Agent sidecar process -- WebSocket client, key store, tool dispatch
-  ui/               React SPA -- Vite + TanStack Router/Query + Tailwind
+Run `make all` before declaring a change correct; individual
+package builds do not guarantee the full project graph compiles.
 
-packages/
-  authz/            Authorization engine -- pattern matching, specificity, evaluation
-  crypto-node/      Cryptographic primitives -- signing, verification, PGP, SSH signatures
-  db/               Drizzle schema, migrations, connection pooling
-  harness/          Agent harness -- deploy tree, director system, tool orchestration
-  hub/              Hono app factory, route handlers, middleware
-  hub-client/       Browser client SDK -- transport, instance sessions, event transforms
-  inference/        LLM inference -- provider adapters, streaming, audit collection
-  log/              LogTape wrapper (setup, getLogger, Hono middleware)
-  mail-memory/      JMAP-style message memory -- mailbox, search, send, threads
-  mime/             MIME message construction and PGP signing
-  pack-transport/   Git pack protocol -- chunked transport for pack send/receive
-  storage-isogit/   Git object storage -- isogit-backed mail store, history, pack ops
-  tools-posix/      POSIX tool implementations -- file read/write, shell execution
-  types/            Shared type definitions (ArkType validators, runtime types, wire formats)
+## HTTP API
 
-bin/
-  hub               Start the hub server (sources .env + .env.hub)
-  db-migrate        Generate and apply Drizzle migrations
-  db-reset          Drop and recreate the database, run migrations, grant permissions; `--clean` also wipes hub/sidecar on-disk state
-  dev.ts            Start the full stack (hub + sidecar + UI) with file watching
-  seed.ts           Seed test data via the HTTP API
-  gen-api-docs.ts   Generate docs/API.md from OpenAPI spec + ArkType introspection
-  add-package       Scaffold a new workspace package
-  check-env         Verify git hooks configuration
-
-db/
-  init.sql          Bootstrap database roles and permissions
-
-docs/
-  API.md            Generated API reference (gitignored from prettier)
-  ARCHITECTURE.md   System architecture overview
-  AUTH.md           Authorization model design
-  CREDENTIALS.md    Credential management
-  HARNESS_DESIGN.md Agent harness design
-  IMPLEMENTATION.md Implementation notes
-  INFERENCE.md      Inference subsystem design
-  MESSAGE.md        Messaging system design
-  PRODUCT.md        Product requirements
-  ROUTES.md         API route conventions
-```
-
-## Scripts
-
-Build verbs are exposed through the `Makefile` at the repo root. The
-Makefile first verifies the environment (`bin/check-env`) and then
-delegates to the underlying `bun run` scripts.
-
-| Target        | Description                                              |
-| ------------- | -------------------------------------------------------- |
-| `make all`    | lint + build + test (full verification)                  |
-| `make build`  | type check (`tsc -b --noEmit`)                           |
-| `make lint`   | prettier + eslint + API docs freshness                   |
-| `make format` | auto-format                                              |
-| `make test`   | run tests                                                |
-| `make docs`   | regenerate API documentation                             |
-| `make clean`  | remove `tsbuildinfo`, `dist/` directories, and env stamp |
-
-## API
-
-The hub exposes a REST API at `http://localhost:3000`. All tenant-scoped routes require authentication and authorization grants. The OpenAPI spec is available at `GET /openapi.json`.
-
-Full reference: `docs/API.md` (generated by `bun bin/gen-api-docs.ts`).
+The hub exposes a REST API at `http://localhost:3000`. The OpenAPI
+spec is at `GET /openapi.json`; the human-readable reference is
+generated into [`docs/API.md`](./docs/API.md) by
+[`bin/gen-api-docs.ts`](./bin/gen-api-docs.ts) from ArkType
+introspection over the type definitions in
+[`@interchange/types`](./packages/types).
