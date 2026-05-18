@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  AgentClosedError,
   createAgent,
   SendQueueFullError,
   type Agent,
@@ -208,8 +209,8 @@ describe("@interchange/agent send-flow integration", () => {
     await first;
     await second;
 
-    expect(firstReason).toBeDefined();
-    expect(secondReason).toBeDefined();
+    expect(firstReason).toBeInstanceOf(AgentClosedError);
+    expect(secondReason).toBeInstanceOf(AgentClosedError);
   });
 
   test("setProvider hot-swaps credentials before the next inference", async () => {
