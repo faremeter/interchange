@@ -5,6 +5,7 @@ import { createGateManager } from "./gates";
 import { createCorrelationRegistry } from "./correlation";
 import { createReactor } from "./reactor";
 import { createDefaultDependencies } from "./harness";
+import { createInboundMessage } from "@interchange/mime";
 
 import type {
   ReactorDirector,
@@ -157,23 +158,16 @@ function waitForEvent(
   });
 }
 
-// Simple inbound message factory.
+// Simple inbound message factory. Delegates to the mail-builder so the
+// reactor tests exercise the same shape consumers of @interchange/mime
+// produce in production code.
 function makeInboundMessage(correlationId?: string): InboundMessage {
-  return {
-    ref: { uid: 1, mailbox: "INBOX" },
-    headers: {
-      from: "test@example.com",
-      to: ["agent@example.com"],
-      date: new Date().toISOString(),
-      messageId: `msg-${Math.random()}`,
-      ...(correlationId !== undefined
-        ? { interchangeCorrelationId: correlationId }
-        : {}),
-    },
-    flags: [],
+  return createInboundMessage({
+    from: "test@example.com",
+    to: "agent@example.com",
     content: "hello",
-    signatureStatus: "missing",
-  };
+    ...(correlationId !== undefined ? { correlationId } : {}),
+  });
 }
 
 // ---------------------------------------------------------------------------

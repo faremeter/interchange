@@ -32,6 +32,7 @@ import type {
 } from "@interchange/types/runtime";
 import type { AuditRecord, ErrorRecord } from "@interchange/types/audit";
 import type { AuthzCallResult } from "@interchange/inference";
+import { createInboundMessage } from "@interchange/mime";
 import type {
   ReactorInboundEvent,
   ReactorDirector,
@@ -348,19 +349,12 @@ function makeMockTransport(): MockTransport {
 }
 
 function makeInboundMessage(from = "user@test"): InboundMessage {
-  return {
-    ref: { uid: 1, mailbox: "INBOX" },
-    headers: {
-      from,
-      to: ["agent@local.interchange"],
-      date: new Date().toISOString(),
-      messageId: `<${Math.random()}@test>`,
-      subject: "Test conversation",
-    },
-    flags: [],
+  return createInboundMessage({
+    from,
+    to: "agent@local.interchange",
+    subject: "Test conversation",
     content: "Hello, agent!",
-    signatureStatus: "missing",
-  };
+  });
 }
 
 function makeConfig(
