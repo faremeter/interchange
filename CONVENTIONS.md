@@ -29,8 +29,11 @@ This is a bun monorepo. When developing new TypeScript code:
 
 - **Applications** go in `apps/`
 - **Shared libraries** go in `packages/`
+- **Reference consumers** go in `examples/`
 
 Do not create standalone TypeScript files in the repository root.
+
+`examples/` is for runnable reference consumers that demonstrate how to use a package's public API. Examples are first-class workspace members: they have their own `package.json`, are listed in the root `tsconfig.json` `references` array, and are gated by `make all` (lint, type-check, test) just like packages and apps. They are not throwaway scratch code.
 
 ---
 
