@@ -22,12 +22,14 @@ import {
   captureMatcherSource,
   createMatcherTable,
   scanWaitingSet,
+  type ReplyOnceOpts,
   type RequestPredicate,
   type Scenario,
   type WaitingFetch,
   type WhenRequestMatchesOpts,
   type WireEventPredicate,
 } from "./scenario";
+import { completeResponse, type Provider } from "./wire/agnostic";
 import {
   createSimulatedStream,
   toStreamId,
@@ -216,6 +218,15 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     return handle.stream;
   };
 
+  // Most-recently matched request, cloned so the test can consume its
+  // body without affecting the original. See `scenario.lastRequest`.
+  // Type widened to satisfy the gap between Bun's global Request and
+  // the undici Request the fetch stub builds; both have the methods
+  // the public surface needs (clone, json, text, headers).
+  let lastMatchedRequest:
+    | ReturnType<WaitingFetch["request"]["clone"]>
+    | undefined;
+
   const routeWaitingFetch = (
     wf: WaitingFetch,
     stream: SimulatedStream,
@@ -224,6 +235,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     wf.settled = true;
     const idx = waiting.indexOf(wf);
     if (idx >= 0) waiting.splice(idx, 1);
+    lastMatchedRequest = wf.request.clone();
     // Per-call abort isolation on the matched stream: once a fetch has
     // been bound to a stream, an abort on its signal must error ONLY
     // that stream's controller. We attach the listener here (the
@@ -396,12 +408,44 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     });
   };
 
+  const lastRequest = (): Request | undefined =>
+    // The clone is produced by the (undici-typed) WaitingFetch.request,
+    // but the public Scenario type uses the platform's global Request.
+    // The shape is identical; the cast bridges the type-only gap.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- type-only bridge between undici Request and Bun's global Request
+    lastMatchedRequest as Request | undefined;
+
+  const replyOnce = (
+    provider: Provider,
+    opts: ReplyOnceOpts,
+  ): SimulatedStream => {
+    const stream = createStream();
+    const chunks = completeResponse(provider, {
+      ...(opts.text !== undefined ? { text: opts.text } : {}),
+      ...(opts.toolCalls !== undefined ? { toolCalls: opts.toolCalls } : {}),
+      ...(opts.headUsage !== undefined ? { headUsage: opts.headUsage } : {}),
+      ...(opts.tailUsage !== undefined ? { tailUsage: opts.tailUsage } : {}),
+    });
+    // Schedule at the next safe virtual time so callers do not have to
+    // compute `clock.now() + N` themselves and so multiple replyOnce
+    // calls in the same test never schedule into the past.
+    stream.enqueueAll(chunks, { startAt: clock.now() + 1 });
+    whenRequestMatches(
+      opts.predicate ?? (() => true),
+      stream,
+      opts.responseOpts,
+    );
+    return stream;
+  };
+
   const scenario: Scenario = {
     createStream,
     whenRequestMatches,
     onTool,
     invokeTool,
     lastToolDispatch,
+    lastRequest,
+    replyOnce,
     abortAt,
     abortAfter,
   };

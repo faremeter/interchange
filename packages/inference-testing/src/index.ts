@@ -20,6 +20,7 @@ export type {
 
 export type {
   Scenario,
+  ReplyOnceOpts,
   RequestPredicate,
   WhenRequestMatchesOpts,
   WireEventPredicate,
