@@ -20,6 +20,7 @@
     { "path": "apps/hub" },
     { "path": "apps/ui" },
     { "path": "apps/sidecar" },
-    { "path": "packages/inference-testing" }
+    { "path": "packages/inference-testing" },
+    { "path": "examples/coding-agent" }
   ]
 }
