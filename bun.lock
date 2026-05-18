@@ -156,6 +156,17 @@
         "arktype": "catalog:",
       },
     },
+    "examples/agent-structured-payload": {
+      "name": "@interchange/example-agent-structured-payload",
+      "version": "0.0.0",
+      "dependencies": {
+        "@interchange/agent": "workspace:*",
+        "@interchange/example-agent-common": "workspace:*",
+        "@interchange/inference": "workspace:*",
+        "@interchange/mime": "workspace:*",
+        "@interchange/types": "workspace:*",
+      },
+    },
     "examples/coding-agent": {
       "name": "@interchange/example-coding-agent",
       "version": "0.0.0",
@@ -553,6 +564,8 @@
     "@interchange/example-agent-rewind": ["@interchange/example-agent-rewind@workspace:examples/agent-rewind"],
 
     "@interchange/example-agent-rich-tool": ["@interchange/example-agent-rich-tool@workspace:examples/agent-rich-tool"],
+
+    "@interchange/example-agent-structured-payload": ["@interchange/example-agent-structured-payload@workspace:examples/agent-structured-payload"],
 
     "@interchange/example-coding-agent": ["@interchange/example-coding-agent@workspace:examples/coding-agent"],
 
