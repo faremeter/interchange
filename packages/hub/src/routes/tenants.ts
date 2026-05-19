@@ -20,7 +20,7 @@ import {
 
 import type { AppEnv } from "../context";
 import { first, ts } from "../format";
-import { generateId } from "../ids";
+import { generateId } from "@interchange/hub-common";
 
 const SYSTEM_ROLES = ["owner", "admin", "member"] as const;
 

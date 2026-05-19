@@ -11,7 +11,7 @@ import { getLogger } from "@interchange/log";
 import type { InferenceEvent, ContentBlock } from "@interchange/types/runtime";
 import { type DB, parseTurnPartType } from "@interchange/db";
 
-import { generateId } from "./ids";
+import { generateId } from "@interchange/hub-common";
 
 const log = getLogger(["hub", "event-collector"]);
 
