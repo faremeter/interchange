@@ -1,14 +1,14 @@
 import { createDB, createGrantStore } from "@interchange/db";
+import { createApp, createAuth } from "@interchange/hub-api";
 import {
   createAgentRepoStore,
-  createApp,
-  createAuth,
   createEventCollectorRegistry,
   createHubSessionLookups,
   createHubSessionOrchestrator,
   createSessionService,
   createSidecarRouter,
-} from "@interchange/hub";
+  type WsHandle,
+} from "@interchange/hub-sessions";
 import { generateKeyPair } from "@interchange/crypto-node";
 import { hexEncode } from "@interchange/types";
 import { upgradeWebSocket, websocket } from "hono/bun";
@@ -93,7 +93,7 @@ const app = createApp({
   sessionService,
   eventCollectors,
   sidecarWsHandler: upgradeWebSocket((_c) => {
-    let handle: import("@interchange/hub").WsHandle;
+    let handle: WsHandle;
     return {
       onOpen(_evt, ws) {
         handle = {
