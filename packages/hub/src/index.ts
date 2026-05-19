@@ -22,7 +22,4 @@ export {
   type WsHandle,
 } from "./ws";
 export { generateId } from "./ids";
-export {
-  resolveInstanceProviders,
-  pushProviderUpdates,
-} from "./credential-push";
+export { pushProviderUpdates } from "./credential-push";

@@ -8,6 +8,8 @@ export {
   resolveCredentialByName,
   resolveCredentialById,
   resolveCredentialRequirement,
+  resolveInstanceProviders,
+  ProviderMetadata,
 } from "./credential-resolution";
 export {
   parseAgentRow,

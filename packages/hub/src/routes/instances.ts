@@ -21,6 +21,7 @@ import {
 import {
   resolveCredentialRequirement,
   parseAgentSkills,
+  ProviderMetadata,
 } from "@interchange/db";
 import { evaluateGrants, authorize } from "@interchange/authz";
 import { parseMailToEmail, extractPartByPath } from "@interchange/mime";
@@ -30,12 +31,14 @@ import {
   CreateAgentInstance,
   AgentInstanceResponse,
   AgentHealth,
+  CredentialRequirement,
   OfferingDetail,
   GrantRequirement,
   SendMessage,
   MailResponse,
   InferenceTurnResponse,
   ErrorResponse,
+  formatAgentAddress,
   paginatedSchema,
 } from "@interchange/types";
 import type { GrantEffect, GrantOrigin } from "@interchange/types";
@@ -58,19 +61,8 @@ import {
   pageParameters,
 } from "../pagination";
 
-const CredentialRequirement = type({
-  providerName: "string",
-  "scopes?": "string[]",
-  source: "'tenant' | 'creator' | 'invoker'",
-  "name?": "string",
-});
-
 const CredentialRequirements = CredentialRequirement.array();
 const GrantRequirements = GrantRequirement.array();
-
-const ProviderMetadata = type({
-  baseURL: "string",
-});
 
 const ModelConfig = type({
   defaultModel: "string",
@@ -183,7 +175,7 @@ app.post(
     }
 
     const instanceId = generateId("instance");
-    const agentAddress = `${instanceId}@${tenant.domain}`;
+    const agentAddress = formatAgentAddress(instanceId, tenant.domain);
 
     // --- Credential resolution ---
 
