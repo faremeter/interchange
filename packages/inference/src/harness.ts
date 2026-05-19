@@ -24,7 +24,7 @@ import type {
   TokenUsage,
   AssistantTurn,
   ContentBlock,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 import { parseSSE } from "./sse";
 import { lookupProvider } from "./providers/registry";

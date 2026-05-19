@@ -1,6 +1,6 @@
 import { type } from "arktype";
-import type { MessageHeaders } from "@interchange/types/runtime";
-import { InterchangeType } from "@interchange/types/runtime";
+import type { MessageHeaders } from "@intx/types/runtime";
+import { InterchangeType } from "@intx/types/runtime";
 
 function isInterchangeType(s: string): s is InterchangeType {
   return !(InterchangeType(s) instanceof type.errors);

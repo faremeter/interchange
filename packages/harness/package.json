@@ -1,5 +1,5 @@
 {
-  "name": "@interchange/harness",
+  "name": "@intx/harness",
   "version": "0.0.0",
   "license": "LGPL-2.1-only",
   "type": "module",
@@ -10,12 +10,12 @@
     }
   },
   "dependencies": {
-    "@interchange/inference": "workspace:*",
-    "@interchange/log": "workspace:*",
-    "@interchange/types": "workspace:*",
+    "@intx/inference": "workspace:*",
+    "@intx/log": "workspace:*",
+    "@intx/types": "workspace:*",
     "arktype": "catalog:"
   },
   "devDependencies": {
-    "@interchange/mime": "workspace:*"
+    "@intx/mime": "workspace:*"
   }
 }

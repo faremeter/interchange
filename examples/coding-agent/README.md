@@ -1,11 +1,11 @@
 # coding-agent example
 
-A reference consumer of `@interchange/agent`. Wires the agent against
-`@interchange/tools-posix` (read/write/edit files, run shell, grep, search)
-and `@interchange/tools-lsp` (language-server diagnostics) so the model can
+A reference consumer of `@intx/agent`. Wires the agent against
+`@intx/tools-posix` (read/write/edit files, run shell, grep, search)
+and `@intx/tools-lsp` (language-server diagnostics) so the model can
 read files, write files, and reason about the codebase it is operating on.
 
-This example exists to demonstrate the public surface of `@interchange/agent`
+This example exists to demonstrate the public surface of `@intx/agent`
 end-to-end. Treat it as documentation that compiles.
 
 ## What it shows
@@ -18,7 +18,7 @@ end-to-end. Treat it as documentation that compiles.
 - Persistent history: re-running the example against the same `contextDir`
   picks up where the previous run left off — this is the resume-from-crash
   story. There is nothing to opt into; the agent commits each cycle to git
-  via `@interchange/storage-isogit` and `history()` projects from there.
+  via `@intx/storage-isogit` and `history()` projects from there.
 
 ## Running
 

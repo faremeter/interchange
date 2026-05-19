@@ -24,7 +24,7 @@ conversation, or surface the resolution to the user.
   even though the operation is technically incomplete.
 - Building an inbound approval message with
   `createInboundMessage({ correlationId })` from
-  `@interchange/mime` — the same builder a production approver
+  `@intx/mime` — the same builder a production approver
   service would use.
 - Delivering the message via `agent.deliver(message)` and watching
   `agent.stream()` for the matching `message.correlated` event.

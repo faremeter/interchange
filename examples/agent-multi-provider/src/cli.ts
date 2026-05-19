@@ -1,5 +1,5 @@
 // agent-multi-provider: combine three flavors of routing policy on
-// top of @interchange/agent's `providers` + `setProvider` surface:
+// top of @intx/agent's `providers` + `setProvider` surface:
 //
 //   * model-per-task — route each prompt to a "cheap" or "smart"
 //     model based on a per-prompt heuristic before each send.
@@ -20,8 +20,8 @@ import {
   resolveProvider,
   resolveStdio,
   type CommonMainOptions,
-} from "@interchange/example-agent-common";
-import type { ProviderConfig } from "@interchange/types/runtime";
+} from "@intx/example-agent-common";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 import {
   routeProvider,

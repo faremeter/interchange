@@ -5,7 +5,7 @@ import { createGateManager } from "./gates";
 import { createCorrelationRegistry } from "./correlation";
 import { createReactor } from "./reactor";
 import { createDefaultDependencies } from "./harness";
-import { createInboundMessage } from "@interchange/mime";
+import { createInboundMessage } from "@intx/mime";
 
 import type {
   ReactorDirector,
@@ -26,7 +26,7 @@ import type {
   PartialMessage,
   BeforeToolExtension,
   Compactor,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 import type { ReactorConfig, Reactor, ReactorEmittedEvent } from "./reactor";
 import type { Dependencies, InferenceHarnessOptions } from "./harness";
@@ -159,7 +159,7 @@ function waitForEvent(
 }
 
 // Simple inbound message factory. Delegates to the mail-builder so the
-// reactor tests exercise the same shape consumers of @interchange/mime
+// reactor tests exercise the same shape consumers of @intx/mime
 // produce in production code.
 function makeInboundMessage(correlationId?: string): InboundMessage {
   return createInboundMessage({
@@ -3031,7 +3031,7 @@ import type {
   ToolResultTransform,
   ContextTransform,
   TransformRecord,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 function passthroughToolTransform(
   name: string,

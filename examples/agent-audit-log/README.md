@@ -1,6 +1,6 @@
 # agent-audit-log
 
-Show that an `@interchange/agent` audit record is not a separate
+Show that an `@intx/agent` audit record is not a separate
 artifact you have to query through a special API — it is a real git
 repository at `contextDir`, with one commit per reactor cycle, and
 the audit data is stored in plain JSON-lines files in each commit's

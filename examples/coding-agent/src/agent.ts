@@ -1,6 +1,6 @@
 // Factory for the coding-agent reference consumer.
 //
-// `createCodingAgent` builds an `@interchange/agent` Agent wired against
+// `createCodingAgent` builds an `@intx/agent` Agent wired against
 // the posix tools (with the LSP plugin attached) and a real
 // `contextDir`-backed isogit store. The factory is separated from the
 // CLI entry so tests can construct the same agent with a stubbed
@@ -8,11 +8,11 @@
 
 import { mkdirSync } from "node:fs";
 
-import { createAgent, fromToolRunner, type Agent } from "@interchange/agent";
-import type { Dependencies } from "@interchange/inference";
-import { createLSPPlugin } from "@interchange/tools-lsp";
-import { createPosixTools, type PosixTools } from "@interchange/tools-posix";
-import type { ProviderConfig } from "@interchange/types/runtime";
+import { createAgent, fromToolRunner, type Agent } from "@intx/agent";
+import type { Dependencies } from "@intx/inference";
+import { createLSPPlugin } from "@intx/tools-lsp";
+import { createPosixTools, type PosixTools } from "@intx/tools-posix";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 import { CODING_AGENT_SYSTEM_PROMPT } from "./prompt";
 
@@ -40,7 +40,7 @@ export type CodingAgentOptions = {
   /**
    * Inference dependencies for the underlying agent. Production callers
    * leave this undefined; tests pass `setupHarness().deps` from
-   * `@interchange/inference-testing` to swap the fetch implementation.
+   * `@intx/inference-testing` to swap the fetch implementation.
    */
   deps?: Dependencies;
 };

@@ -1,8 +1,8 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- test refs[0]! always follows expect(refs.length) checks */
 import { describe, test, expect } from "bun:test";
-import { generateKeyPair, createNodeCrypto } from "@interchange/crypto-node";
+import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
 import { createInMemoryTransport } from "./index";
-import type { MailboxEvent, MessageRef } from "@interchange/types/runtime";
+import type { MailboxEvent, MessageRef } from "@intx/types/runtime";
 
 // ---------------------------------------------------------------------------
 // Test fixtures

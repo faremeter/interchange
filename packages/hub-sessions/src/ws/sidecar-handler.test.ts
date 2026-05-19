@@ -1,10 +1,7 @@
 import { sign as nodeSign } from "node:crypto";
 import { describe, test, expect, beforeEach } from "bun:test";
-import {
-  generateKeyPair,
-  importPrivateKeyBytes,
-} from "@interchange/crypto-node";
-import { hexDecode, hexEncode, parseAgentAddress } from "@interchange/types";
+import { generateKeyPair, importPrivateKeyBytes } from "@intx/crypto-node";
+import { hexDecode, hexEncode, parseAgentAddress } from "@intx/types";
 import { createSidecarRouter, type WsHandle } from "./sidecar-handler";
 
 function signChallenge(

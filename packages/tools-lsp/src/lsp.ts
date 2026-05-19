@@ -1,7 +1,7 @@
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import type { Diagnostic, Hover } from "vscode-languageserver-types";
-import { getLogger } from "@interchange/log";
+import { getLogger } from "@intx/log";
 import { createLSPClient, type LSPClient } from "./client";
 import * as ServerRegistry from "./server";
 import type { ServerInfo, ServerContext } from "./server";

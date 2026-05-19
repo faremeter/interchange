@@ -5,7 +5,7 @@ import { ArrowLeft, Trash2, X } from "lucide-react";
 import {
   type UpdatablePrincipalStatus,
   updatablePrincipalStatuses,
-} from "@interchange/types";
+} from "@intx/types";
 
 import { MutationError } from "@/components/mutation-error";
 import {

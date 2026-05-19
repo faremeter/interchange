@@ -18,7 +18,7 @@ import { dirname } from "node:path";
 import git from "isomorphic-git";
 
 export type CloneAndRewindOpts = {
-  /** Existing contextDir managed by an `@interchange/agent` instance. */
+  /** Existing contextDir managed by an `@intx/agent` instance. */
   sourceDir: string;
   /** Destination path; must not already exist. */
   destDir: string;

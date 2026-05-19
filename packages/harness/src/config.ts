@@ -9,8 +9,8 @@ import type {
   InferenceEvent,
   ReactorDirector,
   BeforeToolExtension,
-} from "@interchange/types/runtime";
-import type { AuthzCallResult } from "@interchange/inference";
+} from "@intx/types/runtime";
+import type { AuthzCallResult } from "@intx/inference";
 
 /**
  * Configuration passed to `createHarness`. All required fields must be

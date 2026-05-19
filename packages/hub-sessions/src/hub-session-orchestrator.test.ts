@@ -1,11 +1,8 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 
-import type { DB } from "@interchange/db";
-import type { GrantRule, GrantStore } from "@interchange/types/authz";
-import type {
-  InferenceEvent,
-  ProviderConfig,
-} from "@interchange/types/runtime";
+import type { DB } from "@intx/db";
+import type { GrantRule, GrantStore } from "@intx/types/authz";
+import type { InferenceEvent, ProviderConfig } from "@intx/types/runtime";
 
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { EventCollectorRegistry } from "./event-collector-registry";

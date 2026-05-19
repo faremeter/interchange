@@ -1,5 +1,5 @@
-import { createDB, createGrantStore } from "@interchange/db";
-import { createApp, createAuth } from "@interchange/hub-api";
+import { createDB, createGrantStore } from "@intx/db";
+import { createApp, createAuth } from "@intx/hub-api";
 import {
   createAgentRepoStore,
   createEventCollectorRegistry,
@@ -8,11 +8,11 @@ import {
   createSessionService,
   createSidecarRouter,
   type WsHandle,
-} from "@interchange/hub-sessions";
-import { generateKeyPair } from "@interchange/crypto-node";
-import { hexEncode } from "@interchange/types";
+} from "@intx/hub-sessions";
+import { generateKeyPair } from "@intx/crypto-node";
+import { hexEncode } from "@intx/types";
 import { upgradeWebSocket, websocket } from "hono/bun";
-import { setup, getLogger } from "@interchange/log";
+import { setup, getLogger } from "@intx/log";
 
 await setup();
 

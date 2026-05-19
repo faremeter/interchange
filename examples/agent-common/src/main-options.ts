@@ -6,8 +6,8 @@
 // each example express only what is unique about its `main()`
 // surface.
 
-import type { Dependencies } from "@interchange/inference";
-import type { ProviderConfig } from "@interchange/types/runtime";
+import type { Dependencies } from "@intx/inference";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 /**
  * Test-seam options every agent-* example's `main()` accepts:

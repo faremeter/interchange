@@ -19,7 +19,7 @@ import {
   type InstanceEvent,
   type InstanceSession,
   type ToolCallEvent,
-} from "@interchange/hub-client";
+} from "@intx/hub-client";
 
 import { MutationError } from "@/components/mutation-error";
 import {

@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 
-import type { ToolDefinition } from "@interchange/types/runtime";
+import type { ToolDefinition } from "@intx/types/runtime";
 
 import {
   createToolRunner,

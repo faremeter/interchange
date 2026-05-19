@@ -1,7 +1,7 @@
 // OpenAI SSE wire DSL.
 //
 // Each helper emits a single SSE event encoded as UTF-8 bytes the existing
-// `createOpenAIAdapter()` in `@interchange/inference/providers/openai` will
+// `createOpenAIAdapter()` in `@intx/inference/providers/openai` will
 // parse without error. The DSL produces the same byte shape OpenAI's
 // `/v1/chat/completions` stream emits, including the terminal `[DONE]`
 // sentinel that `parseSSE` consumes internally.

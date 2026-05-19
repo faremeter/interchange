@@ -1,11 +1,11 @@
 # agent-rewind
 
-Walk an `@interchange/agent` conversation backwards: clone the
+Walk an `@intx/agent` conversation backwards: clone the
 `contextDir`, roll the clone's `HEAD` back to an older commit, and
 open a fresh agent rooted at that earlier state. The original
 conversation is left untouched.
 
-This is the "branchable state" story for `@interchange/agent`. The
+This is the "branchable state" story for `@intx/agent`. The
 context store is a real git repository; every checkpoint is a real
 commit; "rewind" is just "copy the repo, then move HEAD".
 

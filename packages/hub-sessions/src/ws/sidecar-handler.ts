@@ -5,23 +5,23 @@
 // sidecars and the hub's internal systems.
 
 import { randomBytes } from "node:crypto";
-import { getLogger } from "@interchange/log";
-import { verifyEd25519 } from "@interchange/crypto-node";
-import { chunkPack, createPackReceiver } from "@interchange/pack-transport";
-import { hexDecode, hexEncode } from "@interchange/types";
+import { getLogger } from "@intx/log";
+import { verifyEd25519 } from "@intx/crypto-node";
+import { chunkPack, createPackReceiver } from "@intx/pack-transport";
+import { hexDecode, hexEncode } from "@intx/types";
 import { type } from "arktype";
 import {
   SidecarFrame,
   type HubFrame,
   type PackPushFrame,
   type PackDoneFrame,
-} from "@interchange/types/sidecar";
+} from "@intx/types/sidecar";
 import type {
   AbortReason,
   HarnessConfig,
   ProviderConfig,
-} from "@interchange/types/runtime";
-import type { GrantRule } from "@interchange/types/authz";
+} from "@intx/types/runtime";
+import type { GrantRule } from "@intx/types/authz";
 import {
   createSidecarEmitter,
   type SidecarEventEmitter,

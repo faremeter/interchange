@@ -1,5 +1,5 @@
 {
-  "name": "@interchange/storage-isogit",
+  "name": "@intx/storage-isogit",
   "version": "0.0.0",
   "license": "LGPL-2.1-only",
   "type": "module",
@@ -10,8 +10,8 @@
     }
   },
   "dependencies": {
-    "@interchange/mime": "workspace:*",
-    "@interchange/types": "workspace:*",
+    "@intx/mime": "workspace:*",
+    "@intx/types": "workspace:*",
     "arktype": "catalog:",
     "isomorphic-git": "^1.27.2"
   }

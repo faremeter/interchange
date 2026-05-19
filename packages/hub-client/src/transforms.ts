@@ -1,9 +1,9 @@
-import { parseAgentAddress } from "@interchange/types";
-import type { InferenceTurnResponse, MailResponse } from "@interchange/types";
+import { parseAgentAddress } from "@intx/types";
+import type { InferenceTurnResponse, MailResponse } from "@intx/types";
 
 import type { InstanceEvent, MailAddress, ToolCallEvent } from "./types";
 
-export { isAgentAddress } from "@interchange/types";
+export { isAgentAddress } from "@intx/types";
 
 export function parseFromHeader(from: string): string {
   const match = from.match(/^"(.+)"\s+<.+>$/);

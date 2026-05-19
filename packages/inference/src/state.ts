@@ -11,7 +11,7 @@ import type {
   PendingOperation,
   TokenUsage,
   ReactorState,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 import type { GateSnapshot } from "./gates";
 
 export type ReactorStateManager = ReturnType<typeof createStateManager>;

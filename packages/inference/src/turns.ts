@@ -5,7 +5,7 @@ import type {
   InboundMessage,
   ToolCall,
   ToolResult,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 export type { ConversationTurn, ContentBlock, AssistantTurn };
 

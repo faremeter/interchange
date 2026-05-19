@@ -1,5 +1,5 @@
-// Integration tests for @interchange/agent send/close flow driven by the
-// @interchange/inference-testing harness.
+// Integration tests for @intx/agent send/close flow driven by the
+// @intx/inference-testing harness.
 //
 // Each test wires a deterministic Anthropic SSE response, constructs an
 // agent backed by a real isogit context store and the harness's stubbed
@@ -17,12 +17,9 @@ import {
   createAgent,
   SendQueueFullError,
   type Agent,
-} from "@interchange/agent";
-import { setupHarness, type Harness } from "@interchange/inference-testing";
-import type {
-  ConversationTurn,
-  ProviderConfig,
-} from "@interchange/types/runtime";
+} from "@intx/agent";
+import { setupHarness, type Harness } from "@intx/inference-testing";
+import type { ConversationTurn, ProviderConfig } from "@intx/types/runtime";
 
 const PROVIDER: ProviderConfig = {
   provider: "anthropic",
@@ -31,7 +28,7 @@ const PROVIDER: ProviderConfig = {
   model: "claude-3-5-sonnet",
 };
 
-describe("@interchange/agent send-flow integration", () => {
+describe("@intx/agent send-flow integration", () => {
   let workDir: string;
   let harness: Harness;
 

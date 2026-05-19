@@ -6,7 +6,7 @@
 // throws a descriptive `Error` on failure — callers should let those bubble
 // up through bun:test's normal failure machinery.
 
-import type { InferenceEvent } from "@interchange/types/runtime";
+import type { InferenceEvent } from "@intx/types/runtime";
 
 /**
  * Partial expectation against an `InferenceEvent`. The `type` is required;

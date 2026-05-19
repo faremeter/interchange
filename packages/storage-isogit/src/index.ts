@@ -1,4 +1,4 @@
-import type { ContextStore, AuditStore } from "@interchange/types/runtime";
+import type { ContextStore, AuditStore } from "@intx/types/runtime";
 import { initAgentRepo } from "./init";
 import { IsogitStore } from "./store";
 import type { CommitSigner } from "./signer";

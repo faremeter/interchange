@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
-import { createAnthropicAdapter, parseSSE } from "@interchange/inference";
-import type { InferenceEvent } from "@interchange/types/runtime";
+import { createAnthropicAdapter, parseSSE } from "@intx/inference";
+import type { InferenceEvent } from "@intx/types/runtime";
 
 import * as anthropic from "./anthropic";
 

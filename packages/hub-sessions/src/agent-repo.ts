@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import git from "isomorphic-git";
-import { createSshSignature } from "@interchange/crypto-node";
+import { createSshSignature } from "@intx/crypto-node";
 import {
   initRepo,
   createDeployPack,
   receivePackObjects,
-} from "@interchange/storage-isogit";
+} from "@intx/storage-isogit";
 
 const AUTHOR = {
   name: "interchange-hub",

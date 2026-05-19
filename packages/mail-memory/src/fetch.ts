@@ -8,8 +8,8 @@ import type {
   SignatureStatus,
   CryptoProvider,
   MessageRef,
-} from "@interchange/types/runtime";
-import { InterchangeType } from "@interchange/types/runtime";
+} from "@intx/types/runtime";
+import { InterchangeType } from "@intx/types/runtime";
 import type { MailboxStore } from "./mailbox";
 import { requireMessage } from "./mailbox";
 import {
@@ -18,9 +18,9 @@ import {
   extractBoundary,
   parseMultipart,
   extractPartByPath,
-} from "@interchange/mime";
+} from "@intx/mime";
 import { buildMessageHeaders } from "./headers";
-import { verifyDetachedSignature } from "@interchange/crypto-node";
+import { verifyDetachedSignature } from "@intx/crypto-node";
 
 const MessagePayload = type({
   type: InterchangeType,

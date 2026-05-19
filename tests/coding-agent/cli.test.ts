@@ -1,5 +1,5 @@
 // End-to-end test for the coding-agent example's CLI. Drives the actual
-// `main()` entry through @interchange/inference-testing so we exercise
+// `main()` entry through @intx/inference-testing so we exercise
 // every real path the binary takes — argument parsing, agent
 // construction, send, stream pump, close, exit code — without making a
 // network call.
@@ -9,9 +9,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { main } from "@interchange/example-coding-agent";
-import { setupHarness, type Harness } from "@interchange/inference-testing";
-import type { ProviderConfig } from "@interchange/types/runtime";
+import { main } from "@intx/example-coding-agent";
+import { setupHarness, type Harness } from "@intx/inference-testing";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 const PROVIDER: ProviderConfig = {
   provider: "anthropic",
@@ -165,7 +165,7 @@ describe("coding-agent CLI", () => {
     // Verify the on-disk history projection survived both runs by
     // opening the context store directly — the issue's acceptance gate
     // for resume-from-crash.
-    const { createIsogitStore } = await import("@interchange/storage-isogit");
+    const { createIsogitStore } = await import("@intx/storage-isogit");
     const store = await createIsogitStore(contextDir);
     const loaded = await store.load();
     // Each round-trip produces a user turn and an assistant turn, so we

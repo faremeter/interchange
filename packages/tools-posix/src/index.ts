@@ -3,7 +3,7 @@ import type {
   BlobReader,
   ToolRunner,
   ToolDefinition,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 import { TOOL_DEFINITIONS, makeHandlerRegistry } from "./registry";
 import {
   composeMiddleware,

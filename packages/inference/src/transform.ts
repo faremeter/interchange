@@ -9,10 +9,7 @@
 // message's originating model. The originating model is tracked per-message,
 // not per-conversation.
 
-import type {
-  ConversationTurn,
-  ContentBlock,
-} from "@interchange/types/runtime";
+import type { ConversationTurn, ContentBlock } from "@intx/types/runtime";
 
 export type TransformOptions = {
   targetModel: string;

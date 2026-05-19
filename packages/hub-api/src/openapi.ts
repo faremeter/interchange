@@ -4,7 +4,7 @@ import {
   validator,
 } from "hono-openapi";
 import type { OpenAPIV3_1 } from "openapi-types";
-import * as allTypes from "@interchange/types";
+import * as allTypes from "@intx/types";
 
 type ArkTypeValue = {
   expression: string;
@@ -32,7 +32,7 @@ for (const [name, value] of Object.entries(allTypes)) {
 type ResolverResult = ReturnType<typeof baseResolver>;
 
 /**
- * Wraps hono-openapi's resolver to register known @interchange/types
+ * Wraps hono-openapi's resolver to register known @intx/types
  * exports as named components in the OpenAPI spec. Types not found in
  * the registry fall through to the default inline behavior.
  */

@@ -7,7 +7,7 @@ import {
   type GrantOrigin,
   grantEffects,
   grantOrigins,
-} from "@interchange/types";
+} from "@intx/types";
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";

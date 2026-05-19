@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import git from "isomorphic-git";
-import type { ContextCommit } from "@interchange/types/runtime";
+import type { ContextCommit } from "@intx/types/runtime";
 import { AUTHOR } from "./init";
 
 /**

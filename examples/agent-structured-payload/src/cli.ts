@@ -10,7 +10,7 @@
 // data verbatim for audit and downstream consumers.
 //
 // What the example does NOT do, and why: the default director in
-// `@interchange/harness` does not render structured payloads into
+// `@intx/harness` does not render structured payloads into
 // the model's prompt (`createInboundTurn` in
 // packages/inference/src/turns.ts returns null when
 // `message.content` is empty, which is the case for structured
@@ -26,10 +26,10 @@ import {
   resolveAgentProvider,
   resolveStdio,
   type SingleProviderMainOptions,
-} from "@interchange/example-agent-common";
-import type { ReactorEmittedEvent } from "@interchange/inference";
-import { createInboundMessage } from "@interchange/mime";
-import type { InboundMessage } from "@interchange/types/runtime";
+} from "@intx/example-agent-common";
+import type { ReactorEmittedEvent } from "@intx/inference";
+import { createInboundMessage } from "@intx/mime";
+import type { InboundMessage } from "@intx/types/runtime";
 
 const EXAMPLE_NAME = "agent-structured-payload";
 

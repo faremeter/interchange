@@ -12,14 +12,14 @@
 
 import { eq } from "drizzle-orm";
 import { type } from "arktype";
-import type { DB } from "@interchange/db";
-import { agentInstance } from "@interchange/db/schema";
-import { resolveInstanceProviders } from "@interchange/db";
-import { parseMailToEmail } from "@interchange/mime";
-import { parseInferenceEvent } from "@interchange/types/runtime";
-import type { GrantRule, GrantStore } from "@interchange/types/authz";
-import type { ProviderConfig } from "@interchange/types/runtime";
-import { getLogger } from "@interchange/log";
+import type { DB } from "@intx/db";
+import { agentInstance } from "@intx/db/schema";
+import { resolveInstanceProviders } from "@intx/db";
+import { parseMailToEmail } from "@intx/mime";
+import { parseInferenceEvent } from "@intx/types/runtime";
+import type { GrantRule, GrantStore } from "@intx/types/authz";
+import type { ProviderConfig } from "@intx/types/runtime";
+import { getLogger } from "@intx/log";
 
 import type { AgentRepoStore } from "./agent-repo";
 import type { EventCollectorRegistry } from "./event-collector-registry";

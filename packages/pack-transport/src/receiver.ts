@@ -9,7 +9,7 @@ import type {
   PackPushFrame,
   PackDoneFrame,
   PackRejectReason,
-} from "@interchange/types/sidecar";
+} from "@intx/types/sidecar";
 
 type InFlightTransfer = {
   agentAddress: string;

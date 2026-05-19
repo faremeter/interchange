@@ -3,7 +3,7 @@
 // These tests wire the real `IsogitStore`, the real `createSizeCapTransform`,
 // the real `read_file` POSIX tool, and a real `BlobReader`, against a
 // temporary git repo. The inference HTTP path is driven by the
-// `@interchange/inference-testing` harness so every production code path
+// `@intx/inference-testing` harness so every production code path
 // (the real adapter, the real SSE parser, the real reactor) runs end to end;
 // only the live network and live SMTP transports are stubbed.
 
@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 
-import { createIsogitStore, initAgentRepo } from "@interchange/storage-isogit";
+import { createIsogitStore, initAgentRepo } from "@intx/storage-isogit";
 import {
   createDefaultDependencies,
   createReactor,
@@ -21,7 +21,7 @@ import {
   type Reactor,
   type ReactorEmittedEvent,
   type Dependencies,
-} from "@interchange/inference";
+} from "@intx/inference";
 import type {
   AuditStore,
   ContextStore,
@@ -29,11 +29,11 @@ import type {
   ToolRunner,
   TokenUsage,
   TransformRecord,
-} from "@interchange/types/runtime";
-import { createBlobReader } from "@interchange/types/runtime";
-import { createPosixTools } from "@interchange/tools-posix";
-import { setupHarness, wire } from "@interchange/inference-testing";
-import type { Harness } from "@interchange/inference-testing";
+} from "@intx/types/runtime";
+import { createBlobReader } from "@intx/types/runtime";
+import { createPosixTools } from "@intx/tools-posix";
+import { setupHarness, wire } from "@intx/inference-testing";
+import type { Harness } from "@intx/inference-testing";
 
 const tempDirs: string[] = [];
 
@@ -106,7 +106,7 @@ function enqueueAnthropicTextResponse(
 
 function makeInboundMessage(
   text: string,
-): import("@interchange/types/runtime").InboundMessage {
+): import("@intx/types/runtime").InboundMessage {
   return {
     ref: { uid: 1, mailbox: "INBOX" },
     headers: {

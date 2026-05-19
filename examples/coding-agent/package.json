@@ -1,5 +1,5 @@
 {
-  "name": "@interchange/example-coding-agent",
+  "name": "@intx/example-coding-agent",
   "version": "0.0.0",
   "license": "LGPL-2.1-only",
   "private": true,
@@ -14,9 +14,9 @@
     "start": "bun run src/cli.ts"
   },
   "dependencies": {
-    "@interchange/agent": "workspace:*",
-    "@interchange/tools-lsp": "workspace:*",
-    "@interchange/tools-posix": "workspace:*",
-    "@interchange/types": "workspace:*"
+    "@intx/agent": "workspace:*",
+    "@intx/tools-lsp": "workspace:*",
+    "@intx/tools-posix": "workspace:*",
+    "@intx/types": "workspace:*"
   }
 }

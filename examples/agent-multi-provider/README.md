@@ -1,7 +1,7 @@
 # agent-multi-provider
 
 Combine three flavours of routing policy on top of
-`@interchange/agent`'s `providers` array and `setProvider()` method:
+`@intx/agent`'s `providers` array and `setProvider()` method:
 
 - **model-per-task** — choose a "cheap" or "smart" model per send
   based on a per-prompt heuristic (here: prompt length).
@@ -11,7 +11,7 @@ Combine three flavours of routing policy on top of
   cost knob; cheap models get the short, easy prompts and the smart
   model only sees the long, expensive ones.
 
-None of this logic lives inside `@interchange/agent`. The package
+None of this logic lives inside `@intx/agent`. The package
 exposes the registry and a hot-swap primitive (`setProvider`) and
 that's it — by design. Routing strategies vary too widely between
 deployments to ship inside the agent surface, so the example shows
@@ -91,7 +91,7 @@ The interesting code lives in two places:
    send. The loop reports the attempt chain and the served provider
    so the routing decisions are visible to the reader.
 
-## Why no failover inside `@interchange/agent`?
+## Why no failover inside `@intx/agent`?
 
 Failover is policy. The questions a real failover policy has to
 answer (which errors retry, how many retries, exponential backoff,

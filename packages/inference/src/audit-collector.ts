@@ -14,9 +14,9 @@
 // onDecision callback, and onEvent to the reactor's event stream. The
 // types alone do not enforce this — it is a composition-layer concern.
 
-import type { AuditRecord, AuditAuthz } from "@interchange/types/audit";
-import type { InferenceEvent } from "@interchange/types/runtime";
-import { getLogger } from "@interchange/log";
+import type { AuditRecord, AuditAuthz } from "@intx/types/audit";
+import type { InferenceEvent } from "@intx/types/runtime";
+import { getLogger } from "@intx/log";
 import type { AuthzDecision } from "./authz-extension";
 
 const logger = getLogger(["interchange", "audit-collector"]);

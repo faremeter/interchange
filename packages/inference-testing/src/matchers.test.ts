@@ -1,9 +1,6 @@
 import { describe, test, expect } from "bun:test";
 
-import type {
-  InferenceEvent,
-  PartialMessage,
-} from "@interchange/types/runtime";
+import type { InferenceEvent, PartialMessage } from "@intx/types/runtime";
 
 import { expectEvents, expectToolCall, expectToolCalls } from "./matchers";
 

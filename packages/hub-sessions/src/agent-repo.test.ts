@@ -3,10 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
-import { generateKeyPair } from "@interchange/crypto-node";
-import { createDeployPack } from "@interchange/storage-isogit";
+import { generateKeyPair } from "@intx/crypto-node";
+import { createDeployPack } from "@intx/storage-isogit";
 import { createAgentRepoStore } from "./agent-repo";
-import type { KeyPair } from "@interchange/types/runtime";
+import type { KeyPair } from "@intx/types/runtime";
 
 const tempDirs: string[] = [];
 

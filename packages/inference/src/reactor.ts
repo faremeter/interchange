@@ -35,9 +35,9 @@ import type {
   TransformRecord,
   StrategyContext,
   StrategyResult,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
-import { getLogger } from "@interchange/log";
+import { getLogger } from "@intx/log";
 import { runInference } from "./harness";
 import type { Dependencies, InferenceHarnessOptions } from "./harness";
 import { createCapabilities } from "./director";
@@ -548,7 +548,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       if (rawResult.pendingMarker !== undefined && stateManager !== null) {
         const marker = rawResult.pendingMarker;
         const gateId = `pending-${marker.correlationId}`;
-        const op: import("@interchange/types/runtime").PendingOperation = {
+        const op: import("@intx/types/runtime").PendingOperation = {
           correlationId: marker.correlationId,
           registeredAt: Date.now(),
           gateId,

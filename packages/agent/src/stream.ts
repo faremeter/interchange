@@ -12,7 +12,7 @@
 // stalled consumer balloon the agent's memory. The cap is configurable
 // via `streamBufferMax` on `AgentConfig`.
 
-import type { ReactorEmittedEvent } from "@interchange/inference";
+import type { ReactorEmittedEvent } from "@intx/inference";
 
 export class StreamBackpressureError extends Error {
   readonly maxBuffer: number;

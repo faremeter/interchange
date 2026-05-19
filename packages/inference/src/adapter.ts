@@ -2,7 +2,7 @@ import type {
   ConversationTurn,
   InferenceEvent,
   InferenceOptions,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 // The request shape the harness passes to fetch.
 export type BuiltRequest = {

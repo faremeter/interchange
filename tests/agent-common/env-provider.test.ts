@@ -10,8 +10,8 @@ import {
   DEFAULT_ANTHROPIC_BASE_URL,
   DEFAULT_ANTHROPIC_MODEL,
   resolveProvider,
-} from "@interchange/example-agent-common";
-import type { ProviderConfig } from "@interchange/types/runtime";
+} from "@intx/example-agent-common";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 const STUB_PROVIDER: ProviderConfig = {
   provider: "anthropic",

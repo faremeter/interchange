@@ -1,5 +1,5 @@
 {
-  "name": "@interchange/hub-client",
+  "name": "@intx/hub-client",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
     }
   },
   "dependencies": {
-    "@interchange/types": "workspace:*",
+    "@intx/types": "workspace:*",
     "arktype": "catalog:"
   }
 }

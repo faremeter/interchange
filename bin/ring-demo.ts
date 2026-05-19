@@ -2,16 +2,13 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { setup, getLogger } from "@interchange/log";
-import { createInMemoryTransport } from "@interchange/mail-memory";
-import { generateKeyPair, createNodeCrypto } from "@interchange/crypto-node";
-import { createIsogitStore } from "@interchange/storage-isogit";
-import { createPosixTools } from "@interchange/tools-posix";
-import { createHarness } from "@interchange/harness";
-import type {
-  InferenceEvent,
-  ProviderConfig,
-} from "@interchange/types/runtime";
+import { setup, getLogger } from "@intx/log";
+import { createInMemoryTransport } from "@intx/mail-memory";
+import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
+import { createIsogitStore } from "@intx/storage-isogit";
+import { createPosixTools } from "@intx/tools-posix";
+import { createHarness } from "@intx/harness";
+import type { InferenceEvent, ProviderConfig } from "@intx/types/runtime";
 
 await setup({ dev: true });
 

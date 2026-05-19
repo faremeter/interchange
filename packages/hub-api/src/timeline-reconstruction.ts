@@ -5,12 +5,12 @@ import {
   IsogitStore,
   listMail,
   type MailDirection,
-} from "@interchange/storage-isogit";
-import type { ConversationTurn } from "@interchange/types/runtime";
+} from "@intx/storage-isogit";
+import type { ConversationTurn } from "@intx/types/runtime";
 import {
   ErrorRecord,
   type ErrorRecord as ErrorRecordType,
-} from "@interchange/types/audit";
+} from "@intx/types/audit";
 
 export type ReconstructedEvent =
   | {

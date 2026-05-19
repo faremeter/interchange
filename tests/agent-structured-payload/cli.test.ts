@@ -12,9 +12,9 @@ import { join } from "node:path";
 import {
   buildOfferingRequest,
   main,
-} from "@interchange/example-agent-structured-payload";
-import { setupHarness, type Harness } from "@interchange/inference-testing";
-import type { ProviderConfig } from "@interchange/types/runtime";
+} from "@intx/example-agent-structured-payload";
+import { setupHarness, type Harness } from "@intx/inference-testing";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 const PROVIDER: ProviderConfig = {
   provider: "anthropic",

@@ -2,7 +2,7 @@
 
 _Inference_
 
-The inference package (`@interchange/inference`) is the provider-agnostic LLM layer that powers all agent reasoning in Interchange. It handles streaming, tool execution, context management, and token accounting across multiple model providers without depending on any provider's SDK.
+The inference package (`@intx/inference`) is the provider-agnostic LLM layer that powers all agent reasoning in Interchange. It handles streaming, tool execution, context management, and token accounting across multiple model providers without depending on any provider's SDK.
 
 ## Design Principles
 
@@ -480,7 +480,7 @@ Extensions layer on top of the core director without replacing it. Extensions ar
 
 ### Context Transforms and Compactors
 
-Three role-specific abstractions describe how content flowing into and out of the conversation is mutated. They share a common shape — each takes a typed input, produces a typed output, and emits a `TransformRecord` documenting what was done — but differ in where they fire and which file in the context store's working tree their output lands in. Type definitions live in `@interchange/types/runtime` and the runtime wiring is in `@interchange/inference`.
+Three role-specific abstractions describe how content flowing into and out of the conversation is mutated. They share a common shape — each takes a typed input, produces a typed output, and emits a `TransformRecord` documenting what was done — but differ in where they fire and which file in the context store's working tree their output lands in. Type definitions live in `@intx/types/runtime` and the runtime wiring is in `@intx/inference`.
 
 - **`ToolResultTransform`** — Runs on each tool result entering history. The default size-cap policy (`createSizeCapTransform`) ships out of the box: oversized payloads are spilled to `tool-output/{callId}` via `ContextStore.writeBlob` and the inline content is replaced with a marker carrying a `tool-output:///{callId}` URI. The reactor calls the transform chain between `toolRunner.run` and `createToolResultTurn`; the transformed output is appended to `turns.jsonl`.
 - **`ContextTransform`** — Runs in order before every inference call, producing the materialized prompt. Output is written to `prompt.jsonl` for the cycle; the durable history in `turns.jsonl` is untouched. Pending status injection, aged-result clearing, and post-success collapse are all describable as `ContextTransform`s.

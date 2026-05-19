@@ -5,7 +5,7 @@
 // the context store and rewrite the in-history block to a
 // `tool-output:///{callId}` URI.
 
-import { stringTool, type AgentTool } from "@interchange/agent";
+import { stringTool, type AgentTool } from "@intx/agent";
 
 /**
  * Default size of the synthetic payload. Comfortably above the agent's

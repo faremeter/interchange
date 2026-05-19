@@ -1,5 +1,5 @@
 {
-  "name": "@interchange/example-agent-resume",
+  "name": "@intx/example-agent-resume",
   "version": "0.0.0",
   "license": "LGPL-2.1-only",
   "private": true,
@@ -14,9 +14,9 @@
     "start": "bun run src/cli.ts"
   },
   "dependencies": {
-    "@interchange/agent": "workspace:*",
-    "@interchange/example-agent-common": "workspace:*",
-    "@interchange/inference": "workspace:*",
-    "@interchange/types": "workspace:*"
+    "@intx/agent": "workspace:*",
+    "@intx/example-agent-common": "workspace:*",
+    "@intx/inference": "workspace:*",
+    "@intx/types": "workspace:*"
   }
 }

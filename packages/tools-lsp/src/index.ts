@@ -1,4 +1,4 @@
-import type { ToolPlugin } from "@interchange/tools-posix";
+import type { ToolPlugin } from "@intx/tools-posix";
 import { createLSPManager } from "./lsp";
 import { createLSPMiddleware } from "./middleware";
 import { LSP_TOOL_DEFINITION, makeLSPToolHandler } from "./tool";

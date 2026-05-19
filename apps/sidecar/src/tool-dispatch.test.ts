@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import type { DeployToolInfo } from "@interchange/harness";
-import { createPosixTools } from "@interchange/tools-posix";
+import type { DeployToolInfo } from "@intx/harness";
+import { createPosixTools } from "@intx/tools-posix";
 import { buildToolDispatch } from "./session-manager";
 
 function makeDeployTool(name: string, hasHandler: boolean): DeployToolInfo {

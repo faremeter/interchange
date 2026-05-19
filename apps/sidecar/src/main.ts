@@ -1,6 +1,6 @@
-import { setup, getLogger } from "@interchange/log";
-import { createInMemoryTransport } from "@interchange/mail-memory";
-import type { InferenceEvent } from "@interchange/types/runtime";
+import { setup, getLogger } from "@intx/log";
+import { createInMemoryTransport } from "@intx/mail-memory";
+import type { InferenceEvent } from "@intx/types/runtime";
 
 import { createSessionManager } from "./session-manager";
 import { createWsClient } from "./ws-client";

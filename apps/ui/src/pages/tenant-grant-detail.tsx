@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Pencil, Trash2, X } from "lucide-react";
-import { type GrantEffect, grantEffects } from "@interchange/types";
+import { type GrantEffect, grantEffects } from "@intx/types";
 
 import { MutationError } from "@/components/mutation-error";
 import {

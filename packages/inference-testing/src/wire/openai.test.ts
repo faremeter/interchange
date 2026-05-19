@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
-import { createOpenAIAdapter, parseSSE } from "@interchange/inference";
-import type { InferenceEvent } from "@interchange/types/runtime";
+import { createOpenAIAdapter, parseSSE } from "@intx/inference";
+import type { InferenceEvent } from "@intx/types/runtime";
 
 import * as openai from "./openai";
 

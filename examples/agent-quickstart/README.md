@@ -1,6 +1,6 @@
 # agent-quickstart
 
-The smallest runnable `@interchange/agent` program. Construct, send a
+The smallest runnable `@intx/agent` program. Construct, send a
 prompt, print the reply, close. Nothing else.
 
 This example exists to answer "what is the minimum amount of code I
@@ -44,7 +44,7 @@ rm -rf ../../tmp/agent-quickstart
 
 Without `ANTHROPIC_API_KEY` set the example prints a short message
 explaining what to set and exits non-zero. That message comes from
-`@interchange/example-agent-common`'s `resolveProvider` helper, which
+`@intx/example-agent-common`'s `resolveProvider` helper, which
 every agent-\* example shares.
 
 ## Walkthrough

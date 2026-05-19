@@ -15,8 +15,8 @@ import type {
   ToolDefinition,
   OutboundMessage,
   SearchQuery,
-} from "@interchange/types/runtime";
-import { InterchangeType } from "@interchange/types/runtime";
+} from "@intx/types/runtime";
+import { InterchangeType } from "@intx/types/runtime";
 
 type ToolHandler = (call: ToolCall, signal: AbortSignal) => Promise<ToolResult>;
 

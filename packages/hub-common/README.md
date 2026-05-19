@@ -1,17 +1,17 @@
-# @interchange/hub-common
+# @intx/hub-common
 
 Utilities shared across the hub packages. This package has a generic name and
 is therefore at risk of becoming a junk drawer. A new module belongs here only
 if it satisfies all of the following:
 
 1. It is genuinely needed by more than one of the hub packages
-   (`@interchange/hub-api`, `@interchange/hub-sessions`, or future hub
+   (`@intx/hub-api`, `@intx/hub-sessions`, or future hub
    packages). Code used by exactly one package belongs in that package.
 2. It encodes hub-schema-owner knowledge that does not belong in
-   `@interchange/types`. For example, the id prefix table here is the
+   `@intx/types`. For example, the id prefix table here is the
    identity namespace of the hub's database schema, so it lives with the
    schema owner. By contrast, a generic hex encoder belongs in
-   `@interchange/types` (and in fact `@interchange/types` already owns one);
+   `@intx/types` (and in fact `@intx/types` already owns one);
    do not duplicate it here.
 3. It is not session-plane logic, HTTP-surface logic, or a database concern
    -- those have dedicated packages.

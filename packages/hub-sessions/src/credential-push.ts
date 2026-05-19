@@ -4,10 +4,10 @@
 // instance in the tenant after a credential secret is rotated.
 
 import { eq, and } from "drizzle-orm";
-import { getLogger } from "@interchange/log";
-import { agentInstance } from "@interchange/db/schema";
-import { resolveInstanceProviders } from "@interchange/db";
-import type { DB } from "@interchange/db";
+import { getLogger } from "@intx/log";
+import { agentInstance } from "@intx/db/schema";
+import { resolveInstanceProviders } from "@intx/db";
+import type { DB } from "@intx/db";
 
 import type { SidecarRouter } from "./ws/sidecar-handler";
 

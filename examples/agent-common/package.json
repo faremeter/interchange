@@ -1,5 +1,5 @@
 {
-  "name": "@interchange/example-agent-common",
+  "name": "@intx/example-agent-common",
   "version": "0.0.0",
   "license": "LGPL-2.1-only",
   "private": true,
@@ -11,7 +11,7 @@
     }
   },
   "dependencies": {
-    "@interchange/agent": "workspace:*",
-    "@interchange/types": "workspace:*"
+    "@intx/agent": "workspace:*",
+    "@intx/types": "workspace:*"
   }
 }

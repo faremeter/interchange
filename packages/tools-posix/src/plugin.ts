@@ -1,8 +1,4 @@
-import type {
-  ToolCall,
-  ToolResult,
-  ToolDefinition,
-} from "@interchange/types/runtime";
+import type { ToolCall, ToolResult, ToolDefinition } from "@intx/types/runtime";
 
 export type ToolHandler = (
   call: ToolCall,

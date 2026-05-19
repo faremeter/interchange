@@ -17,11 +17,8 @@ import {
   resolveAgentProvider,
   resolveStdio,
   type SingleProviderMainOptions,
-} from "@interchange/example-agent-common";
-import type {
-  ContentBlock,
-  ConversationTurn,
-} from "@interchange/types/runtime";
+} from "@intx/example-agent-common";
+import type { ContentBlock, ConversationTurn } from "@intx/types/runtime";
 
 import { createNoisyTool, DEFAULT_PAYLOAD_CHARS } from "./noisy-tool";
 

@@ -17,18 +17,18 @@ import {
   provider,
   sessionMail,
   turnPart,
-} from "@interchange/db/schema";
+} from "@intx/db/schema";
 import {
   resolveCredentialRequirement,
   parseAgentSkills,
   ProviderMetadata,
-} from "@interchange/db";
-import type { DB } from "@interchange/db";
-import { evaluateGrants, authorize } from "@interchange/authz";
-import type { ConditionRegistry, GrantStore } from "@interchange/types/authz";
-import { parseMailToEmail, extractPartByPath } from "@interchange/mime";
+} from "@intx/db";
+import type { DB } from "@intx/db";
+import { evaluateGrants, authorize } from "@intx/authz";
+import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
+import { parseMailToEmail, extractPartByPath } from "@intx/mime";
 
-import { generateKeyPair, createNodeCrypto } from "@interchange/crypto-node";
+import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
 import {
   CreateAgentInstance,
   AgentInstanceResponse,
@@ -42,24 +42,21 @@ import {
   ErrorResponse,
   formatAgentAddress,
   paginatedSchema,
-} from "@interchange/types";
-import type { GrantEffect, GrantOrigin } from "@interchange/types";
-import type {
-  CryptoProvider,
-  ProviderConfig,
-} from "@interchange/types/runtime";
+} from "@intx/types";
+import type { GrantEffect, GrantOrigin } from "@intx/types";
+import type { CryptoProvider, ProviderConfig } from "@intx/types/runtime";
 import {
   SessionLaunchError,
   type EventCollectorRegistry,
   type SessionService,
   type SidecarRouter,
-} from "@interchange/hub-sessions";
+} from "@intx/hub-sessions";
 import { formatOffering } from "./offerings";
 
 import type { TenantEnv } from "../context";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
-import { generateId } from "@interchange/hub-common";
+import { generateId } from "@intx/hub-common";
 import { first, ts } from "../format";
 import {
   parsePageParams,

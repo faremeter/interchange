@@ -1,8 +1,8 @@
 import { describe, test, expect } from "bun:test";
 
-import { createInMemoryGrantStore } from "@interchange/authz";
-import type { GrantRule } from "@interchange/types/authz";
-import type { SessionStatus } from "@interchange/types";
+import { createInMemoryGrantStore } from "@intx/authz";
+import type { GrantRule } from "@intx/types/authz";
+import type { SessionStatus } from "@intx/types";
 
 import { createApp } from "../app";
 import {
@@ -10,7 +10,7 @@ import {
   type EventCollectorRegistry,
   type SessionService,
   type SidecarRouter,
-} from "@interchange/hub-sessions";
+} from "@intx/hub-sessions";
 import type { GetSession } from "../session";
 
 // ---------------------------------------------------------------------------

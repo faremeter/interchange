@@ -31,15 +31,15 @@
 // caller-supplied director that just relays the model it was
 // constructed with.
 
-import { createDefaultDirector } from "@interchange/harness";
+import { createDefaultDirector } from "@intx/harness";
 import {
   createReactorAssembly,
   type AuthzExtensionOptions,
   type Dependencies,
   type ReactorEmittedEvent,
-} from "@interchange/inference";
-import { createInboundMessage } from "@interchange/mime";
-import { createIsogitStore } from "@interchange/storage-isogit";
+} from "@intx/inference";
+import { createInboundMessage } from "@intx/mime";
+import { createIsogitStore } from "@intx/storage-isogit";
 import type {
   AssistantTurn,
   AuditStore,
@@ -51,7 +51,7 @@ import type {
   ProviderConfig,
   ReactorCapabilities,
   ReactorDirector,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 import { acquireContextDirLock, type ContextDirLock } from "./lock";
 import { createProviderRegistry, type ProviderRegistry } from "./provider";
@@ -123,7 +123,7 @@ export type AgentConfig = {
    * `runInference` call. Production callers should leave this undefined —
    * the assembly falls back to `createDefaultDependencies()` which binds
    * `globalThis.fetch`. Pass `setupHarness().deps` from
-   * `@interchange/inference-testing` in tests to swap the fetch
+   * `@intx/inference-testing` in tests to swap the fetch
    * implementation for a deterministic stub.
    */
   deps?: Dependencies;

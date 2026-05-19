@@ -1,9 +1,9 @@
 import { eq, and, isNull } from "drizzle-orm";
 import { type } from "arktype";
 
-import { getLogger } from "@interchange/log";
-import { CredentialRequirement as CredentialRequirementType } from "@interchange/types";
-import type { ProviderConfig } from "@interchange/types/runtime";
+import { getLogger } from "@intx/log";
+import { CredentialRequirement as CredentialRequirementType } from "@intx/types";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 import type { DB } from "./client";
 import { agent } from "./schema/agents";

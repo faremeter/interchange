@@ -27,17 +27,17 @@ import {
   type SidecarRouter,
   type SessionService,
   type WsHandle,
-} from "@interchange/hub-sessions";
-import type { HarnessConfig } from "@interchange/types/runtime";
-import { hexEncode } from "@interchange/types";
+} from "@intx/hub-sessions";
+import type { HarnessConfig } from "@intx/types/runtime";
+import { hexEncode } from "@intx/types";
 import { sanitizeAddress } from "../../apps/sidecar/src/session-manager";
 import {
   assembleSignedContent,
   assembleMessage,
   createDetachedSignatureFromProvider,
   type MessageHeaders,
-} from "@interchange/mime";
-import { generateKeyPair, createNodeCrypto } from "@interchange/crypto-node";
+} from "@intx/mime";
+import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
 import type { Subprocess } from "bun";
 import git from "isomorphic-git";
 

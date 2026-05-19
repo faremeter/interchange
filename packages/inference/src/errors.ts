@@ -1,4 +1,4 @@
-import type { InferenceError } from "@interchange/types/runtime";
+import type { InferenceError } from "@intx/types/runtime";
 
 export type { InferenceError };
 

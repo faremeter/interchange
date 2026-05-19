@@ -6,12 +6,12 @@ The hub — a multi-tenant control plane — manages tenants,
 principals (users and agents under one authorization model),
 capability grants, credentials, and agent lifecycle. Agents under
 hub management run in sidecars that drive a harness on the hub's
-behalf. The agent runtime — [`@interchange/agent`](./packages/agent)
+behalf. The agent runtime — [`@intx/agent`](./packages/agent)
 and the family of packages around it — runs anywhere from a
 long-lived server to a Cloudflare Worker, swapping implementations
 of storage, cryptography, message transport, tools, and payments to
 match the environment. Both ends share the type definitions in
-[`@interchange/types`](./packages/types).
+[`@intx/types`](./packages/types).
 
 What you build on top is up to you. A coding assistant. A
 mail-driven workflow agent. An autonomous trader. A research
@@ -71,4 +71,4 @@ spec is at `GET /openapi.json`; the human-readable reference is
 generated into [`docs/API.md`](./docs/API.md) by
 [`bin/gen-api-docs.ts`](./bin/gen-api-docs.ts) from ArkType
 introspection over the type definitions in
-[`@interchange/types`](./packages/types).
+[`@intx/types`](./packages/types).

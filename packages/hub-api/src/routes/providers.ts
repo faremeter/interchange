@@ -2,20 +2,20 @@ import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import { provider } from "@interchange/db/schema";
-import { getAncestorChain, parseProviderRow } from "@interchange/db";
-import type { DB } from "@interchange/db";
+import { provider } from "@intx/db/schema";
+import { getAncestorChain, parseProviderRow } from "@intx/db";
+import type { DB } from "@intx/db";
 import {
   CreateProvider,
   UpdateProvider,
   ProviderResponse,
   ErrorResponse,
   paginatedSchema,
-} from "@interchange/types";
+} from "@intx/types";
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
-import { generateId } from "@interchange/hub-common";
+import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import {

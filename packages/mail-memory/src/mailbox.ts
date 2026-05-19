@@ -1,4 +1,4 @@
-import type { CryptoProvider, MailboxEvent } from "@interchange/types/runtime";
+import type { CryptoProvider, MailboxEvent } from "@intx/types/runtime";
 
 /**
  * Pre-parsed envelope extracted from MIME headers at delivery time.

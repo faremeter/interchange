@@ -10,14 +10,14 @@
 // for the common case. Tests that need exact control over event boundaries
 // should call the per-provider helpers directly.
 
-import type { TokenUsage } from "@interchange/types/runtime";
+import type { TokenUsage } from "@intx/types/runtime";
 
 import * as anthropic from "./anthropic";
 import * as openai from "./openai";
 
 /**
  * Identifier of the wire format to generate. Matches the keys in
- * `@interchange/inference/providers/registry`:
+ * `@intx/inference/providers/registry`:
  * - `"anthropic"` — Anthropic Messages API SSE
  * - `"openai"` — OpenAI Chat Completions SSE (also covers
  *   `openai-compatible`, which shares the same wire shape)

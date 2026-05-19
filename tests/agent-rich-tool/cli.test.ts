@@ -1,5 +1,5 @@
 // agent-rich-tool end-to-end test. Drives the full pendingMarker
-// dance through @interchange/inference-testing: the model calls
+// dance through @intx/inference-testing: the model calls
 // request_approval, the tool returns a pending marker, the model
 // follows up with a "waiting" text, then the CLI delivers a matching
 // inbound approval and waits for message.correlated.
@@ -9,9 +9,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { main } from "@interchange/example-agent-rich-tool";
-import { setupHarness, type Harness } from "@interchange/inference-testing";
-import type { ProviderConfig } from "@interchange/types/runtime";
+import { main } from "@intx/example-agent-rich-tool";
+import { setupHarness, type Harness } from "@intx/inference-testing";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 const PROVIDER: ProviderConfig = {
   provider: "anthropic",

@@ -15,7 +15,7 @@ import type {
   StrategyResult,
   ToolResult,
   ToolResultTransform,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 const SIZE_CAP_VERSION = "1";
 const SIZE_CAP_NAME = "size-cap";

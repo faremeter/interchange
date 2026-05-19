@@ -6,7 +6,7 @@ import {
   grantEffects,
   grantOrigins,
   sidecarStatuses,
-} from "@interchange/types";
+} from "@intx/types";
 
 import type {
   agent,

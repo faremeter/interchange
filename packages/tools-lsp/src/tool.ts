@@ -1,10 +1,6 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import type {
-  ToolCall,
-  ToolResult,
-  ToolDefinition,
-} from "@interchange/types/runtime";
+import type { ToolCall, ToolResult, ToolDefinition } from "@intx/types/runtime";
 import type { LSPManager } from "./lsp";
 
 const OPERATIONS = [

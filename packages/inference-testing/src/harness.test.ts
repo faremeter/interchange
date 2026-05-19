@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 
-import { HarnessId, type Dependencies } from "@interchange/inference";
+import { HarnessId, type Dependencies } from "@intx/inference";
 
 import { setupHarness } from "./harness";
 import { WrongHarnessError } from "./errors";

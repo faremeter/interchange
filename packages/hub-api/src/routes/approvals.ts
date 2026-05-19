@@ -5,7 +5,7 @@ import {
   ApproveAction,
   RejectAction,
   ErrorResponse,
-} from "@interchange/types";
+} from "@intx/types";
 
 import type { AppEnv } from "../context";
 

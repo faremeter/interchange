@@ -1,4 +1,4 @@
-// agent-audit-log: show that an @interchange/agent contextDir is a
+// agent-audit-log: show that an @intx/agent contextDir is a
 // real git repository, so the audit story is just "git log + git
 // show". The example sends N prompts (defaulting to 2), then walks
 // the resulting commits with isomorphic-git and prints a summary per
@@ -11,7 +11,7 @@ import {
   resolveAgentProvider,
   resolveStdio,
   type SingleProviderMainOptions,
-} from "@interchange/example-agent-common";
+} from "@intx/example-agent-common";
 
 import { summarizeAuditLog } from "./inspect";
 

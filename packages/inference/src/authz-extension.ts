@@ -21,8 +21,8 @@
 // logged but swallowed so it cannot interfere with the authorization
 // decision or mask the original error.
 
-import type { BeforeToolExtension } from "@interchange/types/runtime";
-import type { Effect } from "@interchange/types/authz";
+import type { BeforeToolExtension } from "@intx/types/runtime";
+import type { Effect } from "@intx/types/authz";
 
 export type AuthzMatchedGrant = {
   id: string;

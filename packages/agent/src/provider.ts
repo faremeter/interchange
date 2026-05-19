@@ -15,7 +15,7 @@ import { type } from "arktype";
 import {
   ProviderConfig as ProviderConfigValidator,
   type ProviderConfig,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 export class InvalidProviderConfigError extends Error {
   constructor(message: string) {

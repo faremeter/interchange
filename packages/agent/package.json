@@ -1,5 +1,5 @@
 {
-  "name": "@interchange/agent",
+  "name": "@intx/agent",
   "version": "0.0.0",
   "license": "LGPL-2.1-only",
   "type": "module",
@@ -10,11 +10,11 @@
     }
   },
   "dependencies": {
-    "@interchange/harness": "workspace:*",
-    "@interchange/inference": "workspace:*",
-    "@interchange/mime": "workspace:*",
-    "@interchange/storage-isogit": "workspace:*",
-    "@interchange/types": "workspace:*",
+    "@intx/harness": "workspace:*",
+    "@intx/inference": "workspace:*",
+    "@intx/mime": "workspace:*",
+    "@intx/storage-isogit": "workspace:*",
+    "@intx/types": "workspace:*",
     "arktype": "catalog:"
   }
 }

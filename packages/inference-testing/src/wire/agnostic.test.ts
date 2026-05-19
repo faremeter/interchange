@@ -4,8 +4,8 @@ import {
   createAnthropicAdapter,
   createOpenAIAdapter,
   parseSSE,
-} from "@interchange/inference";
-import type { InferenceEvent } from "@interchange/types/runtime";
+} from "@intx/inference";
+import type { InferenceEvent } from "@intx/types/runtime";
 
 import { assistantText, completeResponse, toolCall, usage } from "./agnostic";
 

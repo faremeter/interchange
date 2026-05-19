@@ -3,7 +3,7 @@ import type {
   InboundMessage,
   MessageAttachment,
   OutboundMessage,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 import { createInboundMessage, createOutboundMessage } from "./mail-builder";
 import type {

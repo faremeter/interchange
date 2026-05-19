@@ -1,7 +1,7 @@
 import { type } from "arktype";
 
-import type { InferenceTurnResponse, MailResponse } from "@interchange/types";
-import { parseInferenceEvent } from "@interchange/types/runtime";
+import type { InferenceTurnResponse, MailResponse } from "@intx/types";
+import { parseInferenceEvent } from "@intx/types/runtime";
 
 import {
   mailDeliveryToEvent,

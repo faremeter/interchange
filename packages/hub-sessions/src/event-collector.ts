@@ -6,12 +6,12 @@
 
 import { eq } from "drizzle-orm";
 
-import { inferenceTurn, turnPart } from "@interchange/db/schema";
-import { getLogger } from "@interchange/log";
-import type { InferenceEvent, ContentBlock } from "@interchange/types/runtime";
-import { type DB, parseTurnPartType } from "@interchange/db";
+import { inferenceTurn, turnPart } from "@intx/db/schema";
+import { getLogger } from "@intx/log";
+import type { InferenceEvent, ContentBlock } from "@intx/types/runtime";
+import { type DB, parseTurnPartType } from "@intx/db";
 
-import { generateId } from "@interchange/hub-common";
+import { generateId } from "@intx/hub-common";
 
 const log = getLogger(["hub", "event-collector"]);
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The sidecar manages agent harnesses on behalf of the hub. Each agent gets its own harness instance backed by `@interchange/harness`, with an isogit repository for persistent storage and an Ed25519 key pair for identity.
+The sidecar manages agent harnesses on behalf of the hub. Each agent gets its own harness instance backed by `@intx/harness`, with an isogit repository for persistent storage and an Ed25519 key pair for identity.
 
 ## Architecture
 
@@ -21,7 +21,7 @@ The sidecar manages agent harnesses on behalf of the hub. Each agent gets its ow
 │              Sidecar (apps/sidecar/)                              │
 │  - One per machine                                                │
 │  - Pure WebSocket client (no HTTP server)                        │
-│  - Creates @interchange/harness instances per agent              │
+│  - Creates @intx/harness instances per agent              │
 │  - Self-restores agent sessions from disk on restart             │
 │  - Proves agent ownership via Ed25519 challenge/response         │
 └─────────────────────────────────────────────────────────────────┘

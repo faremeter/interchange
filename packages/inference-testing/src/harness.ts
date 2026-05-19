@@ -3,8 +3,8 @@ import {
   runInference,
   type Dependencies,
   type InferenceHarnessOptions,
-} from "@interchange/inference";
-import type { InferenceEvent } from "@interchange/types/runtime";
+} from "@intx/inference";
+import type { InferenceEvent } from "@intx/types/runtime";
 
 import {
   ClockWallClockOverrunError,
@@ -104,7 +104,7 @@ export type Harness = {
    * Default driver for production `runInference` through the harness's
    * `deps`. The wrapper:
    *
-   * 1. Calls `@interchange/inference`'s real `runInference` with `opts`
+   * 1. Calls `@intx/inference`'s real `runInference` with `opts`
    *    plus `harness.deps` automatically injected (callers do not — and
    *    must not — pass `deps` themselves).
    * 2. When the underlying iterator emits `inference.tool_call.end`,

@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { type } from "arktype";
-import type { ToolDefinition } from "@interchange/types/runtime";
+import type { ToolDefinition } from "@intx/types/runtime";
 
 const ToolManifest = type({
   "name?": "string",

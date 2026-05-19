@@ -1,5 +1,5 @@
 // End-to-end test for agent-quickstart. Drives the example's `main()`
-// through @interchange/inference-testing so the exact code path a
+// through @intx/inference-testing so the exact code path a
 // user runs is exercised — argument parsing, provider resolution,
 // createAgent, send, close — without making a network call.
 
@@ -8,9 +8,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { main } from "@interchange/example-agent-quickstart";
-import { setupHarness, type Harness } from "@interchange/inference-testing";
-import type { ProviderConfig } from "@interchange/types/runtime";
+import { main } from "@intx/example-agent-quickstart";
+import { setupHarness, type Harness } from "@intx/inference-testing";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 const PROVIDER: ProviderConfig = {
   provider: "anthropic",

@@ -17,7 +17,7 @@ for name in "$@"; do
 
 	cat > "$pkgdir/package.json" <<-EOF
 	{
-	  "name": "@interchange/$name",
+	  "name": "@intx/$name",
 	  "version": "0.0.0",
 	  "license": "LGPL-2.1-only",
 	  "type": "module",
@@ -41,7 +41,7 @@ for name in "$@"; do
 	export {};
 	EOF
 
-	log::info "created package @interchange/$name"
+	log::info "created package @intx/$name"
 done
 
 log::info "running bun install..."

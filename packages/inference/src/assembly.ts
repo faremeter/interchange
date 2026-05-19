@@ -8,7 +8,7 @@
 // runtimes tomorrow) should use this helper rather than calling `createReactor`
 // directly so the wiring stays consistent across composition points.
 
-import { getLogger } from "@interchange/log";
+import { getLogger } from "@intx/log";
 import {
   createBlobReader,
   type BlobReader,
@@ -21,7 +21,7 @@ import {
   type ReactorDirector,
   type ToolResultTransform,
   type ToolRunner,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 import { createAuditCollector, type AuditCollector } from "./audit-collector";
 import {

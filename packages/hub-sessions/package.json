@@ -1,5 +1,5 @@
 {
-  "name": "@interchange/hub-sessions",
+  "name": "@intx/hub-sessions",
   "version": "0.0.0",
   "license": "LGPL-2.1-only",
   "type": "module",
@@ -10,14 +10,14 @@
     }
   },
   "dependencies": {
-    "@interchange/crypto-node": "workspace:*",
-    "@interchange/db": "workspace:*",
-    "@interchange/hub-common": "workspace:*",
-    "@interchange/log": "workspace:*",
-    "@interchange/mime": "workspace:*",
-    "@interchange/pack-transport": "workspace:*",
-    "@interchange/storage-isogit": "workspace:*",
-    "@interchange/types": "workspace:*",
+    "@intx/crypto-node": "workspace:*",
+    "@intx/db": "workspace:*",
+    "@intx/hub-common": "workspace:*",
+    "@intx/log": "workspace:*",
+    "@intx/mime": "workspace:*",
+    "@intx/pack-transport": "workspace:*",
+    "@intx/storage-isogit": "workspace:*",
+    "@intx/types": "workspace:*",
     "arktype": "catalog:"
   }
 }

@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { inferenceTurn, turnPart } from "@interchange/db/schema";
-import type { InferenceEvent } from "@interchange/types/runtime";
+import { inferenceTurn, turnPart } from "@intx/db/schema";
+import type { InferenceEvent } from "@intx/types/runtime";
 
 import {
   createEventCollector,

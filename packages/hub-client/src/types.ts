@@ -1,4 +1,4 @@
-import type { MailResponse } from "@interchange/types";
+import type { MailResponse } from "@intx/types";
 
 export type MailAddress = { name: string | null; email: string };
 

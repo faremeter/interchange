@@ -17,7 +17,7 @@ import {
   resolveAgentProvider,
   resolveStdio,
   type SingleProviderMainOptions,
-} from "@interchange/example-agent-common";
+} from "@intx/example-agent-common";
 
 import { defaultRewindDir, EXAMPLE_NAME } from "./paths";
 import { clearRewindDir, cloneAndRewind } from "./rewind";

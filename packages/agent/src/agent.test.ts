@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 
-import type { ContextStore, ProviderConfig } from "@interchange/types/runtime";
+import type { ContextStore, ProviderConfig } from "@intx/types/runtime";
 
 import { AgentConfigError, createAgent } from "./agent";
 
