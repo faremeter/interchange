@@ -8,6 +8,7 @@ import {
   type WsHandle,
 } from "@interchange/hub";
 import { createInMemoryTransport } from "@interchange/mail-memory";
+import { hexEncode } from "@interchange/types";
 import type {
   HarnessConfig,
   InboundMessage,
@@ -825,12 +826,6 @@ describe("sidecar↔hub integration", () => {
     // deploy commit signatures. Distinct from the agent keypair.
     const hubKp = await generateKeyPair();
     const fakeAddress = "restored@test.interchange";
-
-    function hexEncode(bytes: Uint8Array): string {
-      return Array.from(bytes)
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
-    }
 
     const agentPublicKeyHex = hexEncode(agentKp.publicKey);
     const hubPublicKeyHex = hexEncode(hubKp.publicKey);
