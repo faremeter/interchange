@@ -26,7 +26,7 @@ A server application backed by Postgres. The hub packages and `db` are versioned
 | `@intx/hub-client`   | Browser/UI client library. API transport, SSE event stream transforms, instance session management. Consumed by the UI, not the hub itself.                                                                          |
 | `@intx/db`           | Drizzle schema, connection pooling, credential resolution, grant store, tenant hierarchy queries. Postgres-specific.                                                                                                 |
 
-`apps/hub` wires `hub-api` and `hub-sessions` together and starts the Hono server. `apps/ui` is the browser SPA built against `hub-client`.
+`apps/hub` wires `hub-api` and `hub-sessions` together and starts the Hono server. `apps/admin-ui` is the browser SPA built against `hub-client`.
 
 ## Agent Runtime
 

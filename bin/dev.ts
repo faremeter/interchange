@@ -3,14 +3,15 @@
 
 // Local development orchestrator.
 //
-// Starts the database migration, hub server, sidecar, and UI dev server
-// in the correct order, with colored log prefixes and graceful shutdown.
+// Starts the database migration, hub server, sidecar, and admin UI dev
+// server in the correct order, with colored log prefixes and graceful
+// shutdown.
 //
 // Usage:
-//   bun bin/dev.ts              # start hub + sidecar + ui
-//   bun bin/dev.ts --seed       # also seed the database after hub is ready
-//   bun bin/dev.ts --no-ui      # skip the UI dev server
-//   bun bin/dev.ts --no-sidecar # skip the sidecar
+//   bun bin/dev.ts                # start hub + sidecar + admin-ui
+//   bun bin/dev.ts --seed         # also seed the database after hub is ready
+//   bun bin/dev.ts --no-admin-ui  # skip the admin UI dev server
+//   bun bin/dev.ts --no-sidecar   # skip the sidecar
 
 import { $, type ProcessPromise, type ProcessOutput } from "zx";
 import { readFileSync, existsSync } from "node:fs";
@@ -35,7 +36,7 @@ function hasStderr(err: unknown): err is { stderr: string } {
 
 const args = new Set(process.argv.slice(2));
 const wantSeed = args.delete("--seed");
-const skipUI = args.delete("--no-ui");
+const skipAdminUI = args.delete("--no-admin-ui");
 const skipSidecar = args.delete("--no-sidecar");
 
 if (args.size > 0) {
@@ -308,25 +309,25 @@ if (!skipSidecar) {
   watchProcess("sidecar", sidecarProc);
 }
 
-// -- Step 5: Start UI --
+// -- Step 5: Start Admin UI --
 
-if (!skipUI) {
-  console.log("Starting UI dev server on port 5173...");
+if (!skipAdminUI) {
+  console.log("Starting admin UI dev server on port 5173...");
 
-  const uiProc = spawnLabeled(
-    "ui",
+  const adminUIProc = spawnLabeled(
+    "admin-ui",
     "\x1b[36m", // cyan
     ["bunx", "vite", "--port", "5173"],
     sharedEnv,
-    resolve(ROOT, "apps/ui"),
+    resolve(ROOT, "apps/admin-ui"),
   );
-  watchProcess("ui", uiProc);
+  watchProcess("admin-ui", adminUIProc);
 }
 
 console.log("\n\x1b[1mDev environment is running.\x1b[0m");
-console.log(`  Hub:     ${hubURL}`);
-if (!skipSidecar) console.log(`  Sidecar: connecting to ${hubWsURL}`);
-if (!skipUI) console.log(`  UI:      http://localhost:5173`);
+console.log(`  Hub:      ${hubURL}`);
+if (!skipSidecar) console.log(`  Sidecar:  connecting to ${hubWsURL}`);
+if (!skipAdminUI) console.log(`  Admin UI: http://localhost:5173`);
 console.log("\nPress Ctrl+C to stop all services.\n");
 
 // Keep the process alive until a signal arrives.

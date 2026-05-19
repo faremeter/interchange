@@ -48,7 +48,7 @@ export default defineConfig(
         projectService: {
           allowDefaultProject: [
             "eslint.config.ts",
-            "apps/ui/vite.config.ts",
+            "apps/admin-ui/vite.config.ts",
             "bin/*.ts",
             "packages/db/drizzle.config.ts",
             "tests/sidecar/*.ts",

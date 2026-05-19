@@ -19,13 +19,13 @@ harness.
 
 ## Start here
 
-| You want to…                                    | Go to                                                                        |
-| ----------------------------------------------- | ---------------------------------------------------------------------------- |
-| Use the agent runtime in your own program       | [`examples/`](./examples/README.md)                                          |
-| Understand how the packages fit together        | [`LAYOUT.md`](./LAYOUT.md)                                                   |
-| Run the full stack (hub + sidecar + UI) locally | [`DEV.md`](./DEV.md)                                                         |
-| Write code in this repository                   | [`CONVENTIONS.md`](./CONVENTIONS.md), [`AGENTS.md`](./AGENTS.md)             |
-| Read the system design                          | [`docs/`](./docs) — [`ARCHITECTURE.md`](./docs/ARCHITECTURE.md), and friends |
+| You want to…                                          | Go to                                                                        |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Use the agent runtime in your own program             | [`examples/`](./examples/README.md)                                          |
+| Understand how the packages fit together              | [`LAYOUT.md`](./LAYOUT.md)                                                   |
+| Run the full stack (hub + sidecar + admin UI) locally | [`DEV.md`](./DEV.md)                                                         |
+| Write code in this repository                         | [`CONVENTIONS.md`](./CONVENTIONS.md), [`AGENTS.md`](./AGENTS.md)             |
+| Read the system design                                | [`docs/`](./docs) — [`ARCHITECTURE.md`](./docs/ARCHITECTURE.md), and friends |
 
 ## The impatient path
 
@@ -35,7 +35,7 @@ Run the full stack with seed data:
 bin/db-reset && bun bin/dev.ts --seed
 ```
 
-Starts the hub, sidecar, and UI — entry points in
+Starts the hub, sidecar, and admin UI — entry points in
 [`apps/`](./apps).
 
 Requires [Bun](https://bun.sh/) 1.2+ and PostgreSQL 15+. See
