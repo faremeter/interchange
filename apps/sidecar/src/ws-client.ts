@@ -33,7 +33,7 @@ import type { KeyPair } from "@interchange/types/runtime";
 
 import type { SessionManager, SessionEventSink } from "./session-manager";
 import { createPackReceiver, chunkPack } from "@interchange/pack-transport";
-import { hexEncode } from "./key-store";
+import { hexDecode, hexEncode } from "@interchange/types";
 
 const logger = getLogger(["interchange", "sidecar", "ws"]);
 
@@ -678,20 +678,6 @@ function base64ToUint8Array(base64: string): Uint8Array {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
     bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
-
-function hexDecode(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) {
-    throw new Error(`hexDecode: odd-length input (${hex.length} chars)`);
-  }
-  if (!/^[0-9a-fA-F]*$/.test(hex)) {
-    throw new Error("hexDecode: input contains non-hex characters");
-  }
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
   }
   return bytes;
 }

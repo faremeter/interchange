@@ -47,9 +47,10 @@ import type {
 } from "@interchange/types/runtime";
 import { createBlobReader } from "@interchange/types/runtime";
 
+import { hexEncode } from "@interchange/types";
+
 import {
   loadOrGenerateKeyPair,
-  hexEncode,
   persistAgentConfig,
   scanExistingAgents,
   type AgentKeyEntry,
