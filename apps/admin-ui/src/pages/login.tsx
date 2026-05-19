@@ -51,6 +51,9 @@ export function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-background">
       <Card className="w-full max-w-sm">
         <CardHeader>
+          <p className="text-center text-xs uppercase tracking-wide text-muted-foreground">
+            Interchange Admin
+          </p>
           <CardTitle className="text-center text-2xl">
             {isSignUp ? "Create account" : "Sign in"}
           </CardTitle>

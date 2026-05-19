@@ -19,7 +19,7 @@ export function Layout() {
       <nav className="border-b bg-card">
         <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
           <Link to="/" className="text-lg font-semibold">
-            Interchange
+            Interchange Admin
           </Link>
           <div className="flex items-center gap-4">
             {profile && (
