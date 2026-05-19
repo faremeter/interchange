@@ -38,11 +38,10 @@ bin/db-reset && bun bin/dev.ts --seed
 Starts the hub, sidecar, and UI — entry points in
 [`apps/`](./apps).
 
-Requires [Bun](https://bun.sh/) 1.2+,
-[opsh](https://github.com/alexanderguy/opsh) 0.7+, and PostgreSQL
-15+. See [`DEV.md`](./DEV.md) for everything else — environment
-files, role setup, default ports, seed credentials, partial-stack
-variants, reset recipes.
+Requires [Bun](https://bun.sh/) 1.2+ and PostgreSQL 15+. See
+[`DEV.md`](./DEV.md) for everything else — environment files, role
+setup, default ports, seed credentials, partial-stack variants,
+reset recipes.
 
 ## Build verbs
 
