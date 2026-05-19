@@ -3,7 +3,6 @@
 ## Prerequisites
 
 - [Bun](https://bun.sh/) (1.2+)
-- [opsh](https://github.com/alexanderguy/opsh) (v0.7+) -- for the shell scripts in `bin/`
 - PostgreSQL (15+)
 - Git hooks configured: `git config core.hooksPath .githooks`
 
@@ -135,7 +134,7 @@ is validated.
 
 ## Bin Scripts
 
-All scripts live in `bin/`. Shell scripts that start with `#!/usr/bin/env opsh` use the bundled `opsh` shell framework (`bin/opsh`).
+All scripts live in `bin/`. The bash scripts source the bundled [opsh](https://github.com/alexanderguy/opsh) framework as a library from `bin/opsh`, so opsh does not need to be installed separately.
 
 | Script                | Usage                                            | Description                                                                                             |
 | --------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
