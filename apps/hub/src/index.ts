@@ -1,5 +1,9 @@
 import { eq, and, isNull } from "drizzle-orm";
-import { createDB, createGrantStore } from "@interchange/db";
+import {
+  createDB,
+  createGrantStore,
+  resolveInstanceProviders,
+} from "@interchange/db";
 import { agentInstance, sessionMail } from "@interchange/db/schema";
 import {
   createAgentRepoStore,
@@ -9,7 +13,6 @@ import {
   createSessionService,
   createSidecarRouter,
   generateId,
-  resolveInstanceProviders,
 } from "@interchange/hub";
 import { generateKeyPair } from "@interchange/crypto-node";
 import { parseMailToEmail } from "@interchange/mime";

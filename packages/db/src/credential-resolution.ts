@@ -1,10 +1,23 @@
 import { eq, and, isNull } from "drizzle-orm";
+import { type } from "arktype";
+
+import { getLogger } from "@interchange/log";
+import { CredentialRequirement as CredentialRequirementType } from "@interchange/types";
+import type { ProviderConfig } from "@interchange/types/runtime";
 
 import type { DB } from "./client";
+import { agent } from "./schema/agents";
+import { agentSession } from "./schema/sessions";
 import { credential } from "./schema/credentials";
 import { oauthClient } from "./schema/oauth-clients";
 import { provider } from "./schema/providers";
 import { getAncestorChain } from "./tenant-hierarchy";
+
+const log = getLogger(["db", "credentials"]);
+
+const CredentialRequirements = CredentialRequirementType.array();
+
+export const ProviderMetadata = type({ baseURL: "string" });
 
 /**
  * Resolves a provider by name, walking up the tenant hierarchy.
@@ -166,4 +179,85 @@ export async function resolveCredentialRequirement(
   }
 
   return null;
+}
+
+/**
+ * Resolve the full ProviderConfig[] for a single running instance by
+ * re-resolving each credential requirement from the agent definition.
+ *
+ * Returns an empty array if no requirements are defined or none could
+ * be resolved.
+ */
+export async function resolveInstanceProviders(
+  db: DB["db"],
+  tenantId: string,
+  instance: { agentId: string; sessionId: string | null },
+): Promise<ProviderConfig[]> {
+  const agentRow = await db.query.agent.findFirst({
+    where: eq(agent.id, instance.agentId),
+  });
+  if (!agentRow) return [];
+
+  const requirements = CredentialRequirements(
+    agentRow.credentialRequirements ?? [],
+  );
+  if (requirements instanceof type.errors) {
+    log.warn`Invalid credential requirements for agent ${agentRow.id}: ${requirements.summary}`;
+    return [];
+  }
+
+  let invokerPrincipalId: string | null = null;
+  if (instance.sessionId) {
+    const session = await db.query.agentSession.findFirst({
+      where: eq(agentSession.id, instance.sessionId),
+    });
+    if (session) {
+      invokerPrincipalId = session.principalId;
+    }
+  }
+
+  const providers: ProviderConfig[] = [];
+  for (const req of requirements) {
+    if (req.source === "creator" && !agentRow.creatorPrincipalId) {
+      continue;
+    }
+    if (req.source === "invoker" && !invokerPrincipalId) {
+      continue;
+    }
+
+    let resolved;
+    try {
+      resolved = await resolveCredentialRequirement(
+        db,
+        tenantId,
+        req,
+        agentRow.creatorPrincipalId ?? "",
+        invokerPrincipalId,
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn`Failed to resolve credential for provider ${req.providerName}: ${msg}`;
+      continue;
+    }
+    if (!resolved) continue;
+
+    const providerRow = await db.query.provider.findFirst({
+      where: eq(provider.id, resolved.providerId),
+    });
+    if (!providerRow) continue;
+
+    const metadata = ProviderMetadata(providerRow.metadata ?? {});
+    if (metadata instanceof type.errors) {
+      log.warn`Invalid provider metadata for provider ${providerRow.id}: ${metadata.summary}`;
+      continue;
+    }
+
+    providers.push({
+      provider: providerRow.plugin,
+      baseURL: metadata.baseURL,
+      apiKey: resolved.secret,
+    });
+  }
+
+  return providers;
 }

@@ -207,6 +207,7 @@
       "name": "@interchange/db",
       "version": "0.0.0",
       "dependencies": {
+        "@interchange/log": "workspace:*",
         "@interchange/types": "workspace:*",
         "arktype": "catalog:",
         "drizzle-orm": "^0.45.1",

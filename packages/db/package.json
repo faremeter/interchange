@@ -18,6 +18,7 @@
     "db:migrate": "drizzle-kit migrate --config=drizzle.config.ts"
   },
   "dependencies": {
+    "@interchange/log": "workspace:*",
     "@interchange/types": "workspace:*",
     "arktype": "catalog:",
     "drizzle-orm": "^0.45.1",

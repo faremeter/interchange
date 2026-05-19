@@ -1,6 +1,9 @@
+import { parseAgentAddress } from "@interchange/types";
 import type { InferenceTurnResponse, MailResponse } from "@interchange/types";
 
 import type { InstanceEvent, MailAddress, ToolCallEvent } from "./types";
+
+export { isAgentAddress } from "@interchange/types";
 
 export function parseFromHeader(from: string): string {
   const match = from.match(/^"(.+)"\s+<.+>$/);
@@ -34,11 +37,6 @@ export function formatAddress(addr: {
   return addr.name ?? addr.email;
 }
 
-export function isAgentAddress(email: string): boolean {
-  const local = email.split("@")[0];
-  return !!local && local.startsWith("ins_");
-}
-
 // Inbound mail is always shown. Outbound mail is shown unless it is a
 // connector thread reply (interchange-type: conversation.message), which is
 // already represented as streaming text → committed turn in the timeline.
@@ -55,9 +53,9 @@ export function shouldShowMail(data: {
 export function resolveAgentAddress(
   addr: MailAddress,
 ): { instanceId: string; label: string } | null {
-  const local = addr.email.split("@")[0];
-  if (!local || !local.startsWith("ins_")) return null;
-  return { instanceId: local, label: formatAddress(addr) };
+  const parsed = parseAgentAddress(addr.email);
+  if (!parsed) return null;
+  return { instanceId: parsed.instanceId, label: formatAddress(addr) };
 }
 
 export function resolveAgentRecipient(

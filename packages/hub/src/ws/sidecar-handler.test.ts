@@ -4,6 +4,7 @@ import {
   generateKeyPair,
   importPrivateKeyBytes,
 } from "@interchange/crypto-node";
+import { parseAgentAddress } from "@interchange/types";
 import { createSidecarRouter, type WsHandle } from "./sidecar-handler";
 
 function hexEncode(bytes: Uint8Array): string {
@@ -304,7 +305,8 @@ describe("SidecarRouter", () => {
             {
               id: "mail_outbound",
               direction: "outbound",
-              instanceId: senderAddress.split("@")[0] ?? senderAddress,
+              instanceId:
+                parseAgentAddress(senderAddress)?.instanceId ?? senderAddress,
               address: senderAddress,
               createdAt: new Date(),
             },
@@ -314,7 +316,7 @@ describe("SidecarRouter", () => {
               results.push({
                 id: `mail_in_${addr}`,
                 direction: "inbound",
-                instanceId: addr.split("@")[0] ?? addr,
+                instanceId: parseAgentAddress(addr)?.instanceId ?? addr,
                 address: addr,
                 createdAt: new Date(),
               });
@@ -369,14 +371,15 @@ describe("SidecarRouter", () => {
             {
               id: "mail_out",
               direction: "outbound" as const,
-              instanceId: senderAddress.split("@")[0] ?? senderAddress,
+              instanceId:
+                parseAgentAddress(senderAddress)?.instanceId ?? senderAddress,
               address: senderAddress,
               createdAt: new Date(),
             },
             ...recipients.map((addr) => ({
               id: `mail_in_${addr}`,
               direction: "inbound" as const,
-              instanceId: addr.split("@")[0] ?? addr,
+              instanceId: parseAgentAddress(addr)?.instanceId ?? addr,
               address: addr,
               createdAt: new Date(),
             })),
