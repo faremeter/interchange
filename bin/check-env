@@ -1,6 +1,19 @@
-#!/usr/bin/env opsh
+#!/usr/bin/env bash
 # shellcheck shell=bash disable=SC2164
-opsh::version::require v0.7.0
+
+# This script is the environment-validation gate. Every other shell
+# script in the repo just sources bin/opsh and accepts bash's generic
+# error if the file is missing; here we explicitly check first so a
+# missing vendored opsh fails with a clear diagnostic rather than a
+# bash "no such file" message.
+OPSH_VENDORED="$(dirname -- "${BASH_SOURCE[0]}")/opsh"
+if [[ ! -f $OPSH_VENDORED ]]; then
+	echo "FATAL: vendored opsh not found at $OPSH_VENDORED" >&2
+	exit 1
+fi
+source "$OPSH_VENDORED"
+
+opsh::version::require v0.9.0
 lib::import step-runner
 
 REQUIRED_BUN_VERSION=1.2.0
