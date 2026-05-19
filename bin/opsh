@@ -19,7 +19,7 @@ set -o errtrace
 
 OPSHROOTDIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")"/.. &>/dev/null && pwd)
 
-_OPSH_VERSION="0.7.0"
+_OPSH_VERSION="0.9.0"
 _OPSH_LIB_IMPORTED=()
 EXIT_FUNCS=()
 
@@ -172,6 +172,7 @@ opsh::version::require() {
 _OPSH_LIB_IMPORTED+=(cloud-init)
 _OPSH_LIB_IMPORTED+=(command)
 _OPSH_LIB_IMPORTED+=(git)
+_OPSH_LIB_IMPORTED+=(path)
 _OPSH_LIB_IMPORTED+=(semver)
 _OPSH_LIB_IMPORTED+=(ssh)
 _OPSH_LIB_IMPORTED+=(step-runner)
@@ -244,6 +245,18 @@ git::tag::lookup::remote() {
 
     awk '{ print $1;}' <"$tagfile"
     rm "$tagfile"
+}
+path::env::add() {
+    PATH=$(array::join : "$@"):$PATH
+}
+
+path::env::remove() {
+    local dir
+    dir=$1
+    shift
+
+    # XXX - This is not as sophisticated as it could be, but that's probably alright.
+    PATH=$(echo -n "$PATH" | awk -v RS=: -v ORS=: "\$0 == \"$dir\" {next} {print}" | sed 's/:$//;')
 }
 _OPSH_SEMVER_NUM='0|[1-9][0-9]*'
 _OPSH_SEMVER_REGEX="^[vV]?($_OPSH_SEMVER_NUM)\\.($_OPSH_SEMVER_NUM)\\.($_OPSH_SEMVER_NUM)((\+|-).+)?\$"
@@ -365,22 +378,43 @@ semver::bump() {
 
     echo "$prefix"
 }
+lib::import path
+
 export _OPSH_SSH_CONTEXT
 
 ssh::end() {
     [[ -v _OPSH_SSH_CONTEXT ]] || return 0
-    eval "$(cat "$_OPSH_SSH_CONTEXT/env")"
+    path::env::remove "$_OPSH_SSH_CONTEXT/bin"
+
+    # shellcheck disable=SC1091 # we assume this is well formed at runtime
+    source "$_OPSH_SSH_CONTEXT/env"
     eval "$(ssh-agent -k | grep -v echo)"
     unset _OPSH_SSH_CONTEXT
 }
 
 ssh::begin() {
+    local realssh
+
+    # shellcheck disable=SC2034 # it's used in the proxy below
+    realssh=$(command -v ssh)
+
     _OPSH_SSH_CONTEXT=$(temp::dir)
     chmod 700 "$_OPSH_SSH_CONTEXT"
 
     log::debug "launching local SSH agent..."
     ssh-agent | grep -v echo >"$_OPSH_SSH_CONTEXT/env" 2>/dev/null
-    eval "$(cat "$_OPSH_SSH_CONTEXT/env")"
+    # shellcheck disable=SC1091 # we assume this is well formed at runtime
+    source "$_OPSH_SSH_CONTEXT/env"
+
+    mkdir -p "$_OPSH_SSH_CONTEXT/bin"
+    cat >"$_OPSH_SSH_CONTEXT/bin/ssh" <<EOF
+#!/usr/bin/env opsh
+[[ -v _OPSH_SSH_CONTEXT ]] || log::fatal "proxied ssh being run outside of opsh ssh context; this is a bug"
+
+exec $realssh -F "\$_OPSH_SSH_CONTEXT/config" "\$@"
+EOF
+    chmod 755 "$_OPSH_SSH_CONTEXT/bin/ssh"
+    path::env::add "$_OPSH_SSH_CONTEXT/bin"
 
     exit::trigger ssh::end
 }
@@ -464,6 +498,40 @@ testing::register() {
     fi
 }
 
+testing::_should-bail() {
+    local code=$1
+    shift
+    local next=$1
+    shift
+
+    if [[ $code -eq 0 ]]; then
+        return 1
+    fi
+
+    # In the case where the previous next was the function we just entered,
+    # ignore failures, since nothing has gotten the chance to run yet.
+    if [[ $_OPSH_TESTING_PREV_NEXT == ${FUNCNAME[1]}* ]]; then
+        return 1
+    fi
+
+    _OPSH_TESTING_PREV_NEXT="$next"
+
+    case "$next" in
+    ret=\$?)
+        return 1
+        ;;
+    return*)
+        return 1
+        ;;
+    testing::fail\ *)
+        return 1
+        ;;
+    *)
+        return 0
+        ;;
+    esac
+}
+
 testing::run() {
     echo "TAP version 13"
     echo "1..${#_TESTING_REGISTERED_FUNCS[@]}"
@@ -475,7 +543,18 @@ testing::run() {
     n=1
     for func in "${_TESTING_REGISTERED_FUNCS[@]}"; do
         res=0
-        ("$func") >"$outfile" 2>&1 || res=$?
+        (
+            _OPSH_TESTING_PREV_NEXT=""
+            set -o functrace
+            # shellcheck disable=SC2154
+            trap '{
+                local code=$?
+                if testing::_should-bail "$code" "$BASH_COMMAND" ; then
+                    [[ $FUNCNAME ]] && return $code || exit $code
+                fi
+            }' DEBUG
+            "$func"
+        ) >"$outfile" 2>&1 || res=$?
 
         if [[ $res -ne 0 ]]; then
             echo -n "not "
@@ -507,18 +586,25 @@ testing::fail() {
     log::fatal "${BASH_SOURCE[1]}:${BASH_LINENO[0]} inside ${FUNCNAME[1]}${msg}"
 }
 #- SECTION 20-command
-if [[ $# -lt 1 ]]; then
-    log::fatal "$0 requires a single argument of the script to run!"
+
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+    SCRIPTFILE="$BASH_ARGV0"
+    # shellcheck disable=SC2034
+    SCRIPTDIR=$(dirname -- "$SCRIPTFILE")
+else
+    if [[ $# -lt 1 ]]; then
+        log::fatal "$0 requires a single argument of the script to run!"
+    fi
+
+    SCRIPTFILE="$1"
+    shift
+    [[ -f $SCRIPTFILE ]] || log::fatal "$0 can only run normal files that exist!"
+
+    # shellcheck disable=SC2034
+    SCRIPTDIR=$(dirname -- "$SCRIPTFILE")
+
+    BASH_ARGV0=$SCRIPTFILE
+    # shellcheck disable=SC1090
+    source "$SCRIPTFILE"
 fi
-
-SCRIPTFILE="$1"
-shift
-[[ -f $SCRIPTFILE ]] || log::fatal "$0 can only run normal files that exist!"
-
-# shellcheck disable=SC2034
-SCRIPTDIR=$(dirname -- "$SCRIPTFILE")
-
-BASH_ARGV0=$SCRIPTFILE
-# shellcheck disable=SC1090
-source "$SCRIPTFILE"
 #- SECTION 30-end
