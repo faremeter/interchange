@@ -236,6 +236,7 @@
         "@interchange/crypto-node": "workspace:*",
         "@interchange/db": "workspace:*",
         "@interchange/hub-common": "workspace:*",
+        "@interchange/hub-sessions": "workspace:*",
         "@interchange/log": "workspace:*",
         "@interchange/mime": "workspace:*",
         "@interchange/pack-transport": "workspace:*",
@@ -258,6 +259,21 @@
     "packages/hub-common": {
       "name": "@interchange/hub-common",
       "version": "0.0.0",
+    },
+    "packages/hub-sessions": {
+      "name": "@interchange/hub-sessions",
+      "version": "0.0.0",
+      "dependencies": {
+        "@interchange/crypto-node": "workspace:*",
+        "@interchange/db": "workspace:*",
+        "@interchange/hub-common": "workspace:*",
+        "@interchange/log": "workspace:*",
+        "@interchange/mime": "workspace:*",
+        "@interchange/pack-transport": "workspace:*",
+        "@interchange/storage-isogit": "workspace:*",
+        "@interchange/types": "workspace:*",
+        "arktype": "catalog:",
+      },
     },
     "packages/inference": {
       "name": "@interchange/inference",
@@ -584,6 +600,8 @@
     "@interchange/hub-client": ["@interchange/hub-client@workspace:packages/hub-client"],
 
     "@interchange/hub-common": ["@interchange/hub-common@workspace:packages/hub-common"],
+
+    "@interchange/hub-sessions": ["@interchange/hub-sessions@workspace:packages/hub-sessions"],
 
     "@interchange/inference": ["@interchange/inference@workspace:packages/inference"],
 
