@@ -235,6 +235,7 @@
         "@interchange/authz": "workspace:*",
         "@interchange/crypto-node": "workspace:*",
         "@interchange/db": "workspace:*",
+        "@interchange/hub-common": "workspace:*",
         "@interchange/log": "workspace:*",
         "@interchange/mime": "workspace:*",
         "@interchange/pack-transport": "workspace:*",
@@ -253,6 +254,10 @@
         "@interchange/types": "workspace:*",
         "arktype": "catalog:",
       },
+    },
+    "packages/hub-common": {
+      "name": "@interchange/hub-common",
+      "version": "0.0.0",
     },
     "packages/inference": {
       "name": "@interchange/inference",
@@ -577,6 +582,8 @@
     "@interchange/hub-app": ["@interchange/hub-app@workspace:apps/hub"],
 
     "@interchange/hub-client": ["@interchange/hub-client@workspace:packages/hub-client"],
+
+    "@interchange/hub-common": ["@interchange/hub-common@workspace:packages/hub-common"],
 
     "@interchange/inference": ["@interchange/inference@workspace:packages/inference"],
 

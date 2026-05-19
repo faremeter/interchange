@@ -19,7 +19,7 @@ import {
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
-import { generateId } from "../ids";
+import { generateId } from "@interchange/hub-common";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import {
