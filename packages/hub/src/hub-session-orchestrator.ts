@@ -93,6 +93,17 @@ export function createHubSessionOrchestrator(
   );
 
   unsubscribers.push(
+    events.on("mail.outbound.undelivered", ({ recipients }) => {
+      // The hub has no external mail transport today. Anything that
+      // could not be delivered locally or queued for a disconnected
+      // agent is dropped; log so operators can see it.
+      log.warn("Dropping mail with no local recipient: {recipients}", {
+        recipients: recipients.join(", "),
+      });
+    }),
+  );
+
+  unsubscribers.push(
     events.on("agent.deploy.ack", async ({ agentAddress, publicKey }) => {
       const instance = await requireInstance(db, agentAddress);
       await db

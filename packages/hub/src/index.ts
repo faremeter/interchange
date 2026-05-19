@@ -28,6 +28,7 @@ export {
   type SidecarEventListener,
   type SidecarLookups,
   type SidecarMailPersistedPayload,
+  type SidecarMailPersistedRow,
 } from "./ws";
 export {
   createHubSessionLookups,
