@@ -22,7 +22,8 @@
       "dependencies": {
         "@interchange/crypto-node": "workspace:*",
         "@interchange/db": "workspace:*",
-        "@interchange/hub": "workspace:*",
+        "@interchange/hub-api": "workspace:*",
+        "@interchange/hub-sessions": "workspace:*",
         "@interchange/log": "workspace:*",
       },
     },
@@ -225,28 +226,6 @@
       },
       "devDependencies": {
         "@interchange/mime": "workspace:*",
-      },
-    },
-    "packages/hub": {
-      "name": "@interchange/hub",
-      "version": "0.0.0",
-      "dependencies": {
-        "@hono/standard-validator": "^0.2.2",
-        "@interchange/authz": "workspace:*",
-        "@interchange/crypto-node": "workspace:*",
-        "@interchange/db": "workspace:*",
-        "@interchange/hub-api": "workspace:*",
-        "@interchange/hub-common": "workspace:*",
-        "@interchange/hub-sessions": "workspace:*",
-        "@interchange/log": "workspace:*",
-        "@interchange/mime": "workspace:*",
-        "@interchange/pack-transport": "workspace:*",
-        "@interchange/storage-isogit": "workspace:*",
-        "@interchange/types": "workspace:*",
-        "arktype": "catalog:",
-        "better-auth": "^1.4.18",
-        "hono": "^4.11.9",
-        "hono-openapi": "^1.2.0",
       },
     },
     "packages/hub-api": {
@@ -613,8 +592,6 @@
     "@interchange/example-coding-agent": ["@interchange/example-coding-agent@workspace:examples/coding-agent"],
 
     "@interchange/harness": ["@interchange/harness@workspace:packages/harness"],
-
-    "@interchange/hub": ["@interchange/hub@workspace:packages/hub"],
 
     "@interchange/hub-api": ["@interchange/hub-api@workspace:packages/hub-api"],
 
