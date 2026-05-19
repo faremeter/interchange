@@ -331,7 +331,11 @@ const sessionService = createSessionService({
 });
 
 const app = createApp({
-  auth,
+  getSession: async (headers) => {
+    const result = await auth.api.getSession({ headers });
+    return result ? { user: result.user, session: result.session } : null;
+  },
+  authHandler: (c) => auth.handler(c.req.raw),
   db,
   sidecarRouter,
   sessionService,
