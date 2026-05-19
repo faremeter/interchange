@@ -121,7 +121,7 @@ export async function resolveCredentialRequirement(
   db: DB["db"],
   tenantId: string,
   requirement: CredentialRequirement,
-  creatorPrincipalId: string,
+  creatorPrincipalId: string | null,
   invokerPrincipalId: string | null,
 ) {
   const resolvedProvider = await resolveProviderByName(
@@ -231,7 +231,7 @@ export async function resolveInstanceProviders(
         db,
         tenantId,
         req,
-        agentRow.creatorPrincipalId ?? "",
+        agentRow.creatorPrincipalId,
         invokerPrincipalId,
       );
     } catch (err: unknown) {
