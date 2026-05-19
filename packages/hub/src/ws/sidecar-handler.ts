@@ -14,7 +14,6 @@ import {
   type HubFrame,
   type PackPushFrame,
   type PackDoneFrame,
-  type PackRejectReason,
 } from "@interchange/types/sidecar";
 import type {
   AbortReason,
@@ -87,52 +86,15 @@ export type SidecarRouterConfig = {
   /** Hex-encoded 32-byte Ed25519 public key for signing deploy commits.
    * Included in agent.deploy frames so sidecars can verify pack signatures. */
   hubPublicKey?: string;
-  onAgentEvent?: (
-    agentAddress: string,
-    sessionId: string,
-    event: unknown,
-  ) => void;
-  onSidecarDisconnect?: (agentAddresses: string[]) => void;
-  onMailOutbound?: (rawMessage: string, recipients: string[]) => void;
   validateToken?: (sidecarId: string, token: string) => boolean;
-  lookupPublicKey?: (agentAddress: string) => Promise<string | null>;
-  onAgentDeployAck?: (agentAddress: string, publicKey: string) => Promise<void>;
-  onAgentReconnected?: (agentAddress: string) => Promise<void>;
-  lookupDeployRef?: (agentAddress: string) => Promise<string | null>;
-  onDeployRefStale?: (agentAddress: string) => Promise<void>;
   challengeTimeoutMs?: number;
   disconnectQueueMaxSize?: number;
   disconnectQueueTTLMs?: number;
   pingTimeoutMs?: number;
-  onMailPersist?: (args: {
-    senderAddress: string;
-    recipients: string[];
-    raw: Uint8Array;
-  }) => Promise<
-    {
-      id: string;
-      direction: "inbound" | "outbound";
-      instanceId: string | null;
-      address: string;
-      createdAt: Date;
-    }[]
-  >;
-  onMailPersisted?: (row: {
-    id: string;
-    raw: Uint8Array;
-    createdAt: Date;
-    direction: "inbound" | "outbound";
-    instanceId: string | null;
-    address: string;
-  }) => void;
-  onStatePackReceived?: (
-    agentAddress: string,
-    pack: Uint8Array,
-    ref: string,
-    commitSha: string,
-  ) => Promise<
-    { accepted: true } | { accepted: false; reason: PackRejectReason }
-  >;
+  /** Query handlers the wire layer issues during frame processing.
+   * Each lookup is one-handler-returns-a-value; for multi-subscriber
+   * notifications use `router.events.on(...)` instead. */
+  lookups?: SidecarLookups;
 };
 
 // Minimal handle so the router doesn't depend on a specific WebSocket impl.
@@ -154,79 +116,16 @@ export function createSidecarRouter(
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     challengeTimeoutMs = DEFAULT_CHALLENGE_TIMEOUT_MS,
     hubPublicKey: hubPublicKeyHex,
-    onAgentEvent,
-    onSidecarDisconnect,
-    onMailOutbound,
-    onMailPersist,
-    onMailPersisted,
     validateToken,
-    lookupPublicKey,
-    onAgentDeployAck,
-    onAgentReconnected,
-    lookupDeployRef,
-    onDeployRefStale,
     disconnectQueueMaxSize = DEFAULT_DISCONNECT_QUEUE_MAX_SIZE,
     disconnectQueueTTLMs = DEFAULT_DISCONNECT_QUEUE_TTL_MS,
     pingTimeoutMs = DEFAULT_PING_TIMEOUT_MS,
-    onStatePackReceived,
+    lookups = {},
   } = config;
 
-  if ((lookupDeployRef === undefined) !== (onDeployRefStale === undefined)) {
-    throw new Error(
-      "lookupDeployRef and onDeployRefStale must both be provided or both omitted",
-    );
-  }
-
   // Receiver-dispatch surface. Wire-layer callsites emit events here;
-  // host code subscribes via `router.events`. The legacy callback fields
-  // on SidecarRouterConfig are folded into this emitter and `lookups`
-  // bag by the adapter block below, so existing call sites keep working
-  // without modification.
+  // host code subscribes via `router.events`.
   const events = createSidecarEmitter();
-  const lookups: SidecarLookups = {
-    ...(lookupPublicKey !== undefined ? { lookupPublicKey } : {}),
-    ...(lookupDeployRef !== undefined ? { lookupDeployRef } : {}),
-    ...(onMailPersist !== undefined ? { persistMail: onMailPersist } : {}),
-    ...(onStatePackReceived !== undefined
-      ? { receiveStatePack: onStatePackReceived }
-      : {}),
-  };
-
-  if (onAgentEvent !== undefined) {
-    events.on("agent.event", ({ agentAddress, sessionId, event }) => {
-      onAgentEvent(agentAddress, sessionId, event);
-    });
-  }
-  if (onSidecarDisconnect !== undefined) {
-    events.on("sidecar.disconnect", ({ agentAddresses }) => {
-      onSidecarDisconnect(agentAddresses);
-    });
-  }
-  if (onMailOutbound !== undefined) {
-    events.on("mail.outbound.undelivered", ({ rawMessage, recipients }) => {
-      onMailOutbound(rawMessage, recipients);
-    });
-  }
-  if (onMailPersisted !== undefined) {
-    events.on("mail.persisted", (payload) => {
-      onMailPersisted(payload);
-    });
-  }
-  if (onAgentDeployAck !== undefined) {
-    events.on("agent.deploy.ack", async ({ agentAddress, publicKey }) => {
-      await onAgentDeployAck(agentAddress, publicKey);
-    });
-  }
-  if (onAgentReconnected !== undefined) {
-    events.on("agent.reconnected", async ({ agentAddress }) => {
-      await onAgentReconnected(agentAddress);
-    });
-  }
-  if (onDeployRefStale !== undefined) {
-    events.on("deploy.ref.stale", async ({ agentAddress }) => {
-      await onDeployRefStale(agentAddress);
-    });
-  }
 
   // ws handle → registered connection
   const connections = new Map<WsHandle, SidecarConnection>();

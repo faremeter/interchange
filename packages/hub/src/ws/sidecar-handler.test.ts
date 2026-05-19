@@ -251,12 +251,14 @@ describe("SidecarRouter", () => {
       expect(delivered.type).toBe("mail.inbound");
     });
 
-    test("unroutable mail goes to onMailOutbound callback", () => {
+    test("unroutable mail emits mail.outbound.undelivered", () => {
       const outbound: { rawMessage: string; recipients: string[] }[] = [];
-      const router = createSidecarRouter({
-        onMailOutbound(rawMessage, recipients) {
-          outbound.push({ rawMessage, recipients });
-        },
+      const router = createSidecarRouter({});
+      router.events.on("mail.outbound.undelivered", (event) => {
+        outbound.push({
+          rawMessage: event.rawMessage,
+          recipients: event.recipients,
+        });
       });
 
       const ws = createMockWs();
@@ -291,42 +293,45 @@ describe("SidecarRouter", () => {
       // mail.delivered SSE event is dispatched.
       const persisted: { id: string; address: string }[] = [];
       const router = createSidecarRouter({
-        onMailPersist: async ({ senderAddress, recipients }) => {
-          // Mirrors the fixed onMailPersist: always create the outbound
-          // record for the sender, and only create inbound records for
-          // recipients that are agent instances (ins_ prefix).
-          const results: {
-            id: string;
-            direction: "inbound" | "outbound";
-            instanceId: string | null;
-            address: string;
-            createdAt: Date;
-          }[] = [
-            {
-              id: "mail_outbound",
-              direction: "outbound",
-              instanceId:
-                parseAgentAddress(senderAddress)?.instanceId ?? senderAddress,
-              address: senderAddress,
-              createdAt: new Date(),
-            },
-          ];
-          for (const addr of recipients) {
-            if (addr.startsWith("ins_")) {
-              results.push({
-                id: `mail_in_${addr}`,
-                direction: "inbound",
-                instanceId: parseAgentAddress(addr)?.instanceId ?? addr,
-                address: addr,
+        lookups: {
+          persistMail: async ({ senderAddress, recipients }) => {
+            // Mirrors the fixed persistMail: always create the
+            // outbound record for the sender, and only create
+            // inbound records for recipients that are agent
+            // instances (ins_ prefix).
+            const results: {
+              id: string;
+              direction: "inbound" | "outbound";
+              instanceId: string | null;
+              address: string;
+              createdAt: Date;
+            }[] = [
+              {
+                id: "mail_outbound",
+                direction: "outbound",
+                instanceId:
+                  parseAgentAddress(senderAddress)?.instanceId ?? senderAddress,
+                address: senderAddress,
                 createdAt: new Date(),
-              });
+              },
+            ];
+            for (const addr of recipients) {
+              if (addr.startsWith("ins_")) {
+                results.push({
+                  id: `mail_in_${addr}`,
+                  direction: "inbound",
+                  instanceId: parseAgentAddress(addr)?.instanceId ?? addr,
+                  address: addr,
+                  createdAt: new Date(),
+                });
+              }
             }
-          }
-          return results;
+            return results;
+          },
         },
-        onMailPersisted(row) {
-          persisted.push({ id: row.id, address: row.address });
-        },
+      });
+      router.events.on("mail.persisted", (row) => {
+        persisted.push({ id: row.id, address: row.address });
       });
 
       const ws = createMockWs();
@@ -363,31 +368,33 @@ describe("SidecarRouter", () => {
       expect(persisted[0]?.address).toBe("ins_sender@tenant.example");
     });
 
-    test("onMailPersist success calls onMailPersisted for each result", async () => {
+    test("persistMail lookup result fans out as mail.persisted events", async () => {
       const persisted: { id: string; address: string }[] = [];
       const router = createSidecarRouter({
-        onMailPersist: async ({ senderAddress, recipients }) => {
-          return [
-            {
-              id: "mail_out",
-              direction: "outbound" as const,
-              instanceId:
-                parseAgentAddress(senderAddress)?.instanceId ?? senderAddress,
-              address: senderAddress,
-              createdAt: new Date(),
-            },
-            ...recipients.map((addr) => ({
-              id: `mail_in_${addr}`,
-              direction: "inbound" as const,
-              instanceId: parseAgentAddress(addr)?.instanceId ?? addr,
-              address: addr,
-              createdAt: new Date(),
-            })),
-          ];
+        lookups: {
+          persistMail: async ({ senderAddress, recipients }) => {
+            return [
+              {
+                id: "mail_out",
+                direction: "outbound" as const,
+                instanceId:
+                  parseAgentAddress(senderAddress)?.instanceId ?? senderAddress,
+                address: senderAddress,
+                createdAt: new Date(),
+              },
+              ...recipients.map((addr) => ({
+                id: `mail_in_${addr}`,
+                direction: "inbound" as const,
+                instanceId: parseAgentAddress(addr)?.instanceId ?? addr,
+                address: addr,
+                createdAt: new Date(),
+              })),
+            ];
+          },
         },
-        onMailPersisted(row) {
-          persisted.push({ id: row.id, address: row.address });
-        },
+      });
+      router.events.on("mail.persisted", (row) => {
+        persisted.push({ id: row.id, address: row.address });
       });
 
       const ws = createMockWs();
@@ -475,14 +482,14 @@ describe("SidecarRouter", () => {
       expect(router.getRoutableAddresses()).toContain("new-agent@local");
     });
 
-    test("agent.deploy.ack calls onAgentDeployAck before resolving", async () => {
+    test("agent.deploy.ack invokes subscribers before resolving", async () => {
       const ackCalls: { address: string; publicKey: string }[] = [];
       const router = createSidecarRouter({
         requestTimeoutMs: 500,
         hubPublicKey: TEST_HUB_KEY,
-        async onAgentDeployAck(address, publicKey) {
-          ackCalls.push({ address, publicKey });
-        },
+      });
+      router.events.on("agent.deploy.ack", ({ agentAddress, publicKey }) => {
+        ackCalls.push({ address: agentAddress, publicKey });
       });
 
       const ws = createMockWs();
@@ -533,13 +540,13 @@ describe("SidecarRouter", () => {
       ]);
     });
 
-    test("agent.deploy rejects when onAgentDeployAck fails", async () => {
+    test("agent.deploy rejects when agent.deploy.ack subscriber throws", async () => {
       const router = createSidecarRouter({
         requestTimeoutMs: 500,
         hubPublicKey: TEST_HUB_KEY,
-        async onAgentDeployAck() {
-          throw new Error("DB write failed");
-        },
+      });
+      router.events.on("agent.deploy.ack", () => {
+        throw new Error("DB write failed");
       });
 
       const ws = createMockWs();
@@ -851,12 +858,11 @@ describe("SidecarRouter", () => {
   });
 
   describe("agent events", () => {
-    test("agent.event frames are forwarded to callback", () => {
+    test("agent.event frames are forwarded to subscribers", () => {
       const events: { addr: string; sid: string; event: unknown }[] = [];
-      const router = createSidecarRouter({
-        onAgentEvent(addr, sid, event) {
-          events.push({ addr, sid, event });
-        },
+      const router = createSidecarRouter({});
+      router.events.on("agent.event", ({ agentAddress, sessionId, event }) => {
+        events.push({ addr: agentAddress, sid: sessionId, event });
       });
 
       const ws = createMockWs();
@@ -1159,8 +1165,10 @@ describe("SidecarRouter", () => {
 
       const router = createSidecarRouter({
         requestTimeoutMs: 5000,
-        lookupPublicKey: async (addr) =>
-          addr === "agent@local" ? publicKeyHex : null,
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === "agent@local" ? publicKeyHex : null,
+        },
       });
 
       const ws = createMockWs();
@@ -1208,8 +1216,10 @@ describe("SidecarRouter", () => {
 
       const router = createSidecarRouter({
         requestTimeoutMs: 5000,
-        lookupPublicKey: async (addr) =>
-          addr === "agent@local" ? publicKeyHex : null,
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === "agent@local" ? publicKeyHex : null,
+        },
       });
 
       const ws = createMockWs();
@@ -1254,7 +1264,9 @@ describe("SidecarRouter", () => {
     test("reconnect sends challenge.failed for unknown address", async () => {
       const router = createSidecarRouter({
         requestTimeoutMs: 5000,
-        lookupPublicKey: async () => null,
+        lookups: {
+          lookupPublicKey: async () => null,
+        },
       });
 
       const ws = createMockWs();
@@ -1291,7 +1303,9 @@ describe("SidecarRouter", () => {
 
       const router = createSidecarRouter({
         requestTimeoutMs: 5000,
-        lookupPublicKey: async (addr) => keys.get(addr) ?? null,
+        lookups: {
+          lookupPublicKey: async (addr) => keys.get(addr) ?? null,
+        },
       });
 
       const ws = createMockWs();
@@ -1333,19 +1347,21 @@ describe("SidecarRouter", () => {
       expect(router.getRoutableAddresses()).not.toContain("agent-b@local");
     });
 
-    test("reconnect with stale deployRef triggers onDeployRefStale", async () => {
+    test("reconnect with stale deployRef emits deploy.ref.stale", async () => {
       const kp = await generateKeyPair();
       const publicKeyHex = hexEncode(kp.publicKey);
       const staleAddresses: string[] = [];
 
       const router = createSidecarRouter({
         requestTimeoutMs: 5000,
-        lookupPublicKey: async (addr) =>
-          addr === "agent@local" ? publicKeyHex : null,
-        lookupDeployRef: async () => "aaaa",
-        onDeployRefStale: async (addr) => {
-          staleAddresses.push(addr);
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === "agent@local" ? publicKeyHex : null,
+          lookupDeployRef: async () => "aaaa",
         },
+      });
+      router.events.on("deploy.ref.stale", ({ agentAddress }) => {
+        staleAddresses.push(agentAddress);
       });
 
       const ws = createMockWs();
@@ -1384,19 +1400,21 @@ describe("SidecarRouter", () => {
       expect(staleAddresses).toContain("agent@local");
     });
 
-    test("reconnect with matching deployRef skips onDeployRefStale", async () => {
+    test("reconnect with matching deployRef skips deploy.ref.stale", async () => {
       const kp = await generateKeyPair();
       const publicKeyHex = hexEncode(kp.publicKey);
       const staleAddresses: string[] = [];
 
       const router = createSidecarRouter({
         requestTimeoutMs: 5000,
-        lookupPublicKey: async (addr) =>
-          addr === "agent@local" ? publicKeyHex : null,
-        lookupDeployRef: async () => "aaaa",
-        onDeployRefStale: async (addr) => {
-          staleAddresses.push(addr);
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === "agent@local" ? publicKeyHex : null,
+          lookupDeployRef: async () => "aaaa",
         },
+      });
+      router.events.on("deploy.ref.stale", ({ agentAddress }) => {
+        staleAddresses.push(agentAddress);
       });
 
       const ws = createMockWs();
@@ -1435,19 +1453,21 @@ describe("SidecarRouter", () => {
       expect(staleAddresses).toEqual([]);
     });
 
-    test("reconnect with absent deployRef triggers onDeployRefStale", async () => {
+    test("reconnect with absent deployRef emits deploy.ref.stale", async () => {
       const kp = await generateKeyPair();
       const publicKeyHex = hexEncode(kp.publicKey);
       const staleAddresses: string[] = [];
 
       const router = createSidecarRouter({
         requestTimeoutMs: 5000,
-        lookupPublicKey: async (addr) =>
-          addr === "agent@local" ? publicKeyHex : null,
-        lookupDeployRef: async () => "aaaa",
-        onDeployRefStale: async (addr) => {
-          staleAddresses.push(addr);
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === "agent@local" ? publicKeyHex : null,
+          lookupDeployRef: async () => "aaaa",
         },
+      });
+      router.events.on("deploy.ref.stale", ({ agentAddress }) => {
+        staleAddresses.push(agentAddress);
       });
 
       const ws = createMockWs();
@@ -1492,11 +1512,10 @@ describe("SidecarRouter", () => {
 
       const router = createSidecarRouter({
         requestTimeoutMs: 5000,
-        lookupPublicKey: async (addr) =>
-          addr === "agent@local" ? publicKeyHex : null,
-        lookupDeployRef: async () => null,
-        onDeployRefStale: async (addr) => {
-          staleAddresses.push(addr);
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === "agent@local" ? publicKeyHex : null,
+          lookupDeployRef: async () => null,
         },
       });
 
@@ -1541,8 +1560,10 @@ describe("SidecarRouter", () => {
 
       const router = createSidecarRouter({
         requestTimeoutMs: 5000,
-        lookupPublicKey: async (addr) =>
-          addr === "agent@local" ? hexEncode(kp.publicKey) : null,
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === "agent@local" ? hexEncode(kp.publicKey) : null,
+        },
       });
 
       const ws = createMockWs();
@@ -1572,8 +1593,10 @@ describe("SidecarRouter", () => {
       const kp = await generateKeyPair();
       const router = createSidecarRouter({
         requestTimeoutMs: 500,
-        async lookupPublicKey() {
-          return hexEncode(kp.publicKey);
+        lookups: {
+          async lookupPublicKey() {
+            return hexEncode(kp.publicKey);
+          },
         },
       });
 
@@ -1645,8 +1668,10 @@ describe("SidecarRouter", () => {
       const router = createSidecarRouter({
         requestTimeoutMs: 500,
         disconnectQueueMaxSize: 2,
-        async lookupPublicKey() {
-          return hexEncode(kp.publicKey);
+        lookups: {
+          async lookupPublicKey() {
+            return hexEncode(kp.publicKey);
+          },
         },
       });
 
@@ -1804,7 +1829,7 @@ describe("SidecarRouter", () => {
     });
   });
 
-  describe("onAgentReconnected callback", () => {
+  describe("agent.reconnected event", () => {
     test("fires for each verified address on reconnect", async () => {
       const kp = await generateKeyPair();
       const publicKeyHex = hexEncode(kp.publicKey);
@@ -1812,11 +1837,13 @@ describe("SidecarRouter", () => {
 
       const router = createSidecarRouter({
         requestTimeoutMs: 5000,
-        lookupPublicKey: async (addr) =>
-          addr === "agent@local" ? publicKeyHex : null,
-        onAgentReconnected: async (addr) => {
-          reconnected.push(addr);
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === "agent@local" ? publicKeyHex : null,
         },
+      });
+      router.events.on("agent.reconnected", ({ agentAddress }) => {
+        reconnected.push(agentAddress);
       });
 
       const ws = createMockWs();
@@ -1861,11 +1888,13 @@ describe("SidecarRouter", () => {
 
       const router = createSidecarRouter({
         requestTimeoutMs: 5000,
-        lookupPublicKey: async (addr) =>
-          addr === "agent@local" ? publicKeyHex : null,
-        onAgentReconnected: async (addr) => {
-          reconnected.push(addr);
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === "agent@local" ? publicKeyHex : null,
         },
+      });
+      router.events.on("agent.reconnected", ({ agentAddress }) => {
+        reconnected.push(agentAddress);
       });
 
       const ws = createMockWs();
@@ -1901,22 +1930,24 @@ describe("SidecarRouter", () => {
       expect(reconnected).toEqual([]);
     });
 
-    test("callback error does not prevent other addresses from reconnecting", async () => {
+    test("listener error does not prevent other addresses from reconnecting", async () => {
       const kp1 = await generateKeyPair();
       const kp2 = await generateKeyPair();
       const reconnected: string[] = [];
 
       const router = createSidecarRouter({
         requestTimeoutMs: 5000,
-        lookupPublicKey: async (addr) => {
-          if (addr === "agent1@local") return hexEncode(kp1.publicKey);
-          if (addr === "agent2@local") return hexEncode(kp2.publicKey);
-          return null;
+        lookups: {
+          lookupPublicKey: async (addr) => {
+            if (addr === "agent1@local") return hexEncode(kp1.publicKey);
+            if (addr === "agent2@local") return hexEncode(kp2.publicKey);
+            return null;
+          },
         },
-        onAgentReconnected: async (addr) => {
-          if (addr === "agent1@local") throw new Error("DB failure");
-          reconnected.push(addr);
-        },
+      });
+      router.events.on("agent.reconnected", ({ agentAddress }) => {
+        if (agentAddress === "agent1@local") throw new Error("DB failure");
+        reconnected.push(agentAddress);
       });
 
       const ws = createMockWs();
@@ -2008,25 +2039,6 @@ describe("SidecarRouter", () => {
       ).rejects.toThrow("Hub signing key is required");
 
       expect(router.getRoutableAddresses()).not.toContain("new-agent@local");
-    });
-
-    test("throws when only lookupDeployRef is provided without onDeployRefStale", () => {
-      expect(() =>
-        createSidecarRouter({
-          requestTimeoutMs: 500,
-          lookupDeployRef: async () => null,
-        }),
-      ).toThrow("lookupDeployRef and onDeployRefStale must both be provided");
-    });
-
-    test("throws when only onDeployRefStale is provided without lookupDeployRef", () => {
-      expect(() =>
-        createSidecarRouter({
-          requestTimeoutMs: 500,
-          // eslint-disable-next-line @typescript-eslint/no-empty-function
-          onDeployRefStale: async () => {},
-        }),
-      ).toThrow("lookupDeployRef and onDeployRefStale must both be provided");
     });
   });
 });

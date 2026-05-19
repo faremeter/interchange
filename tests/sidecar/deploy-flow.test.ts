@@ -201,18 +201,20 @@ async function startHub(): Promise<HubEnv> {
   const router = createSidecarRouter({
     requestTimeoutMs: 10_000,
     hubPublicKey: hexEncode(hubSigningKey.publicKey),
-    onAgentEvent(addr, sid, event) {
-      agentEvents.push({ addr, sid, event });
+    lookups: {
+      async receiveStatePack(agentAddress, pack, ref, commitSha) {
+        const agentId = parseAgentId(agentAddress);
+        await agentRepoStore.receiveStatePack(agentId, pack, ref, commitSha);
+        statePacks.push({ agentAddress, ref, commitSha });
+        return { accepted: true };
+      },
     },
-    async onAgentDeployAck(agentAddress, publicKey) {
-      deployAcks.set(agentAddress, publicKey);
-    },
-    async onStatePackReceived(agentAddress, pack, ref, commitSha) {
-      const agentId = parseAgentId(agentAddress);
-      await agentRepoStore.receiveStatePack(agentId, pack, ref, commitSha);
-      statePacks.push({ agentAddress, ref, commitSha });
-      return { accepted: true };
-    },
+  });
+  router.events.on("agent.event", ({ agentAddress, sessionId, event }) => {
+    agentEvents.push({ addr: agentAddress, sid: sessionId, event });
+  });
+  router.events.on("agent.deploy.ack", ({ agentAddress, publicKey }) => {
+    deployAcks.set(agentAddress, publicKey);
   });
 
   const sessionService = createSessionService({
