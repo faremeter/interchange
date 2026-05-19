@@ -9,6 +9,7 @@
     { "path": "packages/db" },
     { "path": "packages/authz" },
     { "path": "packages/hub" },
+    { "path": "packages/hub-common" },
     { "path": "packages/tools-posix" },
     { "path": "packages/tools-lsp" },
     { "path": "packages/mime" },

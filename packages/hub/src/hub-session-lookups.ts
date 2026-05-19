@@ -12,7 +12,7 @@ import { agentInstance, sessionMail } from "@interchange/db/schema";
 import { getLogger } from "@interchange/log";
 
 import type { AgentRepoStore } from "./agent-repo";
-import { generateId } from "./ids";
+import { generateId } from "@interchange/hub-common";
 import type { SidecarLookups } from "./ws/sidecar-events";
 
 const logger = getLogger(["hub", "lookups"]);
