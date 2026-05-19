@@ -219,12 +219,6 @@ export async function scanExistingAgents(
   return results;
 }
 
-export function hexEncode(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 async function fileExists(filePath: string): Promise<boolean> {
   try {
     await fs.access(filePath);

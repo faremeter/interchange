@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 import { getLogger } from "@interchange/log";
 import { verifyEd25519 } from "@interchange/crypto-node";
 import { chunkPack, createPackReceiver } from "@interchange/pack-transport";
+import { hexDecode, hexEncode } from "@interchange/types";
 import { type } from "arktype";
 import {
   SidecarFrame,
@@ -1469,24 +1470,4 @@ export function createSidecarRouter(
     getRoutableAddresses,
     events,
   };
-}
-
-function hexEncode(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function hexDecode(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) {
-    throw new Error(`Hex string must have even length, got ${hex.length}`);
-  }
-  if (!/^[0-9a-fA-F]*$/.test(hex)) {
-    throw new Error("Hex string contains invalid characters");
-  }
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
-  }
-  return bytes;
 }

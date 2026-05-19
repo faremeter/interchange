@@ -16,5 +16,6 @@ export * from "./models";
 export * from "./observability";
 export * from "./agent-address";
 export * from "./agent-data";
+export * from "./hex";
 export * from "./audit";
 export * from "./sidecars";

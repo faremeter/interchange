@@ -10,6 +10,7 @@ import {
   createSidecarRouter,
 } from "@interchange/hub";
 import { generateKeyPair } from "@interchange/crypto-node";
+import { hexEncode } from "@interchange/types";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import { setup, getLogger } from "@interchange/log";
 
@@ -35,12 +36,6 @@ if (!hubDataDir) {
 
 const hubSigningKey = await generateKeyPair();
 log.info("Generated hub deploy signing key");
-
-function hexEncode(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
 
 const agentRepoStore = createAgentRepoStore({
   dataDir: hubDataDir,

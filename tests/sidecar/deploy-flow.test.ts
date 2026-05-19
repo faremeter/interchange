@@ -29,6 +29,7 @@ import {
   type WsHandle,
 } from "@interchange/hub";
 import type { HarnessConfig } from "@interchange/types/runtime";
+import { hexEncode } from "@interchange/types";
 import { sanitizeAddress } from "../../apps/sidecar/src/session-manager";
 import {
   assembleSignedContent,
@@ -191,12 +192,6 @@ async function startHub(): Promise<HubEnv> {
     dataDir: hubDataDir,
     signingKey: hubSigningKey,
   });
-
-  function hexEncode(bytes: Uint8Array): string {
-    return Array.from(bytes)
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-  }
 
   const router = createSidecarRouter({
     requestTimeoutMs: 10_000,
