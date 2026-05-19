@@ -4,10 +4,12 @@ import { Hono } from "hono";
 import type { DB } from "@interchange/db";
 import { createApp, createHubContextMiddleware, mountHubRoutes } from "./app";
 import type { AppEnv } from "./context";
-import { createEventCollectorRegistry } from "./event-collector-registry";
+import {
+  createEventCollectorRegistry,
+  createSidecarRouter,
+  type SessionService,
+} from "@interchange/hub-sessions";
 import type { GetSession } from "./session";
-import type { SessionService } from "./session-service";
-import { createSidecarRouter } from "./ws/sidecar-handler";
 
 const OpenAPISpec = type({
   info: { title: "string", version: "string" },

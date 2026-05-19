@@ -12,9 +12,11 @@ import { createSessionMiddleware } from "./middleware/session";
 import { createRequireGrant, type RequireGrant } from "./middleware/grant";
 import { createResolveTenant, requireAuth } from "./middleware/tenant";
 import type { GetSession } from "./session";
-import type { SessionService } from "./session-service";
-import type { SidecarRouter } from "./ws/sidecar-handler";
-import type { EventCollectorRegistry } from "./event-collector-registry";
+import type {
+  EventCollectorRegistry,
+  SessionService,
+  SidecarRouter,
+} from "@interchange/hub-sessions";
 
 import { createMeRoutes } from "./routes/me";
 import { createTenantRoutes } from "./routes/tenants";

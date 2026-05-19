@@ -48,10 +48,12 @@ import type {
   CryptoProvider,
   ProviderConfig,
 } from "@interchange/types/runtime";
-import { SessionLaunchError } from "../session-service";
-import type { SessionService } from "../session-service";
-import type { SidecarRouter } from "../ws/sidecar-handler";
-import type { EventCollectorRegistry } from "../event-collector-registry";
+import {
+  SessionLaunchError,
+  type EventCollectorRegistry,
+  type SessionService,
+  type SidecarRouter,
+} from "@interchange/hub-sessions";
 import { formatOffering } from "./offerings";
 
 import type { TenantEnv } from "../context";
