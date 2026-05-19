@@ -5,6 +5,8 @@ import { describeRoute, resolver, validator } from "hono-openapi";
 import { authorize } from "@interchange/authz";
 import { grant, principal } from "@interchange/db/schema";
 import { parseGrantRow } from "@interchange/db";
+import type { DB } from "@interchange/db";
+import type { ConditionRegistry, GrantStore } from "@interchange/types/authz";
 import {
   CreateGrant,
   UpdateGrant,
@@ -145,348 +147,360 @@ async function resolveGrantNames(
   return { roleNames, principalNames };
 }
 
-const app = new Hono<TenantEnv>();
+export type CreateGrantRoutesDeps = {
+  db: DB["db"];
+};
 
-app.get(
-  "/",
-  requireGrant("grant:*", "read"),
-  describeRoute({
-    tags: ["Grants"],
-    summary: "List grants in the tenant",
-    description:
-      "Lists all grants. Filterable by principalId, roleId, resource pattern, and effect.",
-    parameters: [
-      { name: "principalId", in: "query", schema: { type: "string" } },
-      { name: "roleId", in: "query", schema: { type: "string" } },
-      { name: "resource", in: "query", schema: { type: "string" } },
-      {
-        name: "effect",
-        in: "query",
-        schema: { type: "string", enum: ["allow", "deny", "ask"] },
-      },
-      ...pageParameters,
-    ],
-    responses: {
-      200: {
-        description: "List of grants",
-        content: {
-          "application/json": {
-            schema: resolver(paginatedSchema(GrantResponse)),
-          },
-        },
-      },
-    },
-  }),
-  async (c) => {
-    const tenantCtx = c.get("tenant");
-    const db = c.get("db");
+export function createGrantRoutes({
+  db,
+}: CreateGrantRoutesDeps): Hono<TenantEnv> {
+  const app = new Hono<TenantEnv>();
 
-    const principalId = c.req.query("principalId");
-    const roleId = c.req.query("roleId");
-    const resource = c.req.query("resource");
-    const effect = c.req.query("effect");
-    const { limit, cursor } = parsePageParams({
-      cursor: c.req.query("cursor"),
-      limit: c.req.query("limit"),
-    });
-
-    const conditions = [eq(grant.tenantId, tenantCtx.id)];
-    if (principalId) conditions.push(eq(grant.principalId, principalId));
-    if (roleId) conditions.push(eq(grant.roleId, roleId));
-    if (resource) conditions.push(eq(grant.resource, resource));
-    if (effect === "allow" || effect === "deny" || effect === "ask") {
-      conditions.push(eq(grant.effect, effect));
-    }
-    if (cursor) {
-      conditions.push(cursorCondition(grant.createdAt, grant.id, cursor));
-    }
-
-    const rows = await db.query.grant.findMany({
-      where: and(...conditions),
-      orderBy: pageOrder(grant.createdAt, grant.id),
-      limit,
-    });
-
-    const names = await resolveGrantNames(db, rows);
-    return c.json(
-      paginatedResponse(
-        rows.map((g) => formatGrant(g, names)),
-        rows,
-        limit,
-      ),
-    );
-  },
-);
-
-app.post(
-  "/",
-  requireGrant("grant:*", "create"),
-  describeRoute({
-    tags: ["Grants"],
-    summary: "Create a grant",
-    description:
-      "Creates a grant targeting either a role or a principal directly. Exactly one of roleId or principalId must be provided.",
-    responses: {
-      201: {
-        description: "Grant created",
-        content: {
-          "application/json": { schema: resolver(GrantResponse) },
-        },
-      },
-      400: {
-        description: "Validation error",
-        content: {
-          "application/json": { schema: resolver(ErrorResponse) },
-        },
-      },
-    },
-  }),
-  validator("json", CreateGrant),
-  async (c) => {
-    const tenantCtx = c.get("tenant");
-    const body = c.req.valid("json");
-    const db = c.get("db");
-
-    if (!body.roleId && !body.principalId) {
-      return c.json(
+  app.get(
+    "/",
+    requireGrant("grant:*", "read"),
+    describeRoute({
+      tags: ["Grants"],
+      summary: "List grants in the tenant",
+      description:
+        "Lists all grants. Filterable by principalId, roleId, resource pattern, and effect.",
+      parameters: [
+        { name: "principalId", in: "query", schema: { type: "string" } },
+        { name: "roleId", in: "query", schema: { type: "string" } },
+        { name: "resource", in: "query", schema: { type: "string" } },
         {
-          error: {
-            code: "bad_request",
-            message: "Either roleId or principalId must be provided",
+          name: "effect",
+          in: "query",
+          schema: { type: "string", enum: ["allow", "deny", "ask"] },
+        },
+        ...pageParameters,
+      ],
+      responses: {
+        200: {
+          description: "List of grants",
+          content: {
+            "application/json": {
+              schema: resolver(paginatedSchema(GrantResponse)),
+            },
           },
         },
-        400,
-      );
-    }
-
-    const now = new Date();
-    const row = first(
-      await db
-        .insert(grant)
-        .values({
-          id: generateId("grant"),
-          tenantId: tenantCtx.id,
-          roleId: body.roleId ?? null,
-          principalId: body.principalId ?? null,
-          resource: body.resource,
-          action: body.action,
-          effect: body.effect,
-          conditions: body.conditions ?? null,
-          origin: body.origin,
-          expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning(),
-    );
-
-    return c.json(formatGrant(row), 201);
-  },
-);
-
-app.get(
-  "/:grantId",
-  requireGrant(idResource("grant", "grantId"), "read"),
-  describeRoute({
-    tags: ["Grants"],
-    summary: "Get grant details",
-    responses: {
-      200: {
-        description: "Grant details",
-        content: {
-          "application/json": { schema: resolver(GrantResponse) },
-        },
       },
-      404: {
-        description: "Grant not found",
-        content: {
-          "application/json": { schema: resolver(ErrorResponse) },
-        },
-      },
-    },
-  }),
-  async (c) => {
-    const tenantCtx = c.get("tenant");
-    const grantId = c.req.param("grantId");
-    const db = c.get("db");
+    }),
+    async (c) => {
+      const tenantCtx = c.get("tenant");
 
-    const row = await db.query.grant.findFirst({
-      where: and(eq(grant.id, grantId), eq(grant.tenantId, tenantCtx.id)),
-    });
+      const principalId = c.req.query("principalId");
+      const roleId = c.req.query("roleId");
+      const resource = c.req.query("resource");
+      const effect = c.req.query("effect");
+      const { limit, cursor } = parsePageParams({
+        cursor: c.req.query("cursor"),
+        limit: c.req.query("limit"),
+      });
 
-    if (!row) {
+      const conditions = [eq(grant.tenantId, tenantCtx.id)];
+      if (principalId) conditions.push(eq(grant.principalId, principalId));
+      if (roleId) conditions.push(eq(grant.roleId, roleId));
+      if (resource) conditions.push(eq(grant.resource, resource));
+      if (effect === "allow" || effect === "deny" || effect === "ask") {
+        conditions.push(eq(grant.effect, effect));
+      }
+      if (cursor) {
+        conditions.push(cursorCondition(grant.createdAt, grant.id, cursor));
+      }
+
+      const rows = await db.query.grant.findMany({
+        where: and(...conditions),
+        orderBy: pageOrder(grant.createdAt, grant.id),
+        limit,
+      });
+
+      const names = await resolveGrantNames(db, rows);
       return c.json(
-        { error: { code: "not_found", message: "Grant not found" } },
-        404,
+        paginatedResponse(
+          rows.map((g) => formatGrant(g, names)),
+          rows,
+          limit,
+        ),
       );
-    }
-
-    return c.json(formatGrant(row));
-  },
-);
-
-app.patch(
-  "/:grantId",
-  requireGrant(idResource("grant", "grantId"), "manage"),
-  describeRoute({
-    tags: ["Grants"],
-    summary: "Update a grant",
-    description: "Update effect, conditions, or expiry on an existing grant.",
-    responses: {
-      200: {
-        description: "Grant updated",
-        content: {
-          "application/json": { schema: resolver(GrantResponse) },
-        },
-      },
-      404: {
-        description: "Grant not found",
-        content: {
-          "application/json": { schema: resolver(ErrorResponse) },
-        },
-      },
     },
-  }),
-  validator("json", UpdateGrant),
-  async (c) => {
-    const tenantCtx = c.get("tenant");
-    const grantId = c.req.param("grantId");
-    const body = c.req.valid("json");
-    const db = c.get("db");
+  );
 
-    const updates: Record<string, unknown> = { updatedAt: new Date() };
-    if (body.effect !== undefined) updates["effect"] = body.effect;
-    if (body.conditions !== undefined) updates["conditions"] = body.conditions;
-    if (body.expiresAt !== undefined) {
-      updates["expiresAt"] = body.expiresAt ? new Date(body.expiresAt) : null;
-    }
-
-    const [updated] = await db
-      .update(grant)
-      .set(updates)
-      .where(and(eq(grant.id, grantId), eq(grant.tenantId, tenantCtx.id)))
-      .returning();
-
-    if (!updated) {
-      return c.json(
-        { error: { code: "not_found", message: "Grant not found" } },
-        404,
-      );
-    }
-
-    return c.json(formatGrant(updated));
-  },
-);
-
-app.delete(
-  "/:grantId",
-  requireGrant(idResource("grant", "grantId"), "manage"),
-  describeRoute({
-    tags: ["Grants"],
-    summary: "Revoke a grant",
-    responses: {
-      204: {
-        description: "Grant revoked",
-      },
-      404: {
-        description: "Grant not found",
-        content: {
-          "application/json": { schema: resolver(ErrorResponse) },
+  app.post(
+    "/",
+    requireGrant("grant:*", "create"),
+    describeRoute({
+      tags: ["Grants"],
+      summary: "Create a grant",
+      description:
+        "Creates a grant targeting either a role or a principal directly. Exactly one of roleId or principalId must be provided.",
+      responses: {
+        201: {
+          description: "Grant created",
+          content: {
+            "application/json": { schema: resolver(GrantResponse) },
+          },
+        },
+        400: {
+          description: "Validation error",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
         },
       },
-    },
-  }),
-  async (c) => {
-    const tenantCtx = c.get("tenant");
-    const grantId = c.req.param("grantId");
-    const db = c.get("db");
+    }),
+    validator("json", CreateGrant),
+    async (c) => {
+      const tenantCtx = c.get("tenant");
+      const body = c.req.valid("json");
 
-    const deleted = await db
-      .delete(grant)
-      .where(and(eq(grant.id, grantId), eq(grant.tenantId, tenantCtx.id)))
-      .returning();
+      if (!body.roleId && !body.principalId) {
+        return c.json(
+          {
+            error: {
+              code: "bad_request",
+              message: "Either roleId or principalId must be provided",
+            },
+          },
+          400,
+        );
+      }
 
-    if (deleted.length === 0) {
-      return c.json(
-        { error: { code: "not_found", message: "Grant not found" } },
-        404,
+      const now = new Date();
+      const row = first(
+        await db
+          .insert(grant)
+          .values({
+            id: generateId("grant"),
+            tenantId: tenantCtx.id,
+            roleId: body.roleId ?? null,
+            principalId: body.principalId ?? null,
+            resource: body.resource,
+            action: body.action,
+            effect: body.effect,
+            conditions: body.conditions ?? null,
+            origin: body.origin,
+            expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning(),
       );
-    }
 
-    return c.body(null, 204);
-  },
-);
+      return c.json(formatGrant(row), 201);
+    },
+  );
 
-export { app as grantRoutes };
+  app.get(
+    "/:grantId",
+    requireGrant(idResource("grant", "grantId"), "read"),
+    describeRoute({
+      tags: ["Grants"],
+      summary: "Get grant details",
+      responses: {
+        200: {
+          description: "Grant details",
+          content: {
+            "application/json": { schema: resolver(GrantResponse) },
+          },
+        },
+        404: {
+          description: "Grant not found",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
+      },
+    }),
+    async (c) => {
+      const tenantCtx = c.get("tenant");
+      const grantId = c.req.param("grantId");
+
+      const row = await db.query.grant.findFirst({
+        where: and(eq(grant.id, grantId), eq(grant.tenantId, tenantCtx.id)),
+      });
+
+      if (!row) {
+        return c.json(
+          { error: { code: "not_found", message: "Grant not found" } },
+          404,
+        );
+      }
+
+      return c.json(formatGrant(row));
+    },
+  );
+
+  app.patch(
+    "/:grantId",
+    requireGrant(idResource("grant", "grantId"), "manage"),
+    describeRoute({
+      tags: ["Grants"],
+      summary: "Update a grant",
+      description: "Update effect, conditions, or expiry on an existing grant.",
+      responses: {
+        200: {
+          description: "Grant updated",
+          content: {
+            "application/json": { schema: resolver(GrantResponse) },
+          },
+        },
+        404: {
+          description: "Grant not found",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
+      },
+    }),
+    validator("json", UpdateGrant),
+    async (c) => {
+      const tenantCtx = c.get("tenant");
+      const grantId = c.req.param("grantId");
+      const body = c.req.valid("json");
+
+      const updates: Record<string, unknown> = { updatedAt: new Date() };
+      if (body.effect !== undefined) updates["effect"] = body.effect;
+      if (body.conditions !== undefined)
+        updates["conditions"] = body.conditions;
+      if (body.expiresAt !== undefined) {
+        updates["expiresAt"] = body.expiresAt ? new Date(body.expiresAt) : null;
+      }
+
+      const [updated] = await db
+        .update(grant)
+        .set(updates)
+        .where(and(eq(grant.id, grantId), eq(grant.tenantId, tenantCtx.id)))
+        .returning();
+
+      if (!updated) {
+        return c.json(
+          { error: { code: "not_found", message: "Grant not found" } },
+          404,
+        );
+      }
+
+      return c.json(formatGrant(updated));
+    },
+  );
+
+  app.delete(
+    "/:grantId",
+    requireGrant(idResource("grant", "grantId"), "manage"),
+    describeRoute({
+      tags: ["Grants"],
+      summary: "Revoke a grant",
+      responses: {
+        204: {
+          description: "Grant revoked",
+        },
+        404: {
+          description: "Grant not found",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
+      },
+    }),
+    async (c) => {
+      const tenantCtx = c.get("tenant");
+      const grantId = c.req.param("grantId");
+
+      const deleted = await db
+        .delete(grant)
+        .where(and(eq(grant.id, grantId), eq(grant.tenantId, tenantCtx.id)))
+        .returning();
+
+      if (deleted.length === 0) {
+        return c.json(
+          { error: { code: "not_found", message: "Grant not found" } },
+          404,
+        );
+      }
+
+      return c.body(null, 204);
+    },
+  );
+
+  return app;
+}
 
 // Evaluate endpoint is mounted under principals
-const evaluateApp = new Hono<TenantEnv>();
+export type CreateEvaluateRoutesDeps = {
+  db: DB["db"];
+  grantStore: GrantStore;
+  conditionRegistry: ConditionRegistry;
+};
 
-evaluateApp.post(
-  "/",
-  describeRoute({
-    tags: ["Grants"],
-    summary: "Evaluate grants for a principal",
-    description:
-      "Evaluates what would happen if a principal attempted an operation. Returns the resolved effect and all matching grants. Useful for debugging authorization.",
-    responses: {
-      200: {
-        description: "Evaluation result",
-        content: {
-          "application/json": { schema: resolver(EvaluateResult) },
+export function createEvaluateRoutes({
+  db,
+  grantStore,
+  conditionRegistry,
+}: CreateEvaluateRoutesDeps): Hono<TenantEnv> {
+  const evaluateApp = new Hono<TenantEnv>();
+
+  evaluateApp.post(
+    "/",
+    describeRoute({
+      tags: ["Grants"],
+      summary: "Evaluate grants for a principal",
+      description:
+        "Evaluates what would happen if a principal attempted an operation. Returns the resolved effect and all matching grants. Useful for debugging authorization.",
+      responses: {
+        200: {
+          description: "Evaluation result",
+          content: {
+            "application/json": { schema: resolver(EvaluateResult) },
+          },
+        },
+        404: {
+          description: "Principal not found",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
         },
       },
-      404: {
-        description: "Principal not found",
-        content: {
-          "application/json": { schema: resolver(ErrorResponse) },
-        },
-      },
-    },
-  }),
-  validator("json", EvaluateRequest),
-  async (c) => {
-    const tenantCtx = c.get("tenant");
-    const principalId = c.req.param("principalId") ?? "";
-    const body = c.req.valid("json");
-    const db = c.get("db");
-    const grantStore = c.get("grantStore");
-    const conditionRegistry = c.get("conditionRegistry");
+    }),
+    validator("json", EvaluateRequest),
+    async (c) => {
+      const tenantCtx = c.get("tenant");
+      const principalId = c.req.param("principalId") ?? "";
+      const body = c.req.valid("json");
+      const principalRow = await db.query.principal.findFirst({
+        where: and(
+          eq(principal.id, principalId),
+          eq(principal.tenantId, tenantCtx.id),
+        ),
+      });
 
-    const principalRow = await db.query.principal.findFirst({
-      where: and(
-        eq(principal.id, principalId),
-        eq(principal.tenantId, tenantCtx.id),
-      ),
-    });
+      if (!principalRow) {
+        return c.json(
+          { error: { code: "not_found", message: "Principal not found" } },
+          404,
+        );
+      }
 
-    if (!principalRow) {
-      return c.json(
-        { error: { code: "not_found", message: "Principal not found" } },
-        404,
+      const result = await authorize(
+        grantStore,
+        principalId,
+        tenantCtx.id,
+        body.resource,
+        body.action,
+        conditionRegistry,
       );
-    }
 
-    const result = await authorize(
-      grantStore,
-      principalId,
-      tenantCtx.id,
-      body.resource,
-      body.action,
-      conditionRegistry,
-    );
+      return c.json({
+        effect: result.effect ?? "deny",
+        matchingGrants: result.matchingGrants.map((g) => ({
+          id: g.id,
+          resource: g.resource,
+          action: g.action,
+          effect: g.effect,
+          origin: g.origin,
+        })),
+      });
+    },
+  );
 
-    return c.json({
-      effect: result.effect ?? "deny",
-      matchingGrants: result.matchingGrants.map((g) => ({
-        id: g.id,
-        resource: g.resource,
-        action: g.action,
-        effect: g.effect,
-        origin: g.origin,
-      })),
-    });
-  },
-);
-
-export { evaluateApp as evaluateRoutes };
+  return evaluateApp;
+}
