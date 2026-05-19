@@ -2,8 +2,8 @@ import type { DB } from "@interchange/db";
 import type { ConditionRegistry, GrantStore } from "@interchange/types/authz";
 import type { Env } from "hono";
 
-import type { Auth } from "./auth";
 import type { EventCollectorRegistry } from "./event-collector-registry";
+import type { SessionInfo, SessionUser } from "./session";
 import type { SessionService } from "./session-service";
 import type { SidecarRouter } from "./ws/sidecar-handler";
 
@@ -36,8 +36,8 @@ export type AppEnv = Env & {
     sidecarRouter: SidecarRouter;
     sessionService: SessionService;
     eventCollectors: EventCollectorRegistry;
-    user: Auth["$Infer"]["Session"]["user"] | null;
-    session: Auth["$Infer"]["Session"]["session"] | null;
+    user: SessionUser | null;
+    session: SessionInfo | null;
   };
 };
 

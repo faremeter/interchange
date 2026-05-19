@@ -3,9 +3,10 @@ import { Hono } from "hono";
 import { openAPIRouteHandler } from "hono-openapi";
 
 import { honoLogger, type HonoContext } from "@interchange/log/hono";
-import type { Auth } from "./auth";
 import type { AppEnv } from "./context";
+import { createSessionMiddleware } from "./middleware/session";
 import { requireAuth, resolveTenant } from "./middleware/tenant";
+import type { GetSession } from "./session";
 import { meRoutes } from "./routes/me";
 import { tenantRoutes } from "./routes/tenants";
 import { tenantFederationRoutes } from "./routes/tenant-federation";
@@ -33,7 +34,8 @@ import type { SidecarRouter } from "./ws/sidecar-handler";
 import type { EventCollectorRegistry } from "./event-collector-registry";
 
 export type CreateAppOpts = {
-  auth: Auth;
+  getSession: GetSession;
+  authHandler: Handler<AppEnv>;
   db: DB["db"];
   sidecarRouter: SidecarRouter;
   sessionService: SessionService;
@@ -43,7 +45,8 @@ export type CreateAppOpts = {
 };
 
 export function createApp({
-  auth,
+  getSession,
+  authHandler,
   db,
   sidecarRouter,
   sessionService,
@@ -71,17 +74,12 @@ export function createApp({
     c.set("sidecarRouter", sidecarRouter);
     c.set("sessionService", sessionService);
     c.set("eventCollectors", eventCollectors);
-    const result = await auth.api.getSession({
-      headers: c.req.raw.headers,
-    });
-    c.set("user", result?.user ?? null);
-    c.set("session", result?.session ?? null);
     await next();
   });
 
-  app.all("/api/auth/*", (c) => {
-    return auth.handler(c.req.raw);
-  });
+  app.use(createSessionMiddleware(getSession));
+
+  app.all("/api/auth/*", authHandler);
 
   app.get("/status", (c) => c.json({ status: "ok" }));
 
