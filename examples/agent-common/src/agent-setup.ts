@@ -11,8 +11,8 @@
 // canonical "here is the full surface" reference; every other
 // example uses these helpers.
 
-import { createAgent, type Agent, type AgentTool } from "@interchange/agent";
-import type { ProviderConfig } from "@interchange/types/runtime";
+import { createAgent, type Agent, type AgentTool } from "@intx/agent";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 import { resolveProvider } from "./env-provider";
 import {
@@ -60,7 +60,7 @@ export type OpenExampleAgentSpec = {
 };
 
 /**
- * Construct an `@interchange/agent` Agent from the example's
+ * Construct an `@intx/agent` Agent from the example's
  * `MainOptions` and a per-example spec. The helper:
  *
  *   - Defaults `contextDir` to `defaultContextDir(spec.exampleName)`
@@ -70,7 +70,7 @@ export type OpenExampleAgentSpec = {
  *     conditional-spread idiom into every call.
  *
  * Anything example-specific lives in `spec` (system prompt, tools,
- * providers, model). The `@interchange/agent` API surface
+ * providers, model). The `@intx/agent` API surface
  * (`createAgent`, `agent.send`, `agent.close`, etc.) is otherwise
  * unchanged; the helper exists to remove repetition, not to wrap
  * the surface.

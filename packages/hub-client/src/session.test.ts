@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-type-assertion -- Transport.fetch<T> is a generic interface method; mock implementations must use `as T` to satisfy the return type contract */
 import { beforeEach, describe, expect, test } from "bun:test";
 
-import type { InferenceTurnResponse, MailResponse } from "@interchange/types";
+import type { InferenceTurnResponse, MailResponse } from "@intx/types";
 
 import { createInstanceSession, type InstanceSession } from "./session";
 import type { Transport } from "./transport";

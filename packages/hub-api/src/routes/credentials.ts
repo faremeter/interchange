@@ -2,24 +2,24 @@ import { eq, and, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import { credential, provider } from "@interchange/db/schema";
+import { credential, provider } from "@intx/db/schema";
 import {
   getAncestorChain,
   resolveCredentialByName,
   parseCredentialRow,
-} from "@interchange/db";
-import type { DB } from "@interchange/db";
+} from "@intx/db";
+import type { DB } from "@intx/db";
 import {
   CreateCredential,
   UpdateCredential,
   CredentialResponse,
   ErrorResponse,
   paginatedSchema,
-} from "@interchange/types";
+} from "@intx/types";
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
-import { generateId } from "@interchange/hub-common";
+import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import {
@@ -29,10 +29,7 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
-import {
-  pushProviderUpdates,
-  type SidecarRouter,
-} from "@interchange/hub-sessions";
+import { pushProviderUpdates, type SidecarRouter } from "@intx/hub-sessions";
 
 function formatCredential(row: typeof credential.$inferSelect) {
   const parsed = parseCredentialRow(row);

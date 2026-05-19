@@ -5,12 +5,9 @@
 // the hub. Owns per-agent key material for challenge/response signing.
 
 import { sign as nodeSign } from "node:crypto";
-import { getLogger } from "@interchange/log";
-import {
-  importPrivateKeyBytes,
-  verifySshSignature,
-} from "@interchange/crypto-node";
-import type { InMemoryTransport } from "@interchange/mail-memory";
+import { getLogger } from "@intx/log";
+import { importPrivateKeyBytes, verifySshSignature } from "@intx/crypto-node";
+import type { InMemoryTransport } from "@intx/mail-memory";
 import { type } from "arktype";
 import {
   HubFrame,
@@ -28,12 +25,12 @@ import {
   type PackAckFrame,
   type PackRejectFrame,
   type SyncRequestFrame,
-} from "@interchange/types/sidecar";
-import type { KeyPair } from "@interchange/types/runtime";
+} from "@intx/types/sidecar";
+import type { KeyPair } from "@intx/types/runtime";
 
 import type { SessionManager, SessionEventSink } from "./session-manager";
-import { createPackReceiver, chunkPack } from "@interchange/pack-transport";
-import { hexDecode, hexEncode } from "@interchange/types";
+import { createPackReceiver, chunkPack } from "@intx/pack-transport";
+import { hexDecode, hexEncode } from "@intx/types";
 
 const logger = getLogger(["interchange", "sidecar", "ws"]);
 

@@ -1,11 +1,11 @@
 import { describe, test, expect } from "bun:test";
 
-import { runInference } from "@interchange/inference";
+import { runInference } from "@intx/inference";
 import type {
   ConversationTurn,
   InferenceEvent,
   ProviderConfig,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 import { ClockWallClockOverrunError } from "./clock";
 import { UnmatchedFetchError } from "./errors";

@@ -1,5 +1,5 @@
 {
-  "name": "@interchange/tools-posix",
+  "name": "@intx/tools-posix",
   "version": "0.0.0",
   "license": "GPL-3.0-only",
   "type": "module",
@@ -10,6 +10,6 @@
     }
   },
   "dependencies": {
-    "@interchange/types": "workspace:*"
+    "@intx/types": "workspace:*"
   }
 }

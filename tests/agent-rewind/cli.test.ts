@@ -7,10 +7,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { main } from "@interchange/example-agent-rewind";
-import { setupHarness, type Harness } from "@interchange/inference-testing";
-import { createIsogitStore } from "@interchange/storage-isogit";
-import type { ProviderConfig } from "@interchange/types/runtime";
+import { main } from "@intx/example-agent-rewind";
+import { setupHarness, type Harness } from "@intx/inference-testing";
+import { createIsogitStore } from "@intx/storage-isogit";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 const PROVIDER: ProviderConfig = {
   provider: "anthropic",

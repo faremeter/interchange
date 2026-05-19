@@ -7,9 +7,9 @@ import {
   IsogitStore,
   initAgentRepo,
   createMailAuditStore,
-} from "@interchange/storage-isogit";
-import type { ConversationTurn } from "@interchange/types/runtime";
-import type { ErrorRecord } from "@interchange/types/audit";
+} from "@intx/storage-isogit";
+import type { ConversationTurn } from "@intx/types/runtime";
+import type { ErrorRecord } from "@intx/types/audit";
 import { reconstructTimeline } from "./timeline-reconstruction";
 
 const tempDirs: string[] = [];

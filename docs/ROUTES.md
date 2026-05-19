@@ -96,7 +96,7 @@ Error codes are machine-readable strings (not HTTP status codes). The message is
 
 ### Validation
 
-Request validation uses ArkType types shared between server and clients via the `@interchange/types` package. Validation is enforced at the route level -- invalid requests receive a 400 response before reaching business logic.
+Request validation uses ArkType types shared between server and clients via the `@intx/types` package. Validation is enforced at the route level -- invalid requests receive a 400 response before reaching business logic.
 
 Response types are documented in the OpenAPI spec via the same ArkType types but are not validated at runtime (the server is trusted to produce correct responses).
 

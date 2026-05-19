@@ -1,5 +1,5 @@
 {
-  "name": "@interchange/tools-lsp",
+  "name": "@intx/tools-lsp",
   "version": "0.0.0",
   "license": "GPL-3.0-only",
   "type": "module",
@@ -10,9 +10,9 @@
     }
   },
   "dependencies": {
-    "@interchange/log": "workspace:*",
-    "@interchange/tools-posix": "workspace:*",
-    "@interchange/types": "workspace:*",
+    "@intx/log": "workspace:*",
+    "@intx/tools-posix": "workspace:*",
+    "@intx/types": "workspace:*",
     "vscode-jsonrpc": "^8.2.0",
     "vscode-languageserver-types": "^3.17.5",
     "which": "^4.0.0"

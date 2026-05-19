@@ -5,9 +5,9 @@ export type {
   Effect,
   GrantRule,
   GrantStore,
-} from "@interchange/types/authz";
+} from "@intx/types/authz";
 
-import type { Effect } from "@interchange/types/authz";
+import type { Effect } from "@intx/types/authz";
 
 export type MatchedGrant = {
   id: string;

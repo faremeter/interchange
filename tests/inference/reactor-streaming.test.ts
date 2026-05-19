@@ -1,9 +1,6 @@
 import { describe, test, expect } from "bun:test";
 
-import {
-  createReactor,
-  createDefaultDependencies,
-} from "@interchange/inference";
+import { createReactor, createDefaultDependencies } from "@intx/inference";
 import type {
   ReactorConfig,
   Reactor,
@@ -11,9 +8,9 @@ import type {
   CorrelationValidator,
   Dependencies,
   InferenceHarnessOptions,
-} from "@interchange/inference";
-import { setupHarness, wire } from "@interchange/inference-testing";
-import type { Harness } from "@interchange/inference-testing";
+} from "@intx/inference";
+import { setupHarness, wire } from "@intx/inference-testing";
+import type { Harness } from "@intx/inference-testing";
 import type {
   ReactorDirector,
   ReactorAction,
@@ -31,13 +28,13 @@ import type {
   BeforeToolExtension,
   Compactor,
   TransformRecord,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 // ---------------------------------------------------------------------------
 // Helpers (duplicated from packages/inference/src/reactor.test.ts so that
 // these wire-driven tests can live in the top-level tests/inference/ tree
-// without introducing a workspace dependency cycle between @interchange/
-// inference and @interchange/inference-testing).
+// without introducing a workspace dependency cycle between @intx/
+// inference and @intx/inference-testing).
 // ---------------------------------------------------------------------------
 
 function emptyUsage(): TokenUsage {
@@ -413,7 +410,7 @@ function makeRecordingContextStore(): {
 // `createReactor — inference path` describe block in
 // packages/inference/src/reactor.test.ts, but feed the reactor through the
 // real fetch → parseSSE → provider adapter → reactor pipeline using the
-// `@interchange/inference-testing` harness. The synthetic
+// `@intx/inference-testing` harness. The synthetic
 // `mockInferenceRunner` / `makeInferenceRunner` tests in reactor.test.ts
 // continue to validate the reactor's state-machine logic with a cheap
 // in-process generator; this file validates that the same end state is

@@ -28,7 +28,7 @@ import type {
   ToolDefinition,
   ToolResult,
   ToolRunner,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 export type ToolHandler = (
   call: ToolCall,

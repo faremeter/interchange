@@ -1,5 +1,5 @@
 // agent-resume: demonstrate that `contextDir` is the durable boundary
-// for an @interchange/agent conversation.
+// for an @intx/agent conversation.
 //
 // The CLI opens an agent against a fixed `contextDir`, prints whatever
 // turns the store already contains, sends one new prompt, prints the
@@ -19,8 +19,8 @@ import {
   resolveAgentProvider,
   resolveStdio,
   type SingleProviderMainOptions,
-} from "@interchange/example-agent-common";
-import type { ConversationTurn } from "@interchange/types/runtime";
+} from "@intx/example-agent-common";
+import type { ConversationTurn } from "@intx/types/runtime";
 
 const EXAMPLE_NAME = "agent-resume";
 

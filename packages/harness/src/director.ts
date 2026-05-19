@@ -13,7 +13,7 @@
 // The director never throws. Inference errors are surfaced to the user as a
 // reply so the problem is visible, and the agent remains alive for retries.
 
-import { getLogger } from "@interchange/log";
+import { getLogger } from "@intx/log";
 import type {
   ReactorDirector,
   ReactorInboundEvent,
@@ -23,7 +23,7 @@ import type {
   AssistantTurn,
   ToolCall,
   ToolDefinition,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 import type { DirectorPolicy } from "./config";
 
 const logger = getLogger(["interchange", "harness", "director"]);

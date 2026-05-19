@@ -1,6 +1,6 @@
 import { type } from "arktype";
 
-import { getLogger } from "@interchange/log";
+import { getLogger } from "@intx/log";
 import type {
   ConversationTurn,
   ContentBlock,
@@ -8,7 +8,7 @@ import type {
   InferenceOptions,
   PartialMessage,
   TokenUsage,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 
 const logger = getLogger(["interchange", "inference", "anthropic"]);

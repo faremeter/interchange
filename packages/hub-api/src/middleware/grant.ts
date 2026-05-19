@@ -1,9 +1,9 @@
 import { createMiddleware } from "hono/factory";
 import type { MiddlewareHandler } from "hono";
 
-import { authorize } from "@interchange/authz";
-import { getLogger } from "@interchange/log";
-import type { ConditionRegistry, GrantStore } from "@interchange/types/authz";
+import { authorize } from "@intx/authz";
+import { getLogger } from "@intx/log";
+import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 
 import type { TenantEnv } from "../context";
 

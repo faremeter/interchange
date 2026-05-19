@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-import type { BlobReader } from "@interchange/types/runtime";
+import type { BlobReader } from "@intx/types/runtime";
 
 import { hasCode } from "./errors";
 

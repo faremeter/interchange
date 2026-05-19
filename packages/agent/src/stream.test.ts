@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 
-import type { ReactorEmittedEvent } from "@interchange/inference";
+import type { ReactorEmittedEvent } from "@intx/inference";
 
 import { createStreamConsumer, StreamBackpressureError } from "./stream";
 

@@ -13,7 +13,7 @@ import type {
   ForkMode,
   InferenceOptions,
   ToolCall,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 /**
  * Builds a frozen capabilities object. The same instance is reused across

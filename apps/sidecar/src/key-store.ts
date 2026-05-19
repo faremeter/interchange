@@ -8,9 +8,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { type } from "arktype";
-import { getLogger } from "@interchange/log";
-import { generateKeyPair } from "@interchange/crypto-node";
-import { type KeyPair, HarnessConfig } from "@interchange/types/runtime";
+import { getLogger } from "@intx/log";
+import { generateKeyPair } from "@intx/crypto-node";
+import { type KeyPair, HarnessConfig } from "@intx/types/runtime";
 import { sanitizeAddress } from "./session-manager";
 import { hasCode } from "./errors";
 

@@ -1,9 +1,9 @@
 import { eq, and } from "drizzle-orm";
 import type { Context, MiddlewareHandler, Next } from "hono";
 
-import { tenant, principal } from "@interchange/db/schema";
-import type { DB } from "@interchange/db";
-import { getLogger } from "@interchange/log";
+import { tenant, principal } from "@intx/db/schema";
+import type { DB } from "@intx/db";
+import { getLogger } from "@intx/log";
 
 import type { AppEnv, TenantEnv } from "../context";
 

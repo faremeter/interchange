@@ -7,12 +7,12 @@
 // `lookups`.
 
 import { eq, and, isNull } from "drizzle-orm";
-import type { DB } from "@interchange/db";
-import { agentInstance, sessionMail } from "@interchange/db/schema";
-import { getLogger } from "@interchange/log";
+import type { DB } from "@intx/db";
+import { agentInstance, sessionMail } from "@intx/db/schema";
+import { getLogger } from "@intx/log";
 
 import type { AgentRepoStore } from "./agent-repo";
-import { generateId } from "@interchange/hub-common";
+import { generateId } from "@intx/hub-common";
 import type { SidecarLookups } from "./ws/sidecar-events";
 
 const logger = getLogger(["hub", "lookups"]);

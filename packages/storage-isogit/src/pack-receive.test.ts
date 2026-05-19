@@ -7,7 +7,7 @@ import {
   generateKeyPair,
   createSshSignature,
   verifySshSignature,
-} from "@interchange/crypto-node";
+} from "@intx/crypto-node";
 import { initAgentRepo } from "./init";
 import {
   applyPack,

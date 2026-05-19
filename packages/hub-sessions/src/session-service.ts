@@ -1,11 +1,11 @@
-import { getLogger } from "@interchange/log";
+import { getLogger } from "@intx/log";
 import {
   assembleMessage,
   assembleSignedContent,
   createDetachedSignatureFromProvider,
   type MessageHeaders,
-} from "@interchange/mime";
-import type { CryptoProvider, HarnessConfig } from "@interchange/types/runtime";
+} from "@intx/mime";
+import type { CryptoProvider, HarnessConfig } from "@intx/types/runtime";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { SidecarRouter } from "./ws/sidecar-handler";
 

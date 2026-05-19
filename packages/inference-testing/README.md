@@ -1,6 +1,6 @@
-# @interchange/inference-testing
+# @intx/inference-testing
 
-A deterministic test harness for the `@interchange/inference` streaming
+A deterministic test harness for the `@intx/inference` streaming
 pipeline. Replaces the global `fetch` with a virtual-clock-driven
 `SimulatedStream`, lets tests script provider wire bytes via a typed DSL,
 and exposes a small matcher suite for asserting against the collected
@@ -15,12 +15,8 @@ events, assert.
 ```ts
 import { describe, test } from "bun:test";
 
-import { runInference } from "@interchange/inference";
-import {
-  expectEvents,
-  setupHarness,
-  wire,
-} from "@interchange/inference-testing";
+import { runInference } from "@intx/inference";
+import { expectEvents, setupHarness, wire } from "@intx/inference-testing";
 
 test("anthropic streams text and then completes", async () => {
   const harness = setupHarness();

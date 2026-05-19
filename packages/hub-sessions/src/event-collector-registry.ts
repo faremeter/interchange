@@ -5,10 +5,10 @@
 // `agent.event` listener looks up the collector by agent address and
 // dispatches the event.
 
-import type { DB } from "@interchange/db";
-import type { InferenceEvent } from "@interchange/types/runtime";
-import type { SessionStatus } from "@interchange/types";
-import { getLogger } from "@interchange/log";
+import type { DB } from "@intx/db";
+import type { InferenceEvent } from "@intx/types/runtime";
+import type { SessionStatus } from "@intx/types";
+import { getLogger } from "@intx/log";
 
 import {
   createEventCollector,

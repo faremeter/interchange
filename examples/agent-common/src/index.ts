@@ -9,7 +9,7 @@
 // next.
 //
 // This package is consumed only by the other examples; it is not part
-// of the @interchange public surface.
+// of the @intx public surface.
 
 export {
   DEFAULT_ANTHROPIC_BASE_URL,

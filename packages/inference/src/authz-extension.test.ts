@@ -6,11 +6,7 @@ import {
   type AuthzDecision,
 } from "./authz-extension";
 
-import type {
-  ToolCall,
-  ReactorState,
-  TokenUsage,
-} from "@interchange/types/runtime";
+import type { ToolCall, ReactorState, TokenUsage } from "@intx/types/runtime";
 
 function emptyUsage(): TokenUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };

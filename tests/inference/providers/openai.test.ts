@@ -1,15 +1,12 @@
 import { type } from "arktype";
 import { describe, test, expect } from "bun:test";
-import { wire } from "@interchange/inference-testing";
+import { wire } from "@intx/inference-testing";
 import {
   parseSSE,
   createOpenAIAdapter,
   type ProviderAdapter,
-} from "@interchange/inference";
-import type {
-  ConversationTurn,
-  InferenceEvent,
-} from "@interchange/types/runtime";
+} from "@intx/inference";
+import type { ConversationTurn, InferenceEvent } from "@intx/types/runtime";
 
 const adapter = createOpenAIAdapter();
 

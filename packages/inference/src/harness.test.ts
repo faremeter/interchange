@@ -7,10 +7,7 @@ import {
   type Dependencies,
   type InferenceHarnessOptions,
 } from "./harness";
-import type {
-  ConversationTurn,
-  InferenceEvent,
-} from "@interchange/types/runtime";
+import type { ConversationTurn, InferenceEvent } from "@intx/types/runtime";
 
 const PROVIDER_CONFIG = {
   provider: "anthropic" as const,

@@ -3,7 +3,7 @@ import type {
   BlobReader,
   ToolDefinition,
   ToolResult,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 import { runEditFile } from "./edit-file";
 import { runGrep } from "./grep";
 import { runReadFile } from "./read-file";

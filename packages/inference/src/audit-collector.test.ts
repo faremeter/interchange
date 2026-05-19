@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 
 import { createAuditCollector } from "./audit-collector";
 import type { AuthzDecision } from "./authz-extension";
-import type { InferenceEvent } from "@interchange/types/runtime";
+import type { InferenceEvent } from "@intx/types/runtime";
 
 function makeDecision(overrides: Partial<AuthzDecision> = {}): AuthzDecision {
   return {

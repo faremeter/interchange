@@ -18,8 +18,8 @@ import type {
   ConversationTurn,
   TokenUsage,
   TransformRecord,
-} from "@interchange/types/runtime";
-import type { AuditRecord, ErrorRecord } from "@interchange/types/audit";
+} from "@intx/types/runtime";
+import type { AuditRecord, ErrorRecord } from "@intx/types/audit";
 
 const ZERO_USAGE: TokenUsage = {
   input: 0,

@@ -12,8 +12,8 @@ import {
   routeProvider,
   withFailover,
   type ProviderEntry,
-} from "@interchange/example-agent-multi-provider";
-import type { ProviderConfig } from "@interchange/types/runtime";
+} from "@intx/example-agent-multi-provider";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 const PRIMARY_CFG: ProviderConfig = {
   provider: "anthropic",

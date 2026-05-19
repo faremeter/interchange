@@ -2,7 +2,7 @@ import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import type { HarnessConfig as AgentConfig } from "@interchange/types/runtime";
+import type { HarnessConfig as AgentConfig } from "@intx/types/runtime";
 import {
   persistAgentConfig,
   scanExistingAgents,

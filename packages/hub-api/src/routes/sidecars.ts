@@ -3,14 +3,10 @@ import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import type { Handler } from "hono";
 
-import { sidecar } from "@interchange/db/schema";
-import { parseSidecarStatus } from "@interchange/db";
-import type { DB } from "@interchange/db";
-import {
-  CreateSidecar,
-  SidecarResponse,
-  ErrorResponse,
-} from "@interchange/types";
+import { sidecar } from "@intx/db/schema";
+import { parseSidecarStatus } from "@intx/db";
+import type { DB } from "@intx/db";
+import { CreateSidecar, SidecarResponse, ErrorResponse } from "@intx/types";
 
 import type { AppEnv } from "../context";
 import { first, ts } from "../format";

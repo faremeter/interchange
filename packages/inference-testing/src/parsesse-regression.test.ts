@@ -16,7 +16,7 @@
 
 import { describe, test, expect } from "bun:test";
 
-import { parseSSE } from "@interchange/inference";
+import { parseSSE } from "@intx/inference";
 
 import { ClockOverrunError } from "./clock";
 import { setupHarness } from "./harness";

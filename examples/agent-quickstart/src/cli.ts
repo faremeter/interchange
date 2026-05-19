@@ -1,21 +1,21 @@
-// agent-quickstart: the smallest possible @interchange/agent program.
+// agent-quickstart: the smallest possible @intx/agent program.
 //
 // The body of `main()` below is the answer to "what does an agent
 // look like?" — construct, send a prompt, print the reply, close.
 // This is the only example that calls `createAgent` inline; the
 // other seven agent-* examples go through
-// `openExampleAgent` in @interchange/example-agent-common so they
+// `openExampleAgent` in @intx/example-agent-common so they
 // can keep their focus on the feature they demonstrate. Read this
 // file when you want to see the full `createAgent` surface.
 
-import { createAgent } from "@interchange/agent";
+import { createAgent } from "@intx/agent";
 import {
   defaultContextDir,
   optional,
   resolveAgentProvider,
   resolveStdio,
   type SingleProviderMainOptions,
-} from "@interchange/example-agent-common";
+} from "@intx/example-agent-common";
 
 const EXAMPLE_NAME = "agent-quickstart";
 

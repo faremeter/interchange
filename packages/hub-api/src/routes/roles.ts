@@ -2,19 +2,19 @@ import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import { role, principalRole, principal } from "@interchange/db/schema";
-import type { DB } from "@interchange/db";
+import { role, principalRole, principal } from "@intx/db/schema";
+import type { DB } from "@intx/db";
 import {
   CreateRole,
   UpdateRole,
   RoleResponse,
   ErrorResponse,
   paginatedSchema,
-} from "@interchange/types";
+} from "@intx/types";
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
-import { generateId } from "@interchange/hub-common";
+import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import {

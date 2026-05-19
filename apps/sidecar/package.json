@@ -1,18 +1,18 @@
 {
-  "name": "@interchange/sidecar-app",
+  "name": "@intx/sidecar-app",
   "version": "0.0.0",
   "license": "GPL-3.0-only",
   "type": "module",
   "dependencies": {
-    "@interchange/authz": "workspace:*",
-    "@interchange/crypto-node": "workspace:*",
-    "@interchange/harness": "workspace:*",
-    "@interchange/log": "workspace:*",
-    "@interchange/mail-memory": "workspace:*",
-    "@interchange/pack-transport": "workspace:*",
-    "@interchange/storage-isogit": "workspace:*",
-    "@interchange/tools-lsp": "workspace:*",
-    "@interchange/tools-posix": "workspace:*",
-    "@interchange/types": "workspace:*"
+    "@intx/authz": "workspace:*",
+    "@intx/crypto-node": "workspace:*",
+    "@intx/harness": "workspace:*",
+    "@intx/log": "workspace:*",
+    "@intx/mail-memory": "workspace:*",
+    "@intx/pack-transport": "workspace:*",
+    "@intx/storage-isogit": "workspace:*",
+    "@intx/tools-lsp": "workspace:*",
+    "@intx/tools-posix": "workspace:*",
+    "@intx/types": "workspace:*"
   }
 }

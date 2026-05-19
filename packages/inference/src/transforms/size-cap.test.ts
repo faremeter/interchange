@@ -7,7 +7,7 @@ import type {
   StrategyContext,
   ToolCall,
   ToolResult,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 function emptyState(): ReactorState {
   return {

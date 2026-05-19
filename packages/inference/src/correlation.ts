@@ -5,10 +5,7 @@
 //
 // (INFERENCE.md § Correlation)
 
-import type {
-  InboundMessage,
-  PendingOperation,
-} from "@interchange/types/runtime";
+import type { InboundMessage, PendingOperation } from "@intx/types/runtime";
 
 /**
  * Validates whether an inbound message is an authentic response to a

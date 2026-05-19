@@ -2,14 +2,9 @@ import { eq, and, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import {
-  agent,
-  agentInstance,
-  agentRole,
-  agentVersion,
-} from "@interchange/db/schema";
-import { parseAgentRow, parseAgentVersionRow } from "@interchange/db";
-import type { DB } from "@interchange/db";
+import { agent, agentInstance, agentRole, agentVersion } from "@intx/db/schema";
+import { parseAgentRow, parseAgentVersionRow } from "@intx/db";
+import type { DB } from "@intx/db";
 import {
   CreateAgent,
   UpdateAgent,
@@ -18,11 +13,11 @@ import {
   RollbackRequest,
   ErrorResponse,
   paginatedSchema,
-} from "@interchange/types";
+} from "@intx/types";
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
-import { generateId } from "@interchange/hub-common";
+import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import {

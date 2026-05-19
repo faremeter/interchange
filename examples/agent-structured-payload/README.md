@@ -1,19 +1,19 @@
 # agent-structured-payload
 
 Build an `InboundMessage` carrying a typed `InterchangeType` payload
-(here `offering.request`), deliver it to an `@interchange/agent`,
+(here `offering.request`), deliver it to an `@intx/agent`,
 and confirm via the reactor's event stream that the typed envelope
 landed intact.
 
 This example uses `offering.request` because it has the most
 concrete fields; the same shape covers `payment.required`,
 `approval.request`, `system.credential.refresh`, and every other
-`InterchangeType` defined in `@interchange/types`.
+`InterchangeType` defined in `@intx/types`.
 
 ## What it shows
 
 - Building an `InboundMessage` with `createInboundMessage` from
-  `@interchange/mime`, passing `payload: { type, body }` instead of
+  `@intx/mime`, passing `payload: { type, body }` instead of
   `content: string`.
 - The mail-builder's defaults — `interchangeType` is auto-derived
   from `payload.type`, `messageId` is generated, `signatureStatus`
@@ -105,7 +105,7 @@ A few things to notice:
 ## Why `deliver` and not `send`?
 
 `send(message)` waits for `connector.reply`. The default director
-in `@interchange/harness` calls `infer()` whenever a
+in `@intx/harness` calls `infer()` whenever a
 `message.received` event arrives, regardless of whether the message
 carries text content or a structured payload, so `send` would happily
 park waiting for a reply.
@@ -151,7 +151,7 @@ import type {
   ReactorInboundEvent,
   ReactorState,
   ReactorCapabilities,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 const renderPayloadDirector: ReactorDirector = {
   async decide(event, _state, caps): Promise<ReactorAction | ReactorAction[]> {
@@ -172,7 +172,7 @@ const renderPayloadDirector: ReactorDirector = {
 ```
 
 That is policy code; it lives in the application, not in
-`@interchange/agent`.
+`@intx/agent`.
 
 ## Beyond offering.request
 

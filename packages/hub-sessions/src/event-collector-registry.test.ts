@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import type { InferenceEvent } from "@interchange/types/runtime";
+import type { InferenceEvent } from "@intx/types/runtime";
 import { deriveStatus } from "./event-collector-registry";
 
 function event(

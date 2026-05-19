@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realpathSync } from "node:fs";
-import { createBlobReader, type BlobReader } from "@interchange/types/runtime";
+import { createBlobReader, type BlobReader } from "@intx/types/runtime";
 import { createPosixTools, composeMiddleware } from "./index";
 import type { PosixTools, ToolHandler, ToolPlugin } from "./index";
 import { matchGlob, shouldSkip } from "./glob-match";

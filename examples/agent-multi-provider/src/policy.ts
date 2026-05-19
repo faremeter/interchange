@@ -1,12 +1,12 @@
 // Routing and failover policy for the multi-provider example.
 //
-// The @interchange/agent surface intentionally does not bundle a
+// The @intx/agent surface intentionally does not bundle a
 // failover or cost-routing engine — `setProvider()` lets you swap
 // credentials/model in place, and the example layers the policy
 // on top. That keeps the agent package's surface small and lets
 // users encode the policy that matches their billing/SLA story.
 
-import type { ProviderConfig } from "@interchange/types/runtime";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 export type ProviderEntry = {
   /** Stable identifier for the entry (e.g. "primary", "fallback"). */

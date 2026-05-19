@@ -13,18 +13,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import git from "isomorphic-git";
-import { getLogger } from "@interchange/log";
-import { evaluateGrants } from "@interchange/authz";
+import { getLogger } from "@intx/log";
+import { evaluateGrants } from "@intx/authz";
 import {
   createHarness,
   readDeployTree,
   type Harness,
   type DeployToolInfo,
-} from "@interchange/harness";
-import { createPosixTools } from "@interchange/tools-posix";
-import { createLSPPlugin } from "@interchange/tools-lsp";
-import { hasProvider } from "@interchange/inference";
-import { createNodeCrypto, createSshSignature } from "@interchange/crypto-node";
+} from "@intx/harness";
+import { createPosixTools } from "@intx/tools-posix";
+import { createLSPPlugin } from "@intx/tools-lsp";
+import { hasProvider } from "@intx/inference";
+import { createNodeCrypto, createSshSignature } from "@intx/crypto-node";
 import {
   createIsogitStore,
   createMailAuditStore,
@@ -34,9 +34,9 @@ import {
   currentBranch,
   type CommitVerifier,
   type MailAuditStore,
-} from "@interchange/storage-isogit";
-import type { InMemoryTransport } from "@interchange/mail-memory";
-import type { GrantRule } from "@interchange/types/authz";
+} from "@intx/storage-isogit";
+import type { InMemoryTransport } from "@intx/mail-memory";
+import type { GrantRule } from "@intx/types/authz";
 import type {
   InboundMessage,
   InferenceEvent,
@@ -44,10 +44,10 @@ import type {
   ProviderConfig,
   ToolRunner,
   HarnessConfig as AgentConfig,
-} from "@interchange/types/runtime";
-import { createBlobReader } from "@interchange/types/runtime";
+} from "@intx/types/runtime";
+import { createBlobReader } from "@intx/types/runtime";
 
-import { hexEncode } from "@interchange/types";
+import { hexEncode } from "@intx/types";
 
 import {
   loadOrGenerateKeyPair,

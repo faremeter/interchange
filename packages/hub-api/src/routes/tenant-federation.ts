@@ -2,18 +2,18 @@ import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import { federationTrust, tenant } from "@interchange/db/schema";
-import type { DB } from "@interchange/db";
+import { federationTrust, tenant } from "@intx/db/schema";
+import type { DB } from "@intx/db";
 import {
   FederationTrust,
   CreateFederationTrust,
   ErrorResponse,
   paginatedSchema,
-} from "@interchange/types";
+} from "@intx/types";
 
 import type { TenantEnv } from "../context";
 import { ts } from "../format";
-import { generateId } from "@interchange/hub-common";
+import { generateId } from "@intx/hub-common";
 import {
   parsePageParams,
   cursorCondition,

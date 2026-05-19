@@ -29,7 +29,7 @@
 //   `wait`, or `done`. Context-overflow recovery runs compaction in its own
 //   cycle and re-infers on the next director invocation.
 
-import type { ReactorAction, ToolCall } from "@interchange/types/runtime";
+import type { ReactorAction, ToolCall } from "@intx/types/runtime";
 
 export type ValidationResult =
   | { ok: true; normalized: ReactorAction[] }

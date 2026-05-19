@@ -5,7 +5,7 @@
 
 import { resolve } from "node:path";
 
-import { defaultContextDir } from "@interchange/example-agent-common";
+import { defaultContextDir } from "@intx/example-agent-common";
 
 export const EXAMPLE_NAME = "agent-rewind";
 

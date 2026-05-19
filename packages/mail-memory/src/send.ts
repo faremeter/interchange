@@ -2,7 +2,7 @@ import type {
   OutboundMessage,
   SendReceipt,
   MailboxEvent,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 import type { AddressEntry, StoredEnvelope } from "./mailbox";
 import { appendToMailbox } from "./mailbox";
 import {
@@ -14,7 +14,7 @@ import {
   type MessageHeaders as MimeMessageHeaders,
   type ConversationContent,
   type StructuredContent,
-} from "@interchange/mime";
+} from "@intx/mime";
 import { buildMessageHeaders } from "./headers";
 
 const CONVERSATION_TYPES = new Set([

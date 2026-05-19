@@ -2,8 +2,8 @@ import { type SQL, eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver } from "hono-openapi";
 
-import { agent, agentInstance, principal } from "@interchange/db/schema";
-import type { DB } from "@interchange/db";
+import { agent, agentInstance, principal } from "@intx/db/schema";
+import type { DB } from "@intx/db";
 import {
   UserProfile,
   PrincipalSummary,
@@ -13,7 +13,7 @@ import {
   ApprovalSummary,
   ErrorResponse,
   paginatedSchema,
-} from "@interchange/types";
+} from "@intx/types";
 
 import type { AppEnv } from "../context";
 import { ts } from "../format";

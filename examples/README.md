@@ -7,7 +7,7 @@ just like packages and apps — they are not throwaway scratch code,
 and they are expected to keep working as the packages they consume
 evolve.
 
-Every example here targets `@interchange/agent`. Start with
+Every example here targets `@intx/agent`. Start with
 [`agent-quickstart`](./agent-quickstart/README.md); the rest layer
 one concept on top of that baseline.
 
@@ -56,7 +56,7 @@ without overwhelming the conversation or the model.
 
 ## Full integration
 
-- [`coding-agent`](./coding-agent/README.md) — `@interchange/agent`
-  wired against `@interchange/tools-posix` and
-  `@interchange/tools-lsp` to read, write, and reason about a real
+- [`coding-agent`](./coding-agent/README.md) — `@intx/agent`
+  wired against `@intx/tools-posix` and
+  `@intx/tools-lsp` to read, write, and reason about a real
   codebase. Demonstrates the public surface end-to-end.

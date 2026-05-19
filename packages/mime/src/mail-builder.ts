@@ -7,12 +7,12 @@
  * collapse that boilerplate behind two factories with sensible defaults.
  *
  * The builders use the parsed-shape MessageHeaders from
- * @interchange/types/runtime (where date is an ISO string), NOT the
+ * @intx/types/runtime (where date is an ISO string), NOT the
  * wire-shape MessageHeaders local to this package (where date is a Date
  * object and headers are serialised to RFC 2822 bytes via assembleMessage).
  *
- * Consumers import the message types from @interchange/types directly; the
- * @interchange/mime barrel does not re-export them.
+ * Consumers import the message types from @intx/types directly; the
+ * @intx/mime barrel does not re-export them.
  */
 
 import { type } from "arktype";
@@ -22,8 +22,8 @@ import type {
   MessageHeaders,
   MessageRef,
   OutboundMessage,
-} from "@interchange/types/runtime";
-import { InterchangeType, SignatureStatus } from "@interchange/types/runtime";
+} from "@intx/types/runtime";
+import { InterchangeType, SignatureStatus } from "@intx/types/runtime";
 import { generateMessageId } from "./mime";
 
 /**

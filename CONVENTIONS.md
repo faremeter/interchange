@@ -249,14 +249,14 @@ type FrameType = (typeof FrameType)[keyof typeof FrameType];
 Use `import type` for type-only imports (required by `verbatimModuleSyntax`):
 
 ```typescript
-import type { SidecarFrame, HubFrame } from "@interchange/types/sidecar";
-import type { AbortReason, HarnessConfig } from "@interchange/types/runtime";
+import type { SidecarFrame, HubFrame } from "@intx/types/sidecar";
+import type { AbortReason, HarnessConfig } from "@intx/types/runtime";
 
 // Mixed imports
 import {
   type AuthzResult,
   authorize, // value import
-} from "@interchange/authz";
+} from "@intx/authz";
 ```
 
 ### Avoid Over-Typing
@@ -452,7 +452,7 @@ export { createGrantStore } from "./grant-store";
 export * as schema from "./schema";
 ```
 
-Prefer flat re-exports (`export *`) for types packages. Use namespaced re-exports (`export * as`) when grouping a subdirectory under a single name. Use dedicated `package.json` entry points for sub-modules that consumers import directly (e.g., `@interchange/types/sidecar`).
+Prefer flat re-exports (`export *`) for types packages. Use namespaced re-exports (`export * as`) when grouping a subdirectory under a single name. Use dedicated `package.json` entry points for sub-modules that consumers import directly (e.g., `@intx/types/sidecar`).
 
 ### Named Exports (Preferred)
 
@@ -470,7 +470,7 @@ export default function createSidecarRouter(config: SidecarRouterConfig) { ... }
 Order imports by category:
 
 1. External library imports
-2. Internal package imports (`@interchange/*`)
+2. Internal package imports (`@intx/*`)
 3. Relative imports
 
 ```typescript
@@ -479,8 +479,8 @@ import { type } from "arktype";
 import { Hono } from "hono";
 
 // Internal packages
-import { getLogger } from "@interchange/log";
-import type { SidecarFrame } from "@interchange/types/sidecar";
+import { getLogger } from "@intx/log";
+import type { SidecarFrame } from "@intx/types/sidecar";
 
 // Relative imports
 import { formatSession } from "./helpers";
@@ -707,7 +707,7 @@ Two locations are used for tests:
 
 - **Co-located unit tests**: `packages/<name>/src/*.test.ts`. These tests cover a single package's internals using mocks and synthetic inputs. The default for all per-module tests.
 
-- **Integration-shaped tests**: `tests/<package-name>/`. Tests that target a package's behavior but need the `@interchange/inference-testing` harness, span multiple packages, or spawn real servers and subprocesses live here. Co-locating harness-driven tests in `packages/<name>/src/` would force the package to depend on `@interchange/inference-testing`, creating a workspace dependency cycle (because the harness depends on the package). The `tests/` tree breaks that cycle. Tests spanning multiple packages live under `tests/<primary-target-package>/`; the "primary target" is whatever package's behavior the test is asserting, with the other packages as setup dependencies.
+- **Integration-shaped tests**: `tests/<package-name>/`. Tests that target a package's behavior but need the `@intx/inference-testing` harness, span multiple packages, or spawn real servers and subprocesses live here. Co-locating harness-driven tests in `packages/<name>/src/` would force the package to depend on `@intx/inference-testing`, creating a workspace dependency cycle (because the harness depends on the package). The `tests/` tree breaks that cycle. Tests spanning multiple packages live under `tests/<primary-target-package>/`; the "primary target" is whatever package's behavior the test is asserting, with the other packages as setup dependencies.
 
 Tests that are not parallel-safe (e.g. spawn servers, perform real `isomorphic-git` operations against `os.tmpdir()`) are excluded per-file via the `[test].exclude` list in `bunfig.toml`. That list is a flat enumeration of individual files, not a directory convention; each entry is an explicit marker that the file cannot run in the main parallel pass. The `test` script in the root `package.json` reruns those files in a second `bun test` invocation after the main suite.
 
@@ -715,14 +715,14 @@ Tests that are not parallel-safe (e.g. spawn servers, perform real `isomorphic-g
 
 ## Logging
 
-The project uses `@interchange/log`, which re-exports LogTape and provides a `setup` helper for application-level configuration.
+The project uses `@intx/log`, which re-exports LogTape and provides a `setup` helper for application-level configuration.
 
 ### Application Configuration
 
 Configure logging once at application startup:
 
 ```typescript
-import { setup } from "@interchange/log";
+import { setup } from "@intx/log";
 
 // Development: pretty ANSI output, debug level
 // Production: JSON Lines output, info level
@@ -740,7 +740,7 @@ await setup({
 Each package creates loggers using `getLogger` with hierarchical category names:
 
 ```typescript
-import { getLogger } from "@interchange/log";
+import { getLogger } from "@intx/log";
 
 const logger = getLogger(["hub", "ws", "sidecar"]);
 ```

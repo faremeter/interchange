@@ -1,14 +1,14 @@
 import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
 import { Hono } from "hono";
-import type { DB } from "@interchange/db";
+import type { DB } from "@intx/db";
 import { createApp, createHubContextMiddleware, mountHubRoutes } from "./app";
 import type { AppEnv } from "./context";
 import {
   createEventCollectorRegistry,
   createSidecarRouter,
   type SessionService,
-} from "@interchange/hub-sessions";
+} from "@intx/hub-sessions";
 import type { GetSession } from "./session";
 
 const OpenAPISpec = type({

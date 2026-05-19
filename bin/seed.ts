@@ -11,7 +11,7 @@ import {
   RoleResponse,
   ProviderResponse,
   paginatedSchema,
-} from "@interchange/types";
+} from "@intx/types";
 
 const AuthResponse = type({ "user?": { id: "string" } });
 

@@ -6,7 +6,7 @@
 //
 // (INFERENCE.md § Gates, Gate Timeouts, Gate Behavior During Suspension)
 
-import type { GateType } from "@interchange/types/runtime";
+import type { GateType } from "@intx/types/runtime";
 
 export type GateRecord = {
   gateId: string;

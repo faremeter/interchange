@@ -1,6 +1,6 @@
 import path from "node:path";
-import type { Middleware } from "@interchange/tools-posix";
-import { TOOL_NAMES } from "@interchange/tools-posix";
+import type { Middleware } from "@intx/tools-posix";
+import { TOOL_NAMES } from "@intx/tools-posix";
 import type { LSPManager } from "./lsp";
 import { report } from "./diagnostic";
 

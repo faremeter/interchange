@@ -1,4 +1,4 @@
-// End-to-end round-trip tests for the @interchange/inference-testing harness.
+// End-to-end round-trip tests for the @intx/inference-testing harness.
 //
 // These tests exercise complete turn-1 to turn-2 inference cycles through the
 // production stack — the real provider adapter, the real `parseSSE`, and SSE
@@ -33,14 +33,14 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { runInference } from "@interchange/inference";
-import { setupHarness, wire } from "@interchange/inference-testing";
-import type { Harness } from "@interchange/inference-testing";
+import { runInference } from "@intx/inference";
+import { setupHarness, wire } from "@intx/inference-testing";
+import type { Harness } from "@intx/inference-testing";
 import type {
   ConversationTurn,
   InferenceEvent,
   ProviderConfig,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 const ANTHROPIC_PROVIDER_CONFIG: ProviderConfig = {
   provider: "anthropic",

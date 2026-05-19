@@ -144,7 +144,7 @@ All scripts live in `bin/`. Shell scripts that start with `#!/usr/bin/env opsh` 
 | `bin/db-migrate`      | `bin/db-migrate`                                 | Generate and apply database migrations (loads `.env` and `.env.migrate`)                                |
 | `bin/db-reset`        | `bin/db-reset [--clean]`                         | Drop, recreate, migrate, and grant permissions. `--clean` also wipes the hub and sidecar on-disk state. |
 | `bin/seed.ts`         | `bun bin/seed.ts`                                | Seed the database via the hub API (requires running hub, uses `HUB_URL`)                                |
-| `bin/add-package`     | `bin/add-package <name>`                         | Scaffold a new `@interchange/<name>` package                                                            |
+| `bin/add-package`     | `bin/add-package <name>`                         | Scaffold a new `@intx/<name>` package                                                                   |
 | `bin/check-env`       | `bin/check-env`                                  | Verify git hooks are configured                                                                         |
 | `bin/audit`           | `bin/audit --dir <path> --session <id> [--json]` | Inspect an agent's tool authorization audit trail                                                       |
 | `bin/gen-api-docs.ts` | `bun bin/gen-api-docs.ts`                        | Generate API documentation from route schemas                                                           |

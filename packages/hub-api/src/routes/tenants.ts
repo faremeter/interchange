@@ -2,25 +2,19 @@ import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import {
-  tenant,
-  principal,
-  role,
-  principalRole,
-  grant,
-} from "@interchange/db/schema";
-import { parseTenantRow } from "@interchange/db";
-import type { DB } from "@interchange/db";
+import { tenant, principal, role, principalRole, grant } from "@intx/db/schema";
+import { parseTenantRow } from "@intx/db";
+import type { DB } from "@intx/db";
 import {
   CreateTenant,
   UpdateTenant,
   TenantResponse,
   ErrorResponse,
-} from "@interchange/types";
+} from "@intx/types";
 
 import type { AppEnv } from "../context";
 import { first, ts } from "../format";
-import { generateId } from "@interchange/hub-common";
+import { generateId } from "@intx/hub-common";
 
 const SYSTEM_ROLES = ["owner", "admin", "member"] as const;
 

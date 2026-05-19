@@ -2,10 +2,10 @@ import type { Handler, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { openAPIRouteHandler } from "hono-openapi";
 
-import { honoLogger, type HonoContext } from "@interchange/log/hono";
-import { timeWindowEvaluator } from "@interchange/authz";
-import { type DB, createGrantStore } from "@interchange/db";
-import type { ConditionRegistry, GrantStore } from "@interchange/types/authz";
+import { honoLogger, type HonoContext } from "@intx/log/hono";
+import { timeWindowEvaluator } from "@intx/authz";
+import { type DB, createGrantStore } from "@intx/db";
+import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 
 import type { AppEnv } from "./context";
 import { createSessionMiddleware } from "./middleware/session";
@@ -16,7 +16,7 @@ import type {
   EventCollectorRegistry,
   SessionService,
   SidecarRouter,
-} from "@interchange/hub-sessions";
+} from "@intx/hub-sessions";
 
 import { createMeRoutes } from "./routes/me";
 import { createTenantRoutes } from "./routes/tenants";

@@ -8,7 +8,7 @@
 // removes the pending operation, and emits a `message.correlated`
 // event so any watcher knows the approval landed.
 //
-// The example uses `createInboundMessage` from @interchange/mime to
+// The example uses `createInboundMessage` from @intx/mime to
 // synthesise the approval message because that is the same builder
 // any production approver service would use. The agent's surface
 // for this flow is two methods: `deliver(message)` to ingest the
@@ -21,13 +21,10 @@ import {
   resolveAgentProvider,
   resolveStdio,
   type SingleProviderMainOptions,
-} from "@interchange/example-agent-common";
-import type { ReactorEmittedEvent } from "@interchange/inference";
-import { createInboundMessage } from "@interchange/mime";
-import type {
-  ContentBlock,
-  ConversationTurn,
-} from "@interchange/types/runtime";
+} from "@intx/example-agent-common";
+import type { ReactorEmittedEvent } from "@intx/inference";
+import { createInboundMessage } from "@intx/mime";
+import type { ContentBlock, ConversationTurn } from "@intx/types/runtime";
 
 import { createApprovalTool } from "./approval-tool";
 

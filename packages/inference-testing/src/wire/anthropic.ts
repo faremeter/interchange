@@ -1,7 +1,7 @@
 // Anthropic SSE wire DSL.
 //
 // Each helper emits a single SSE event encoded as UTF-8 bytes the existing
-// `createAnthropicAdapter()` in `@interchange/inference/providers/anthropic`
+// `createAnthropicAdapter()` in `@intx/inference/providers/anthropic`
 // will parse without error. The DSL never touches adapter internals; it
 // produces the same byte shape Anthropic's real `/v1/messages` stream would.
 

@@ -7,7 +7,7 @@ import {
   CommitDetail,
   BranchInfo,
   ErrorResponse,
-} from "@interchange/types";
+} from "@intx/types";
 
 import type { AppEnv } from "../context";
 

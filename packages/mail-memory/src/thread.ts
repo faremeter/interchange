@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- Map.get()! after has() checks in threading algorithm */
-import type { Thread, SearchQuery } from "@interchange/types/runtime";
+import type { Thread, SearchQuery } from "@intx/types/runtime";
 import type { MailboxStore, StoredMessage } from "./mailbox";
 import { executeSearch } from "./search";
 

@@ -1,5 +1,5 @@
 import { sign as nodeSign, verify as nodeVerify } from "node:crypto";
-import type { CryptoProvider, KeyPair } from "@interchange/types/runtime";
+import type { CryptoProvider, KeyPair } from "@intx/types/runtime";
 import { importPrivateKeyBytes, importPublicKeyBytes } from "./keys";
 
 /**

@@ -17,9 +17,9 @@
 //
 // (ARCHITECTURE.md § Agent Harness, INFERENCE.md § Relationship to Harness)
 
-import { getLogger } from "@interchange/log";
-import { createReactorAssembly } from "@interchange/inference";
-import type { ReactorEmittedEvent } from "@interchange/inference";
+import { getLogger } from "@intx/log";
+import { createReactorAssembly } from "@intx/inference";
+import type { ReactorEmittedEvent } from "@intx/inference";
 import {
   ProviderConfig,
   type BlobReader,
@@ -28,9 +28,9 @@ import {
   type InboundMessage,
   type Unsubscribe,
   type ReactorDirector,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
-import type { ErrorRecord } from "@interchange/types/audit";
+import type { ErrorRecord } from "@intx/types/audit";
 
 import type { HarnessConfig } from "./config";
 import { validateConfig } from "./config";

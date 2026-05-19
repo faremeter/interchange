@@ -9,7 +9,7 @@ import {
   credentialRequirementSources,
   grantRequirementSources,
   grantEffects,
-} from "@interchange/types";
+} from "@intx/types";
 
 import { MutationError } from "@/components/mutation-error";
 import {

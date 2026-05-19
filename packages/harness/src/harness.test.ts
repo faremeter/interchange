@@ -29,16 +29,16 @@ import type {
   ToolCall,
   ToolResult,
   InferenceEvent,
-} from "@interchange/types/runtime";
-import type { AuditRecord, ErrorRecord } from "@interchange/types/audit";
-import type { AuthzCallResult } from "@interchange/inference";
-import { createInboundMessage } from "@interchange/mime";
+} from "@intx/types/runtime";
+import type { AuditRecord, ErrorRecord } from "@intx/types/audit";
+import type { AuthzCallResult } from "@intx/inference";
+import { createInboundMessage } from "@intx/mime";
 import type {
   ReactorInboundEvent,
   ReactorDirector,
   ReactorState,
   ReactorCapabilities,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 import { createHarness } from "./harness";
 import { buildMailToolHandlers, buildCombinedRunner } from "./tools";
@@ -957,7 +957,7 @@ describe("Default director", () => {
         };
       },
       suspend(gate: {
-        type: import("@interchange/types/runtime").GateType;
+        type: import("@intx/types/runtime").GateType;
         gateId: string;
         timeoutMs: number;
         correlationId?: string;
@@ -965,10 +965,7 @@ describe("Default director", () => {
         this.calls.push({ type: "suspend", args: [gate] });
         return { type: "suspend" as const, gate };
       },
-      fork(
-        mode: import("@interchange/types/runtime").ForkMode,
-        forkId: string,
-      ) {
+      fork(mode: import("@intx/types/runtime").ForkMode, forkId: string) {
         this.calls.push({ type: "fork", args: [mode, forkId] });
         return { type: "fork" as const, mode, forkId };
       },
@@ -1002,7 +999,7 @@ describe("Default director", () => {
     };
   }
 
-  function makeState(): import("@interchange/types/runtime").ReactorState {
+  function makeState(): import("@intx/types/runtime").ReactorState {
     return {
       turns: [],
       activeForks: [],

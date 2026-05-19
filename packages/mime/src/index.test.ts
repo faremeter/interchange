@@ -3,7 +3,7 @@ import {
   generateKeyPair,
   createNodeCrypto,
   verifyDetachedSignature,
-} from "@interchange/crypto-node";
+} from "@intx/crypto-node";
 import {
   assembleSignedContent,
   assembleMessage,

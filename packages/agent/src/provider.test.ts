@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 
-import type { ProviderConfig } from "@interchange/types/runtime";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 import {
   createProviderRegistry,

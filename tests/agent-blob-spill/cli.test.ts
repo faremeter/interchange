@@ -8,12 +8,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import {
-  DEFAULT_PAYLOAD_CHARS,
-  main,
-} from "@interchange/example-agent-blob-spill";
-import { setupHarness, type Harness } from "@interchange/inference-testing";
-import type { ProviderConfig } from "@interchange/types/runtime";
+import { DEFAULT_PAYLOAD_CHARS, main } from "@intx/example-agent-blob-spill";
+import { setupHarness, type Harness } from "@intx/inference-testing";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 const PROVIDER: ProviderConfig = {
   provider: "anthropic",

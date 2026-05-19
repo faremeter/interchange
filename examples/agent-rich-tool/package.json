@@ -1,5 +1,5 @@
 {
-  "name": "@interchange/example-agent-rich-tool",
+  "name": "@intx/example-agent-rich-tool",
   "version": "0.0.0",
   "license": "GPL-3.0-only",
   "private": true,
@@ -14,11 +14,11 @@
     "start": "bun run src/cli.ts"
   },
   "dependencies": {
-    "@interchange/agent": "workspace:*",
-    "@interchange/example-agent-common": "workspace:*",
-    "@interchange/inference": "workspace:*",
-    "@interchange/mime": "workspace:*",
-    "@interchange/types": "workspace:*",
+    "@intx/agent": "workspace:*",
+    "@intx/example-agent-common": "workspace:*",
+    "@intx/inference": "workspace:*",
+    "@intx/mime": "workspace:*",
+    "@intx/types": "workspace:*",
     "arktype": "catalog:"
   }
 }

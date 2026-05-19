@@ -1,4 +1,4 @@
-# @interchange/tools-posix
+# @intx/tools-posix
 
 POSIX-flavored tool runner for the agent harness. Provides `read_file`,
 `write_file`, `edit_file`, `run_shell`, `search_files`, and `grep` with a
@@ -7,7 +7,7 @@ plugin/middleware surface for extensions.
 ## Construction
 
 ```ts
-import { createPosixTools } from "@interchange/tools-posix";
+import { createPosixTools } from "@intx/tools-posix";
 
 const tools = createPosixTools({
   cwd: "/path/to/agent/workspace",
@@ -27,8 +27,8 @@ form `tool-output:///{callId}`. Pass that URI as the `path` argument to
 the filesystem.
 
 ```ts
-import { createHarness } from "@interchange/harness";
-import { createPosixTools } from "@interchange/tools-posix";
+import { createHarness } from "@intx/harness";
+import { createPosixTools } from "@intx/tools-posix";
 
 const harness = createHarness(harnessConfig);
 const tools = createPosixTools({

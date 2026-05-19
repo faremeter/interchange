@@ -19,8 +19,8 @@
 // wire layer already has both behaviors, and pretending otherwise
 // would silently change failure handling.
 
-import type { PackRejectReason } from "@interchange/types/sidecar";
-import { getLogger } from "@interchange/log";
+import type { PackRejectReason } from "@intx/types/sidecar";
+import { getLogger } from "@intx/log";
 
 const logger = getLogger(["hub", "ws", "sidecar", "events"]);
 

@@ -5,7 +5,7 @@ import {
   verify as nodeVerify,
   type KeyObject,
 } from "node:crypto";
-import type { KeyPair } from "@interchange/types/runtime";
+import type { KeyPair } from "@intx/types/runtime";
 
 /**
  * Generate a fresh Ed25519 key pair.

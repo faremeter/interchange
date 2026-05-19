@@ -13,13 +13,13 @@ import {
   type ConversationTurn,
   type ConnectorThreadState,
   type PendingOperation,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 import { type } from "arktype";
 import {
   AuditRecord,
   type AuditRecord as AuditRecordType,
   type ErrorRecord,
-} from "@interchange/types/audit";
+} from "@intx/types/audit";
 import { AUTHOR } from "./init";
 import type { CommitSigner } from "./signer";
 import { buildSigningArgs } from "./commit-helpers";

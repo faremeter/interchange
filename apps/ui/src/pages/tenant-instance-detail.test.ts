@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { shouldShowMail } from "@interchange/hub-client";
+import { shouldShowMail } from "@intx/hub-client";
 
 describe("shouldShowMail", () => {
   test("inbound mail is always shown", () => {

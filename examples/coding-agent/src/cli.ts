@@ -14,8 +14,8 @@
 
 import { parseArgs } from "node:util";
 
-import type { Dependencies, ReactorEmittedEvent } from "@interchange/inference";
-import type { ProviderConfig } from "@interchange/types/runtime";
+import type { Dependencies, ReactorEmittedEvent } from "@intx/inference";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 import { createCodingAgent } from "./agent";
 import { defaultContextDir, defaultRepoRoot } from "./paths";
@@ -32,7 +32,7 @@ export type MainOptions = {
   stdout?: (chunk: string) => void;
   /** Replace stderr (defaults to `process.stderr.write`). */
   stderr?: (chunk: string) => void;
-  /** Inject inference deps (for tests using `@interchange/inference-testing`). */
+  /** Inject inference deps (for tests using `@intx/inference-testing`). */
   deps?: Dependencies;
   /** Skip credential parsing and use this provider directly. */
   providerOverride?: ProviderConfig;

@@ -12,7 +12,7 @@
 // than throwing: first-time users skim past stack traces, but they
 // will read a 5-line "set these variables to run me" block.
 
-import type { ProviderConfig } from "@interchange/types/runtime";
+import type { ProviderConfig } from "@intx/types/runtime";
 
 export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 export const DEFAULT_ANTHROPIC_MODEL = "claude-3-5-sonnet-20241022";

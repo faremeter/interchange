@@ -1,4 +1,4 @@
-// Integration tests for @interchange/agent lifecycle that exercise the
+// Integration tests for @intx/agent lifecycle that exercise the
 // real isogit-backed context store but do not require driving inference.
 //
 // These tests cover the singleton-per-`contextDir` lock, the
@@ -16,12 +16,12 @@ import {
   createAgent,
   type Agent,
   type AgentConfig,
-} from "@interchange/agent";
+} from "@intx/agent";
 import type {
   ContextStore,
   InboundMessage,
   ProviderConfig,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
 /**
  * Test helper: build an `InboundMessage` shaped just enough to exercise
@@ -61,7 +61,7 @@ function baseConfig(contextDir: string): AgentConfig {
   };
 }
 
-describe("@interchange/agent lifecycle", () => {
+describe("@intx/agent lifecycle", () => {
   let workDir: string;
 
   beforeEach(() => {

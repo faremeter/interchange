@@ -2,7 +2,7 @@
 /**
  * PGP/MIME signing via CryptoProvider.
  *
- * createDetachedSignature in @interchange/crypto-node takes raw private key
+ * createDetachedSignature in @intx/crypto-node takes raw private key
  * bytes, but callers that only hold a CryptoProvider (which does not expose
  * private key bytes) need this alternative. This module reimplements the PGP
  * packet construction using CryptoProvider.sign() on the correct hash input.
@@ -20,8 +20,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { armorEncode } from "@interchange/crypto-node";
-import type { CryptoProvider } from "@interchange/types/runtime";
+import { armorEncode } from "@intx/crypto-node";
+import type { CryptoProvider } from "@intx/types/runtime";
 
 // OpenPGP constants (verified against pgp.ts in crypto-node).
 const PK_ALGO_EDDSA = 22;

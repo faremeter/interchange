@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
 import { createReactorAssembly } from "./assembly";
-import { createInboundMessage } from "@interchange/mime";
+import { createInboundMessage } from "@intx/mime";
 import type { AuthzCallResult } from "./authz-extension";
 import type { ReactorEmittedEvent } from "./reactor";
 
@@ -19,9 +19,9 @@ import type {
   TokenUsage,
   ToolResultTransform,
   ToolRunner,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 
-import type { AuditRecord } from "@interchange/types/audit";
+import type { AuditRecord } from "@intx/types/audit";
 
 // ---------------------------------------------------------------------------
 // Fakes

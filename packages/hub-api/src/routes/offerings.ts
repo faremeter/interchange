@@ -2,9 +2,9 @@ import { eq, and, ilike } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import { agent, offering } from "@interchange/db/schema";
-import { parseOfferingRow } from "@interchange/db";
-import type { DB } from "@interchange/db";
+import { agent, offering } from "@intx/db/schema";
+import { parseOfferingRow } from "@intx/db";
+import type { DB } from "@intx/db";
 import {
   CreateOffering,
   UpdateOffering,
@@ -12,11 +12,11 @@ import {
   ModelInfo,
   ErrorResponse,
   paginatedSchema,
-} from "@interchange/types";
+} from "@intx/types";
 
 import type { TenantEnv, AppEnv } from "../context";
 import { first } from "../format";
-import { generateId } from "@interchange/hub-common";
+import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import {

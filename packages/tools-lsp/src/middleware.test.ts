@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { createPosixTools, type PosixTools } from "@interchange/tools-posix";
+import { createPosixTools, type PosixTools } from "@intx/tools-posix";
 import { createLSPPlugin } from "./index";
 import type { ServerInfo } from "./server";
 import { createLSPManager, type LSPManager } from "./lsp";

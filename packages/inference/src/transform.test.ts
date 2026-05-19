@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { transformMessages, createIDNormalizer } from "./transform";
-import type { ConversationTurn } from "@interchange/types/runtime";
+import type { ConversationTurn } from "@intx/types/runtime";
 
 describe("transformMessages", () => {
   test("preserves messages when target model matches originating model", () => {

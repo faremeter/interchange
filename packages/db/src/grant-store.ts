@@ -1,6 +1,6 @@
 import { eq, and, or, isNull, gt, inArray } from "drizzle-orm";
 
-import type { GrantRule, GrantStore } from "@interchange/types/authz";
+import type { GrantRule, GrantStore } from "@intx/types/authz";
 
 import type { DB } from "./client";
 import { grant } from "./schema/grants";

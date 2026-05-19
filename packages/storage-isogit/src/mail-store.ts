@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import git from "isomorphic-git";
-import { parseHeaderSection } from "@interchange/mime";
+import { parseHeaderSection } from "@intx/mime";
 import { AUTHOR } from "./init";
 import type { CommitSigner } from "./signer";
 import { buildSigningArgs } from "./commit-helpers";

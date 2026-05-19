@@ -1,11 +1,11 @@
 # agent-resume
 
-Demonstrate that an `@interchange/agent` conversation survives process
+Demonstrate that an `@intx/agent` conversation survives process
 death. The CLI prints whatever turns the `contextDir` already contains,
 sends a new prompt, prints the reply, and exits. Run it twice with the
 same `contextDir` and the second run sees the first run's turns.
 
-This is the "resume from crash" story for `@interchange/agent`. There
+This is the "resume from crash" story for `@intx/agent`. There
 is nothing to opt in to: the agent commits each cycle to its
 isogit-backed context store on exit, so reopening the store on the
 same directory replays the conversation automatically.

@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import type { CryptoProvider, HarnessConfig } from "@interchange/types/runtime";
+import type { CryptoProvider, HarnessConfig } from "@intx/types/runtime";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import {
   createSessionService,

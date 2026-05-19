@@ -6,8 +6,8 @@
 // user "I have requested approval") but the gate is invisible to the
 // model — it lives on the reactor's pending-operations table.
 
-import { tool, type AgentTool } from "@interchange/agent";
-import type { ToolResult } from "@interchange/types/runtime";
+import { tool, type AgentTool } from "@intx/agent";
+import type { ToolResult } from "@intx/types/runtime";
 
 /**
  * Build the request_approval tool. `correlationIdFor(callId)` lets

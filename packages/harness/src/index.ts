@@ -3,7 +3,7 @@ export type { Harness } from "./harness";
 
 export type { HarnessConfig } from "./config";
 export { validateConfig } from "./config";
-export type { BeforeToolExtension } from "@interchange/types/runtime";
+export type { BeforeToolExtension } from "@intx/types/runtime";
 
 export { createDefaultDirector, DefaultDirector } from "./director";
 

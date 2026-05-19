@@ -1,13 +1,13 @@
 {
-  "name": "@interchange/hub-app",
+  "name": "@intx/hub-app",
   "version": "0.0.0",
   "license": "GPL-3.0-only",
   "type": "module",
   "dependencies": {
-    "@interchange/crypto-node": "workspace:*",
-    "@interchange/db": "workspace:*",
-    "@interchange/hub-api": "workspace:*",
-    "@interchange/hub-sessions": "workspace:*",
-    "@interchange/log": "workspace:*"
+    "@intx/crypto-node": "workspace:*",
+    "@intx/db": "workspace:*",
+    "@intx/hub-api": "workspace:*",
+    "@intx/hub-sessions": "workspace:*",
+    "@intx/log": "workspace:*"
   }
 }

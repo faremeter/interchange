@@ -1,16 +1,16 @@
-# @interchange/agent
+# @intx/agent
 
 In-process agent runtime built on `createReactorAssembly` from
-`@interchange/inference`. Construct an agent, `send()` it a message,
+`@intx/inference`. Construct an agent, `send()` it a message,
 get a reply.
 
 Use this package when you want an agent you can drive from inside
 your own program — a CLI, a worker, a test, an embedded assistant.
 If you want an agent that lives behind a mailbox instead, see
-`@interchange/harness`.
+`@intx/harness`.
 
 ```ts
-import { createAgent } from "@interchange/agent";
+import { createAgent } from "@intx/agent";
 
 const agent = await createAgent({
   contextDir: "./tmp/my-agent",

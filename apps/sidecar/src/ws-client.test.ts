@@ -6,15 +6,15 @@ import {
   createSidecarRouter,
   type SidecarRouter,
   type WsHandle,
-} from "@interchange/hub-sessions";
-import { createInMemoryTransport } from "@interchange/mail-memory";
-import { hexEncode } from "@interchange/types";
+} from "@intx/hub-sessions";
+import { createInMemoryTransport } from "@intx/mail-memory";
+import { hexEncode } from "@intx/types";
 import type {
   HarnessConfig,
   InboundMessage,
   ProviderConfig,
-} from "@interchange/types/runtime";
-import type { GrantRule } from "@interchange/types/authz";
+} from "@intx/types/runtime";
+import type { GrantRule } from "@intx/types/authz";
 
 import { createWsClient } from "./ws-client";
 import type { SessionManager } from "./session-manager";
@@ -464,7 +464,7 @@ describe("sidecar↔hub integration", () => {
     // register frame includes it in the routing table.
     sessions.addresses.push("agent-1@test.interchange");
     const { generateKeyPair, createNodeCrypto } = await import(
-      "@interchange/crypto-node"
+      "@intx/crypto-node"
     );
     const kp = await generateKeyPair();
     transport.register("agent-1@test.interchange", createNodeCrypto(kp));
@@ -513,7 +513,7 @@ describe("sidecar↔hub integration", () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
     const { generateKeyPair, createNodeCrypto } = await import(
-      "@interchange/crypto-node"
+      "@intx/crypto-node"
     );
     const kp = await generateKeyPair();
     transport.register("sender@test.interchange", createNodeCrypto(kp));
@@ -556,7 +556,7 @@ describe("sidecar↔hub integration", () => {
 
   test("mail routes between two sidecars via hub", async () => {
     const { generateKeyPair, createNodeCrypto } = await import(
-      "@interchange/crypto-node"
+      "@intx/crypto-node"
     );
 
     // Sidecar A
@@ -817,7 +817,7 @@ describe("sidecar↔hub integration", () => {
 
   test("reconnect restores hubPublicKey into hubKeys map", async () => {
     const { generateKeyPair, createSshSignature } = await import(
-      "@interchange/crypto-node"
+      "@intx/crypto-node"
     );
 
     // Agent keypair — used for challenge/response signing.

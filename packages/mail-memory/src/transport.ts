@@ -17,7 +17,7 @@ import type {
   MailboxEvent,
   Unsubscribe,
   CryptoProvider,
-} from "@interchange/types/runtime";
+} from "@intx/types/runtime";
 import {
   createAddressEntry,
   createMailboxStore,
@@ -25,7 +25,7 @@ import {
   appendToMailbox,
   type AddressEntry,
 } from "./mailbox";
-import { parseHeaderSection } from "@interchange/mime";
+import { parseHeaderSection } from "@intx/mime";
 import { buildMessageHeaders } from "./headers";
 import {
   executeSend,
@@ -340,7 +340,7 @@ export class InMemoryTransport implements MessageTransport {
 
     const callbacks = entry.watchCallbacks.get("INBOX");
     if (callbacks !== undefined && callbacks.size > 0) {
-      const event: import("@interchange/types/runtime").MailboxEvent = {
+      const event: import("@intx/types/runtime").MailboxEvent = {
         type: "exists",
         uid,
         headers: msgHeaders,
@@ -739,7 +739,7 @@ class ScopedMessageTransport implements MessageTransport {
 
   #buildMessageHeaders(
     headers: Map<string, string>,
-  ): import("@interchange/types/runtime").MessageHeaders {
+  ): import("@intx/types/runtime").MessageHeaders {
     return buildMessageHeaders(headers);
   }
 }
