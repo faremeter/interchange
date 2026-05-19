@@ -5,6 +5,7 @@ import type { Handler } from "hono";
 
 import { sidecar } from "@interchange/db/schema";
 import { parseSidecarStatus } from "@interchange/db";
+import type { DB } from "@interchange/db";
 import {
   CreateSidecar,
   SidecarResponse,
@@ -25,11 +26,19 @@ function formatSidecar(row: typeof sidecar.$inferSelect) {
   };
 }
 
+export type CreateSidecarRoutesDeps = {
+  db: DB["db"];
+  wsHandler?: Handler<AppEnv>;
+};
+
 // Sidecar management routes are system-level (not tenant-scoped) and
 // authenticated by the sidecar's registration token over the WebSocket
 // channel. The REST endpoints here are for internal tooling and are not
 // exposed through tenant authorization grants.
-export function createSidecarRoutes(wsHandler?: Handler<AppEnv>) {
+export function createSidecarRoutes({
+  db,
+  wsHandler,
+}: CreateSidecarRoutesDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
 
   if (wsHandler) {
@@ -54,7 +63,6 @@ export function createSidecarRoutes(wsHandler?: Handler<AppEnv>) {
     }),
     validator("json", CreateSidecar),
     async (c) => {
-      const db = c.get("db");
       const body = c.req.valid("json");
 
       const resolvedStatus = body.status ?? "online";
@@ -100,7 +108,6 @@ export function createSidecarRoutes(wsHandler?: Handler<AppEnv>) {
       },
     }),
     async (c) => {
-      const db = c.get("db");
       const sidecars = await db.select().from(sidecar);
       return c.json(sidecars.map(formatSidecar));
     },
@@ -127,7 +134,6 @@ export function createSidecarRoutes(wsHandler?: Handler<AppEnv>) {
       },
     }),
     async (c) => {
-      const db = c.get("db");
       const id = c.req.param("id");
       const [sc] = await db.select().from(sidecar).where(eq(sidecar.id, id));
 
@@ -158,7 +164,6 @@ export function createSidecarRoutes(wsHandler?: Handler<AppEnv>) {
       },
     }),
     async (c) => {
-      const db = c.get("db");
       const id = c.req.param("id");
       const deleted = await db
         .delete(sidecar)
@@ -194,7 +199,6 @@ export function createSidecarRoutes(wsHandler?: Handler<AppEnv>) {
       },
     }),
     async (c) => {
-      const db = c.get("db");
       const id = c.req.param("id");
       const updated = await db
         .update(sidecar)

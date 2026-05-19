@@ -7,23 +7,23 @@ import type { AppEnv } from "./context";
 import { createSessionMiddleware } from "./middleware/session";
 import { requireAuth, resolveTenant } from "./middleware/tenant";
 import type { GetSession } from "./session";
-import { meRoutes } from "./routes/me";
-import { tenantRoutes } from "./routes/tenants";
-import { tenantFederationRoutes } from "./routes/tenant-federation";
-import { principalRoutes, inviteRoutes } from "./routes/principals";
-import { roleRoutes, roleAssignRoutes } from "./routes/roles";
-import { grantRoutes, evaluateRoutes } from "./routes/grants";
-import { agentRoutes } from "./routes/agents";
+import { createMeRoutes } from "./routes/me";
+import { createTenantRoutes } from "./routes/tenants";
+import { createTenantFederationRoutes } from "./routes/tenant-federation";
+import { createPrincipalRoutes, createInviteRoutes } from "./routes/principals";
+import { createRoleRoutes, createRoleAssignRoutes } from "./routes/roles";
+import { createGrantRoutes, createEvaluateRoutes } from "./routes/grants";
+import { createAgentRoutes } from "./routes/agents";
 import { createInstanceRoutes } from "./routes/instances";
 
-import { approvalRoutes } from "./routes/approvals";
-import { walletRoutes } from "./routes/wallets";
-import { providerRoutes } from "./routes/providers";
-import { oauthClientRoutes } from "./routes/oauth-clients";
-import { credentialRoutes } from "./routes/credentials";
-import { offeringRoutes, modelRoutes } from "./routes/offerings";
-import { observabilityRoutes } from "./routes/observability";
-import { agentDataRoutes } from "./routes/agent-data";
+import { createApprovalRoutes } from "./routes/approvals";
+import { createWalletRoutes } from "./routes/wallets";
+import { createProviderRoutes } from "./routes/providers";
+import { createOAuthClientRoutes } from "./routes/oauth-clients";
+import { createCredentialRoutes } from "./routes/credentials";
+import { createOfferingRoutes, createModelRoutes } from "./routes/offerings";
+import { createObservabilityRoutes } from "./routes/observability";
+import { createAgentDataRoutes } from "./routes/agent-data";
 import { createSidecarRoutes } from "./routes/sidecars";
 
 import { type DB, createGrantStore } from "@interchange/db";
@@ -85,7 +85,7 @@ export function createApp({
 
   // User-scoped (cross-tenant) -- requires auth but not tenant membership
   app.use("/api/me/*", requireAuth);
-  app.route("/api/me", meRoutes);
+  app.route("/api/me", createMeRoutes({ db }));
 
   // Tenant-scoped middleware -- require auth + tenant membership for any
   // path under /api/tenants/:tenantId/*. Must be registered before routes
@@ -93,23 +93,29 @@ export function createApp({
   app.use("/api/tenants/:tenantId/*", resolveTenant);
 
   // Global tenant routes (create needs auth, detail/update handle auth inline)
-  app.route("/api/tenants", tenantRoutes);
-  app.route("/api/models", modelRoutes);
+  app.route("/api/tenants", createTenantRoutes({ db }));
+  app.route("/api/models", createModelRoutes());
 
   // Tenant-scoped routes
-  app.route("/api/tenants/:tenantId/principals", principalRoutes);
-  app.route("/api/tenants/:tenantId/members/invite", inviteRoutes);
-  app.route("/api/tenants/:tenantId/roles", roleRoutes);
+  app.route("/api/tenants/:tenantId/principals", createPrincipalRoutes({ db }));
+  app.route(
+    "/api/tenants/:tenantId/members/invite",
+    createInviteRoutes({ db }),
+  );
+  app.route("/api/tenants/:tenantId/roles", createRoleRoutes({ db }));
   app.route(
     "/api/tenants/:tenantId/principals/:principalId/roles",
-    roleAssignRoutes,
+    createRoleAssignRoutes({ db }),
   );
-  app.route("/api/tenants/:tenantId/grants", grantRoutes);
+  app.route("/api/tenants/:tenantId/grants", createGrantRoutes({ db }));
   app.route(
     "/api/tenants/:tenantId/principals/:principalId/evaluate",
-    evaluateRoutes,
+    createEvaluateRoutes({ db, grantStore, conditionRegistry }),
   );
-  app.route("/api/tenants/:tenantId/agents/definitions", agentRoutes);
+  app.route(
+    "/api/tenants/:tenantId/agents/definitions",
+    createAgentRoutes({ db }),
+  );
   app.route(
     "/api/tenants/:tenantId/agents/instances",
     createInstanceRoutes({
@@ -122,17 +128,31 @@ export function createApp({
     }),
   );
 
-  app.route("/api/tenants/:tenantId/approvals", approvalRoutes);
-  app.route("/api/tenants/:tenantId/wallets", walletRoutes);
-  app.route("/api/tenants/:tenantId/providers", providerRoutes);
-  app.route("/api/tenants/:tenantId/oauth-clients", oauthClientRoutes);
-  app.route("/api/tenants/:tenantId/credentials", credentialRoutes);
-  app.route("/api/tenants/:tenantId/offerings", offeringRoutes);
-  app.route("/api/tenants/:tenantId", observabilityRoutes);
-  app.route("/api/tenants/:tenantId/federation", tenantFederationRoutes);
-  app.route("/api/tenants/:tenantId/agents/:agentId", agentDataRoutes);
+  app.route("/api/tenants/:tenantId/approvals", createApprovalRoutes());
+  app.route("/api/tenants/:tenantId/wallets", createWalletRoutes({ db }));
+  app.route("/api/tenants/:tenantId/providers", createProviderRoutes({ db }));
+  app.route(
+    "/api/tenants/:tenantId/oauth-clients",
+    createOAuthClientRoutes({ db }),
+  );
+  app.route(
+    "/api/tenants/:tenantId/credentials",
+    createCredentialRoutes({ db, sidecarRouter }),
+  );
+  app.route("/api/tenants/:tenantId/offerings", createOfferingRoutes({ db }));
+  app.route("/api/tenants/:tenantId", createObservabilityRoutes());
+  app.route(
+    "/api/tenants/:tenantId/federation",
+    createTenantFederationRoutes({ db }),
+  );
+  app.route("/api/tenants/:tenantId/agents/:agentId", createAgentDataRoutes());
 
-  app.route("/api/sidecars", createSidecarRoutes(sidecarWsHandler));
+  app.route(
+    "/api/sidecars",
+    createSidecarRoutes(
+      sidecarWsHandler ? { db, wsHandler: sidecarWsHandler } : { db },
+    ),
+  );
 
   app.get(
     "/openapi.json",
