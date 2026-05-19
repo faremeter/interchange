@@ -1,5 +1,7 @@
-#!/usr/bin/env opsh
+#!/usr/bin/env bash
 # shellcheck shell=bash
+
+source "$(dirname -- "${BASH_SOURCE[0]}")/../bin/opsh"
 
 PREV_HEAD=$1
 shift

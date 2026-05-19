@@ -1,7 +1,8 @@
-#!/usr/bin/env opsh
+#!/usr/bin/env bash
 # shellcheck shell=bash
 
-opsh::version::require v0.7.0
+source "$(dirname -- "${BASH_SOURCE[0]}")/opsh"
+opsh::version::require v0.9.0
 
 REPODIR=$(git rev-parse --show-toplevel)
 
