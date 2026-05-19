@@ -16,7 +16,8 @@ import {
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
-import { requireGrant, idResource } from "../middleware/grant";
+import { idResource } from "../middleware/grant";
+import type { RequireGrant } from "../middleware/grant";
 import {
   parsePageParams,
   cursorCondition,
@@ -42,10 +43,12 @@ function formatOAuthClient(row: typeof oauthClient.$inferSelect) {
 
 export type CreateOAuthClientRoutesDeps = {
   db: DB["db"];
+  requireGrant: RequireGrant;
 };
 
 export function createOAuthClientRoutes({
   db,
+  requireGrant,
 }: CreateOAuthClientRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 

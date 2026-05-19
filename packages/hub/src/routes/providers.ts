@@ -16,7 +16,8 @@ import {
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
-import { requireGrant, idResource } from "../middleware/grant";
+import { idResource } from "../middleware/grant";
+import type { RequireGrant } from "../middleware/grant";
 import {
   parsePageParams,
   cursorCondition,
@@ -44,10 +45,12 @@ function formatProvider(row: typeof provider.$inferSelect) {
 
 export type CreateProviderRoutesDeps = {
   db: DB["db"];
+  requireGrant: RequireGrant;
 };
 
 export function createProviderRoutes({
   db,
+  requireGrant,
 }: CreateProviderRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
