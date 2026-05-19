@@ -5,8 +5,8 @@ import type { GrantRule } from "@interchange/types/authz";
 import type { SessionStatus } from "@interchange/types";
 
 import { createApp } from "../app";
-import type { Auth } from "../auth";
 import type { EventCollectorRegistry } from "../event-collector-registry";
+import type { GetSession } from "../session";
 import type { SessionService } from "../session-service";
 import type { SidecarRouter } from "../ws/sidecar-handler";
 
@@ -150,17 +150,26 @@ function createMockDB(opts: MockDBOpts) {
   } as unknown as Parameters<typeof createApp>[0]["db"];
 }
 
-function createMockAuth(userId: string) {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- betterAuth type cannot be structurally satisfied in tests
-  return {
-    api: {
-      getSession: async () => ({
-        user: { id: userId, email: "test@example.com", name: "Test User" },
-        session: { id: "session_test" },
-      }),
+function createMockGetSession(userId: string): GetSession {
+  const now = new Date("2025-01-01");
+  return async () => ({
+    user: {
+      id: userId,
+      email: "test@example.com",
+      emailVerified: true,
+      name: "Test User",
+      createdAt: now,
+      updatedAt: now,
     },
-    handler: async () => new Response("", { status: 404 }),
-  } as unknown as Auth;
+    session: {
+      id: "session_test",
+      userId,
+      token: "tok_test",
+      expiresAt: new Date("2999-01-01"),
+      createdAt: now,
+      updatedAt: now,
+    },
+  });
 }
 
 function createMockSidecarRouter(
@@ -267,7 +276,8 @@ function createTestApp(opts: TestAppOpts = {}) {
   );
 
   return createApp({
-    auth: createMockAuth(USER_ID),
+    getSession: createMockGetSession(USER_ID),
+    authHandler: () => new Response("", { status: 404 }),
     db,
     grantStore: createInMemoryGrantStore(opts.grants ?? [makeGrant()]),
     sidecarRouter: createMockSidecarRouter(opts.routableAddresses),

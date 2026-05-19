@@ -11,6 +11,7 @@ export {
 } from "./session-service";
 export { createApp, type App, type CreateAppOpts } from "./app";
 export type { AppEnv, TenantEnv, TenantRow, PrincipalRow } from "./context";
+export type { GetSession, SessionInfo, SessionUser } from "./session";
 export {
   createEventCollectorRegistry,
   type EventCollectorRegistry,

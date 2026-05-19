@@ -2,7 +2,6 @@ import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
 import type { DB } from "@interchange/db";
 import { createApp } from "./app";
-import type { Auth } from "./auth";
 import { createEventCollectorRegistry } from "./event-collector-registry";
 import type { SessionService } from "./session-service";
 import { createSidecarRouter } from "./ws/sidecar-handler";
@@ -11,14 +10,6 @@ const OpenAPISpec = type({
   info: { title: "string", version: "string" },
   paths: "Record<string, Record<string, unknown>>",
 });
-
-// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- betterAuth type cannot be structurally satisfied in tests
-const mockAuth = {
-  api: {
-    getSession: async () => null,
-  },
-  handler: async () => new Response("", { status: 404 }),
-} as unknown as Auth;
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
 const mockDb = {} as unknown as DB["db"];
@@ -37,7 +28,8 @@ const sessionService: SessionService = {
 const eventCollectors = createEventCollectorRegistry({ db: mockDb });
 
 const app = createApp({
-  auth: mockAuth,
+  getSession: async () => null,
+  authHandler: () => new Response("", { status: 404 }),
   db: mockDb,
   sidecarRouter,
   sessionService,

@@ -143,20 +143,17 @@ function formatTypeName(schema: JsonSchema, tagHint?: string): string {
 // 3. Load the Hono app and fetch the OpenAPI spec
 // ---------------------------------------------------------------------------
 
-const mockAuth = {
-  api: { getSession: async () => null },
-  handler: async () => new Response("", { status: 404 }),
-};
-
 const app = createApp({
   // Stub dependencies — this script only calls /openapi.json which uses
   // route metadata, not runtime services. These stubs are never called.
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- stub; only /openapi.json is called
-  auth: mockAuth as never,
+  getSession: async () => null,
+  authHandler: () => new Response("", { status: 404 }),
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- stub; only /openapi.json is called
   db: {} as never,
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- stub; only /openapi.json is called
   sidecarRouter: {} as never,
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- stub; only /openapi.json is called
+  sessionService: {} as never,
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- stub; only /openapi.json is called
   eventCollectors: {} as never,
 });
