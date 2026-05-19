@@ -9,6 +9,7 @@ import type { EventCollectorRegistry } from "../event-collector-registry";
 import type { GetSession } from "../session";
 import type { SessionService } from "../session-service";
 import type { SidecarRouter } from "../ws/sidecar-handler";
+import { createSidecarEmitter } from "../ws/sidecar-events";
 
 // ---------------------------------------------------------------------------
 // Test data constants
@@ -223,6 +224,7 @@ function createMockSidecarRouter(
     },
     getConnectedSidecars: () => [],
     getRoutableAddresses: () => routableAddresses,
+    events: createSidecarEmitter(),
   };
 }
 
