@@ -14,7 +14,7 @@ If env files are already configured (see Environment Setup below):
 bin/db-reset && bun bin/dev.ts --seed
 ```
 
-This drops and recreates the database, runs migrations, grants permissions, starts all services, and seeds test data. After startup, the hub is at `http://localhost:3000` and the UI is at `http://localhost:5173`.
+This drops and recreates the database, runs migrations, grants permissions, starts all services, and seeds test data. After startup, the hub is at `http://localhost:3000` and the admin UI is at `http://localhost:5173`.
 
 Seed accounts (all use password `password123`):
 
@@ -68,17 +68,17 @@ The dev orchestrator starts everything in the correct order with colored log out
 bun bin/dev.ts
 ```
 
-This runs: database migration, hub server (with `--watch` for auto-reload), sidecar, and UI dev server. Press Ctrl+C for graceful shutdown of all services.
+This runs: database migration, hub server (with `--watch` for auto-reload), sidecar, and admin UI dev server. Press Ctrl+C for graceful shutdown of all services.
 
 Options:
 
-| Flag           | Effect                                   |
-| -------------- | ---------------------------------------- |
-| `--seed`       | Seed the database after the hub is ready |
-| `--no-ui`      | Skip the UI dev server                   |
-| `--no-sidecar` | Skip the sidecar                         |
+| Flag            | Effect                                   |
+| --------------- | ---------------------------------------- |
+| `--seed`        | Seed the database after the hub is ready |
+| `--no-admin-ui` | Skip the admin UI dev server             |
+| `--no-sidecar`  | Skip the sidecar                         |
 
-Default ports: hub on 3000, UI on 5173. The sidecar connects to the hub via websocket at `ws://localhost:3000/api/sidecars/ws`.
+Default ports: hub on 3000, admin UI on 5173. The sidecar connects to the hub via websocket at `ws://localhost:3000/api/sidecars/ws`.
 
 ## Database
 
@@ -160,7 +160,7 @@ All scripts live in `bin/`. The bash scripts source the bundled [opsh](https://g
 apps/
   hub/          Hub server (Hono, websocket, API routes)
   sidecar/      Sidecar process (agent lifecycle, websocket client)
-  ui/           Web UI (Vite + React)
+  admin-ui/     Admin web UI (Vite + React)
 packages/
   db/           Drizzle ORM schema and migrations
   types/        Shared TypeScript types (arktype validators)

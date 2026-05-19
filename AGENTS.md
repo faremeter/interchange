@@ -21,29 +21,29 @@ Read `DEV.md` for the full development guide. The essentials:
 bin/db-reset && bun bin/dev.ts --seed
 ```
 
-This is the single command to get a clean, running system with seed data. It drops and recreates the database, runs migrations, grants permissions, starts all services (hub, sidecar, UI), and seeds test data.
+This is the single command to get a clean, running system with seed data. It drops and recreates the database, runs migrations, grants permissions, starts all services (hub, sidecar, admin UI), and seeds test data.
 
 - Hub: `http://localhost:3000`
-- UI: `http://localhost:5173`
+- Admin UI: `http://localhost:5173`
 - Seed login: `alice@example.com` / `password123`
 
 ### Common Operations
 
-| Task                          | Command                  |
-| ----------------------------- | ------------------------ |
-| Start stack (no seed)         | `bun bin/dev.ts`         |
-| Start stack with seed         | `bun bin/dev.ts --seed`  |
-| Start stack without UI        | `bun bin/dev.ts --no-ui` |
-| Full database reset           | `bin/db-reset`           |
-| Full reset (DB + agent state) | `bin/db-reset --clean`   |
-| Apply migrations only         | `bin/db-migrate`         |
-| Seed (requires running hub)   | `bun bin/seed.ts`        |
-| Full build verification       | `make all`               |
-| Type check only               | `make build`             |
-| Lint only                     | `make lint`              |
-| Run tests only                | `make test`              |
-| Auto-format                   | `make format`            |
-| Regenerate API docs           | `make docs`              |
+| Task                          | Command                        |
+| ----------------------------- | ------------------------------ |
+| Start stack (no seed)         | `bun bin/dev.ts`               |
+| Start stack with seed         | `bun bin/dev.ts --seed`        |
+| Start stack without admin UI  | `bun bin/dev.ts --no-admin-ui` |
+| Full database reset           | `bin/db-reset`                 |
+| Full reset (DB + agent state) | `bin/db-reset --clean`         |
+| Apply migrations only         | `bin/db-migrate`               |
+| Seed (requires running hub)   | `bun bin/seed.ts`              |
+| Full build verification       | `make all`                     |
+| Type check only               | `make build`                   |
+| Lint only                     | `make lint`                    |
+| Run tests only                | `make test`                    |
+| Auto-format                   | `make format`                  |
+| Regenerate API docs           | `make docs`                    |
 
 Use the `make` targets above for build, lint, test, format, and docs.
 Do not invoke the underlying `bun run` scripts directly -- the Makefile
