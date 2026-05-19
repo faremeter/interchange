@@ -11,10 +11,10 @@ import { chunkPack, createPackReceiver } from "@interchange/pack-transport";
 import { type } from "arktype";
 import {
   SidecarFrame,
-  type PackRejectReason,
   type HubFrame,
   type PackPushFrame,
   type PackDoneFrame,
+  type PackRejectReason,
 } from "@interchange/types/sidecar";
 import type {
   AbortReason,
@@ -22,6 +22,12 @@ import type {
   ProviderConfig,
 } from "@interchange/types/runtime";
 import type { GrantRule } from "@interchange/types/authz";
+import {
+  createSidecarEmitter,
+  type SidecarEventEmitter,
+  type SidecarLookups,
+  type SidecarMailPersistedRow,
+} from "./sidecar-events";
 
 const logger = getLogger(["hub", "ws", "sidecar"]);
 
@@ -70,6 +76,10 @@ export type SidecarRouter = {
 
   getConnectedSidecars(): string[];
   getRoutableAddresses(): string[];
+
+  /** Typed event emitter for the receiver-dispatch surface. See
+   * `sidecar-events.ts` for the event map and emission semantics. */
+  events: SidecarEventEmitter;
 };
 
 export type SidecarRouterConfig = {
@@ -165,6 +175,57 @@ export function createSidecarRouter(
     throw new Error(
       "lookupDeployRef and onDeployRefStale must both be provided or both omitted",
     );
+  }
+
+  // Receiver-dispatch surface. Wire-layer callsites emit events here;
+  // host code subscribes via `router.events`. The legacy callback fields
+  // on SidecarRouterConfig are folded into this emitter and `lookups`
+  // bag by the adapter block below, so existing call sites keep working
+  // without modification.
+  const events = createSidecarEmitter();
+  const lookups: SidecarLookups = {
+    ...(lookupPublicKey !== undefined ? { lookupPublicKey } : {}),
+    ...(lookupDeployRef !== undefined ? { lookupDeployRef } : {}),
+    ...(onMailPersist !== undefined ? { persistMail: onMailPersist } : {}),
+    ...(onStatePackReceived !== undefined
+      ? { receiveStatePack: onStatePackReceived }
+      : {}),
+  };
+
+  if (onAgentEvent !== undefined) {
+    events.on("agent.event", ({ agentAddress, sessionId, event }) => {
+      onAgentEvent(agentAddress, sessionId, event);
+    });
+  }
+  if (onSidecarDisconnect !== undefined) {
+    events.on("sidecar.disconnect", ({ agentAddresses }) => {
+      onSidecarDisconnect(agentAddresses);
+    });
+  }
+  if (onMailOutbound !== undefined) {
+    events.on("mail.outbound.undelivered", ({ rawMessage, recipients }) => {
+      onMailOutbound(rawMessage, recipients);
+    });
+  }
+  if (onMailPersisted !== undefined) {
+    events.on("mail.persisted", (payload) => {
+      onMailPersisted(payload);
+    });
+  }
+  if (onAgentDeployAck !== undefined) {
+    events.on("agent.deploy.ack", async ({ agentAddress, publicKey }) => {
+      await onAgentDeployAck(agentAddress, publicKey);
+    });
+  }
+  if (onAgentReconnected !== undefined) {
+    events.on("agent.reconnected", async ({ agentAddress }) => {
+      await onAgentReconnected(agentAddress);
+    });
+  }
+  if (onDeployRefStale !== undefined) {
+    events.on("deploy.ref.stale", async ({ agentAddress }) => {
+      await onDeployRefStale(agentAddress);
+    });
   }
 
   // ws handle → registered connection
@@ -347,9 +408,9 @@ export function createSidecarRouter(
       case "mail.outbound":
         if (frame.delivered !== true) {
           handleMailOutbound(frame.rawMessage, frame.recipients);
-        } else if (onMailPersist && frame.senderAddress) {
+        } else if (lookups.persistMail && frame.senderAddress) {
           void handleMailPersist(
-            onMailPersist,
+            lookups.persistMail,
             frame.rawMessage,
             frame.senderAddress,
             frame.recipients,
@@ -358,12 +419,16 @@ export function createSidecarRouter(
           if (!frame.senderAddress) {
             logger.warn`Dropping delivered mail.outbound frame with no senderAddress`;
           } else {
-            logger.warn`Dropping delivered mail.outbound frame: no onMailPersist handler configured`;
+            logger.warn`Dropping delivered mail.outbound frame: no persistMail lookup configured`;
           }
         }
         break;
       case "agent.event":
-        onAgentEvent?.(frame.agentAddress, frame.sessionId, frame.event);
+        events.emit("agent.event", {
+          agentAddress: frame.agentAddress,
+          sessionId: frame.sessionId,
+          event: frame.event,
+        });
         dispatchToSubscribers(frame.agentAddress, frame.event);
         break;
       case "session.ack":
@@ -474,8 +539,9 @@ export function createSidecarRouter(
       return;
     }
 
-    if (lookupPublicKey === undefined) {
-      logger.error`Received reconnect frame but no lookupPublicKey callback is configured`;
+    const lookupKey = lookups.lookupPublicKey;
+    if (lookupKey === undefined) {
+      logger.error`Received reconnect frame but no lookupPublicKey is configured`;
       ws.close();
       return;
     }
@@ -496,10 +562,10 @@ export function createSidecarRouter(
     if (conn === undefined) return;
 
     // Look up stored public keys for all claimed addresses.
-    const lookups = await Promise.all(
+    const keyLookups = await Promise.all(
       agentAddresses.map(async (addr) => ({
         address: addr,
-        publicKeyHex: await lookupPublicKey(addr),
+        publicKeyHex: await lookupKey(addr),
       })),
     );
 
@@ -513,7 +579,7 @@ export function createSidecarRouter(
     >();
     const challengeEntries: { address: string; nonce: string }[] = [];
 
-    for (const { address, publicKeyHex } of lookups) {
+    for (const { address, publicKeyHex } of keyLookups) {
       if (publicKeyHex === null) {
         conn.send({
           type: "challenge.failed",
@@ -632,7 +698,7 @@ export function createSidecarRouter(
     }
 
     // Add verified addresses to the routing table immediately so that
-    // the onAgentReconnected callback can use sendRequest-based methods
+    // `agent.reconnected` subscribers can use sendRequest-based methods
     // (e.g. sendGrantsUpdate). Addresses that fail governance are
     // rolled back from the routing table afterward.
     for (const addr of verified) {
@@ -644,16 +710,16 @@ export function createSidecarRouter(
     const failed: string[] = [];
 
     for (const addr of verified) {
-      if (onAgentReconnected !== undefined) {
-        try {
-          await onAgentReconnected(addr);
-          ready.push(addr);
-        } catch (err) {
-          logger.error`Failed to handle reconnection for ${addr}: ${err instanceof Error ? err.message : String(err)}`;
-          failed.push(addr);
-        }
-      } else {
+      if (events.listenerCount("agent.reconnected") === 0) {
         ready.push(addr);
+        continue;
+      }
+      try {
+        await events.emitAndAwait("agent.reconnected", { agentAddress: addr });
+        ready.push(addr);
+      } catch (err) {
+        logger.error`Failed to handle reconnection for ${addr}: ${err instanceof Error ? err.message : String(err)}`;
+        failed.push(addr);
       }
     }
 
@@ -678,18 +744,23 @@ export function createSidecarRouter(
     }
 
     // Re-deploy agents whose deploy ref is stale or absent. Fire-and-forget
-    // so reconnect completion is not blocked on pack transfer.
-    if (lookupDeployRef !== undefined && onDeployRefStale !== undefined) {
+    // so reconnect completion is not blocked on pack transfer. The
+    // wire layer owns the staleness comparison; the event fires only
+    // when staleness is confirmed.
+    const checkDeployRef = lookups.lookupDeployRef;
+    if (checkDeployRef !== undefined) {
       for (const addr of ready) {
         void (async () => {
           try {
-            const hubRef = await lookupDeployRef(addr);
+            const hubRef = await checkDeployRef(addr);
             if (hubRef === null) return;
             const sidecarRef = challenge.deployRefs[addr];
             if (sidecarRef === hubRef) return;
 
             logger.info`Re-deploying ${addr}: sidecar ref ${sidecarRef ?? "(none)"} != hub ref ${hubRef.slice(0, 8)}`;
-            await onDeployRefStale(addr);
+            await events.emitAndAwait("deploy.ref.stale", {
+              agentAddress: addr,
+            });
           } catch (err) {
             logger.error`Failed to re-deploy ${addr} after reconnect: ${err instanceof Error ? err.message : String(err)}`;
           }
@@ -744,23 +815,28 @@ export function createSidecarRouter(
       unrouted.push(recipient);
     }
 
-    // Anything not routed locally goes to the external handler.
+    // Anything not routed locally is emitted as a notification. The
+    // host decides whether to relay onto an external transport or drop.
+    // When nobody is listening we log so operators see dropped mail.
     if (unrouted.length > 0) {
-      if (onMailOutbound !== undefined) {
-        onMailOutbound(rawMessage, unrouted);
+      if (events.listenerCount("mail.outbound.undelivered") === 0) {
+        logger.warn`No mail outbound listener; dropping mail for ${unrouted.join(", ")}`;
       } else {
-        logger.warn`No mail outbound handler; dropping mail for ${unrouted.join(", ")}`;
+        events.emit("mail.outbound.undelivered", {
+          rawMessage,
+          recipients: unrouted,
+        });
       }
     }
   }
 
   async function handleMailPersist(
-    persist: NonNullable<SidecarRouterConfig["onMailPersist"]>,
+    persist: NonNullable<SidecarLookups["persistMail"]>,
     rawMessage: string,
     senderAddress: string,
     recipients: string[],
   ): Promise<void> {
-    let results;
+    let results: SidecarMailPersistedRow[];
     let raw: Uint8Array;
     try {
       raw = Uint8Array.from(atob(rawMessage), (c) => c.charCodeAt(0));
@@ -774,17 +850,15 @@ export function createSidecarRouter(
       return;
     }
 
-    if (onMailPersisted !== undefined) {
-      for (const result of results) {
-        onMailPersisted({
-          id: result.id,
-          raw,
-          createdAt: result.createdAt,
-          direction: result.direction,
-          instanceId: result.instanceId,
-          address: result.address,
-        });
-      }
+    for (const result of results) {
+      events.emit("mail.persisted", {
+        id: result.id,
+        raw,
+        createdAt: result.createdAt,
+        direction: result.direction,
+        instanceId: result.instanceId,
+        address: result.address,
+      });
     }
   }
 
@@ -869,9 +943,9 @@ export function createSidecarRouter(
       statePackReceiver.cancelByAgent(addr);
     }
 
-    if (onSidecarDisconnect !== undefined) {
-      onSidecarDisconnect([...conn.agentAddresses]);
-    }
+    events.emit("sidecar.disconnect", {
+      agentAddresses: [...conn.agentAddresses],
+    });
 
     logger.info`Sidecar ${conn.sidecarId} disconnected`;
   }
@@ -1038,7 +1112,8 @@ export function createSidecarRouter(
       return;
     }
 
-    if (onStatePackReceived === undefined) {
+    const receiveStatePack = lookups.receiveStatePack;
+    if (receiveStatePack === undefined) {
       conn.send({
         type: "pack.ack",
         agentAddress: frame.agentAddress,
@@ -1047,7 +1122,7 @@ export function createSidecarRouter(
       return;
     }
 
-    const verdict = await onStatePackReceived(
+    const verdict = await receiveStatePack(
       frame.agentAddress,
       result.pack,
       result.ref,
@@ -1170,9 +1245,12 @@ export function createSidecarRouter(
       return;
     }
 
-    if (onAgentDeployAck !== undefined) {
+    if (events.listenerCount("agent.deploy.ack") > 0) {
       try {
-        await onAgentDeployAck(agentAddress, publicKey);
+        await events.emitAndAwait("agent.deploy.ack", {
+          agentAddress,
+          publicKey,
+        });
       } catch (err) {
         rejectDeployPending(
           agentAddress,
@@ -1487,6 +1565,7 @@ export function createSidecarRouter(
     dispatchAgentEvent: dispatchToSubscribers,
     getConnectedSidecars,
     getRoutableAddresses,
+    events,
   };
 }
 

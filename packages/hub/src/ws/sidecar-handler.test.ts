@@ -889,6 +889,60 @@ describe("SidecarRouter", () => {
         data: {},
       });
     });
+
+    test("agent.event frames are emitted on router.events", () => {
+      const seen: { addr: string; sid: string }[] = [];
+      const router = createSidecarRouter({});
+      router.events.on("agent.event", ({ agentAddress, sessionId }) => {
+        seen.push({ addr: agentAddress, sid: sessionId });
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.event",
+          agentAddress: "agent@local",
+          sessionId: "sess-1",
+          event: { type: "reactor.start", seq: 0, data: {} },
+        }),
+      );
+
+      expect(seen).toEqual([{ addr: "agent@local", sid: "sess-1" }]);
+    });
+
+    test("sidecar.disconnect is emitted on router.events", () => {
+      const router = createSidecarRouter({});
+      const seen: string[][] = [];
+      router.events.on("sidecar.disconnect", ({ agentAddresses }) => {
+        seen.push(agentAddresses);
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+      router.handleClose(ws);
+
+      expect(seen).toEqual([["agent@local"]]);
+    });
   });
 
   describe("session subscriptions", () => {

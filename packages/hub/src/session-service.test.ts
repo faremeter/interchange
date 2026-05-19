@@ -7,6 +7,7 @@ import {
   type UserMessageParams,
 } from "./session-service";
 import type { SidecarRouter } from "./ws/sidecar-handler";
+import { createSidecarEmitter } from "./ws/sidecar-events";
 
 type Call = { method: string; args: unknown[] };
 
@@ -61,6 +62,7 @@ function createMockRouter(): SidecarRouter & {
     dispatchAgentEvent: () => undefined,
     getConnectedSidecars: () => [],
     getRoutableAddresses: () => [],
+    events: createSidecarEmitter(),
   };
   return mock;
 }
