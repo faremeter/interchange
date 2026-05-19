@@ -9,6 +9,7 @@
     { "path": "packages/db" },
     { "path": "packages/authz" },
     { "path": "packages/hub" },
+    { "path": "packages/hub-api" },
     { "path": "packages/hub-common" },
     { "path": "packages/hub-sessions" },
     { "path": "packages/tools-posix" },
