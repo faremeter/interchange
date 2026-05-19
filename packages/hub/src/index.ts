@@ -27,8 +27,9 @@ export {
   type HubSessionRouterFacade,
   pushProviderUpdates,
 } from "@interchange/hub-sessions";
-export { createAuth, type Auth } from "./auth";
 export {
+  createAuth,
+  type Auth,
   createApp,
   createHubContextMiddleware,
   mountHubRoutes,
@@ -36,18 +37,19 @@ export {
   type CreateAppOpts,
   type CreateHubContextMiddlewareDeps,
   type MountHubRoutesDeps,
-} from "./app";
-export {
   createRequireGrant,
   idResource,
   type CreateRequireGrantDeps,
   type RequireGrant,
-} from "./middleware/grant";
-export type { ConditionRegistry, GrantStore } from "@interchange/types/authz";
-export {
   createResolveTenant,
   requireAuth,
   type CreateResolveTenantDeps,
-} from "./middleware/tenant";
-export type { AppEnv, TenantEnv, TenantRow, PrincipalRow } from "./context";
-export type { GetSession, SessionInfo, SessionUser } from "./session";
+  type AppEnv,
+  type TenantEnv,
+  type TenantRow,
+  type PrincipalRow,
+  type GetSession,
+  type SessionInfo,
+  type SessionUser,
+} from "@interchange/hub-api";
+export type { ConditionRegistry, GrantStore } from "@interchange/types/authz";
