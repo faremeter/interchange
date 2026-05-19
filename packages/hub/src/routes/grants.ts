@@ -20,7 +20,8 @@ import {
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
-import { requireGrant, idResource } from "../middleware/grant";
+import { idResource } from "../middleware/grant";
+import type { RequireGrant } from "../middleware/grant";
 import {
   parsePageParams,
   cursorCondition,
@@ -57,7 +58,7 @@ function formatGrant(row: typeof grant.$inferSelect, names?: ResolvedNames) {
 }
 
 async function resolveGrantNames(
-  db: TenantEnv["Variables"]["db"],
+  db: DB["db"],
   grants: (typeof grant.$inferSelect)[],
 ): Promise<ResolvedNames> {
   const roleIds = [
@@ -149,10 +150,12 @@ async function resolveGrantNames(
 
 export type CreateGrantRoutesDeps = {
   db: DB["db"];
+  requireGrant: RequireGrant;
 };
 
 export function createGrantRoutes({
   db,
+  requireGrant,
 }: CreateGrantRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 

@@ -17,7 +17,8 @@ import {
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
-import { requireGrant, idResource } from "../middleware/grant";
+import { idResource } from "../middleware/grant";
+import type { RequireGrant } from "../middleware/grant";
 import {
   parsePageParams,
   cursorCondition,
@@ -60,10 +61,12 @@ function formatTransaction(row: typeof transaction.$inferSelect) {
 
 export type CreateWalletRoutesDeps = {
   db: DB["db"];
+  requireGrant: RequireGrant;
 };
 
 export function createWalletRoutes({
   db,
+  requireGrant,
 }: CreateWalletRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 

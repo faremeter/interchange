@@ -15,7 +15,8 @@ import {
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
-import { requireGrant, idResource } from "../middleware/grant";
+import { idResource } from "../middleware/grant";
+import type { RequireGrant } from "../middleware/grant";
 import {
   parsePageParams,
   cursorCondition,
@@ -38,10 +39,12 @@ function formatRole(row: typeof role.$inferSelect) {
 
 export type CreateRoleRoutesDeps = {
   db: DB["db"];
+  requireGrant: RequireGrant;
 };
 
 export function createRoleRoutes({
   db,
+  requireGrant,
 }: CreateRoleRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
@@ -324,10 +327,12 @@ export function createRoleRoutes({
 // Role assignment routes are mounted under principals
 export type CreateRoleAssignRoutesDeps = {
   db: DB["db"];
+  requireGrant: RequireGrant;
 };
 
 export function createRoleAssignRoutes({
   db,
+  requireGrant,
 }: CreateRoleAssignRoutesDeps): Hono<TenantEnv> {
   const assignApp = new Hono<TenantEnv>();
 

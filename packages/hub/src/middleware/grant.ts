@@ -1,7 +1,9 @@
 import { createMiddleware } from "hono/factory";
+import type { MiddlewareHandler } from "hono";
 
 import { authorize } from "@interchange/authz";
 import { getLogger } from "@interchange/log";
+import type { ConditionRegistry, GrantStore } from "@interchange/types/authz";
 
 import type { TenantEnv } from "../context";
 
@@ -12,63 +14,78 @@ type ResourceFn = (c: {
 }) => string;
 
 /**
- * Middleware factory that checks authorization grants before
- * allowing a request to proceed.
- *
- * The resource can be a static string or a function that extracts
- * the resource identifier from request parameters.
- *
- * Usage:
- *   app.get("/", requireGrant("agent:*", "read"), handler)
- *   app.delete("/:agentId", requireGrant(idResource("agent", "agentId"), "manage"), handler)
+ * Closure-bound grant-check middleware factory returned by
+ * `createRequireGrant`. Returns a Hono middleware that authorizes the
+ * current principal against the given resource and action. The function
+ * form of `resource` is intended to be built with `idResource(...)`.
  */
-export function requireGrant(resource: string | ResourceFn, action: string) {
-  return createMiddleware<TenantEnv>(async (c, next) => {
-    const grantStore = c.get("grantStore");
-    const conditionRegistry = c.get("conditionRegistry");
-    const principal = c.get("principal");
-    const tenant = c.get("tenant");
+export type RequireGrant = (
+  resource: string | ResourceFn,
+  action: string,
+) => MiddlewareHandler<TenantEnv>;
 
-    const resolvedResource =
-      typeof resource === "function"
-        ? resource({ param: (name) => c.req.param(name) })
-        : resource;
+export type CreateRequireGrantDeps = {
+  grantStore: GrantStore;
+  conditionRegistry: ConditionRegistry;
+};
 
-    const result = await authorize(
-      grantStore,
-      principal.id,
-      tenant.id,
-      resolvedResource,
-      action,
-      conditionRegistry,
-    );
+/**
+ * Builds a `requireGrant` middleware factory bound to the application's
+ * grant store and condition registry. Usage:
+ *
+ *   const requireGrant = createRequireGrant({ grantStore, conditionRegistry });
+ *   app.get("/", requireGrant("agent:*", "read"), handler);
+ */
+export function createRequireGrant({
+  grantStore,
+  conditionRegistry,
+}: CreateRequireGrantDeps): RequireGrant {
+  return function requireGrant(resource, action) {
+    return createMiddleware<TenantEnv>(async (c, next) => {
+      const principal = c.get("principal");
+      const tenant = c.get("tenant");
 
-    if (result.effect === "allow") {
-      await next();
-      return;
-    }
+      const resolvedResource =
+        typeof resource === "function"
+          ? resource({ param: (name) => c.req.param(name) })
+          : resource;
 
-    log.info(
-      "Authorization denied for {principalId}: {resource} {action} -> {effect}",
-      {
-        principalId: principal.id,
-        resource: resolvedResource,
+      const result = await authorize(
+        grantStore,
+        principal.id,
+        tenant.id,
+        resolvedResource,
         action,
-        effect: result.effect ?? "no_match",
-        resolvedBy: result.resolvedBy?.id ?? null,
-      },
-    );
+        conditionRegistry,
+      );
 
-    return c.json(
-      {
-        error: {
-          code: "forbidden",
-          message: "You do not have permission to perform this action",
+      if (result.effect === "allow") {
+        await next();
+        return;
+      }
+
+      log.info(
+        "Authorization denied for {principalId}: {resource} {action} -> {effect}",
+        {
+          principalId: principal.id,
+          resource: resolvedResource,
+          action,
+          effect: result.effect ?? "no_match",
+          resolvedBy: result.resolvedBy?.id ?? null,
         },
-      },
-      403,
-    );
-  });
+      );
+
+      return c.json(
+        {
+          error: {
+            code: "forbidden",
+            message: "You do not have permission to perform this action",
+          },
+        },
+        403,
+      );
+    });
+  };
 }
 
 /**

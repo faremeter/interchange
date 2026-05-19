@@ -1,11 +1,6 @@
-import type { DB } from "@interchange/db";
-import type { ConditionRegistry, GrantStore } from "@interchange/types/authz";
 import type { Env } from "hono";
 
-import type { EventCollectorRegistry } from "./event-collector-registry";
 import type { SessionInfo, SessionUser } from "./session";
-import type { SessionService } from "./session-service";
-import type { SidecarRouter } from "./ws/sidecar-handler";
 
 export type TenantRow = {
   id: string;
@@ -30,12 +25,6 @@ export type PrincipalRow = {
 
 export type AppEnv = Env & {
   Variables: {
-    db: DB["db"];
-    grantStore: GrantStore;
-    conditionRegistry: ConditionRegistry;
-    sidecarRouter: SidecarRouter;
-    sessionService: SessionService;
-    eventCollectors: EventCollectorRegistry;
     user: SessionUser | null;
     session: SessionInfo | null;
   };

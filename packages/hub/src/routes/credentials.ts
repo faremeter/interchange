@@ -20,7 +20,8 @@ import {
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
-import { requireGrant, idResource } from "../middleware/grant";
+import { idResource } from "../middleware/grant";
+import type { RequireGrant } from "../middleware/grant";
 import {
   parsePageParams,
   cursorCondition,
@@ -54,11 +55,13 @@ function formatCredential(row: typeof credential.$inferSelect) {
 export type CreateCredentialRoutesDeps = {
   db: DB["db"];
   sidecarRouter: SidecarRouter;
+  requireGrant: RequireGrant;
 };
 
 export function createCredentialRoutes({
   db,
   sidecarRouter,
+  requireGrant,
 }: CreateCredentialRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
