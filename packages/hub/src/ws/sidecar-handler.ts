@@ -93,7 +93,14 @@ export type SidecarRouterConfig = {
   pingTimeoutMs?: number;
   /** Query handlers the wire layer issues during frame processing.
    * Each lookup is one-handler-returns-a-value; for multi-subscriber
-   * notifications use `router.events.on(...)` instead. */
+   * notifications use `router.events.on(...)` instead.
+   *
+   * `lookupDeployRef` and the `deploy.ref.stale` event are paired by
+   * convention: the wire layer only issues the staleness comparison
+   * when the lookup is set, and only emits the event on a confirmed
+   * mismatch. The host is responsible for subscribing a listener
+   * whenever the lookup is provided; the router does not enforce
+   * the pairing. */
   lookups?: SidecarLookups;
 };
 
@@ -715,17 +722,13 @@ export function createSidecarRouter(
     }
 
     // Anything not routed locally is emitted as a notification. The
-    // host decides whether to relay onto an external transport or drop.
-    // When nobody is listening we log so operators see dropped mail.
+    // host decides whether to relay onto an external transport, log,
+    // or drop. The wire layer takes no stance.
     if (unrouted.length > 0) {
-      if (events.listenerCount("mail.outbound.undelivered") === 0) {
-        logger.warn`No mail outbound listener; dropping mail for ${unrouted.join(", ")}`;
-      } else {
-        events.emit("mail.outbound.undelivered", {
-          rawMessage,
-          recipients: unrouted,
-        });
-      }
+      events.emit("mail.outbound.undelivered", {
+        rawMessage,
+        recipients: unrouted,
+      });
     }
   }
 
