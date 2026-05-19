@@ -1,8 +1,9 @@
 // Registry of active event collectors, keyed by agent address.
 //
 // The hub creates a collector when an instance starts and removes it when the
-// instance ends or the sidecar disconnects. The onAgentEvent callback looks
-// up the collector by agent address and dispatches the event.
+// instance ends or the sidecar disconnects. The hub session orchestrator's
+// `agent.event` listener looks up the collector by agent address and
+// dispatches the event.
 
 import type { DB } from "@interchange/db";
 import type { InferenceEvent } from "@interchange/types/runtime";

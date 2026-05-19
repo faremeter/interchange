@@ -191,13 +191,16 @@ function startTestServer(): TestEnv {
   const router = createSidecarRouter({
     requestTimeoutMs: 5000,
     hubPublicKey: "a".repeat(64),
-    onAgentEvent(addr, sid, event) {
-      agentEvents.push({ addr, sid, event });
-    },
-    onMailOutbound(rawMessage, recipients) {
+  });
+  router.events.on("agent.event", ({ agentAddress, sessionId, event }) => {
+    agentEvents.push({ addr: agentAddress, sid: sessionId, event });
+  });
+  router.events.on(
+    "mail.outbound.undelivered",
+    ({ rawMessage, recipients }) => {
       outboundMail.push({ rawMessage, recipients });
     },
-  });
+  );
 
   const app = new Hono();
   app.get(
@@ -750,8 +753,6 @@ describe("sidecar↔hub integration", () => {
     const badRouter = createSidecarRouter({
       requestTimeoutMs: 5000,
       hubPublicKey: "abc", // odd length — hexDecode should throw
-      onAgentEvent: () => undefined,
-      onMailOutbound: () => undefined,
     });
 
     const badApp = new Hono();
@@ -839,10 +840,10 @@ describe("sidecar↔hub integration", () => {
       requestTimeoutMs: 5000,
       challengeTimeoutMs: 5000,
       hubPublicKey: hubPublicKeyHex,
-      onAgentEvent: () => undefined,
-      onMailOutbound: () => undefined,
-      lookupPublicKey: async (addr) =>
-        addr === fakeAddress ? agentPublicKeyHex : null,
+      lookups: {
+        lookupPublicKey: async (addr) =>
+          addr === fakeAddress ? agentPublicKeyHex : null,
+      },
     });
 
     const reconnectApp = new Hono();
