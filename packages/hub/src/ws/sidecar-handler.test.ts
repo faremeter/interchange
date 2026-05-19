@@ -288,8 +288,8 @@ describe("SidecarRouter", () => {
 
     test("agent reply to non-agent address still persists outbound record", async () => {
       // When an agent replies to a human user (usr_ address), the
-      // onMailPersist callback must still persist at least the outbound
-      // record on the sender's session and call onMailPersisted so a
+      // persistMail lookup must still persist at least the outbound
+      // record on the sender's session and emit mail.persisted so a
       // mail.delivered SSE event is dispatched.
       const persisted: { id: string; address: string }[] = [];
       const router = createSidecarRouter({
