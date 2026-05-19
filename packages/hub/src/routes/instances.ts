@@ -55,7 +55,8 @@ import type { EventCollectorRegistry } from "../event-collector-registry";
 import { formatOffering } from "./offerings";
 
 import type { TenantEnv } from "../context";
-import { requireGrant, idResource } from "../middleware/grant";
+import { idResource } from "../middleware/grant";
+import type { RequireGrant } from "../middleware/grant";
 import { generateId } from "../ids";
 import { first, ts } from "../format";
 import {
@@ -105,6 +106,7 @@ export type CreateInstanceRoutesDeps = {
   eventCollectors: EventCollectorRegistry;
   grantStore: GrantStore;
   conditionRegistry: ConditionRegistry;
+  requireGrant: RequireGrant;
 };
 
 export function createInstanceRoutes({
@@ -114,6 +116,7 @@ export function createInstanceRoutes({
   eventCollectors,
   grantStore,
   conditionRegistry,
+  requireGrant,
 }: CreateInstanceRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 

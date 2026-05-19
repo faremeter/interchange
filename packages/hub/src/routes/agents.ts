@@ -23,7 +23,8 @@ import {
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
-import { requireGrant, idResource } from "../middleware/grant";
+import { idResource } from "../middleware/grant";
+import type { RequireGrant } from "../middleware/grant";
 import {
   parsePageParams,
   cursorCondition,
@@ -60,7 +61,7 @@ function formatAgent(
 }
 
 async function loadAgentRoles(
-  db: TenantEnv["Variables"]["db"],
+  db: DB["db"],
   agentId: string,
   tenantId: string,
 ): Promise<{ id: string; name: string }[]> {
@@ -78,10 +79,12 @@ async function loadAgentRoles(
 
 export type CreateAgentRoutesDeps = {
   db: DB["db"];
+  requireGrant: RequireGrant;
 };
 
 export function createAgentRoutes({
   db,
+  requireGrant,
 }: CreateAgentRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 

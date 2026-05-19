@@ -15,7 +15,8 @@ import {
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "../ids";
-import { requireGrant, idResource } from "../middleware/grant";
+import { idResource } from "../middleware/grant";
+import type { RequireGrant } from "../middleware/grant";
 import {
   parsePageParams,
   cursorCondition,
@@ -46,7 +47,7 @@ function formatPrincipal(
 }
 
 async function resolveIdentities(
-  db: TenantEnv["Variables"]["db"],
+  db: DB["db"],
   principals: (typeof principal.$inferSelect)[],
 ): Promise<Map<string, ResolvedIdentity>> {
   const identities = new Map<string, ResolvedIdentity>();
@@ -102,10 +103,7 @@ async function resolveIdentities(
   return identities;
 }
 
-async function loadRolesForPrincipal(
-  db: TenantEnv["Variables"]["db"],
-  principalId: string,
-) {
+async function loadRolesForPrincipal(db: DB["db"], principalId: string) {
   const assignments = await db.query.principalRole.findMany({
     where: eq(principalRole.principalId, principalId),
   });
@@ -120,10 +118,12 @@ async function loadRolesForPrincipal(
 
 export type CreatePrincipalRoutesDeps = {
   db: DB["db"];
+  requireGrant: RequireGrant;
 };
 
 export function createPrincipalRoutes({
   db,
+  requireGrant,
 }: CreatePrincipalRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
@@ -396,10 +396,12 @@ export function createPrincipalRoutes({
 // Invite is mounted separately at ../members/invite in app.ts
 export type CreateInviteRoutesDeps = {
   db: DB["db"];
+  requireGrant: RequireGrant;
 };
 
 export function createInviteRoutes({
   db,
+  requireGrant,
 }: CreateInviteRoutesDeps): Hono<TenantEnv> {
   const inviteApp = new Hono<TenantEnv>();
 
