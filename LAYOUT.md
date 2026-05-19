@@ -16,15 +16,17 @@ Breaking changes to shared foundation packages cascade into both trees. These pa
 
 ## Control Plane
 
-A server application backed by Postgres. The `hub` and `db` packages are versioned and deployed together; `hub-client` is a browser library shipped separately to UI consumers.
+A server application backed by Postgres. The hub packages and `db` are versioned and deployed together; `hub-client` is a browser library shipped separately to UI consumers.
 
-| Package                   | Purpose                                                                                                                                     |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@interchange/hub`        | Hono app factory, route handlers, middleware, websocket session brokering, credential refresh workers, certificate authority.               |
-| `@interchange/hub-client` | Browser/UI client library. API transport, SSE event stream transforms, instance session management. Consumed by the UI, not the hub itself. |
-| `@interchange/db`         | Drizzle schema, connection pooling, credential resolution, grant store, tenant hierarchy queries. Postgres-specific.                        |
+| Package                     | Purpose                                                                                                                                                                                                              |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@interchange/hub-api`      | Hono app factory, context middleware, route group factories, per-request middleware, the better-auth wrapper, request/response helpers, the request context and session contract types, and the timeline read model. |
+| `@interchange/hub-sessions` | Sidecar websocket wire layer and typed event emitter, session service, event collector and registry, agent repository, hub session orchestrator, and the credential-push pipeline.                                   |
+| `@interchange/hub-common`   | Utilities genuinely shared across hub packages. Holds the id generator and its prefix table; see the package README for the rules that gate additions.                                                               |
+| `@interchange/hub-client`   | Browser/UI client library. API transport, SSE event stream transforms, instance session management. Consumed by the UI, not the hub itself.                                                                          |
+| `@interchange/db`           | Drizzle schema, connection pooling, credential resolution, grant store, tenant hierarchy queries. Postgres-specific.                                                                                                 |
 
-`apps/hub` wires the hub package together and starts the Hono server. `apps/ui` is the browser SPA built against `hub-client`.
+`apps/hub` wires `hub-api` and `hub-sessions` together and starts the Hono server. `apps/ui` is the browser SPA built against `hub-client`.
 
 ## Agent Runtime
 
