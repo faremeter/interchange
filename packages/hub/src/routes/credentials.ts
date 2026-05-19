@@ -29,8 +29,10 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
-import { pushProviderUpdates } from "../credential-push";
-import type { SidecarRouter } from "../ws/sidecar-handler";
+import {
+  pushProviderUpdates,
+  type SidecarRouter,
+} from "@interchange/hub-sessions";
 
 function formatCredential(row: typeof credential.$inferSelect) {
   const parsed = parseCredentialRow(row);

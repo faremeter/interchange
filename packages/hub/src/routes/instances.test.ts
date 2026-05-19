@@ -5,11 +5,13 @@ import type { GrantRule } from "@interchange/types/authz";
 import type { SessionStatus } from "@interchange/types";
 
 import { createApp } from "../app";
-import type { EventCollectorRegistry } from "../event-collector-registry";
+import {
+  createSidecarEmitter,
+  type EventCollectorRegistry,
+  type SessionService,
+  type SidecarRouter,
+} from "@interchange/hub-sessions";
 import type { GetSession } from "../session";
-import type { SessionService } from "../session-service";
-import type { SidecarRouter } from "../ws/sidecar-handler";
-import { createSidecarEmitter } from "../ws/sidecar-events";
 
 // ---------------------------------------------------------------------------
 // Test data constants
