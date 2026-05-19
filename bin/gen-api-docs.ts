@@ -2,7 +2,7 @@
 
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createApp } from "@interchange/hub";
+import { createApp } from "@interchange/hub-api";
 import { setup, getLogger } from "@interchange/log";
 import * as allTypes from "@interchange/types";
 

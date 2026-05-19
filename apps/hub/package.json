@@ -6,7 +6,8 @@
   "dependencies": {
     "@interchange/crypto-node": "workspace:*",
     "@interchange/db": "workspace:*",
-    "@interchange/hub": "workspace:*",
+    "@interchange/hub-api": "workspace:*",
+    "@interchange/hub-sessions": "workspace:*",
     "@interchange/log": "workspace:*"
   }
 }

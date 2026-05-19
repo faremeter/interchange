@@ -6,7 +6,7 @@ import {
   createSidecarRouter,
   type SidecarRouter,
   type WsHandle,
-} from "@interchange/hub";
+} from "@interchange/hub-sessions";
 import { createInMemoryTransport } from "@interchange/mail-memory";
 import { hexEncode } from "@interchange/types";
 import type {

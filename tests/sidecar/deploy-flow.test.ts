@@ -27,7 +27,7 @@ import {
   type SidecarRouter,
   type SessionService,
   type WsHandle,
-} from "@interchange/hub";
+} from "@interchange/hub-sessions";
 import type { HarnessConfig } from "@interchange/types/runtime";
 import { hexEncode } from "@interchange/types";
 import { sanitizeAddress } from "../../apps/sidecar/src/session-manager";
