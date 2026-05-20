@@ -524,7 +524,7 @@ fileUri}` part. The documented TTL is 48 hours.
 The capture is a true two-step fixture. The top-level metadata
 (`packages/inference-testing/wire/gemini/files-api/metadata.json`)
 records `sequence: ["upload", "generate"]`,
-`uri-contract: "documentary"`, `uri-ttl-hours: 48`, plus the
+`uriContract: "documentary"`, `uriTtlHours: 48`, plus the
 uploaded URI and expiration time.
 
 Step 1 (upload) request
@@ -587,6 +587,96 @@ is a plain text summary of the PDF.
   hours after upload; downstream simulator consumers read bytes
   from the fixture, not from the live URI. Tests that hit the URI
   will receive 404 once the TTL elapses.
+
+## Streaming variants
+
+Every non-streaming capture above has a streaming counterpart under
+`packages/inference-testing/wire/gemini/<capability>-streaming/`. Each
+streaming capture mirrors the request body of its non-streaming sibling
+exactly and changes only the endpoint
+(`generateContent` → `streamGenerateContent?alt=sse`) and the capture
+helper (the SSE byte stream is captured verbatim as `response.sse` via
+a stream tee). Where the original capture is multi-step, the streaming
+variant streams every inference turn; the Files API upload step stays
+non-streaming because it is a binary POST, not an inference call.
+
+### Documented
+
+The Gemini docs describe `streamGenerateContent?alt=sse` as the
+streaming counterpart to `generateContent`, returning an SSE byte
+stream of `data: <GenerateContentResponse>` events. Each event is a
+full response envelope; the docs imply event boundaries correspond
+roughly to model output deltas, with the final event carrying
+`finishReason`. The docs do not specify whether large `inlineData`
+parts in the response (generated images, for example) are chunked
+across events or delivered in a single event.
+
+### Observed
+
+The non-streaming-vs-streaming difference is entirely an envelope
+shape change: identical request body, identical model, identical
+response semantics, but the response body is `text/event-stream` and
+arrives as a sequence of full-envelope `data:` events terminated by
+`finishReason: "STOP"` on the last event. There is no `[DONE]`
+sentinel.
+
+Three further observations refine that picture:
+
+- SSE event count is a function of output length, not of the
+  streaming endpoint. Short outputs arrive as a single `data:` event
+  even on the streaming endpoint. The single-event captures are
+  `image-input-streaming/response.sse` (1 event, 545 bytes),
+  `audio-input-streaming/response.sse` (1 event, 453 bytes),
+  `video-input-streaming/response.sse` (1 event, 585 bytes),
+  `function-calling-multi-turn-streaming/turn-1/response.sse` (1
+  event, 494 bytes), and
+  `files-api-streaming/generate/response.sse` (1 event, 646 bytes).
+  Multi-event captures include `image-output-streaming/response.sse`
+  (4 events), `code-execution-streaming/response.sse` (4 events),
+  `google-search-grounding-streaming/response.sse` (3 events),
+  `pdf-input-streaming/response.sse` (2 events),
+  `function-calling-thinking-streaming/turn-1/response.sse` (2
+  events),
+  `function-calling-multi-turn-streaming/turn-2/response.sse` (3
+  events), and
+  `function-calling-thinking-streaming/turn-2/response.sse` (3
+  events).
+- `image-output-streaming` does not chunk the generated PNG. The
+  ~380 KB base64 `inlineData` part arrives in one SSE event;
+  `image-output-streaming/response.sse` is 382,382 bytes total
+  because one event line carries the full payload (the four events
+  for the apple prompt are: text(4), text(9), inlineData(380744),
+  empty+`STOP`).
+- `thoughtSignature` is atomic, not delta-accumulated. In
+  `function-calling-thinking-streaming/turn-1/response.sse` the
+  signature arrives as one complete 456-character string inside the
+  same SSE event as the `functionCall` part (the earlier thought-text
+  event carries no signature). Streaming returns one event per
+  response part, not one event per token within a part. (The
+  non-streaming sibling at
+  `function-calling-thinking/turn-1/response.json` carries a
+  408-character signature; the same value is what the streaming
+  variant produces, the small length difference reflects the model
+  re-running the prompt, not a streaming-vs-non-streaming difference.)
+- `files-api-streaming/upload` is byte-identical in shape to
+  `files-api/upload`. Only the `generate` step flips response shape;
+  the upload step's response is still JSON because the upload
+  endpoint is a binary POST, not an inference call.
+
+### Discrepancies
+
+- The docs do not state that large `inlineData` outputs are delivered
+  in a single SSE event; the observed behaviour of
+  `image-output-streaming` is that they are. A simulator built on the
+  doc-implied "deltas accumulate into a payload" model would need
+  special-case logic that is in fact unnecessary.
+- The docs do not state that short outputs may produce a single SSE
+  event on the streaming endpoint. The deterministic simulator must
+  treat the one-event case as ordinary streaming, not as a degenerate
+  shape.
+- The docs do not document `thoughtSignature`'s atomic delivery in a
+  single event. A naive implementation that pre-allocates a buffer
+  for an accumulating signature would work but is wasted effort.
 
 ## Cross-cutting observations
 

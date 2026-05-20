@@ -166,11 +166,11 @@ export const capability: Capability = {
       capturedAt: new Date().toISOString(),
       scriptVersion,
       sequence: ["upload", "generate"],
-      "uri-contract": URI_CONTRACT,
-      "uri-ttl-hours": URI_TTL_HOURS,
-      "uploaded-file-uri": fileUri,
-      "uploaded-file-expires-at": expirationTime ?? null,
-      "asset-path": ASSET_RELATIVE_PATH,
+      uriContract: URI_CONTRACT,
+      uriTtlHours: URI_TTL_HOURS,
+      uploadedFileUri: fileUri,
+      uploadedFileExpiresAt: expirationTime ?? null,
+      assetPath: ASSET_RELATIVE_PATH,
     };
 
     await writeFile(

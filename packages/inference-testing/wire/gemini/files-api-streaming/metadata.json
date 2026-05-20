@@ -5,9 +5,9 @@
   "capturedAt": "2026-05-20T17:49:41.819Z",
   "scriptVersion": "1",
   "sequence": ["upload", "generate"],
-  "uri-contract": "documentary",
-  "uri-ttl-hours": 48,
-  "uploaded-file-uri": "https://generativelanguage.googleapis.com/v1beta/files/amegsn8xbcgk",
-  "uploaded-file-expires-at": "2026-05-22T17:49:36.226458567Z",
-  "asset-path": "bin/gemini-discover/assets/sample.pdf"
+  "uriContract": "documentary",
+  "uriTtlHours": 48,
+  "uploadedFileUri": "https://generativelanguage.googleapis.com/v1beta/files/amegsn8xbcgk",
+  "uploadedFileExpiresAt": "2026-05-22T17:49:36.226458567Z",
+  "assetPath": "bin/gemini-discover/assets/sample.pdf"
 }
