@@ -32,6 +32,7 @@
     { "path": "examples/agent-audit-log" },
     { "path": "examples/agent-multi-provider" },
     { "path": "examples/agent-rich-tool" },
-    { "path": "examples/agent-structured-payload" }
+    { "path": "examples/agent-structured-payload" },
+    { "path": "bin" }
   ]
 }

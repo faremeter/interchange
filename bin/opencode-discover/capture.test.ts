@@ -284,13 +284,16 @@ describe("probeModel (against constructed in-memory responses)", () => {
     ];
     let i = 0;
     const realFetch = globalThis.fetch;
-    const mockFetch: typeof fetch = async () => {
-      const key = order[i++];
-      if (!key) throw new Error("Unexpected extra fetch call in probe test");
-      const factory = responses[key];
-      if (!factory) throw new Error(`No response factory for ${key}`);
-      return factory();
-    };
+    const mockFetch: typeof fetch = Object.assign(
+      async (): Promise<Response> => {
+        const key = order[i++];
+        if (!key) throw new Error("Unexpected extra fetch call in probe test");
+        const factory = responses[key];
+        if (!factory) throw new Error(`No response factory for ${key}`);
+        return factory();
+      },
+      { preconnect: () => undefined },
+    );
     globalThis.fetch = mockFetch;
 
     try {

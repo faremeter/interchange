@@ -1,0 +1,7 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true
+  },
+  "include": ["gemini-discover/**/*.ts", "opencode-discover/**/*.ts"]
+}
