@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { getLogger } from "@intx/log";
 
 import {
+  GEMINI_REDACT_HEADERS,
   buildMetadata,
   fixtureDirectoryFor,
   headersToMap,
@@ -81,6 +82,7 @@ export const capability: Capability = {
         scriptVersion,
         requestBody: REQUEST_BODY,
         requestHeaders,
+        redactHeaderNames: GEMINI_REDACT_HEADERS,
         responseHeaders,
         responseJson: parsedBody,
       });
@@ -92,7 +94,10 @@ export const capability: Capability = {
     const dir = fixtureDirectoryFor(NAME);
     await mkdir(dir, { recursive: true });
 
-    const requestHeadersRedacted = redactRequestHeaders(requestHeaders);
+    const requestHeadersRedacted = redactRequestHeaders(
+      requestHeaders,
+      GEMINI_REDACT_HEADERS,
+    );
 
     await writeFile(
       join(dir, "request.json"),

@@ -1,7 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-import { runNonStreamingCapture } from "../capture.ts";
+import {
+  GEMINI_BASE,
+  GEMINI_REDACT_HEADERS,
+  buildGeminiHeaders,
+  runNonStreamingCapture,
+} from "../capture.ts";
 import type { Capability } from "./index.ts";
 
 const NAME = "video-input";
@@ -42,8 +47,10 @@ export const capability: Capability = {
       capability: NAME,
       model: MODEL,
       endpoint: ENDPOINT,
+      url: `${GEMINI_BASE}/${MODEL}:${ENDPOINT}`,
+      requestHeaders: buildGeminiHeaders(apiKey),
+      redactHeaderNames: GEMINI_REDACT_HEADERS,
       body,
-      apiKey,
       scriptVersion,
     });
   },

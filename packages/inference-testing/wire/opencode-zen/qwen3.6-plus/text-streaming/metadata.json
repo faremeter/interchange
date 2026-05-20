@@ -1,0 +1,7 @@
+{
+  "capability": "text-streaming",
+  "model": "qwen3.6-plus",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:05:40.668Z",
+  "scriptVersion": "1"
+}

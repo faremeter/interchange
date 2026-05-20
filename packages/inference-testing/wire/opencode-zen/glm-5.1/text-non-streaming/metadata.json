@@ -1,0 +1,7 @@
+{
+  "capability": "text-non-streaming",
+  "model": "glm-5.1",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:05:17.732Z",
+  "scriptVersion": "1"
+}

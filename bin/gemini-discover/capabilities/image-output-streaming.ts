@@ -1,4 +1,9 @@
-import { runStreamingCapture } from "../capture.ts";
+import {
+  GEMINI_BASE,
+  GEMINI_REDACT_HEADERS,
+  buildGeminiHeaders,
+  runStreamingCapture,
+} from "../capture.ts";
 import type { Capability } from "./index.ts";
 
 const NAME = "image-output-streaming";
@@ -30,8 +35,10 @@ export const capability: Capability = {
       capability: NAME,
       model: MODEL,
       endpoint: ENDPOINT,
+      url: `${GEMINI_BASE}/${MODEL}:${ENDPOINT}?alt=sse`,
+      requestHeaders: buildGeminiHeaders(apiKey),
+      redactHeaderNames: GEMINI_REDACT_HEADERS,
       body: REQUEST_BODY,
-      apiKey,
       scriptVersion,
     });
   },

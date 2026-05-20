@@ -18,7 +18,8 @@ export const FIXTURE_ROOT = join(
 );
 
 const REDACTED = "<redacted>";
-const REDACTED_HEADER_NAMES = new Set(["x-goog-api-key"]);
+
+export const GEMINI_REDACT_HEADERS = new Set(["x-goog-api-key"]);
 
 export type HeadersMap = Record<string, string>;
 
@@ -30,10 +31,17 @@ export function headersToMap(headers: Headers): HeadersMap {
   return map;
 }
 
-export function redactRequestHeaders(headers: HeadersMap): HeadersMap {
+export function redactRequestHeaders(
+  headers: HeadersMap,
+  redactHeaderNames: Set<string>,
+): HeadersMap {
+  const lowercaseSet = new Set<string>();
+  for (const name of redactHeaderNames) {
+    lowercaseSet.add(name.toLowerCase());
+  }
   const redacted: HeadersMap = {};
   for (const [key, value] of Object.entries(headers)) {
-    if (REDACTED_HEADER_NAMES.has(key.toLowerCase())) {
+    if (lowercaseSet.has(key.toLowerCase())) {
       redacted[key] = REDACTED;
     } else {
       redacted[key] = value;
@@ -80,6 +88,7 @@ type WriteRequestResponseArgs = {
   capability: string;
   requestBody: unknown;
   requestHeaders: HeadersMap;
+  redactHeaderNames: Set<string>;
   responseHeaders: HeadersMap;
   responseBytes?: Uint8Array;
   responseJson?: unknown;
@@ -101,7 +110,10 @@ async function writeRequestResponseFiles(
 
   await mkdir(args.dir, { recursive: true });
 
-  const requestHeadersRedacted = redactRequestHeaders(args.requestHeaders);
+  const requestHeadersRedacted = redactRequestHeaders(
+    args.requestHeaders,
+    args.redactHeaderNames,
+  );
 
   await writeFile(
     join(args.dir, "request.json"),
@@ -133,6 +145,7 @@ export type WriteFixtureArgs = {
   scriptVersion: string;
   requestBody: unknown;
   requestHeaders: HeadersMap;
+  redactHeaderNames: Set<string>;
   responseHeaders: HeadersMap;
   responseBytes?: Uint8Array;
   responseJson?: unknown;
@@ -154,6 +167,7 @@ export async function writeFixture(args: WriteFixtureArgs): Promise<string> {
     capability: args.capability,
     requestBody: args.requestBody,
     requestHeaders: args.requestHeaders,
+    redactHeaderNames: args.redactHeaderNames,
     responseHeaders: args.responseHeaders,
     ...(args.responseBytes !== undefined
       ? { responseBytes: args.responseBytes }
@@ -183,6 +197,7 @@ export type WriteStepFixtureArgs = {
   stepName: string;
   requestBody: unknown;
   requestHeaders: HeadersMap;
+  redactHeaderNames: Set<string>;
   responseHeaders: HeadersMap;
   responseBytes?: Uint8Array;
   responseJson?: unknown;
@@ -216,6 +231,7 @@ export async function writeStepFixture(
     capability: args.capability,
     requestBody: args.requestBody,
     requestHeaders: args.requestHeaders,
+    redactHeaderNames: args.redactHeaderNames,
     responseHeaders: args.responseHeaders,
     ...(args.responseBytes !== undefined
       ? { responseBytes: args.responseBytes }
@@ -267,9 +283,10 @@ export async function writeMultiStepMetadata(
   return path;
 }
 
-const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+export const GEMINI_BASE =
+  "https://generativelanguage.googleapis.com/v1beta/models";
 
-function buildHeaders(apiKey: string): HeadersMap {
+export function buildGeminiHeaders(apiKey: string): HeadersMap {
   return {
     "content-type": "application/json",
     "x-goog-api-key": apiKey,
@@ -280,22 +297,22 @@ export type NonStreamingCaptureArgs = {
   capability: string;
   model: string;
   endpoint: string;
+  url: string;
+  requestHeaders: HeadersMap;
+  redactHeaderNames: Set<string>;
   body: unknown;
-  apiKey: string;
   scriptVersion: string;
+  destinationOverride?: string;
 };
 
 export async function runNonStreamingCapture(
   args: NonStreamingCaptureArgs,
 ): Promise<{ fixtureDir: string; responseJson: unknown }> {
-  const url = `${GEMINI_BASE}/${args.model}:${args.endpoint}`;
-  const requestHeaders = buildHeaders(args.apiKey);
+  logger.info`POST ${args.url}`;
 
-  logger.info`POST ${url}`;
-
-  const response = await fetch(url, {
+  const response = await fetch(args.url, {
     method: "POST",
-    headers: requestHeaders,
+    headers: args.requestHeaders,
     body: JSON.stringify(args.body),
   });
 
@@ -304,7 +321,7 @@ export async function runNonStreamingCapture(
 
   if (!response.ok) {
     throw new Error(
-      `Gemini non-streaming request failed: ${String(response.status)} ${response.statusText}: ${text}`,
+      `Non-streaming request failed: ${String(response.status)} ${response.statusText}: ${text}`,
     );
   }
 
@@ -324,9 +341,13 @@ export async function runNonStreamingCapture(
     endpoint: args.endpoint,
     scriptVersion: args.scriptVersion,
     requestBody: args.body,
-    requestHeaders,
+    requestHeaders: args.requestHeaders,
+    redactHeaderNames: args.redactHeaderNames,
     responseHeaders,
     responseJson,
+    ...(args.destinationOverride
+      ? { destinationOverride: args.destinationOverride }
+      : {}),
   });
 
   return { fixtureDir, responseJson };
@@ -337,22 +358,21 @@ export type NonStreamingStepCaptureArgs = {
   stepName: string;
   model: string;
   endpoint: string;
+  url: string;
+  requestHeaders: HeadersMap;
+  redactHeaderNames: Set<string>;
   body: unknown;
-  apiKey: string;
   destinationOverride?: string;
 };
 
 export async function runNonStreamingStepCapture(
   args: NonStreamingStepCaptureArgs,
 ): Promise<{ stepDir: string; responseJson: unknown }> {
-  const url = `${GEMINI_BASE}/${args.model}:${args.endpoint}`;
-  const requestHeaders = buildHeaders(args.apiKey);
+  logger.info`POST ${args.url} (step=${args.stepName})`;
 
-  logger.info`POST ${url} (step=${args.stepName})`;
-
-  const response = await fetch(url, {
+  const response = await fetch(args.url, {
     method: "POST",
-    headers: requestHeaders,
+    headers: args.requestHeaders,
     body: JSON.stringify(args.body),
   });
 
@@ -361,7 +381,7 @@ export async function runNonStreamingStepCapture(
 
   if (!response.ok) {
     throw new Error(
-      `Gemini non-streaming request failed (capability=${args.capability}, step=${args.stepName}): ${String(response.status)} ${response.statusText}: ${text}`,
+      `Non-streaming request failed (capability=${args.capability}, step=${args.stepName}): ${String(response.status)} ${response.statusText}: ${text}`,
     );
   }
 
@@ -379,7 +399,8 @@ export async function runNonStreamingStepCapture(
     capability: args.capability,
     stepName: args.stepName,
     requestBody: args.body,
-    requestHeaders,
+    requestHeaders: args.requestHeaders,
+    redactHeaderNames: args.redactHeaderNames,
     responseHeaders,
     responseJson,
     ...(args.destinationOverride
@@ -394,8 +415,10 @@ export type StreamingCaptureArgs = {
   capability: string;
   model: string;
   endpoint: string;
+  url: string;
+  requestHeaders: HeadersMap;
+  redactHeaderNames: Set<string>;
   body: unknown;
-  apiKey: string;
   scriptVersion: string;
   source?: {
     stream: ReadableStream<Uint8Array>;
@@ -407,8 +430,6 @@ export type StreamingCaptureArgs = {
 export async function runStreamingCapture(
   args: StreamingCaptureArgs,
 ): Promise<{ fixtureDir: string; bytes: Uint8Array }> {
-  const requestHeaders = buildHeaders(args.apiKey);
-
   let stream: ReadableStream<Uint8Array>;
   let responseHeaders: HeadersMap;
 
@@ -416,23 +437,20 @@ export async function runStreamingCapture(
     stream = args.source.stream;
     responseHeaders = args.source.responseHeaders;
   } else {
-    const url = `${GEMINI_BASE}/${args.model}:${args.endpoint}?alt=sse`;
-    logger.info`POST (stream) ${url}`;
-    const response = await fetch(url, {
+    logger.info`POST (stream) ${args.url}`;
+    const response = await fetch(args.url, {
       method: "POST",
-      headers: requestHeaders,
+      headers: args.requestHeaders,
       body: JSON.stringify(args.body),
     });
     if (!response.ok) {
       const text = await response.text();
       throw new Error(
-        `Gemini streaming request failed: ${String(response.status)} ${response.statusText}: ${text}`,
+        `Streaming request failed: ${String(response.status)} ${response.statusText}: ${text}`,
       );
     }
     if (!response.body) {
-      throw new Error(
-        `Gemini streaming response for ${args.capability} had no body`,
-      );
+      throw new Error(`Streaming response for ${args.capability} had no body`);
     }
     stream = response.body;
     responseHeaders = headersToMap(response.headers);
@@ -452,7 +470,8 @@ export async function runStreamingCapture(
     endpoint: args.endpoint,
     scriptVersion: args.scriptVersion,
     requestBody: args.body,
-    requestHeaders,
+    requestHeaders: args.requestHeaders,
+    redactHeaderNames: args.redactHeaderNames,
     responseHeaders,
     responseBytes: bytes,
     ...(args.destinationOverride
@@ -468,8 +487,10 @@ export type StreamingStepCaptureArgs = {
   stepName: string;
   model: string;
   endpoint: string;
+  url: string;
+  requestHeaders: HeadersMap;
+  redactHeaderNames: Set<string>;
   body: unknown;
-  apiKey: string;
   source?: {
     stream: ReadableStream<Uint8Array>;
     responseHeaders: HeadersMap;
@@ -480,8 +501,6 @@ export type StreamingStepCaptureArgs = {
 export async function runStreamingStepCapture(
   args: StreamingStepCaptureArgs,
 ): Promise<{ stepDir: string; bytes: Uint8Array }> {
-  const requestHeaders = buildHeaders(args.apiKey);
-
   let stream: ReadableStream<Uint8Array>;
   let responseHeaders: HeadersMap;
 
@@ -489,22 +508,21 @@ export async function runStreamingStepCapture(
     stream = args.source.stream;
     responseHeaders = args.source.responseHeaders;
   } else {
-    const url = `${GEMINI_BASE}/${args.model}:${args.endpoint}?alt=sse`;
-    logger.info`POST (stream) ${url} (step=${args.stepName})`;
-    const response = await fetch(url, {
+    logger.info`POST (stream) ${args.url} (step=${args.stepName})`;
+    const response = await fetch(args.url, {
       method: "POST",
-      headers: requestHeaders,
+      headers: args.requestHeaders,
       body: JSON.stringify(args.body),
     });
     if (!response.ok) {
       const text = await response.text();
       throw new Error(
-        `Gemini streaming request failed (capability=${args.capability}, step=${args.stepName}): ${String(response.status)} ${response.statusText}: ${text}`,
+        `Streaming request failed (capability=${args.capability}, step=${args.stepName}): ${String(response.status)} ${response.statusText}: ${text}`,
       );
     }
     if (!response.body) {
       throw new Error(
-        `Gemini streaming response for ${args.capability} step ${args.stepName} had no body`,
+        `Streaming response for ${args.capability} step ${args.stepName} had no body`,
       );
     }
     stream = response.body;
@@ -523,7 +541,8 @@ export async function runStreamingStepCapture(
     capability: args.capability,
     stepName: args.stepName,
     requestBody: args.body,
-    requestHeaders,
+    requestHeaders: args.requestHeaders,
+    redactHeaderNames: args.redactHeaderNames,
     responseHeaders,
     responseBytes: bytes,
     ...(args.destinationOverride

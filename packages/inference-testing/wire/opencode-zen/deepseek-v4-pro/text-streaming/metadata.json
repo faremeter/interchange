@@ -1,0 +1,7 @@
+{
+  "capability": "text-streaming",
+  "model": "deepseek-v4-pro",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:05:28.617Z",
+  "scriptVersion": "1"
+}

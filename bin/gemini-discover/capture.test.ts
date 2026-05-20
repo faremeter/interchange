@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import {
   FIXTURE_ROOT,
+  GEMINI_REDACT_HEADERS,
   buildMetadata,
   fixtureDirectoryFor,
   redactRequestHeaders,
@@ -16,13 +17,15 @@ import {
   writeStepFixture,
 } from "./capture.ts";
 
+const BEARER_REDACT_HEADERS = new Set(["authorization"]);
+
 describe("redactRequestHeaders", () => {
   test("replaces x-goog-api-key value with <redacted>", () => {
     const headers = {
       "content-type": "application/json",
       "x-goog-api-key": "AIzaSyABCDEF",
     };
-    const out = redactRequestHeaders(headers);
+    const out = redactRequestHeaders(headers, GEMINI_REDACT_HEADERS);
     expect(out["x-goog-api-key"]).toBe("<redacted>");
     expect(out["content-type"]).toBe("application/json");
   });
@@ -33,23 +36,57 @@ describe("redactRequestHeaders", () => {
       "x-goog-api-key",
       "X-GOOG-API-KEY",
     ]) {
-      const out = redactRequestHeaders({
-        [variant]: "AIzaSyABCDEF",
-      });
+      const out = redactRequestHeaders(
+        {
+          [variant]: "AIzaSyABCDEF",
+        },
+        GEMINI_REDACT_HEADERS,
+      );
       expect(out[variant]).toBe("<redacted>");
     }
   });
 
   test("preserves the header name verbatim while redacting the value", () => {
-    const out = redactRequestHeaders({ "X-Goog-Api-Key": "secret" });
+    const out = redactRequestHeaders(
+      { "X-Goog-Api-Key": "secret" },
+      GEMINI_REDACT_HEADERS,
+    );
     expect(Object.keys(out)).toEqual(["X-Goog-Api-Key"]);
     expect(out["X-Goog-Api-Key"]).toBe("<redacted>");
   });
 
   test("does not mutate the input map", () => {
     const headers = { "x-goog-api-key": "secret" };
-    redactRequestHeaders(headers);
+    redactRequestHeaders(headers, GEMINI_REDACT_HEADERS);
     expect(headers["x-goog-api-key"]).toBe("secret");
+  });
+
+  test("redacts a bearer authorization header when given that set", () => {
+    const headers = {
+      "content-type": "application/json",
+      authorization: "Bearer sk-secret",
+    };
+    const out = redactRequestHeaders(headers, BEARER_REDACT_HEADERS);
+    expect(out["authorization"]).toBe("<redacted>");
+    expect(out["content-type"]).toBe("application/json");
+  });
+
+  test("matches the bearer header name case-insensitively", () => {
+    for (const variant of ["Authorization", "AUTHORIZATION", "authorization"]) {
+      const out = redactRequestHeaders(
+        {
+          [variant]: "Bearer sk-secret",
+        },
+        BEARER_REDACT_HEADERS,
+      );
+      expect(out[variant]).toBe("<redacted>");
+    }
+  });
+
+  test("leaves headers untouched when set is empty", () => {
+    const headers = { "x-goog-api-key": "secret", authorization: "Bearer x" };
+    const out = redactRequestHeaders(headers, new Set<string>());
+    expect(out).toEqual(headers);
   });
 });
 
@@ -127,6 +164,7 @@ describe("writeFixture", () => {
         "content-type": "application/json",
         "x-goog-api-key": "AIzaSyTEST",
       },
+      redactHeaderNames: GEMINI_REDACT_HEADERS,
       responseHeaders: { "content-type": "application/json" },
       responseJson: { candidates: [] },
       now: new Date("2026-05-20T00:00:00.000Z"),
@@ -170,6 +208,7 @@ describe("writeFixture", () => {
       scriptVersion: "1",
       requestBody: { contents: [] },
       requestHeaders: { "x-goog-api-key": "AIzaSyTEST" },
+      redactHeaderNames: GEMINI_REDACT_HEADERS,
       responseHeaders: { "content-type": "text/event-stream" },
       responseBytes: bytes,
     });
@@ -200,6 +239,7 @@ describe("writeFixture", () => {
         scriptVersion: "1",
         requestBody: {},
         requestHeaders: {},
+        redactHeaderNames: GEMINI_REDACT_HEADERS,
         responseHeaders: {},
       }),
     ).rejects.toThrow(/either responseBytes or responseJson/);
@@ -212,6 +252,7 @@ describe("writeFixture", () => {
         scriptVersion: "1",
         requestBody: {},
         requestHeaders: {},
+        redactHeaderNames: GEMINI_REDACT_HEADERS,
         responseHeaders: {},
         responseBytes: new Uint8Array([1]),
         responseJson: {},
@@ -245,6 +286,7 @@ describe("writeStepFixture", () => {
         "content-type": "application/json",
         "x-goog-api-key": "AIzaSyTEST",
       },
+      redactHeaderNames: GEMINI_REDACT_HEADERS,
       responseHeaders: { "content-type": "application/json" },
       responseJson: { candidates: [] },
       destinationOverride: capDir,
@@ -276,6 +318,7 @@ describe("writeStepFixture", () => {
       stepName: "upload",
       requestBody: { file: "abc" },
       requestHeaders: { "x-goog-api-key": "AIzaSyTEST" },
+      redactHeaderNames: GEMINI_REDACT_HEADERS,
       responseHeaders: { "content-type": "application/json" },
       responseJson: { fileId: "files/123" },
       destinationOverride: capDir,
@@ -285,6 +328,7 @@ describe("writeStepFixture", () => {
       stepName: "generate",
       requestBody: { contents: [{ role: "user", parts: [] }] },
       requestHeaders: { "x-goog-api-key": "AIzaSyTEST" },
+      redactHeaderNames: GEMINI_REDACT_HEADERS,
       responseHeaders: { "content-type": "application/json" },
       responseJson: { candidates: [] },
       destinationOverride: capDir,
@@ -314,6 +358,7 @@ describe("writeStepFixture", () => {
         stepName: "",
         requestBody: {},
         requestHeaders: {},
+        redactHeaderNames: GEMINI_REDACT_HEADERS,
         responseHeaders: {},
         responseJson: {},
         destinationOverride: workdir,
@@ -328,6 +373,7 @@ describe("writeStepFixture", () => {
         stepName: "turn-1/sneaky",
         requestBody: {},
         requestHeaders: {},
+        redactHeaderNames: GEMINI_REDACT_HEADERS,
         responseHeaders: {},
         responseJson: {},
         destinationOverride: workdir,
@@ -448,8 +494,13 @@ describe("runStreamingStepCapture (in-memory source)", () => {
       stepName: "turn-1",
       model: "gemini-2.0-flash",
       endpoint: "streamGenerateContent",
+      url: "https://example.invalid/streamGenerateContent",
+      requestHeaders: {
+        "content-type": "application/json",
+        "x-goog-api-key": "AIzaSyTEST",
+      },
+      redactHeaderNames: GEMINI_REDACT_HEADERS,
       body: { contents: [] },
-      apiKey: "AIzaSyTEST",
       source: {
         stream,
         responseHeaders: { "content-type": "text/event-stream" },
@@ -492,8 +543,10 @@ describe("runStreamingStepCapture (in-memory source)", () => {
         stepName: "",
         model: "m",
         endpoint: "e",
+        url: "https://example.invalid/e",
+        requestHeaders: { "x-goog-api-key": "AIzaSyTEST" },
+        redactHeaderNames: GEMINI_REDACT_HEADERS,
         body: {},
-        apiKey: "AIzaSyTEST",
         source: { stream, responseHeaders: {} },
         destinationOverride: workdir,
       }),
@@ -523,8 +576,13 @@ async function callRunStreamingCaptureWithRedirectedRoot(
     capability: "test-streaming",
     model: "gemini-2.0-flash",
     endpoint: "streamGenerateContent",
+    url: "https://example.invalid/streamGenerateContent",
+    requestHeaders: {
+      "content-type": "application/json",
+      "x-goog-api-key": "AIzaSyTEST",
+    },
+    redactHeaderNames: GEMINI_REDACT_HEADERS,
     body: { contents: [] },
-    apiKey: "AIzaSyTEST",
     scriptVersion: "1",
     source: {
       stream,

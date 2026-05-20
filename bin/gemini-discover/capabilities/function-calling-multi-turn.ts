@@ -1,6 +1,9 @@
 import { getLogger } from "@intx/log";
 
 import {
+  GEMINI_BASE,
+  GEMINI_REDACT_HEADERS,
+  buildGeminiHeaders,
   runNonStreamingStepCapture,
   writeMultiStepMetadata,
 } from "../capture.ts";
@@ -129,8 +132,10 @@ export const capability: Capability = {
       stepName: "turn-1",
       model: MODEL,
       endpoint: ENDPOINT,
+      url: `${GEMINI_BASE}/${MODEL}:${ENDPOINT}`,
+      requestHeaders: buildGeminiHeaders(apiKey),
+      redactHeaderNames: GEMINI_REDACT_HEADERS,
       body: turn1Body,
-      apiKey,
     });
 
     const modelTurn = extractModelTurn(turn1.responseJson, `${NAME} turn-1`);
@@ -171,8 +176,10 @@ export const capability: Capability = {
       stepName: "turn-2",
       model: MODEL,
       endpoint: ENDPOINT,
+      url: `${GEMINI_BASE}/${MODEL}:${ENDPOINT}`,
+      requestHeaders: buildGeminiHeaders(apiKey),
+      redactHeaderNames: GEMINI_REDACT_HEADERS,
       body: turn2Body,
-      apiKey,
     });
 
     await writeMultiStepMetadata({

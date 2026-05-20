@@ -7,6 +7,9 @@ import { type } from "arktype";
 import { getLogger } from "@intx/log";
 
 import {
+  GEMINI_BASE,
+  GEMINI_REDACT_HEADERS,
+  buildGeminiHeaders,
   fixtureDirectoryFor,
   headersToMap,
   redactRequestHeaders,
@@ -102,7 +105,11 @@ async function captureUploadStep(args: {
   );
   await writeFile(
     join(stepDir, "request-headers.json"),
-    JSON.stringify(redactRequestHeaders(requestHeaders), null, 2) + "\n",
+    JSON.stringify(
+      redactRequestHeaders(requestHeaders, GEMINI_REDACT_HEADERS),
+      null,
+      2,
+    ) + "\n",
   );
   await writeFile(
     join(stepDir, "response.json"),
@@ -155,8 +162,10 @@ export const capability: Capability = {
       stepName: "generate",
       model: MODEL,
       endpoint: ENDPOINT,
+      url: `${GEMINI_BASE}/${MODEL}:${ENDPOINT}`,
+      requestHeaders: buildGeminiHeaders(apiKey),
+      redactHeaderNames: GEMINI_REDACT_HEADERS,
       body: generateBody,
-      apiKey,
     });
 
     const metadata = {

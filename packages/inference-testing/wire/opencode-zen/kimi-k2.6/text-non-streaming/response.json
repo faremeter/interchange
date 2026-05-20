@@ -1,0 +1,54 @@
+{
+  "id": "gen-1779303899-TbKZNqe84qsepTmDaDpF",
+  "object": "chat.completion",
+  "created": 1779303899,
+  "model": "moonshotai/kimi-k2.6-20260420",
+  "provider": "Moonshot AI",
+  "system_fingerprint": "fpv0_5989ad0a",
+  "choices": [
+    {
+      "index": 0,
+      "logprobs": null,
+      "finish_reason": "stop",
+      "native_finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "ready",
+        "refusal": null,
+        "reasoning": "The user wants me to reply with the single word 'ready'. This is a straightforward request. I should output exactly \"ready\" without any additional punctuation, formatting, or explanation, unless punctuation is considered part of the word. The user said \"single word 'ready'\" so I should output just that word.\n\nWait, let me check if there are any hidden constraints or tricks. The user is asking for a single word reply. I should comply exactly. No markdown formatting needed, just the text \"ready\".",
+        "reasoning_details": [
+          {
+            "type": "reasoning.text",
+            "text": "The user wants me to reply with the single word 'ready'. This is a straightforward request. I should output exactly \"ready\" without any additional punctuation, formatting, or explanation, unless punctuation is considered part of the word. The user said \"single word 'ready'\" so I should output just that word.\n\nWait, let me check if there are any hidden constraints or tricks. The user is asking for a single word reply. I should comply exactly. No markdown formatting needed, just the text \"ready\".",
+            "format": "unknown",
+            "index": 0
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 15,
+    "completion_tokens": 106,
+    "total_tokens": 121,
+    "cost": 0,
+    "is_byok": true,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "cost_details": {
+      "upstream_inference_cost": 0.00043825,
+      "upstream_inference_prompt_cost": 0.00001425,
+      "upstream_inference_completions_cost": 0.000424
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 127,
+      "image_tokens": 0,
+      "audio_tokens": 0
+    }
+  },
+  "cost": "0"
+}

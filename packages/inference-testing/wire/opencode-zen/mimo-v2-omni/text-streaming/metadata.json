@@ -1,0 +1,7 @@
+{
+  "capability": "text-streaming",
+  "model": "mimo-v2-omni",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:05:49.163Z",
+  "scriptVersion": "1"
+}

@@ -1,7 +1,13 @@
 import { getLogger } from "@intx/log";
 import { type } from "arktype";
 
-import { runStreamingStepCapture, writeMultiStepMetadata } from "../capture.ts";
+import {
+  GEMINI_BASE,
+  GEMINI_REDACT_HEADERS,
+  buildGeminiHeaders,
+  runStreamingStepCapture,
+  writeMultiStepMetadata,
+} from "../capture.ts";
 import type { Capability } from "./index.ts";
 
 const logger = getLogger([
@@ -172,8 +178,10 @@ export const capability: Capability = {
       stepName: "turn-1",
       model: MODEL,
       endpoint: ENDPOINT,
+      url: `${GEMINI_BASE}/${MODEL}:${ENDPOINT}?alt=sse`,
+      requestHeaders: buildGeminiHeaders(apiKey),
+      redactHeaderNames: GEMINI_REDACT_HEADERS,
       body: turn1Body,
-      apiKey,
     });
 
     const modelTurn = mergeStreamedModelTurn(turn1.bytes, `${NAME} turn-1`);
@@ -223,8 +231,10 @@ export const capability: Capability = {
       stepName: "turn-2",
       model: MODEL,
       endpoint: ENDPOINT,
+      url: `${GEMINI_BASE}/${MODEL}:${ENDPOINT}?alt=sse`,
+      requestHeaders: buildGeminiHeaders(apiKey),
+      redactHeaderNames: GEMINI_REDACT_HEADERS,
       body: turn2Body,
-      apiKey,
     });
 
     await writeMultiStepMetadata({

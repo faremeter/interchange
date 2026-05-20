@@ -52,6 +52,8 @@ export default defineConfig(
             "bin/*.ts",
             "bin/gemini-discover/*.ts",
             "bin/gemini-discover/capabilities/*.ts",
+            "bin/opencode-discover/*.ts",
+            "bin/opencode-discover/capabilities/*.ts",
             "packages/db/drizzle.config.ts",
             "tests/sidecar/*.ts",
             "tests/inference-testing/*.ts",
