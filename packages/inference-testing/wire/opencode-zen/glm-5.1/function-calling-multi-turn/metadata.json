@@ -1,0 +1,8 @@
+{
+  "capability": "function-calling-multi-turn",
+  "model": "glm-5.1",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:23:30.517Z",
+  "scriptVersion": "1",
+  "sequence": ["turn-1", "turn-2"]
+}

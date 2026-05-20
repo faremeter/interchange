@@ -1,0 +1,32 @@
+{
+  "choices": [
+    {
+      "message": {
+        "content": "The current weather in Boston, MA is 62°F and partly cloudy, with winds at 8 mph.",
+        "reasoning_content": "The user asked for the weather in Boston, MA.\nI called the `getCurrentWeather` tool with the location \"Boston, MA\".\nThe tool returned the weather as \"62F partly cloudy\" with a wind speed of \"8\" mph.\nI should now report this information to the user.",
+        "role": "assistant"
+      },
+      "finish_reason": "stop",
+      "index": 0,
+      "logprobs": null
+    }
+  ],
+  "object": "chat.completion",
+  "usage": {
+    "prompt_tokens": 450,
+    "completion_tokens": 91,
+    "total_tokens": 541,
+    "completion_tokens_details": {
+      "reasoning_tokens": 63,
+      "text_tokens": 91
+    },
+    "prompt_tokens_details": {
+      "text_tokens": 450
+    }
+  },
+  "created": 1779305040,
+  "system_fingerprint": null,
+  "model": "qwen3.6-plus",
+  "id": "chatcmpl-a82c1f02-b5eb-4f48-a170-57c3e5978f7d",
+  "cost": "0"
+}

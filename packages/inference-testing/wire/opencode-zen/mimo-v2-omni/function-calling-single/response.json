@@ -1,0 +1,39 @@
+{
+  "id": "f733628a3c2e4eea97ea6ccc49039296",
+  "choices": [
+    {
+      "finish_reason": "tool_calls",
+      "index": 0,
+      "message": {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "call_125d361901104aea96ee1d44",
+            "function": {
+              "arguments": "{\"location\": \"Boston, MA\"}",
+              "name": "getCurrentWeather"
+            },
+            "type": "function"
+          }
+        ],
+        "reasoning_content": "The user wants to know the current weather in Boston, MA, and they specifically ask me to use the provided tool. I have a tool called getCurrentWeather that can get current weather conditions for a given city. I should call that tool with location \"Boston, MA\". Let me do that."
+      }
+    }
+  ],
+  "created": 1779305043,
+  "model": "mimo-v2-omni",
+  "object": "chat.completion",
+  "usage": {
+    "completion_tokens": 85,
+    "prompt_tokens": 520,
+    "total_tokens": 605,
+    "completion_tokens_details": {
+      "reasoning_tokens": 59
+    },
+    "prompt_tokens_details": {
+      "cached_tokens": 512
+    }
+  },
+  "cost": "0"
+}

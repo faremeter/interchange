@@ -1,0 +1,44 @@
+{
+  "id": "55741552-7c3a-49e3-81e9-a0e7af7a4e23",
+  "object": "chat.completion",
+  "created": 1779305012,
+  "model": "deepseek-v4-pro",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "The user wants to know the weather in Boston, MA. I need to use the getCurrentWeather tool with the location \"Boston, MA\".",
+        "tool_calls": [
+          {
+            "index": 0,
+            "id": "call_00_KR3pk4MS8NfIg90cJ3997058",
+            "type": "function",
+            "function": {
+              "name": "getCurrentWeather",
+              "arguments": "{\"location\": \"Boston, MA\"}"
+            }
+          }
+        ]
+      },
+      "logprobs": null,
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 388,
+    "completion_tokens": 76,
+    "total_tokens": 464,
+    "prompt_tokens_details": {
+      "cached_tokens": 384
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 29
+    },
+    "prompt_cache_hit_tokens": 384,
+    "prompt_cache_miss_tokens": 4
+  },
+  "system_fingerprint": "fp_9954b31ca7_prod0820_fp8_kvcache_20260402",
+  "cost": "0"
+}

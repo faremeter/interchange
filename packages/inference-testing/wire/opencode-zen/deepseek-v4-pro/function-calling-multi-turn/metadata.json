@@ -1,0 +1,8 @@
+{
+  "capability": "function-calling-multi-turn",
+  "model": "deepseek-v4-pro",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:23:46.607Z",
+  "scriptVersion": "1",
+  "sequence": ["turn-1", "turn-2"]
+}

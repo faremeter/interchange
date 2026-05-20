@@ -1,0 +1,7 @@
+{
+  "capability": "function-calling-single",
+  "model": "kimi-k2.6",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:23:15.469Z",
+  "scriptVersion": "1"
+}

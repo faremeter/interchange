@@ -1,0 +1,7 @@
+{
+  "capability": "function-calling-single",
+  "model": "glm-5.1",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:23:24.176Z",
+  "scriptVersion": "1"
+}

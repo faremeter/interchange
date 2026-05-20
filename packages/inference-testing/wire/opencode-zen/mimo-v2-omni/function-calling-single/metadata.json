@@ -1,0 +1,7 @@
+{
+  "capability": "function-calling-single",
+  "model": "mimo-v2-omni",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:24:05.125Z",
+  "scriptVersion": "1"
+}

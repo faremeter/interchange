@@ -1,0 +1,49 @@
+{
+  "model": "glm-5.1",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Boston, MA? Use the provided tool."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "The user wants to know the current weather in Boston, MA. I have the tool available to get this information.",
+      "name": null,
+      "tool_calls": [
+        {
+          "id": "call_bf82",
+          "type": "function",
+          "function": {
+            "name": "getCurrentWeather",
+            "arguments": "{\"location\": \"Boston, MA\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_bf82",
+      "content": "{\"weather\":\"62F partly cloudy\",\"windMph\":8}"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "getCurrentWeather",
+        "description": "Get the current weather conditions for a given city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "The city and optional state, e.g. 'Boston, MA'."
+            }
+          },
+          "required": ["location"]
+        }
+      }
+    }
+  ]
+}

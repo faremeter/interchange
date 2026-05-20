@@ -1,0 +1,8 @@
+{
+  "capability": "function-calling-multi-turn",
+  "model": "qwen3.6-plus",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:24:00.839Z",
+  "scriptVersion": "1",
+  "sequence": ["turn-1", "turn-2"]
+}

@@ -1,0 +1,49 @@
+{
+  "model": "qwen3.6-plus",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Boston, MA? Use the provided tool."
+    },
+    {
+      "content": "",
+      "reasoning_content": "Thinking Process:\n1.  Identify the user's request: Get the current weather in Boston, MA.\n2.  Identify the available tool: `getCurrentWeather`.\n3.  Check tool parameters: `location` (string, required).\n4.  Extract parameter value from request: \"Boston, MA\".\n5.  Construct the tool call.\n6.  Execute the tool call.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{\"location\": \"Boston, MA\"}",
+            "name": "getCurrentWeather"
+          },
+          "id": "call_9d7ecb3bac7a49e69e7574e1",
+          "index": 0,
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_9d7ecb3bac7a49e69e7574e1",
+      "content": "{\"weather\":\"62F partly cloudy\",\"windMph\":8}"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "getCurrentWeather",
+        "description": "Get the current weather conditions for a given city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "The city and optional state, e.g. 'Boston, MA'."
+            }
+          },
+          "required": ["location"]
+        }
+      }
+    }
+  ]
+}

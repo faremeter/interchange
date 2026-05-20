@@ -1,0 +1,7 @@
+{
+  "capability": "function-calling-single",
+  "model": "deepseek-v4-pro",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:23:36.253Z",
+  "scriptVersion": "1"
+}
