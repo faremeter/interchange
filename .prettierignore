@@ -1,5 +1,8 @@
 bun.lock
 dist
 docs/API.md
+briefs
+dispatch
+tmp
 *~
 *\#*
