@@ -21,10 +21,23 @@ export type OpenCodeModel = {
 };
 
 /**
- * Capability flags are derived empirically by the probe step in
- * `bin/opencode-discover/probe.ts`. Update this table when re-running
- * probes; the source of truth for downstream consumers is whatever
- * lands in this file at the end of the L1 task.
+ * Capability flags are derived empirically by the probe step, which
+ * lives in `probeModel` later in this file (invoked from
+ * `bin/opencode-discover.ts` when `--probe` is passed). Update this
+ * table when re-running probes; the source of truth for downstream
+ * consumers is whatever lands in this file at the end of the L1
+ * task.
+ *
+ * Manual overrides on top of the auto-detected flags:
+ *
+ * - `glm-5.1` vision is set to `false` even though the model's
+ *   probe response returned HTTP 200. The endpoint accepts the
+ *   `image_url` content part but the model itself refuses the
+ *   request ("Please provide an image..."). The auto-detector
+ *   cannot judge semantic refusal from a successful HTTP status,
+ *   so the flag is overridden to `false` to keep downstream
+ *   batches from attempting vision captures that would produce
+ *   refusal text rather than real image-description content.
  */
 export const models: OpenCodeModel[] = [
   {
