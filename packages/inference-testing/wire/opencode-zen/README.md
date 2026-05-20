@@ -72,3 +72,16 @@ flags there are populated by running `bun bin/opencode-discover.ts
 --probe`; the probe responses themselves are written to
 `dispatch/intr-78-phase-2/1a-opencode_rig/probe-<model>.json` for
 audit and are not part of the committed fixture corpus.
+
+## `_evidence/` directory
+
+Subdirectories under `_evidence/` (underscore-prefixed to keep them
+out of the capability-name namespace) hold findings that are not
+themselves capability captures but reference the corpus. The
+inaugural entry is `_evidence/kimi-k2.6-routing/`, documenting the
+finding that the OpenCode Zen relay routes `kimi-k2.6` requests to
+more than one upstream platform (Moonshot AI and Fireworks AI), with
+materially different response envelopes per upstream. Its `README.md`
+contains a self-contained report plus the raw side-by-side request
+and response bodies for each backend; third parties can read it
+without needing the rest of the corpus.
