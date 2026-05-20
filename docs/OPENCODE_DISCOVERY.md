@@ -1,0 +1,628 @@
+# OpenCode Zen Discovery: Observed vs Documented
+
+This note records the live wire behaviour of the OpenCode Zen relay
+as observed during the INTR-78 Phase 2 capture campaign. OpenCode Zen
+is an OpenAI-compatible Chat Completions relay that fronts five
+upstream model providers (Moonshot, Z.AI, DeepSeek, Alibaba, and
+Xiaomi MiMo) behind the single endpoint
+`https://opencode.ai/zen/go/v1/chat/completions`. For each model and
+each captured capability we contrast the OpenAI Chat Completions
+reference shape (and, where applicable, the upstream vendor's own
+documentation) against the bytes the relay actually emitted, and
+call out every place the two diverged. The captures were taken on
+2026-05-20 using `Authorization: Bearer <key>` authentication
+against the relay's `chat/completions` surface.
+
+The capture corpus lives at
+`packages/inference-testing/wire/opencode-zen/`. Layout conventions
+are documented in
+`packages/inference-testing/wire/opencode-zen/README.md`, and the
+model-to-capability matrix is authoritatively defined in
+`bin/opencode-discover/models.ts`. The fixtures are the ground
+truth: where the docs and the wire disagree, the wire wins. This
+document is the narrative companion to those bytes.
+
+Thirty-three capture directories were committed, spanning text
+(streaming and non-streaming), function calling (single-turn and
+multi-turn), reasoning (streaming and non-streaming), and vision
+input. Five models were exercised: `kimi-k2.6`, `glm-5.1`,
+`deepseek-v4-pro`, `qwen3.6-plus`, and `mimo-v2-omni`. Vision input
+was captured for the three models that the registry marks as
+vision-capable; the other two are exercised by the registry guard
+itself, not by an HTTP call. The companion taxonomy document at
+`docs/INFERENCE.md` (the "Generalized Multimodal Taxonomy" section)
+generalises these observations into the cross-provider abstractions
+that INTR-79 and INTR-80 will consume. This note records facts;
+design decisions belong in the taxonomy document, not here.
+
+## Models in scope
+
+The five models in scope and their per-capability flags as recorded
+in `bin/opencode-discover/models.ts`:
+
+| Model             | Vendor         | text | functionCalling | reasoning | vision |
+| ----------------- | -------------- | ---- | --------------- | --------- | ------ |
+| `kimi-k2.6`       | Moonshot       | yes  | yes             | yes       | yes    |
+| `glm-5.1`         | Z.AI (zhipuai) | yes  | yes             | yes       | no     |
+| `deepseek-v4-pro` | DeepSeek       | yes  | yes             | yes       | no     |
+| `qwen3.6-plus`    | Alibaba        | yes  | yes             | yes       | yes    |
+| `mimo-v2-omni`    | Xiaomi MiMo    | yes  | yes             | yes       | yes    |
+
+The `vision: false` entries for `glm-5.1` and `deepseek-v4-pro` are
+deliberate manual overrides on top of the auto-detected probe
+results, recorded in the comment block at the top of
+`bin/opencode-discover/models.ts`. `glm-5.1`'s probe returned HTTP
+200 but with a textual refusal ("Please provide an image so I can
+describe it for you") rather than a real description, and
+`deepseek-v4-pro` returned HTTP 400 `invalid_request_error: unknown
+variant 'image_url'`. Both models are therefore excluded from the
+vision-input capture, and the capability module's early-return guard
+fires before any HTTP request is dispatched.
+
+## kimi-k2.6 (Moonshot)
+
+### Documented
+
+Moonshot's public documentation
+(https://platform.moonshot.ai/docs/api/chat) describes a Chat
+Completions surface compatible with OpenAI's reference at
+`https://platform.openai.com/docs/api-reference/chat`: a JSON POST
+to `/chat/completions` with `model`, `messages`, optional `tools`,
+optional `stream`, returning a `chat.completion` (or
+`chat.completion.chunk` for SSE) envelope. Vision input follows the
+OpenAI shape: a `messages[].content` array containing
+`{type: "image_url", image_url: {url}}` parts where the URL may be a
+`data:` URI.
+
+### Observed
+
+The relay surfaces two different upstream backends for `kimi-k2.6`
+depending on which capability is exercised, and the response shape
+differs between them. The `model` field in the response body, the
+`provider` field (present only on one path), and the message-level
+reasoning key are the load-bearing signal of which backend served
+the request.
+
+Text and vision captures route through what the response identifies
+as the Moonshot AI backend. The non-streaming text response
+(`packages/inference-testing/wire/opencode-zen/kimi-k2.6/text-non-streaming/response.json`)
+carries `model: "moonshotai/kimi-k2.6-20260420"`, `provider:
+"Moonshot AI"`, a `system_fingerprint`, a `native_finish_reason`
+mirroring `finish_reason`, and a message envelope with `refusal:
+null`, `reasoning: "..."` (no `_content` suffix), and a parallel
+`reasoning_details: [{type: "reasoning.text", text, format: "unknown",
+index: 0}]` array. The vision capture
+(`packages/inference-testing/wire/opencode-zen/kimi-k2.6/vision-input/response.json`)
+has the same shape, with the relay flattening the multimodal
+response back to a plain string in `choices[0].message.content`
+rather than a content-parts array. Vision token cost surfaces as
+`usage.prompt_tokens_details.audio_tokens: 0`,
+`video_tokens: 0`, and a top-level `cost_details` block reporting
+upstream prices in dollars.
+
+Function-calling and reasoning captures route through what the
+response identifies as the Fireworks backend
+(`accounts/fireworks/models/kimi-k2p6`). The single-turn
+function-calling response
+(`packages/inference-testing/wire/opencode-zen/kimi-k2.6/function-calling-single/response.json`)
+uses `reasoning_content` rather than `reasoning`, omits `provider`
+and `system_fingerprint`, adds `prompt_token_ids` at the top level
+and `token_ids` per choice, and each `tool_calls[]` entry carries
+both an `index` integer and a sibling `name: null` alongside the
+nested `function.name`. The `tool_calls[].id` follows a
+function-name-keyed scheme (`functions.getCurrentWeather:0`) rather
+than the `call_<hash>` convention seen elsewhere. The reasoning
+non-streaming response
+(`packages/inference-testing/wire/opencode-zen/kimi-k2.6/reasoning-non-streaming/response.json`)
+similarly carries `reasoning_content` on the message and is shaped
+like the function-calling response. The streaming counterpart at
+`packages/inference-testing/wire/opencode-zen/kimi-k2.6/reasoning-streaming/response.sse`
+emits `choices[0].delta.reasoning_content` deltas (no `content` key
+during the reasoning phase), then transitions to
+`choices[0].delta.content` deltas for the visible answer, terminates
+with `finish_reason: "stop"` on an empty-delta event, and finally
+emits an empty-`choices` usage chunk before `data: [DONE]`. A
+trailing `data: {"choices":[],"cost":"0"}` follows the `[DONE]`
+sentinel.
+
+The streaming text response
+(`packages/inference-testing/wire/opencode-zen/kimi-k2.6/text-streaming/response.sse`)
+routes through the Fireworks backend and ends with the same
+`data: [DONE]\n\ndata: {"choices":[],"cost":"0"}` trailer. The
+multi-turn function-calling capture
+(`packages/inference-testing/wire/opencode-zen/kimi-k2.6/function-calling-multi-turn/turn-2/request.json`)
+echoes the turn-1 assistant message verbatim, including
+`reasoning_content`, before appending the `role: "tool"` response
+and re-sending the tool definitions; turn 2 succeeds and returns a
+natural-language answer with `finish_reason: "stop"`.
+
+### Discrepancies
+
+- The relay routes `kimi-k2.6` to two different upstream backends
+  (Moonshot AI and Fireworks) and the response shape differs
+  between them. Text and vision get `message.reasoning` plus
+  `reasoning_details`; function calling and reasoning get
+  `message.reasoning_content`. A consumer that normalises reasoning
+  must read both names; this was the surprise that
+  `dispatch/intr-78-phase-2/3a-opencode_reasoning/output.yaml`
+  flagged as a correction to the upstream 1a probe note.
+- `tool_calls[].name` (top-level, distinct from `function.name`)
+  appears with value `null` on this backend and is not part of the
+  documented OpenAI shape. `tool_calls[].index` is present even on
+  single-turn captures where ordering is unambiguous.
+- `tool_calls[].id` uses the form `functions.<name>:<index>` rather
+  than the `call_<hash>` form the other four vendors use. Both
+  forms are valid OpenAI tool-call IDs (the spec is opaque on the
+  format), but consumers that pattern-match on `call_` will not
+  recognise this one.
+- `reasoning_details` is an entire parallel structure for thinking
+  content that the OpenAI reference does not define; it duplicates
+  the prose already in `message.reasoning` and adds `type`,
+  `format`, and `index` fields that may eventually carry more
+  shape (today `format: "unknown"` is the only observed value).
+- A `data: {"choices":[],"cost":"0"}` SSE chunk arrives after
+  `data: [DONE]` on every streaming capture. The OpenAI Chat
+  Completions SSE specification documents `[DONE]` as the
+  terminator; any parser that stops at it will miss this trailer.
+
+## glm-5.1 (Z.AI)
+
+### Documented
+
+Z.AI's GLM family is documented at
+https://docs.z.ai/api-reference/llm/chat-completion as an
+OpenAI-compatible chat completions surface. The reference describes
+the standard `model` / `messages` / `tools` request shape and a
+response envelope with `choices[].message` and
+`choices[].finish_reason` enumerated as `stop`, `length`,
+`tool_calls`, or `content_filter`. The GLM thinking documentation at
+https://docs.z.ai/guides/llm/glm-4.5#thinking-deep-mode introduces
+`message.reasoning_content` as the field carrying chain-of-thought
+output.
+
+### Observed
+
+The relay surfaces `glm-5.1` consistently across all four captured
+capabilities: every response carries `model: "frank/GLM-5.1"` and
+the same message envelope. The non-streaming text response
+(`packages/inference-testing/wire/opencode-zen/glm-5.1/text-non-streaming/response.json`)
+returns a single choice with
+`message: {role, content, reasoning_content, name: null,
+tool_calls: []}`. `usage` includes an `estimated_cost: 0` field that
+no other vendor in this corpus emits, plus
+`prompt_tokens_details.cache_write_tokens: null`.
+
+The function-calling single-turn response
+(`packages/inference-testing/wire/opencode-zen/glm-5.1/function-calling-single/response.json`)
+keeps the `message.name: null` slot and adds a non-empty
+`tool_calls` array. Each `tool_calls[]` entry omits the `index` key
+that the other tool-calling vendors include, and the `id` follows a
+short `call_<4-hex>` form (`call_6b0b`) rather than the longer
+opaque IDs the other vendors emit. The multi-turn turn-2 request
+(`packages/inference-testing/wire/opencode-zen/glm-5.1/function-calling-multi-turn/turn-2/request.json`)
+echoes the assistant message verbatim, including the spurious
+`name: null` slot, and turn 2 succeeds with `finish_reason: "stop"`.
+
+The reasoning non-streaming response
+(`packages/inference-testing/wire/opencode-zen/glm-5.1/reasoning-non-streaming/response.json`)
+carries `message.reasoning_content` matching the documented thinking
+mode. The streaming counterpart
+(`packages/inference-testing/wire/opencode-zen/glm-5.1/reasoning-streaming/response.sse`)
+emits `delta.reasoning_content` deltas without a `content` key
+during the reasoning phase, then transitions to `delta.content`
+deltas, and terminates with the same `data: [DONE]` plus trailing
+`data: {"choices":[],"cost":"0"}` cost trailer as the other models.
+The streaming response identifies the upstream as
+`accounts/fireworks/models/glm-5p1`; the relay routes the model to
+the Fireworks backend in this case even though the non-streaming
+captures identify upstream as `frank/GLM-5.1`. The response payload
+shape is otherwise indistinguishable between the two streaming /
+non-streaming responses.
+
+### Discrepancies
+
+- `choices[0].message.name` appears with value `null` on every
+  GLM-5.1 capture, including plain text turns where no tool was
+  offered. The OpenAI Chat Completions reference reserves
+  `message.name` for function-call response messages from named
+  callers; emitting it with `null` on every assistant turn is a
+  surface extension. Multi-turn callers must echo it verbatim
+  alongside the rest of the assistant turn.
+- `tool_calls[]` entries omit the `index` integer that
+  `deepseek-v4-pro`, `qwen3.6-plus`, and `kimi-k2.6` include. This
+  is harmless for single-call captures but means consumers cannot
+  rely on `tool_calls[].index` being present across vendors.
+- `usage.estimated_cost` is not part of the OpenAI usage shape and
+  does not appear on any other model in the corpus.
+- The relay routes the same model id to different upstream
+  identifiers (`frank/GLM-5.1` for non-streaming,
+  `accounts/fireworks/models/glm-5p1` for streaming). The shape is
+  the same, but the upstream-identifier metadata is not.
+- Per `bin/opencode-discover/models.ts`, vision is set to `false`
+  for `glm-5.1` because the model's probe returned an HTTP 200
+  textual refusal rather than describing the image. No vision
+  capture was attempted; the capability module's early-return guard
+  fires before any HTTP request is dispatched. No fixture under
+  `packages/inference-testing/wire/opencode-zen/glm-5.1/` exists for
+  vision-input.
+
+## deepseek-v4-pro (DeepSeek)
+
+### Documented
+
+DeepSeek's API reference at
+https://api-docs.deepseek.com/api/create-chat-completion documents
+an OpenAI-compatible Chat Completions surface. Reasoning models
+expose chain-of-thought via `choices[0].message.reasoning_content`
+(non-streaming) and `choices[0].delta.reasoning_content` (streaming).
+The multi-turn-with-reasoning guidance
+(https://api-docs.deepseek.com/guides/reasoning_model) states that
+`reasoning_content` must be passed back into subsequent turns; the
+DeepSeek docs note that omitting it on a subsequent assistant turn
+produces a 400 error.
+
+### Observed
+
+The relay surfaces `deepseek-v4-pro` consistently across all four
+captured capabilities: every response carries
+`model: "deepseek-v4-pro"`, the same `system_fingerprint`
+(`fp_9954b31ca7_prod0820_fp8_kvcache_20260402`), and the same
+message envelope shape. The non-streaming text response
+(`packages/inference-testing/wire/opencode-zen/deepseek-v4-pro/text-non-streaming/response.json`)
+returns `message: {role, content, reasoning_content}` plus a `logprobs:
+null` slot at the choice level. `usage` carries DeepSeek-specific
+fields `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens`
+alongside `completion_tokens_details.reasoning_tokens`.
+
+The function-calling single-turn response
+(`packages/inference-testing/wire/opencode-zen/deepseek-v4-pro/function-calling-single/response.json`)
+adds `tool_calls` to the message envelope; each `tool_calls[]` entry
+includes an `index` integer and the `id` follows a long opaque form
+(`call_00_KR3pk4MS8NfIg90cJ3997058`). The multi-turn turn-2 request
+(`packages/inference-testing/wire/opencode-zen/deepseek-v4-pro/function-calling-multi-turn/turn-2/request.json`)
+forwards the verbatim turn-1 assistant message — including
+`reasoning_content`, which the DeepSeek docs mandate — and turn 2
+returns a natural-language answer with `finish_reason: "stop"`. The
+verbatim-forwarding requirement was the load-bearing finding
+recorded in
+`dispatch/intr-78-phase-2/2a-opencode_function_calling/output.yaml`:
+the first multi-turn implementation passed only `{role, content,
+tool_calls}` on the assistant turn and received an HTTP 400
+"The `reasoning_content` in the thinking mode must be passed back to
+the API." The final implementation forwards the entire turn-1
+assistant message into turn-2 for every model so the same code path
+handles every vendor's contract.
+
+The reasoning non-streaming response
+(`packages/inference-testing/wire/opencode-zen/deepseek-v4-pro/reasoning-non-streaming/response.json`)
+matches the documented `message.reasoning_content` shape. The
+streaming counterpart
+(`packages/inference-testing/wire/opencode-zen/deepseek-v4-pro/reasoning-streaming/response.sse`)
+emits `delta: {content: null, reasoning_content: "..."}` chunks
+during the reasoning phase (the explicit `content: null` is always
+present alongside reasoning) and `delta: {content: "...",
+reasoning_content: null}` chunks during the answer phase. The
+terminal usage chunk records
+`completion_tokens_details.reasoning_tokens`, and the SSE stream
+ends with `data: [DONE]\n\ndata: {"choices":[],"cost":"0"}`.
+
+### Discrepancies
+
+- DeepSeek's multi-turn-with-reasoning contract is strict: omitting
+  `reasoning_content` on a re-sent assistant turn causes an HTTP
+  400 with the message "The `reasoning_content` in the thinking
+  mode must be passed back to the API." This is documented by
+  DeepSeek but is a deviation from the OpenAI Chat Completions
+  reference, where the assistant turn's structure is the caller's
+  choice. The simplest portable implementation is to forward the
+  verbatim turn-1 assistant body into turn 2 unconditionally.
+- The reasoning-streaming deltas always include explicit
+  `content: null` alongside `reasoning_content`, where two other
+  vendors (`kimi-k2.6`, `glm-5.1`) omit the `content` key during
+  the reasoning phase. A consumer that distinguishes "reasoning
+  chunk" from "content chunk" by key presence rather than by
+  value-is-non-null will misclassify DeepSeek's reasoning deltas.
+- `usage.prompt_cache_hit_tokens` and `prompt_cache_miss_tokens`
+  are DeepSeek-specific fields not part of the OpenAI usage shape.
+- Per `bin/opencode-discover/models.ts`, vision is set to `false`
+  for `deepseek-v4-pro` because submitting an OpenAI-style
+  multimodal `messages[].content` array elicits an HTTP 400
+  `invalid_request_error: "unknown variant 'image_url', expected
+'text'"`. The model's content path validates that user content
+  must be a string. No vision fixture exists under
+  `packages/inference-testing/wire/opencode-zen/deepseek-v4-pro/`.
+- The `data: {"choices":[],"cost":"0"}` post-`[DONE]` trailer
+  applies here as it does for every other model in the corpus.
+
+## qwen3.6-plus (Alibaba)
+
+### Documented
+
+Alibaba's Qwen API documentation at
+https://www.alibabacloud.com/help/en/model-studio/use-qwen-by-calling-api
+describes an OpenAI-compatible Chat Completions surface with
+`enable_thinking` as the opt-in for reasoning output, where the
+reasoning text surfaces in `choices[0].message.reasoning_content`
+and the streaming counterpart at `choices[0].delta.reasoning_content`.
+Tool calling, vision input, and the response envelope structure
+mirror OpenAI Chat Completions.
+
+### Observed
+
+The relay surfaces `qwen3.6-plus` consistently across all five
+captured capabilities (text, function calling, reasoning, and
+vision). Every response carries `model: "qwen3.6-plus"` and
+`system_fingerprint: null`. The response top-level key ordering
+differs from the OpenAI convention — `choices` appears before
+`object`, then `usage`, `created`, `system_fingerprint`, `model`,
+`id`, `cost` — but the field set is OpenAI-compatible.
+
+The non-streaming text response
+(`packages/inference-testing/wire/opencode-zen/qwen3.6-plus/text-non-streaming/response.json`)
+returns `message: {content, reasoning_content, role}` with
+`reasoning_content` populated even on a single-word reply.
+`usage.completion_tokens_details` carries both
+`reasoning_tokens` and `text_tokens`, and
+`prompt_tokens_details.text_tokens` records the input modality
+breakdown (echoed as `image_tokens` in the vision capture).
+
+The function-calling single-turn response
+(`packages/inference-testing/wire/opencode-zen/qwen3.6-plus/function-calling-single/response.json`)
+adds a `tool_calls` array whose entries carry `index`, `id` (long
+opaque `call_<24-hex>`), `type`, and `function`. The multi-turn
+turn-2 request
+(`packages/inference-testing/wire/opencode-zen/qwen3.6-plus/function-calling-multi-turn/turn-2/request.json`)
+forwards the verbatim turn-1 assistant message, and turn 2 returns
+a natural-language answer with `finish_reason: "stop"`.
+
+The reasoning non-streaming response
+(`packages/inference-testing/wire/opencode-zen/qwen3.6-plus/reasoning-non-streaming/response.json`)
+matches the documented shape. The streaming counterpart
+(`packages/inference-testing/wire/opencode-zen/qwen3.6-plus/reasoning-streaming/response.sse`)
+emits `delta: {content: null, reasoning_content: "...", role:
+"assistant"}` for the first chunk, then varies between including
+`content: null` and omitting it across the rest of the reasoning
+phase. The terminal chunk records
+`usage.completion_tokens_details.reasoning_tokens` and
+`text_tokens`, and the stream ends with
+`data: [DONE]\n\ndata: {"choices":[],"cost":"0"}`.
+
+The vision input response
+(`packages/inference-testing/wire/opencode-zen/qwen3.6-plus/vision-input/response.json`)
+accepts the OpenAI multimodal request shape — a `content` array
+with a `{type: "text"}` part and a `{type: "image_url", image_url:
+{url}}` part where the URL is a `data:image/jpeg;base64,...`
+payload — and returns a single-string `choices[0].message.content`
+plus `reasoning_content`. The image cost is reported in
+`usage.prompt_tokens_details.image_tokens`.
+
+### Discrepancies
+
+- `system_fingerprint` is always `null` on this surface, where most
+  vendors emit either a non-null fingerprint or omit the field
+  entirely. The presence of an explicit `null` is harmless but
+  unusual.
+- The non-streaming text response emits `reasoning_content`
+  unsolicited (no `enable_thinking` opt-in was sent in the
+  request body). The reasoning text is present even for trivial
+  replies. The model evidently always reasons internally when
+  served through this relay path; the OpenAI Chat Completions
+  reference makes no commitment about default reasoning behaviour
+  for non-reasoning prompts.
+- In reasoning-streaming, the presence of `content: null` alongside
+  `reasoning_content` in deltas is inconsistent across chunks:
+  present in the first delta, then dropped. A consumer that
+  classifies deltas by key presence rather than value will see a
+  mixed signal.
+- The post-`[DONE]` `data: {"choices":[],"cost":"0"}` trailer is
+  present on every streaming capture, matching the other four
+  vendors.
+
+## mimo-v2-omni (Xiaomi MiMo)
+
+### Documented
+
+Xiaomi MiMo's public surface is the OpenAI-compatible Chat
+Completions endpoint described generically by the OpenAI reference
+(https://platform.openai.com/docs/api-reference/chat). The model is
+documented as multimodal-capable (omni) with the OpenAI vision
+content shape.
+
+### Observed
+
+The relay surfaces `mimo-v2-omni` with `model: "mimo-v2-omni"` on
+every capture and a response top-level ordering that places
+`id` first, then `choices`, `created`, `model`, `object`, `usage`,
+and `cost`. There is no `system_fingerprint` and no `provider`
+field.
+
+The non-streaming text response
+(`packages/inference-testing/wire/opencode-zen/mimo-v2-omni/text-non-streaming/response.json`)
+returns `message: {content, role, tool_calls, reasoning_content}`
+where `tool_calls` is explicitly `null` on a plain text turn.
+`usage.completion_tokens_details.reasoning_tokens` is reported
+alongside `prompt_tokens_details.cached_tokens`.
+
+The function-calling single-turn response
+(`packages/inference-testing/wire/opencode-zen/mimo-v2-omni/function-calling-single/response.json`)
+is the only capture in the corpus where
+`choices[0].message.content` is `null` rather than the empty string
+the other four vendors emit. Each `tool_calls[]` entry omits the
+`index` key (matching `glm-5.1`'s shape and differing from
+`kimi-k2.6`, `deepseek-v4-pro`, and `qwen3.6-plus`); the `id`
+follows a long opaque form (`call_125d361901104aea96ee1d44`).
+`reasoning_content` is emitted alongside the tool call. The
+multi-turn turn-2 request
+(`packages/inference-testing/wire/opencode-zen/mimo-v2-omni/function-calling-multi-turn/turn-2/request.json`)
+forwards the verbatim turn-1 assistant message, and turn 2 returns
+a natural-language answer with `finish_reason: "stop"`.
+
+The reasoning non-streaming response
+(`packages/inference-testing/wire/opencode-zen/mimo-v2-omni/reasoning-non-streaming/response.json`)
+matches the documented `reasoning_content` shape, with
+`tool_calls: null` slotted alongside it. The streaming counterpart
+(`packages/inference-testing/wire/opencode-zen/mimo-v2-omni/reasoning-streaming/response.sse`)
+emits the most verbose delta shape of any model in the corpus —
+every delta carries `content`, `role`, `tool_calls`, and
+`reasoning_content` keys, with `content: null`, `role: null`,
+`tool_calls: null` filling the slots during the reasoning phase.
+The terminal usage chunk records
+`completion_tokens_details.reasoning_tokens` and the stream ends
+with `data: [DONE]\n\ndata: {"choices":[],"cost":"0"}`.
+
+The vision input response
+(`packages/inference-testing/wire/opencode-zen/mimo-v2-omni/vision-input/response.json`)
+accepts the OpenAI multimodal request shape and returns a
+single-string `message.content` plus `reasoning_content`. Image
+cost is reported in `usage.prompt_tokens_details.image_tokens` and
+`usage.prompt_tokens_details.cached_tokens` indicates a prefix
+cache hit.
+
+### Discrepancies
+
+- `choices[0].message.content: null` (rather than the empty string
+  `""`) on the function-calling single-turn capture is unique to
+  `mimo-v2-omni` in this corpus. The OpenAI reference does not
+  pick between these forms; consumers that test `content === ""`
+  to detect a tool-only turn will miss this case.
+- Reasoning-streaming deltas always include all four message keys
+  (`content`, `role`, `tool_calls`, `reasoning_content`), each
+  filled with `null` during phases where the field is not the
+  delta's payload. This is the most explicit `null`-as-absent
+  shape in the corpus.
+- `tool_calls[]` entries omit the `index` key (matching `glm-5.1`).
+- The post-`[DONE]` `data: {"choices":[],"cost":"0"}` trailer is
+  present on every streaming capture.
+
+## Cross-cutting observations
+
+These items are not specific to any one model.
+
+**The post-`[DONE]` cost trailer is universal.** Every captured
+streaming response in this corpus — text-streaming and
+reasoning-streaming, across all five models — ends with a literal
+`data: [DONE]\n\ndata: {"choices":[],"cost":"0"}\n\n` sequence. The
+OpenAI Chat Completions SSE specification documents `[DONE]` as the
+terminator; the relay emits one further `data:` event after it.
+Consumers that stop reading at `[DONE]` will miss the trailer.
+Consumers that continue reading past `[DONE]` must tolerate a
+chunk with empty `choices` and a stringified `cost`. This corrects
+the upstream note from
+`dispatch/intr-78-phase-2/2a-opencode_function_calling/output.yaml`
+which had attributed the trailer only to `mimo-v2-omni` and
+`qwen3.6-plus`; the reasoning-streaming captures recorded in
+`dispatch/intr-78-phase-2/3a-opencode_reasoning/output.yaml` showed
+all five models emit it.
+
+**Reasoning surfaces are not uniform across the corpus, but they
+are uniform within each backend route.** Four of the five models
+expose reasoning at `choices[0].message.reasoning_content` (and the
+matching `delta.reasoning_content` in SSE) on every capture. The
+fifth, `kimi-k2.6`, splits depending on which upstream the relay
+routes to: the Moonshot AI path used for text and vision emits
+`message.reasoning` (no `_content` suffix) plus a parallel
+`reasoning_details` array, while the Fireworks path used for
+function calling and reasoning emits `message.reasoning_content`
+like every other model. A normaliser that reads only one of these
+names will lose reasoning text on `kimi-k2.6` for the affected
+capabilities.
+
+**The relay routes the nominal model id to multiple upstream
+backends, and the response shape reflects the upstream choice.**
+The `model` field inside the response body is the load-bearing
+signal of which upstream served the request:
+`moonshotai/kimi-k2.6-20260420` versus
+`accounts/fireworks/models/kimi-k2p6` for Kimi;
+`frank/GLM-5.1` versus `accounts/fireworks/models/glm-5p1` for
+GLM. The request body uses the short id (`kimi-k2.6`, `glm-5.1`);
+the response body reveals the actual fulfilment path. Downstream
+consumers tracking which upstream provider served a request must
+read this field rather than infer it from the request.
+
+**Message envelopes are not uniform across vendors even for plain
+text turns.** `glm-5.1` and `mimo-v2-omni` carry `tool_calls`
+(as `[]` or `null`) in the non-tool-calling text response;
+`kimi-k2.6` on the Moonshot path carries `refusal: null` and
+`reasoning_details`; `glm-5.1` carries `name: null` on every
+assistant turn. The OpenAI Chat Completions reference does not
+require these slots to be present, but several vendors emit them
+unconditionally. Multi-turn callers that echo the assistant turn
+back must preserve these vendor-specific slots verbatim or risk a
+400 (in DeepSeek's case) or a silently degraded round-trip.
+
+**Tool-call shapes vary across vendors in three orthogonal ways.**
+The `tool_calls[].index` integer is present on `kimi-k2.6`
+(Fireworks path), `deepseek-v4-pro`, and `qwen3.6-plus`, and
+absent on `glm-5.1` and `mimo-v2-omni`. The `tool_calls[].id` form
+varies between long opaque `call_<hex>` (`deepseek-v4-pro`,
+`qwen3.6-plus`, `mimo-v2-omni`), short opaque `call_<4-hex>`
+(`glm-5.1`), and function-name-keyed (`functions.<name>:<index>`
+on `kimi-k2.6`). The `choices[0].message.content` value alongside a
+tool call is the empty string on four vendors and `null` on
+`mimo-v2-omni`. A cross-vendor consumer must tolerate all three
+axes of variation.
+
+**Multi-turn function calling requires verbatim assistant-message
+forwarding.** DeepSeek's documented reasoning-content round-trip
+contract makes verbatim forwarding mandatory for that vendor.
+The other four vendors accept either verbatim or reduced
+`{role, content, tool_calls}` shapes, but verbatim is the
+lowest-common-denominator that works everywhere. The
+multi-turn capability module forwards the entire turn-1 assistant
+body into turn 2 for every vendor for this reason; the captured
+turn-2 requests preserve the vendor's idiosyncratic message slots
+(GLM's `name: null`, Kimi's `tool_calls[].name: null`, every
+vendor's `reasoning_content`) on the way back to the relay.
+
+**`finish_reason` is OpenAI-standard across the corpus.** Every
+captured non-streaming response uses `"stop"` for a normal turn and
+`"tool_calls"` for a tool-call turn. `kimi-k2.6` on the Moonshot
+path additionally carries a `native_finish_reason` mirroring
+`finish_reason` (per-choice). No `length` or `content_filter`
+captures exist in this corpus.
+
+**Vision input accepts the OpenAI multimodal request shape on every
+vision-capable model, and the response is flattened to plain text.**
+`kimi-k2.6`, `qwen3.6-plus`, and `mimo-v2-omni` all accept a
+`messages[].content` array containing a `{type: "image_url",
+image_url: {url}}` part where the URL is a `data:image/jpeg;base64,...`
+inline payload. None of the three requires a different field name,
+a bare-string `image_url`, or a multipart upload. The response
+`choices[0].message.content` is a single string in every vision
+capture; the relay flattens any multimodal response back to plain
+text on the way out, and consumers will not see content-parts
+arrays in the response. Image cost is reported in
+`usage.prompt_tokens_details.image_tokens` (or vendor-specific
+sibling fields). `glm-5.1` and `deepseek-v4-pro` are not
+vision-capable on this relay; the registry guard in
+`bin/opencode-discover/models.ts` prevents the capability module
+from attempting a capture against them.
+
+**Authentication is `Authorization: Bearer <key>`.** Every
+captured request carries this header; in the fixtures the value is
+replaced with the literal string `<redacted>` and the redaction set
+covers only the `authorization` header (case-insensitive). The
+relay does not accept the API key in the URL or in any other
+header.
+
+**Response headers are uniformly thin on this relay.** All
+non-streaming responses carry only `cf-ray`, `connection`,
+`content-encoding`, `content-type`, `date`, `server`, and
+`transfer-encoding`. Streaming responses substitute `content-type:
+text/event-stream` (with minor charset / spacing variation between
+vendors: `text/event-stream; charset=utf-8` on Kimi, GLM, and
+DeepSeek; `text/event-stream;charset=utf-8` on Qwen; bare
+`text/event-stream` on MiMo). There are no relay-specific custom
+headers analogous to Gemini's `x-gemini-service-tier`. The
+underlying upstream-provider hints are inside the response body
+(`model`, `provider`, `system_fingerprint`), not on the headers.
+
+**Cost reporting is non-uniform.** Every model emits a top-level
+`cost: "0"` (a stringified zero) on every captured response.
+Beyond that, `kimi-k2.6` (Moonshot path) is the only model that
+carries `usage.cost`, `usage.is_byok`, and a `usage.cost_details`
+block reporting upstream inference cost components in dollars.
+`glm-5.1` emits `usage.estimated_cost`. The other three models
+omit cost from the usage block entirely. Consumers building
+cost-attribution UI must accommodate at least these three shapes
+plus the post-`[DONE]` trailer.
