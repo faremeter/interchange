@@ -190,7 +190,7 @@ sets `thinkingConfig.thinkingBudget: 1024` and
 returns two parts in `candidates[0].content.parts`: a `text` part
 with `thought: true` (the visible reasoning), followed by a
 `functionCall` part carrying a `thoughtSignature` field. The
-signature is a ~290-character base64-looking blob
+signature is a 408-character base64-looking blob
 (`Cq4CAQw51sfdlVRevc++U+r6uQYT2YPGkyMiQ8NVA8OHqgTQIykg7eHC...`).
 `usageMetadata.thoughtsTokenCount: 63` is reported.
 
@@ -213,7 +213,7 @@ is the final text answer.
   `{name, args}` only) will silently strip the signature and lose
   the model's internal state. The captured fixtures pin the exact
   bytes so simulator-backed tests can assert the round-trip.
-- The signature is ~290 characters of opaque base64. The docs make
+- The signature is 408 characters of opaque base64. The docs make
   no commitment to size, but downstream consumers should not assume
   it stays short — future model versions may emit larger blobs.
 - `usageMetadata.thoughtsTokenCount` is reported even when the
@@ -609,10 +609,10 @@ Modality labels seen in details arrays: `TEXT`, `IMAGE`, `AUDIO`,
 `VIDEO`, `DOCUMENT`. Consumers building cost-attribution UI must
 account for all of these.
 
-**`thoughtsTokenCount` can appear without an opt-in.** Three
+**`thoughtsTokenCount` can appear without an opt-in.** Seven
 captures with no `thinkingConfig` (`text-non-streaming`,
-`image-input`, `audio-input`, `video-input`, `pdf-input`, plus
-`code-execution` and `google-search-grounding`) still emitted
+`image-input`, `audio-input`, `video-input`, `pdf-input`,
+`code-execution`, and `google-search-grounding`) still emitted
 non-zero `thoughtsTokenCount`. The model decides to spend thinking
 tokens regardless of the caller's opt-in. The opt-in
 (`includeThoughts`) appears to control whether the thoughts are
