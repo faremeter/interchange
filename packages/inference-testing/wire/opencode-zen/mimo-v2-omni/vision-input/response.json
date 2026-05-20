@@ -1,0 +1,31 @@
+{
+  "id": "dedc3bacc98d4fcab5f02993b0192c3f",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "This image displays two global maps of a celestial body, likely a moon such as Enceladus, showing its surface albedo (brightness) on the left and a \"Water Signature\" highlighting a plume or water concentration in blue near the south pole on the right.",
+        "role": "assistant",
+        "tool_calls": null,
+        "reasoning_content": "The user wants a one-sentence description of the provided image.\nThe image shows two globes side-by-side labeled \"Albedo\" and \"Water Signature\".\nThe Albedo globe shows grayscale surface textures.\nThe Water Signature globe is mostly dark with a blue spot near the north pole.\nI will combine these observations into a single descriptive sentence."
+      }
+    }
+  ],
+  "created": 1779306722,
+  "model": "mimo-v2-omni",
+  "object": "chat.completion",
+  "usage": {
+    "completion_tokens": 126,
+    "prompt_tokens": 435,
+    "total_tokens": 561,
+    "completion_tokens_details": {
+      "reasoning_tokens": 68
+    },
+    "prompt_tokens_details": {
+      "cached_tokens": 192,
+      "image_tokens": 176
+    }
+  },
+  "cost": "0"
+}

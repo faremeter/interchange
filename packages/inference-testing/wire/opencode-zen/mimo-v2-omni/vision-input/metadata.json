@@ -1,0 +1,7 @@
+{
+  "capability": "vision-input",
+  "model": "mimo-v2-omni",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:52:03.785Z",
+  "scriptVersion": "1"
+}

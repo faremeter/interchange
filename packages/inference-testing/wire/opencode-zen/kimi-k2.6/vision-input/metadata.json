@@ -1,0 +1,7 @@
+{
+  "capability": "vision-input",
+  "model": "kimi-k2.6",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:51:43.740Z",
+  "scriptVersion": "1"
+}

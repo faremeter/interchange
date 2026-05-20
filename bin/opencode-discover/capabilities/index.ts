@@ -4,6 +4,7 @@ import { capability as reasoningNonStreaming } from "./reasoning-non-streaming.t
 import { capability as reasoningStreaming } from "./reasoning-streaming.ts";
 import { capability as textNonStreaming } from "./text-non-streaming.ts";
 import { capability as textStreaming } from "./text-streaming.ts";
+import { capability as visionInput } from "./vision-input.ts";
 
 export type CapabilityBuildArgs = {
   apiKey: string;
@@ -25,4 +26,5 @@ export const capabilities: Record<string, Capability> = {
   [functionCallingMultiTurn.name]: functionCallingMultiTurn,
   [reasoningNonStreaming.name]: reasoningNonStreaming,
   [reasoningStreaming.name]: reasoningStreaming,
+  [visionInput.name]: visionInput,
 };

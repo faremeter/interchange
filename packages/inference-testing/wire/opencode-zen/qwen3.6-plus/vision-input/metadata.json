@@ -1,0 +1,7 @@
+{
+  "capability": "vision-input",
+  "model": "qwen3.6-plus",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:51:58.044Z",
+  "scriptVersion": "1"
+}
