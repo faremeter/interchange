@@ -68,7 +68,7 @@ export default defineConfig(
             "tests/agent-rich-tool/*.ts",
             "tests/agent-structured-payload/*.ts",
           ],
-          maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 45,
+          maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 60,
         },
         tsconfigRootDir: import.meta.dirname,
       },
