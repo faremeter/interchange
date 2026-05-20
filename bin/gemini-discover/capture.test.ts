@@ -11,6 +11,8 @@ import {
   runStreamingCapture,
   teeStreamToBytes,
   writeFixture,
+  writeMultiStepMetadata,
+  writeStepFixture,
 } from "./capture.ts";
 
 describe("redactRequestHeaders", () => {
@@ -222,6 +224,179 @@ describe("writeFixture", () => {
   test("FIXTURE_ROOT export is stable", () => {
     expect(typeof originalFixtureRoot).toBe("string");
     expect(originalFixtureRoot.length).toBeGreaterThan(0);
+  });
+});
+
+describe("writeStepFixture", () => {
+  let workdir: string;
+
+  beforeEach(async () => {
+    workdir = await mkdtemp(join(tmpdir(), "gemini-step-fixture-test-"));
+  });
+
+  test("writes per-step files into a turn-N subdirectory and omits per-step metadata", async () => {
+    const capDir = join(workdir, "multi-turn-cap");
+    const stepDir = await writeStepFixture({
+      capability: "multi-turn-cap",
+      stepName: "turn-1",
+      requestBody: { contents: [{ role: "user", parts: [{ text: "hi" }] }] },
+      requestHeaders: {
+        "content-type": "application/json",
+        "x-goog-api-key": "AIzaSyTEST",
+      },
+      responseHeaders: { "content-type": "application/json" },
+      responseJson: { candidates: [] },
+      destinationOverride: capDir,
+    });
+
+    expect(stepDir.endsWith("/multi-turn-cap/turn-1")).toBe(true);
+
+    const files = (await readdir(stepDir)).sort();
+    expect(files).toEqual([
+      "request-headers.json",
+      "request.json",
+      "response-headers.json",
+      "response.json",
+    ]);
+
+    const reqHeaders = JSON.parse(
+      await readFile(join(stepDir, "request-headers.json"), "utf8"),
+    );
+    expect(reqHeaders["x-goog-api-key"]).toBe("<redacted>");
+    expect(reqHeaders["content-type"]).toBe("application/json");
+
+    await rm(workdir, { recursive: true, force: true });
+  });
+
+  test("supports arbitrary, non-turn step names like 'upload' and 'generate'", async () => {
+    const capDir = join(workdir, "two-phase-cap");
+    const uploadDir = await writeStepFixture({
+      capability: "two-phase-cap",
+      stepName: "upload",
+      requestBody: { file: "abc" },
+      requestHeaders: { "x-goog-api-key": "AIzaSyTEST" },
+      responseHeaders: { "content-type": "application/json" },
+      responseJson: { fileId: "files/123" },
+      destinationOverride: capDir,
+    });
+    const generateDir = await writeStepFixture({
+      capability: "two-phase-cap",
+      stepName: "generate",
+      requestBody: { contents: [{ role: "user", parts: [] }] },
+      requestHeaders: { "x-goog-api-key": "AIzaSyTEST" },
+      responseHeaders: { "content-type": "application/json" },
+      responseJson: { candidates: [] },
+      destinationOverride: capDir,
+    });
+
+    expect(uploadDir.endsWith("/two-phase-cap/upload")).toBe(true);
+    expect(generateDir.endsWith("/two-phase-cap/generate")).toBe(true);
+
+    const top = (await readdir(capDir)).sort();
+    expect(top).toEqual(["generate", "upload"]);
+
+    const uploadFiles = (await readdir(uploadDir)).sort();
+    expect(uploadFiles).toEqual([
+      "request-headers.json",
+      "request.json",
+      "response-headers.json",
+      "response.json",
+    ]);
+
+    await rm(workdir, { recursive: true, force: true });
+  });
+
+  test("rejects empty step names", async () => {
+    await expect(
+      writeStepFixture({
+        capability: "cap",
+        stepName: "",
+        requestBody: {},
+        requestHeaders: {},
+        responseHeaders: {},
+        responseJson: {},
+        destinationOverride: workdir,
+      }),
+    ).rejects.toThrow(/non-empty stepName/);
+  });
+
+  test("rejects step names containing path separators", async () => {
+    await expect(
+      writeStepFixture({
+        capability: "cap",
+        stepName: "turn-1/sneaky",
+        requestBody: {},
+        requestHeaders: {},
+        responseHeaders: {},
+        responseJson: {},
+        destinationOverride: workdir,
+      }),
+    ).rejects.toThrow(/path separators/);
+
+    await rm(workdir, { recursive: true, force: true });
+  });
+});
+
+describe("writeMultiStepMetadata", () => {
+  let workdir: string;
+
+  beforeEach(async () => {
+    workdir = await mkdtemp(join(tmpdir(), "gemini-multi-meta-test-"));
+  });
+
+  test("writes top-level metadata.json including sequence", async () => {
+    const capDir = join(workdir, "multi-cap");
+    const path = await writeMultiStepMetadata({
+      capability: "multi-cap",
+      model: "gemini-2.5-flash",
+      endpoint: "generateContent",
+      scriptVersion: "1",
+      sequence: ["turn-1", "turn-2"],
+      now: new Date("2026-05-20T00:00:00.000Z"),
+      destinationOverride: capDir,
+    });
+    expect(path.endsWith("/multi-cap/metadata.json")).toBe(true);
+
+    const meta = JSON.parse(await readFile(path, "utf8"));
+    expect(meta.capability).toBe("multi-cap");
+    expect(meta.model).toBe("gemini-2.5-flash");
+    expect(meta.endpoint).toBe("generateContent");
+    expect(meta.scriptVersion).toBe("1");
+    expect(meta.capturedAt).toBe("2026-05-20T00:00:00.000Z");
+    expect(meta.sequence).toEqual(["turn-1", "turn-2"]);
+
+    await rm(workdir, { recursive: true, force: true });
+  });
+
+  test("accepts arbitrary step names in the sequence", async () => {
+    const capDir = join(workdir, "two-phase");
+    await writeMultiStepMetadata({
+      capability: "two-phase",
+      model: "gemini-2.5-flash",
+      endpoint: "generateContent",
+      scriptVersion: "1",
+      sequence: ["upload", "generate"],
+      destinationOverride: capDir,
+    });
+    const meta = JSON.parse(
+      await readFile(join(capDir, "metadata.json"), "utf8"),
+    );
+    expect(meta.sequence).toEqual(["upload", "generate"]);
+
+    await rm(workdir, { recursive: true, force: true });
+  });
+
+  test("rejects empty sequence", async () => {
+    await expect(
+      writeMultiStepMetadata({
+        capability: "cap",
+        model: "m",
+        endpoint: "e",
+        scriptVersion: "1",
+        sequence: [],
+        destinationOverride: workdir,
+      }),
+    ).rejects.toThrow(/non-empty sequence/);
   });
 });
 

@@ -54,6 +54,10 @@ export type Metadata = {
   scriptVersion: string;
 };
 
+export type MultiStepMetadata = Metadata & {
+  sequence: string[];
+};
+
 export function buildMetadata(opts: {
   capability: string;
   model: string;
@@ -69,6 +73,57 @@ export function buildMetadata(opts: {
     capturedAt: now.toISOString(),
     scriptVersion: opts.scriptVersion,
   };
+}
+
+type WriteRequestResponseArgs = {
+  dir: string;
+  capability: string;
+  requestBody: unknown;
+  requestHeaders: HeadersMap;
+  responseHeaders: HeadersMap;
+  responseBytes?: Uint8Array;
+  responseJson?: unknown;
+};
+
+async function writeRequestResponseFiles(
+  args: WriteRequestResponseArgs,
+): Promise<void> {
+  if (args.responseBytes === undefined && args.responseJson === undefined) {
+    throw new Error(
+      `fixture writer for capability ${args.capability} requires either responseBytes or responseJson`,
+    );
+  }
+  if (args.responseBytes !== undefined && args.responseJson !== undefined) {
+    throw new Error(
+      `fixture writer for capability ${args.capability} received both responseBytes and responseJson`,
+    );
+  }
+
+  await mkdir(args.dir, { recursive: true });
+
+  const requestHeadersRedacted = redactRequestHeaders(args.requestHeaders);
+
+  await writeFile(
+    join(args.dir, "request.json"),
+    JSON.stringify(args.requestBody, null, 2) + "\n",
+  );
+  await writeFile(
+    join(args.dir, "request-headers.json"),
+    JSON.stringify(requestHeadersRedacted, null, 2) + "\n",
+  );
+  await writeFile(
+    join(args.dir, "response-headers.json"),
+    JSON.stringify(args.responseHeaders, null, 2) + "\n",
+  );
+
+  if (args.responseBytes !== undefined) {
+    await writeFile(join(args.dir, "response.sse"), args.responseBytes);
+  } else {
+    await writeFile(
+      join(args.dir, "response.json"),
+      JSON.stringify(args.responseJson, null, 2) + "\n",
+    );
+  }
 }
 
 export type WriteFixtureArgs = {
@@ -92,43 +147,21 @@ export type WriteFixtureArgs = {
 };
 
 export async function writeFixture(args: WriteFixtureArgs): Promise<string> {
-  if (args.responseBytes === undefined && args.responseJson === undefined) {
-    throw new Error(
-      `writeFixture for capability ${args.capability} requires either responseBytes or responseJson`,
-    );
-  }
-  if (args.responseBytes !== undefined && args.responseJson !== undefined) {
-    throw new Error(
-      `writeFixture for capability ${args.capability} received both responseBytes and responseJson`,
-    );
-  }
-
   const dir = args.destinationOverride ?? fixtureDirectoryFor(args.capability);
-  await mkdir(dir, { recursive: true });
 
-  const requestHeadersRedacted = redactRequestHeaders(args.requestHeaders);
-
-  await writeFile(
-    join(dir, "request.json"),
-    JSON.stringify(args.requestBody, null, 2) + "\n",
-  );
-  await writeFile(
-    join(dir, "request-headers.json"),
-    JSON.stringify(requestHeadersRedacted, null, 2) + "\n",
-  );
-  await writeFile(
-    join(dir, "response-headers.json"),
-    JSON.stringify(args.responseHeaders, null, 2) + "\n",
-  );
-
-  if (args.responseBytes !== undefined) {
-    await writeFile(join(dir, "response.sse"), args.responseBytes);
-  } else {
-    await writeFile(
-      join(dir, "response.json"),
-      JSON.stringify(args.responseJson, null, 2) + "\n",
-    );
-  }
+  await writeRequestResponseFiles({
+    dir,
+    capability: args.capability,
+    requestBody: args.requestBody,
+    requestHeaders: args.requestHeaders,
+    responseHeaders: args.responseHeaders,
+    ...(args.responseBytes !== undefined
+      ? { responseBytes: args.responseBytes }
+      : {}),
+    ...(args.responseJson !== undefined
+      ? { responseJson: args.responseJson }
+      : {}),
+  });
 
   const metadata = buildMetadata({
     capability: args.capability,
@@ -143,6 +176,95 @@ export async function writeFixture(args: WriteFixtureArgs): Promise<string> {
   );
 
   return dir;
+}
+
+export type WriteStepFixtureArgs = {
+  capability: string;
+  stepName: string;
+  requestBody: unknown;
+  requestHeaders: HeadersMap;
+  responseHeaders: HeadersMap;
+  responseBytes?: Uint8Array;
+  responseJson?: unknown;
+  /**
+   * Override the capability directory root. Tests use this to write into
+   * a temporary directory instead of the canonical fixture tree.
+   */
+  destinationOverride?: string;
+};
+
+export async function writeStepFixture(
+  args: WriteStepFixtureArgs,
+): Promise<string> {
+  if (args.stepName.length === 0) {
+    throw new Error(
+      `writeStepFixture for capability ${args.capability} requires a non-empty stepName`,
+    );
+  }
+  if (args.stepName.includes("/") || args.stepName.includes("\\")) {
+    throw new Error(
+      `writeStepFixture stepName must not contain path separators: ${args.stepName}`,
+    );
+  }
+
+  const capDir =
+    args.destinationOverride ?? fixtureDirectoryFor(args.capability);
+  const stepDir = join(capDir, args.stepName);
+
+  await writeRequestResponseFiles({
+    dir: stepDir,
+    capability: args.capability,
+    requestBody: args.requestBody,
+    requestHeaders: args.requestHeaders,
+    responseHeaders: args.responseHeaders,
+    ...(args.responseBytes !== undefined
+      ? { responseBytes: args.responseBytes }
+      : {}),
+    ...(args.responseJson !== undefined
+      ? { responseJson: args.responseJson }
+      : {}),
+  });
+
+  return stepDir;
+}
+
+export type WriteMultiStepMetadataArgs = {
+  capability: string;
+  model: string;
+  endpoint: string;
+  scriptVersion: string;
+  sequence: string[];
+  now?: Date;
+  destinationOverride?: string;
+};
+
+export async function writeMultiStepMetadata(
+  args: WriteMultiStepMetadataArgs,
+): Promise<string> {
+  if (args.sequence.length === 0) {
+    throw new Error(
+      `writeMultiStepMetadata for capability ${args.capability} requires a non-empty sequence`,
+    );
+  }
+
+  const dir = args.destinationOverride ?? fixtureDirectoryFor(args.capability);
+  await mkdir(dir, { recursive: true });
+
+  const base = buildMetadata({
+    capability: args.capability,
+    model: args.model,
+    endpoint: args.endpoint,
+    scriptVersion: args.scriptVersion,
+    ...(args.now ? { now: args.now } : {}),
+  });
+  const metadata: MultiStepMetadata = {
+    ...base,
+    sequence: args.sequence,
+  };
+
+  const path = join(dir, "metadata.json");
+  await writeFile(path, JSON.stringify(metadata, null, 2) + "\n");
+  return path;
 }
 
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -208,6 +330,64 @@ export async function runNonStreamingCapture(
   });
 
   return { fixtureDir, responseJson };
+}
+
+export type NonStreamingStepCaptureArgs = {
+  capability: string;
+  stepName: string;
+  model: string;
+  endpoint: string;
+  body: unknown;
+  apiKey: string;
+  destinationOverride?: string;
+};
+
+export async function runNonStreamingStepCapture(
+  args: NonStreamingStepCaptureArgs,
+): Promise<{ stepDir: string; responseJson: unknown }> {
+  const url = `${GEMINI_BASE}/${args.model}:${args.endpoint}`;
+  const requestHeaders = buildHeaders(args.apiKey);
+
+  logger.info`POST ${url} (step=${args.stepName})`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: requestHeaders,
+    body: JSON.stringify(args.body),
+  });
+
+  const responseHeaders = headersToMap(response.headers);
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(
+      `Gemini non-streaming request failed (capability=${args.capability}, step=${args.stepName}): ${String(response.status)} ${response.statusText}: ${text}`,
+    );
+  }
+
+  let responseJson: unknown;
+  try {
+    responseJson = JSON.parse(text);
+  } catch (cause) {
+    throw new Error(
+      `Failed to parse non-streaming response as JSON for ${args.capability} step ${args.stepName}`,
+      { cause },
+    );
+  }
+
+  const stepDir = await writeStepFixture({
+    capability: args.capability,
+    stepName: args.stepName,
+    requestBody: args.body,
+    requestHeaders,
+    responseHeaders,
+    responseJson,
+    ...(args.destinationOverride
+      ? { destinationOverride: args.destinationOverride }
+      : {}),
+  });
+
+  return { stepDir, responseJson };
 }
 
 export type StreamingCaptureArgs = {

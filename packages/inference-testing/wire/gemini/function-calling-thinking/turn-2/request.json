@@ -1,0 +1,72 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Think carefully, then use the getCurrentWeather tool to look up the current weather in Boston, MA."
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "text": "**Weather Check for Boston**\n\nOkay, the user wants the weather for Boston, MA. That's straightforward. I've got the `getCurrentWeather` tool available; perfect for this kind of request. Now, let's see... the key parameter for this tool is \"location\", and the input should be \"Boston, MA\". So, my plan is to call `default_api.getCurrentWeather(location=\"Boston, MA\")`. That should get us the data we need.\n",
+          "thought": true
+        },
+        {
+          "functionCall": {
+            "name": "getCurrentWeather",
+            "args": {
+              "location": "Boston, MA"
+            }
+          },
+          "thoughtSignature": "Cq4CAQw51sfdlVRevc++U+r6uQYT2YPGkyMiQ8NVA8OHqgTQIykg7eHC2YSo7OqxmHISGZgiq6JHHiHJ11G7t0AppEY517xeTelcLXMSh6pGcv5JaHN677Ouu2YhTmyE8jDrI8hThqNl1hNI+8awV83xrnjPLi/2g0iPVZHyNkCNcGuiLmBWMn5reEwmaPRQ4Qpr24N4Qq5FDS3lzD/UbDtsBKKyTScvC+Kd+SM5ERRROTgHU1jfvbxO1J1II+zxs2iOyLmPP0u8LwmzGniBGgJSwce0livIz/5mrexM0DNOjOnd9YqrGtN/E7vOOAgFCLrlEJAYAiS+yjBWgn4NMkZyA8aAFOI0mEM0wa1Zf1DHfNQeSbQBwV6H6JJRhYoR+V41Qk73SjC7ZUJMElchgDI="
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "getCurrentWeather",
+            "response": {
+              "location": "Boston, MA",
+              "temperatureF": 62,
+              "conditions": "partly cloudy",
+              "windMph": 8
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "getCurrentWeather",
+          "description": "Get the current weather conditions for a given city. Use this whenever the user asks about weather.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "The city and optional state, e.g. 'Boston, MA'."
+              }
+            },
+            "required": ["location"]
+          }
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "thinkingConfig": {
+      "thinkingBudget": 1024,
+      "includeThoughts": true
+    }
+  }
+}

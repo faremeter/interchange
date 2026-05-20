@@ -1,0 +1,8 @@
+{
+  "capability": "function-calling-thinking",
+  "model": "gemini-2.5-flash",
+  "endpoint": "generateContent",
+  "capturedAt": "2026-05-20T16:24:44.088Z",
+  "scriptVersion": "1",
+  "sequence": ["turn-1", "turn-2"]
+}
