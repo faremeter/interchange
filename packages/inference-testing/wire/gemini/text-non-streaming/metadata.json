@@ -1,0 +1,7 @@
+{
+  "capability": "text-non-streaming",
+  "model": "gemini-2.5-flash",
+  "endpoint": "generateContent",
+  "capturedAt": "2026-05-20T16:05:59.604Z",
+  "scriptVersion": "1"
+}
