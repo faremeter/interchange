@@ -13,6 +13,7 @@ keypairs
 .eslintcache
 .DS_Store
 opencode-*.md
+briefs/
 dispatch/
 tmp/
 .claude
