@@ -1,0 +1,7 @@
+{
+  "capability": "reasoning-streaming",
+  "model": "kimi-k2.6",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:37:02.653Z",
+  "scriptVersion": "1"
+}

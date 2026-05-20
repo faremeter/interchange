@@ -1,0 +1,7 @@
+{
+  "capability": "reasoning-non-streaming",
+  "model": "mimo-v2-omni",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:42:12.833Z",
+  "scriptVersion": "1"
+}

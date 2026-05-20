@@ -1,0 +1,7 @@
+{
+  "capability": "reasoning-non-streaming",
+  "model": "deepseek-v4-pro",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:41:34.683Z",
+  "scriptVersion": "1"
+}

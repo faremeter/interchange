@@ -1,0 +1,7 @@
+{
+  "capability": "reasoning-non-streaming",
+  "model": "qwen3.6-plus",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:41:57.235Z",
+  "scriptVersion": "1"
+}

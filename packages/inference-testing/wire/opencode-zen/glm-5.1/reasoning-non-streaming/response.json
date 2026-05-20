@@ -1,0 +1,31 @@
+{
+  "id": "chatcmpl-RExzVy25jGyJ9ulh5Au8DiEP",
+  "object": "chat.completion",
+  "created": 1779305950,
+  "model": "frank/GLM-5.1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "There are **9** sheep left. \n\nThe phrase \"all but 9 die\" means that out of the original 17, every sheep died *except* for 9 of them. Therefore, the 9 that survived are the ones left.",
+        "reasoning_content": "1.  **Analyze the Input:** The user is asking a riddle: \"A farmer has 17 sheep. All but 9 die. How many are left?\"\n2.  **Identify the Key Phrase:** \"All but 9 die\".\n3.  **Deconstruct the Phrase:**\n    *   \"All\" refers to the total number of sheep (17).\n    *   \"but 9\" means \"except 9\".\n    *   \"die\" means they are dead.\n4.  **Interpret the Meaning:** Out of the 17 sheep, all of them died, *except* 9. This means 9 sheep did not die.\n5.  **Calculate the Remaining Sheep:** If 9 sheep did not die, then there are 9 sheep left alive.\n6.  **Address the Common Trap:** Often, people hear \"All die\" and might subtract 9 from 17, getting 8 dead sheep, or they might think all 17 died. The trick is in the phrasing \"All but 9\".\n7.  **Formulate the Answer:** State the answer clearly as 9, and briefly explain the reasoning based on the phrase \"all but 9\".",
+        "name": null,
+        "tool_calls": []
+      },
+      "finish_reason": "stop",
+      "logprobs": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 28,
+    "total_tokens": 332,
+    "completion_tokens": 304,
+    "estimated_cost": 0,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": null
+    }
+  },
+  "cost": "0"
+}

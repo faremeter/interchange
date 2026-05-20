@@ -1,0 +1,7 @@
+{
+  "capability": "reasoning-streaming",
+  "model": "glm-5.1",
+  "endpoint": "chat/completions",
+  "capturedAt": "2026-05-20T19:41:24.081Z",
+  "scriptVersion": "1"
+}
