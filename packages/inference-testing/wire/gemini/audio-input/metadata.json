@@ -1,0 +1,7 @@
+{
+  "capability": "audio-input",
+  "model": "gemini-2.5-flash",
+  "endpoint": "generateContent",
+  "capturedAt": "2026-05-20T16:37:06.803Z",
+  "scriptVersion": "1"
+}

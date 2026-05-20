@@ -1,0 +1,7 @@
+{
+  "capability": "video-input",
+  "model": "gemini-2.5-flash",
+  "endpoint": "generateContent",
+  "capturedAt": "2026-05-20T16:37:10.660Z",
+  "scriptVersion": "1"
+}

@@ -1,0 +1,7 @@
+{
+  "capability": "image-output",
+  "model": "gemini-2.5-flash-image",
+  "endpoint": "generateContent",
+  "capturedAt": "2026-05-20T16:37:05.026Z",
+  "scriptVersion": "1"
+}
