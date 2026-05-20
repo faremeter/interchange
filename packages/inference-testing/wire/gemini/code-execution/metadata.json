@@ -1,0 +1,7 @@
+{
+  "capability": "code-execution",
+  "model": "gemini-2.5-flash",
+  "endpoint": "generateContent",
+  "capturedAt": "2026-05-20T16:46:00.294Z",
+  "scriptVersion": "1"
+}

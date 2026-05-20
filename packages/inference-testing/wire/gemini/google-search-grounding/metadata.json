@@ -1,0 +1,7 @@
+{
+  "capability": "google-search-grounding",
+  "model": "gemini-2.5-flash",
+  "endpoint": "generateContent",
+  "capturedAt": "2026-05-20T16:46:04.379Z",
+  "scriptVersion": "1"
+}

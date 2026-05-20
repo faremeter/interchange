@@ -1,0 +1,13 @@
+{
+  "capability": "files-api",
+  "model": "gemini-2.5-flash",
+  "endpoint": "generateContent",
+  "capturedAt": "2026-05-20T16:46:13.335Z",
+  "scriptVersion": "1",
+  "sequence": ["upload", "generate"],
+  "uri-contract": "documentary",
+  "uri-ttl-hours": 48,
+  "uploaded-file-uri": "https://generativelanguage.googleapis.com/v1beta/files/bazi800pl384",
+  "uploaded-file-expires-at": "2026-05-22T16:46:04.895080935Z",
+  "asset-path": "bin/gemini-discover/assets/sample.pdf"
+}

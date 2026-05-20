@@ -1,6 +1,9 @@
 import { capability as audioInput } from "./audio-input.ts";
+import { capability as codeExecution } from "./code-execution.ts";
+import { capability as filesApi } from "./files-api.ts";
 import { capability as functionCallingMultiTurn } from "./function-calling-multi-turn.ts";
 import { capability as functionCallingThinking } from "./function-calling-thinking.ts";
+import { capability as googleSearchGrounding } from "./google-search-grounding.ts";
 import { capability as imageInput } from "./image-input.ts";
 import { capability as imageOutput } from "./image-output.ts";
 import { capability as pdfInput } from "./pdf-input.ts";
@@ -30,4 +33,7 @@ export const capabilities: Record<string, Capability> = {
   [audioInput.name]: audioInput,
   [videoInput.name]: videoInput,
   [pdfInput.name]: pdfInput,
+  [codeExecution.name]: codeExecution,
+  [googleSearchGrounding.name]: googleSearchGrounding,
+  [filesApi.name]: filesApi,
 };
