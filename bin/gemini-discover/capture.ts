@@ -463,6 +463,77 @@ export async function runStreamingCapture(
   return { fixtureDir, bytes };
 }
 
+export type StreamingStepCaptureArgs = {
+  capability: string;
+  stepName: string;
+  model: string;
+  endpoint: string;
+  body: unknown;
+  apiKey: string;
+  source?: {
+    stream: ReadableStream<Uint8Array>;
+    responseHeaders: HeadersMap;
+  };
+  destinationOverride?: string;
+};
+
+export async function runStreamingStepCapture(
+  args: StreamingStepCaptureArgs,
+): Promise<{ stepDir: string; bytes: Uint8Array }> {
+  const requestHeaders = buildHeaders(args.apiKey);
+
+  let stream: ReadableStream<Uint8Array>;
+  let responseHeaders: HeadersMap;
+
+  if (args.source) {
+    stream = args.source.stream;
+    responseHeaders = args.source.responseHeaders;
+  } else {
+    const url = `${GEMINI_BASE}/${args.model}:${args.endpoint}?alt=sse`;
+    logger.info`POST (stream) ${url} (step=${args.stepName})`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify(args.body),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(
+        `Gemini streaming request failed (capability=${args.capability}, step=${args.stepName}): ${String(response.status)} ${response.statusText}: ${text}`,
+      );
+    }
+    if (!response.body) {
+      throw new Error(
+        `Gemini streaming response for ${args.capability} step ${args.stepName} had no body`,
+      );
+    }
+    stream = response.body;
+    responseHeaders = headersToMap(response.headers);
+  }
+
+  const bytes = await teeStreamToBytes(stream, (chunk) => {
+    const text = new TextDecoder("utf-8", { fatal: false }).decode(chunk);
+    for (const line of text.split(/\r?\n/)) {
+      if (line.length === 0) continue;
+      logger.debug`sse< ${line}`;
+    }
+  });
+
+  const stepDir = await writeStepFixture({
+    capability: args.capability,
+    stepName: args.stepName,
+    requestBody: args.body,
+    requestHeaders,
+    responseHeaders,
+    responseBytes: bytes,
+    ...(args.destinationOverride
+      ? { destinationOverride: args.destinationOverride }
+      : {}),
+  });
+
+  return { stepDir, bytes };
+}
+
 export async function teeStreamToBytes(
   source: ReadableStream<Uint8Array>,
   onChunk?: (chunk: Uint8Array) => void,

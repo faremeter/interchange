@@ -1,0 +1,7 @@
+{
+  "capability": "code-execution-streaming",
+  "model": "gemini-2.5-flash",
+  "endpoint": "streamGenerateContent",
+  "capturedAt": "2026-05-20T17:49:28.266Z",
+  "scriptVersion": "1"
+}

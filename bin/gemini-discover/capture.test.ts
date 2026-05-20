@@ -9,6 +9,7 @@ import {
   fixtureDirectoryFor,
   redactRequestHeaders,
   runStreamingCapture,
+  runStreamingStepCapture,
   teeStreamToBytes,
   writeFixture,
   writeMultiStepMetadata,
@@ -422,6 +423,81 @@ describe("runStreamingCapture (in-memory source)", () => {
     expect(result.bytes.byteLength).toBe(15);
     const onDisk = await readFile(join(capDir, "response.sse"));
     expect(Array.from(onDisk)).toEqual(Array.from(result.bytes));
+
+    await rm(workdir, { recursive: true, force: true });
+  });
+});
+
+describe("runStreamingStepCapture (in-memory source)", () => {
+  test("tees a constructed stream into a per-step response.sse and redacts headers", async () => {
+    const workdir = await mkdtemp(join(tmpdir(), "gemini-stream-step-test-"));
+    const chunks = [
+      new Uint8Array([0x64, 0x61, 0x74, 0x61, 0x3a, 0x20]),
+      new Uint8Array([0x7b, 0x22, 0x62, 0x22, 0x3a, 0x32, 0x7d, 0x0a, 0x0a]),
+    ];
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const c of chunks) controller.enqueue(c);
+        controller.close();
+      },
+    });
+
+    const capDir = join(workdir, "in-mem-step-stream");
+    const result = await runStreamingStepCapture({
+      capability: "test-step-streaming",
+      stepName: "turn-1",
+      model: "gemini-2.0-flash",
+      endpoint: "streamGenerateContent",
+      body: { contents: [] },
+      apiKey: "AIzaSyTEST",
+      source: {
+        stream,
+        responseHeaders: { "content-type": "text/event-stream" },
+      },
+      destinationOverride: capDir,
+    });
+
+    expect(result.stepDir.endsWith("/in-mem-step-stream/turn-1")).toBe(true);
+    expect(result.bytes.byteLength).toBe(15);
+
+    const files = (await readdir(result.stepDir)).sort();
+    expect(files).toEqual([
+      "request-headers.json",
+      "request.json",
+      "response-headers.json",
+      "response.sse",
+    ]);
+
+    const onDisk = await readFile(join(result.stepDir, "response.sse"));
+    expect(Array.from(onDisk)).toEqual(Array.from(result.bytes));
+
+    const reqHeaders = JSON.parse(
+      await readFile(join(result.stepDir, "request-headers.json"), "utf8"),
+    );
+    expect(reqHeaders["x-goog-api-key"]).toBe("<redacted>");
+
+    await rm(workdir, { recursive: true, force: true });
+  });
+
+  test("rejects empty step names", async () => {
+    const workdir = await mkdtemp(join(tmpdir(), "gemini-stream-step-test-"));
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.close();
+      },
+    });
+    await expect(
+      runStreamingStepCapture({
+        capability: "test-step-streaming",
+        stepName: "",
+        model: "m",
+        endpoint: "e",
+        body: {},
+        apiKey: "AIzaSyTEST",
+        source: { stream, responseHeaders: {} },
+        destinationOverride: workdir,
+      }),
+    ).rejects.toThrow(/non-empty stepName/);
 
     await rm(workdir, { recursive: true, force: true });
   });

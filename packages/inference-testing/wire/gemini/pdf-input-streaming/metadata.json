@@ -1,0 +1,7 @@
+{
+  "capability": "pdf-input-streaming",
+  "model": "gemini-2.5-flash",
+  "endpoint": "streamGenerateContent",
+  "capturedAt": "2026-05-20T17:49:26.543Z",
+  "scriptVersion": "1"
+}

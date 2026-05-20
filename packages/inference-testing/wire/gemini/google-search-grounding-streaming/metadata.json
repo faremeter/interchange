@@ -1,0 +1,7 @@
+{
+  "capability": "google-search-grounding-streaming",
+  "model": "gemini-2.5-flash",
+  "endpoint": "streamGenerateContent",
+  "capturedAt": "2026-05-20T17:49:31.820Z",
+  "scriptVersion": "1"
+}

@@ -1,0 +1,8 @@
+{
+  "capability": "function-calling-multi-turn-streaming",
+  "model": "gemini-2.5-flash",
+  "endpoint": "streamGenerateContent",
+  "capturedAt": "2026-05-20T17:49:33.149Z",
+  "scriptVersion": "1",
+  "sequence": ["turn-1", "turn-2"]
+}

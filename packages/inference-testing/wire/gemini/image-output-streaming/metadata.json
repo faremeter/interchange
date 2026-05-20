@@ -1,0 +1,7 @@
+{
+  "capability": "image-output-streaming",
+  "model": "gemini-2.5-flash-image",
+  "endpoint": "streamGenerateContent",
+  "capturedAt": "2026-05-20T17:49:03.534Z",
+  "scriptVersion": "1"
+}
