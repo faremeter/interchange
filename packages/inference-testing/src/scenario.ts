@@ -52,6 +52,11 @@ export type BodyAwareRequestPredicate = (
  *   name and structured arguments.
  *
  * Both shapes may be mixed within the same array.
+ *
+ * Auto-generated callIds use the prefix `call_auto_` followed by a
+ * monotonically-increasing per-harness counter. Tests that pin explicit
+ * callIds via the explicit shape should avoid the `call_auto_` prefix
+ * to keep their pinned ids distinguishable from auto-generated ones.
  */
 export type ReplyOnceToolCall =
   | {
@@ -272,9 +277,12 @@ export type Scenario = {
    * scenario (e.g., per-agent body assertions across a multi-agent dispatch
    * run) rather than only the most-recent one.
    *
-   * Each clone is independent: consuming one's body does not affect any
-   * other (the production reactor reads the body via the `Response`
-   * returned through the stream, not through these clones).
+   * Each call returns fresh clones, so consuming one returned Request's
+   * body does not affect any other returned Request — neither the
+   * siblings returned by the same call nor the Requests returned by
+   * later calls. The harness's internal capture list itself is never
+   * consumed: every `.json()` / `.text()` invocation runs against a
+   * one-shot clone minted at the time `matchedRequests()` was called.
    *
    * To read only the most-recent request, use `matchedRequests().at(-1)`.
    */
@@ -533,13 +541,20 @@ export function scanWaitingSet(
     if (m.bodyAware) {
       if (!includeBodyAware) return false;
       // Body-aware matchers only fire against fetches whose bodies have
-      // already been buffered. A body-aware scan that hasn't yet seen a
-      // fresh fetch (one that arrived after the last `bufferUnreadBodies`
-      // pass) simply treats it as a non-match for this pass; the harness
-      // will run another scan after buffering completes. This is more
-      // robust than throwing — concurrent body-aware scans against an
-      // active waiting set are a legitimate steady-state condition,
-      // not an invariant violation.
+      // already been buffered. A body-aware scan that meets an
+      // unbuffered fetch simply treats it as a non-match for this pass;
+      // the harness will run another scan after buffering completes.
+      //
+      // The unbuffered case is expected, not an invariant violation:
+      // two body-aware scans can be in flight at the same time, e.g.
+      // one queued from a matcher registration and one queued from a
+      // fetch arrival. The first scan snapshots `waiting` and starts
+      // its `clone().text()` reads; while it is awaiting, a new fetch
+      // arrives and pushes onto `waiting`. When the first scan resumes
+      // and calls `scanWaitingSet`, it sees the new fetch with
+      // `bodyText === undefined`. Returning false here lets the second
+      // scan (which buffers the new fetch as part of its own
+      // `bufferUnreadBodies` pass) route it on a later pass.
       if (wf.bodyText === undefined) return false;
       return m.predicate(wf.bodyText, wf.request);
     }

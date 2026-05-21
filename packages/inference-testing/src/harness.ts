@@ -244,10 +244,10 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     return handle.stream;
   };
 
-  // Every matched request, captured in match order as a fresh clone the
-  // test can consume freely. The clones share no state with the original
-  // (which the production reactor reads via the `Response` returned
-  // through the stream) and no state with each other.
+  // Capture list for `scenario.matchedRequests()`. Each entry is a
+  // clone taken at route time and held purely as a clone-source — the
+  // entry itself is never consumed, so `matchedRequests()` can re-clone
+  // it on every call without exhausting its body.
   // Type widened to satisfy the gap between Bun's global Request and
   // the undici Request the fetch stub builds; both have the methods
   // the public surface needs (clone, json, text, headers).
@@ -362,6 +362,16 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
   const inFlightBodyScans = new Set<Promise<void>>();
   const inFlightScanErrors: unknown[] = [];
 
+  // Best-effort buffering, NOT transactional. When one `clone().text()`
+  // call throws, `Promise.all` rejects and `bufferUnreadBodies` itself
+  // rejects — but the other in-flight reads' resolved writes to
+  // `wf.bodyText` still land before the outer scan promise's `.catch`
+  // pushes the error to `inFlightScanErrors`. The next `run()` /
+  // `advanceTo()` rethrows that error at the call site. Readers
+  // expecting all-or-nothing buffering semantics should know that this
+  // function leaves partially-buffered state behind on failure — fine
+  // for the one-shot harness contract (a new test creates a fresh
+  // harness), but worth flagging.
   const bufferUnreadBodies = async (): Promise<void> => {
     // Loop until no unbuffered waiting fetches remain. The loop is
     // necessary because new fetches can arrive (via `stubFetch`) while
@@ -382,19 +392,26 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
           // scan may have buffered this same fetch via a parallel
           // `clone().text()` already.
           if (wf.bodyText !== undefined) return;
+          let text: string;
           try {
-            wf.bodyText = await wf.request.clone().text();
-          } catch {
-            // A request with no readable body (e.g., a GET with no
-            // payload) cannot be matched by body-aware predicates;
-            // treat as empty so body-aware predicates can still
-            // evaluate without throwing. If the body genuinely
-            // matters and the read failed, the body-aware predicate
-            // returns false on the empty string and the fetch
-            // surfaces later as UnmatchedFetchError, which is the
-            // correct diagnostic.
-            wf.bodyText = "";
+            text = await wf.request.clone().text();
+          } catch (err) {
+            // The fetch may have been aborted or the harness disposed
+            // while the body read was in flight. In either case the
+            // entry is already settled and we skip silently — the
+            // matching path won't see this fetch again. Anything else
+            // is a genuine read failure (e.g., a Request whose body
+            // stream cannot be re-read) and must surface; the harness
+            // routes the throw through `inFlightScanErrors` so the
+            // next `run()` / `advanceTo()` re-throws it at the call
+            // site rather than letting it manifest as a confusing
+            // downstream `UnmatchedFetchError`.
+            if (wf.settled) return;
+            throw err;
           }
+          if (wf.settled) return;
+          if (wf.bodyText !== undefined) return;
+          wf.bodyText = text;
         }),
       );
     }
@@ -590,13 +607,16 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
   };
 
   const matchedRequests = (): Request[] =>
-    // The clones are produced by the (undici-typed) WaitingFetch.request,
-    // but the public Scenario type uses the platform's global Request.
-    // The shape is identical; the cast bridges the type-only gap. The
-    // returned array is a fresh copy so caller mutations cannot leak
-    // back into the harness's internal capture list.
+    // Re-clone every stored Request on each call so the returned objects
+    // are fully independent — both from one another AND across repeat
+    // calls. The stored route-time clone is never consumed (it's only
+    // used as a source for further `.clone()` calls), so subsequent
+    // body reads against the returned Requests succeed even if a prior
+    // call already drained one. The (undici-typed) WaitingFetch.request
+    // clone is structurally identical to the platform's global Request;
+    // the cast bridges the type-only gap.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- type-only bridge between undici Request and Bun's global Request
-    matchedRequestsList.slice() as Request[];
+    matchedRequestsList.map((r) => r.clone()) as Request[];
 
   let nextAutoCallId = 0;
   // The `call_auto_` prefix is reserved for ids the harness mints on
@@ -961,6 +981,11 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
 
   const takeBodyScanError = (): unknown => {
     if (inFlightScanErrors.length === 0) return undefined;
+    // Surface the first rejection; additional ones (rare — would require
+    // multiple body-aware scans rejecting in the same tick, e.g., two
+    // concurrent body reads both throwing) are dropped to keep the
+    // contract simple, mirroring `takeInFlightError`. A future slice
+    // can extend to AggregateError if real tests need it.
     const [first] = inFlightScanErrors.splice(0, inFlightScanErrors.length);
     return first;
   };
