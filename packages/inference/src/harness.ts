@@ -782,6 +782,26 @@ const ParsedToolArgs = type("Record<string, unknown>");
 const ErrorBody = type({ error: { message: "string" } });
 const DirectMessageBody = type({ message: "string" });
 
+/**
+ * Upper bound on the length of a plain-text error body that gets
+ * promoted to `InferenceError.message`. Bodies longer than this are
+ * truncated with a marker pointing operators at `error.raw`, which
+ * always retains the untruncated body. Structured JSON envelopes are
+ * not subject to this cap — their `message` fields are server-curated
+ * and concise in practice.
+ *
+ * 500 characters covers a multi-line stack trace or a paragraph of
+ * diagnostic text without blowing up the default director's
+ * user-facing reply (which concatenates the message into a chat-style
+ * string) or the timeline part stored by the hub event collector.
+ */
+const MAX_PLAIN_TEXT_MESSAGE_CHARS = 500;
+
+function truncatePlainTextMessage(text: string): string {
+  if (text.length <= MAX_PLAIN_TEXT_MESSAGE_CHARS) return text;
+  return `${text.slice(0, MAX_PLAIN_TEXT_MESSAGE_CHARS)}… (truncated; full body in error.raw)`;
+}
+
 function extractErrorMessage(body: unknown): string | null {
   // Anthropic/OpenAI: { error: { message: "..." } }
   const errorBody = ErrorBody(body);
@@ -793,6 +813,18 @@ function extractErrorMessage(body: unknown): string | null {
   const directBody = DirectMessageBody(body);
   if (!(directBody instanceof type.errors)) {
     return directBody.message;
+  }
+
+  // Plain-text error bodies (HTML error pages, raw exception strings,
+  // load-balancer diagnostics). The body reaches us via the
+  // text-then-parse path in the `!response.ok` branch: when
+  // JSON.parse failed, the raw string is stored as errorBody.
+  // Surfacing it here means the operator-visible message contains
+  // the server's actual diagnostic rather than just `statusText`.
+  // `error.raw` always holds the untruncated body for audit-time
+  // inspection.
+  if (typeof body === "string" && body.length > 0) {
+    return truncatePlainTextMessage(body);
   }
 
   return null;
