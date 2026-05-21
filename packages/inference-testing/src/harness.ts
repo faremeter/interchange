@@ -3,6 +3,7 @@ import {
   runInference,
   type Dependencies,
   type InferenceHarnessOptions,
+  type Scheduler,
 } from "@intx/inference";
 import type { InferenceEvent } from "@intx/types/runtime";
 
@@ -152,6 +153,20 @@ export type SetupHarnessOpts = {
    * should let `setupHarness()` create its own clock.
    */
   clock?: Clock;
+  /**
+   * When true, the `Scheduler` exposed via `harness.deps.scheduler` is
+   * backed by the virtual clock so production inactivity / total timeouts
+   * in `@intx/inference`'s `runInference` fire at virtual time. When
+   * false (default), the scheduler is a no-op — production timers are
+   * inert during tests, which is what almost every test wants (otherwise
+   * `harness.run()` would have to advance virtual time through the 600s
+   * default total-timeout horizon on every call).
+   *
+   * Tests that specifically assert on timeout behaviour set this to
+   * true and pass explicit short thresholds via
+   * `InferenceOptions.inactivityTimeoutMs` / `totalTimeoutMs`.
+   */
+  enableInferenceTimers?: boolean;
 };
 
 /**
@@ -525,8 +540,45 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     });
   };
 
+  // Scheduler exposed via deps. Behaviour depends on opts.enableInferenceTimers:
+  //
+  //   - false (default): a no-op — every `setTimeout` returns a no-op
+  //     canceller without scheduling anything. Production timers in
+  //     `runInference` are inert, which is what every test that isn't
+  //     specifically asserting timeout behaviour wants (otherwise
+  //     `harness.run()` would have to advance virtual time through the
+  //     600s default total-timeout horizon on every call).
+  //   - true: backed by the virtual clock, so the inference layer's
+  //     inactivity / total timers fire at virtual time exactly when
+  //     they would in production. Tests that exercise timeout
+  //     behaviour set this and pass explicit short thresholds.
+  // The inert scheduler's no-op canceller has nothing to cancel because
+  // its `setTimeout` never scheduled anything in the first place.
+  const noopCanceller = (): void => {
+    /* no scheduled work to cancel */
+  };
+  const inertScheduler: Scheduler = {
+    setTimeout: () => noopCanceller,
+  };
+  const scheduler: Scheduler =
+    opts.enableInferenceTimers === true
+      ? {
+          setTimeout(callback, delayMs) {
+            let cancelled = false;
+            clock.schedule(clock.now() + delayMs, () => {
+              if (cancelled) return;
+              callback();
+            });
+            return () => {
+              cancelled = true;
+            };
+          },
+        }
+      : inertScheduler;
+
   const deps: Dependencies = {
     fetch: stubFetch,
+    scheduler,
     [HarnessId]: harnessSymbol,
   };
 
