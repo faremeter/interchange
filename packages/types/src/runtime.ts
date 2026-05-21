@@ -1479,13 +1479,15 @@ export type InferenceOptions = {
    * fetch is aborted and the call ends with `inference.error` of category
    * `"timeout"`. Default 120_000 (2 min). Tune higher for reasoning models
    * that exhibit long silent-thinking stretches between token bursts; tune
-   * lower to fail fast.
+   * lower to fail fast. `0` arms the timer to fire on the next tick (a
+   * "fail-fast even if the fetch is instant" mode useful in tests).
    */
   inactivityTimeoutMs?: number;
   /**
    * Per-call total wall-clock cap in milliseconds. Starts at fetch.
    * Default 600_000 (10 min). Backstop for streams that keep emitting
    * forever without terminating. Same error category as `inactivityTimeoutMs`.
+   * `0` arms the timer to fire on the next tick.
    */
   totalTimeoutMs?: number;
 };

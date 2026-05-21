@@ -89,16 +89,19 @@ export type StallOpts = {
  * later, e.g. to release the stall after the assertions run) plus abort
  * telemetry covering the matched fetch's `AbortSignal`.
  *
- * `aborted` flips to `true` as soon as the matched fetch's signal fires
- * — either because the inference layer's per-call timeout aborted it,
- * because a caller-supplied `signal` aborted, or because `dispose()`
- * rejected the still-waiting fetch. Reading `aborted` before the
- * matcher fires returns `false`. Reading it after the matcher fires
- * but before any abort returns `false`.
+ * `aborted` flips to `true` as soon as the matched fetch's signal
+ * fires — typically because the inference layer's per-call timeout
+ * aborted it, but a caller-supplied `signal` aborting also counts.
+ * Reading `aborted` before the matcher fires or before any abort
+ * returns `false`. `dispose()` does NOT flip `aborted` (it rejects
+ * the underlying fetch with an `Error` rather than aborting its
+ * `AbortSignal`); it does, however, resolve `awaitAbort` so tests
+ * that awaited it past dispose do not hang the test runner.
  *
  * `awaitAbort` resolves the first time the matched fetch's signal
- * fires. Tests use it when they need to sequence assertions after the
- * abort propagated rather than after `harness.run()` returned.
+ * fires, or when `dispose()` runs — whichever happens first. Tests
+ * use it when they need to sequence assertions after the abort
+ * propagated rather than after `harness.run()` returned.
  */
 export type StallHandle = {
   readonly stream: SimulatedStream;
@@ -236,14 +239,17 @@ export type Scenario = {
    * fetch's `AbortSignal` fires, and `awaitAbort` resolves at the
    * same moment.
    *
-   * The harness recognises the stall as intentional pending state and
-   * does NOT raise `UnmatchedFetchError` during the quiescence check
-   * *as long as the fetch eventually settles* — i.e., either an abort
-   * fires (timeout, caller signal, dispose) or the test enqueues the
-   * terminating chunks. Tests that exercise per-call timeout
-   * behaviour should pair `stall` with short `inactivityTimeoutMs` or
-   * `totalTimeoutMs` values and `setupHarness({ enableInferenceTimers:
-   * true })` so the inference layer's timers fire at virtual time.
+   * Quiescence interaction: the harness has no special-case knowledge
+   * of stalls. The matched fetch's `Response` is delivered as soon as
+   * the matcher fires (the WaitingFetch is settled at that moment);
+   * what parks indefinitely is the response body's SSE iterator, not
+   * the fetch itself. `checkQuiescence` therefore does not see an
+   * unmatched fetch and does not raise `UnmatchedFetchError`. Tests
+   * that exercise per-call timeout behaviour should pair `stall` with
+   * short `inactivityTimeoutMs` or `totalTimeoutMs` values and
+   * `setupHarness({ enableInferenceTimers: true })` so the inference
+   * layer's timers fire at virtual time and surface a `"timeout"`
+   * `inference.error` before the test's `harness.run()` returns.
    */
   stall(opts?: StallOpts): StallHandle;
   /**
