@@ -242,114 +242,38 @@ export async function* runInference(
     timeoutReason = "total";
     timeoutAbort.abort();
   }, totalTimeoutMs);
-  const cleanupTimers = () => {
+  // Per-timer cancellers are idempotent (the production scheduler's
+  // canceller wraps `clearTimeout`, which no-ops on a fired timer; the
+  // test scheduler's canceller flips a `cancelled` flag). Callers may
+  // invoke `cleanupTimers` exactly once; the `try/finally` around the
+  // generator body below is the single owner of that lifecycle.
+  const cleanupTimers = (): void => {
     cancelTotal();
     cancelInactivity?.();
     cancelInactivity = null;
   };
   // Combined signal: the production code's existing caller-signal +
   // our timeout controller, so a fetch implementation that respects
-  // AbortSignal sees both.
-  const fetchSignal = combineSignals(signal, timeoutAbort.signal);
+  // AbortSignal sees both. `cleanupSignal` removes the abort listeners
+  // `combineSignals` installs on the caller signal so a long-lived
+  // caller signal (e.g., a session-scoped controller) does not
+  // accumulate one un-removed listener per call.
+  const { signal: fetchSignal, cleanup: cleanupSignal } = combineSignals(
+    signal,
+    timeoutAbort.signal,
+  );
 
-  let response: Response;
   try {
-    response = await deps.fetch(url, {
-      method: "POST",
-      headers,
-      body: builtRequest.body,
-      signal: fetchSignal,
-    });
-  } catch (cause) {
-    cleanupTimers();
-    if (timeoutReason !== null) {
-      const thresholdMs =
-        timeoutReason === "inactivity" ? inactivityTimeoutMs : totalTimeoutMs;
-      yield {
-        type: "inference.error",
-        seq: nextSeq(),
-        data: {
-          error: classifyTimeoutError(timeoutReason, thresholdMs),
-          partial: snapshotPartial(partial),
-        },
-      };
-      return;
-    }
-    if (signal?.aborted) {
-      yield {
-        type: "inference.error",
-        seq: nextSeq(),
-        data: {
-          error: classifyAbortError(),
-          partial: snapshotPartial(partial),
-        },
-      };
-      return;
-    }
-    yield {
-      type: "inference.error",
-      seq: nextSeq(),
-      data: {
-        error: classifyNetworkError(cause),
-        partial: snapshotPartial(partial),
-      },
-    };
-    return;
-  }
-
-  if (!response.ok) {
-    let errorBody: unknown;
+    let response: Response;
     try {
-      errorBody = await response.json();
-    } catch {
-      try {
-        errorBody = await response.text();
-      } catch {
-        errorBody = undefined;
-      }
-    }
-    const errorMessage = extractErrorMessage(errorBody) ?? response.statusText;
-    const retryAfterMs = adapter.extractRetryAfterMs?.(response.headers);
-    yield {
-      type: "inference.error",
-      seq: nextSeq(),
-      data: {
-        error: classifyHTTPError(
-          response.status,
-          errorMessage,
-          errorBody,
-          retryAfterMs,
-        ),
-        partial: snapshotPartial(partial),
-      },
-    };
-    return;
-  }
-
-  if (response.body === null) {
-    yield {
-      type: "inference.error",
-      seq: nextSeq(),
-      data: {
-        error: classifyNetworkError(new Error("Response body is null")),
-        partial: snapshotPartial(partial),
-      },
-    };
-    return;
-  }
-
-  // Arm the inactivity timer now that the SSE stream is open. Every
-  // event we yield below resets it; sustained silence past
-  // `inactivityTimeoutMs` aborts the controller and the loop's catch
-  // surfaces the timeout error.
-  armInactivity();
-
-  try {
-    for await (const sseData of parseSSE(response.body)) {
+      response = await deps.fetch(url, {
+        method: "POST",
+        headers,
+        body: builtRequest.body,
+        signal: fetchSignal,
+      });
+    } catch (cause) {
       if (timeoutReason !== null) {
-        // The timeout aborted the stream; bubble up the right error
-        // shape rather than letting the abort masquerade as a
-        // caller-initiated cancellation.
         const thresholdMs =
           timeoutReason === "inactivity" ? inactivityTimeoutMs : totalTimeoutMs;
         yield {
@@ -360,7 +284,6 @@ export async function* runInference(
             partial: snapshotPartial(partial),
           },
         };
-        cleanupTimers();
         return;
       }
       if (signal?.aborted) {
@@ -372,240 +295,335 @@ export async function* runInference(
             partial: snapshotPartial(partial),
           },
         };
-        cleanupTimers();
         return;
       }
+      yield {
+        type: "inference.error",
+        seq: nextSeq(),
+        data: {
+          error: classifyNetworkError(cause),
+          partial: snapshotPartial(partial),
+        },
+      };
+      return;
+    }
 
-      // Reset inactivity timer — we just got something from the wire.
-      armInactivity();
+    if (!response.ok) {
+      // Bind both body reads to the combined fetch signal. The fetch's
+      // response body is supposed to inherit the signal, but in practice
+      // some runtimes leave it parked even after the signal aborts — a
+      // hostile server returning a 4xx/5xx with a body that never
+      // terminates would otherwise hang the call indefinitely, defeating
+      // the total-timeout safety property.
+      let errorBody: unknown;
+      try {
+        errorBody = await awaitWithSignal(response.json(), fetchSignal);
+      } catch {
+        try {
+          errorBody = await awaitWithSignal(response.text(), fetchSignal);
+        } catch {
+          errorBody = undefined;
+        }
+      }
+      const errorMessage =
+        extractErrorMessage(errorBody) ?? response.statusText;
+      const retryAfterMs = adapter.extractRetryAfterMs?.(response.headers);
+      yield {
+        type: "inference.error",
+        seq: nextSeq(),
+        data: {
+          error: classifyHTTPError(
+            response.status,
+            errorMessage,
+            errorBody,
+            retryAfterMs,
+          ),
+          partial: snapshotPartial(partial),
+        },
+      };
+      return;
+    }
 
-      const rawEvents = adapter.parseResponse(sseData);
+    if (response.body === null) {
+      yield {
+        type: "inference.error",
+        seq: nextSeq(),
+        data: {
+          error: classifyNetworkError(new Error("Response body is null")),
+          partial: snapshotPartial(partial),
+        },
+      };
+      return;
+    }
 
-      for (const raw of rawEvents) {
-        switch (raw.type) {
-          case "inference.text.delta": {
-            partial.text += raw.data.token;
-            yield {
-              type: "inference.text.delta",
-              seq: nextSeq(),
-              data: {
-                token: raw.data.token,
-                partial: snapshotPartial(partial),
-              },
-            };
-            break;
-          }
+    // Arm the inactivity timer now that the SSE stream is open. Every
+    // event we yield below resets it; sustained silence past
+    // `inactivityTimeoutMs` aborts the controller and the loop's catch
+    // surfaces the timeout error.
+    armInactivity();
 
-          case "inference.thinking.delta": {
-            thinkingBuffer += raw.data.token;
-            partial.thinking = thinkingBuffer;
-            yield {
-              type: "inference.thinking.delta",
-              seq: nextSeq(),
-              data: {
-                token: raw.data.token,
-                partial: snapshotPartial(partial),
-              },
-            };
-            break;
-          }
+    try {
+      for await (const sseData of parseSSE(response.body)) {
+        if (timeoutReason !== null) {
+          // The timeout aborted the stream; bubble up the right error
+          // shape rather than letting the abort masquerade as a
+          // caller-initiated cancellation.
+          const thresholdMs =
+            timeoutReason === "inactivity"
+              ? inactivityTimeoutMs
+              : totalTimeoutMs;
+          yield {
+            type: "inference.error",
+            seq: nextSeq(),
+            data: {
+              error: classifyTimeoutError(timeoutReason, thresholdMs),
+              partial: snapshotPartial(partial),
+            },
+          };
+          return;
+        }
+        if (signal?.aborted) {
+          yield {
+            type: "inference.error",
+            seq: nextSeq(),
+            data: {
+              error: classifyAbortError(),
+              partial: snapshotPartial(partial),
+            },
+          };
+          return;
+        }
 
-          case "inference.tool_call.start": {
-            const { callId, name } = raw.data;
-            openToolCalls.set(callId, { callId, name, argsBuffer: "" });
-            // OpenAI sends deltas with a string index ("0", "1", ...) as the
-            // callId. Map each index to the real callId so deltas resolve.
-            // The index is the position of this tool call in the current batch.
-            indexToCallId.set(String(openToolCalls.size - 1), callId);
-            partial.toolCalls = [
-              ...(partial.toolCalls ?? []),
-              {
-                id: callId,
-                name,
-                partialArguments: "",
-              },
-            ];
-            yield {
-              type: "inference.tool_call.start",
-              seq: nextSeq(),
-              data: { callId, name, partial: snapshotPartial(partial) },
-            };
-            break;
-          }
+        // Reset inactivity timer — we just got something from the wire.
+        armInactivity();
 
-          case "inference.tool_call.delta": {
-            const { callId, argumentFragment } = raw.data;
+        const rawEvents = adapter.parseResponse(sseData);
 
-            // Resolve index-based callId to real callId if we have a mapping.
-            const resolvedId = indexToCallId.get(callId) ?? callId;
-            const tc = openToolCalls.get(resolvedId);
-            if (tc !== undefined) {
-              tc.argsBuffer += argumentFragment;
-              // Update partial.toolCalls entry.
-              if (partial.toolCalls !== undefined) {
-                for (const ptc of partial.toolCalls) {
-                  if (ptc.id === resolvedId) {
-                    ptc.partialArguments = tc.argsBuffer;
-                    break;
-                  }
-                }
-              }
+        for (const raw of rawEvents) {
+          switch (raw.type) {
+            case "inference.text.delta": {
+              partial.text += raw.data.token;
               yield {
-                type: "inference.tool_call.delta",
+                type: "inference.text.delta",
                 seq: nextSeq(),
                 data: {
-                  callId: resolvedId,
-                  argumentFragment,
+                  token: raw.data.token,
                   partial: snapshotPartial(partial),
                 },
               };
+              break;
             }
-            break;
-          }
 
-          case "inference.usage": {
-            // Accumulate usage — providers may send multiple usage events
-            // (e.g., Anthropic sends one at message_start, one at message_delta).
-            usageSeen = mergeUsage(usageSeen, raw.data.usage);
-            yield {
-              type: "inference.usage",
-              seq: nextSeq(),
-              data: { usage: raw.data.usage },
-            };
-            break;
-          }
+            case "inference.thinking.delta": {
+              thinkingBuffer += raw.data.token;
+              partial.thinking = thinkingBuffer;
+              yield {
+                type: "inference.thinking.delta",
+                seq: nextSeq(),
+                data: {
+                  token: raw.data.token,
+                  partial: snapshotPartial(partial),
+                },
+              };
+              break;
+            }
 
-          // inference.done and inference.error from adapters are unexpected —
-          // the harness emits those itself. Ignore them.
-          default:
-            break;
+            case "inference.tool_call.start": {
+              const { callId, name } = raw.data;
+              openToolCalls.set(callId, { callId, name, argsBuffer: "" });
+              // OpenAI sends deltas with a string index ("0", "1", ...) as the
+              // callId. Map each index to the real callId so deltas resolve.
+              // The index is the position of this tool call in the current batch.
+              indexToCallId.set(String(openToolCalls.size - 1), callId);
+              partial.toolCalls = [
+                ...(partial.toolCalls ?? []),
+                {
+                  id: callId,
+                  name,
+                  partialArguments: "",
+                },
+              ];
+              yield {
+                type: "inference.tool_call.start",
+                seq: nextSeq(),
+                data: { callId, name, partial: snapshotPartial(partial) },
+              };
+              break;
+            }
+
+            case "inference.tool_call.delta": {
+              const { callId, argumentFragment } = raw.data;
+
+              // Resolve index-based callId to real callId if we have a mapping.
+              const resolvedId = indexToCallId.get(callId) ?? callId;
+              const tc = openToolCalls.get(resolvedId);
+              if (tc !== undefined) {
+                tc.argsBuffer += argumentFragment;
+                // Update partial.toolCalls entry.
+                if (partial.toolCalls !== undefined) {
+                  for (const ptc of partial.toolCalls) {
+                    if (ptc.id === resolvedId) {
+                      ptc.partialArguments = tc.argsBuffer;
+                      break;
+                    }
+                  }
+                }
+                yield {
+                  type: "inference.tool_call.delta",
+                  seq: nextSeq(),
+                  data: {
+                    callId: resolvedId,
+                    argumentFragment,
+                    partial: snapshotPartial(partial),
+                  },
+                };
+              }
+              break;
+            }
+
+            case "inference.usage": {
+              // Accumulate usage — providers may send multiple usage events
+              // (e.g., Anthropic sends one at message_start, one at message_delta).
+              usageSeen = mergeUsage(usageSeen, raw.data.usage);
+              yield {
+                type: "inference.usage",
+                seq: nextSeq(),
+                data: { usage: raw.data.usage },
+              };
+              break;
+            }
+
+            // inference.done and inference.error from adapters are unexpected —
+            // the harness emits those itself. Ignore them.
+            default:
+              break;
+          }
         }
       }
-    }
-  } catch (cause) {
-    if (timeoutReason !== null) {
-      const thresholdMs =
-        timeoutReason === "inactivity" ? inactivityTimeoutMs : totalTimeoutMs;
+    } catch (cause) {
+      if (timeoutReason !== null) {
+        const thresholdMs =
+          timeoutReason === "inactivity" ? inactivityTimeoutMs : totalTimeoutMs;
+        yield {
+          type: "inference.error",
+          seq: nextSeq(),
+          data: {
+            error: classifyTimeoutError(timeoutReason, thresholdMs),
+            partial: snapshotPartial(partial),
+          },
+        };
+        return;
+      }
+      if (signal?.aborted) {
+        yield {
+          type: "inference.error",
+          seq: nextSeq(),
+          data: {
+            error: classifyAbortError(),
+            partial: snapshotPartial(partial),
+          },
+        };
+        return;
+      }
       yield {
         type: "inference.error",
         seq: nextSeq(),
         data: {
-          error: classifyTimeoutError(timeoutReason, thresholdMs),
+          error: classifyStreamError(cause),
           partial: snapshotPartial(partial),
         },
       };
-      cleanupTimers();
       return;
     }
-    if (signal?.aborted) {
-      yield {
-        type: "inference.error",
-        seq: nextSeq(),
-        data: {
-          error: classifyAbortError(),
-          partial: snapshotPartial(partial),
-        },
-      };
-      cleanupTimers();
-      return;
-    }
-    yield {
-      type: "inference.error",
-      seq: nextSeq(),
-      data: {
-        error: classifyStreamError(cause),
-        partial: snapshotPartial(partial),
-      },
-    };
-    cleanupTimers();
-    return;
-  }
 
-  // SSE loop exited normally — disarm timers before the finalization
-  // path emits any further events. (Both timers are no-op-safe after
-  // cleanup, but stopping them avoids spurious firings during a slow
-  // finalization step.)
-  cleanupTimers();
+    // Finalize any open tool calls that never received an explicit end event.
+    const completedToolCalls: ContentBlock[] = [];
+    for (const tc of openToolCalls.values()) {
+      let parsedArgs: Record<string, unknown>;
+      try {
+        const raw = tc.argsBuffer.trim() === "" ? "{}" : tc.argsBuffer;
+        const parsed = JSON.parse(raw);
+        const validated = ParsedToolArgs(parsed);
+        parsedArgs = validated instanceof type.errors ? {} : validated;
+      } catch {
+        parsedArgs = { _raw: tc.argsBuffer };
+      }
 
-  // Finalize any open tool calls that never received an explicit end event.
-  const completedToolCalls: ContentBlock[] = [];
-  for (const tc of openToolCalls.values()) {
-    let parsedArgs: Record<string, unknown>;
-    try {
-      const raw = tc.argsBuffer.trim() === "" ? "{}" : tc.argsBuffer;
-      const parsed = JSON.parse(raw);
-      const validated = ParsedToolArgs(parsed);
-      parsedArgs = validated instanceof type.errors ? {} : validated;
-    } catch {
-      parsedArgs = { _raw: tc.argsBuffer };
-    }
-
-    completedToolCalls.push({
-      type: "tool_call",
-      id: tc.callId,
-      name: tc.name,
-      arguments: parsedArgs,
-    });
-
-    yield {
-      type: "inference.tool_call.end",
-      seq: nextSeq(),
-      data: {
-        callId: tc.callId,
+      completedToolCalls.push({
+        type: "tool_call",
+        id: tc.callId,
         name: tc.name,
         arguments: parsedArgs,
-        partial: snapshotPartial(partial),
+      });
+
+      yield {
+        type: "inference.tool_call.end",
+        seq: nextSeq(),
+        data: {
+          callId: tc.callId,
+          name: tc.name,
+          arguments: parsedArgs,
+          partial: snapshotPartial(partial),
+        },
+      };
+    }
+
+    const finalUsage: TokenUsage = usageSeen ?? {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      thinking: 0,
+    };
+
+    // Emit inference.usage before inference.done per the protocol spec.
+    if (usageSeen === null) {
+      yield {
+        type: "inference.usage",
+        seq: nextSeq(),
+        data: { usage: finalUsage },
+      };
+    }
+
+    // Build the final assistant message.
+    const contentBlocks: ContentBlock[] = [];
+    if (thinkingBuffer.length > 0) {
+      contentBlocks.push({ type: "thinking", thinking: thinkingBuffer });
+    }
+    if (partial.text.length > 0) {
+      contentBlocks.push({ type: "text", text: partial.text });
+    }
+    contentBlocks.push(...completedToolCalls);
+
+    const finalTurn: AssistantTurn = {
+      role: "assistant",
+      content: contentBlocks,
+      model,
+      timestamp: Date.now(),
+    };
+
+    const pacingDelayMs = adapter.extractPacingDelayMs?.(response.headers);
+
+    yield {
+      type: "inference.done",
+      seq: nextSeq(),
+      data: {
+        turn: finalTurn,
+        usage: finalUsage,
+        ...(pacingDelayMs !== undefined && pacingDelayMs > 0
+          ? { pacingDelayMs }
+          : {}),
       },
     };
+  } finally {
+    // Single owner of the timer + signal-listener lifecycle. Runs on
+    // every exit including normal completion, early `return`, thrown
+    // errors, and consumer abandonment via `for await` `break`
+    // (which invokes the generator's `return()` and triggers the
+    // finally). Both cleanups are idempotent.
+    cleanupTimers();
+    cleanupSignal();
   }
-
-  const finalUsage: TokenUsage = usageSeen ?? {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    thinking: 0,
-  };
-
-  // Emit inference.usage before inference.done per the protocol spec.
-  if (usageSeen === null) {
-    yield {
-      type: "inference.usage",
-      seq: nextSeq(),
-      data: { usage: finalUsage },
-    };
-  }
-
-  // Build the final assistant message.
-  const contentBlocks: ContentBlock[] = [];
-  if (thinkingBuffer.length > 0) {
-    contentBlocks.push({ type: "thinking", thinking: thinkingBuffer });
-  }
-  if (partial.text.length > 0) {
-    contentBlocks.push({ type: "text", text: partial.text });
-  }
-  contentBlocks.push(...completedToolCalls);
-
-  const finalTurn: AssistantTurn = {
-    role: "assistant",
-    content: contentBlocks,
-    model,
-    timestamp: Date.now(),
-  };
-
-  const pacingDelayMs = adapter.extractPacingDelayMs?.(response.headers);
-
-  yield {
-    type: "inference.done",
-    seq: nextSeq(),
-    data: {
-      turn: finalTurn,
-      usage: finalUsage,
-      ...(pacingDelayMs !== undefined && pacingDelayMs > 0
-        ? { pacingDelayMs }
-        : {}),
-    },
-  };
 }
 
 /**
@@ -614,24 +632,88 @@ export async function* runInference(
  * implementation can observe. Returns the internal controller's signal
  * alone if no caller signal exists; otherwise wires both so that either
  * one firing aborts the combined signal.
+ *
+ * Returns a bundle containing the signal AND an explicit cleanup
+ * function. `{ once: true }` on the abort listeners only auto-removes
+ * after firing, so on the happy path (no abort) the listeners would
+ * accumulate against a long-lived caller signal — one un-removed
+ * listener per `runInference` call. The caller MUST invoke
+ * `cleanup()` exactly once when the call's interest in the signal
+ * ends (whether by completion, error, or abandonment); the harness
+ * does this from its `try/finally` block. `cleanup()` is idempotent.
  */
+type CombinedSignal = {
+  readonly signal: AbortSignal;
+  readonly cleanup: () => void;
+};
+
 function combineSignals(
   caller: AbortSignal | undefined,
   internal: AbortSignal,
-): AbortSignal {
-  if (caller === undefined) return internal;
+): CombinedSignal {
+  if (caller === undefined) {
+    const noopCleanup = (): void => {
+      /* no listener was attached */
+    };
+    return { signal: internal, cleanup: noopCleanup };
+  }
   const composite = new AbortController();
-  if (caller.aborted) composite.abort(caller.reason);
-  else
-    caller.addEventListener("abort", () => composite.abort(caller.reason), {
-      once: true,
-    });
-  if (internal.aborted) composite.abort(internal.reason);
-  else
-    internal.addEventListener("abort", () => composite.abort(internal.reason), {
-      once: true,
-    });
-  return composite.signal;
+  const onCallerAbort = (): void => {
+    composite.abort(caller.reason);
+  };
+  const onInternalAbort = (): void => {
+    composite.abort(internal.reason);
+  };
+  let cleanedUp = false;
+  const cleanup = (): void => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    caller.removeEventListener("abort", onCallerAbort);
+    internal.removeEventListener("abort", onInternalAbort);
+  };
+  if (caller.aborted) {
+    composite.abort(caller.reason);
+  } else {
+    caller.addEventListener("abort", onCallerAbort, { once: true });
+  }
+  if (internal.aborted) {
+    composite.abort(internal.reason);
+  } else {
+    internal.addEventListener("abort", onInternalAbort, { once: true });
+  }
+  return { signal: composite.signal, cleanup };
+}
+
+/**
+ * Await `promise` but reject early if `signal` aborts in the meantime.
+ * Used for non-streaming reads of the error response body so a hostile
+ * server cannot hang the call by returning a 4xx/5xx with a body that
+ * never terminates. The signal's listener is always removed before
+ * settlement so this helper does not itself leak listeners.
+ */
+async function awaitWithSignal<T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  if (signal.aborted) {
+    throw new DOMException("aborted", "AbortError");
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(new DOMException("aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+  });
 }
 
 function snapshotPartial(partial: PartialMessage): PartialMessage {

@@ -194,10 +194,17 @@ expect(stall.aborted).toBe(true);
 
 `stall.stream` is the underlying `SimulatedStream` in case a test wants
 to release the stall by enqueueing chunks before the timeout fires.
-`stall.aborted` flips `true` the moment the matched fetch's signal
-fires (timeout, caller signal, or `dispose()`). `stall.awaitAbort`
-resolves at the same moment for tests that need to sequence
-assertions after abort propagation.
+`stall.aborted` flips `true` the moment the matched fetch's
+`AbortSignal` fires (the inference layer's per-call timeout firing,
+or a caller-supplied signal aborting). `dispose()` does not flip
+`aborted` — it rejects the underlying fetch with an `Error` rather
+than aborting its signal — but it does resolve `awaitAbort` so tests
+that awaited the promise past dispose do not hang the test runner.
+
+The harness has no special-case knowledge of stalls. The matcher
+settles the fetch with a `Response` as soon as it fires; what parks
+indefinitely is the response body's SSE iterator. `checkQuiescence`
+therefore does not see an unmatched fetch and does not raise.
 
 Pair `stall` with `setupHarness({ enableInferenceTimers: true })` — the
 default no-op scheduler leaves the inference layer's timers inert so

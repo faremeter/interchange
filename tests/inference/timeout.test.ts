@@ -120,9 +120,9 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
       const stream = harness.scenario.createStream();
       harness.scenario.whenRequestMatches(() => true, stream);
 
-      // Five chunks at 60ms apart — under a 100ms inactivity timeout,
-      // each chunk resets the timer well before it can fire. Total
-      // virtual time elapsed: 5 * 60 = 300ms.
+      // wire.completeResponse for openai produces two chunks (one
+      // content delta + the `[DONE]` sentinel). Spaced 60ms apart,
+      // each resets the 100ms inactivity timer well before it fires.
       const chunks = wire.completeResponse("openai", { text: "hello" });
       stream.enqueueAll(chunks, { startAt: 60, stepMs: 60 });
 
