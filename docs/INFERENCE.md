@@ -656,12 +656,28 @@ Provider errors are classified into categories that determine the reactor's resp
 - **Quota exhausted** — Provider-level usage limit hit (distinct from transient rate limits). Response: fail or switch model, depending on director policy.
 - **Fatal** — Invalid request, unsupported model, malformed content. Response: fail immediately with diagnostic information.
 - **Aborted** — Caller cancelled via AbortSignal. Response: clean termination.
+- **Timeout** — Per-call inactivity or total wall-clock cap fired (see Per-Call Timeouts). The call produced no usable response. Response: treat as transient infrastructure failure and retry per director policy rather than as a model decision.
 
 The classifier inspects HTTP status codes, error response bodies, and provider-specific error message patterns. The classified error is delivered to the director as an `inference.error` event, and the director decides the response — retry, compact, switch model, suspend, or fail. The error categories inform the director's decision but do not hardcode the response.
 
 ### Retry Behavior
 
 Retryable errors use exponential backoff: `baseDelay * 2^attempt`. The director controls maximum attempts and total budget. Failed attempts are removed from the message history before retrying — the model should not see its own error responses.
+
+## Per-Call Timeouts
+
+Every `runInference` call arms two timers: an inactivity timer reset on every chunk the harness receives from the wire, and a total wall-clock cap that starts at `fetch()`. When either timer fires, the harness aborts the underlying fetch's combined `AbortController` and emits an `inference.error` with category `"timeout"` and a message naming which timer fired and its threshold value. The combined controller wires together the caller-supplied signal (if any) and the harness's internal timeout signal, so a fetch implementation that respects `AbortSignal` sees both.
+
+"Wire chunk" means any SSE data line the harness reads, not strictly the events the harness yields downstream — heartbeat frames, sentinel-only chunks (e.g. `[DONE]`), and trailing usage events all count as activity. This is the more permissive of the two natural rules: it treats any sign of provider liveness as defeat of the inactivity timer, which is what "stalled SSE stream" intuitively means and what the safety property actually guards against.
+
+The defaults are conservative:
+
+- `inactivityTimeoutMs: 120_000` (2 min). Reasoning-heavy models emit tokens regularly when actually thinking; two minutes of pure silence is real stall, not legitimate reasoning. Tune higher for models with extended pure-silence thinking stretches — the `interchange-demo-dispatch` planner agent was observed reasoning for roughly seven minutes between tool calls during early benchmarking, which would require a higher inactivity threshold.
+- `totalTimeoutMs: 600_000` (10 min). Matches Anthropic's documented per-call recommendation and fits within typical CI budgets. Backstop for streams that keep emitting forever without terminating.
+
+Both can be overridden per call via `InferenceOptions.inactivityTimeoutMs` and `InferenceOptions.totalTimeoutMs`. Set to a smaller number to fail fast; set to a larger number to accommodate slower model behaviour.
+
+A timeout always classifies as `"timeout"`, never as `"aborted"` — even though the underlying mechanism is an `AbortController` firing. Distinguishing the two at the category level lets directors apply different policies: a caller-initiated abort is the user's decision and should not be retried, while a timeout is an infrastructure failure and may be retried.
 
 ## Abort Handling
 

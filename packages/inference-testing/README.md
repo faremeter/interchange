@@ -165,6 +165,45 @@ harness.scenario.abortAfter(
 stream and errors its controller — useful for modelling network failures
 mid-response.
 
+### Stall scenarios
+
+`scenario.stall` wires up a parked-stream fixture for tests that exercise
+the inference layer's per-call timeouts. The matched fetch is bound to a
+stream the helper never feeds, so the SSE iterator parks on its first
+read; in virtual time the test advances past the timeout threshold and
+the inactivity (or total) timer in `runInference` aborts the underlying
+fetch. The returned `StallHandle` exposes live abort telemetry so tests
+can assert on `AbortController` propagation directly, not only on the
+downstream `inference.error` event the abort produces.
+
+```ts
+const harness = setupHarness({ enableInferenceTimers: true });
+const stall = harness.scenario.stall();
+
+const events = runInference({
+  /* ... */
+  inferenceOptions: { inactivityTimeoutMs: 50, totalTimeoutMs: 10_000 },
+  deps: harness.deps,
+});
+
+await harness.run();
+await stall.awaitAbort;
+
+expect(stall.aborted).toBe(true);
+```
+
+`stall.stream` is the underlying `SimulatedStream` in case a test wants
+to release the stall by enqueueing chunks before the timeout fires.
+`stall.aborted` flips `true` the moment the matched fetch's signal
+fires (timeout, caller signal, or `dispose()`). `stall.awaitAbort`
+resolves at the same moment for tests that need to sequence
+assertions after abort propagation.
+
+Pair `stall` with `setupHarness({ enableInferenceTimers: true })` — the
+default no-op scheduler leaves the inference layer's timers inert so
+that other test suites don't have to advance virtual time through the
+ten-minute default total timeout on every call.
+
 ### Multi-turn
 
 Compose multiple matchers and call `runInference` once per turn. The
