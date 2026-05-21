@@ -4,6 +4,7 @@ import { wire } from "@intx/inference-testing";
 import {
   parseSSE,
   createOpenAIAdapter,
+  ProtocolMismatchError,
   type ProviderAdapter,
 } from "@intx/inference";
 import type { ConversationTurn, InferenceEvent } from "@intx/types/runtime";
@@ -262,15 +263,6 @@ describe("OpenAI adapter: buildRequest", () => {
 });
 
 describe("OpenAI adapter: parseResponse", () => {
-  test("returns empty array for non-JSON input", async () => {
-    // Non-JSON data payload — the structured DSL helpers serialize JSON, so
-    // `wire.openai.raw` is the right tool for genuinely-adversarial bytes.
-    const events = await parseWire(adapter, [
-      wire.openai.raw("data: not json\n\n"),
-    ]);
-    expect(events).toEqual([]);
-  });
-
   test("parses text delta from choices", async () => {
     const events = await parseWire(adapter, [
       wire.openai.chunk({ content: "Hello" }),
@@ -407,5 +399,51 @@ describe("OpenAI adapter: parseResponse", () => {
       wire.openai.raw('data: {"choices":[]}\n\n'),
     ]);
     expect(events).toEqual([]);
+  });
+
+  test("throws ProtocolMismatchError on malformed JSON in SSE payload", () => {
+    // The harness's stream-error catch maps this throw to an
+    // inference.error event with category "protocol_mismatch" via
+    // classifyStreamError. The raw payload is carried in error.raw so
+    // operators can inspect the bytes that failed to parse.
+    expect(() => adapter.parseResponse("not json {")).toThrow(
+      ProtocolMismatchError,
+    );
+
+    try {
+      adapter.parseResponse("not json {");
+      throw new Error("expected ProtocolMismatchError to be thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProtocolMismatchError);
+      if (err instanceof ProtocolMismatchError) {
+        expect(err.message).toContain("malformed JSON");
+        expect(err.raw).toBe("not json {");
+      }
+    }
+  });
+
+  test("throws ProtocolMismatchError on schema-mismatched chunk", () => {
+    // `delta.role: 42` is well-formed JSON but rejects against the
+    // OpenAIChunkDelta schema (role must be string when present).
+    // The thrown error carries the parsed object in `raw` and the
+    // arktype summary in `message` so operators reading audit logs see
+    // exactly where the wire violated the contract.
+    const malformed = '{"choices":[{"delta":{"role":42}}]}';
+
+    expect(() => adapter.parseResponse(malformed)).toThrow(
+      ProtocolMismatchError,
+    );
+
+    try {
+      adapter.parseResponse(malformed);
+      throw new Error("expected ProtocolMismatchError to be thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProtocolMismatchError);
+      if (err instanceof ProtocolMismatchError) {
+        expect(err.message).toContain("schema validation");
+        // The raw field carries the parsed object, not the original string.
+        expect(err.raw).toEqual({ choices: [{ delta: { role: 42 } }] });
+      }
+    }
   });
 });
