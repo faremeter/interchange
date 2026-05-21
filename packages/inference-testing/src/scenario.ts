@@ -23,6 +23,23 @@ export type WireEventPredicate = (event: ChunkFiredEvent) => boolean;
 export type RequestPredicate = (req: Request) => boolean;
 
 /**
+ * Predicate variant for `scenario.whenRequestBodyMatches`. Receives the
+ * buffered request body as a UTF-8 string plus the original `Request` (for
+ * URL/header inspection). The harness buffers the body once per fetch the
+ * first time a body-aware matcher could fire; the same buffered text is
+ * passed to every body-aware predicate evaluated against that fetch.
+ *
+ * The same purity contract that governs `RequestPredicate` applies here:
+ * sync, idempotent, side-effect-free, and independent of mutable harness
+ * state. Reading `bodyText`, `req.url`, `req.method`, and `req.headers` is
+ * fine; everything else is a bug class.
+ */
+export type BodyAwareRequestPredicate = (
+  bodyText: string,
+  req: Request,
+) => boolean;
+
+/**
  * Options for `scenario.replyOnce`. `text` and `toolCalls` are the response
  * payload (passed through to `wire.completeResponse`); `headUsage` and
  * `tailUsage` are optional usage frames. `predicate` narrows which fetch
@@ -153,6 +170,34 @@ export type Scenario = {
     opts?: WhenRequestMatchesOpts,
   ): void;
   /**
+   * Register a single-use matcher whose predicate sees the request body as
+   * a UTF-8 string. Useful when the only field that distinguishes parallel
+   * fetches lives in the body (e.g., a task id in the seed message of a
+   * multi-agent dispatch run).
+   *
+   * The body is buffered once per fetch the first time a body-aware
+   * matcher could fire against it; subsequent body-aware predicates see
+   * the same cached text. URL/header-only predicates registered via
+   * `whenRequestMatches` never trigger a body read.
+   *
+   * Scan ordering: sync `whenRequestMatches` predicates run first. If
+   * none bind a fetch and at least one body-aware matcher is registered,
+   * the harness buffers the bodies of every still-waiting fetch and then
+   * runs a body-aware scan pass. Body-aware matches resolve only after
+   * ALL in-flight body buffers complete — `AmbiguousRequestError` for
+   * body-aware matchers is detected over a fully-buffered set, not as
+   * bodies become available, so the conflict semantics match the sync
+   * scan's "single pass over all waiting fetches" model.
+   *
+   * `opts.status` and `opts.headers` shape the `Response`'s envelope, with
+   * the same defaults as `whenRequestMatches`.
+   */
+  whenRequestBodyMatches(
+    predicate: BodyAwareRequestPredicate,
+    responseStream: SimulatedStream,
+    opts?: WhenRequestMatchesOpts,
+  ): void;
+  /**
    * Register a handler for the tool named `name`. On the default path,
    * `harness.runInference` observes `inference.tool_call.end` events from
    * the production reactor and auto-dispatches the registered handler with
@@ -198,18 +243,20 @@ export type Scenario = {
    */
   lastToolDispatch(name: string): unknown;
   /**
-   * Returns a clone of the most-recently matched `Request`, or `undefined`
-   * if no fetch has been routed by a matcher yet. The harness records
-   * every routed request so tests can `await req.json()` after the fact
-   * to assert on the body shape — the matcher predicate itself is
-   * synchronous on purpose (it runs on every scan pass) and so cannot
-   * read the body, but `lastRequest` is the post-match seam.
+   * Returns the full list of matched `Request`s in match order, each as a
+   * fresh clone whose body the caller can consume freely. Empty until at
+   * least one fetch has been routed by a matcher. Tests use this to assert
+   * against the body shape of every request the harness routed during the
+   * scenario (e.g., per-agent body assertions across a multi-agent dispatch
+   * run) rather than only the most-recent one.
    *
-   * The returned `Request` is a clone so the test can consume its body
-   * without affecting the original (the production reactor will still
-   * read the body via the `Response` returned through the stream).
+   * Each clone is independent: consuming one's body does not affect any
+   * other (the production reactor reads the body via the `Response`
+   * returned through the stream, not through these clones).
+   *
+   * To read only the most-recent request, use `matchedRequests().at(-1)`.
    */
-  lastRequest(): Request | undefined;
+  matchedRequests(): Request[];
   /**
    * Convenience wrapper that creates a stream, builds a complete
    * single-turn response for `provider`, enqueues it at the next safe
@@ -287,21 +334,43 @@ export type Scenario = {
  * consistent with "registration-order, first-match-wins" + per-fetch
  * controllers + the `AmbiguousRequestError` case. If a test wants to match
  * the same request twice, it registers two matchers.
+ *
+ * `bodyAware` discriminates between sync-only predicates (registered via
+ * `whenRequestMatches`) and body-aware predicates (registered via
+ * `whenRequestBodyMatches`). Sync predicates evaluate in the sync scan
+ * pass; body-aware predicates evaluate in a follow-up async scan pass
+ * that runs only after every still-waiting fetch's body has been
+ * buffered.
  */
-export type Matcher = {
-  readonly predicate: RequestPredicate;
-  readonly responseStream: SimulatedStream;
-  /** First two non-anonymous frames of the registration site, if available. */
-  readonly source: string | undefined;
-  readonly opts: WhenRequestMatchesOpts | undefined;
-  consumed: boolean;
-};
+export type Matcher =
+  | {
+      readonly bodyAware: false;
+      readonly predicate: RequestPredicate;
+      readonly responseStream: SimulatedStream;
+      /** First two non-anonymous frames of the registration site, if available. */
+      readonly source: string | undefined;
+      readonly opts: WhenRequestMatchesOpts | undefined;
+      consumed: boolean;
+    }
+  | {
+      readonly bodyAware: true;
+      readonly predicate: BodyAwareRequestPredicate;
+      readonly responseStream: SimulatedStream;
+      readonly source: string | undefined;
+      readonly opts: WhenRequestMatchesOpts | undefined;
+      consumed: boolean;
+    };
 
 /**
  * Internal shape of a fetch parked in the waiting set. The `request` field
  * is constructed once when the fetch enters the waiting set and reused
  * across every predicate evaluation, so that any per-`Request` side effect
- * (consuming a body, header normalization) is paid exactly once.
+ * (header normalization) is paid exactly once.
+ *
+ * `bodyText` is populated lazily — the first body-aware scan pass triggered
+ * against this fetch reads `request.clone().text()` once and caches the
+ * result here. Sync-only fetches never trigger a body read; the field
+ * stays `undefined` for those.
  */
 export type WaitingFetch = {
   readonly request: Request;
@@ -310,6 +379,13 @@ export type WaitingFetch = {
   readonly reject: (err: unknown) => void;
   /** Set true once routed or aborted; prevents duplicate settlement. */
   settled: boolean;
+  /**
+   * Buffered request body, populated lazily by `bufferUnreadBodies`
+   * before the body-aware scan pass. `undefined` means "not yet
+   * buffered". The harness never overwrites a populated entry; each
+   * fetch buffers at most once across its lifetime.
+   */
+  bodyText: string | undefined;
 };
 
 /**
@@ -318,7 +394,7 @@ export type WaitingFetch = {
  * Ordered, append-only registry of `Matcher` entries owned by a single
  * harness. `entries` is exposed so the harness can clear it on `dispose()`
  * without piercing private state; production code should treat the table
- * as opaque and interact only via `register`.
+ * as opaque and interact only via `register` / `registerBodyAware`.
  */
 export type MatcherTable = {
   readonly entries: Matcher[];
@@ -328,6 +404,22 @@ export type MatcherTable = {
     source: string | undefined,
     opts: WhenRequestMatchesOpts | undefined,
   ): void;
+  registerBodyAware(
+    predicate: BodyAwareRequestPredicate,
+    responseStream: SimulatedStream,
+    source: string | undefined,
+    opts: WhenRequestMatchesOpts | undefined,
+  ): void;
+  /**
+   * Returns true when at least one body-aware matcher has ever been
+   * registered against this table (consumed or not). Used by the harness
+   * to decide whether arriving fetches need their bodies buffered for the
+   * body-aware scan pass. Once a body-aware matcher has been registered,
+   * the flag stays true for the lifetime of the table — even after the
+   * matcher consumes — because the registration tells us tests care
+   * about body routing for the run as a whole.
+   */
+  hasBodyAware(): boolean;
 };
 
 /**
@@ -338,6 +430,7 @@ export type MatcherTable = {
  */
 export function createMatcherTable(): MatcherTable {
   const entries: Matcher[] = [];
+  let bodyAwareEverRegistered = false;
   return {
     entries,
     register(
@@ -347,12 +440,32 @@ export function createMatcherTable(): MatcherTable {
       opts: WhenRequestMatchesOpts | undefined,
     ): void {
       entries.push({
+        bodyAware: false,
         predicate,
         responseStream,
         source,
         opts,
         consumed: false,
       });
+    },
+    registerBodyAware(
+      predicate: BodyAwareRequestPredicate,
+      responseStream: SimulatedStream,
+      source: string | undefined,
+      opts: WhenRequestMatchesOpts | undefined,
+    ): void {
+      bodyAwareEverRegistered = true;
+      entries.push({
+        bodyAware: true,
+        predicate,
+        responseStream,
+        source,
+        opts,
+        consumed: false,
+      });
+    },
+    hasBodyAware(): boolean {
+      return bodyAwareEverRegistered;
     },
   };
 }
@@ -375,6 +488,14 @@ export function createMatcherTable(): MatcherTable {
  * and removes the entry from the waiting set. `route` must NOT itself
  * call `scanWaitingSet` — the caller is responsible for re-invoking the
  * scan at the next trigger point.
+ *
+ * `includeBodyAware` controls which matchers are considered. When false
+ * (the sync scan pass), body-aware matchers are skipped entirely — they
+ * remain available for a later async pass once bodies are buffered. When
+ * true, body-aware matchers are evaluated using the fetch's pre-buffered
+ * `bodyText`; a body-aware matcher seen with `bodyText === undefined` is
+ * an internal bug (the harness must buffer before calling with
+ * `includeBodyAware: true`).
  */
 export function scanWaitingSet(
   waiting: WaitingFetch[],
@@ -384,7 +505,25 @@ export function scanWaitingSet(
     stream: SimulatedStream,
     opts: WhenRequestMatchesOpts | undefined,
   ) => void,
+  includeBodyAware = false,
 ): void {
+  const evaluate = (m: Matcher, wf: WaitingFetch): boolean => {
+    if (m.bodyAware) {
+      if (!includeBodyAware) return false;
+      // Body-aware matchers only fire against fetches whose bodies have
+      // already been buffered. A body-aware scan that hasn't yet seen a
+      // fresh fetch (one that arrived after the last `bufferUnreadBodies`
+      // pass) simply treats it as a non-match for this pass; the harness
+      // will run another scan after buffering completes. This is more
+      // robust than throwing — concurrent body-aware scans against an
+      // active waiting set are a legitimate steady-state condition,
+      // not an invariant violation.
+      if (wf.bodyText === undefined) return false;
+      return m.predicate(wf.bodyText, wf.request);
+    }
+    return m.predicate(wf.request);
+  };
+
   // Snapshot: matcher -> first waiting fetch that bound to it. If a second
   // fetch tries to bind to the same matcher in this pass, that's ambiguous.
   // We iterate fetches in arrival order to honor first-match-wins on the
@@ -403,7 +542,7 @@ export function scanWaitingSet(
     for (const m of table.entries) {
       if (m.consumed) continue;
       if (boundThisPass.has(m)) continue;
-      if (m.predicate(wf.request)) {
+      if (evaluate(m, wf)) {
         chosen = m;
         break;
       }
@@ -415,7 +554,7 @@ export function scanWaitingSet(
       for (const m of table.entries) {
         if (m.consumed) continue;
         if (!boundThisPass.has(m)) continue;
-        if (m.predicate(wf.request)) {
+        if (evaluate(m, wf)) {
           const list = conflicts.get(m) ?? [];
           if (list.length === 0) {
             // The prior binding fetch is the conflict's first member.

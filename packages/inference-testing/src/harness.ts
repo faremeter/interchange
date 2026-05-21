@@ -23,6 +23,7 @@ import {
   captureMatcherSource,
   createMatcherTable,
   scanWaitingSet,
+  type BodyAwareRequestPredicate,
   type ReplyOnceOpts,
   type RequestPredicate,
   type Scenario,
@@ -242,14 +243,15 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     return handle.stream;
   };
 
-  // Most-recently matched request, cloned so the test can consume its
-  // body without affecting the original. See `scenario.lastRequest`.
+  // Every matched request, captured in match order as a fresh clone the
+  // test can consume freely. The clones share no state with the original
+  // (which the production reactor reads via the `Response` returned
+  // through the stream) and no state with each other.
   // Type widened to satisfy the gap between Bun's global Request and
   // the undici Request the fetch stub builds; both have the methods
   // the public surface needs (clone, json, text, headers).
-  let lastMatchedRequest:
-    | ReturnType<WaitingFetch["request"]["clone"]>
-    | undefined;
+  const matchedRequestsList: ReturnType<WaitingFetch["request"]["clone"]>[] =
+    [];
 
   const routeWaitingFetch = (
     wf: WaitingFetch,
@@ -259,7 +261,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     wf.settled = true;
     const idx = waiting.indexOf(wf);
     if (idx >= 0) waiting.splice(idx, 1);
-    lastMatchedRequest = wf.request.clone();
+    matchedRequestsList.push(wf.request.clone());
     // Per-call abort isolation on the matched stream: once a fetch has
     // been bound to a stream, an abort on its signal must error ONLY
     // that stream's controller. We attach the listener here (the
@@ -319,15 +321,102 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     wf.resolve(new Response(stream.body, { status, headers }));
   };
 
-  const runScan = (): void => {
-    scanWaitingSet(waiting, matcherTable, routeWaitingFetch);
-    // Drop any fetches that were settled by scanWaitingSet (ambiguity case).
+  const sweepSettled = (): void => {
     for (let i = waiting.length - 1; i >= 0; i--) {
       const entry = waiting[i];
       if (entry !== undefined && entry.settled) {
         waiting.splice(i, 1);
       }
     }
+  };
+
+  const runScan = (): void => {
+    scanWaitingSet(waiting, matcherTable, routeWaitingFetch);
+    // Drop any fetches that were settled by scanWaitingSet (ambiguity case).
+    sweepSettled();
+  };
+
+  // Body-aware scan plumbing.
+  //
+  // The sync scan (above) considers only sync matchers. When body-aware
+  // matchers exist, the harness:
+  //
+  //   1. Buffers the body of every still-waiting fetch (in parallel, via
+  //      one `clone().text()` per fetch). The result is cached on the
+  //      `WaitingFetch.bodyText` field so subsequent passes don't re-read.
+  //   2. Runs a second `scanWaitingSet` pass with `includeBodyAware: true`,
+  //      which evaluates body-aware predicates over the buffered text.
+  //
+  // The buffer-then-scan ordering is deliberate: ambiguous body-aware
+  // matches are detected over a fully-buffered waiting set, not as
+  // bodies become available one at a time. That keeps the conflict
+  // semantics identical to the sync scan's "single pass over the
+  // waiting set at the trigger point" model.
+  //
+  // `run`/`advanceTo` drain in-flight body scans alongside in-flight
+  // tool handlers before checking quiescence; a body-aware match can
+  // route a fetch (which schedules clock work — the response stream's
+  // chunks fire on the virtual clock), so the outer loop re-enters
+  // `clock.run` after the scan completes.
+  const inFlightBodyScans = new Set<Promise<void>>();
+  const inFlightScanErrors: unknown[] = [];
+
+  const bufferUnreadBodies = async (): Promise<void> => {
+    // Loop until no unbuffered waiting fetches remain. The loop is
+    // necessary because new fetches can arrive (via `stubFetch`) while
+    // a body read is in flight — each `await` here yields the event
+    // loop and gives `stubFetch` a chance to push fresh entries onto
+    // `waiting`. Without the loop, scan-time would observe those
+    // new entries with `bodyText === undefined` and throw an internal
+    // invariant error.
+    for (;;) {
+      const needBuffer = waiting.filter(
+        (wf) => !wf.settled && wf.bodyText === undefined,
+      );
+      if (needBuffer.length === 0) return;
+      await Promise.all(
+        needBuffer.map(async (wf) => {
+          if (wf.settled) return;
+          // Re-check inside the awaited body too: another concurrent
+          // scan may have buffered this same fetch via a parallel
+          // `clone().text()` already.
+          if (wf.bodyText !== undefined) return;
+          try {
+            wf.bodyText = await wf.request.clone().text();
+          } catch {
+            // A request with no readable body (e.g., a GET with no
+            // payload) cannot be matched by body-aware predicates;
+            // treat as empty so body-aware predicates can still
+            // evaluate without throwing. If the body genuinely
+            // matters and the read failed, the body-aware predicate
+            // returns false on the empty string and the fetch
+            // surfaces later as UnmatchedFetchError, which is the
+            // correct diagnostic.
+            wf.bodyText = "";
+          }
+        }),
+      );
+    }
+  };
+
+  const triggerBodyAwareScan = (): void => {
+    if (!matcherTable.hasBodyAware()) return;
+    if (disposed) return;
+    const scanPromise: Promise<void> = (async () => {
+      await bufferUnreadBodies();
+      if (disposed) return;
+      // Re-check after the buffer await; entries can have been settled
+      // or removed in the interim.
+      scanWaitingSet(waiting, matcherTable, routeWaitingFetch, true);
+      sweepSettled();
+    })()
+      .catch((err: unknown) => {
+        inFlightScanErrors.push(err);
+      })
+      .finally(() => {
+        inFlightBodyScans.delete(scanPromise);
+      });
+    inFlightBodyScans.add(scanPromise);
   };
 
   const whenRequestMatches = (
@@ -357,6 +446,46 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     const source = captureMatcherSource(2);
     matcherTable.register(predicate, responseStream, source, opts);
     runScan();
+    // Defensive: under the matcher-predicate purity rule, a pre-existing
+    // body-aware matcher would have already routed any fetch its
+    // predicate accepts on the fetch's arrival-triggered scan, so a new
+    // sync matcher arriving later can't unblock anything by itself. The
+    // re-trigger covers cases the purity rule doesn't strictly cover —
+    // a body-aware matcher's `consumed` flag flipping between scans, or
+    // a future relaxation of the purity contract. `triggerBodyAwareScan`
+    // is a no-op when no body-aware matchers exist and idempotent
+    // otherwise, so the cost of being conservative here is nil.
+    triggerBodyAwareScan();
+  };
+
+  const whenRequestBodyMatches = (
+    predicate: BodyAwareRequestPredicate,
+    responseStream: SimulatedStream,
+    opts?: WhenRequestMatchesOpts,
+  ): void => {
+    if (disposed) {
+      throw new Error(
+        "Harness.scenario.whenRequestBodyMatches: harness has been disposed",
+      );
+    }
+    if (typeof predicate !== "function") {
+      throw new Error(
+        "Harness.scenario.whenRequestBodyMatches: predicate must be a function",
+      );
+    }
+    if (!streamToHandle.has(responseStream)) {
+      throw new Error(
+        `Harness.scenario.whenRequestBodyMatches: stream ${String(responseStream.streamId)} was not minted by this harness`,
+      );
+    }
+    const source = captureMatcherSource(2);
+    matcherTable.registerBodyAware(predicate, responseStream, source, opts);
+    // Sync scan first: a sync matcher might still bind a fetch (the
+    // new body-aware matcher is skipped in the sync pass), and the
+    // sweep below keeps the waiting set tidy before the async scan
+    // reads it.
+    runScan();
+    triggerBodyAwareScan();
   };
 
   const inFlightToolHandlers = new Set<Promise<void>>();
@@ -459,12 +588,14 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     });
   };
 
-  const lastRequest = (): Request | undefined =>
-    // The clone is produced by the (undici-typed) WaitingFetch.request,
+  const matchedRequests = (): Request[] =>
+    // The clones are produced by the (undici-typed) WaitingFetch.request,
     // but the public Scenario type uses the platform's global Request.
-    // The shape is identical; the cast bridges the type-only gap.
+    // The shape is identical; the cast bridges the type-only gap. The
+    // returned array is a fresh copy so caller mutations cannot leak
+    // back into the harness's internal capture list.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- type-only bridge between undici Request and Bun's global Request
-    lastMatchedRequest as Request | undefined;
+    matchedRequestsList.slice() as Request[];
 
   const replyOnce = (
     provider: Provider,
@@ -521,10 +652,11 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
   const scenario: Scenario = {
     createStream,
     whenRequestMatches,
+    whenRequestBodyMatches,
     onTool,
     invokeTool,
     lastToolDispatch,
-    lastRequest,
+    matchedRequests,
     replyOnce,
     stall,
     abortAt,
@@ -571,6 +703,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
         resolve,
         reject,
         settled: false,
+        bodyText: undefined,
       };
       if (signal !== undefined) {
         const onAbort = (): void => {
@@ -602,6 +735,13 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
           if (idx >= 0) waiting.splice(idx, 1);
           reject(err);
         }
+      }
+      // If body-aware matchers are registered and this fetch did not
+      // bind on the sync scan, schedule an async body-aware scan. The
+      // promise is tracked on `inFlightBodyScans` so `run`/`advanceTo`
+      // drain it before checking quiescence.
+      if (!entry.settled) {
+        triggerBodyAwareScan();
       }
     });
   };
@@ -712,31 +852,34 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     return first;
   };
 
-  const drainInFlight = async (
+  const drainInFlightSet = async (
+    label: string,
+    set: Set<Promise<void>>,
     startWall: number,
     wallClockBudgetMs: number,
   ): Promise<void> => {
-    // Repeatedly await any in-flight tool handler promises. A handler may
-    // schedule additional clock work or register further handlers on
-    // resolution, so the run/advanceTo callers re-enter the clock loop
-    // after this returns to pick that work up.
+    // Repeatedly await any in-flight promises tracked in `set`. The set's
+    // population may grow during a wait — e.g., a tool handler that
+    // schedules more clock work, or a body-aware scan that triggers a
+    // follow-up scan after routing — so the loop reads `set.size` each
+    // pass and the snapshot is re-taken before each await.
     //
-    // The drain races each batch against a real-time timer so a handler
+    // The drain races each batch against a real-time timer so a promise
     // that's blocked on a real wall-clock timer (e.g., setTimeout(...))
     // surfaces as a ClockWallClockOverrunError instead of hanging the
     // test. This mirrors the budget the clock itself enforces inside
     // `clock.run()`.
-    while (inFlightToolHandlers.size > 0) {
+    while (set.size > 0) {
       if (wallClockBudgetMs === Infinity) {
-        await Promise.all([...inFlightToolHandlers]);
+        await Promise.all([...set]);
         continue;
       }
       const elapsed = performance.now() - startWall;
       const remaining = wallClockBudgetMs - elapsed;
       if (remaining <= 0) {
         throw new ClockWallClockOverrunError(
-          `Harness.run exceeded wall-clock budget of ${String(wallClockBudgetMs)}ms while awaiting in-flight tool handlers (elapsed=${String(elapsed)}ms)`,
-          `in-flight tool handlers: ${String(inFlightToolHandlers.size)}`,
+          `Harness.run exceeded wall-clock budget of ${String(wallClockBudgetMs)}ms while awaiting ${label} (elapsed=${String(elapsed)}ms)`,
+          `${label}: ${String(set.size)}`,
         );
       }
       let timer: ReturnType<typeof setTimeout> | null = null;
@@ -745,24 +888,82 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
           resolve("timeout");
         }, remaining);
       });
-      const allDone = Promise.all([...inFlightToolHandlers]).then(
-        () => "done" as const,
-      );
+      const allDone = Promise.all([...set]).then(() => "done" as const);
       const outcome = await Promise.race([allDone, budgetExpired]);
       if (timer !== null) clearTimeout(timer);
       if (outcome === "timeout") {
         const elapsedNow = performance.now() - startWall;
         throw new ClockWallClockOverrunError(
-          `Harness.run exceeded wall-clock budget of ${String(wallClockBudgetMs)}ms while awaiting in-flight tool handlers (elapsed=${String(elapsedNow)}ms)`,
-          `in-flight tool handlers: ${String(inFlightToolHandlers.size)}`,
+          `Harness.run exceeded wall-clock budget of ${String(wallClockBudgetMs)}ms while awaiting ${label} (elapsed=${String(elapsedNow)}ms)`,
+          `${label}: ${String(set.size)}`,
         );
       }
     }
   };
 
+  const drainInFlight = (
+    startWall: number,
+    wallClockBudgetMs: number,
+  ): Promise<void> =>
+    drainInFlightSet(
+      "in-flight tool handlers",
+      inFlightToolHandlers,
+      startWall,
+      wallClockBudgetMs,
+    );
+
+  const drainBodyScans = (
+    startWall: number,
+    wallClockBudgetMs: number,
+  ): Promise<void> =>
+    drainInFlightSet(
+      "in-flight body-aware scans",
+      inFlightBodyScans,
+      startWall,
+      wallClockBudgetMs,
+    );
+
+  const takeBodyScanError = (): unknown => {
+    if (inFlightScanErrors.length === 0) return undefined;
+    const [first] = inFlightScanErrors.splice(0, inFlightScanErrors.length);
+    return first;
+  };
+
   const clearInFlightState = (): void => {
     inFlightToolHandlers.clear();
     inFlightErrors.length = 0;
+    inFlightBodyScans.clear();
+    inFlightScanErrors.length = 0;
+  };
+
+  const drainPendingWork = async (
+    startWall: number,
+    wallClockBudgetMs: number,
+  ): Promise<boolean> => {
+    // Drains both in-flight tool handlers and in-flight body-aware
+    // scans, in that order, surfacing the first error from either. The
+    // caller (run / advanceTo) loops until this returns `false`,
+    // meaning nothing was drained on this pass — at which point the
+    // clock is also empty and the harness can declare quiescence.
+    //
+    // Order matters: tool handlers can register more matchers (which
+    // can trigger body scans), so draining handlers first lets the
+    // subsequent body-scan drain catch their fallout in the same
+    // outer iteration.
+    let drained = false;
+    if (inFlightToolHandlers.size > 0) {
+      drained = true;
+      await drainInFlight(startWall, wallClockBudgetMs);
+      const handlerErr = takeInFlightError();
+      if (handlerErr !== undefined) throw handlerErr;
+    }
+    if (inFlightBodyScans.size > 0) {
+      drained = true;
+      await drainBodyScans(startWall, wallClockBudgetMs);
+      const scanErr = takeBodyScanError();
+      if (scanErr !== undefined) throw scanErr;
+    }
+    return drained;
   };
 
   const run = async (runOpts?: RunOpts): Promise<void> => {
@@ -774,17 +975,18 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
         await clock.run(runOpts);
         const err = takeInFlightError();
         if (err !== undefined) throw err;
-        if (inFlightToolHandlers.size === 0) break;
-        await drainInFlight(startWall, wallClockBudgetMs);
-        const errAfter = takeInFlightError();
-        if (errAfter !== undefined) throw errAfter;
+        const scanErr = takeBodyScanError();
+        if (scanErr !== undefined) throw scanErr;
+        const drained = await drainPendingWork(startWall, wallClockBudgetMs);
+        if (!drained) break;
         // Loop: handler resolution may have scheduled new heap entries or
-        // registered new matchers; let `clock.run()` settle them before we
-        // declare quiescence.
+        // registered new matchers, and body-aware scans may have routed
+        // fetches into new chunk-firing on the clock; let `clock.run()`
+        // settle the new work before we declare quiescence.
       }
     } catch (err) {
       // The harness is intended to be one-shot, but defensively clear any
-      // tracked in-flight handlers and queued rejections so a caller that
+      // tracked in-flight work and queued rejections so a caller that
       // re-uses this harness after a throw does not inherit stale state.
       clearInFlightState();
       throw err;
@@ -798,17 +1000,20 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
   ): Promise<void> => {
     // advanceTo's wall-clock budget mirrors run()'s default. AdvanceOpts
     // does not expose a wallClockBudgetMs knob today; the in-flight drain
-    // uses the default so a stuck handler still surfaces as an overrun.
+    // uses the default so stuck work still surfaces as an overrun.
     const startWall = performance.now();
     try {
       for (;;) {
         await clock.advanceTo(virtualMs, advanceOpts);
         const err = takeInFlightError();
         if (err !== undefined) throw err;
-        if (inFlightToolHandlers.size === 0) break;
-        await drainInFlight(startWall, DEFAULT_WALL_CLOCK_BUDGET_MS);
-        const errAfter = takeInFlightError();
-        if (errAfter !== undefined) throw errAfter;
+        const scanErr = takeBodyScanError();
+        if (scanErr !== undefined) throw scanErr;
+        const drained = await drainPendingWork(
+          startWall,
+          DEFAULT_WALL_CLOCK_BUDGET_MS,
+        );
+        if (!drained) break;
       }
     } catch (err) {
       clearInFlightState();
@@ -890,6 +1095,8 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     matcherTable.entries.length = 0;
     inFlightToolHandlers.clear();
     inFlightErrors.length = 0;
+    inFlightBodyScans.clear();
+    inFlightScanErrors.length = 0;
     abortAfterRegistrations.length = 0;
     // Resolve any still-pending stall awaits so test code that awaited
     // `stall.awaitAbort` past dispose does not deadlock the test runner.
@@ -898,6 +1105,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     }
     stallRegistrations.length = 0;
     lastToolDispatchByName.clear();
+    matchedRequestsList.length = 0;
   };
 
   return {

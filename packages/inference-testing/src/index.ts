@@ -22,6 +22,7 @@ export type {
   Scenario,
   ReplyOnceOpts,
   RequestPredicate,
+  BodyAwareRequestPredicate,
   StallHandle,
   StallOpts,
   WhenRequestMatchesOpts,
