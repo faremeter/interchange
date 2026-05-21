@@ -26,6 +26,8 @@ export {
   classifyNetworkError,
   classifyAbortError,
   classifyStreamError,
+  classifyProtocolMismatch,
+  ProtocolMismatchError,
 } from "./errors";
 export { transformMessages, createIDNormalizer } from "./transform";
 export type { TransformOptions, IDNormalizer } from "./transform";

@@ -1,6 +1,5 @@
 import { type } from "arktype";
 
-import { getLogger } from "@intx/log";
 import type {
   ConversationTurn,
   ContentBlock,
@@ -10,8 +9,7 @@ import type {
   TokenUsage,
 } from "@intx/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
-
-const logger = getLogger(["interchange", "inference", "openai"]);
+import { ProtocolMismatchError } from "../errors";
 
 // ---------------------------------------------------------------------------
 // Request building
@@ -221,17 +219,33 @@ const OpenAIChunk = type({
 });
 
 function parseResponse(sseData: string): InferenceEvent[] {
+  // parseSSE strips the `[DONE]` sentinel before yielding payloads, so
+  // anything that reaches us here is supposed to be a JSON chunk. A
+  // JSON.parse failure or an arktype rejection means the upstream
+  // emitted bytes that violate the OpenAI streaming protocol — a
+  // protocol mismatch, not a transport flake. Surface it through the
+  // harness's stream-error catch via ProtocolMismatchError so the
+  // resulting inference.error carries category "protocol_mismatch"
+  // and the offending data in error.raw, instead of silently dropping
+  // the chunk and leaving the agent to guess why a tool call arrived
+  // with empty arguments.
   let parsed: unknown;
   try {
     parsed = JSON.parse(sseData);
-  } catch {
-    return [];
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    throw new ProtocolMismatchError(
+      `openai parseResponse: malformed JSON in SSE data payload: ${message}`,
+      sseData,
+    );
   }
 
   const chunk = OpenAIChunk(parsed);
   if (chunk instanceof type.errors) {
-    logger.warn`Unexpected SSE chunk shape: ${chunk.summary}`;
-    return [];
+    throw new ProtocolMismatchError(
+      `openai parseResponse: SSE chunk failed schema validation: ${chunk.summary}`,
+      parsed,
+    );
   }
 
   const seq = 0;
