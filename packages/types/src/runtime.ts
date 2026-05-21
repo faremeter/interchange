@@ -686,6 +686,7 @@ export const InferenceError = type({
     "fatal",
     "aborted",
     "timeout",
+    "protocol_mismatch",
   ),
   message: "string",
   "statusCode?": "number",
