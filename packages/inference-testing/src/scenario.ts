@@ -74,6 +74,39 @@ export type WhenRequestMatchesOpts = {
 };
 
 /**
+ * Options for `scenario.stall`. `predicate` narrows which fetch the
+ * stalled stream routes to (defaults to match-any). `responseOpts`
+ * shapes the HTTP envelope of the `Response` the matcher produces.
+ */
+export type StallOpts = {
+  readonly predicate?: RequestPredicate;
+  readonly responseOpts?: WhenRequestMatchesOpts;
+};
+
+/**
+ * Handle returned by `scenario.stall`. Exposes the underlying
+ * `SimulatedStream` (in case a test wants to enqueue something into it
+ * later, e.g. to release the stall after the assertions run) plus abort
+ * telemetry covering the matched fetch's `AbortSignal`.
+ *
+ * `aborted` flips to `true` as soon as the matched fetch's signal fires
+ * — either because the inference layer's per-call timeout aborted it,
+ * because a caller-supplied `signal` aborted, or because `dispose()`
+ * rejected the still-waiting fetch. Reading `aborted` before the
+ * matcher fires returns `false`. Reading it after the matcher fires
+ * but before any abort returns `false`.
+ *
+ * `awaitAbort` resolves the first time the matched fetch's signal
+ * fires. Tests use it when they need to sequence assertions after the
+ * abort propagated rather than after `harness.run()` returned.
+ */
+export type StallHandle = {
+  readonly stream: SimulatedStream;
+  readonly aborted: boolean;
+  readonly awaitAbort: Promise<void>;
+};
+
+/**
  * The public scenario seam exposed by the harness. `createStream()` mints a
  * `SimulatedStream` registered with the harness for `dispose()` teardown.
  * `whenRequestMatches(predicate, responseStream, opts?)` registers a
@@ -192,6 +225,27 @@ export type Scenario = {
    * tool calls), use `createStream` + `whenRequestMatches` directly.
    */
   replyOnce(provider: Provider, opts: ReplyOnceOpts): SimulatedStream;
+  /**
+   * Convenience helper for timeout/abort tests. Creates a stream,
+   * registers a single-use matcher that routes the next fetch to it,
+   * and never enqueues anything — the matched stream parks forever.
+   *
+   * The returned `StallHandle` exposes the underlying stream (in case
+   * the test wants to release the stall by enqueueing chunks later)
+   * and live abort telemetry: `aborted` flips true when the matched
+   * fetch's `AbortSignal` fires, and `awaitAbort` resolves at the
+   * same moment.
+   *
+   * The harness recognises the stall as intentional pending state and
+   * does NOT raise `UnmatchedFetchError` during the quiescence check
+   * *as long as the fetch eventually settles* — i.e., either an abort
+   * fires (timeout, caller signal, dispose) or the test enqueues the
+   * terminating chunks. Tests that exercise per-call timeout
+   * behaviour should pair `stall` with short `inactivityTimeoutMs` or
+   * `totalTimeoutMs` values and `setupHarness({ enableInferenceTimers:
+   * true })` so the inference layer's timers fire at virtual time.
+   */
+  stall(opts?: StallOpts): StallHandle;
   /**
    * Schedules `controller.abort()` to fire at the supplied virtual time.
    * The caller supplies the `AbortController` they want aborted —

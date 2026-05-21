@@ -22,6 +22,8 @@ export type {
   Scenario,
   ReplyOnceOpts,
   RequestPredicate,
+  StallHandle,
+  StallOpts,
   WhenRequestMatchesOpts,
   WireEventPredicate,
 } from "./scenario";

@@ -26,6 +26,8 @@ import {
   type ReplyOnceOpts,
   type RequestPredicate,
   type Scenario,
+  type StallHandle,
+  type StallOpts,
   type WaitingFetch,
   type WhenRequestMatchesOpts,
   type WireEventPredicate,
@@ -186,6 +188,13 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
   const matcherTable = createMatcherTable();
   let disposed = false;
 
+  type StallRegistration = {
+    readonly stream: SimulatedStream;
+    readonly aborted: { value: boolean };
+    readonly resolveAwaitAbort: () => void;
+  };
+  const stallRegistrations: StallRegistration[] = [];
+
   const streamIdToHandle = new Map<StreamId, SimulatedStreamHandle>();
   const streamToHandle = new WeakMap<SimulatedStream, SimulatedStreamHandle>();
 
@@ -267,6 +276,33 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
           handle.forceError(new DOMException("aborted", "AbortError"));
         };
         signal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
+    // Stall telemetry: if this stream was minted by `scenario.stall`,
+    // record when its bound fetch's signal aborts so the test can
+    // assert directly on AbortController propagation rather than only
+    // on the downstream `inference.error` event the abort produces.
+    const stallReg = stallRegistrations.find((r) => r.stream === stream);
+    if (stallReg !== undefined) {
+      if (signal === undefined) {
+        // No signal means no abort can ever fire on this fetch. The
+        // stall handle's `aborted` stays false and `awaitAbort` never
+        // resolves; that's the honest read of the situation. A test
+        // that called stall() without a signal-bearing call is using
+        // the helper outside its intended purpose, and we will not
+        // fabricate a resolution.
+      } else if (signal.aborted) {
+        stallReg.aborted.value = true;
+        stallReg.resolveAwaitAbort();
+      } else {
+        signal.addEventListener(
+          "abort",
+          () => {
+            stallReg.aborted.value = true;
+            stallReg.resolveAwaitAbort();
+          },
+          { once: true },
+        );
       }
     }
     const status = opts?.status ?? 200;
@@ -453,6 +489,35 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     return stream;
   };
 
+  const stall = (opts: StallOpts = {}): StallHandle => {
+    if (disposed) {
+      throw new Error("Harness.scenario.stall: harness has been disposed");
+    }
+    const stream = createStream();
+    const aborted = { value: false };
+    let resolveAwaitAbort: () => void = () => {
+      throw new Error(
+        "Harness.scenario.stall: awaitAbort resolver invoked before Promise constructor ran (internal bug)",
+      );
+    };
+    const awaitAbort = new Promise<void>((resolve) => {
+      resolveAwaitAbort = resolve;
+    });
+    stallRegistrations.push({ stream, aborted, resolveAwaitAbort });
+    whenRequestMatches(
+      opts.predicate ?? (() => true),
+      stream,
+      opts.responseOpts,
+    );
+    return {
+      stream,
+      get aborted() {
+        return aborted.value;
+      },
+      awaitAbort,
+    };
+  };
+
   const scenario: Scenario = {
     createStream,
     whenRequestMatches,
@@ -461,6 +526,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     lastToolDispatch,
     lastRequest,
     replyOnce,
+    stall,
     abortAt,
     abortAfter,
   };
@@ -825,6 +891,12 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     inFlightToolHandlers.clear();
     inFlightErrors.length = 0;
     abortAfterRegistrations.length = 0;
+    // Resolve any still-pending stall awaits so test code that awaited
+    // `stall.awaitAbort` past dispose does not deadlock the test runner.
+    for (const reg of stallRegistrations) {
+      reg.resolveAwaitAbort();
+    }
+    stallRegistrations.length = 0;
     lastToolDispatchByName.clear();
   };
 
