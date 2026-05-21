@@ -83,9 +83,9 @@ describe("agent-multi-provider CLI", () => {
     expect(stdoutBuf).toContain("smart-reply");
 
     // The model carried by the actual inference request must match
-    // the routed model. lastRequest sees only the most recent
-    // matched request, so we check the smart side here.
-    const last = harness.scenario.lastRequest();
+    // the routed model. matchedRequests() returns every routed request
+    // in match order; we check the most recent (the smart side) here.
+    const last = harness.scenario.matchedRequests().at(-1);
     if (last === undefined) throw new Error("expected a matched request");
     const body: unknown = await last.json();
     expect(body).toMatchObject({ model: "sonnet-test" });

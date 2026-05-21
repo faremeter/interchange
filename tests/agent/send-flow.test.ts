@@ -209,7 +209,7 @@ describe("@intx/agent send-flow integration", () => {
       const r = await second;
       expect(r.reply).toBe("rotated reply");
 
-      const matched = harness.scenario.lastRequest();
+      const matched = harness.scenario.matchedRequests().at(-1);
       if (matched === undefined) {
         throw new Error("expected a matched request after setProvider swap");
       }
@@ -256,7 +256,7 @@ describe("@intx/agent send-flow integration", () => {
       const r = await second;
       expect(r.reply).toBe("second-model reply");
 
-      const matched = harness.scenario.lastRequest();
+      const matched = harness.scenario.matchedRequests().at(-1);
       if (matched === undefined) {
         throw new Error("expected a matched request after model swap");
       }
