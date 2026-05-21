@@ -1,6 +1,5 @@
 import { type } from "arktype";
 
-import { getLogger } from "@intx/log";
 import type {
   ConversationTurn,
   ContentBlock,
@@ -10,8 +9,7 @@ import type {
   TokenUsage,
 } from "@intx/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
-
-const logger = getLogger(["interchange", "inference", "anthropic"]);
+import { ProtocolMismatchError } from "../errors";
 
 // ---------------------------------------------------------------------------
 // Request building
@@ -254,17 +252,30 @@ function parseResponse(
   sseData: string,
   blockIndexToCallId: Map<number, string>,
 ): InferenceEvent[] {
+  // Same protocol-mismatch posture as the openai adapter: a JSON parse
+  // failure or arktype rejection means the upstream emitted bytes that
+  // violate the Anthropic streaming protocol. Surface through
+  // ProtocolMismatchError so the harness's stream-error catch emits
+  // an inference.error with category "protocol_mismatch" carrying the
+  // offending data in error.raw, rather than dropping the chunk
+  // silently.
   let parsed: unknown;
   try {
     parsed = JSON.parse(sseData);
-  } catch {
-    return [];
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    throw new ProtocolMismatchError(
+      `anthropic parseResponse: malformed JSON in SSE data payload: ${message}`,
+      sseData,
+    );
   }
 
   const event = AnthropicSSEEvent(parsed);
   if (event instanceof type.errors) {
-    logger.warn`Unexpected SSE event shape: ${event.summary}`;
-    return [];
+    throw new ProtocolMismatchError(
+      `anthropic parseResponse: SSE event failed schema validation: ${event.summary}`,
+      parsed,
+    );
   }
 
   // The seq field is a placeholder 0 — the harness assigns real sequence numbers.
@@ -300,8 +311,9 @@ function parseResponse(
         const index = event.index ?? 0;
         const callId = blockIndexToCallId.get(index);
         if (callId === undefined) {
-          throw new Error(
-            `input_json_delta for content block ${index} with no preceding tool_use start`,
+          throw new ProtocolMismatchError(
+            `anthropic parseResponse: input_json_delta for content block ${index} with no preceding tool_use start`,
+            event,
           );
         }
         const fragment = delta.partial_json ?? "";

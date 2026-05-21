@@ -4,6 +4,7 @@ import { wire } from "@intx/inference-testing";
 import {
   parseSSE,
   createAnthropicAdapter,
+  ProtocolMismatchError,
   type ProviderAdapter,
 } from "@intx/inference";
 import type { ConversationTurn, InferenceEvent } from "@intx/types/runtime";
@@ -288,13 +289,71 @@ describe("Anthropic adapter: buildRequest", () => {
 });
 
 describe("Anthropic adapter: parseResponse", () => {
-  test("returns empty array for non-JSON input", async () => {
-    // Non-JSON data payload — the structured DSL helpers serialize JSON, so
-    // `wire.anthropic.raw` is the right tool for genuinely-adversarial bytes.
-    const events = await parseWire(adapter, [
-      wire.anthropic.raw("event: x\ndata: not json\n\n"),
-    ]);
-    expect(events).toEqual([]);
+  test("throws ProtocolMismatchError on malformed JSON in SSE payload", () => {
+    // The harness's stream-error catch maps this to inference.error with
+    // category "protocol_mismatch" via classifyStreamError. The raw
+    // payload is carried in error.raw for operator inspection.
+    expect(() => adapter.parseResponse("not json {")).toThrow(
+      ProtocolMismatchError,
+    );
+
+    try {
+      adapter.parseResponse("not json {");
+      throw new Error("expected ProtocolMismatchError to be thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProtocolMismatchError);
+      if (err instanceof ProtocolMismatchError) {
+        expect(err.message).toContain("malformed JSON");
+        expect(err.raw).toBe("not json {");
+      }
+    }
+  });
+
+  test("throws ProtocolMismatchError on schema-mismatched event", () => {
+    // `{"type":42}` is well-formed JSON but rejects against the
+    // AnthropicSSEEvent schema (type must be a string). The thrown
+    // error carries the parsed object in raw and the arktype summary
+    // in message.
+    const malformed = '{"type":42}';
+
+    expect(() => adapter.parseResponse(malformed)).toThrow(
+      ProtocolMismatchError,
+    );
+
+    try {
+      adapter.parseResponse(malformed);
+      throw new Error("expected ProtocolMismatchError to be thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProtocolMismatchError);
+      if (err instanceof ProtocolMismatchError) {
+        expect(err.message).toContain("schema validation");
+        expect(err.raw).toEqual({ type: 42 });
+      }
+    }
+  });
+
+  test("throws ProtocolMismatchError on input_json_delta with no preceding tool_use start", () => {
+    // The adapter tracks tool_use content-block IDs by index so that
+    // subsequent input_json_delta events can resolve to the right
+    // tool call. A delta for an unknown index means the upstream
+    // emitted events out of order — a protocol violation, not a
+    // transport flake.
+    const malformed =
+      '{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"x\\":1}"}}';
+
+    expect(() => adapter.parseResponse(malformed)).toThrow(
+      ProtocolMismatchError,
+    );
+
+    try {
+      adapter.parseResponse(malformed);
+      throw new Error("expected ProtocolMismatchError to be thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProtocolMismatchError);
+      if (err instanceof ProtocolMismatchError) {
+        expect(err.message).toContain("no preceding tool_use start");
+      }
+    }
   });
 
   test("parses text_delta", async () => {
