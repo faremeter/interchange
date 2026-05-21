@@ -47,6 +47,17 @@ export function classifyAbortError(): InferenceError {
   return { category: "aborted", message: "inference aborted" };
 }
 
+export function classifyTimeoutError(
+  kind: "inactivity" | "total",
+  thresholdMs: number,
+): InferenceError {
+  const message =
+    kind === "inactivity"
+      ? `inference call exceeded inactivity timeout (${String(thresholdMs)} ms with no events from the provider)`
+      : `inference call exceeded total timeout (${String(thresholdMs)} ms wall-clock)`;
+  return { category: "timeout", message };
+}
+
 export function classifyStreamError(cause: unknown): InferenceError {
   if (isAbortError(cause)) {
     return classifyAbortError();
