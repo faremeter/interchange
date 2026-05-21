@@ -685,6 +685,7 @@ export const InferenceError = type({
     "quota_exhausted",
     "fatal",
     "aborted",
+    "timeout",
   ),
   message: "string",
   "statusCode?": "number",
@@ -1472,6 +1473,21 @@ export type InferenceOptions = {
   thinking?: { enabled: boolean; budgetTokens?: number };
   systemPrompt?: string;
   tools?: ToolDefinition[];
+  /**
+   * Per-call inactivity timeout in milliseconds. If the harness yields no
+   * event (other than `inference.start`) for this many ms, the underlying
+   * fetch is aborted and the call ends with `inference.error` of category
+   * `"timeout"`. Default 120_000 (2 min). Tune higher for reasoning models
+   * that exhibit long silent-thinking stretches between token bursts; tune
+   * lower to fail fast.
+   */
+  inactivityTimeoutMs?: number;
+  /**
+   * Per-call total wall-clock cap in milliseconds. Starts at fetch.
+   * Default 600_000 (10 min). Backstop for streams that keep emitting
+   * forever without terminating. Same error category as `inactivityTimeoutMs`.
+   */
+  totalTimeoutMs?: number;
 };
 
 // ---------------------------------------------------------------------------
