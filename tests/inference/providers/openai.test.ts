@@ -324,6 +324,81 @@ describe("OpenAI adapter: parseResponse", () => {
     }
   });
 
+  test("parses Fireworks-shaped tool-call deltas with null name/id on follow-up fragments", async () => {
+    // Fireworks (and other OpenAI-compatible deployments routing through
+    // opencode-zen) emits `id: null` and `function.name: null` on every
+    // tool-call delta AFTER the start delta — semantically equivalent to
+    // omitting the field, but lexically a different JSON value.
+    // The schema must accept `null` and the consumer site must normalise
+    // it to undefined, otherwise every fragment chunk fails validation
+    // and `argsBuffer` never accumulates — the exact failure mode that
+    // produced `arguments: {}` tool calls in kimi-k2.6 runs of
+    // interchange-demo-dispatch.
+    //
+    // Hand-rolled via `wire.openai.raw()` because the wire DSL's typed
+    // helpers (`toolCallStart`, `toolCallArgumentsDelta`) always emit
+    // the canonical OpenAI shape, never the Fireworks variant.
+    const events = await parseWire(adapter, [
+      wire.openai.raw(
+        'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","function":{"name":"read_file","arguments":""}}]}}]}\n\n',
+      ),
+      wire.openai.raw(
+        'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":null,"function":{"name":null,"arguments":"{\\"path\\":\\""}}]}}]}\n\n',
+      ),
+      wire.openai.raw(
+        'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":null,"function":{"name":null,"arguments":"foo.ts\\"}"}}]}}]}\n\n',
+      ),
+    ]);
+
+    // One start (from chunk 1) plus two fragments (from chunks 2 and 3).
+    // Chunk 1's empty `arguments: ""` does not produce a fragment event
+    // because the consumer-site length check skips zero-length fragments.
+    const starts = events.filter((e) => e.type === "inference.tool_call.start");
+    const fragments = events.filter(
+      (e) => e.type === "inference.tool_call.delta",
+    );
+    expect(starts).toHaveLength(1);
+    expect(fragments).toHaveLength(2);
+
+    const start = starts[0];
+    if (start?.type === "inference.tool_call.start") {
+      expect(start.data.callId).toBe("call_abc");
+      expect(start.data.name).toBe("read_file");
+    }
+
+    const accumulated = fragments
+      .map((e) =>
+        e.type === "inference.tool_call.delta" ? e.data.argumentFragment : "",
+      )
+      .join("");
+    expect(accumulated).toBe('{"path":"foo.ts"}');
+  });
+
+  test("emits both start and fragment from a single Fireworks first-fragment delta", async () => {
+    // Locks the dual-emission claim in the consumer-site comment: when
+    // one chunk carries BOTH a start signal (id + non-null name) and
+    // a non-empty argument fragment, both events must come out. This
+    // is what Fireworks does on the first fragment delta following the
+    // bare start — without this independent treatment, accepting null
+    // name on the second-and-later deltas alone wouldn't be enough.
+    const events = await parseWire(adapter, [
+      wire.openai.raw(
+        'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_xyz","function":{"name":"search","arguments":"{\\"q\\":\\"foo\\"}"}}]}}]}\n\n',
+      ),
+    ]);
+
+    expect(events).toHaveLength(2);
+    expect(events[0]?.type).toBe("inference.tool_call.start");
+    expect(events[1]?.type).toBe("inference.tool_call.delta");
+    if (events[0]?.type === "inference.tool_call.start") {
+      expect(events[0].data.callId).toBe("call_xyz");
+      expect(events[0].data.name).toBe("search");
+    }
+    if (events[1]?.type === "inference.tool_call.delta") {
+      expect(events[1].data.argumentFragment).toBe('{"q":"foo"}');
+    }
+  });
+
   test("returns empty for empty choices array with no usage", async () => {
     // The `chunk()` helper always emits a non-empty choices entry unless a
     // usage block is supplied (in which case it also adds a usage object).

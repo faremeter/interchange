@@ -176,10 +176,19 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
 
 const EMPTY_PARTIAL: PartialMessage = { text: "" };
 
+// Fireworks (and likely other OpenAI-compatible deployments) emits
+// `name: null` and `arguments: null` on tool-call delta fragments AFTER
+// the start delta. arktype rejects `null` against `"string"` and would
+// drop the whole chunk silently — taking the argument fragments with
+// it. Accept `string | null` here and treat null the same as the field
+// being absent at the consumer site.
 const OpenAIToolCallDelta = type({
   "index?": "number",
-  "id?": "string",
-  "function?": { "name?": "string", "arguments?": "string" },
+  "id?": "string | null",
+  "function?": {
+    "name?": "string | null",
+    "arguments?": "string | null",
+  },
 });
 
 const OpenAIChunkDelta = type({
@@ -277,21 +286,36 @@ function parseResponse(sseData: string): InferenceEvent[] {
   if (toolCallDeltas !== undefined) {
     for (const tcDelta of toolCallDeltas) {
       const index = tcDelta.index ?? 0;
-      const { id } = tcDelta;
+      // Normalize null → undefined: Fireworks emits literal null on every
+      // delta after the first; we treat that the same as the field being
+      // absent so the start / fragment branches below remain simple.
+      const id = tcDelta.id ?? undefined;
       const fn = tcDelta.function;
-      const name = fn?.name;
-      const argFragment = fn?.arguments;
+      const name = fn?.name ?? undefined;
+      const argFragment = fn?.arguments ?? undefined;
 
+      // Different providers shape these deltas differently:
+      //   - OpenAI emits id + name + empty arguments in the first delta,
+      //     then arguments-only deltas (no id, no name) for the body.
+      //   - Fireworks (kimi-k2.6) emits id + index on EVERY delta, with
+      //     name populated only on the first and arguments fragments on
+      //     subsequent deltas. The non-first deltas carry name: null
+      //     (normalized to undefined above) rather than omitting the
+      //     field outright.
+      // Treat the two signals independently. A single delta may legitimately
+      // carry both a start signal (id + non-null name) and an argument
+      // fragment; both must be emitted.
       if (id !== undefined && name !== undefined) {
-        // First delta for this tool call — emit start.
         events.push({
           type: "inference.tool_call.start",
           seq,
           data: { callId: id, name, partial: EMPTY_PARTIAL },
         });
-      } else if (argFragment !== undefined && argFragment.length > 0) {
+      }
+      if (argFragment !== undefined && argFragment.length > 0) {
         // Argument fragment. We use the index as a temporary callId placeholder
-        // since we may not have the real ID yet — the harness resolves this.
+        // since the upstream harness merges fragments by index — the real id is
+        // resolved at finalize time.
         events.push({
           type: "inference.tool_call.delta",
           seq,
