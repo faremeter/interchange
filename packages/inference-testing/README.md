@@ -413,15 +413,34 @@ register matchers via `scenario.whenRequestBodyMatches`. The predicate
 receives the buffered body text alongside the `Request`:
 
 ```ts
+const greetStream = harness.scenario.createStream();
+greetStream.enqueueAll(
+  wire.completeResponse("openai", {
+    toolCalls: [{ name: "writeFile", args: { path: "greet.ts" } }],
+  }),
+  { startAt: harness.clock.now() + 1 },
+);
 harness.scenario.whenRequestBodyMatches(
   (body) => body.includes("1a-greet"),
-  greetImplementerStream,
+  greetStream,
+);
+
+const formatStream = harness.scenario.createStream();
+formatStream.enqueueAll(
+  wire.completeResponse("openai", {
+    toolCalls: [{ name: "writeFile", args: { path: "format.ts" } }],
+  }),
+  { startAt: harness.clock.now() + 1 },
 );
 harness.scenario.whenRequestBodyMatches(
   (body) => body.includes("1b-format"),
-  formatImplementerStream,
+  formatStream,
 );
 ```
+
+See `tests/inference-testing/per-agent-scoping.test.ts` for a runnable
+end-to-end shape that combines body-aware routing with per-agent
+assertion scoping.
 
 The harness buffers each fetch's body once before evaluating
 body-aware matchers; subsequent body-aware predicates see the cached

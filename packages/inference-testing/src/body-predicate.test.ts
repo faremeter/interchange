@@ -34,6 +34,103 @@ async function drainResponse(response: Response): Promise<string> {
   return out;
 }
 
+describe("Scenario.matchedRequests", () => {
+  test("returns fresh clones every call so bodies can be read repeatedly", async () => {
+    // matchedRequests() is the post-match seam for asserting against
+    // request bodies. Tests sometimes call it more than once during a
+    // run (e.g., once to check the first agent's request, again after
+    // the second agent's request fires). Each call must return clones
+    // whose bodies are independently consumable — the route-time
+    // stored clone is only used as a source for further `.clone()`
+    // calls, never consumed itself.
+    const harness = setupHarness();
+    try {
+      const s = harness.scenario.createStream();
+      harness.scenario.whenRequestMatches(() => true, s);
+      s.enqueueAt(5, utf8("reply"));
+      s.closeAt(10);
+
+      const body = JSON.stringify({ marker: "abc" });
+      const f = harness.deps.fetch("https://example/x", {
+        method: "POST",
+        body,
+      });
+      await harness.run();
+      await f;
+
+      const first = harness.scenario.matchedRequests();
+      expect(first).toHaveLength(1);
+      const firstEntry = first[0];
+      if (firstEntry === undefined) throw new Error("unreachable");
+      expect(await firstEntry.text()).toBe(body);
+
+      // Second call must succeed even though the first call's clone
+      // had its body fully consumed.
+      const second = harness.scenario.matchedRequests();
+      expect(second).toHaveLength(1);
+      const secondEntry = second[0];
+      if (secondEntry === undefined) throw new Error("unreachable");
+      expect(await secondEntry.text()).toBe(body);
+
+      // And the two calls' clones must themselves be different
+      // objects — caller code that mutates one (e.g., reads headers
+      // case-insensitively, applies request rewriting in a test
+      // utility) must not see leakage into the next call's clones.
+      expect(firstEntry).not.toBe(secondEntry);
+    } finally {
+      harness.dispose();
+    }
+  });
+
+  test("captures matched requests in match order across multiple routings", async () => {
+    const harness = setupHarness();
+    try {
+      const sA = harness.scenario.createStream();
+      const sB = harness.scenario.createStream();
+      harness.scenario.whenRequestMatches((req) => req.url.endsWith("/a"), sA);
+      harness.scenario.whenRequestMatches((req) => req.url.endsWith("/b"), sB);
+      sA.enqueueAt(5, utf8("a"));
+      sA.closeAt(10);
+      sB.enqueueAt(5, utf8("b"));
+      sB.closeAt(10);
+
+      const fA = harness.deps.fetch("https://example/a", {
+        method: "POST",
+        body: "first",
+      });
+      const fB = harness.deps.fetch("https://example/b", {
+        method: "POST",
+        body: "second",
+      });
+      await harness.run();
+      await Promise.all([fA, fB]);
+
+      const all = harness.scenario.matchedRequests();
+      expect(all).toHaveLength(2);
+      // Match order is fetch arrival order — fA was the first to park.
+      const [first, second] = all;
+      if (first === undefined || second === undefined) {
+        throw new Error("unreachable");
+      }
+      expect(first.url).toBe("https://example/a");
+      expect(second.url).toBe("https://example/b");
+      expect(await first.text()).toBe("first");
+      expect(await second.text()).toBe("second");
+    } finally {
+      harness.dispose();
+    }
+  });
+
+  test("returns an empty array when nothing has been matched yet", () => {
+    const harness = setupHarness();
+    try {
+      expect(harness.scenario.matchedRequests()).toEqual([]);
+    } finally {
+      harness.dispose();
+    }
+  });
+});
+
 describe("Scenario.whenRequestBodyMatches", () => {
   test("routes two concurrent POSTs to different streams by body substring", async () => {
     // This is the primary use case from INTR-83: N agents POST to the
@@ -285,10 +382,22 @@ describe("Scenario.whenRequestBodyMatches", () => {
     }
   });
 
-  test("abort during body buffering: fetch rejects with AbortError, scan does not throw", async () => {
-    // A fetch aborted between arrival and body-aware scan should reject
-    // cleanly. The body buffer reads through but the routing path
-    // checks `settled` and skips. `run()` returns without an error.
+  test("abort before run(): aborted fetch is removed from the waiting set before any body-aware scan runs", async () => {
+    // The abort fires synchronously, BEFORE `harness.run()` begins.
+    // `triggerBodyAwareScan` already ran (synchronously, from
+    // `stubFetch`) and queued an async scan whose `bufferUnreadBodies`
+    // call snapshots the entry into `needBuffer` before the first
+    // `await`. By the time `Promise.all` resumes, the pre-route abort
+    // listener in `stubFetch` has already set `settled = true` and
+    // removed the entry from `waiting`. The `if (wf.settled) return;`
+    // short-circuit at the head of the map callback (and the second
+    // guard around the `clone().text()` catch) is what then prevents
+    // a spurious read error from surfacing.
+    //
+    // This test pins that body-aware matchers tolerate a pre-run abort
+    // gracefully (the matcher stays unconsumed and is available for
+    // any future fetch) and that the settled-flag guards inside the
+    // buffer are the ones doing the work.
     const harness = setupHarness();
     try {
       const s = harness.scenario.createStream();
@@ -402,6 +511,60 @@ describe("Scenario.whenRequestBodyMatches", () => {
     expect(() =>
       harness.scenario.whenRequestBodyMatches(() => true, s),
     ).toThrow(/has been disposed/);
+  });
+
+  test("genuine body-read failure surfaces as the scan error, not as UnmatchedFetchError", async () => {
+    // The pre-INTR-83 buffer path used to map any body-read exception
+    // to `bodyText = ""`, hiding real failures behind a downstream
+    // "fetch was not matched" diagnostic. Per the CLAUDE.md defensive-
+    // coding rule, errors must surface — this test pins that contract.
+    //
+    // Synthesizing a real body-read failure on the Bun runtime is
+    // unreliable (Bun's `Request.clone().text()` is permissive about
+    // disturbed bodies and errored streams), so we override `clone`
+    // on the request instance to throw deterministically. The harness
+    // calls `wf.request.clone().text()` inside `bufferUnreadBodies`;
+    // the override turns that into a guaranteed rejection the harness
+    // must re-throw to the caller of `harness.run()` rather than
+    // silently coerce to an empty body.
+    const harness = setupHarness();
+    try {
+      const s = harness.scenario.createStream();
+      harness.scenario.whenRequestBodyMatches(() => true, s);
+      s.enqueueAt(5, utf8("unused"));
+      s.closeAt(10);
+
+      const SENTINEL = "intentional-clone-failure";
+      const req = new Request("https://example/x", {
+        method: "POST",
+        body: "payload",
+      });
+      Object.defineProperty(req, "clone", {
+        value: () => {
+          throw new Error(SENTINEL);
+        },
+      });
+
+      // Attach the rejection-catcher BEFORE driving run() so the
+      // parked fetch's eventual rejection (delivered by `dispose()` in
+      // the finally clause once `run()` has thrown) does not surface
+      // as an unhandled rejection inside the test runner.
+      const f = harness.deps.fetch(req);
+      f.catch(() => undefined);
+
+      let runErr: unknown;
+      try {
+        await harness.run();
+      } catch (err) {
+        runErr = err;
+      }
+      expect(runErr).toBeInstanceOf(Error);
+      expect(runErr).not.toBeInstanceOf(UnmatchedFetchError);
+      if (!(runErr instanceof Error)) throw new Error("unreachable");
+      expect(runErr.message).toBe(SENTINEL);
+    } finally {
+      harness.dispose();
+    }
   });
 
   test("body-aware scan does NOT fire when no body-aware matchers are registered", async () => {
