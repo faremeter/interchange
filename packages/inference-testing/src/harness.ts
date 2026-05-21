@@ -25,6 +25,7 @@ import {
   scanWaitingSet,
   type BodyAwareRequestPredicate,
   type ReplyOnceOpts,
+  type ReplyOnceToolCall,
   type RequestPredicate,
   type Scenario,
   type StallHandle,
@@ -597,6 +598,39 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- type-only bridge between undici Request and Bun's global Request
     matchedRequestsList.slice() as Request[];
 
+  let nextAutoCallId = 0;
+  // The `call_auto_` prefix is reserved for ids the harness mints on
+  // behalf of the friendlier `{ name, args }` shape. Tests that pin an
+  // explicit `callId` against the explicit shape must not collide with
+  // it; rejecting at registration is friendlier than the silent
+  // confusion of two tool calls sharing an id mid-stream.
+  const AUTO_CALL_ID_PREFIX = "call_auto_";
+  const normalizeToolCalls = (
+    toolCalls: readonly ReplyOnceToolCall[],
+  ): { callId: string; name: string; argsJSON: string }[] => {
+    return toolCalls.map((tc) => {
+      if ("argsJSON" in tc) {
+        if (tc.callId.startsWith(AUTO_CALL_ID_PREFIX)) {
+          throw new Error(
+            `Harness.scenario.replyOnce: callId ${JSON.stringify(tc.callId)} uses the reserved ${JSON.stringify(AUTO_CALL_ID_PREFIX)} prefix; pick a different id for explicit-shape tool calls.`,
+          );
+        }
+        return { callId: tc.callId, name: tc.name, argsJSON: tc.argsJSON };
+      }
+      if (
+        tc.callId !== undefined &&
+        tc.callId.startsWith(AUTO_CALL_ID_PREFIX)
+      ) {
+        throw new Error(
+          `Harness.scenario.replyOnce: callId ${JSON.stringify(tc.callId)} uses the reserved ${JSON.stringify(AUTO_CALL_ID_PREFIX)} prefix; pick a different id for pinned tool calls.`,
+        );
+      }
+      const callId =
+        tc.callId ?? `${AUTO_CALL_ID_PREFIX}${String(nextAutoCallId++)}`;
+      return { callId, name: tc.name, argsJSON: JSON.stringify(tc.args) };
+    });
+  };
+
   const replyOnce = (
     provider: Provider,
     opts: ReplyOnceOpts,
@@ -604,7 +638,9 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     const stream = createStream();
     const chunks = completeResponse(provider, {
       ...(opts.text !== undefined ? { text: opts.text } : {}),
-      ...(opts.toolCalls !== undefined ? { toolCalls: opts.toolCalls } : {}),
+      ...(opts.toolCalls !== undefined
+        ? { toolCalls: normalizeToolCalls(opts.toolCalls) }
+        : {}),
       ...(opts.headUsage !== undefined ? { headUsage: opts.headUsage } : {}),
       ...(opts.tailUsage !== undefined ? { tailUsage: opts.tailUsage } : {}),
     });

@@ -40,6 +40,32 @@ export type BodyAwareRequestPredicate = (
 ) => boolean;
 
 /**
+ * Tool-call entry accepted by `ReplyOnceOpts.toolCalls`. Two shapes are
+ * permitted:
+ *
+ * - `{ callId, name, argsJSON }` — the original explicit shape. Use when
+ *   the test asserts against an exact `callId` or hand-crafts the
+ *   arguments string (e.g., to exercise malformed-JSON paths).
+ * - `{ name, args, callId? }` — the friendlier shape. `args` is
+ *   `JSON.stringify`'d for you; `callId` is auto-generated if omitted.
+ *   Use for the common case where the test only cares about the tool
+ *   name and structured arguments.
+ *
+ * Both shapes may be mixed within the same array.
+ */
+export type ReplyOnceToolCall =
+  | {
+      readonly callId: string;
+      readonly name: string;
+      readonly argsJSON: string;
+    }
+  | {
+      readonly name: string;
+      readonly args: unknown;
+      readonly callId?: string;
+    };
+
+/**
  * Options for `scenario.replyOnce`. `text` and `toolCalls` are the response
  * payload (passed through to `wire.completeResponse`); `headUsage` and
  * `tailUsage` are optional usage frames. `predicate` narrows which fetch
@@ -48,11 +74,7 @@ export type BodyAwareRequestPredicate = (
  */
 export type ReplyOnceOpts = {
   readonly text?: string;
-  readonly toolCalls?: {
-    callId: string;
-    name: string;
-    argsJSON: string;
-  }[];
+  readonly toolCalls?: readonly ReplyOnceToolCall[];
   readonly headUsage?: {
     input: number;
     output: number;

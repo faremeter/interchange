@@ -21,6 +21,7 @@ export type {
 export type {
   Scenario,
   ReplyOnceOpts,
+  ReplyOnceToolCall,
   RequestPredicate,
   BodyAwareRequestPredicate,
   StallHandle,
