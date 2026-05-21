@@ -1,6 +1,15 @@
 export { parseSSE } from "./sse";
-export { runInference, createDefaultDependencies, HarnessId } from "./harness";
-export type { Dependencies, InferenceHarnessOptions } from "./harness";
+export {
+  runInference,
+  createDefaultDependencies,
+  createDefaultScheduler,
+  HarnessId,
+} from "./harness";
+export type {
+  Dependencies,
+  InferenceHarnessOptions,
+  Scheduler,
+} from "./harness";
 export {
   hasProvider,
   lookupProvider,

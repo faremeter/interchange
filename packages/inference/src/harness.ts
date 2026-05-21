@@ -33,7 +33,24 @@ import {
   classifyNetworkError,
   classifyAbortError,
   classifyStreamError,
+  classifyTimeoutError,
 } from "./errors";
+
+/**
+ * Default per-call inactivity timeout (ms). Two minutes is conservative
+ * for reasoning-heavy models that emit `inference.thinking.delta` tokens
+ * regularly when actually working — sustained silence past this means
+ * the provider stream has genuinely stalled, not that the model is
+ * thinking. Operators can tune via `InferenceOptions.inactivityTimeoutMs`.
+ */
+export const DEFAULT_INACTIVITY_TIMEOUT_MS = 120_000;
+
+/**
+ * Default per-call total wall-clock cap (ms). Matches Anthropic's
+ * documented per-call recommendation and fits within typical CI
+ * timeouts. Operators can tune via `InferenceOptions.totalTimeoutMs`.
+ */
+export const DEFAULT_TOTAL_TIMEOUT_MS = 600_000;
 
 export const HarnessId: unique symbol = Symbol("HarnessId");
 
@@ -58,11 +75,45 @@ export type Dependencies = {
     input: string | URL | Request,
     init?: RequestInit,
   ) => Promise<Response>;
+  /**
+   * Time-based scheduler used by the harness's per-call timeouts (see
+   * `InferenceOptions.inactivityTimeoutMs` / `totalTimeoutMs`). Production
+   * passes the default wrapper around `setTimeout` / `clearTimeout`; the
+   * deterministic test harness injects a scheduler that wraps its virtual
+   * clock so timeout tests fire at virtual-time-N without sleeping real
+   * wall-clock. Optional for backward compatibility — when omitted the
+   * harness substitutes the production default.
+   */
+  readonly scheduler?: Scheduler;
   readonly [HarnessId]?: symbol;
 };
 
+/**
+ * Minimal scheduling abstraction. `setTimeout` returns a canceller; the
+ * canceller is idempotent (multiple calls are safe). The harness uses
+ * this for both the inactivity timer (which is re-armed on every event)
+ * and the total wall-clock cap.
+ */
+export type Scheduler = {
+  setTimeout(callback: () => void, delayMs: number): () => void;
+};
+
+export function createDefaultScheduler(): Scheduler {
+  return {
+    setTimeout(callback, delayMs) {
+      const handle = setTimeout(callback, delayMs);
+      return () => {
+        clearTimeout(handle);
+      };
+    },
+  };
+}
+
 export function createDefaultDependencies(): Dependencies {
-  return { fetch: globalThis.fetch.bind(globalThis) };
+  return {
+    fetch: globalThis.fetch.bind(globalThis),
+    scheduler: createDefaultScheduler(),
+  };
 }
 
 export type InferenceHarnessOptions = {
@@ -167,15 +218,63 @@ export async function* runInference(
   const url = resolveURL(builtRequest.url, providerConfig.baseURL);
   const headers = injectCredentials(builtRequest.headers, providerConfig);
 
+  // Per-call timeouts. The inactivity timer fires when the harness
+  // hasn't yielded an event for `inactivityTimeoutMs`; the total timer
+  // is a wall-clock cap from fetch onwards. We own one AbortController,
+  // combine its signal with the caller's, and attribute the abort to
+  // whichever timer fired by checking `timeoutReason` at the catch site.
+  const inactivityTimeoutMs =
+    inferenceOptions.inactivityTimeoutMs ?? DEFAULT_INACTIVITY_TIMEOUT_MS;
+  const totalTimeoutMs =
+    inferenceOptions.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS;
+  const scheduler = deps.scheduler ?? createDefaultScheduler();
+  const timeoutAbort = new AbortController();
+  let timeoutReason: "inactivity" | "total" | null = null;
+  let cancelInactivity: (() => void) | null = null;
+  const armInactivity = () => {
+    cancelInactivity?.();
+    cancelInactivity = scheduler.setTimeout(() => {
+      timeoutReason = "inactivity";
+      timeoutAbort.abort();
+    }, inactivityTimeoutMs);
+  };
+  const cancelTotal = scheduler.setTimeout(() => {
+    timeoutReason = "total";
+    timeoutAbort.abort();
+  }, totalTimeoutMs);
+  const cleanupTimers = () => {
+    cancelTotal();
+    cancelInactivity?.();
+    cancelInactivity = null;
+  };
+  // Combined signal: the production code's existing caller-signal +
+  // our timeout controller, so a fetch implementation that respects
+  // AbortSignal sees both.
+  const fetchSignal = combineSignals(signal, timeoutAbort.signal);
+
   let response: Response;
   try {
     response = await deps.fetch(url, {
       method: "POST",
       headers,
       body: builtRequest.body,
-      ...(signal !== undefined ? { signal } : {}),
+      signal: fetchSignal,
     });
   } catch (cause) {
+    cleanupTimers();
+    if (timeoutReason !== null) {
+      const thresholdMs =
+        timeoutReason === "inactivity" ? inactivityTimeoutMs : totalTimeoutMs;
+      yield {
+        type: "inference.error",
+        seq: nextSeq(),
+        data: {
+          error: classifyTimeoutError(timeoutReason, thresholdMs),
+          partial: snapshotPartial(partial),
+        },
+      };
+      return;
+    }
     if (signal?.aborted) {
       yield {
         type: "inference.error",
@@ -239,8 +338,31 @@ export async function* runInference(
     return;
   }
 
+  // Arm the inactivity timer now that the SSE stream is open. Every
+  // event we yield below resets it; sustained silence past
+  // `inactivityTimeoutMs` aborts the controller and the loop's catch
+  // surfaces the timeout error.
+  armInactivity();
+
   try {
     for await (const sseData of parseSSE(response.body)) {
+      if (timeoutReason !== null) {
+        // The timeout aborted the stream; bubble up the right error
+        // shape rather than letting the abort masquerade as a
+        // caller-initiated cancellation.
+        const thresholdMs =
+          timeoutReason === "inactivity" ? inactivityTimeoutMs : totalTimeoutMs;
+        yield {
+          type: "inference.error",
+          seq: nextSeq(),
+          data: {
+            error: classifyTimeoutError(timeoutReason, thresholdMs),
+            partial: snapshotPartial(partial),
+          },
+        };
+        cleanupTimers();
+        return;
+      }
       if (signal?.aborted) {
         yield {
           type: "inference.error",
@@ -250,8 +372,12 @@ export async function* runInference(
             partial: snapshotPartial(partial),
           },
         };
+        cleanupTimers();
         return;
       }
+
+      // Reset inactivity timer — we just got something from the wire.
+      armInactivity();
 
       const rawEvents = adapter.parseResponse(sseData);
 
@@ -357,6 +483,20 @@ export async function* runInference(
       }
     }
   } catch (cause) {
+    if (timeoutReason !== null) {
+      const thresholdMs =
+        timeoutReason === "inactivity" ? inactivityTimeoutMs : totalTimeoutMs;
+      yield {
+        type: "inference.error",
+        seq: nextSeq(),
+        data: {
+          error: classifyTimeoutError(timeoutReason, thresholdMs),
+          partial: snapshotPartial(partial),
+        },
+      };
+      cleanupTimers();
+      return;
+    }
     if (signal?.aborted) {
       yield {
         type: "inference.error",
@@ -366,6 +506,7 @@ export async function* runInference(
           partial: snapshotPartial(partial),
         },
       };
+      cleanupTimers();
       return;
     }
     yield {
@@ -376,8 +517,15 @@ export async function* runInference(
         partial: snapshotPartial(partial),
       },
     };
+    cleanupTimers();
     return;
   }
+
+  // SSE loop exited normally — disarm timers before the finalization
+  // path emits any further events. (Both timers are no-op-safe after
+  // cleanup, but stopping them avoids spurious firings during a slow
+  // finalization step.)
+  cleanupTimers();
 
   // Finalize any open tool calls that never received an explicit end event.
   const completedToolCalls: ContentBlock[] = [];
@@ -458,6 +606,32 @@ export async function* runInference(
         : {}),
     },
   };
+}
+
+/**
+ * Combine an optional caller-supplied `AbortSignal` with the harness's
+ * internal timeout-driven controller into a single signal the fetch
+ * implementation can observe. Returns the internal controller's signal
+ * alone if no caller signal exists; otherwise wires both so that either
+ * one firing aborts the combined signal.
+ */
+function combineSignals(
+  caller: AbortSignal | undefined,
+  internal: AbortSignal,
+): AbortSignal {
+  if (caller === undefined) return internal;
+  const composite = new AbortController();
+  if (caller.aborted) composite.abort(caller.reason);
+  else
+    caller.addEventListener("abort", () => composite.abort(caller.reason), {
+      once: true,
+    });
+  if (internal.aborted) composite.abort(internal.reason);
+  else
+    internal.addEventListener("abort", () => composite.abort(internal.reason), {
+      once: true,
+    });
+  return composite.signal;
 }
 
 function snapshotPartial(partial: PartialMessage): PartialMessage {
