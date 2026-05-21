@@ -52,7 +52,6 @@ export default defineConfig(
             "bin/*.ts",
             "packages/db/drizzle.config.ts",
             "tests/sidecar/*.ts",
-            "tests/inference-testing/*.ts",
             "tests/inference/transform-cutover.test.ts",
             "tests/agent/*.ts",
             "tests/coding-agent/*.ts",
