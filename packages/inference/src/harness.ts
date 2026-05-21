@@ -309,21 +309,27 @@ export async function* runInference(
     }
 
     if (!response.ok) {
-      // Bind both body reads to the combined fetch signal. The fetch's
-      // response body is supposed to inherit the signal, but in practice
-      // some runtimes leave it parked even after the signal aborts — a
-      // hostile server returning a 4xx/5xx with a body that never
-      // terminates would otherwise hang the call indefinitely, defeating
-      // the total-timeout safety property.
+      // Read the body as text once and then try to parse it as JSON.
+      // Calling `.json()` first and falling back to `.text()` on the
+      // same response does not work — per WHATWG fetch the body stream
+      // is locked/disturbed by the first read attempt, so the fallback
+      // throws `TypeError: body already consumed` and `errorBody` ends
+      // up `undefined`. Reading text-then-parsing covers both JSON and
+      // plain-text error bodies in a single pass.
+      //
+      // The read is bound to the combined fetch signal so a hostile
+      // server returning a 4xx/5xx with a body that never terminates
+      // cannot hang the call past the total-timeout horizon.
       let errorBody: unknown;
       try {
-        errorBody = await awaitWithSignal(response.json(), fetchSignal);
-      } catch {
+        const text = await awaitWithSignal(response.text(), fetchSignal);
         try {
-          errorBody = await awaitWithSignal(response.text(), fetchSignal);
+          errorBody = JSON.parse(text);
         } catch {
-          errorBody = undefined;
+          errorBody = text;
         }
+      } catch {
+        errorBody = undefined;
       }
       const errorMessage =
         extractErrorMessage(errorBody) ?? response.statusText;
