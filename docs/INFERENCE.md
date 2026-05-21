@@ -657,6 +657,7 @@ Provider errors are classified into categories that determine the reactor's resp
 - **Fatal** — Invalid request, unsupported model, malformed content. Response: fail immediately with diagnostic information.
 - **Aborted** — Caller cancelled via AbortSignal. Response: clean termination.
 - **Timeout** — Per-call inactivity or total wall-clock cap fired (see Per-Call Timeouts). The call produced no usable response. Response: treat as transient infrastructure failure and retry per director policy rather than as a model decision.
+- **Protocol mismatch** — Upstream emitted a chunk that violates the provider's streaming protocol: malformed JSON, schema validation failure, or an out-of-order event sequence; the offending chunk is preserved in `error.raw`. Response: fail rather than retry — retrying the same request won't fix the bytes.
 
 The classifier inspects HTTP status codes, error response bodies, and provider-specific error message patterns. The classified error is delivered to the director as an `inference.error` event, and the director decides the response — retry, compact, switch model, suspend, or fail. The error categories inform the director's decision but do not hardcode the response.
 
