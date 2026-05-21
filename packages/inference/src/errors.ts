@@ -58,9 +58,38 @@ export function classifyTimeoutError(
   return { category: "timeout", message };
 }
 
+/**
+ * The one throw type a response parser is permitted to raise. See the
+ * `ResponseParser` contract on `adapter.ts` for full semantics. `raw`
+ * carries the offending bytes or parsed object so operators can
+ * inspect what came over the wire.
+ */
+export class ProtocolMismatchError extends Error {
+  readonly raw: unknown;
+  constructor(detail: string, raw?: unknown) {
+    super(detail);
+    this.name = "ProtocolMismatchError";
+    this.raw = raw;
+  }
+}
+
+export function classifyProtocolMismatch(
+  detail: string,
+  raw?: unknown,
+): InferenceError {
+  return {
+    category: "protocol_mismatch",
+    message: detail,
+    ...(raw !== undefined ? { raw } : {}),
+  };
+}
+
 export function classifyStreamError(cause: unknown): InferenceError {
   if (isAbortError(cause)) {
     return classifyAbortError();
+  }
+  if (cause instanceof ProtocolMismatchError) {
+    return classifyProtocolMismatch(cause.message, cause.raw);
   }
   const message = cause instanceof Error ? cause.message : String(cause);
   return { category: "retryable", message, raw: cause };

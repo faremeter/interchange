@@ -26,8 +26,15 @@ export type RequestBuilder = (
 // requests.
 //
 // The parser may return an empty array for events it doesn't care about
-// (e.g., Anthropic's ping events). It must not throw; errors should be
-// returned as inference.error events.
+// (e.g., Anthropic's ping events). It MAY throw `ProtocolMismatchError`
+// when the upstream chunk violates the provider's protocol (malformed
+// JSON, schema validation failure, out-of-order events); the harness's
+// stream-error catch converts that into an `inference.error` with
+// category `"protocol_mismatch"` via `classifyStreamError`. No other
+// throw type is permitted, and adapter-returned `inference.error` or
+// `inference.done` events are silently dropped — the harness owns
+// emission of those terminal types and the only path through which
+// adapter-detected failures can surface is `ProtocolMismatchError`.
 export type ResponseParser = (sseData: string) => InferenceEvent[];
 
 // An adapter pairs a request builder with a response parser. Registration
