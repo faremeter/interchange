@@ -347,6 +347,96 @@ expectToolCall("search").from(events).toHaveBeenCalledTimes(2);
 `toMatchSequence` allows gaps between expected entries — events not named
 in the partial are tolerated.
 
+### Per-agent scoping
+
+Multi-agent tests routinely want to assert "agent A made tool call X"
+independently of "agent B made tool call Y". The harness supports this
+without any special-purpose machinery: each call to
+`harness.runInference(...)` returns its own
+`AsyncIterable<InferenceEvent>`. Collect events per call into separate
+arrays, and every matcher (`expectToolCalls`, `expectToolCall(...).from(events)`)
+is automatically scoped to the agent whose events array it sees.
+
+```ts
+const harness = setupHarness();
+
+// Route each agent's fetch to its own response stream — either by URL,
+// or by body content via `whenRequestBodyMatches` (see below).
+harness.scenario.replyOnce("openai", {
+  toolCalls: [{ name: "agentATool", args: { value: "from-A" } }],
+  predicate: (req) => req.url.includes("/agent-a/"),
+});
+harness.scenario.replyOnce("openai", {
+  toolCalls: [{ name: "agentBTool", args: { value: "from-B" } }],
+  predicate: (req) => req.url.includes("/agent-b/"),
+});
+
+const eventsA: InferenceEvent[] = [];
+const eventsB: InferenceEvent[] = [];
+
+const collectA = (async () => {
+  for await (const ev of harness.runInference({
+    /* agent A's opts */
+  })) {
+    eventsA.push(ev);
+  }
+})();
+const collectB = (async () => {
+  for await (const ev of harness.runInference({
+    /* agent B's opts */
+  })) {
+    eventsB.push(ev);
+  }
+})();
+
+await harness.run();
+await Promise.all([collectA, collectB]);
+
+// Each assertion sees only the agent's own events.
+expectToolCall("agentATool").from(eventsA).toHaveBeenCalledTimes(1);
+expectToolCall("agentBTool").from(eventsA).toHaveBeenCalledTimes(0);
+expectToolCall("agentBTool").from(eventsB).toHaveBeenCalledTimes(1);
+expectToolCall("agentATool").from(eventsB).toHaveBeenCalledTimes(0);
+```
+
+The same pattern works when agents share a URL and only the body
+distinguishes them — see [body-aware predicates](#body-aware-predicates).
+`tests/inference-testing/per-agent-scoping.test.ts` pins this contract.
+
+### Body-aware predicates
+
+When the only distinguishing data between parallel fetches lives in the
+request body — for example, multiple agents POSTing to the same
+`/chat/completions` endpoint with the same headers and the same `model`
+field, distinguishable only by the task id in the seed message —
+register matchers via `scenario.whenRequestBodyMatches`. The predicate
+receives the buffered body text alongside the `Request`:
+
+```ts
+harness.scenario.whenRequestBodyMatches(
+  (body) => body.includes("1a-greet"),
+  greetImplementerStream,
+);
+harness.scenario.whenRequestBodyMatches(
+  (body) => body.includes("1b-format"),
+  formatImplementerStream,
+);
+```
+
+The harness buffers each fetch's body once before evaluating
+body-aware matchers; subsequent body-aware predicates see the cached
+text. URL/header-only matchers registered via `whenRequestMatches`
+never trigger a body read, so existing tests pay no extra cost.
+
+Scan ordering: sync `whenRequestMatches` predicates evaluate first.
+If none bind a fetch and at least one body-aware matcher exists, the
+harness buffers the bodies of every still-waiting fetch and runs a
+follow-up scan against body-aware matchers in their original
+registration order. Ambiguity (two fetches binding to the same
+body-aware matcher) is detected over a fully-buffered waiting set, so
+`AmbiguousRequestError` carries the same semantics it carries for sync
+matchers.
+
 ## Rules
 
 The harness's determinism rests on a small set of contracts test authors
@@ -369,20 +459,25 @@ count and the elapsed wall time so the offending site is easy to find.
 
 ### Matcher predicate purity rule
 
-A `RequestPredicate` passed to `scenario.whenRequestMatches` must be:
+A `RequestPredicate` passed to `scenario.whenRequestMatches` (and a
+`BodyAwareRequestPredicate` passed to `scenario.whenRequestBodyMatches`)
+must be:
 
-- **synchronous** — enforced by the `(req: Request) => boolean` type
-  signature; there is no place to `await`.
+- **synchronous** — enforced by the type signature; there is no place
+  to `await`. A body-aware predicate receives the body as a string
+  parameter, so the predicate itself never reads the body asynchronously.
 - **idempotent** — the harness scans the matcher table on every fetch,
-  every `whenRequestMatches` call, and at quiescence checkpoints. A
-  predicate may run any number of times against the same request.
+  every `whenRequestMatches` / `whenRequestBodyMatches` call, and at
+  quiescence checkpoints. A predicate may run any number of times
+  against the same request.
 - **side-effect-free** — predicates must not mutate harness state, mutate
   closed-over test state, or emit events.
 - **independent of harness state** — predicates must not read
   `clock.now()`, `scenario.invokeTool`-managed registries, the matcher
   table, or anything else that changes between scan passes. Reading
-  `req.url`, `req.method`, and `req.headers` is fine; everything else is
-  a bug class.
+  `req.url`, `req.method`, `req.headers`, and (for body-aware predicates)
+  the buffered body string passed as the first parameter is fine;
+  everything else is a bug class.
 
 A predicate that reads `clock.now()` to "only match the second fetch"
 will misbehave: the harness calls the predicate during scan-on-quiescence
