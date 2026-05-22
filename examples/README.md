@@ -60,3 +60,17 @@ without overwhelming the conversation or the model.
   wired against `@intx/tools-posix` and
   `@intx/tools-lsp` to read, write, and reason about a real
   codebase. Demonstrates the public surface end-to-end.
+
+## Multi-agent demos
+
+Top-level scripts (no `main()`, no test harness) that wire several
+`@intx/harness`-driven agents against the in-memory transport and
+let them talk to each other. Useful for watching inter-agent mail
+flow live.
+
+- [`posix-demo`](./posix-demo/src/cli.ts) — two agents (alpha relays,
+  beta answers). Configured via `ALPHA_*` / `BETA_*` env vars (with
+  shared `OPENAI_*` / `ANTHROPIC_API_KEY` fallbacks).
+- [`ring-demo`](./ring-demo/src/cli.ts) — a 5-agent braintrust that
+  circulates a question around a ring and synthesises a recommendation.
+  Configured via `RING_*` env vars (with the same shared fallbacks).

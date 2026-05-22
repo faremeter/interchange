@@ -10,4 +10,4 @@ if [[ -f "$REPODIR/.env" ]]; then
     set +a
 fi
 
-exec bun run "$REPODIR/bin/posix-demo.ts" "$@"
+exec bun run "$REPODIR/examples/posix-demo/src/cli.ts" "$@"
