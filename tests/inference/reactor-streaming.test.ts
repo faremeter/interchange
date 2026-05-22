@@ -482,7 +482,7 @@ describe("createReactor — inference path [wire-driven]", () => {
         deps: harness.deps,
         source: ANTHROPIC_SOURCE,
         director: directorFromTable({
-          "message.received": (_e, _s, caps) => caps.infer("mock-model"),
+          "message.received": (_e, _s, caps) => caps.infer(),
           "inference.done": (_e, state, caps) => {
             stateAtInferenceDone = state;
             return caps.done();
@@ -556,7 +556,7 @@ describe("createReactor — inference path [wire-driven]", () => {
         deps: harness.deps,
         source: OPENAI_SOURCE,
         director: directorFromTable({
-          "message.received": (_e, _s, caps) => caps.infer("mock-model"),
+          "message.received": (_e, _s, caps) => caps.infer(),
           "inference.done": (_e, state, caps) => {
             stateAtInferenceDone = state;
             return caps.done();
@@ -625,7 +625,7 @@ describe("createReactor — inference path [wire-driven]", () => {
         deps: harness.deps,
         source: ANTHROPIC_SOURCE,
         director: directorFromTable({
-          "message.received": (_e, _s, caps) => caps.infer("mock-model"),
+          "message.received": (_e, _s, caps) => caps.infer(),
           "inference.done": (_e, _s, caps) => caps.done(),
         }),
       });
@@ -676,7 +676,7 @@ describe("createReactor — inference path [wire-driven]", () => {
         deps: harness.deps,
         source: ANTHROPIC_SOURCE,
         director: directorFromTable({
-          "message.received": (_e, _s, caps) => caps.infer("mock-model"),
+          "message.received": (_e, _s, caps) => caps.infer(),
           "inference.error": (e, _s, caps) => {
             capturedError = {
               category: e.error.category,
@@ -719,7 +719,7 @@ describe("createReactor — inference path [wire-driven]", () => {
         deps: harness.deps,
         source: OPENAI_SOURCE,
         director: directorFromTable({
-          "message.received": (_e, _s, caps) => caps.infer("mock-model"),
+          "message.received": (_e, _s, caps) => caps.infer(),
           "inference.error": (e, _s, caps) => {
             capturedError = {
               category: e.error.category,
@@ -788,7 +788,7 @@ describe("createReactor — inference path [wire-driven]", () => {
         deps: harness.deps,
         source: ANTHROPIC_SOURCE,
         director: directorFromTable({
-          "message.received": (_e, _s, caps) => caps.infer("mock-model"),
+          "message.received": (_e, _s, caps) => caps.infer(),
           "inference.done": (_e, _s, caps) => caps.done(),
         }),
       });
@@ -856,7 +856,7 @@ describe("createReactor — inference path [wire-driven]", () => {
       const director: ReactorDirector = {
         async decide(event, _state, caps) {
           if (event.type === "message.received") {
-            return caps.infer("test-model");
+            return caps.infer();
           }
           if (event.type === "inference.error") {
             if (event.error.category === "context_overflow") {
@@ -945,7 +945,7 @@ describe("createReactor — inference path [wire-driven]", () => {
         deps: harness.deps,
         source: ANTHROPIC_SOURCE,
         director: directorFromTable({
-          "message.received": (_e, _s, caps) => caps.infer("mock-model"),
+          "message.received": (_e, _s, caps) => caps.infer(),
           "inference.error": (e, _s, caps) => {
             capturedError = {
               category: e.error.category,
@@ -990,7 +990,7 @@ describe("createReactor — inference path [wire-driven]", () => {
         deps: harness.deps,
         source: OPENAI_SOURCE,
         director: directorFromTable({
-          "message.received": (_e, _s, caps) => caps.infer("mock-model"),
+          "message.received": (_e, _s, caps) => caps.infer(),
           "inference.done": (_e, _s, caps) => caps.done(),
         }),
       });

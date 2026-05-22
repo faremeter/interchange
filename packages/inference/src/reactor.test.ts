@@ -374,7 +374,7 @@ function getEvent<T extends ReactorEmittedEvent["type"]>(
 
 describe("validateActions", () => {
   test("single infer action is valid", () => {
-    const result = validateActions({ type: "infer", model: "gpt-4" });
+    const result = validateActions({ type: "infer" });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.normalized.some((a) => a.type === "infer")).toBe(true);
@@ -396,7 +396,7 @@ describe("validateActions", () => {
   test("checkpoint + infer is valid (composable)", () => {
     const result = validateActions([
       { type: "checkpoint", message: "checkpoint" },
-      { type: "infer", model: "gpt-4" },
+      { type: "infer" },
     ]);
     expect(result.ok).toBe(true);
   });
@@ -427,7 +427,7 @@ describe("validateActions", () => {
   test("emit + infer is valid", () => {
     const result = validateActions([
       { type: "emit", eventType: "custom.progress", data: { pct: 50 } },
-      { type: "infer", model: "gpt-4" },
+      { type: "infer" },
     ]);
     expect(result.ok).toBe(true);
   });
@@ -456,26 +456,20 @@ describe("validateActions", () => {
   });
 
   test("infer + done is invalid", () => {
-    const result = validateActions([
-      { type: "infer", model: "gpt-4" },
-      { type: "done" },
-    ]);
+    const result = validateActions([{ type: "infer" }, { type: "done" }]);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error).toMatch(/infer.*done/i);
   });
 
   test("multiple infer actions are invalid", () => {
-    const result = validateActions([
-      { type: "infer", model: "gpt-4" },
-      { type: "infer", model: "claude-3" },
-    ]);
+    const result = validateActions([{ type: "infer" }, { type: "infer" }]);
     expect(result.ok).toBe(false);
   });
 
   test("suspend + infer is invalid", () => {
     const result = validateActions([
-      { type: "infer", model: "gpt-4" },
+      { type: "infer" },
       {
         type: "suspend",
         gate: {
@@ -540,10 +534,7 @@ describe("validateActions", () => {
   });
 
   test("wait + infer is invalid", () => {
-    const result = validateActions([
-      { type: "wait" },
-      { type: "infer", model: "gpt-4" },
-    ]);
+    const result = validateActions([{ type: "wait" }, { type: "infer" }]);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.error).toMatch(/wait.*infer/i);
@@ -595,7 +586,7 @@ describe("validateActions", () => {
   test("reply + infer is invalid", () => {
     const result = validateActions([
       { type: "reply", content: "hello" },
-      { type: "infer", model: "gpt-4" },
+      { type: "infer" },
     ]);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -1439,10 +1430,7 @@ describe("createReactor — director misbehavior", () => {
   test("reactor shuts down when director returns invalid action set", async () => {
     const { reactor, events, waitFor } = createTestReactor({
       director: directorFromTable({
-        "message.received": (_e, _s, caps) => [
-          caps.infer("gpt-4"),
-          caps.done(),
-        ],
+        "message.received": (_e, _s, caps) => [caps.infer(), caps.done()],
       }),
     });
 
@@ -2353,7 +2341,7 @@ describe("createReactor — inference path", () => {
 
     const { reactor, events, waitFor } = createTestReactor({
       director: directorFromTable({
-        "message.received": (_e, _s, caps) => caps.infer("mock-model"),
+        "message.received": (_e, _s, caps) => caps.infer(),
         "inference.done": (_e, state, caps) => {
           stateAtInferenceDone = state;
           return caps.done();
@@ -2406,7 +2394,7 @@ describe("createReactor — inference path", () => {
 
     const { reactor, events, waitFor } = createTestReactor({
       director: directorFromTable({
-        "message.received": (_e, _s, caps) => caps.infer("mock-model"),
+        "message.received": (_e, _s, caps) => caps.infer(),
         "inference.error": (e, _s, caps) => {
           capturedError = {
             category: e.error.category,
@@ -2443,7 +2431,7 @@ describe("createReactor — inference path", () => {
 
     const { reactor, events, waitFor } = createTestReactor({
       director: directorFromTable({
-        "message.received": (_e, _s, caps) => caps.infer("mock-model"),
+        "message.received": (_e, _s, caps) => caps.infer(),
         "inference.error": (e, _s, caps) => {
           capturedError = {
             category: e.error.category,
@@ -2520,7 +2508,7 @@ describe("createReactor — beforeToolExtensions", () => {
 
     const { reactor, events, waitFor } = createTestReactor({
       director: directorFromTable({
-        "message.received": (_e, _s, caps) => caps.infer("test-model"),
+        "message.received": (_e, _s, caps) => caps.infer(),
         "inference.done": (_e, _s, caps) =>
           caps.executeTools(
             [{ id: "call-1", name: "bash", arguments: { cmd: "ls" } }],
@@ -2557,7 +2545,7 @@ describe("createReactor — beforeToolExtensions", () => {
 
     const { reactor, events, waitFor } = createTestReactor({
       director: directorFromTable({
-        "message.received": (_e, _s, caps) => caps.infer("test-model"),
+        "message.received": (_e, _s, caps) => caps.infer(),
         "inference.done": (_e, _s, caps) =>
           caps.executeTools(
             [{ id: "call-1", name: "bash", arguments: { cmd: "ls" } }],
@@ -2615,7 +2603,7 @@ describe("createReactor — beforeToolExtensions", () => {
 
     const { reactor, waitFor } = createTestReactor({
       director: directorFromTable({
-        "message.received": (_e, _s, caps) => caps.infer("test-model"),
+        "message.received": (_e, _s, caps) => caps.infer(),
         "inference.done": (_e, _s, caps) =>
           caps.executeTools(
             [{ id: "call-1", name: "bash", arguments: { cmd: "ls" } }],
@@ -2645,7 +2633,7 @@ describe("createReactor — beforeToolExtensions", () => {
 
     const { reactor, events, waitFor } = createTestReactor({
       director: directorFromTable({
-        "message.received": (_e, _s, caps) => caps.infer("test-model"),
+        "message.received": (_e, _s, caps) => caps.infer(),
         "inference.done": (_e, _s, caps) =>
           caps.executeTools(
             [{ id: "call-1", name: "bash", arguments: { cmd: "ls" } }],
@@ -2697,7 +2685,7 @@ describe("createReactor — beforeToolExtensions", () => {
 
     const { reactor, waitFor } = createTestReactor({
       director: directorFromTable({
-        "message.received": (_e, _s, caps) => caps.infer("test-model"),
+        "message.received": (_e, _s, caps) => caps.infer(),
         "inference.done": (_e, _s, caps) =>
           caps.executeTools(
             [{ id: "call-1", name: "bash", arguments: { cmd: "ls" } }],
@@ -2728,7 +2716,7 @@ describe("createReactor — beforeToolExtensions", () => {
 
     const { reactor, waitFor } = createTestReactor({
       director: directorFromTable({
-        "message.received": (_e, _s, caps) => caps.infer("test-model"),
+        "message.received": (_e, _s, caps) => caps.infer(),
         "inference.done": (_e, _s, caps) =>
           caps.executeTools(
             [{ id: "call-1", name: "bash", arguments: { cmd: "ls" } }],
@@ -2785,7 +2773,7 @@ describe("createReactor — beforeToolExtensions", () => {
     const { reactor, events, waitFor } = createTestReactor({
       director: directorFromTable(
         {
-          "message.received": (_e, _s, caps) => caps.infer("test-model"),
+          "message.received": (_e, _s, caps) => caps.infer(),
           "inference.done": (_e, _s, caps) =>
             caps.executeTools(
               [
@@ -3394,7 +3382,7 @@ describe("createReactor — transform chain ordering and compact action", () => 
       contextStore: recording.store,
       inferenceRunner: runner,
       director: directorFromTable({
-        "message.received": (_e, _s, caps) => caps.infer("test-model"),
+        "message.received": (_e, _s, caps) => caps.infer(),
         "inference.done": (_e, _s, caps) => caps.done(),
       }),
       contextTransforms: [transform],
@@ -3480,7 +3468,7 @@ describe("createReactor — transform chain ordering and compact action", () => 
   test("validateActions rejects compact + infer", async () => {
     const result = validateActions([
       { type: "compact", compactor: "tail", reason: "r" },
-      { type: "infer", model: "m" },
+      { type: "infer" },
     ]);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -3527,7 +3515,7 @@ describe("createReactor — transform chain ordering and compact action", () => 
     const director: ReactorDirector = {
       async decide(event, _state, caps) {
         if (event.type === "message.received") {
-          return caps.infer("test-model");
+          return caps.infer();
         }
         if (event.type === "inference.error") {
           if (event.error.category === "context_overflow") {
@@ -3594,7 +3582,7 @@ describe("createReactor — transform chain ordering and compact action", () => 
       async decide(event, _state, _caps) {
         directorCalls++;
         if (event.type === "message.received" && directorCalls === 1) {
-          return { type: "infer" as const, model: "test-model" };
+          return { type: "infer" as const };
         }
         if (event.type === "inference.done") {
           return [
@@ -3631,7 +3619,7 @@ describe("createReactor — transform chain ordering and compact action", () => 
           if (directorCalls === 1) {
             return [
               { type: "checkpoint" as const, message: "first-override" },
-              { type: "infer" as const, model: "m" },
+              { type: "infer" as const },
             ];
           }
           return { type: "done" as const };

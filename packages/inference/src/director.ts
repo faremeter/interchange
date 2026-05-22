@@ -21,10 +21,9 @@ import type {
  */
 export function createCapabilities(): ReactorCapabilities {
   return {
-    infer(model: string, options?: InferenceOptions): ReactorAction {
+    infer(options?: InferenceOptions): ReactorAction {
       return {
         type: "infer",
-        model,
         ...(options !== undefined ? { options } : {}),
       };
     },

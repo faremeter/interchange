@@ -945,9 +945,9 @@ describe("Default director", () => {
   function makeCapabilities() {
     return {
       calls: [] as { type: string; args: unknown[] }[],
-      infer(model: string, options?: unknown) {
-        this.calls.push({ type: "infer", args: [model, options] });
-        return { type: "infer" as const, model };
+      infer(options?: unknown) {
+        this.calls.push({ type: "infer", args: [options] });
+        return { type: "infer" as const };
       },
       executeTools(calls: ToolCall[], parallel?: boolean) {
         this.calls.push({ type: "execute_tools", args: [calls, parallel] });
@@ -1013,7 +1013,7 @@ describe("Default director", () => {
   }
 
   test("message.received triggers infer action", async () => {
-    const director = createDefaultDirector("claude-test", "You are helpful.");
+    const director = createDefaultDirector("You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1029,7 +1029,7 @@ describe("Default director", () => {
   });
 
   test("inference.done with tool calls triggers checkpoint and execute_tools", async () => {
-    const director = createDefaultDirector("claude-test", "You are helpful.");
+    const director = createDefaultDirector("You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1058,7 +1058,7 @@ describe("Default director", () => {
   });
 
   test("inference.done without tool calls returns checkpoint and reply", async () => {
-    const director = createDefaultDirector("claude-test", "You are helpful.");
+    const director = createDefaultDirector("You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1085,7 +1085,7 @@ describe("Default director", () => {
   });
 
   test("tool.done triggers checkpoint and re-infer", async () => {
-    const director = createDefaultDirector("claude-test", "You are helpful.");
+    const director = createDefaultDirector("You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1101,7 +1101,7 @@ describe("Default director", () => {
   });
 
   test("inference.error returns checkpoint and reply with error message", async () => {
-    const director = createDefaultDirector("claude-test", "You are helpful.");
+    const director = createDefaultDirector("You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1128,7 +1128,7 @@ describe("Default director", () => {
   });
 
   test("abort returns done", async () => {
-    const director = createDefaultDirector("claude-test", "You are helpful.");
+    const director = createDefaultDirector("You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1143,7 +1143,7 @@ describe("Default director", () => {
   });
 
   test("inference.done with empty content returns checkpoint and wait", async () => {
-    const director = createDefaultDirector("claude-test", "You are helpful.");
+    const director = createDefaultDirector("You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1167,7 +1167,7 @@ describe("Default director", () => {
   });
 
   test("inference.done with whitespace-only text returns checkpoint and wait", async () => {
-    const director = createDefaultDirector("claude-test", "You are helpful.");
+    const director = createDefaultDirector("You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1191,14 +1191,9 @@ describe("Default director", () => {
   });
 
   test("reactive mode inference.done returns checkpoint and wait", async () => {
-    const director = createDefaultDirector(
-      "claude-test",
-      "You are helpful.",
-      [],
-      {
-        mode: "reactive",
-      },
-    );
+    const director = createDefaultDirector("You are helpful.", [], {
+      mode: "reactive",
+    });
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1220,14 +1215,9 @@ describe("Default director", () => {
   });
 
   test("reactive mode tool.done returns checkpoint and wait", async () => {
-    const director = createDefaultDirector(
-      "claude-test",
-      "You are helpful.",
-      [],
-      {
-        mode: "reactive",
-      },
-    );
+    const director = createDefaultDirector("You are helpful.", [], {
+      mode: "reactive",
+    });
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1244,7 +1234,7 @@ describe("Default director", () => {
   });
 
   test("tool.done batching waits for all results before checkpoint", async () => {
-    const director = createDefaultDirector("claude-test", "You are helpful.");
+    const director = createDefaultDirector("You are helpful.");
     const caps = makeCapabilities();
     const state = makeState();
 
@@ -1707,7 +1697,7 @@ describe("Error flushing", () => {
         caps: ReactorCapabilities,
       ) {
         if (event.type === "message.received") {
-          return caps.infer("claude-test");
+          return caps.infer();
         }
         if (event.type === "inference.error") {
           return [caps.checkpoint("after-error"), caps.done()];
@@ -1839,7 +1829,7 @@ describe("Error flushing", () => {
         caps: ReactorCapabilities,
       ) {
         if (event.type === "message.received") {
-          return caps.infer("claude-test");
+          return caps.infer();
         }
         if (event.type === "inference.error") {
           return [caps.checkpoint("after-error"), caps.done()];
@@ -1911,7 +1901,7 @@ describe("Error flushing", () => {
         caps: ReactorCapabilities,
       ) {
         if (event.type === "message.received") {
-          return caps.infer("claude-test");
+          return caps.infer();
         }
         if (event.type === "inference.error") {
           return [caps.checkpoint("will-fail"), caps.done()];

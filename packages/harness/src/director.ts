@@ -78,7 +78,6 @@ function formatInferenceError(error: {
 }
 
 export class DefaultDirector implements ReactorDirector {
-  private readonly model: string;
   private readonly systemPrompt: string;
   private readonly toolDefinitions: ToolDefinition[];
   private readonly policy: DirectorPolicy;
@@ -87,12 +86,10 @@ export class DefaultDirector implements ReactorDirector {
   private pendingToolResults = 0;
 
   constructor(
-    model: string,
     systemPrompt: string,
     toolDefinitions: ToolDefinition[] = [],
     policy: DirectorPolicy = {},
   ) {
-    this.model = model;
     this.systemPrompt = systemPrompt;
     this.toolDefinitions = toolDefinitions;
     this.policy = policy;
@@ -105,7 +102,7 @@ export class DefaultDirector implements ReactorDirector {
   ): Promise<ReactorAction | ReactorAction[]> {
     switch (event.type) {
       case "message.received": {
-        return capabilities.infer(this.model, {
+        return capabilities.infer({
           systemPrompt: this.systemPrompt,
           tools: this.toolDefinitions,
         });
@@ -155,7 +152,7 @@ export class DefaultDirector implements ReactorDirector {
         // All tool results received — re-infer with complete context.
         return [
           capabilities.checkpoint("tool-done"),
-          capabilities.infer(this.model, {
+          capabilities.infer({
             systemPrompt: this.systemPrompt,
             tools: this.toolDefinitions,
           }),
@@ -180,7 +177,7 @@ export class DefaultDirector implements ReactorDirector {
       case "reactor.gate.cleared": {
         return [
           capabilities.checkpoint("gate-cleared"),
-          capabilities.infer(this.model, {
+          capabilities.infer({
             systemPrompt: this.systemPrompt,
             tools: this.toolDefinitions,
           }),
@@ -195,10 +192,9 @@ export class DefaultDirector implements ReactorDirector {
 }
 
 export function createDefaultDirector(
-  model: string,
   systemPrompt: string,
   toolDefinitions: ToolDefinition[] = [],
   policy: DirectorPolicy = {},
 ): ReactorDirector {
-  return new DefaultDirector(model, systemPrompt, toolDefinitions, policy);
+  return new DefaultDirector(systemPrompt, toolDefinitions, policy);
 }

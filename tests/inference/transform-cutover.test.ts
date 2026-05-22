@@ -351,7 +351,7 @@ describe("Phase 4 headline tests", () => {
     const director: ReactorDirector = {
       async decide(event, _state, caps) {
         if (event.type === "message.received") {
-          return caps.infer("test-model");
+          return caps.infer();
         }
         if (event.type === "inference.done") {
           return caps.done();
@@ -433,7 +433,7 @@ describe("Phase 4 headline tests", () => {
       const director: ReactorDirector = {
         async decide(event, _state, caps) {
           if (event.type === "message.received") {
-            return caps.infer("test-model");
+            return caps.infer();
           }
           if (event.type === "inference.done") {
             return caps.done();

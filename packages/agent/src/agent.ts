@@ -23,13 +23,10 @@
 // `setSource` covers the whole source: id/provider/baseURL/apiKey/model
 // plus the model-bound `defaults` and `capabilities`. Credentials and
 // model rotate together via the shared source object the reactor reads
-// lazily at the start of each inference call. The model rotates via a
-// thin wrapper the agent puts around the director's `capabilities`:
-// every `capabilities.infer(model, ...)` call the director makes is
-// rewritten to use the active source's current model, regardless of
-// which model the director itself captured. This makes the rotation
-// invisible to both the default director and any caller-supplied
-// director that just relays the model it was constructed with.
+// lazily at the start of each inference call. The director never names
+// a model — `capabilities.infer(options?)` does not take one — so the
+// active source's model is the single source of truth and rotations
+// take effect on the next inference call without any wrapper.
 
 import { createDefaultDirector } from "@intx/harness";
 import {
@@ -49,7 +46,6 @@ import type {
   ConversationTurn,
   InboundMessage,
   InferenceSource,
-  ReactorCapabilities,
   ReactorDirector,
 } from "@intx/types/runtime";
 
@@ -174,9 +170,9 @@ export type Agent = {
   /**
    * Replace the active source's fields in place. Picked up at the start
    * of the next inference call. `model` rotates alongside the
-   * credentials: the agent wraps the director so every
-   * `capabilities.infer(model, ...)` call uses the active source's
-   * current model.
+   * credentials — the director does not name a model, so the active
+   * source's `model` is what the next inference call uses without any
+   * additional plumbing.
    */
   setSource(source: InferenceSource): void;
   /**
@@ -257,38 +253,16 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     throw cause;
   }
 
-  let baseDirector: ReactorDirector;
+  let director: ReactorDirector;
   if (config.director !== undefined) {
-    baseDirector = config.director;
+    director = config.director;
   } else {
-    baseDirector = createDefaultDirector(
-      sourceRegistry.active.model,
+    director = createDefaultDirector(
       config.systemPrompt,
       [...toolRunner.definitions],
       {},
     );
   }
-
-  // Wrap the director's `capabilities` so every `infer(model, ...)` call
-  // uses the live model from sourceRegistry.active. This lets setSource
-  // rotate `model` (alongside the credentials) without requiring the
-  // inner director to know about it. The default director captures
-  // `model` at construction; this wrapper substitutes the live value at
-  // action-build time.
-  const director: ReactorDirector = {
-    async decide(event, state, capabilities) {
-      const wrappedCapabilities: ReactorCapabilities = {
-        ...capabilities,
-        infer: (_requestedModel, options) => {
-          const liveModel = sourceRegistry.active.model;
-          return options === undefined
-            ? capabilities.infer(liveModel)
-            : capabilities.infer(liveModel, options);
-        },
-      };
-      return baseDirector.decide(event, state, wrappedCapabilities);
-    },
-  };
 
   const sessionId = config.sessionId ?? crypto.randomUUID();
 
