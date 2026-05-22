@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach } from "bun:test";
 
 import type { DB } from "@intx/db";
 import type { GrantRule, GrantStore } from "@intx/types/authz";
-import type { InferenceEvent, ProviderConfig } from "@intx/types/runtime";
+import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { EventCollectorRegistry } from "./event-collector-registry";
@@ -61,7 +61,7 @@ type UpdateCall = { table: string; set: Record<string, unknown> };
 type MockDBOpts = {
   instance?: InstanceRow | undefined;
   recordUpdates?: UpdateCall[];
-  /** When set, `resolveInstanceProviders` queries fan out into these
+  /** When set, `resolveInstanceSources` queries fan out into these
    * tables; the helper returns empty arrays so the orchestrator's
    * credential push is a no-op. */
   emptyProviderTables?: boolean;
@@ -123,7 +123,12 @@ function createMockDB(opts: MockDBOpts) {
 
 type RouterCall =
   | { kind: "sendGrantsUpdate"; addr: string; grants: GrantRule[] }
-  | { kind: "sendProvidersUpdate"; addr: string; providers: ProviderConfig[] }
+  | {
+      kind: "sendSourcesUpdate";
+      addr: string;
+      sources: InferenceSource[];
+      defaultSource: string;
+    }
   | {
       kind: "sendPack";
       addr: string;
@@ -144,8 +149,8 @@ function createRouterFacade(): {
       async sendGrantsUpdate(addr, grants) {
         calls.push({ kind: "sendGrantsUpdate", addr, grants });
       },
-      async sendProvidersUpdate(addr, providers) {
-        calls.push({ kind: "sendProvidersUpdate", addr, providers });
+      async sendSourcesUpdate(addr, sources, defaultSource) {
+        calls.push({ kind: "sendSourcesUpdate", addr, sources, defaultSource });
       },
       async sendPack(addr, pack, ref, sha) {
         calls.push({ kind: "sendPack", addr, pack, ref, sha });

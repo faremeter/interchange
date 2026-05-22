@@ -368,14 +368,16 @@ describe("deploy flow integration", () => {
       systemPrompt: "Fallback prompt (should be overridden by deploy tree)",
       tools: [],
       grants: [],
-      providers: [
+      sources: [
         {
+          id: "anthropic:mock-model",
           provider: "anthropic",
           baseURL: `http://localhost:${inference.server.port}`,
           apiKey: "sk-mock",
+          model: "mock-model",
         },
       ],
-      defaultModel: "mock-model",
+      defaultSource: "anthropic:mock-model",
     };
 
     await hub.sessionService.launchSession({

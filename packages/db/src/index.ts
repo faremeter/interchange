@@ -8,7 +8,7 @@ export {
   resolveCredentialByName,
   resolveCredentialById,
   resolveCredentialRequirement,
-  resolveInstanceProviders,
+  resolveInstanceSources,
   ProviderMetadata,
 } from "./credential-resolution";
 export {

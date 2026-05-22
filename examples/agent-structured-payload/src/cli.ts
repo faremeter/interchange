@@ -23,9 +23,9 @@
 import {
   openExampleAgent,
   optional,
-  resolveAgentProvider,
+  resolveAgentSource,
   resolveStdio,
-  type SingleProviderMainOptions,
+  type SingleSourceMainOptions,
 } from "@intx/example-agent-common";
 import type { ReactorEmittedEvent } from "@intx/inference";
 import { createInboundMessage } from "@intx/mime";
@@ -40,7 +40,7 @@ export type OfferingRequestArgs = {
   currency: string;
 };
 
-export type MainOptions = SingleProviderMainOptions & {
+export type MainOptions = SingleSourceMainOptions & {
   /** Provide pre-built args; overrides any argv parsing. */
   offering?: OfferingRequestArgs;
   /**
@@ -137,8 +137,8 @@ export async function main(
   const offering = opts.offering ?? parseArgs(argv, stderr);
   if (offering === undefined) return 1;
 
-  const resolved = resolveAgentProvider(opts, env, EXAMPLE_NAME, stderr);
-  if (resolved === null) return 1;
+  const source = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
+  if (source === null) return 1;
 
   const message = buildOfferingRequest(offering);
 
@@ -147,8 +147,8 @@ export async function main(
     systemPrompt:
       "You are an offering-aware assistant. The default director does not surface structured payloads to you; a custom director would render them as user turns. This example demonstrates the delivery half of the contract.",
     tools: [],
-    providers: [resolved.provider],
-    defaultModel: resolved.model,
+    sources: [source],
+    defaultSource: source.id,
   });
 
   const timeoutMs = opts.receivedTimeoutMs ?? DEFAULT_RECEIVED_TIMEOUT_MS;

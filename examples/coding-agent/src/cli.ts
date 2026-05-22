@@ -15,7 +15,7 @@
 import { parseArgs } from "node:util";
 
 import type { Dependencies, ReactorEmittedEvent } from "@intx/inference";
-import type { ProviderConfig } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
 import { createCodingAgent } from "./agent";
 import { defaultContextDir, defaultRepoRoot } from "./paths";
@@ -34,8 +34,8 @@ export type MainOptions = {
   stderr?: (chunk: string) => void;
   /** Inject inference deps (for tests using `@intx/inference-testing`). */
   deps?: Dependencies;
-  /** Skip credential parsing and use this provider directly. */
-  providerOverride?: ProviderConfig;
+  /** Skip credential parsing and use this inference source directly. */
+  sourceOverride?: InferenceSource;
 };
 
 export function parseCliArgs(argv: string[]): CliArgs {
@@ -74,7 +74,7 @@ async function pumpStreamToStderr(
 /**
  * Execute one CLI run. Returns an exit code (0 success, non-zero failure).
  * Pure with respect to globals when callers supply `stdout`/`stderr`/
- * `providerOverride`/`deps` — that's the seam tests use.
+ * `sourceOverride`/`deps` — that's the seam tests use.
  */
 export async function main(
   argv: string[],
@@ -86,7 +86,7 @@ export async function main(
 
   const apiKey = env["ANTHROPIC_API_KEY"];
   if (
-    opts.providerOverride === undefined &&
+    opts.sourceOverride === undefined &&
     (apiKey === undefined || apiKey === "")
   ) {
     stderr("ANTHROPIC_API_KEY is required\n");
@@ -106,8 +106,8 @@ export async function main(
     cwd: args.cwd,
     ...(apiKey !== undefined ? { apiKey } : {}),
     ...(args.model !== undefined ? { model: args.model } : {}),
-    ...(opts.providerOverride !== undefined
-      ? { providerOverride: opts.providerOverride }
+    ...(opts.sourceOverride !== undefined
+      ? { sourceOverride: opts.sourceOverride }
       : {}),
     ...(opts.deps !== undefined ? { deps: opts.deps } : {}),
   });

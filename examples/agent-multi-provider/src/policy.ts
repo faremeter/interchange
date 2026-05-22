@@ -1,17 +1,17 @@
 // Routing and failover policy for the multi-provider example.
 //
 // The @intx/agent surface intentionally does not bundle a
-// failover or cost-routing engine — `setProvider()` lets you swap
-// credentials/model in place, and the example layers the policy
+// failover or cost-routing engine — `setSource()` lets you swap the
+// active inference source in place, and the example layers the policy
 // on top. That keeps the agent package's surface small and lets
 // users encode the policy that matches their billing/SLA story.
 
-import type { ProviderConfig } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
-export type ProviderEntry = {
+export type SourceEntry = {
   /** Stable identifier for the entry (e.g. "primary", "fallback"). */
   name: string;
-  config: ProviderConfig;
+  source: InferenceSource;
 };
 
 /**
@@ -27,20 +27,25 @@ export function pickModelTier(prompt: string): ModelTier {
 }
 
 /**
- * Return the ProviderConfig the agent should use for `prompt` given
+ * Return the InferenceSource the agent should use for `prompt` given
  * the routing table. The `models` map selects which model is "cheap"
- * vs "smart"; the chosen entry's `config` is cloned with the chosen
- * model overlaid. The original config is never mutated.
+ * vs "smart"; the chosen entry's `source` is cloned with the chosen
+ * model overlaid and a freshly synthesized id. The original source is
+ * never mutated.
  */
-export function routeProvider(args: {
+export function routeSource(args: {
   prompt: string;
-  primary: ProviderEntry;
+  primary: SourceEntry;
   models: { cheap: string; smart: string };
-}): { provider: ProviderConfig; tier: ModelTier; model: string } {
+}): { source: InferenceSource; tier: ModelTier; model: string } {
   const tier = pickModelTier(args.prompt);
   const model = args.models[tier];
   return {
-    provider: { ...args.primary.config, model },
+    source: {
+      ...args.primary.source,
+      id: `${args.primary.source.provider}:${model}`,
+      model,
+    },
     tier,
     model,
   };
@@ -53,16 +58,16 @@ export function routeProvider(args: {
  */
 export type WithFailoverResult<T> = {
   result: T;
-  served: ProviderEntry;
-  attempts: ProviderEntry[];
+  served: SourceEntry;
+  attempts: SourceEntry[];
   primaryError?: unknown;
 };
 
 /**
  * Wrap an inference attempt with a single-shot failover: if the call
  * rejects, swap to `fallback` and retry once. The returned object
- * carries which provider ultimately served the request so the caller
- * can report it; `attempts` lists every config tried in order, and
+ * carries which source ultimately served the request so the caller
+ * can report it; `attempts` lists every source tried in order, and
  * `primaryError` carries the primary's failure when failover engaged
  * so it can be logged rather than silently discarded.
  *
@@ -72,13 +77,13 @@ export type WithFailoverResult<T> = {
  * error object is mutated.
  */
 export async function withFailover<T>(args: {
-  primary: ProviderEntry;
-  fallback: ProviderEntry;
-  applyProvider: (cfg: ProviderConfig) => void;
+  primary: SourceEntry;
+  fallback: SourceEntry;
+  applySource: (source: InferenceSource) => void;
   invoke: () => Promise<T>;
 }): Promise<WithFailoverResult<T>> {
-  const attempts: ProviderEntry[] = [args.primary];
-  args.applyProvider(args.primary.config);
+  const attempts: SourceEntry[] = [args.primary];
+  args.applySource(args.primary.source);
   let primaryError: unknown;
   try {
     const result = await args.invoke();
@@ -88,7 +93,7 @@ export async function withFailover<T>(args: {
   }
 
   attempts.push(args.fallback);
-  args.applyProvider(args.fallback.config);
+  args.applySource(args.fallback.source);
   try {
     const result = await args.invoke();
     return { result, served: args.fallback, attempts, primaryError };
@@ -102,7 +107,7 @@ export async function withFailover<T>(args: {
         ? primaryError.message
         : String(primaryError);
     throw new Error(
-      `withFailover: both providers failed. ` +
+      `withFailover: both sources failed. ` +
         `Primary (${args.primary.name}): ${primaryMessage}. ` +
         `Fallback (${args.fallback.name}): ${fallbackError.message}`,
       { cause: fallbackError },

@@ -7,7 +7,7 @@ export {
 } from "./cli";
 export {
   pickModelTier,
-  routeProvider,
+  routeSource,
   withFailover,
-  type ProviderEntry,
+  type SourceEntry,
 } from "./policy";

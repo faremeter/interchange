@@ -12,10 +12,18 @@ If you want an agent that lives behind a mailbox instead, see
 ```ts
 import { createAgent } from "@intx/agent";
 
+const source = {
+  id: `anthropic:${model}`,
+  provider: "anthropic",
+  baseURL: "https://api.anthropic.com",
+  apiKey,
+  model,
+};
+
 const agent = await createAgent({
   contextDir: "./tmp/my-agent",
-  providers: [{ provider: "anthropic", apiKey, model }],
-  defaultModel: model,
+  sources: [source],
+  defaultSource: source.id,
   systemPrompt: "...",
   tools: [],
 });
@@ -33,7 +41,7 @@ Then, depending on what you're trying to do:
 
 - Persistence and time travel — `agent-resume`, `agent-rewind`, `agent-audit-log`
 - Tool I/O — `agent-blob-spill`, `agent-rich-tool`, `agent-structured-payload`
-- Provider routing — `agent-multi-provider`
+- Multi inference provider routing — `agent-multi-provider`
 - End-to-end with real tools — `coding-agent`
 
 See [`examples/README.md`](../../examples/README.md) for the full index.

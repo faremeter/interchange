@@ -44,7 +44,7 @@ import {
   paginatedSchema,
 } from "@intx/types";
 import type { GrantEffect, GrantOrigin } from "@intx/types";
-import type { CryptoProvider, ProviderConfig } from "@intx/types/runtime";
+import type { CryptoProvider, InferenceSource } from "@intx/types/runtime";
 import {
   SessionLaunchError,
   type EventCollectorRegistry,
@@ -230,7 +230,26 @@ export function createInstanceRoutes({
         );
       }
 
-      const providers: ProviderConfig[] = [];
+      // Parse modelConfig up front: the model identity is part of every
+      // resolved InferenceSource (pre-catalog the same `defaultModel`
+      // gets stamped on each one), and the resolution loop below needs
+      // it. Surfacing an invalid modelConfig before the credential
+      // resolution avoids partial work that would have to be unwound.
+      const modelConfig = ModelConfig(row.modelConfig ?? {});
+      if (modelConfig instanceof type.errors) {
+        return c.json(
+          {
+            error: {
+              code: "not_launchable",
+              message: `Agent model configuration is invalid: ${modelConfig.summary}`,
+            },
+          },
+          409,
+        );
+      }
+      const defaultModel = modelConfig.defaultModel;
+
+      const sources: InferenceSource[] = [];
       for (const req of parsedRequirements) {
         let resolved;
         try {
@@ -297,27 +316,37 @@ export function createInstanceRoutes({
           );
         }
 
-        providers.push({
+        sources.push({
+          id: `${providerRow.plugin}:${defaultModel}`,
           provider: providerRow.plugin,
           baseURL: metadata.baseURL,
           apiKey: resolved.secret,
+          model: defaultModel,
         });
       }
 
-      // --- Model config ---
-
-      const modelConfig = ModelConfig(row.modelConfig ?? {});
-      if (modelConfig instanceof type.errors) {
+      // The first resolved source becomes the active one. Pre-catalog
+      // every source carries the same `defaultModel`, so the id of the
+      // first source is the canonical `defaultSource` reference.
+      const [firstSource] = sources;
+      if (firstSource === undefined) {
+        // An agent with no credentialRequirements has no resolvable
+        // sources, so the inference runtime has nothing to call. Surface
+        // this as a 409 here rather than letting the launch reach the
+        // sidecar with an empty sources[] only to fail with a less
+        // direct error.
         return c.json(
           {
             error: {
               code: "not_launchable",
-              message: `Agent model configuration is invalid: ${modelConfig.summary}`,
+              message:
+                "Agent has no credential requirements; cannot resolve any inference sources",
             },
           },
           409,
         );
       }
+      const defaultSource = firstSource.id;
 
       // --- Grant requirement resolution (creator/invoker delegation) ---
 
@@ -583,8 +612,8 @@ export function createInstanceRoutes({
             systemPrompt: row.systemPrompt,
             tools: [],
             grants,
-            providers,
-            defaultModel: modelConfig.defaultModel,
+            sources,
+            defaultSource,
           },
           deployContent: {
             systemPrompt: row.systemPrompt,

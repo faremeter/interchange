@@ -18,9 +18,9 @@ import { type } from "arktype";
 
 import {
   openExampleAgent,
-  resolveAgentProvider,
+  resolveAgentSource,
   resolveStdio,
-  type SingleProviderMainOptions,
+  type SingleSourceMainOptions,
 } from "@intx/example-agent-common";
 import type { ReactorEmittedEvent } from "@intx/inference";
 import { createInboundMessage } from "@intx/mime";
@@ -37,7 +37,7 @@ const ApprovalDetail = type({
 });
 type ApprovalDetail = typeof ApprovalDetail.infer;
 
-export type MainOptions = SingleProviderMainOptions & {
+export type MainOptions = SingleSourceMainOptions & {
   /** Override the correlation ID picked by the tool (tests use this). */
   correlationIdFor?: (callId: string) => string;
   /**
@@ -104,8 +104,8 @@ export async function main(
     return 1;
   }
 
-  const resolved = resolveAgentProvider(opts, env, EXAMPLE_NAME, stderr);
-  if (resolved === null) return 1;
+  const source = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
+  if (source === null) return 1;
 
   const approvalTool = createApprovalTool(
     opts.correlationIdFor !== undefined
@@ -118,8 +118,8 @@ export async function main(
     systemPrompt:
       "You are a careful assistant. Use the request_approval tool for any sensitive action. Reply concisely.",
     tools: [approvalTool],
-    providers: [resolved.provider],
-    defaultModel: resolved.model,
+    sources: [source],
+    defaultSource: source.id,
   });
 
   const timeoutMs = opts.correlationTimeoutMs ?? DEFAULT_CORRELATION_TIMEOUT_MS;

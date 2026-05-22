@@ -17,7 +17,7 @@ import {
   type Compactor,
   type ContextStore,
   type ContextTransform,
-  type ProviderConfig,
+  type InferenceSource,
   type ReactorDirector,
   type ToolResultTransform,
   type ToolRunner,
@@ -56,7 +56,7 @@ const DEFAULT_SIZE_CAP_MAX_CHARS = 10_000;
 export type ReactorAssemblyConfig = {
   sessionId: string;
   director: ReactorDirector;
-  providerConfig: ProviderConfig;
+  source: InferenceSource;
   toolRunner: ToolRunner;
   contextStore: ContextStore;
   onEvent: (event: ReactorEmittedEvent) => void;
@@ -106,7 +106,7 @@ export function createReactorAssembly(
   const {
     sessionId,
     director,
-    providerConfig,
+    source,
     toolRunner,
     contextStore,
     onEvent,
@@ -220,7 +220,7 @@ export function createReactorAssembly(
   const reactorConfig: ReactorConfig = {
     sessionId,
     director,
-    providerConfig,
+    source,
     toolRunner,
     contextStore,
     onEvent: composedOnEvent,

@@ -38,9 +38,9 @@ rm -rf ../../tmp/coding-agent
 The default working directory for tool calls is the repository root; pass
 `--cwd <path>` to change it.
 
-## Provider
+## Inference source
 
 The example targets Anthropic out of the box. To use a different provider,
-construct the agent yourself with the appropriate `ProviderConfig` and call
+construct the agent yourself with the appropriate `InferenceSource` and call
 `createCodingAgent` from `./src/agent.ts` directly — `createCodingAgent`
-accepts a `providerOverride` that bypasses the Anthropic default.
+accepts a `sourceOverride` that bypasses the Anthropic default.

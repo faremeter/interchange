@@ -12,14 +12,14 @@ import { createAgent } from "@intx/agent";
 import {
   defaultContextDir,
   optional,
-  resolveAgentProvider,
+  resolveAgentSource,
   resolveStdio,
-  type SingleProviderMainOptions,
+  type SingleSourceMainOptions,
 } from "@intx/example-agent-common";
 
 const EXAMPLE_NAME = "agent-quickstart";
 
-export type MainOptions = SingleProviderMainOptions;
+export type MainOptions = SingleSourceMainOptions;
 
 export async function main(
   argv: string[],
@@ -34,13 +34,13 @@ export async function main(
     return 1;
   }
 
-  const resolved = resolveAgentProvider(opts, env, EXAMPLE_NAME, stderr);
-  if (resolved === null) return 1;
+  const source = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
+  if (source === null) return 1;
 
   const agent = await createAgent({
     contextDir: opts.contextDir ?? defaultContextDir(EXAMPLE_NAME),
-    providers: [resolved.provider],
-    defaultModel: resolved.model,
+    sources: [source],
+    defaultSource: source.id,
     systemPrompt: "You are a helpful assistant. Keep replies concise.",
     tools: [],
     ...optional("deps", opts.deps),

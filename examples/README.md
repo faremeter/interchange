@@ -47,11 +47,11 @@ without overwhelming the conversation or the model.
   deliver a typed `InterchangeType` payload (e.g. `offering.request`)
   on an `InboundMessage` instead of a plain string `content`.
 
-## Provider topology
+## Inference-source topology
 
 - [`agent-multi-provider`](./agent-multi-provider/README.md) —
   combine per-task model selection, failover, and cost optimisation
-  using the agent's `providers` array and `setProvider()`. Routing
+  using the agent's `sources` array and `setSource()`. Routing
   policy lives in user-land; the agent ships the primitives.
 
 ## Full integration

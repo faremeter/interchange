@@ -1,5 +1,5 @@
 // agent-multi-provider end-to-end test. Verifies the policy layer
-// actually drives setProvider() before each send: one short prompt
+// actually drives setSource() before each send: one short prompt
 // goes to the cheap model, one long prompt goes to the smart model.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -9,15 +9,17 @@ import { join } from "node:path";
 
 import { main } from "@intx/example-agent-multi-provider";
 import { setupHarness, type Harness } from "@intx/inference-testing";
-import type { ProviderConfig } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
-const PRIMARY: ProviderConfig = {
+const PRIMARY: InferenceSource = {
+  id: "anthropic:primary-cheap",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
   apiKey: "sk-test-primary",
   model: "primary-cheap",
 };
-const FALLBACK: ProviderConfig = {
+const FALLBACK: InferenceSource = {
+  id: "anthropic:fallback-cheap",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
   apiKey: "sk-test-fallback",

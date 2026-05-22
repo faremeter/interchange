@@ -19,9 +19,10 @@ import {
   type Agent,
 } from "@intx/agent";
 import { setupHarness, type Harness } from "@intx/inference-testing";
-import type { ConversationTurn, ProviderConfig } from "@intx/types/runtime";
+import type { ConversationTurn, InferenceSource } from "@intx/types/runtime";
 
-const PROVIDER: ProviderConfig = {
+const SOURCE: InferenceSource = {
+  id: "anthropic:claude-3-5-sonnet",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
   apiKey: "sk-test-send-flow",
@@ -47,8 +48,8 @@ describe("@intx/agent send-flow integration", () => {
 
     const agent = await createAgent({
       contextDir: join(workDir, "ctx"),
-      providers: [PROVIDER],
-      defaultModel: PROVIDER.model ?? "claude-3-5-sonnet",
+      sources: [SOURCE],
+      defaultSource: SOURCE.id,
       systemPrompt: "send-flow test",
       tools: [],
       deps: harness.deps,
@@ -71,8 +72,8 @@ describe("@intx/agent send-flow integration", () => {
     const dir = join(workDir, "ctx");
     const agent = await createAgent({
       contextDir: dir,
-      providers: [PROVIDER],
-      defaultModel: PROVIDER.model ?? "claude-3-5-sonnet",
+      sources: [SOURCE],
+      defaultSource: SOURCE.id,
       systemPrompt: "send-flow test",
       tools: [],
       deps: harness.deps,
@@ -96,8 +97,8 @@ describe("@intx/agent send-flow integration", () => {
     // exercise history(), which reads from the store directly.
     const reopened = await createAgent({
       contextDir: dir,
-      providers: [PROVIDER],
-      defaultModel: PROVIDER.model ?? "claude-3-5-sonnet",
+      sources: [SOURCE],
+      defaultSource: SOURCE.id,
       systemPrompt: "send-flow test",
       tools: [],
       deps: harness.deps,
@@ -117,8 +118,8 @@ describe("@intx/agent send-flow integration", () => {
 
     const agent = await createAgent({
       contextDir: join(workDir, "ctx"),
-      providers: [PROVIDER],
-      defaultModel: PROVIDER.model ?? "claude-3-5-sonnet",
+      sources: [SOURCE],
+      defaultSource: SOURCE.id,
       systemPrompt: "send-flow test",
       tools: [],
       deps: harness.deps,
@@ -147,8 +148,8 @@ describe("@intx/agent send-flow integration", () => {
 
     const agent: Agent = await createAgent({
       contextDir: join(workDir, "ctx"),
-      providers: [PROVIDER],
-      defaultModel: PROVIDER.model ?? "claude-3-5-sonnet",
+      sources: [SOURCE],
+      defaultSource: SOURCE.id,
       systemPrompt: "send-flow test",
       tools: [],
       deps: harness.deps,
@@ -176,13 +177,13 @@ describe("@intx/agent send-flow integration", () => {
     expect(secondReason).toBeInstanceOf(AgentClosedError);
   });
 
-  test("setProvider hot-swaps credentials before the next inference", async () => {
+  test("setSource hot-swaps credentials before the next inference", async () => {
     harness.scenario.replyOnce("anthropic", { text: "first-provider reply" });
 
     const agent = await createAgent({
       contextDir: join(workDir, "ctx"),
-      providers: [PROVIDER],
-      defaultModel: PROVIDER.model ?? "claude-3-5-sonnet",
+      sources: [SOURCE],
+      defaultSource: SOURCE.id,
       systemPrompt: "send-flow test",
       tools: [],
       deps: harness.deps,
@@ -194,12 +195,13 @@ describe("@intx/agent send-flow integration", () => {
       await first;
 
       // Swap to a new credential. The next send picks up the new apiKey
-      // when the reactor reads providerConfig at start-of-inference.
-      agent.setProvider({
+      // when the reactor reads the active source at start-of-inference.
+      agent.setSource({
+        id: SOURCE.id,
         provider: "anthropic",
         baseURL: "https://api.anthropic.com",
         apiKey: "sk-rotated",
-        model: PROVIDER.model ?? "claude-3-5-sonnet",
+        model: SOURCE.model,
       });
 
       harness.scenario.replyOnce("anthropic", { text: "rotated reply" });
@@ -211,7 +213,7 @@ describe("@intx/agent send-flow integration", () => {
 
       const matched = harness.scenario.matchedRequests().at(-1);
       if (matched === undefined) {
-        throw new Error("expected a matched request after setProvider swap");
+        throw new Error("expected a matched request after setSource swap");
       }
       expect(matched.headers.get("x-api-key")).toBe("sk-rotated");
     } finally {
@@ -219,13 +221,13 @@ describe("@intx/agent send-flow integration", () => {
     }
   });
 
-  test("setProvider rotates the model in the next inference request", async () => {
+  test("setSource rotates the model in the next inference request", async () => {
     harness.scenario.replyOnce("anthropic", { text: "first-model reply" });
 
     const agent = await createAgent({
       contextDir: join(workDir, "ctx"),
-      providers: [PROVIDER],
-      defaultModel: PROVIDER.model ?? "claude-3-5-sonnet",
+      sources: [SOURCE],
+      defaultSource: SOURCE.id,
       systemPrompt: "send-flow test",
       tools: [],
       deps: harness.deps,
@@ -240,10 +242,11 @@ describe("@intx/agent send-flow integration", () => {
       // capabilities.infer substitutes the live model on each call, so
       // the next request body should carry the new model name.
       const NEW_MODEL = "claude-3-5-haiku";
-      agent.setProvider({
+      agent.setSource({
+        id: `anthropic:${NEW_MODEL}`,
         provider: "anthropic",
         baseURL: "https://api.anthropic.com",
-        apiKey: PROVIDER.apiKey,
+        apiKey: SOURCE.apiKey,
         model: NEW_MODEL,
       });
 
@@ -275,8 +278,8 @@ describe("@intx/agent send-flow integration", () => {
 
     const agent = await createAgent({
       contextDir: join(workDir, "ctx"),
-      providers: [PROVIDER],
-      defaultModel: PROVIDER.model ?? "claude-3-5-sonnet",
+      sources: [SOURCE],
+      defaultSource: SOURCE.id,
       systemPrompt: "send-flow test",
       tools: [],
       deps: harness.deps,
@@ -317,8 +320,8 @@ describe("@intx/agent send-flow integration", () => {
 
     const agent = await createAgent({
       contextDir: join(workDir, "ctx"),
-      providers: [PROVIDER],
-      defaultModel: PROVIDER.model ?? "claude-3-5-sonnet",
+      sources: [SOURCE],
+      defaultSource: SOURCE.id,
       systemPrompt: "send-flow test",
       tools: [],
       deps: harness.deps,

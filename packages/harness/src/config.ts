@@ -5,7 +5,7 @@ import type {
   AuditStore,
   ToolRunner,
   ToolDefinition,
-  ProviderConfig,
+  InferenceSource,
   InferenceEvent,
   ReactorDirector,
   BeforeToolExtension,
@@ -23,8 +23,8 @@ export type HarnessConfig = {
   /** System prompt for the agent's reasoning. */
   systemPrompt: string;
 
-  /** Inference provider configuration (provider, model, API key, etc.). */
-  provider: ProviderConfig;
+  /** Active inference source (id, provider, model, API key, etc.). */
+  source: InferenceSource;
 
   /** Message transport implementation (SMTP/IMAP or in-memory). */
   transport: MessageTransport;
@@ -115,14 +115,20 @@ export function validateConfig(config: HarnessConfig): void {
   if (config.systemPrompt.trim() === "") {
     throw new Error("HarnessConfig.systemPrompt must not be empty");
   }
-  if (config.provider.provider.trim() === "") {
-    throw new Error("HarnessConfig.provider.provider must not be empty");
+  if (config.source.id.trim() === "") {
+    throw new Error("HarnessConfig.source.id must not be empty");
   }
-  if (config.provider.apiKey.trim() === "") {
-    throw new Error("HarnessConfig.provider.apiKey must not be empty");
+  if (config.source.provider.trim() === "") {
+    throw new Error("HarnessConfig.source.provider must not be empty");
   }
-  if (config.provider.baseURL.trim() === "") {
-    throw new Error("HarnessConfig.provider.baseURL must not be empty");
+  if (config.source.model.trim() === "") {
+    throw new Error("HarnessConfig.source.model must not be empty");
+  }
+  if (config.source.apiKey.trim() === "") {
+    throw new Error("HarnessConfig.source.apiKey must not be empty");
+  }
+  if (config.source.baseURL.trim() === "") {
+    throw new Error("HarnessConfig.source.baseURL must not be empty");
   }
   if (config.auditStore !== undefined && config.authorize === undefined) {
     throw new Error(

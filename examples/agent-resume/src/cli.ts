@@ -16,15 +16,15 @@
 
 import {
   openExampleAgent,
-  resolveAgentProvider,
+  resolveAgentSource,
   resolveStdio,
-  type SingleProviderMainOptions,
+  type SingleSourceMainOptions,
 } from "@intx/example-agent-common";
 import type { ConversationTurn } from "@intx/types/runtime";
 
 const EXAMPLE_NAME = "agent-resume";
 
-export type MainOptions = SingleProviderMainOptions;
+export type MainOptions = SingleSourceMainOptions;
 
 function summarizeTurn(turn: ConversationTurn): string {
   const parts: string[] = [];
@@ -51,15 +51,15 @@ export async function main(
     return 1;
   }
 
-  const resolved = resolveAgentProvider(opts, env, EXAMPLE_NAME, stderr);
-  if (resolved === null) return 1;
+  const source = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
+  if (source === null) return 1;
 
   const agent = await openExampleAgent(opts, {
     exampleName: EXAMPLE_NAME,
     systemPrompt: "You are a helpful assistant. Keep replies concise.",
     tools: [],
-    providers: [resolved.provider],
-    defaultModel: resolved.model,
+    sources: [source],
+    defaultSource: source.id,
   });
   try {
     // history() reads straight off the store; on the first run it's

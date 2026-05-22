@@ -51,9 +51,9 @@ function createMockRouter(): SidecarRouter & {
     sendGrantsUpdate: track(
       "sendGrantsUpdate",
     ) as SidecarRouter["sendGrantsUpdate"],
-    sendProvidersUpdate: track(
-      "sendProvidersUpdate",
-    ) as SidecarRouter["sendProvidersUpdate"],
+    sendSourcesUpdate: track(
+      "sendSourcesUpdate",
+    ) as SidecarRouter["sendSourcesUpdate"],
     sendPack: track("sendPack") as SidecarRouter["sendPack"],
     sendSyncRequest: track(
       "sendSyncRequest",
@@ -110,8 +110,8 @@ const MOCK_CONFIG: HarnessConfig = {
   systemPrompt: "Test",
   tools: [],
   grants: [],
-  providers: [],
-  defaultModel: "mock",
+  sources: [],
+  defaultSource: "",
 };
 
 const MOCK_CONTENT: DeployContent = {

@@ -3,7 +3,7 @@ import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
 import { CredentialRequirement as CredentialRequirementType } from "@intx/types";
-import type { ProviderConfig } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
 import type { DB } from "./client";
 import { agent } from "./schema/agents";
@@ -18,6 +18,8 @@ const log = getLogger(["db", "credentials"]);
 const CredentialRequirements = CredentialRequirementType.array();
 
 export const ProviderMetadata = type({ baseURL: "string" });
+
+const AgentModelConfig = type({ defaultModel: "string" });
 
 /**
  * Resolves a provider by name, walking up the tenant hierarchy.
@@ -182,17 +184,24 @@ export async function resolveCredentialRequirement(
 }
 
 /**
- * Resolve the full ProviderConfig[] for a single running instance by
+ * Resolve the full `InferenceSource[]` for a single running instance by
  * re-resolving each credential requirement from the agent definition.
  *
- * Returns an empty array if no requirements are defined or none could
- * be resolved.
+ * The model comes from `agentRow.modelConfig.defaultModel` and is stamped
+ * onto every resolved source pre-catalog. When the catalog ships, the
+ * model will come from the catalog row instead. The synthesized `id` is
+ * `${provider}:${model}`, which matches the pre-catalog id-synthesis
+ * rule.
+ *
+ * Returns an empty array if no requirements are defined, the
+ * `modelConfig` is missing or invalid, or no credentials could be
+ * resolved.
  */
-export async function resolveInstanceProviders(
+export async function resolveInstanceSources(
   db: DB["db"],
   tenantId: string,
   instance: { agentId: string; sessionId: string | null },
-): Promise<ProviderConfig[]> {
+): Promise<InferenceSource[]> {
   const agentRow = await db.query.agent.findFirst({
     where: eq(agent.id, instance.agentId),
   });
@@ -206,6 +215,13 @@ export async function resolveInstanceProviders(
     return [];
   }
 
+  const modelConfig = AgentModelConfig(agentRow.modelConfig ?? {});
+  if (modelConfig instanceof type.errors) {
+    log.warn`Invalid modelConfig for agent ${agentRow.id}: ${modelConfig.summary}`;
+    return [];
+  }
+  const defaultModel = modelConfig.defaultModel;
+
   let invokerPrincipalId: string | null = null;
   if (instance.sessionId) {
     const session = await db.query.agentSession.findFirst({
@@ -216,7 +232,7 @@ export async function resolveInstanceProviders(
     }
   }
 
-  const providers: ProviderConfig[] = [];
+  const sources: InferenceSource[] = [];
   for (const req of requirements) {
     if (req.source === "creator" && !agentRow.creatorPrincipalId) {
       continue;
@@ -252,12 +268,14 @@ export async function resolveInstanceProviders(
       continue;
     }
 
-    providers.push({
+    sources.push({
+      id: `${providerRow.plugin}:${defaultModel}`,
       provider: providerRow.plugin,
       baseURL: metadata.baseURL,
       apiKey: resolved.secret,
+      model: defaultModel,
     });
   }
 
-  return providers;
+  return sources;
 }

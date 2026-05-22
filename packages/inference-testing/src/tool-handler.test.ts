@@ -4,7 +4,7 @@ import { runInference } from "@intx/inference";
 import type {
   ConversationTurn,
   InferenceEvent,
-  ProviderConfig,
+  InferenceSource,
 } from "@intx/types/runtime";
 
 import { ClockWallClockOverrunError } from "./clock";
@@ -12,10 +12,12 @@ import { UnmatchedFetchError } from "./errors";
 import { setupHarness, type Harness } from "./harness";
 import * as wire from "./wire";
 
-const ANTHROPIC_PROVIDER_CONFIG: ProviderConfig = {
+const ANTHROPIC_SOURCE: InferenceSource = {
+  id: "anthropic:claude-test",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
   apiKey: "test",
+  model: "claude-test",
 };
 
 const HEAD_USAGE = {
@@ -434,8 +436,7 @@ describe("harness.runInference auto-dispatch", () => {
       const collected = (async () => {
         for await (const ev of harness.runInference({
           turns: [userTurn("weather?")],
-          model: "claude-test",
-          providerConfig: ANTHROPIC_PROVIDER_CONFIG,
+          source: ANTHROPIC_SOURCE,
           nextSeq: () => ++seq,
         })) {
           events.push(ev);
@@ -479,8 +480,7 @@ describe("harness.runInference auto-dispatch", () => {
       const collected = (async () => {
         for await (const _ev of runInference({
           turns: [userTurn("weather?")],
-          model: "claude-test",
-          providerConfig: ANTHROPIC_PROVIDER_CONFIG,
+          source: ANTHROPIC_SOURCE,
           nextSeq: () => ++seq,
           deps: harness.deps,
         })) {
@@ -526,8 +526,7 @@ describe("harness.runInference auto-dispatch", () => {
       const collected = (async () => {
         for await (const ev of harness.runInference({
           turns: [userTurn("weather?")],
-          model: "claude-test",
-          providerConfig: ANTHROPIC_PROVIDER_CONFIG,
+          source: ANTHROPIC_SOURCE,
           nextSeq: () => ++seq,
         })) {
           if (ev.type === "inference.tool_call.end") {
@@ -564,8 +563,7 @@ describe("harness.runInference auto-dispatch", () => {
         try {
           for await (const _ev of harness.runInference({
             turns: [userTurn("?")],
-            model: "claude-test",
-            providerConfig: ANTHROPIC_PROVIDER_CONFIG,
+            source: ANTHROPIC_SOURCE,
             nextSeq: () => ++seq,
           })) {
             // drain

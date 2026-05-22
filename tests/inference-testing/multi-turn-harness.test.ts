@@ -39,19 +39,23 @@ import type { Harness } from "@intx/inference-testing";
 import type {
   ConversationTurn,
   InferenceEvent,
-  ProviderConfig,
+  InferenceSource,
 } from "@intx/types/runtime";
 
-const ANTHROPIC_PROVIDER_CONFIG: ProviderConfig = {
+const ANTHROPIC_SOURCE: InferenceSource = {
+  id: "anthropic:claude-test",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
   apiKey: "test",
+  model: "claude-test",
 };
 
-const OPENAI_PROVIDER_CONFIG: ProviderConfig = {
+const OPENAI_SOURCE: InferenceSource = {
+  id: "openai:gpt-test",
   provider: "openai",
   baseURL: "https://api.openai.com/v1",
   apiKey: "test",
+  model: "gpt-test",
 };
 
 const TURN1_USAGE_HEAD = {
@@ -124,13 +128,12 @@ async function collectInferenceManual(
   harness: Harness,
   turns: ConversationTurn[],
   nextSeq: () => number,
-  providerConfig: ProviderConfig,
+  source: InferenceSource,
 ): Promise<InferenceEvent[]> {
   const events: InferenceEvent[] = [];
   for await (const ev of runInference({
     turns,
-    model: "claude-test",
-    providerConfig,
+    source,
     nextSeq,
     deps: harness.deps,
   })) {
@@ -147,13 +150,12 @@ async function collectInferenceAuto(
   harness: Harness,
   turns: ConversationTurn[],
   nextSeq: () => number,
-  providerConfig: ProviderConfig,
+  source: InferenceSource,
 ): Promise<InferenceEvent[]> {
   const events: InferenceEvent[] = [];
   for await (const ev of harness.runInference({
     turns,
-    model: "claude-test",
-    providerConfig,
+    source,
     nextSeq,
   })) {
     events.push(ev);
@@ -245,7 +247,7 @@ describe("inference-testing harness — multi-turn round-trip", () => {
       harness,
       [userTurn("What is the weather in SF?")],
       () => ++seq,
-      ANTHROPIC_PROVIDER_CONFIG,
+      ANTHROPIC_SOURCE,
     );
     await harness.advanceTo(turn1Close + 10);
     const events1 = await turn1Events;
@@ -303,7 +305,7 @@ describe("inference-testing harness — multi-turn round-trip", () => {
       harness,
       turn2Conversation,
       () => ++seq,
-      ANTHROPIC_PROVIDER_CONFIG,
+      ANTHROPIC_SOURCE,
     );
     await harness.advanceTo(turn2Close + 10);
     const events2 = await turn2Events;
@@ -438,7 +440,7 @@ describe("inference-testing harness — multi-turn round-trip", () => {
       harness,
       [userTurn("How big is SF?")],
       () => ++seq,
-      OPENAI_PROVIDER_CONFIG,
+      OPENAI_SOURCE,
     );
     await harness.advanceTo(turn1Close + 10);
     const events1 = await turn1Events;
@@ -483,7 +485,7 @@ describe("inference-testing harness — multi-turn round-trip", () => {
       harness,
       turn2Conversation,
       () => ++seq,
-      OPENAI_PROVIDER_CONFIG,
+      OPENAI_SOURCE,
     );
     await harness.advanceTo(turn2Close + 10);
     const events2 = await turn2Events;
@@ -565,7 +567,7 @@ describe("inference-testing harness — multi-turn round-trip", () => {
       harness,
       [userTurn("What is the weather in LA?")],
       () => ++seq,
-      ANTHROPIC_PROVIDER_CONFIG,
+      ANTHROPIC_SOURCE,
     );
     await harness.advanceTo(turn1Close + 10);
     const events1 = await turn1Events;
@@ -643,7 +645,7 @@ describe("inference-testing harness — multi-turn round-trip", () => {
       harness,
       [userTurn("What is the weather in NYC?")],
       () => ++seq,
-      ANTHROPIC_PROVIDER_CONFIG,
+      ANTHROPIC_SOURCE,
     );
     await harness.advanceTo(turn1Close + 10);
     const events1 = await turn1Events;
@@ -735,7 +737,7 @@ describe("inference-testing harness — multi-turn round-trip", () => {
       harness,
       [userTurn("PDX weather and time?")],
       () => ++seq,
-      ANTHROPIC_PROVIDER_CONFIG,
+      ANTHROPIC_SOURCE,
     );
     await harness.advanceTo(turn1Close + 10);
     const events1 = await turn1Events;
@@ -815,7 +817,7 @@ describe("inference-testing harness — multi-turn round-trip", () => {
       harness,
       turn2Conversation,
       () => ++seq,
-      ANTHROPIC_PROVIDER_CONFIG,
+      ANTHROPIC_SOURCE,
     );
     await harness.advanceTo(turn2Close + 10);
     const events2 = await turn2Events;

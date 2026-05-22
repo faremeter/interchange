@@ -87,7 +87,7 @@ function buildRequest(
     url: "/v1/messages",
     headers: {
       "content-type": "application/json",
-      "x-api-key": "", // Filled by the harness from ProviderConfig.apiKey
+      "x-api-key": "", // Filled by the harness from InferenceSource.apiKey
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify(body),

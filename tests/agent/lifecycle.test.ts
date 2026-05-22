@@ -20,7 +20,7 @@ import {
 import type {
   ContextStore,
   InboundMessage,
-  ProviderConfig,
+  InferenceSource,
 } from "@intx/types/runtime";
 
 /**
@@ -44,7 +44,8 @@ function stubContextStore(): ContextStore {
   return {} as ContextStore;
 }
 
-const PROVIDER: ProviderConfig = {
+const SOURCE: InferenceSource = {
+  id: "anthropic:claude-3-5-sonnet",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
   apiKey: "sk-test-lifecycle",
@@ -54,8 +55,8 @@ const PROVIDER: ProviderConfig = {
 function baseConfig(contextDir: string): AgentConfig {
   return {
     contextDir,
-    providers: [PROVIDER],
-    defaultModel: PROVIDER.model ?? "claude-3-5-sonnet",
+    sources: [SOURCE],
+    defaultSource: SOURCE.id,
     systemPrompt: "lifecycle test agent",
     tools: [],
   };
@@ -116,7 +117,7 @@ describe("@intx/agent lifecycle", () => {
     await agent.close();
 
     expect(() => agent.deliver(stubInboundMessage())).toThrow();
-    expect(() => agent.setProvider(PROVIDER)).toThrow();
+    expect(() => agent.setSource(SOURCE)).toThrow();
     await expect(agent.send("hi")).rejects.toBeDefined();
   });
 

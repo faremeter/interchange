@@ -8,7 +8,7 @@ import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
 import { createIsogitStore } from "@intx/storage-isogit";
 import { createPosixTools } from "@intx/tools-posix";
 import { createHarness } from "@intx/harness";
-import type { InferenceEvent, ProviderConfig } from "@intx/types/runtime";
+import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 await setup({ dev: true });
 
@@ -23,7 +23,7 @@ const ANTHROPIC_DEFAULTS = {
   model: "claude-sonnet-4-20250514",
 };
 
-function readProvider(): ProviderConfig {
+function readSource(): InferenceSource {
   const provider = process.env["RING_PROVIDER"] ?? "openai-compatible";
 
   const baseURL =
@@ -55,14 +55,20 @@ function readProvider(): ProviderConfig {
     process.exit(1);
   }
 
-  return { provider, baseURL, apiKey, model };
+  return {
+    id: `${provider}:${model}`,
+    provider,
+    baseURL,
+    apiKey,
+    model,
+  };
 }
 
-const providerConfig = readProvider();
+const source = readSource();
 
 log.info("Provider: {provider} / {model}", {
-  provider: providerConfig.provider,
-  model: providerConfig.model,
+  provider: source.provider,
+  model: source.model,
 });
 
 // ---------------------------------------------------------------------------
@@ -317,7 +323,7 @@ for (let i = 0; i < AGENT_NAMES.length; i++) {
   const h = createHarness({
     address: agentAddress(name),
     systemPrompt: buildRingPrompt(name, i),
-    provider: providerConfig,
+    source,
     transport: transports[i],
     crypto: cryptoInstances[i],
     storage: stores[i],

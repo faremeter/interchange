@@ -7,7 +7,7 @@
 // surface.
 
 import type { Dependencies } from "@intx/inference";
-import type { ProviderConfig } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
 /**
  * Test-seam options every agent-* example's `main()` accepts:
@@ -25,14 +25,14 @@ export type CommonMainOptions = {
 };
 
 /**
- * `CommonMainOptions` plus the `providerOverride` test seam. Seven
- * of the eight agent-* examples wire a single provider and use this
- * shape directly. The multi-provider example extends
+ * `CommonMainOptions` plus the `sourceOverride` test seam. Seven
+ * of the eight agent-* examples wire a single inference source and use
+ * this shape directly. The multi-provider example extends
  * `CommonMainOptions` with its own primary/fallback overrides.
  */
-export type SingleProviderMainOptions = CommonMainOptions & {
-  /** Skip env resolution and use this provider directly. */
-  providerOverride?: ProviderConfig;
+export type SingleSourceMainOptions = CommonMainOptions & {
+  /** Skip env resolution and use this source directly. */
+  sourceOverride?: InferenceSource;
 };
 
 /**

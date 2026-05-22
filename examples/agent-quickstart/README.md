@@ -7,13 +7,13 @@ This example exists to answer "what is the minimum amount of code I
 need to talk to an agent?" — read the body of
 [`src/cli.ts`](./src/cli.ts) and you have it. Everything around the
 `main()` body is plumbing the integration test uses to swap a stub
-provider in for the real Anthropic API; production callers do not see
-that machinery.
+inference source in for the real Anthropic API; production callers do
+not see that machinery.
 
 ## What it shows
 
-- Constructing an agent with `createAgent({ contextDir, providers,
-defaultModel, systemPrompt, tools })`.
+- Constructing an agent with `createAgent({ contextDir, sources,
+defaultSource, systemPrompt, tools })`.
 - A single round trip through `agent.send(prompt)`.
 - Tearing the agent down with `agent.close()` so the singleton-per-
   `contextDir` lock is released cleanly.
@@ -44,7 +44,7 @@ rm -rf ../../tmp/agent-quickstart
 
 Without `ANTHROPIC_API_KEY` set the example prints a short message
 explaining what to set and exits non-zero. That message comes from
-`@intx/example-agent-common`'s `resolveProvider` helper, which
+`@intx/example-agent-common`'s `resolveSource` helper, which
 every agent-\* example shares.
 
 ## Walkthrough
@@ -54,11 +54,12 @@ The `main()` function in `src/cli.ts` does five things in order:
 1. **Parse arguments.** The prompt is the rest of the command line
    joined by spaces; an empty prompt prints a one-line usage message
    and returns exit code 1.
-2. **Resolve the provider.** `resolveProvider` reads
+2. **Resolve the inference source.** `resolveSource` reads
    `ANTHROPIC_API_KEY` from `env`, defaults the model to
-   `claude-3-5-sonnet-20241022`, and returns `{ ok: false, help }`
-   when the env is incomplete. Tests bypass env resolution entirely
-   by supplying `providerOverride`.
+   `claude-3-5-sonnet-20241022`, synthesizes an `id` of
+   `${provider}:${model}`, and returns `{ ok: false, help }` when the
+   env is incomplete. Tests bypass env resolution entirely by
+   supplying `sourceOverride`.
 3. **Construct the agent.** `contextDir` is the only piece of state
    the example owns; the isogit-backed context store materialises
    inside it on first use. `tools: []` keeps the surface honest — a
@@ -73,7 +74,7 @@ The `main()` function in `src/cli.ts` does five things in order:
 
 `agent.send()` and `agent.close()` are the two methods you have to
 know. Every other surface on `Agent` (streaming, history, readAt,
-setProvider, deliver) is layered on top and demonstrated in a
+setSource, deliver) is layered on top and demonstrated in a
 dedicated example.
 
 ## Why so short?
@@ -84,7 +85,7 @@ hello, nobody would reach for it for a quick experiment. The body of
 `main()` fits on a single screen — argument parsing, provider
 resolution, agent construction, one send, close — with no scaffolding
 beyond what the surrounding example test seam (stdout / stderr /
-`providerOverride` / `deps` injection) demands.
+`sourceOverride` / `deps` injection) demands.
 
 ## Next
 

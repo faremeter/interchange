@@ -436,14 +436,16 @@ describe("SidecarRouter", () => {
         systemPrompt: "test",
         tools: [],
         grants: [],
-        providers: [
+        sources: [
           {
+            id: "anthropic:claude-sonnet-4-20250514",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
             apiKey: "sk-test",
+            model: "claude-sonnet-4-20250514",
           },
         ],
-        defaultModel: "claude-sonnet-4-20250514",
+        defaultSource: "anthropic:claude-sonnet-4-20250514",
       };
 
       const promise = router.sendAgentDeploy("new-agent@local", config);
@@ -496,14 +498,16 @@ describe("SidecarRouter", () => {
         systemPrompt: "test",
         tools: [],
         grants: [],
-        providers: [
+        sources: [
           {
+            id: "anthropic:claude-sonnet-4-20250514",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
             apiKey: "sk-test",
+            model: "claude-sonnet-4-20250514",
           },
         ],
-        defaultModel: "claude-sonnet-4-20250514",
+        defaultSource: "anthropic:claude-sonnet-4-20250514",
       };
 
       const promise = router.sendAgentDeploy("ack-agent@local", config);
@@ -553,14 +557,16 @@ describe("SidecarRouter", () => {
         systemPrompt: "test",
         tools: [],
         grants: [],
-        providers: [
+        sources: [
           {
+            id: "anthropic:claude-sonnet-4-20250514",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
             apiKey: "sk-test",
+            model: "claude-sonnet-4-20250514",
           },
         ],
-        defaultModel: "claude-sonnet-4-20250514",
+        defaultSource: "anthropic:claude-sonnet-4-20250514",
       };
 
       const promise = router.sendAgentDeploy("fail-ack@local", config);
@@ -600,14 +606,16 @@ describe("SidecarRouter", () => {
         systemPrompt: "test",
         tools: [],
         grants: [],
-        providers: [
+        sources: [
           {
+            id: "anthropic:claude-sonnet-4-20250514",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
             apiKey: "sk-test",
+            model: "claude-sonnet-4-20250514",
           },
         ],
-        defaultModel: "claude-sonnet-4-20250514",
+        defaultSource: "anthropic:claude-sonnet-4-20250514",
       };
 
       const promise = router.sendAgentDeploy("fail-agent@local", config);
@@ -682,14 +690,16 @@ describe("SidecarRouter", () => {
         systemPrompt: "test",
         tools: [],
         grants: [],
-        providers: [
+        sources: [
           {
+            id: "anthropic:claude-sonnet-4-20250514",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
             apiKey: "sk-test",
+            model: "claude-sonnet-4-20250514",
           },
         ],
-        defaultModel: "claude-sonnet-4-20250514",
+        defaultSource: "anthropic:claude-sonnet-4-20250514",
       };
 
       await expect(
@@ -747,14 +757,16 @@ describe("SidecarRouter", () => {
         systemPrompt: "test",
         tools: [],
         grants: [],
-        providers: [
+        sources: [
           {
+            id: "anthropic:claude-sonnet-4-20250514",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
             apiKey: "sk-test",
+            model: "claude-sonnet-4-20250514",
           },
         ],
-        defaultModel: "claude-sonnet-4-20250514",
+        defaultSource: "anthropic:claude-sonnet-4-20250514",
       };
 
       const promise = router.sendAgentDeploy("dc-agent@local", config);
@@ -2014,10 +2026,16 @@ describe("SidecarRouter", () => {
           systemPrompt: "test",
           tools: [],
           grants: [],
-          providers: [
-            { provider: "test", apiKey: "k", baseURL: "http://localhost" },
+          sources: [
+            {
+              id: "test:m",
+              provider: "test",
+              apiKey: "k",
+              baseURL: "http://localhost",
+              model: "m",
+            },
           ],
-          defaultModel: "m",
+          defaultSource: "test:m",
         }),
       ).rejects.toThrow("Hub signing key is required");
 

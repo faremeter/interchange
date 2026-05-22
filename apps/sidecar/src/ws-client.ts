@@ -19,7 +19,7 @@ import {
   type SessionAbortFrame,
   type SessionStartFrame,
   type GrantsUpdateFrame,
-  type ProvidersUpdateFrame,
+  type SourcesUpdateFrame,
   type PackPushFrame,
   type PackDoneFrame,
   type PackAckFrame,
@@ -316,11 +316,13 @@ export function createWsClient(config: WsClientConfig): WsClient {
     }
   }
 
-  async function handleProvidersUpdate(
-    frame: ProvidersUpdateFrame,
-  ): Promise<void> {
+  async function handleSourcesUpdate(frame: SourcesUpdateFrame): Promise<void> {
     try {
-      await sessions.updateProviders(frame.agentAddress, frame.providers);
+      await sessions.updateSources(
+        frame.agentAddress,
+        frame.sources,
+        frame.defaultSource,
+      );
       send({ type: "session.ack", requestId: frame.requestId });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -509,8 +511,8 @@ export function createWsClient(config: WsClientConfig): WsClient {
       case "grants.update":
         await handleGrantsUpdate(frame);
         break;
-      case "providers.update":
-        await handleProvidersUpdate(frame);
+      case "sources.update":
+        await handleSourcesUpdate(frame);
         break;
       case "pack.push":
         handlePackPush(frame);

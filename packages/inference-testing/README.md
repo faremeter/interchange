@@ -56,11 +56,12 @@ test("anthropic streams text and then completes", async () => {
       turns: [
         { role: "user", content: [{ type: "text", text: "Hi" }], timestamp: 0 },
       ],
-      model: "claude-test",
-      providerConfig: {
+      source: {
+        id: "anthropic:claude-test",
         provider: "anthropic",
         baseURL: "https://example",
         apiKey: "key",
+        model: "claude-test",
       },
       nextSeq: () => seq++,
       deps: harness.deps,
@@ -256,13 +257,20 @@ try {
   );
   harness.scenario.whenRequestMatches(() => true, turn2);
 
+  const source = {
+    id: "anthropic:claude-test",
+    provider: "anthropic",
+    baseURL: "https://example",
+    apiKey: "key",
+    model: "claude-test",
+  };
+
   let seq = 0;
   const events: InferenceEvent[] = [];
   const collect = (async () => {
     for await (const ev of harness.runInference({
       turns: [userTurn("weather?")],
-      model: "claude-test",
-      providerConfig,
+      source,
       nextSeq: () => ++seq,
     })) {
       events.push(ev);

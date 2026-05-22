@@ -12,7 +12,7 @@ import { hexEncode } from "@intx/types";
 import type {
   HarnessConfig,
   InboundMessage,
-  ProviderConfig,
+  InferenceSource,
 } from "@intx/types/runtime";
 import type { GrantRule } from "@intx/types/authz";
 
@@ -98,9 +98,10 @@ function createMockSessionManager(): SessionManager & {
     ): Promise<void> {
       if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
     },
-    async updateProviders(
+    async updateSources(
       _agentAddress: string,
-      _providers: ProviderConfig[],
+      _sources: InferenceSource[],
+      _defaultSource: string,
     ): Promise<void> {
       if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
     },
@@ -143,14 +144,16 @@ const TEST_CONFIG: HarnessConfig = {
   systemPrompt: "You are a test agent",
   tools: [],
   grants: [],
-  providers: [
+  sources: [
     {
+      id: "anthropic:claude-sonnet-4-20250514",
       provider: "anthropic",
       baseURL: "https://api.anthropic.com",
       apiKey: "sk-test",
+      model: "claude-sonnet-4-20250514",
     },
   ],
-  defaultModel: "claude-sonnet-4-20250514",
+  defaultSource: "anthropic:claude-sonnet-4-20250514",
 };
 
 const VALID_MESSAGE = new TextEncoder().encode(

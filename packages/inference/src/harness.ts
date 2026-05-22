@@ -19,8 +19,8 @@ import type {
   ConversationTurn,
   InferenceEvent,
   InferenceOptions,
+  InferenceSource,
   PartialMessage,
-  ProviderConfig,
   TokenUsage,
   AssistantTurn,
   ContentBlock,
@@ -118,8 +118,7 @@ export function createDefaultDependencies(): Dependencies {
 
 export type InferenceHarnessOptions = {
   turns: ConversationTurn[];
-  model: string;
-  providerConfig: ProviderConfig;
+  source: InferenceSource;
   inferenceOptions?: InferenceOptions;
   signal?: AbortSignal;
   // Sequence number allocator — called once per event to get the next seq.
@@ -130,15 +129,16 @@ export type InferenceHarnessOptions = {
 export async function* runInference(
   opts: InferenceHarnessOptions,
 ): AsyncIterable<InferenceEvent> {
-  const {
-    turns,
-    model,
-    providerConfig,
-    inferenceOptions = {},
-    signal,
-    nextSeq,
-    deps,
-  } = opts;
+  const { turns, source, inferenceOptions, signal, nextSeq, deps } = opts;
+  // Per-call options override source-bound defaults. The merge happens
+  // here, once, so the adapter and timeout-resolution paths below all
+  // see the effective option set without having to remember the
+  // precedence rule.
+  const effectiveOptions: InferenceOptions = {
+    ...(source.defaults ?? {}),
+    ...(inferenceOptions ?? {}),
+  };
+  const model = source.model;
 
   // Defensive guard for callers that bypass the type system (JS, `any`,
   // unchecked casts). Missing or malformed `deps.fetch` is a programmer
@@ -180,7 +180,7 @@ export async function* runInference(
 
   let adapter;
   try {
-    adapter = lookupProvider(providerConfig.provider);
+    adapter = lookupProvider(source.provider);
   } catch (cause) {
     yield {
       type: "inference.error",
@@ -191,7 +191,7 @@ export async function* runInference(
           message:
             cause instanceof Error
               ? cause.message
-              : `Unknown provider: ${providerConfig.provider}`,
+              : `Unknown provider: ${source.provider}`,
         },
         partial: snapshotPartial(partial),
       },
@@ -201,7 +201,7 @@ export async function* runInference(
 
   let builtRequest;
   try {
-    builtRequest = adapter.buildRequest(turns, model, inferenceOptions);
+    builtRequest = adapter.buildRequest(turns, model, effectiveOptions);
   } catch (cause) {
     yield {
       type: "inference.error",
@@ -215,8 +215,8 @@ export async function* runInference(
   }
 
   // Resolve the full URL and inject credentials.
-  const url = resolveURL(builtRequest.url, providerConfig.baseURL);
-  const headers = injectCredentials(builtRequest.headers, providerConfig);
+  const url = resolveURL(builtRequest.url, source.baseURL);
+  const headers = injectCredentials(builtRequest.headers, source);
 
   // Per-call timeouts. The inactivity timer fires when the harness
   // hasn't yielded an event for `inactivityTimeoutMs`; the total timer
@@ -224,9 +224,9 @@ export async function* runInference(
   // combine its signal with the caller's, and attribute the abort to
   // whichever timer fired by checking `timeoutReason` at the catch site.
   const inactivityTimeoutMs =
-    inferenceOptions.inactivityTimeoutMs ?? DEFAULT_INACTIVITY_TIMEOUT_MS;
+    effectiveOptions.inactivityTimeoutMs ?? DEFAULT_INACTIVITY_TIMEOUT_MS;
   const totalTimeoutMs =
-    inferenceOptions.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS;
+    effectiveOptions.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS;
   const scheduler = deps.scheduler ?? createDefaultScheduler();
   const timeoutAbort = new AbortController();
   let timeoutReason: "inactivity" | "total" | null = null;
@@ -762,16 +762,16 @@ function resolveURL(path: string, baseURL: string): string {
 
 function injectCredentials(
   headers: Record<string, string>,
-  config: ProviderConfig,
+  source: InferenceSource,
 ): Record<string, string> {
   const result = { ...headers };
 
   if ("x-api-key" in result) {
-    result["x-api-key"] = config.apiKey;
+    result["x-api-key"] = source.apiKey;
   }
 
   if ("authorization" in result) {
-    result["authorization"] = `Bearer ${config.apiKey}`;
+    result["authorization"] = `Bearer ${source.apiKey}`;
   }
 
   return result;
