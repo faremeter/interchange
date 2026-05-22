@@ -115,13 +115,18 @@ const keyPairs = await Promise.all(
 const cryptoInstances = keyPairs.map((kp) => createNodeCrypto(kp));
 
 // Register all agents and the user.
-for (let i = 0; i < AGENT_NAMES.length; i++) {
-  sharedTransport.register(agentAddress(AGENT_NAMES[i]), cryptoInstances[i]);
+for (const [i, name] of AGENT_NAMES.entries()) {
+  const crypto = cryptoInstances[i];
+  if (crypto === undefined) {
+    throw new Error(`Missing crypto for agent index ${String(i)}`);
+  }
+  sharedTransport.register(agentAddress(name), crypto);
 }
-sharedTransport.register(
-  USER_ADDRESS,
-  cryptoInstances[cryptoInstances.length - 1],
-);
+const userCrypto = cryptoInstances.at(-1);
+if (userCrypto === undefined) {
+  throw new Error("Missing crypto for user");
+}
+sharedTransport.register(USER_ADDRESS, userCrypto);
 
 // Per-agent transports.
 const transports = AGENT_NAMES.map((name) =>
@@ -207,12 +212,6 @@ function makeEventLogger(label: string): (event: InferenceEvent) => void {
         break;
       }
 
-      case "message.received": {
-        const from = event.data.message.headers.from;
-        log.info("[{label}] Received message from {from}", { label, from });
-        break;
-      }
-
       case "connector.reply": {
         const content = event.data.content;
         log.info("[{label}] Connector reply: {content}", {
@@ -278,13 +277,25 @@ const ROLES: Record<string, { title: string; perspective: string }> = {
 
 function buildRingPrompt(name: string, index: number): string {
   const role = ROLES[name];
+  if (role === undefined) {
+    throw new Error(`No role defined for ${name}`);
+  }
   const nextIndex = (index + 1) % AGENT_NAMES.length;
   const nextName = AGENT_NAMES[nextIndex];
+  if (nextName === undefined) {
+    throw new Error(`No agent name at index ${String(nextIndex)}`);
+  }
   const nextAddress = agentAddress(nextName);
   const nextRole = ROLES[nextName];
+  if (nextRole === undefined) {
+    throw new Error(`No role defined for ${nextName}`);
+  }
 
   if (index === 0) {
-    const lastName = AGENT_NAMES[AGENT_NAMES.length - 1];
+    const lastName = AGENT_NAMES.at(-1);
+    if (lastName === undefined) {
+      throw new Error("AGENT_NAMES is empty");
+    }
     const lastAddress = agentAddress(lastName);
     return `You are ${name}, the ${role.title} of a braintrust of ${AGENT_NAMES.length} advisors.
 
@@ -318,15 +329,24 @@ After the tool call succeeds, stop immediately. Do not write any reply text.`;
 // Harnesses
 // ---------------------------------------------------------------------------
 
-for (let i = 0; i < AGENT_NAMES.length; i++) {
-  const name = AGENT_NAMES[i];
+for (const [i, name] of AGENT_NAMES.entries()) {
+  const transport = transports[i];
+  const crypto = cryptoInstances[i];
+  const storage = stores[i];
+  if (
+    transport === undefined ||
+    crypto === undefined ||
+    storage === undefined
+  ) {
+    throw new Error(`Missing per-agent dependency for index ${String(i)}`);
+  }
   const h = createHarness({
     address: agentAddress(name),
     systemPrompt: buildRingPrompt(name, i),
     source,
-    transport: transports[i],
-    crypto: cryptoInstances[i],
-    storage: stores[i],
+    transport,
+    crypto,
+    storage,
     tools: createPosixTools({ cwd: process.cwd() }),
     onEvent: makeEventLogger(name),
     directorPolicy: i !== 0 ? { mode: "reactive" } : {},

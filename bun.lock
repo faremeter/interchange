@@ -178,6 +178,32 @@
         "@intx/types": "workspace:*",
       },
     },
+    "examples/posix-demo": {
+      "name": "@intx/example-posix-demo",
+      "version": "0.0.0",
+      "dependencies": {
+        "@intx/crypto-node": "workspace:*",
+        "@intx/harness": "workspace:*",
+        "@intx/log": "workspace:*",
+        "@intx/mail-memory": "workspace:*",
+        "@intx/storage-isogit": "workspace:*",
+        "@intx/tools-posix": "workspace:*",
+        "@intx/types": "workspace:*",
+      },
+    },
+    "examples/ring-demo": {
+      "name": "@intx/example-ring-demo",
+      "version": "0.0.0",
+      "dependencies": {
+        "@intx/crypto-node": "workspace:*",
+        "@intx/harness": "workspace:*",
+        "@intx/log": "workspace:*",
+        "@intx/mail-memory": "workspace:*",
+        "@intx/storage-isogit": "workspace:*",
+        "@intx/tools-posix": "workspace:*",
+        "@intx/types": "workspace:*",
+      },
+    },
     "packages/agent": {
       "name": "@intx/agent",
       "version": "0.0.0",
@@ -592,6 +618,10 @@
     "@intx/example-agent-structured-payload": ["@intx/example-agent-structured-payload@workspace:examples/agent-structured-payload"],
 
     "@intx/example-coding-agent": ["@intx/example-coding-agent@workspace:examples/coding-agent"],
+
+    "@intx/example-posix-demo": ["@intx/example-posix-demo@workspace:examples/posix-demo"],
+
+    "@intx/example-ring-demo": ["@intx/example-ring-demo@workspace:examples/ring-demo"],
 
     "@intx/harness": ["@intx/harness@workspace:packages/harness"],
 

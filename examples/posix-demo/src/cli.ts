@@ -221,12 +221,6 @@ function makeEventLogger(label: string): (event: InferenceEvent) => void {
         break;
       }
 
-      case "message.received": {
-        const from = event.data.message.headers.from;
-        log.info("[{label}] Received message from {from}", { label, from });
-        break;
-      }
-
       case "connector.reply": {
         const content = event.data.content;
         log.info("[{label}] Connector reply: {content}", {

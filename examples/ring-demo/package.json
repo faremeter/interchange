@@ -1,0 +1,19 @@
+{
+  "name": "@intx/example-ring-demo",
+  "version": "0.0.0",
+  "license": "LGPL-2.1-only",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/cli.ts"
+  },
+  "dependencies": {
+    "@intx/crypto-node": "workspace:*",
+    "@intx/harness": "workspace:*",
+    "@intx/log": "workspace:*",
+    "@intx/mail-memory": "workspace:*",
+    "@intx/storage-isogit": "workspace:*",
+    "@intx/tools-posix": "workspace:*",
+    "@intx/types": "workspace:*"
+  }
+}
