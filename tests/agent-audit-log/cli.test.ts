@@ -9,9 +9,10 @@ import { join } from "node:path";
 
 import { main } from "@intx/example-agent-audit-log";
 import { setupHarness, type Harness } from "@intx/inference-testing";
-import type { ProviderConfig } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
-const PROVIDER: ProviderConfig = {
+const SOURCE: InferenceSource = {
+  id: "anthropic:claude-3-5-sonnet",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
   apiKey: "sk-test-audit-log",
@@ -52,7 +53,7 @@ describe("agent-audit-log CLI", () => {
         stderr: (s) => {
           stderrBuf += s;
         },
-        providerOverride: PROVIDER,
+        sourceOverride: SOURCE,
         deps: harness.deps,
         contextDir,
       },
@@ -95,7 +96,7 @@ describe("agent-audit-log CLI", () => {
         stderr: (s) => {
           stderrBuf += s;
         },
-        providerOverride: PROVIDER,
+        sourceOverride: SOURCE,
         deps: harness.deps,
         contextDir,
       },

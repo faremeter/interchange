@@ -1,32 +1,33 @@
 # agent-multi-provider
 
 Combine three flavours of routing policy on top of
-`@intx/agent`'s `providers` array and `setProvider()` method:
+`@intx/agent`'s `sources` array and `setSource()` method:
 
 - **model-per-task** — choose a "cheap" or "smart" model per send
   based on a per-prompt heuristic (here: prompt length).
-- **failover** — if the primary provider's call rejects, swap to a
-  fallback provider and retry once.
+- **failover** — if the primary source's call rejects, swap to a
+  fallback source and retry once.
 - **cost optimisation** — the model-per-task heuristic doubles as a
   cost knob; cheap models get the short, easy prompts and the smart
   model only sees the long, expensive ones.
 
 None of this logic lives inside `@intx/agent`. The package
-exposes the registry and a hot-swap primitive (`setProvider`) and
+exposes the registry and a hot-swap primitive (`setSource`) and
 that's it — by design. Routing strategies vary too widely between
 deployments to ship inside the agent surface, so the example shows
 the pattern in user-land.
 
 ## What it shows
 
-- `createAgent({ providers, defaultModel })` accepts a list of
-  configs. The active one is `providers[0]`; `setProvider(config)`
-  rotates the credentials and model in place.
-- A small policy module (`./src/policy.ts`) decides which config
-  applies per send. `routeProvider` picks the model tier from the
+- `createAgent({ sources, defaultSource })` accepts a list of
+  `InferenceSource` entries and the `id` of the one to start with.
+  `setSource(source)` rotates the active source (id, credentials,
+  model, defaults, capabilities) in place.
+- A small policy module (`./src/policy.ts`) decides which source
+  applies per send. `routeSource` picks the model tier from the
   prompt; `withFailover` retries against a fallback on rejection.
-- The reactor reads `providerConfig` lazily at the start of each
-  inference call, so a `setProvider` call between sends takes effect
+- The reactor reads the active source lazily at the start of each
+  inference call, so a `setSource` call between sends takes effect
   on the very next inference request.
 
 ## Running
@@ -57,8 +58,8 @@ Output looks like:
 
 If the primary call fails (network outage, 5xx, expired credentials)
 the line for that prompt shows `attempts: primary -> fallback` and
-`served by: fallback`. The agent keeps running on whichever provider
-served the most recent send until the next `routeProvider` call swaps
+`served by: fallback`. The agent keeps running on whichever source
+served the most recent send until the next `routeSource` call swaps
 the model again.
 
 To start fresh:
@@ -76,19 +77,20 @@ The interesting code lives in two places:
      with whatever maps your prompts to a tier — classify intent,
      consult past token usage, check whether the request needs tool
      access, etc.
-   - `routeProvider({ prompt, primary, models })` overlays the
-     chosen model on the primary config and returns the
-     `ProviderConfig` that should be applied for this send.
-   - `withFailover({ primary, fallback, applyProvider, invoke })`
+   - `routeSource({ prompt, primary, models })` overlays the
+     chosen model on the primary source and returns the
+     `InferenceSource` (with a freshly synthesized id) that should be
+     applied for this send.
+   - `withFailover({ primary, fallback, applySource, invoke })`
      wraps a send: applies the primary, runs `invoke()`, and on
      rejection swaps to the fallback and retries once. The function
-     reports which provider ultimately served the request so the
+     reports which source ultimately served the request so the
      caller can log or meter accordingly.
 
 2. **`src/cli.ts`** wires the policy into a per-prompt loop. Before
-   each `agent.send(prompt)` it calls `routeProvider` to pick the
-   model, then `withFailover` to apply the provider and run the
-   send. The loop reports the attempt chain and the served provider
+   each `agent.send(prompt)` it calls `routeSource` to pick the
+   model, then `withFailover` to apply the source and run the
+   send. The loop reports the attempt chain and the served source
    so the routing decisions are visible to the reader.
 
 ## Why no failover inside `@intx/agent`?
@@ -98,7 +100,7 @@ answer (which errors retry, how many retries, exponential backoff,
 budget caps, half-open circuit breakers, per-tenant overrides) vary
 too much between deployments to bake into the agent surface.
 
-`setProvider()` is the primitive the agent provides; everything else
+`setSource()` is the primitive the agent provides; everything else
 is user code that layers the policy you want on top. The example
 implements the simplest useful policy (one retry against a fallback)
 so the shape is visible.
@@ -118,5 +120,5 @@ A real heuristic might consider:
   [`agent-structured-payload`](../agent-structured-payload/README.md)).
 
 The agent surface doesn't care which one you pick. The pattern is
-always the same: derive a `ProviderConfig`, call `setProvider`, then
+always the same: derive an `InferenceSource`, call `setSource`, then
 `send`.

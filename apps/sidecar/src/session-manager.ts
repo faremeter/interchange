@@ -40,8 +40,8 @@ import type { GrantRule } from "@intx/types/authz";
 import type {
   InboundMessage,
   InferenceEvent,
+  InferenceSource,
   KeyPair,
-  ProviderConfig,
   ToolRunner,
   HarnessConfig as AgentConfig,
 } from "@intx/types/runtime";
@@ -103,9 +103,10 @@ export type SessionManager = {
   abortSession(agentAddress: string, reason: string): Promise<void>;
   deliverMessage(agentAddress: string, message: InboundMessage): void;
   updateGrants(agentAddress: string, grants: GrantRule[]): Promise<void>;
-  updateProviders(
+  updateSources(
     agentAddress: string,
-    providers: ProviderConfig[],
+    sources: InferenceSource[],
+    defaultSource: string,
   ): Promise<void>;
   hasSession(agentAddress: string): boolean;
   isProvisioned(agentAddress: string): boolean;
@@ -300,10 +301,17 @@ export function createSessionManager(
 
     const { config: agentConfig, keyPair } = entry;
 
-    const provider = agentConfig.providers.find((p) => hasProvider(p.provider));
-    if (provider === undefined) {
+    const source = agentConfig.sources.find(
+      (s) => s.id === agentConfig.defaultSource,
+    );
+    if (source === undefined) {
       throw new Error(
-        `No inference provider configured for agent "${agentAddress}"`,
+        `No source matches defaultSource "${agentConfig.defaultSource}" for agent "${agentAddress}"`,
+      );
+    }
+    if (!hasProvider(source.provider)) {
+      throw new Error(
+        `Source provider "${source.provider}" is not registered for agent "${agentAddress}"`,
       );
     }
 
@@ -351,10 +359,7 @@ export function createSessionManager(
       const harness = createHarness({
         address: agentAddress,
         systemPrompt,
-        provider: {
-          ...provider,
-          model: agentConfig.defaultModel,
-        },
+        source,
         transport: agentTransport,
         crypto,
         storage,
@@ -510,27 +515,30 @@ export function createSessionManager(
     logger.info`Updated grants for ${agentAddress} (${String(grants.length)} rules)`;
   }
 
-  async function updateProviders(
+  async function updateSources(
     agentAddress: string,
-    providers: ProviderConfig[],
+    sources: InferenceSource[],
+    defaultSource: string,
   ): Promise<void> {
     const session = sessions.get(agentAddress);
     if (session === undefined) {
       throw new Error(`No session exists for agent "${agentAddress}"`);
     }
-    const provider = providers.find((p) => hasProvider(p.provider));
-    if (provider === undefined) {
+    const source = sources.find((s) => s.id === defaultSource);
+    if (source === undefined) {
       throw new Error(
-        `No supported provider in update for agent "${agentAddress}"`,
+        `No source matches defaultSource "${defaultSource}" in update for agent "${agentAddress}"`,
       );
     }
-    session.harness.setProviderConfig({
-      ...provider,
-      model: session.config.defaultModel,
-    });
-    session.config = { ...session.config, providers };
+    if (!hasProvider(source.provider)) {
+      throw new Error(
+        `Source provider "${source.provider}" is not registered for agent "${agentAddress}"`,
+      );
+    }
+    session.harness.setSource(source);
+    session.config = { ...session.config, sources, defaultSource };
     await persistAgentConfig(dataDir, agentAddress, session.config);
-    logger.info`Updated providers for ${agentAddress}`;
+    logger.info`Updated sources for ${agentAddress}`;
   }
 
   async function applyDeployPack(
@@ -619,7 +627,7 @@ export function createSessionManager(
     abortSession,
     deliverMessage,
     updateGrants,
-    updateProviders,
+    updateSources,
     hasSession,
     isProvisioned,
     getAddresses,

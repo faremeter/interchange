@@ -34,14 +34,16 @@ function makeConfig(address: string): AgentConfig {
     systemPrompt: "test",
     tools: [],
     grants: [],
-    providers: [
+    sources: [
       {
+        id: "test:test-model",
         provider: "test",
         apiKey: "key",
         baseURL: "http://localhost",
+        model: "test-model",
       },
     ],
-    defaultModel: "test-model",
+    defaultSource: "test:test-model",
   };
 }
 

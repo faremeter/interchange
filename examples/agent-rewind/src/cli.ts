@@ -14,15 +14,15 @@
 import {
   defaultContextDir,
   openExampleAgent,
-  resolveAgentProvider,
+  resolveAgentSource,
   resolveStdio,
-  type SingleProviderMainOptions,
+  type SingleSourceMainOptions,
 } from "@intx/example-agent-common";
 
 import { defaultRewindDir, EXAMPLE_NAME } from "./paths";
 import { clearRewindDir, cloneAndRewind } from "./rewind";
 
-export type MainOptions = SingleProviderMainOptions & {
+export type MainOptions = SingleSourceMainOptions & {
   rewindDir?: string;
 };
 
@@ -44,8 +44,8 @@ export async function main(
     return 1;
   }
 
-  const resolved = resolveAgentProvider(opts, env, EXAMPLE_NAME, stderr);
-  if (resolved === null) return 1;
+  const source = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
+  if (source === null) return 1;
 
   const contextDir = opts.contextDir ?? defaultContextDir(EXAMPLE_NAME);
   const rewindDir = opts.rewindDir ?? defaultRewindDir();
@@ -60,8 +60,8 @@ export async function main(
       exampleName: EXAMPLE_NAME,
       systemPrompt: SYSTEM_PROMPT,
       tools: [],
-      providers: [resolved.provider],
-      defaultModel: resolved.model,
+      sources: [source],
+      defaultSource: source.id,
     },
   );
 
@@ -105,8 +105,8 @@ export async function main(
       exampleName: EXAMPLE_NAME,
       systemPrompt: SYSTEM_PROMPT,
       tools: [],
-      providers: [resolved.provider],
-      defaultModel: resolved.model,
+      sources: [source],
+      defaultSource: source.id,
     },
   );
   try {

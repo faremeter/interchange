@@ -8,7 +8,7 @@ import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
 import { createIsogitStore } from "@intx/storage-isogit";
 import { createPosixTools } from "@intx/tools-posix";
 import { createHarness } from "@intx/harness";
-import type { InferenceEvent, ProviderConfig } from "@intx/types/runtime";
+import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 await setup({ dev: true });
 
@@ -33,7 +33,7 @@ const ANTHROPIC_DEFAULTS = {
   model: "claude-sonnet-4-20250514",
 };
 
-function readAgentProvider(prefix: string): ProviderConfig {
+function readAgentSource(prefix: string): InferenceSource {
   const env = (key: string) => process.env[`${prefix}_${key}`];
 
   const provider = env("PROVIDER") ?? "openai-compatible";
@@ -67,23 +67,29 @@ function readAgentProvider(prefix: string): ProviderConfig {
     process.exit(1);
   }
 
-  return { provider, baseURL, apiKey, model };
+  return {
+    id: `${provider}:${model}`,
+    provider,
+    baseURL,
+    apiKey,
+    model,
+  };
 }
 
-const alphaProvider = readAgentProvider("ALPHA");
-const betaProvider = readAgentProvider("BETA");
+const alphaSource = readAgentSource("ALPHA");
+const betaSource = readAgentSource("BETA");
 
 const DEMO_SEED =
   process.env["DEMO_SEED"] ??
   "Use the mail_send tool to send a message to beta@local.interchange asking: What do you want to be when you grow up? Then tell me what Beta says.";
 
 log.info("alpha: {provider} / {model}", {
-  provider: alphaProvider.provider,
-  model: alphaProvider.model,
+  provider: alphaSource.provider,
+  model: alphaSource.model,
 });
 log.info("beta: {provider} / {model}", {
-  provider: betaProvider.provider,
-  model: betaProvider.model,
+  provider: betaSource.provider,
+  model: betaSource.model,
 });
 
 // ---------------------------------------------------------------------------
@@ -271,7 +277,7 @@ Known agents:
   Beta: ${BETA_ADDRESS}
 
 After you receive a response from an agent, tell the user what they said.`,
-  provider: alphaProvider,
+  source: alphaSource,
   transport: transportAlpha,
   crypto: cryptoAlpha,
   storage: storageAlpha,
@@ -283,7 +289,7 @@ const harnessBeta = createHarness({
   address: BETA_ADDRESS,
   systemPrompt:
     "You are Beta, a thoughtful agent. When someone asks you a question, answer honestly and with personality. Be concise but interesting.",
-  provider: betaProvider,
+  source: betaSource,
   transport: transportBeta,
   crypto: cryptoBeta,
   storage: storageBeta,

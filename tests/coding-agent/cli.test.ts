@@ -11,9 +11,10 @@ import { join } from "node:path";
 
 import { main } from "@intx/example-coding-agent";
 import { setupHarness, type Harness } from "@intx/inference-testing";
-import type { ProviderConfig } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
-const PROVIDER: ProviderConfig = {
+const SOURCE: InferenceSource = {
+  id: "anthropic:claude-3-5-sonnet",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
   apiKey: "sk-test-cli",
@@ -61,7 +62,7 @@ describe("coding-agent CLI", () => {
         stderr: (s) => {
           stderrBuf += s;
         },
-        providerOverride: PROVIDER,
+        sourceOverride: SOURCE,
         deps: harness.deps,
       },
     );
@@ -76,7 +77,7 @@ describe("coding-agent CLI", () => {
     expect(stderrBuf).toMatch(/\[message\.received\]/);
   });
 
-  test("missing ANTHROPIC_API_KEY (and no providerOverride) returns exit code 1", async () => {
+  test("missing ANTHROPIC_API_KEY (and no sourceOverride) returns exit code 1", async () => {
     const code = await main(
       ["any prompt"],
       {},
@@ -128,7 +129,7 @@ describe("coding-agent CLI", () => {
           stdoutBuf += s;
         },
         stderr: () => undefined,
-        providerOverride: PROVIDER,
+        sourceOverride: SOURCE,
         deps: harness.deps,
       },
     );
@@ -154,7 +155,7 @@ describe("coding-agent CLI", () => {
           stdoutBuf += s;
         },
         stderr: () => undefined,
-        providerOverride: PROVIDER,
+        sourceOverride: SOURCE,
         deps: harness.deps,
       },
     );

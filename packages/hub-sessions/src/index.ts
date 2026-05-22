@@ -36,4 +36,4 @@ export {
   type HubSessionOrchestratorDeps,
   type HubSessionRouterFacade,
 } from "./hub-session-orchestrator";
-export { pushProviderUpdates } from "./credential-push";
+export { pushSourceUpdates } from "./credential-push";

@@ -209,7 +209,7 @@ type TestReactorOverrides = {
   gateTimeout?: number;
   shutdownTimeoutMs?: number;
   deps?: Dependencies;
-  providerConfig?: ReactorConfig["providerConfig"];
+  source?: ReactorConfig["source"];
   compactors?: Record<string, Compactor>;
 };
 
@@ -231,10 +231,12 @@ function createTestReactor(
   const config: ReactorConfig = {
     sessionId,
     director: overrides.director ?? directorFromTable({}),
-    providerConfig: overrides.providerConfig ?? {
+    source: overrides.source ?? {
+      id: "anthropic:test-model",
       provider: "anthropic",
       baseURL: "https://api.anthropic.com",
       apiKey: "test",
+      model: "test-model",
     },
     toolRunner: overrides.toolRunner ?? noopToolRunner(),
     contextStore: overrides.contextStore ?? makeContextStore(),
@@ -422,16 +424,20 @@ function makeRecordingContextStore(): {
 // reactor.test.ts tests stay on the synthetic path.
 // ---------------------------------------------------------------------------
 
-const ANTHROPIC_PROVIDER_CONFIG = {
+const ANTHROPIC_SOURCE = {
+  id: "anthropic:test-model",
   provider: "anthropic" as const,
   baseURL: "https://api.anthropic.com",
   apiKey: "test",
+  model: "test-model",
 };
 
-const OPENAI_PROVIDER_CONFIG = {
+const OPENAI_SOURCE = {
+  id: "openai:test-model",
   provider: "openai" as const,
   baseURL: "https://api.openai.com/v1",
   apiKey: "test",
+  model: "test-model",
 };
 
 async function withHarness<T>(body: (h: Harness) => Promise<T>): Promise<T> {
@@ -474,7 +480,7 @@ describe("createReactor — inference path [wire-driven]", () => {
       let stateAtInferenceDone: ReactorState | undefined;
       const { reactor, events, waitFor } = createTestReactor({
         deps: harness.deps,
-        providerConfig: ANTHROPIC_PROVIDER_CONFIG,
+        source: ANTHROPIC_SOURCE,
         director: directorFromTable({
           "message.received": (_e, _s, caps) => caps.infer("mock-model"),
           "inference.done": (_e, state, caps) => {
@@ -548,7 +554,7 @@ describe("createReactor — inference path [wire-driven]", () => {
       let stateAtInferenceDone: ReactorState | undefined;
       const { reactor, events, waitFor } = createTestReactor({
         deps: harness.deps,
-        providerConfig: OPENAI_PROVIDER_CONFIG,
+        source: OPENAI_SOURCE,
         director: directorFromTable({
           "message.received": (_e, _s, caps) => caps.infer("mock-model"),
           "inference.done": (_e, state, caps) => {
@@ -617,7 +623,7 @@ describe("createReactor — inference path [wire-driven]", () => {
 
       const { reactor, events, waitFor } = createTestReactor({
         deps: harness.deps,
-        providerConfig: ANTHROPIC_PROVIDER_CONFIG,
+        source: ANTHROPIC_SOURCE,
         director: directorFromTable({
           "message.received": (_e, _s, caps) => caps.infer("mock-model"),
           "inference.done": (_e, _s, caps) => caps.done(),
@@ -668,7 +674,7 @@ describe("createReactor — inference path [wire-driven]", () => {
       let capturedPartialText: string | undefined;
       const { reactor, events, waitFor } = createTestReactor({
         deps: harness.deps,
-        providerConfig: ANTHROPIC_PROVIDER_CONFIG,
+        source: ANTHROPIC_SOURCE,
         director: directorFromTable({
           "message.received": (_e, _s, caps) => caps.infer("mock-model"),
           "inference.error": (e, _s, caps) => {
@@ -711,7 +717,7 @@ describe("createReactor — inference path [wire-driven]", () => {
       let capturedPartialText: string | undefined;
       const { reactor, events, waitFor } = createTestReactor({
         deps: harness.deps,
-        providerConfig: OPENAI_PROVIDER_CONFIG,
+        source: OPENAI_SOURCE,
         director: directorFromTable({
           "message.received": (_e, _s, caps) => caps.infer("mock-model"),
           "inference.error": (e, _s, caps) => {
@@ -780,7 +786,7 @@ describe("createReactor — inference path [wire-driven]", () => {
 
       const { reactor, events, waitFor } = createTestReactor({
         deps: harness.deps,
-        providerConfig: ANTHROPIC_PROVIDER_CONFIG,
+        source: ANTHROPIC_SOURCE,
         director: directorFromTable({
           "message.received": (_e, _s, caps) => caps.infer("mock-model"),
           "inference.done": (_e, _s, caps) => caps.done(),
@@ -877,7 +883,7 @@ describe("createReactor — inference path [wire-driven]", () => {
 
       const { reactor, events, waitFor } = createTestReactor({
         deps: harness.deps,
-        providerConfig: ANTHROPIC_PROVIDER_CONFIG,
+        source: ANTHROPIC_SOURCE,
         contextStore: recording.store,
         compactors: { "overflow-compactor": compactor },
         director: recordingDirector,
@@ -937,7 +943,7 @@ describe("createReactor — inference path [wire-driven]", () => {
 
       const { reactor, events, waitFor } = createTestReactor({
         deps: harness.deps,
-        providerConfig: ANTHROPIC_PROVIDER_CONFIG,
+        source: ANTHROPIC_SOURCE,
         director: directorFromTable({
           "message.received": (_e, _s, caps) => caps.infer("mock-model"),
           "inference.error": (e, _s, caps) => {
@@ -982,7 +988,7 @@ describe("createReactor — inference path [wire-driven]", () => {
 
       const { reactor, events, waitFor } = createTestReactor({
         deps: harness.deps,
-        providerConfig: OPENAI_PROVIDER_CONFIG,
+        source: OPENAI_SOURCE,
         director: directorFromTable({
           "message.received": (_e, _s, caps) => caps.infer("mock-model"),
           "inference.done": (_e, _s, caps) => caps.done(),

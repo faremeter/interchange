@@ -12,7 +12,7 @@ import {
   AbortReason,
   HarnessConfig,
   InferenceEvent,
-  ProviderConfig,
+  InferenceSource,
 } from "./runtime";
 import { WireGrantRule } from "./grant-wire";
 
@@ -267,17 +267,19 @@ export const GrantsUpdateFrame = type({
 export type GrantsUpdateFrame = typeof GrantsUpdateFrame.infer;
 
 /**
- * Push updated provider configuration to a running agent. The sidecar
- * hot-swaps the provider config on the harness and re-persists the agent
- * config. Responds with session.ack or session.error.
+ * Push updated inference sources to a running agent. The sidecar hot-swaps
+ * the active source on the harness (selected by id from `defaultSource`)
+ * and re-persists the agent config. Responds with session.ack or
+ * session.error.
  */
-export const ProvidersUpdateFrame = type({
-  type: "'providers.update'",
+export const SourcesUpdateFrame = type({
+  type: "'sources.update'",
   requestId: "string",
   agentAddress: "string",
-  providers: ProviderConfig.array(),
+  sources: InferenceSource.array(),
+  defaultSource: "string",
 });
-export type ProvidersUpdateFrame = typeof ProvidersUpdateFrame.infer;
+export type SourcesUpdateFrame = typeof SourcesUpdateFrame.infer;
 
 // ---------------------------------------------------------------------------
 // Pack transport (bidirectional)
@@ -396,7 +398,7 @@ export const HubFrame = MailInboundFrame.or(AgentDeployFrame)
   .or(PongFrame)
   .or(SessionAbortFrame)
   .or(GrantsUpdateFrame)
-  .or(ProvidersUpdateFrame)
+  .or(SourcesUpdateFrame)
   .or(PackPushFrame)
   .or(PackDoneFrame)
   .or(PackAckFrame)

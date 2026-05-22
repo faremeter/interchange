@@ -19,7 +19,7 @@ import {
 import type {
   AbortReason,
   HarnessConfig,
-  ProviderConfig,
+  InferenceSource,
 } from "@intx/types/runtime";
 import type { GrantRule } from "@intx/types/authz";
 import {
@@ -56,9 +56,10 @@ export type SidecarRouter = {
   sendSessionStart(agentAddress: string): Promise<void>;
   sendSessionAbort(agentAddress: string, reason: AbortReason): Promise<void>;
   sendGrantsUpdate(agentAddress: string, grants: GrantRule[]): Promise<void>;
-  sendProvidersUpdate(
+  sendSourcesUpdate(
     agentAddress: string,
-    providers: ProviderConfig[],
+    sources: InferenceSource[],
+    defaultSource: string,
   ): Promise<void>;
   sendPack(
     agentAddress: string,
@@ -1421,15 +1422,17 @@ export function createSidecarRouter(
     }));
   }
 
-  async function sendProvidersUpdate(
+  async function sendSourcesUpdate(
     agentAddress: string,
-    providers: ProviderConfig[],
+    sources: InferenceSource[],
+    defaultSource: string,
   ): Promise<void> {
     await sendRequest(agentAddress, (requestId) => ({
-      type: "providers.update",
+      type: "sources.update",
       requestId,
       agentAddress,
-      providers,
+      sources,
+      defaultSource,
     }));
   }
 
@@ -1461,7 +1464,7 @@ export function createSidecarRouter(
     sendSessionStart,
     sendSessionAbort,
     sendGrantsUpdate,
-    sendProvidersUpdate,
+    sendSourcesUpdate,
     sendPack,
     sendSyncRequest,
     subscribeAgent,

@@ -19,7 +19,7 @@ import type {
   InferenceEvent,
   InferenceError,
   ConversationTurn,
-  ProviderConfig,
+  InferenceSource,
 } from "@intx/types/runtime";
 import { setupHarness, wire } from "@intx/inference-testing";
 import type { Harness } from "@intx/inference-testing";
@@ -38,7 +38,8 @@ async function withHarness<T>(body: (h: Harness) => Promise<T>): Promise<T> {
   }
 }
 
-const PROVIDER: ProviderConfig = {
+const SOURCE: InferenceSource = {
+  id: "openai:test-model",
   provider: "openai",
   baseURL: "https://test.invalid/v1",
   apiKey: "test",
@@ -90,8 +91,7 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
       const consumer = startConsumer(
         runInference({
           turns: makeTurns(),
-          model: "test-model",
-          providerConfig: PROVIDER,
+          source: SOURCE,
           inferenceOptions: {
             inactivityTimeoutMs: 100,
             totalTimeoutMs: 10_000,
@@ -130,8 +130,7 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
       const consumer = startConsumer(
         runInference({
           turns: makeTurns(),
-          model: "test-model",
-          providerConfig: PROVIDER,
+          source: SOURCE,
           inferenceOptions: {
             inactivityTimeoutMs: 100,
             totalTimeoutMs: 10_000,
@@ -171,8 +170,7 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
       const consumer = startConsumer(
         runInference({
           turns: makeTurns(),
-          model: "test-model",
-          providerConfig: PROVIDER,
+          source: SOURCE,
           inferenceOptions: {
             inactivityTimeoutMs: 5_000,
             totalTimeoutMs: 200,
@@ -203,8 +201,7 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
       const consumer = startConsumer(
         runInference({
           turns: makeTurns(),
-          model: "test-model",
-          providerConfig: PROVIDER,
+          source: SOURCE,
           nextSeq: () => seq++,
           deps: harness.deps,
         }),
@@ -231,8 +228,7 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
       const consumer = startConsumer(
         runInference({
           turns: makeTurns(),
-          model: "test-model",
-          providerConfig: PROVIDER,
+          source: SOURCE,
           inferenceOptions: {
             inactivityTimeoutMs: 50,
             totalTimeoutMs: 10_000,
@@ -288,8 +284,7 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
         const consumer = startConsumer(
           runInference({
             turns: makeTurns(),
-            model: "test-model",
-            providerConfig: PROVIDER,
+            source: SOURCE,
             inferenceOptions: {
               inactivityTimeoutMs: 50,
               totalTimeoutMs: 10_000,
@@ -318,8 +313,7 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
         const consumer = startConsumer(
           runInference({
             turns: makeTurns(),
-            model: "test-model",
-            providerConfig: PROVIDER,
+            source: SOURCE,
             inferenceOptions: {
               inactivityTimeoutMs: 5_000,
               totalTimeoutMs: 10_000,

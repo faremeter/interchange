@@ -21,7 +21,7 @@ import type {
   InferenceEvent,
   InferenceError,
   ConversationTurn,
-  ProviderConfig,
+  InferenceSource,
 } from "@intx/types/runtime";
 
 const inertScheduler: Scheduler = {
@@ -73,7 +73,8 @@ async function runAgainst(
   provider: "openai" | "anthropic",
   sseBody: string,
 ): Promise<InferenceError | undefined> {
-  const config: ProviderConfig = {
+  const source: InferenceSource = {
+    id: `${provider}:test-model`,
     provider,
     baseURL: "https://test.invalid/v1",
     apiKey: "test",
@@ -87,8 +88,7 @@ async function runAgainst(
   const events = await drain(
     runInference({
       turns: makeTurns(),
-      model: "test-model",
-      providerConfig: config,
+      source,
       nextSeq: () => seq++,
       deps,
     }),

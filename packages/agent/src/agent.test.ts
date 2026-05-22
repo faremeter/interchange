@@ -1,10 +1,11 @@
 import { describe, test, expect } from "bun:test";
 
-import type { ContextStore, ProviderConfig } from "@intx/types/runtime";
+import type { ContextStore, InferenceSource } from "@intx/types/runtime";
 
 import { AgentConfigError, createAgent } from "./agent";
 
-const PROVIDER: ProviderConfig = {
+const SOURCE: InferenceSource = {
+  id: "anthropic:claude-3-5-sonnet",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
   apiKey: "sk-test",
@@ -24,8 +25,8 @@ describe("createAgent storage configuration", () => {
       createAgent({
         contextStore: stubContextStore(),
         contextDir: "/tmp/agent-config-1",
-        providers: [PROVIDER],
-        defaultModel: "claude-3-5-sonnet",
+        sources: [SOURCE],
+        defaultSource: SOURCE.id,
         systemPrompt: "test",
         tools: [],
       }),
@@ -35,8 +36,8 @@ describe("createAgent storage configuration", () => {
   test("rejects when neither contextStore nor contextDir is given", async () => {
     await expect(
       createAgent({
-        providers: [PROVIDER],
-        defaultModel: "claude-3-5-sonnet",
+        sources: [SOURCE],
+        defaultSource: SOURCE.id,
         systemPrompt: "test",
         tools: [],
       }),

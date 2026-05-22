@@ -29,7 +29,7 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
-import { pushProviderUpdates, type SidecarRouter } from "@intx/hub-sessions";
+import { pushSourceUpdates, type SidecarRouter } from "@intx/hub-sessions";
 
 function formatCredential(row: typeof credential.$inferSelect) {
   const parsed = parseCredentialRow(row);
@@ -377,9 +377,10 @@ export function createCredentialRoutes({
         );
       }
 
-      // If the secret was updated, push new provider config to running instances.
+      // If the secret was updated, push new inference sources to running
+      // instances.
       if (body.secret !== undefined) {
-        void pushProviderUpdates(db, sidecarRouter, updated.tenantId);
+        void pushSourceUpdates(db, sidecarRouter, updated.tenantId);
       }
 
       return c.json(formatCredential(updated));

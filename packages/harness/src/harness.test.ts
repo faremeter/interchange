@@ -364,7 +364,8 @@ function makeConfig(
   return {
     address: "agent@local.interchange",
     systemPrompt: "You are a helpful agent.",
-    provider: {
+    source: {
+      id: "anthropic:claude-test",
       provider: "anthropic",
       baseURL: "https://api.anthropic.com",
       apiKey: "test-key",
@@ -1719,7 +1720,8 @@ describe("Error flushing", () => {
     // error, causing the reactor to emit inference.error.
     const harness = createHarness(
       makeConfig(transport, {
-        provider: {
+        source: {
+          id: "anthropic:claude-test",
           provider: "anthropic",
           baseURL: "http://localhost:1",
           apiKey: "test-key",
@@ -1848,7 +1850,8 @@ describe("Error flushing", () => {
 
     const harness = createHarness(
       makeConfig(transport, {
-        provider: {
+        source: {
+          id: "anthropic:claude-test",
           provider: "anthropic",
           baseURL: "http://localhost:1",
           apiKey: "test-key",
@@ -1919,7 +1922,8 @@ describe("Error flushing", () => {
 
     const harness = createHarness(
       makeConfig(transport, {
-        provider: {
+        source: {
+          id: "anthropic:claude-test",
           provider: "anthropic",
           baseURL: "http://localhost:1",
           apiKey: "test-key",

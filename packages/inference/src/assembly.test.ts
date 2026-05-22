@@ -12,7 +12,7 @@ import type {
   ContextStore,
   ConversationTurn,
   InboundMessage,
-  ProviderConfig,
+  InferenceSource,
   ReactorCapabilities,
   ReactorDirector,
   ReactorState,
@@ -166,11 +166,13 @@ function waitForDone(events: ReactorEmittedEvent[]): Promise<void> {
   });
 }
 
-function provider(): ProviderConfig {
+function source(): InferenceSource {
   return {
+    id: "anthropic:test-model",
     provider: "anthropic",
     baseURL: "https://api.anthropic.com",
     apiKey: "test",
+    model: "test-model",
   };
 }
 
@@ -265,7 +267,7 @@ describe("createReactorAssembly", () => {
     const { reactor } = createReactorAssembly({
       sessionId: "s1",
       director: makeToolExecDirector("t", {}, { callId: "c1" }),
-      providerConfig: provider(),
+      source: source(),
       toolRunner: makeToolRunner(big),
       contextStore,
       onEvent: events.onEvent,
@@ -320,7 +322,7 @@ describe("createReactorAssembly", () => {
     const { reactor } = createReactorAssembly({
       sessionId: "s2",
       director: makeToolExecDirector("t", {}, { callId: "c2" }),
-      providerConfig: provider(),
+      source: source(),
       toolRunner: makeToolRunner(big),
       contextStore,
       onEvent: events.onEvent,
@@ -351,7 +353,7 @@ describe("createReactorAssembly", () => {
     const { reactor } = createReactorAssembly({
       sessionId: "s3",
       director: makeToolExecDirector("t", {}, { callId: "c3" }),
-      providerConfig: provider(),
+      source: source(),
       toolRunner: makeToolRunner(payload),
       contextStore,
       onEvent: events.onEvent,
@@ -379,7 +381,7 @@ describe("createReactorAssembly", () => {
     const { reactor } = createReactorAssembly({
       sessionId: "s4",
       director: makeToolExecDirector("forbidden", {}, { callId: "c4" }),
-      providerConfig: provider(),
+      source: source(),
       toolRunner: makeToolRunner("never runs"),
       contextStore,
       onEvent: events.onEvent,
@@ -434,7 +436,7 @@ describe("createReactorAssembly", () => {
     const { reactor } = createReactorAssembly({
       sessionId: "s5",
       director: makeToolExecDirector("t", {}, { callId: "c5" }),
-      providerConfig: provider(),
+      source: source(),
       toolRunner: makeToolRunner("ok"),
       contextStore,
       onEvent: events.onEvent,
@@ -466,7 +468,7 @@ describe("createReactorAssembly", () => {
           callId: "c6",
         },
       ),
-      providerConfig: provider(),
+      source: source(),
       toolRunner: makeToolRunner("ok"),
       contextStore,
       onEvent: events.onEvent,
@@ -504,7 +506,7 @@ describe("createReactorAssembly", () => {
           callId: "c7",
         },
       ),
-      providerConfig: provider(),
+      source: source(),
       toolRunner: makeToolRunner("ok"),
       contextStore,
       onEvent: events.onEvent,
@@ -552,7 +554,7 @@ describe("createReactorAssembly", () => {
           callId: "c8",
         },
       ),
-      providerConfig: provider(),
+      source: source(),
       toolRunner: makeToolRunner("ok"),
       contextStore,
       onEvent: events.onEvent,
@@ -606,7 +608,7 @@ describe("createReactorAssembly", () => {
     const { reactor } = createReactorAssembly({
       sessionId: "s9",
       director,
-      providerConfig: provider(),
+      source: source(),
       toolRunner: makeToolRunner("ok"),
       contextStore,
       onEvent: events.onEvent,
@@ -634,7 +636,7 @@ describe("createReactorAssembly", () => {
           return caps.done();
         },
       },
-      providerConfig: provider(),
+      source: source(),
       toolRunner: makeToolRunner("ok"),
       contextStore,
       onEvent: () => {
@@ -664,7 +666,7 @@ describe("createReactorAssembly", () => {
           callId: "c11",
         },
       ),
-      providerConfig: provider(),
+      source: source(),
       toolRunner: makeToolRunner("ok"),
       contextStore,
       onEvent: events.onEvent,
@@ -702,7 +704,7 @@ describe("createReactorAssembly", () => {
     const { reactor } = createReactorAssembly({
       sessionId: "s12",
       director: makeToolExecDirector("t", {}, { callId: "c12" }),
-      providerConfig: provider(),
+      source: source(),
       toolRunner: makeToolRunner("never reached"),
       contextStore,
       onEvent: events.onEvent,

@@ -1,7 +1,7 @@
 // Higher-level setup helpers for the agent-* examples.
 //
-// `resolveAgentProvider` collapses the provider-resolution +
-// error-print pattern every single-provider example has into one
+// `resolveAgentSource` collapses the source-resolution +
+// error-print pattern every single-source example has into one
 // call site; `openExampleAgent` further wraps the `createAgent`
 // invocation so the seven non-quickstart examples can focus on the
 // feature they demonstrate rather than re-deriving construction
@@ -12,51 +12,51 @@
 // example uses these helpers.
 
 import { createAgent, type Agent, type AgentTool } from "@intx/agent";
-import type { ProviderConfig } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
-import { resolveProvider } from "./env-provider";
+import { resolveSource } from "./env-source";
 import {
   type CommonMainOptions,
-  type SingleProviderMainOptions,
+  type SingleSourceMainOptions,
 } from "./main-options";
 import { optional } from "./optional";
 import { defaultContextDir } from "./paths";
 
 /**
- * Resolve a single provider from `opts.providerOverride` or the
+ * Resolve a single inference source from `opts.sourceOverride` or the
  * surrounding env, writing the help text to `stderr` and returning
  * `null` when neither is present. Callers map `null` to a non-zero
  * exit code.
  */
-export function resolveAgentProvider(
-  opts: SingleProviderMainOptions,
+export function resolveAgentSource(
+  opts: SingleSourceMainOptions,
   env: NodeJS.ProcessEnv,
   exampleName: string,
   stderr: (chunk: string) => void,
-): { provider: ProviderConfig; model: string } | null {
-  const resolved = resolveProvider({
+): InferenceSource | null {
+  const resolved = resolveSource({
     env,
     exampleName,
-    ...optional("providerOverride", opts.providerOverride),
+    ...optional("sourceOverride", opts.sourceOverride),
   });
   if (!resolved.ok) {
     stderr(resolved.help);
     return null;
   }
-  return { provider: resolved.provider, model: resolved.model };
+  return resolved.source;
 }
 
 /**
- * What `openExampleAgent` needs from the caller. `providers` is
- * supplied as a list so multi-provider examples can pass both
- * primary and fallback; `defaultModel` selects the active one.
+ * What `openExampleAgent` needs from the caller. `sources` is supplied
+ * as a list so multi-source examples can pass both primary and
+ * fallback; `defaultSource` selects the active one by id.
  */
 export type OpenExampleAgentSpec = {
   exampleName: string;
   systemPrompt: string;
   tools: AgentTool[];
-  providers: ProviderConfig[];
-  defaultModel: string;
+  sources: InferenceSource[];
+  defaultSource: string;
 };
 
 /**
@@ -70,7 +70,7 @@ export type OpenExampleAgentSpec = {
  *     conditional-spread idiom into every call.
  *
  * Anything example-specific lives in `spec` (system prompt, tools,
- * providers, model). The `@intx/agent` API surface
+ * sources, defaultSource). The `@intx/agent` API surface
  * (`createAgent`, `agent.send`, `agent.close`, etc.) is otherwise
  * unchanged; the helper exists to remove repetition, not to wrap
  * the surface.
@@ -81,8 +81,8 @@ export async function openExampleAgent<T extends CommonMainOptions>(
 ): Promise<Agent> {
   return createAgent({
     contextDir: opts.contextDir ?? defaultContextDir(spec.exampleName),
-    providers: spec.providers,
-    defaultModel: spec.defaultModel,
+    sources: spec.sources,
+    defaultSource: spec.defaultSource,
     systemPrompt: spec.systemPrompt,
     tools: spec.tools,
     ...optional("deps", opts.deps),

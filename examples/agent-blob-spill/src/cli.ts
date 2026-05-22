@@ -14,9 +14,9 @@
 
 import {
   openExampleAgent,
-  resolveAgentProvider,
+  resolveAgentSource,
   resolveStdio,
-  type SingleProviderMainOptions,
+  type SingleSourceMainOptions,
 } from "@intx/example-agent-common";
 import type { ContentBlock, ConversationTurn } from "@intx/types/runtime";
 
@@ -24,7 +24,7 @@ import { createNoisyTool, DEFAULT_PAYLOAD_CHARS } from "./noisy-tool";
 
 const EXAMPLE_NAME = "agent-blob-spill";
 
-export type MainOptions = SingleProviderMainOptions & {
+export type MainOptions = SingleSourceMainOptions & {
   /** Override the synthetic payload size (defaults to 25k chars). */
   payloadChars?: number;
 };
@@ -76,8 +76,8 @@ export async function main(
     return 1;
   }
 
-  const resolved = resolveAgentProvider(opts, env, EXAMPLE_NAME, stderr);
-  if (resolved === null) return 1;
+  const source = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
+  if (source === null) return 1;
 
   const noisy = createNoisyTool(opts.payloadChars ?? DEFAULT_PAYLOAD_CHARS);
 
@@ -86,8 +86,8 @@ export async function main(
     systemPrompt:
       "You are a log-summarising assistant. Use the fetch_full_logs tool when asked.",
     tools: [noisy],
-    providers: [resolved.provider],
-    defaultModel: resolved.model,
+    sources: [source],
+    defaultSource: source.id,
   });
   try {
     const { reply } = await agent.send(prompt);

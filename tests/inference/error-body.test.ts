@@ -19,10 +19,11 @@ import type {
   InferenceEvent,
   InferenceError,
   ConversationTurn,
-  ProviderConfig,
+  InferenceSource,
 } from "@intx/types/runtime";
 
-const PROVIDER: ProviderConfig = {
+const SOURCE: InferenceSource = {
+  id: "openai:test-model",
   provider: "openai",
   baseURL: "https://test.invalid/v1",
   apiKey: "test",
@@ -59,8 +60,7 @@ async function runAgainstFetch(
   const events = await drain(
     runInference({
       turns: makeTurns(),
-      model: "test-model",
-      providerConfig: PROVIDER,
+      source: SOURCE,
       nextSeq: () => seq++,
       deps,
     }),

@@ -26,13 +26,15 @@ import { expectToolCall, expectToolCalls } from "@intx/inference-testing";
 import type {
   ConversationTurn,
   InferenceEvent,
-  ProviderConfig,
+  InferenceSource,
 } from "@intx/types/runtime";
 
-const PROVIDER_CONFIG: ProviderConfig = {
+const SOURCE: InferenceSource = {
+  id: "openai:test",
   provider: "openai",
   baseURL: "https://example/v1",
   apiKey: "test",
+  model: "test",
 };
 
 const USAGE_HEAD = {
@@ -102,9 +104,8 @@ describe("per-agent assertion scoping", () => {
     const collectA = (async () => {
       for await (const ev of harness.runInference({
         turns: [userTurn("hello A")],
-        model: "test",
-        providerConfig: {
-          ...PROVIDER_CONFIG,
+        source: {
+          ...SOURCE,
           baseURL: "https://example/v1/agent-a",
         },
         nextSeq: () => ++seqA,
@@ -115,9 +116,8 @@ describe("per-agent assertion scoping", () => {
     const collectB = (async () => {
       for await (const ev of harness.runInference({
         turns: [userTurn("hello B")],
-        model: "test",
-        providerConfig: {
-          ...PROVIDER_CONFIG,
+        source: {
+          ...SOURCE,
           baseURL: "https://example/v1/agent-b",
         },
         nextSeq: () => ++seqB,
@@ -227,8 +227,7 @@ describe("per-agent assertion scoping", () => {
     const collectA = (async () => {
       for await (const ev of harness.runInference({
         turns: [userTurn("agent-A-marker")],
-        model: "test",
-        providerConfig: PROVIDER_CONFIG,
+        source: SOURCE,
         nextSeq: () => ++seqA,
       })) {
         eventsA.push(ev);
@@ -237,8 +236,7 @@ describe("per-agent assertion scoping", () => {
     const collectB = (async () => {
       for await (const ev of harness.runInference({
         turns: [userTurn("agent-B-marker")],
-        model: "test",
-        providerConfig: PROVIDER_CONFIG,
+        source: SOURCE,
         nextSeq: () => ++seqB,
       })) {
         eventsB.push(ev);

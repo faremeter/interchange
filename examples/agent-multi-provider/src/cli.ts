@@ -1,33 +1,33 @@
 // agent-multi-provider: combine three flavors of routing policy on
-// top of @intx/agent's `providers` + `setProvider` surface:
+// top of @intx/agent's `sources` + `setSource` surface:
 //
 //   * model-per-task — route each prompt to a "cheap" or "smart"
 //     model based on a per-prompt heuristic before each send.
-//   * failover       — if the primary provider's call rejects, swap
-//                      to a fallback provider and retry once.
+//   * failover       — if the primary source's call rejects, swap
+//                      to a fallback source and retry once.
 //   * cost-routing   — the model-per-task heuristic doubles as a
 //                      cost-routing knob; longer prompts go to the
 //                      smarter (more expensive) model, shorter ones
 //                      go to the cheap one.
 //
-// The agent package owns the `providers` registry and exposes
-// `setProvider` to rotate credentials/model in place. Everything in
+// The agent package owns the `sources` registry and exposes
+// `setSource` to rotate the active source in place. Everything in
 // this file lives in user-land: the agent surface stays uncluttered.
 
 import {
   openExampleAgent,
   optional,
-  resolveProvider,
+  resolveSource,
   resolveStdio,
   type CommonMainOptions,
 } from "@intx/example-agent-common";
-import type { ProviderConfig } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
 import {
-  routeProvider,
+  routeSource,
   withFailover,
   type ModelTier,
-  type ProviderEntry,
+  type SourceEntry,
 } from "./policy";
 
 const EXAMPLE_NAME = "agent-multi-provider";
@@ -36,36 +36,36 @@ export const DEFAULT_CHEAP_MODEL = "claude-3-5-haiku-20241022";
 export const DEFAULT_SMART_MODEL = "claude-3-5-sonnet-20241022";
 
 export type MainOptions = CommonMainOptions & {
-  /** Override the primary provider (tests use this). */
-  primaryOverride?: ProviderConfig;
-  /** Override the fallback provider (tests use this). */
-  fallbackOverride?: ProviderConfig;
+  /** Override the primary source (tests use this). */
+  primaryOverride?: InferenceSource;
+  /** Override the fallback source (tests use this). */
+  fallbackOverride?: InferenceSource;
   /** Replace the default cheap/smart model identifiers. */
   models?: { cheap: string; smart: string };
 };
 
 /**
- * Resolve one of the two providers this example wires. Each call
- * routes through the same `resolveProvider` helper as the other
+ * Resolve one of the two sources this example wires. Each call
+ * routes through the same `resolveSource` helper as the other
  * examples but with its own label and override so the help text
  * names the right role when configuration is missing.
  */
 function resolveRole(
   env: NodeJS.ProcessEnv,
   role: "primary" | "fallback",
-  override: ProviderConfig | undefined,
+  override: InferenceSource | undefined,
   stderr: (chunk: string) => void,
-): { provider: ProviderConfig; model: string } | null {
-  const resolved = resolveProvider({
+): InferenceSource | null {
+  const resolved = resolveSource({
     env,
     exampleName: `${EXAMPLE_NAME} (${role})`,
-    ...optional("providerOverride", override),
+    ...optional("sourceOverride", override),
   });
   if (!resolved.ok) {
     stderr(resolved.help);
     return null;
   }
-  return { provider: resolved.provider, model: resolved.model };
+  return resolved.source;
 }
 
 export async function main(
@@ -95,30 +95,30 @@ export async function main(
     smart: DEFAULT_SMART_MODEL,
   };
 
-  const primaryEntry: ProviderEntry = {
+  const primaryEntry: SourceEntry = {
     name: "primary",
-    config: primary.provider,
+    source: primary,
   };
-  const fallbackEntry: ProviderEntry = {
+  const fallbackEntry: SourceEntry = {
     name: "fallback",
-    config: fallback.provider,
+    source: fallback,
   };
 
-  // The agent's `providers` array is the union; `defaultModel` is
-  // overwritten by setProvider() before each send. The reactor reads
-  // the active provider lazily at start-of-inference, so swapping
-  // takes effect on the next send().
+  // The agent's `sources` array is the union; the active source
+  // rotates via setSource() before each send. The reactor reads the
+  // active source lazily at start-of-inference, so swapping takes
+  // effect on the next send().
   const agent = await openExampleAgent(opts, {
     exampleName: EXAMPLE_NAME,
     systemPrompt:
       "You are a routing-aware assistant. Reply concisely; never mention the model name.",
     tools: [],
-    providers: [primary.provider, fallback.provider],
-    defaultModel: primary.model,
+    sources: [primary, fallback],
+    defaultSource: primary.id,
   });
   try {
     for (const prompt of argv) {
-      const routed = routeProvider({
+      const routed = routeSource({
         prompt,
         primary: primaryEntry,
         models,
@@ -126,22 +126,22 @@ export async function main(
       stdout(`> ${prompt}\n`);
       stdout(`  routed to: tier=${routed.tier} model=${routed.model}\n`);
 
-      // Apply the routed model on top of the primary provider's
+      // Apply the routed model on top of the primary source's
       // credentials, then run the send with failover. The fallback
-      // entry's config is left as-is from resolveProvider (it
+      // entry's source is left as-is from resolveSource (it
       // already carries its own model). Production callers would
       // typically overlay the same model on both for parity, but
       // the example leaves the choice to the caller.
-      const primaryWithModel: ProviderEntry = {
+      const primaryWithModel: SourceEntry = {
         name: primaryEntry.name,
-        config: routed.provider,
+        source: routed.source,
       };
 
       const { served, attempts, primaryError } = await withFailover({
         primary: primaryWithModel,
         fallback: fallbackEntry,
-        applyProvider: (cfg) => {
-          agent.setProvider(cfg);
+        applySource: (source) => {
+          agent.setSource(source);
         },
         invoke: () => agent.send(prompt),
       });

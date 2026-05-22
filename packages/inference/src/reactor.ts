@@ -17,7 +17,7 @@ import type {
   InboundMessage,
   InferenceEvent,
   InferenceOptions,
-  ProviderConfig,
+  InferenceSource,
   ReactorDirector,
   ReactorInboundEvent,
   ContextStore,
@@ -52,8 +52,7 @@ const logger = getLogger(["interchange", "reactor"]);
 
 function buildHarnessOpts(
   turns: ConversationTurn[],
-  model: string,
-  providerConfig: ProviderConfig,
+  source: InferenceSource,
   options: InferenceOptions | undefined,
   signal: AbortSignal,
   nextSeq: () => number,
@@ -62,15 +61,14 @@ function buildHarnessOpts(
   if (options !== undefined) {
     return {
       turns,
-      model,
-      providerConfig,
+      source,
       inferenceOptions: options,
       signal,
       nextSeq,
       deps,
     };
   }
-  return { turns, model, providerConfig, signal, nextSeq, deps };
+  return { turns, source, signal, nextSeq, deps };
 }
 
 export type ReactorEmittedEvent =
@@ -84,7 +82,7 @@ export type ReactorEmittedEvent =
 export type ReactorConfig = {
   sessionId: string;
   director: ReactorDirector;
-  providerConfig: ProviderConfig;
+  source: InferenceSource;
   toolRunner: ToolRunner;
   contextStore: ContextStore;
   correlationValidator?: CorrelationValidator;
@@ -345,7 +343,13 @@ export function createReactor(config: ReactorConfig): Reactor {
   }
 
   async function executeInfer(
-    model: string,
+    // The director-requested model is informational. The active
+    // InferenceSource is authoritative: `runInference` reads `source.model`
+    // and emits `inference.start` with that model. The agent's capabilities
+    // wrapper already rewrites `infer(model)` to use the source's model
+    // before the action is built, so the value reaching here matches
+    // `source.model` in practice — but we do not rely on that.
+    _model: string,
     options: InferenceOptions | undefined,
   ): Promise<void> {
     if (stateManager === null) return;
@@ -396,8 +400,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         const harnessOpts = buildHarnessOpts(
           prompt,
-          model,
-          config.providerConfig,
+          config.source,
           options,
           signal,
           nextSeq,

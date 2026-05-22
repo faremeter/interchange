@@ -21,7 +21,8 @@ import { getLogger } from "@intx/log";
 import { createReactorAssembly } from "@intx/inference";
 import type { ReactorEmittedEvent } from "@intx/inference";
 import {
-  ProviderConfig,
+  InferenceSource,
+  applyInferenceSourceFields,
   type BlobReader,
   type ContextStore,
   type ConnectorThreadState,
@@ -65,10 +66,10 @@ export type Harness = {
   deliver(message: InboundMessage): void;
 
   /**
-   * Hot-swap the provider configuration. Takes effect on the next inference
-   * call — in-flight calls continue with the previous config.
+   * Hot-swap the active inference source. Takes effect on the next
+   * inference call — in-flight calls continue with the previous source.
    */
-  setProviderConfig(config: ProviderConfig): void;
+  setSource(source: InferenceSource): void;
 
   /**
    * Read-only blob reader backed by this harness's context store. Pass it to
@@ -82,7 +83,7 @@ export type Harness = {
 export function createHarness(config: HarnessConfig): Harness {
   validateConfig(config);
 
-  const { transport, storage, provider, tools, onEvent } = config;
+  const { transport, storage, source, tools, onEvent } = config;
 
   const deployToolDefs = config.deployTools ?? [];
 
@@ -90,13 +91,8 @@ export function createHarness(config: HarnessConfig): Harness {
   if (config.director !== undefined) {
     director = config.director;
   } else {
-    if (provider.model === undefined) {
-      throw new Error(
-        "provider.model is required when using the default director",
-      );
-    }
     director = createDefaultDirector(
-      provider.model,
+      source.model,
       config.systemPrompt,
       [...getMailToolDefinitions(), ...deployToolDefs],
       config.directorPolicy ?? {},
@@ -345,16 +341,17 @@ export function createHarness(config: HarnessConfig): Harness {
     accumulatedErrors.splice(0, count);
   }
 
-  // providerConfig is held as a single mutable object whose reference is
+  // activeSource is held as a single mutable object whose reference is
   // shared with the reactor's config (via the assembly helper). The reactor
-  // reads providerConfig lazily at each inference call, so mutating the
-  // fields on this object hot-swaps credentials without restarting.
-  const providerConfig: ProviderConfig = { ...provider };
+  // reads the source lazily at each inference call, so mutating the
+  // fields on this object hot-swaps credentials and model without
+  // restarting.
+  const activeSource: InferenceSource = { ...source };
 
   const { reactor, blobReader } = createReactorAssembly({
     sessionId,
     director,
-    providerConfig,
+    source: activeSource,
     toolRunner: combinedRunner,
     contextStore: wrappedStore,
     onEvent: handleEvent,
@@ -446,23 +443,18 @@ export function createHarness(config: HarnessConfig): Harness {
     reactor.deliver(message);
   }
 
-  function setProviderConfig(newConfig: ProviderConfig): void {
-    const parsed = ProviderConfig(newConfig);
+  function setSource(newSource: InferenceSource): void {
+    const parsed = InferenceSource(newSource);
     if (parsed instanceof type.errors) {
-      throw new Error(`Invalid ProviderConfig: ${parsed.summary}`);
+      throw new Error(`Invalid InferenceSource: ${parsed.summary}`);
     }
-    // Mutate the shared providerConfig object in place so the reactor's
-    // next inference call (which reads providerConfig lazily through the
-    // same reference held by the assembly helper) observes the new fields.
-    providerConfig.provider = parsed.provider;
-    providerConfig.baseURL = parsed.baseURL;
-    providerConfig.apiKey = parsed.apiKey;
-    if (parsed.model !== undefined) {
-      providerConfig.model = parsed.model;
-    } else {
-      delete providerConfig.model;
-    }
+    // Mutate the shared activeSource object in place so the reactor's
+    // next inference call (which reads the source lazily through the
+    // same reference held by the assembly helper) observes the new
+    // fields. Defaults and capabilities rotate alongside the
+    // credentials.
+    applyInferenceSourceFields(activeSource, parsed);
   }
 
-  return { start, stop, deliver, setProviderConfig, blobReader };
+  return { start, stop, deliver, setSource, blobReader };
 }

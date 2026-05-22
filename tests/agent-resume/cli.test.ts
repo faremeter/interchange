@@ -9,9 +9,10 @@ import { join } from "node:path";
 
 import { main } from "@intx/example-agent-resume";
 import { setupHarness, type Harness } from "@intx/inference-testing";
-import type { ProviderConfig } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
-const PROVIDER: ProviderConfig = {
+const SOURCE: InferenceSource = {
+  id: "anthropic:claude-3-5-sonnet",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
   apiKey: "sk-test-resume",
@@ -50,7 +51,7 @@ describe("agent-resume CLI", () => {
           stdoutBuf += s;
         },
         stderr: () => undefined,
-        providerOverride: PROVIDER,
+        sourceOverride: SOURCE,
         deps: harness.deps,
         contextDir,
       },
@@ -74,7 +75,7 @@ describe("agent-resume CLI", () => {
           stdoutBuf += s;
         },
         stderr: () => undefined,
-        providerOverride: PROVIDER,
+        sourceOverride: SOURCE,
         deps: harness.deps,
         contextDir,
       },

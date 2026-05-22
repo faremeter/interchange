@@ -10,9 +10,10 @@ import { join } from "node:path";
 import { main } from "@intx/example-agent-rewind";
 import { setupHarness, type Harness } from "@intx/inference-testing";
 import { createIsogitStore } from "@intx/storage-isogit";
-import type { ProviderConfig } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
-const PROVIDER: ProviderConfig = {
+const SOURCE: InferenceSource = {
+  id: "anthropic:claude-3-5-sonnet",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
   apiKey: "sk-test-rewind",
@@ -55,7 +56,7 @@ describe("agent-rewind CLI", () => {
         stderr: (s) => {
           stderrBuf += s;
         },
-        providerOverride: PROVIDER,
+        sourceOverride: SOURCE,
         deps: harness.deps,
         contextDir,
         rewindDir,
@@ -108,7 +109,7 @@ describe("agent-rewind CLI", () => {
         stderr: (s) => {
           stderrBuf += s;
         },
-        providerOverride: PROVIDER,
+        sourceOverride: SOURCE,
         deps: harness.deps,
         contextDir,
         rewindDir,

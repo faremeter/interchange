@@ -1,6 +1,6 @@
 // Runtime definitions for the Interchange agent harness.
 //
-// Wire-facing data types (AbortReason, ProviderConfig, ToolDefinition,
+// Wire-facing data types (AbortReason, InferenceSource, ToolDefinition,
 // HarnessConfig) are arktype validators so they can be composed into
 // WebSocket frame validators and used for runtime validation at parse
 // boundaries. Behavioral interfaces (ContextStore, MessageTransport,
@@ -1441,25 +1441,97 @@ export const AbortReason = type.enumerated(
 export type AbortReason = typeof AbortReason.infer;
 
 // ---------------------------------------------------------------------------
-// Provider Configuration (INFERENCE.md § Providers)
+// Inference Source (INFERENCE.md § Providers)
 // ---------------------------------------------------------------------------
 
 /**
- * Configuration for a single inference provider. Identifies the provider and
- * carries the endpoint URL and API credentials.
+ * Model-bound default knobs for an inference source. Per-call
+ * `InferenceOptions.X` overrides `defaults.X`; the merge happens once at
+ * the top of `runInference` before the adapter sees anything. New fields
+ * land here as separately-scoped issues.
+ */
+export const InferenceSourceDefaults = type({
+  "maxTokens?": "number",
+});
+export type InferenceSourceDefaults = typeof InferenceSourceDefaults.infer;
+
+/**
+ * A specific (provider, model) bundle the agent runtime can route to.
+ * Carries wire reachability, credentials, the model identity at the
+ * provider, and the model-bound default knobs.
  *
- * Supported providers correspond to the day-one set defined in INFERENCE.md.
- * Custom providers may be registered under any string identifier.
+ * Pre-catalog, `id` is synthesized by the resolver as `${provider}:${model}`.
+ * When the catalog ships, `id` becomes the catalog primary key and the
+ * resolver looks the source up rather than synthesizing it. `id` is the
+ * routing key used by `AgentConfig.defaultSource` and `Agent.setSource`.
+ *
+ * Multi-model providers become multiple sources — `model` is part of the
+ * identity, not an optional override.
+ *
+ * `capabilities` is carried for the selection-policy layer (the model
+ * selector consumes it). The runtime ignores it; populating the field
+ * later is not a wire-format change.
  *
  * (INFERENCE.md § Providers)
  */
-export const ProviderConfig = type({
+export const InferenceSource = type({
+  id: "string",
   provider: "string",
   baseURL: "string",
   apiKey: "string",
-  "model?": "string",
+  model: "string",
+  "defaults?": InferenceSourceDefaults,
+  "capabilities?": "string[]",
 });
-export type ProviderConfig = typeof ProviderConfig.infer;
+export type InferenceSource = typeof InferenceSource.infer;
+
+/**
+ * Replace every field on `active` with the corresponding field from
+ * `next`, in place. Optional fields (`defaults`, `capabilities`) are
+ * `delete`d from `active` when absent on `next` so the swap is exact —
+ * no stale value from a previous rotation can survive.
+ *
+ * Used by both the agent's source registry and the harness's source
+ * hot-swap path to mutate the single shared `InferenceSource` object the
+ * reactor reads lazily at the start of each inference call. Putting the
+ * field list in one place means the next field added to
+ * `InferenceSource` only has to be remembered here.
+ */
+export function applyInferenceSourceFields(
+  active: InferenceSource,
+  next: InferenceSource,
+): void {
+  active.id = next.id;
+  active.provider = next.provider;
+  active.baseURL = next.baseURL;
+  active.apiKey = next.apiKey;
+  active.model = next.model;
+  if (next.defaults !== undefined) {
+    active.defaults = next.defaults;
+  } else {
+    delete active.defaults;
+  }
+  if (next.capabilities !== undefined) {
+    active.capabilities = next.capabilities;
+  } else {
+    delete active.capabilities;
+  }
+
+  // Compile-time exhaustiveness check. `Required<>` forces optional
+  // keys to also be required in the guard — so a future optional field
+  // (e.g. `region?: string`) added to `InferenceSource` without being
+  // handled above is flagged by TypeScript, not silently dropped.
+  const _handled: { readonly [K in keyof Required<InferenceSource>]: true } = {
+    id: true,
+    provider: true,
+    baseURL: true,
+    apiKey: true,
+    model: true,
+    defaults: true,
+    capabilities: true,
+  };
+  void _handled;
+}
 
 /**
  * Options for a single inference call. Override the defaults from the agent
@@ -1727,8 +1799,8 @@ export const HarnessConfig = type({
   systemPrompt: "string",
   tools: ToolDefinition.array(),
   grants: WireGrantRule.array(),
-  providers: ProviderConfig.array(),
-  defaultModel: "string",
+  sources: InferenceSource.array(),
+  defaultSource: "string",
   "sessionChannelEnabled?": "boolean",
 });
 export type HarnessConfig = typeof HarnessConfig.infer;

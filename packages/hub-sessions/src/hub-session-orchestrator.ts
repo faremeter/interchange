@@ -14,11 +14,11 @@ import { eq } from "drizzle-orm";
 import { type } from "arktype";
 import type { DB } from "@intx/db";
 import { agentInstance } from "@intx/db/schema";
-import { resolveInstanceProviders } from "@intx/db";
+import { resolveInstanceSources } from "@intx/db";
 import { parseMailToEmail } from "@intx/mime";
 import { parseInferenceEvent } from "@intx/types/runtime";
 import type { GrantRule, GrantStore } from "@intx/types/authz";
-import type { ProviderConfig } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 import { getLogger } from "@intx/log";
 
 import type { AgentRepoStore } from "./agent-repo";
@@ -33,9 +33,10 @@ const log = getLogger(["hub", "orchestrator"]);
  * from the rest of the router API. */
 export type HubSessionRouterFacade = {
   sendGrantsUpdate(agentAddress: string, grants: GrantRule[]): Promise<void>;
-  sendProvidersUpdate(
+  sendSourcesUpdate(
     agentAddress: string,
-    providers: ProviderConfig[],
+    sources: InferenceSource[],
+    defaultSource: string,
   ): Promise<void>;
   sendPack(
     agentAddress: string,
@@ -138,13 +139,16 @@ export function createHubSessionOrchestrator(
       // security escalation, so we log rather than reject the
       // reconnect.
       try {
-        const providers = await resolveInstanceProviders(
+        const sources = await resolveInstanceSources(
           db,
           instance.tenantId,
           instance,
         );
-        if (providers.length > 0) {
-          await router.sendProvidersUpdate(agentAddress, providers);
+        if (sources.length > 0) {
+          const [first] = sources;
+          if (first !== undefined) {
+            await router.sendSourcesUpdate(agentAddress, sources, first.id);
+          }
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

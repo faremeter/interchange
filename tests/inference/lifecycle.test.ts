@@ -19,10 +19,11 @@ import type { Dependencies, Scheduler } from "@intx/inference";
 import type {
   ConversationTurn,
   InferenceEvent,
-  ProviderConfig,
+  InferenceSource,
 } from "@intx/types/runtime";
 
-const PROVIDER: ProviderConfig = {
+const SOURCE: InferenceSource = {
+  id: "openai:test-model",
   provider: "openai",
   baseURL: "https://test.invalid/v1",
   apiKey: "test",
@@ -84,8 +85,7 @@ describe("runInference — timer cancellation on non-streaming exit paths", () =
     const events = await drain(
       runInference({
         turns: makeTurns(),
-        model: "test-model",
-        providerConfig: PROVIDER,
+        source: SOURCE,
         nextSeq: () => seq++,
         deps,
       }),
@@ -108,8 +108,7 @@ describe("runInference — timer cancellation on non-streaming exit paths", () =
     const events = await drain(
       runInference({
         turns: makeTurns(),
-        model: "test-model",
-        providerConfig: PROVIDER,
+        source: SOURCE,
         nextSeq: () => seq++,
         deps,
       }),
@@ -151,8 +150,7 @@ describe("runInference — timer cancellation on consumer abandonment", () => {
     let seq = 0;
     const iter = runInference({
       turns: makeTurns(),
-      model: "test-model",
-      providerConfig: PROVIDER,
+      source: SOURCE,
       nextSeq: () => seq++,
       deps,
     });
@@ -232,8 +230,7 @@ describe("runInference — caller-signal listener accounting", () => {
     await drain(
       runInference({
         turns: makeTurns(),
-        model: "test-model",
-        providerConfig: PROVIDER,
+        source: SOURCE,
         nextSeq: () => seq++,
         deps,
         signal: fakeSignal,

@@ -7,12 +7,18 @@ import {
   type Dependencies,
   type InferenceHarnessOptions,
 } from "./harness";
-import type { ConversationTurn, InferenceEvent } from "@intx/types/runtime";
+import type {
+  ConversationTurn,
+  InferenceEvent,
+  InferenceSource,
+} from "@intx/types/runtime";
 
-const PROVIDER_CONFIG = {
-  provider: "anthropic" as const,
+const SOURCE: InferenceSource = {
+  id: "anthropic:claude-3-5-sonnet-20240620",
+  provider: "anthropic",
   baseURL: "https://api.anthropic.com",
   apiKey: "test",
+  model: "claude-3-5-sonnet-20240620",
 };
 
 function userTurn(text: string): ConversationTurn {
@@ -78,8 +84,7 @@ describe("runInference — Dependencies parameter", () => {
       events = await collect(
         runInference({
           turns: [userTurn("hello")],
-          model: "claude-3-5-sonnet-20240620",
-          providerConfig: PROVIDER_CONFIG,
+          source: SOURCE,
           nextSeq: () => ++seq,
           deps,
         }),
@@ -120,8 +125,7 @@ describe("runInference — Dependencies parameter", () => {
       events = await collect(
         runInference({
           turns: [userTurn("hello")],
-          model: "claude-3-5-sonnet-20240620",
-          providerConfig: PROVIDER_CONFIG,
+          source: SOURCE,
           nextSeq: () => ++seq,
           deps,
         }),
@@ -150,8 +154,7 @@ describe("runInference — Dependencies parameter", () => {
     const deps = { fetch: undefined } as unknown as Dependencies;
     const iter = runInference({
       turns: [userTurn("hello")],
-      model: "claude-3-5-sonnet-20240620",
-      providerConfig: PROVIDER_CONFIG,
+      source: SOURCE,
       nextSeq: () => 1,
       deps,
     });
@@ -177,8 +180,7 @@ describe("runInference — Dependencies parameter", () => {
     const deps = { fetch: "not a function" } as unknown as Dependencies;
     const iter = runInference({
       turns: [userTurn("hello")],
-      model: "claude-3-5-sonnet-20240620",
-      providerConfig: PROVIDER_CONFIG,
+      source: SOURCE,
       nextSeq: () => 1,
       deps,
     });
@@ -202,8 +204,7 @@ describe("runInference — Dependencies parameter", () => {
   test("throws plainly when deps is omitted entirely", async () => {
     const baseOpts: Omit<InferenceHarnessOptions, "deps"> = {
       turns: [userTurn("hello")],
-      model: "claude-3-5-sonnet-20240620",
-      providerConfig: PROVIDER_CONFIG,
+      source: SOURCE,
       nextSeq: () => 1,
     };
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- modeling a JS caller that omitted the required `deps` field
@@ -259,6 +260,93 @@ describe("createDefaultDependencies", () => {
   test("does not stamp the HarnessId tag", () => {
     const deps = createDefaultDependencies();
     expect(Object.getOwnPropertySymbols(deps)).toEqual([]);
+  });
+});
+
+// `source.defaults` carries model-bound knobs that the harness merges
+// into the per-call `InferenceOptions` at the top of `runInference`
+// before the adapter sees anything. The contract: per-call wins over
+// source-bound; source-bound applies when per-call omits the key.
+//
+// These tests use the openai-compatible adapter because it carries the
+// fully-populated `max_tokens` floor through to the request body
+// (anthropic's adapter only forwards `max_tokens` when set), so the
+// merge result is observable at the wire.
+describe("runInference — source.defaults merge precedence", () => {
+  const OPENAI_SOURCE: InferenceSource = {
+    id: "openai:gpt-test",
+    provider: "openai",
+    baseURL: "https://api.openai.test/v1",
+    apiKey: "test",
+    model: "gpt-test",
+  };
+
+  function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
+  async function captureMaxTokens(opts: {
+    source: InferenceSource;
+    perCallMaxTokens?: number;
+  }): Promise<number | undefined> {
+    let captured: Record<string, unknown> | undefined;
+    const deps: Dependencies = {
+      fetch: (_input, init) => {
+        const body = typeof init?.body === "string" ? init.body : "";
+        const parsed: unknown = body === "" ? {} : JSON.parse(body);
+        if (isRecord(parsed)) {
+          captured = parsed;
+        }
+        return Promise.resolve(
+          new Response("", {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        );
+      },
+    };
+    let seq = 0;
+    await collect(
+      runInference({
+        turns: [userTurn("hi")],
+        source: opts.source,
+        ...(opts.perCallMaxTokens !== undefined
+          ? { inferenceOptions: { maxTokens: opts.perCallMaxTokens } }
+          : {}),
+        nextSeq: () => ++seq,
+        deps,
+      }),
+    );
+    if (captured === undefined) throw new Error("no request body captured");
+    const value = captured["max_tokens"];
+    return typeof value === "number" ? value : undefined;
+  }
+
+  test("source-bound default applies when the per-call option is absent", async () => {
+    const sourceWithDefault: InferenceSource = {
+      ...OPENAI_SOURCE,
+      defaults: { maxTokens: 1024 },
+    };
+    const max = await captureMaxTokens({ source: sourceWithDefault });
+    expect(max).toBe(1024);
+  });
+
+  test("per-call option overrides the source-bound default", async () => {
+    const sourceWithDefault: InferenceSource = {
+      ...OPENAI_SOURCE,
+      defaults: { maxTokens: 1024 },
+    };
+    const max = await captureMaxTokens({
+      source: sourceWithDefault,
+      perCallMaxTokens: 8192,
+    });
+    expect(max).toBe(8192);
+  });
+
+  test("neither set: the adapter's compile-time floor applies", async () => {
+    const max = await captureMaxTokens({ source: OPENAI_SOURCE });
+    // Falls through to openai.ts's `options.maxTokens ?? 4096` floor.
+    expect(max).toBe(4096);
   });
 });
 

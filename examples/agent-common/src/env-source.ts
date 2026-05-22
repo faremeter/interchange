@@ -1,10 +1,10 @@
-// Environment-driven `ProviderConfig` resolution for the agent-* examples.
+// Environment-driven `InferenceSource` resolution for the agent-* examples.
 //
 // Production users invoke each example with `ANTHROPIC_API_KEY` set;
-// `resolveProvider` reads that variable, builds an Anthropic provider
-// config, and returns it alongside the chosen model. Tests bypass the
-// env entirely by supplying `providerOverride` — the helper short-
-// circuits and returns the override unchanged.
+// `resolveSource` reads that variable, builds an Anthropic inference
+// source, and returns it. Tests bypass the env entirely by supplying
+// `sourceOverride` — the helper short-circuits and returns the
+// override unchanged.
 //
 // When the env is incomplete and no override was supplied, the helper
 // returns `{ ok: false, help }` carrying a multi-line message the
@@ -12,12 +12,12 @@
 // than throwing: first-time users skim past stack traces, but they
 // will read a 5-line "set these variables to run me" block.
 
-import type { ProviderConfig } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
 export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 export const DEFAULT_ANTHROPIC_MODEL = "claude-3-5-sonnet-20241022";
 
-export type ResolveProviderOpts = {
+export type ResolveSourceOpts = {
   /**
    * The process env (typically `process.env`). Accepted as a parameter
    * rather than read from `process.env` directly so callers can pass a
@@ -25,12 +25,12 @@ export type ResolveProviderOpts = {
    */
   env: NodeJS.ProcessEnv;
   /**
-   * Skip env resolution entirely and use this provider config. Tests
-   * pass the stub provider here; the resolver returns it unchanged.
+   * Skip env resolution entirely and use this inference source. Tests
+   * pass the stub source here; the resolver returns it unchanged.
    */
-  providerOverride?: ProviderConfig;
+  sourceOverride?: InferenceSource;
   /**
-   * Override the default model name. Ignored when `providerOverride`
+   * Override the default model name. Ignored when `sourceOverride`
    * is supplied (the override's model wins).
    */
   model?: string;
@@ -41,45 +41,26 @@ export type ResolveProviderOpts = {
   exampleName: string;
 };
 
-export type ResolveProviderResult =
+export type ResolveSourceResult =
   | {
       ok: true;
-      provider: ProviderConfig;
-      /**
-       * Guaranteed-non-undefined copy of `provider.model`. Examples pass
-       * this directly into `createAgent({ defaultModel })` without
-       * having to re-check the optional field.
-       */
-      model: string;
+      source: InferenceSource;
     }
   | { ok: false; help: string };
 
 /**
- * Resolve a `ProviderConfig` for an example. Order of precedence:
+ * Resolve an `InferenceSource` for an example. Order of precedence:
  *
- * 1. `providerOverride` — returned unchanged. Its `model` field must
- *    be set; the resolver returns `{ ok: false, help }` otherwise so
- *    the failure mode matches the env-missing case.
- * 2. `ANTHROPIC_API_KEY` in env — built into an Anthropic config with
+ * 1. `sourceOverride` — returned unchanged.
+ * 2. `ANTHROPIC_API_KEY` in env — built into an Anthropic source with
  *    the default base URL and `opts.model ?? DEFAULT_ANTHROPIC_MODEL`.
+ *    The `id` is synthesized as `${provider}:${model}`.
  * 3. Neither present — returns `{ ok: false, help }` so the caller can
  *    print the help text and exit non-zero.
  */
-export function resolveProvider(
-  opts: ResolveProviderOpts,
-): ResolveProviderResult {
-  if (opts.providerOverride !== undefined) {
-    const override = opts.providerOverride;
-    if (override.model === undefined || override.model === "") {
-      return {
-        ok: false,
-        help: formatHelp(
-          opts.exampleName,
-          "providerOverride was supplied but its `model` field is unset",
-        ),
-      };
-    }
-    return { ok: true, provider: override, model: override.model };
+export function resolveSource(opts: ResolveSourceOpts): ResolveSourceResult {
+  if (opts.sourceOverride !== undefined) {
+    return { ok: true, source: opts.sourceOverride };
   }
 
   const apiKey = opts.env["ANTHROPIC_API_KEY"];
@@ -90,13 +71,13 @@ export function resolveProvider(
   const model = opts.model ?? DEFAULT_ANTHROPIC_MODEL;
   return {
     ok: true,
-    provider: {
+    source: {
+      id: `anthropic:${model}`,
       provider: "anthropic",
       baseURL: DEFAULT_ANTHROPIC_BASE_URL,
       apiKey,
       model,
     },
-    model,
   };
 }
 
@@ -112,7 +93,7 @@ function formatHelp(exampleName: string, detail?: string): string {
     "",
     "then re-run the example. Pass --model on the command line where",
     "the example supports it to override the default model. Tests",
-    "bypass this check by passing a providerOverride directly to",
+    "bypass this check by passing a sourceOverride directly to",
     "main().",
     "",
   ].join("\n");

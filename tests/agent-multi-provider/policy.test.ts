@@ -2,34 +2,36 @@
 // failover path is exercised here with a synthetic `invoke` rather
 // than through the full agent: the inference layer's own retry
 // behaviour makes the live HTTP path a poor signal for "did the
-// outer policy swap providers?". Testing the policy module in
+// outer policy swap sources?". Testing the policy module in
 // isolation pins the contract `withFailover` actually advertises.
 
 import { describe, expect, test } from "bun:test";
 
 import {
   pickModelTier,
-  routeProvider,
+  routeSource,
   withFailover,
-  type ProviderEntry,
+  type SourceEntry,
 } from "@intx/example-agent-multi-provider";
-import type { ProviderConfig } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
-const PRIMARY_CFG: ProviderConfig = {
+const PRIMARY_SOURCE: InferenceSource = {
+  id: "anthropic:primary-model",
   provider: "anthropic",
   baseURL: "https://primary.example",
   apiKey: "sk-primary",
   model: "primary-model",
 };
-const FALLBACK_CFG: ProviderConfig = {
+const FALLBACK_SOURCE: InferenceSource = {
+  id: "anthropic:fallback-model",
   provider: "anthropic",
   baseURL: "https://fallback.example",
   apiKey: "sk-fallback",
   model: "fallback-model",
 };
 
-const PRIMARY: ProviderEntry = { name: "primary", config: PRIMARY_CFG };
-const FALLBACK: ProviderEntry = { name: "fallback", config: FALLBACK_CFG };
+const PRIMARY: SourceEntry = { name: "primary", source: PRIMARY_SOURCE };
+const FALLBACK: SourceEntry = { name: "fallback", source: FALLBACK_SOURCE };
 
 describe("pickModelTier", () => {
   test("short prompts pick the cheap tier", () => {
@@ -42,52 +44,53 @@ describe("pickModelTier", () => {
   });
 });
 
-describe("routeProvider", () => {
-  test("overlays the chosen model onto the primary config", () => {
-    const r = routeProvider({
+describe("routeSource", () => {
+  test("overlays the chosen model onto the primary source", () => {
+    const r = routeSource({
       prompt: "x".repeat(120),
       primary: PRIMARY,
       models: { cheap: "h", smart: "s" },
     });
     expect(r.tier).toBe("smart");
     expect(r.model).toBe("s");
-    expect(r.provider.apiKey).toBe(PRIMARY_CFG.apiKey);
-    expect(r.provider.model).toBe("s");
+    expect(r.source.apiKey).toBe(PRIMARY_SOURCE.apiKey);
+    expect(r.source.model).toBe("s");
+    expect(r.source.id).toBe(`${PRIMARY_SOURCE.provider}:s`);
   });
 
-  test("does not mutate the source ProviderConfig", () => {
-    const original = { ...PRIMARY_CFG };
-    routeProvider({
+  test("does not mutate the source InferenceSource", () => {
+    const original = { ...PRIMARY_SOURCE };
+    routeSource({
       prompt: "x".repeat(120),
       primary: PRIMARY,
       models: { cheap: "h", smart: "s" },
     });
-    expect(PRIMARY_CFG).toEqual(original);
+    expect(PRIMARY_SOURCE).toEqual(original);
   });
 });
 
 describe("withFailover", () => {
   test("returns the primary's result on first-try success", async () => {
-    const applied: ProviderConfig[] = [];
+    const applied: InferenceSource[] = [];
     const r = await withFailover({
       primary: PRIMARY,
       fallback: FALLBACK,
-      applyProvider: (cfg) => applied.push(cfg),
+      applySource: (s) => applied.push(s),
       invoke: async () => "primary-result",
     });
     expect(r.served).toBe(PRIMARY);
     expect(r.attempts).toEqual([PRIMARY]);
-    expect(applied).toEqual([PRIMARY_CFG]);
+    expect(applied).toEqual([PRIMARY_SOURCE]);
     expect(r.result).toBe("primary-result");
   });
 
   test("swaps to fallback and retries when the primary attempt rejects", async () => {
-    const applied: ProviderConfig[] = [];
+    const applied: InferenceSource[] = [];
     let calls = 0;
     const r = await withFailover({
       primary: PRIMARY,
       fallback: FALLBACK,
-      applyProvider: (cfg) => applied.push(cfg),
+      applySource: (s) => applied.push(s),
       invoke: async () => {
         calls++;
         if (calls === 1) throw new Error("primary down");
@@ -96,7 +99,7 @@ describe("withFailover", () => {
     });
     expect(r.served).toBe(FALLBACK);
     expect(r.attempts).toEqual([PRIMARY, FALLBACK]);
-    expect(applied).toEqual([PRIMARY_CFG, FALLBACK_CFG]);
+    expect(applied).toEqual([PRIMARY_SOURCE, FALLBACK_SOURCE]);
     expect(r.result).toBe("fallback-result");
     expect(calls).toBe(2);
     // The primary's failure must come back attached so the caller
@@ -115,7 +118,7 @@ describe("withFailover", () => {
       await withFailover({
         primary: PRIMARY,
         fallback: FALLBACK,
-        applyProvider: () => undefined,
+        applySource: () => undefined,
         invoke: async () => {
           calls++;
           throw new Error(calls === 1 ? "primary down" : "fallback down");
@@ -131,7 +134,7 @@ describe("withFailover", () => {
     // Both failure messages must appear in the wrapper text so an
     // operator log line carries the full picture without walking
     // the cause chain.
-    expect(thrown.message).toContain("withFailover: both providers failed");
+    expect(thrown.message).toContain("withFailover: both sources failed");
     expect(thrown.message).toContain(`Primary (${PRIMARY.name}): primary down`);
     expect(thrown.message).toContain(
       `Fallback (${FALLBACK.name}): fallback down`,

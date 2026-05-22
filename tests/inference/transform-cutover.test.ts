@@ -167,10 +167,12 @@ async function startReactor(opts: {
   const reactor = createReactor({
     sessionId: `headline-${String(Math.random())}`,
     director: opts.director,
-    providerConfig: {
+    source: {
+      id: "anthropic:test-model",
       provider: "anthropic",
       baseURL: "https://api.anthropic.com",
       apiKey: "test",
+      model: "test-model",
     },
     toolRunner: opts.toolRunner,
     contextStore,

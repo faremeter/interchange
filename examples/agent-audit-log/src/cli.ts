@@ -8,16 +8,16 @@
 import {
   defaultContextDir,
   openExampleAgent,
-  resolveAgentProvider,
+  resolveAgentSource,
   resolveStdio,
-  type SingleProviderMainOptions,
+  type SingleSourceMainOptions,
 } from "@intx/example-agent-common";
 
 import { summarizeAuditLog } from "./inspect";
 
 const EXAMPLE_NAME = "agent-audit-log";
 
-export type MainOptions = SingleProviderMainOptions;
+export type MainOptions = SingleSourceMainOptions;
 
 export async function main(
   argv: string[],
@@ -31,8 +31,8 @@ export async function main(
     return 1;
   }
 
-  const resolved = resolveAgentProvider(opts, env, EXAMPLE_NAME, stderr);
-  if (resolved === null) return 1;
+  const source = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
+  if (source === null) return 1;
 
   const contextDir = opts.contextDir ?? defaultContextDir(EXAMPLE_NAME);
 
@@ -42,8 +42,8 @@ export async function main(
       exampleName: EXAMPLE_NAME,
       systemPrompt: "You are a helpful assistant. Keep replies concise.",
       tools: [],
-      providers: [resolved.provider],
-      defaultModel: resolved.model,
+      sources: [source],
+      defaultSource: source.id,
     },
   );
   try {

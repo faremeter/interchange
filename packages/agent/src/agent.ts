@@ -1,9 +1,9 @@
 // In-process agent runtime.
 //
-// `createAgent` resolves storage, builds the provider registry and tool
+// `createAgent` resolves storage, builds the source registry and tool
 // dispatcher, wires `createReactorAssembly`, and exposes the public Agent
-// surface. The agent owns the active provider config object so
-// `setProvider` can mutate it in place and the reactor's lazy read at the
+// surface. The agent owns the active inference source object so
+// `setSource` can mutate it in place and the reactor's lazy read at the
 // start of each inference call picks up the new credentials.
 //
 // Composition:
@@ -20,16 +20,16 @@
 //     the singleton-per-`contextDir` lock so another agent can open the
 //     same directory.
 //
-// `setProvider` covers all of `provider`/`baseURL`/`apiKey`/`model`.
-// Credentials rotate via the shared `providerConfig` object the reactor
-// reads lazily at the start of each inference call. The model rotates
-// via a thin wrapper the agent puts around the director's
-// `capabilities`: every `capabilities.infer(model, ...)` call the
-// director makes is rewritten to use the active provider's current
-// model, regardless of which model the director itself captured. This
-// makes the rotation invisible to both the default director and any
-// caller-supplied director that just relays the model it was
-// constructed with.
+// `setSource` covers the whole source: id/provider/baseURL/apiKey/model
+// plus the model-bound `defaults` and `capabilities`. Credentials and
+// model rotate together via the shared source object the reactor reads
+// lazily at the start of each inference call. The model rotates via a
+// thin wrapper the agent puts around the director's `capabilities`:
+// every `capabilities.infer(model, ...)` call the director makes is
+// rewritten to use the active source's current model, regardless of
+// which model the director itself captured. This makes the rotation
+// invisible to both the default director and any caller-supplied
+// director that just relays the model it was constructed with.
 
 import { createDefaultDirector } from "@intx/harness";
 import {
@@ -48,13 +48,13 @@ import type {
   ContextStore,
   ConversationTurn,
   InboundMessage,
-  ProviderConfig,
+  InferenceSource,
   ReactorCapabilities,
   ReactorDirector,
 } from "@intx/types/runtime";
 
 import { acquireContextDirLock, type ContextDirLock } from "./lock";
-import { createProviderRegistry, type ProviderRegistry } from "./provider";
+import { createSourceRegistry, type SourceRegistry } from "./source";
 import { createSendQueue, type SendQueue } from "./send-queue";
 import { createStreamConsumer, type StreamConsumer } from "./stream";
 import { createToolRunner, type AgentTool, type AgentToolRunner } from "./tool";
@@ -81,10 +81,10 @@ export type AgentConfig = {
    */
   contextDir?: string;
 
-  /** Pre-configured providers. Must be non-empty. Each entry must have model. */
-  providers: ProviderConfig[];
-  /** Must match the `model` field of one of `providers`. */
-  defaultModel: string;
+  /** Pre-configured inference sources. Must be non-empty. */
+  sources: InferenceSource[];
+  /** Must match the `id` field of one of `sources`. */
+  defaultSource: string;
 
   /** System prompt for the default director. */
   systemPrompt: string;
@@ -172,13 +172,13 @@ export type Agent = {
   deliver(message: InboundMessage): void;
   close(): Promise<void>;
   /**
-   * Replace the active provider's fields in place. Picked up at the
-   * start of the next inference call. `model` is rotated alongside
-   * `provider`/`baseURL`/`apiKey`: the agent wraps the director so
-   * every `capabilities.infer(model, ...)` call uses the active
-   * provider's current model.
+   * Replace the active source's fields in place. Picked up at the start
+   * of the next inference call. `model` rotates alongside the
+   * credentials: the agent wraps the director so every
+   * `capabilities.infer(model, ...)` call uses the active source's
+   * current model.
    */
-  setProvider(config: ProviderConfig): void;
+  setSource(source: InferenceSource): void;
   /**
    * Project conversation history from the underlying context store.
    * Remains callable after `close()` — reads do not need the reactor
@@ -244,12 +244,12 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     throw new AgentConfigError("unreachable: storage form validated above");
   }
 
-  let providerRegistry: ProviderRegistry;
+  let sourceRegistry: SourceRegistry;
   let toolRunner: AgentToolRunner;
   try {
-    providerRegistry = createProviderRegistry({
-      providers: config.providers,
-      defaultModel: config.defaultModel,
+    sourceRegistry = createSourceRegistry({
+      sources: config.sources,
+      defaultSource: config.defaultSource,
     });
     toolRunner = createToolRunner(config.tools);
   } catch (cause) {
@@ -257,20 +257,12 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     throw cause;
   }
 
-  // Capture the initial model so the capabilities wrapper has a safe
-  // fallback if a setProvider call ever leaves active.model undefined.
-  if (providerRegistry.active.model === undefined) {
-    if (lock !== undefined) lock.release();
-    throw new AgentConfigError("active provider must have model defined");
-  }
-  const initialModel = providerRegistry.active.model;
-
   let baseDirector: ReactorDirector;
   if (config.director !== undefined) {
     baseDirector = config.director;
   } else {
     baseDirector = createDefaultDirector(
-      initialModel,
+      sourceRegistry.active.model,
       config.systemPrompt,
       [...toolRunner.definitions],
       {},
@@ -278,17 +270,17 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
   }
 
   // Wrap the director's `capabilities` so every `infer(model, ...)` call
-  // uses the live model from providerRegistry.active. This lets
-  // setProvider rotate `model` (alongside provider/baseURL/apiKey)
-  // without requiring the inner director to know about it. The default
-  // director captures `model` at construction; this wrapper substitutes
-  // the live value at action-build time.
+  // uses the live model from sourceRegistry.active. This lets setSource
+  // rotate `model` (alongside the credentials) without requiring the
+  // inner director to know about it. The default director captures
+  // `model` at construction; this wrapper substitutes the live value at
+  // action-build time.
   const director: ReactorDirector = {
     async decide(event, state, capabilities) {
       const wrappedCapabilities: ReactorCapabilities = {
         ...capabilities,
         infer: (_requestedModel, options) => {
-          const liveModel = providerRegistry.active.model ?? initialModel;
+          const liveModel = sourceRegistry.active.model;
           return options === undefined
             ? capabilities.infer(liveModel)
             : capabilities.infer(liveModel, options);
@@ -338,9 +330,7 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     return {
       role: "assistant",
       content: [{ type: "text", text }],
-      ...(providerRegistry.active.model !== undefined
-        ? { model: providerRegistry.active.model }
-        : {}),
+      model: sourceRegistry.active.model,
       timestamp: Date.now(),
     };
   }
@@ -394,7 +384,7 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
   const { reactor, blobReader } = createReactorAssembly({
     sessionId,
     director,
-    providerConfig: providerRegistry.active,
+    source: sourceRegistry.active,
     toolRunner,
     contextStore,
     onEvent: handleEvent,
@@ -467,9 +457,9 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     reactor.deliver(message);
   }
 
-  function setProvider(cfg: ProviderConfig): void {
+  function setSource(source: InferenceSource): void {
     ensureOpen();
-    providerRegistry.setProvider(cfg);
+    sourceRegistry.setSource(source);
   }
 
   async function history(): Promise<ConversationTurn[]> {
@@ -521,7 +511,7 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     stream,
     deliver,
     close,
-    setProvider,
+    setSource,
     history,
     checkpoints,
     readAt,

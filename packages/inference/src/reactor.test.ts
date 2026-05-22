@@ -228,7 +228,7 @@ type TestReactorOverrides = {
   // non-Anthropic provider. Both override hooks are optional; omit them for
   // tests that don't care about the inference HTTP path.
   deps?: Dependencies;
-  providerConfig?: ReactorConfig["providerConfig"];
+  source?: ReactorConfig["source"];
   compactors?: Record<string, Compactor>;
 };
 
@@ -250,10 +250,12 @@ function createTestReactor(
   const config: ReactorConfig = {
     sessionId,
     director: overrides.director ?? directorFromTable({}),
-    providerConfig: overrides.providerConfig ?? {
+    source: overrides.source ?? {
+      id: "anthropic:test-model",
       provider: "anthropic",
       baseURL: "https://api.anthropic.com",
       apiKey: "test",
+      model: "test-model",
     },
     toolRunner: overrides.toolRunner ?? noopToolRunner(),
     contextStore: overrides.contextStore ?? makeContextStore(),
@@ -905,10 +907,12 @@ describe("createReactor — director exception", () => {
     const reactor = createReactor({
       sessionId: "sess-err",
       director,
-      providerConfig: {
+      source: {
+        id: "anthropic:test-model",
         provider: "anthropic",
         baseURL: "https://api.anthropic.com",
         apiKey: "test",
+        model: "test-model",
       },
       toolRunner: noopToolRunner(),
       contextStore: makeContextStore(),
@@ -3230,7 +3234,7 @@ function mockInferenceRunner(
     const turn: AssistantTurn = {
       role: "assistant",
       content,
-      model: opts.model,
+      model: opts.source.model,
       timestamp: Date.now(),
     };
     yield {
@@ -3294,10 +3298,12 @@ function createDirectReactor(opts: {
   const reactor = createReactor({
     sessionId: `test-${String(++testSessionCounter)}`,
     director: opts.director,
-    providerConfig: {
+    source: {
+      id: "anthropic:test-model",
       provider: "anthropic",
       baseURL: "https://api.anthropic.com",
       apiKey: "test",
+      model: "test-model",
     },
     toolRunner: opts.toolRunner ?? noopToolRunner(),
     contextStore: opts.contextStore,
@@ -3371,7 +3377,7 @@ describe("createReactor — transform chain ordering and compact action", () => 
       const turn: AssistantTurn = {
         role: "assistant",
         content: [{ type: "text", text: "ok" }],
-        model: opts.model,
+        model: opts.source.model,
         timestamp: Date.now(),
       };
       yield {
@@ -3508,7 +3514,7 @@ describe("createReactor — transform chain ordering and compact action", () => 
       const turn: AssistantTurn = {
         role: "assistant",
         content: [{ type: "text", text: "ok-after-compact" }],
-        model: opts.model,
+        model: opts.source.model,
         timestamp: Date.now(),
       };
       yield {
