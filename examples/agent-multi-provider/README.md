@@ -42,14 +42,14 @@ Output looks like:
 
 ```
 > what is the boiling point of water
-  routed to: tier=cheap model=claude-3-5-haiku-20241022
+  routed to: tier=cheap model=claude-haiku-4-5-20251001
   attempts:  primary
   served by: primary
   reply:     assistant
   text:      100C.
 
 > explain quantum tunneling in two paragraphs, ...
-  routed to: tier=smart model=claude-3-5-sonnet-20241022
+  routed to: tier=smart model=claude-sonnet-4-6
   attempts:  primary
   served by: primary
   reply:     assistant

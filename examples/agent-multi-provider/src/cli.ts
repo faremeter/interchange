@@ -32,8 +32,8 @@ import {
 
 const EXAMPLE_NAME = "agent-multi-provider";
 
-export const DEFAULT_CHEAP_MODEL = "claude-3-5-haiku-20241022";
-export const DEFAULT_SMART_MODEL = "claude-3-5-sonnet-20241022";
+export const DEFAULT_CHEAP_MODEL = "claude-haiku-4-5-20251001";
+export const DEFAULT_SMART_MODEL = "claude-sonnet-4-6";
 
 export type MainOptions = CommonMainOptions & {
   /** Override the primary source (tests use this). */
