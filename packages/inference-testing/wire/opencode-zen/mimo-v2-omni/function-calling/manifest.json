@@ -1,0 +1,7 @@
+{
+  "provider": "opencode-zen",
+  "model": "mimo-v2-omni",
+  "capability": "function-calling",
+  "capturedAt": "2026-05-22T00:00:00Z",
+  "schemaVersion": "1"
+}

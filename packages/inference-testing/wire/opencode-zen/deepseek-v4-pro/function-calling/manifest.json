@@ -1,0 +1,7 @@
+{
+  "provider": "opencode-zen",
+  "model": "deepseek-v4-pro",
+  "capability": "function-calling",
+  "capturedAt": "2026-05-22T00:00:00Z",
+  "schemaVersion": "1"
+}

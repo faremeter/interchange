@@ -1,0 +1,7 @@
+{
+  "provider": "google-genai",
+  "model": "gemini-2.5-flash-image",
+  "capability": "image-output-streaming",
+  "capturedAt": "2026-05-22T00:00:00Z",
+  "schemaVersion": "1"
+}
