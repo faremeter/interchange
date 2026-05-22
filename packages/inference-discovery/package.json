@@ -1,0 +1,19 @@
+{
+  "name": "@intx/inference-discovery",
+  "version": "0.0.0",
+  "license": "LGPL-2.1-only",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./catalog": {
+      "types": "./src/catalog/index.ts",
+      "default": "./src/catalog/index.ts"
+    }
+  },
+  "dependencies": {
+    "arktype": "catalog:"
+  }
+}

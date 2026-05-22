@@ -313,6 +313,13 @@
         "@intx/mime": "workspace:*",
       },
     },
+    "packages/inference-discovery": {
+      "name": "@intx/inference-discovery",
+      "version": "0.0.0",
+      "dependencies": {
+        "arktype": "catalog:",
+      },
+    },
     "packages/inference-testing": {
       "name": "@intx/inference-testing",
       "version": "0.0.0",
@@ -636,6 +643,8 @@
     "@intx/hub-sessions": ["@intx/hub-sessions@workspace:packages/hub-sessions"],
 
     "@intx/inference": ["@intx/inference@workspace:packages/inference"],
+
+    "@intx/inference-discovery": ["@intx/inference-discovery@workspace:packages/inference-discovery"],
 
     "@intx/inference-testing": ["@intx/inference-testing@workspace:packages/inference-testing"],
 

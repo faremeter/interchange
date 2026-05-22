@@ -22,6 +22,7 @@
     { "path": "apps/hub" },
     { "path": "apps/admin-ui" },
     { "path": "apps/sidecar" },
+    { "path": "packages/inference-discovery" },
     { "path": "packages/inference-testing" },
     { "path": "examples/coding-agent" },
     { "path": "examples/agent-common" },
