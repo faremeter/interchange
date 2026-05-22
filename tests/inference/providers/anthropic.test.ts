@@ -14,6 +14,8 @@ const adapter = createAnthropicAdapter();
 const AnthropicContentBlock = type({
   type: "string",
   "text?": "string",
+  "thinking?": "string",
+  "signature?": "string",
   "id?": "string",
   "name?": "string",
   "cache_control?": { type: "string" },
@@ -175,6 +177,54 @@ describe("Anthropic adapter: buildRequest", () => {
     const body = AnthropicRequestBody.assert(JSON.parse(req.body));
     expect(body.thinking?.type).toBe("enabled");
     expect(body.thinking?.budget_tokens).toBe(2048);
+  });
+
+  test("echoes thinking block signature back in the request body", () => {
+    // Anthropic requires that any thinking block included in a
+    // follow-up turn's history carries the cryptographic signature
+    // the API issued when the block was originally generated. Without
+    // the signature, the next request 400s with
+    // "messages.N.content.M.thinking.signature: Field required".
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Question." }],
+        timestamp: 1000,
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: "Reasoning about the question...",
+            signature: "sig_round_trip",
+          },
+          { type: "text", text: "Answer." },
+        ],
+        timestamp: 1100,
+        model: "claude-sonnet-4-6",
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Follow-up." }],
+        timestamp: 1200,
+      },
+    ];
+
+    const req = adapter.buildRequest(messages, "claude-sonnet-4-6", {});
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    const assistantMsg = body.messages.find((m) => m.role === "assistant");
+    if (assistantMsg === undefined) {
+      throw new Error("expected an assistant message in the request body");
+    }
+    const thinkingBlock = assistantMsg.content.find(
+      (b) => b.type === "thinking",
+    );
+    if (thinkingBlock === undefined) {
+      throw new Error("expected a thinking block in the assistant message");
+    }
+    expect(thinkingBlock.thinking).toBe("Reasoning about the question...");
+    expect(thinkingBlock.signature).toBe("sig_round_trip");
   });
 
   test("converts tool_call blocks to tool_use type", () => {
@@ -384,6 +434,26 @@ describe("Anthropic adapter: parseResponse", () => {
     expect(events[0]?.type).toBe("inference.thinking.delta");
     if (events[0]?.type === "inference.thinking.delta") {
       expect(events[0].data.token).toBe("reasoning...");
+    }
+  });
+
+  test("parses signature_delta into inference.thinking.signature", async () => {
+    // Anthropic emits the thinking-block signature after the thinking
+    // content stream. The signature must be propagated end-to-end —
+    // without it, follow-up turns that echo the thinking block are
+    // rejected by Anthropic with
+    // "messages.N.content.M.thinking.signature: Field required".
+    const events = await parseWire(adapter, [
+      wire.anthropic.contentBlockDelta({
+        index: 0,
+        kind: "signature_delta",
+        signature: "sig_abc123",
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe("inference.thinking.signature");
+    if (events[0]?.type === "inference.thinking.signature") {
+      expect(events[0].data.signature).toBe("sig_abc123");
     }
   });
 

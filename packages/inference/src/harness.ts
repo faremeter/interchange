@@ -157,6 +157,11 @@ export async function* runInference(
   // Mutable partial state — the harness owns this.
   const partial: PartialMessage = { text: "" };
   let thinkingBuffer = "";
+  // Cryptographic signature for the thinking block, when the provider
+  // emits one. Anthropic requires this signature to be echoed back on
+  // any follow-up turn that includes the thinking block in history; see
+  // `inference.thinking.signature` in `runtime.ts`.
+  let thinkingSignature: string | undefined;
   let usageSeen: TokenUsage | null = null;
 
   // Tool call state: keyed by callId (or index for OpenAI).
@@ -434,6 +439,20 @@ export async function* runInference(
               break;
             }
 
+            case "inference.thinking.signature": {
+              // Anthropic emits the signature once per thinking block, after
+              // the thinking_delta stream. The harness collapses all thinking
+              // content into a single block today, so a single trailing
+              // signature is captured here and attached at finalisation.
+              thinkingSignature = raw.data.signature;
+              yield {
+                type: "inference.thinking.signature",
+                seq: nextSeq(),
+                data: { signature: raw.data.signature },
+              };
+              break;
+            }
+
             case "inference.tool_call.start": {
               const { callId, name } = raw.data;
               openToolCalls.set(callId, { callId, name, argsBuffer: "" });
@@ -594,7 +613,13 @@ export async function* runInference(
     // Build the final assistant message.
     const contentBlocks: ContentBlock[] = [];
     if (thinkingBuffer.length > 0) {
-      contentBlocks.push({ type: "thinking", thinking: thinkingBuffer });
+      contentBlocks.push({
+        type: "thinking",
+        thinking: thinkingBuffer,
+        ...(thinkingSignature !== undefined
+          ? { signature: thinkingSignature }
+          : {}),
+      });
     }
     if (partial.text.length > 0) {
       contentBlocks.push({ type: "text", text: partial.text });
