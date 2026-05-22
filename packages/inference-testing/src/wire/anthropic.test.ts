@@ -78,6 +78,20 @@ describe("anthropic wire DSL", () => {
     }
   });
 
+  test("thinkingBlock with signature emits inference.thinking.signature", async () => {
+    const events = await drive([
+      anthropic.messageStart(),
+      ...anthropic.thinkingBlock("Let me think...", 0, "sig_xyz"),
+    ]);
+    const sigEvents = events.filter(
+      (e) => e.type === "inference.thinking.signature",
+    );
+    expect(sigEvents).toHaveLength(1);
+    if (sigEvents[0]?.type === "inference.thinking.signature") {
+      expect(sigEvents[0].data.signature).toBe("sig_xyz");
+    }
+  });
+
   test("toolUseBlock emits start + delta carrying the call id and args", async () => {
     const events = await drive([
       anthropic.messageStart(),

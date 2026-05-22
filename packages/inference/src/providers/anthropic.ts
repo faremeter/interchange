@@ -205,6 +205,7 @@ const ContentBlockDelta = type({
     "text?": "string",
     "thinking?": "string",
     "partial_json?": "string",
+    "signature?": "string",
   },
 });
 
@@ -303,6 +304,23 @@ function parseResponse(
             type: "inference.thinking.delta",
             seq,
             data: { token, partial: EMPTY_PARTIAL },
+          },
+        ];
+      }
+
+      if (delta.type === "signature_delta") {
+        // Anthropic emits the cryptographic signature for a thinking block
+        // in a dedicated signature_delta event after the block's
+        // thinking_delta stream. The signature must be echoed back on any
+        // follow-up turn that includes the thinking block as context —
+        // otherwise the API rejects the request with
+        // "messages.N.content.M.thinking.signature: Field required".
+        const signature = delta.signature ?? "";
+        return [
+          {
+            type: "inference.thinking.signature",
+            seq,
+            data: { signature },
           },
         ];
       }

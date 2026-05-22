@@ -764,6 +764,11 @@ export const InferenceEvent = type({
     data: { token: "string", partial: PartialMessage },
   })
   .or({
+    type: "'inference.thinking.signature'",
+    seq: "number",
+    data: { signature: "string" },
+  })
+  .or({
     type: "'inference.text.delta'",
     seq: "number",
     data: { token: "string", partial: PartialMessage },
@@ -907,6 +912,11 @@ export type InferenceEvent =
       type: "inference.thinking.delta";
       seq: number;
       data: { token: string; partial: PartialMessage };
+    }
+  | {
+      type: "inference.thinking.signature";
+      seq: number;
+      data: { signature: string };
     }
   | {
       type: "inference.text.delta";

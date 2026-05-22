@@ -116,12 +116,14 @@ export function contentBlockStart(
 }
 
 /**
- * Options for `contentBlockDelta`. Three delta kinds correspond to the three
- * the adapter handles: text, thinking, and `input_json_delta` for tool args.
+ * Options for `contentBlockDelta`. The kinds correspond to the deltas the
+ * adapter handles: text, thinking, the cryptographic signature that
+ * follows a thinking block, and `input_json_delta` for tool args.
  */
 export type AnthropicContentBlockDeltaOpts =
   | { index: number; kind: "text_delta"; text: string }
   | { index: number; kind: "thinking_delta"; thinking: string }
+  | { index: number; kind: "signature_delta"; signature: string }
   | { index: number; kind: "input_json_delta"; partialJson: string }
   | { index: number; kind: "raw"; delta: Record<string, unknown> };
 
@@ -140,6 +142,9 @@ export function contentBlockDelta(
       break;
     case "thinking_delta":
       delta = { type: "thinking_delta", thinking: opts.thinking };
+      break;
+    case "signature_delta":
+      delta = { type: "signature_delta", signature: opts.signature };
       break;
     case "input_json_delta":
       delta = { type: "input_json_delta", partial_json: opts.partialJson };
@@ -217,18 +222,32 @@ export function raw(rawSSE: string): Uint8Array {
 }
 
 /**
- * Convenience: emit an Anthropic thinking block (start + delta + stop). The
- * adapter forwards each `thinking_delta` as an `inference.thinking.delta`.
+ * Convenience: emit an Anthropic thinking block (start + delta +
+ * optional signature_delta + stop). The adapter forwards each
+ * `thinking_delta` as an `inference.thinking.delta`; when `signature`
+ * is supplied, the trailing `signature_delta` becomes an
+ * `inference.thinking.signature` and the harness attaches it to the
+ * final ThinkingBlock.
  *
  * `index` defaults to 0; supply a higher index when interleaving thinking
  * with other content blocks (e.g., text at index 1 after thinking at 0).
  */
-export function thinkingBlock(text: string, index = 0): Uint8Array[] {
-  return [
+export function thinkingBlock(
+  text: string,
+  index = 0,
+  signature?: string,
+): Uint8Array[] {
+  const events: Uint8Array[] = [
     contentBlockStart({ index, kind: "thinking", thinking: "" }),
     contentBlockDelta({ index, kind: "thinking_delta", thinking: text }),
-    contentBlockStop({ index }),
   ];
+  if (signature !== undefined) {
+    events.push(
+      contentBlockDelta({ index, kind: "signature_delta", signature }),
+    );
+  }
+  events.push(contentBlockStop({ index }));
+  return events;
 }
 
 /**
