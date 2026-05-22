@@ -24,6 +24,7 @@
     { "path": "apps/sidecar" },
     { "path": "packages/inference-discovery" },
     { "path": "packages/inference-discovery-google-genai" },
+    { "path": "packages/inference-discovery-openai" },
     { "path": "packages/inference-testing" },
     { "path": "examples/coding-agent" },
     { "path": "examples/agent-common" },
