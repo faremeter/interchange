@@ -1,0 +1,2 @@
+data: {"candidates": [{"content": {"parts": [{"text": "The image displays a celestial body's albedo map alongside another highlighting its faint water signature."}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 267,"candidatesTokenCount": 19,"totalTokenCount": 1359,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 9},{"modality": "IMAGE","tokenCount": 258}],"thoughtsTokenCount": 1073,"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash","responseId": "BfQNaoXPCMO-jMcPj_LkMA"}
+

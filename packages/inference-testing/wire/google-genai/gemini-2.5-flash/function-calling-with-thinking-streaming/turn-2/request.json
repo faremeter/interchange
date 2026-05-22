@@ -1,0 +1,72 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Think carefully, then use the getCurrentWeather tool to look up the current weather in Boston, MA."
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "text": "**Determining Weather Query**\n\nI've determined the user is asking for weather information. The `getCurrentWeather` tool seems appropriate, and I've extracted \"Boston, MA\" as the location. I'm ready to call the tool with the correct argument.\n\n\n",
+          "thought": true
+        },
+        {
+          "functionCall": {
+            "name": "getCurrentWeather",
+            "args": {
+              "location": "Boston, MA"
+            }
+          },
+          "thoughtSignature": "CiQBDDnWx5kUfD92jJo00W2XKf6M2cBic5bt6pJ/JAYUAVf42acKcAEMOdbHMJGQbd1XtX8YSdOf2II/bn9KULC+apBhnagxjOH/9PTxYxxfRdH3q0VgfO8us+bdqSbbMOkqwKzStl7i68grq8UP0T90GYFOEbLBYw/g0v9Kkt0f9OBIRtrTNaZ4qnEFwU5nc0geg6BPqJ0KuQEBDDnWx1akwWjL1eqNBMFPqhMpsKQMfn5NcPt8/yBPGJDbmYVgnez9fZ+D0PBKfLXg5jzZaNWJS0rE4rWocvPqGgQWUtPWrIUM38l7+rPPKbU6KWOIZtjynz9AVdhlJA8qJPE24BEDNE/Lo7sICAOlqDqlRyI2OILrgCiy8p7rNwiFVXxtf+OCK6c2kJ+gyz45sdvjZW0Ej/PbF1eT4e6V8SbLs8oPrpTtQr9yteOaRrSqQyQfZxD7mw=="
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "getCurrentWeather",
+            "response": {
+              "location": "Boston, MA",
+              "temperatureF": 62,
+              "conditions": "partly cloudy",
+              "windMph": 8
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "getCurrentWeather",
+          "description": "Get the current weather conditions for a given city. Use this whenever the user asks about weather.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "The city and optional state, e.g. 'Boston, MA'."
+              }
+            },
+            "required": ["location"]
+          }
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "thinkingConfig": {
+      "thinkingBudget": 1024,
+      "includeThoughts": true
+    }
+  }
+}

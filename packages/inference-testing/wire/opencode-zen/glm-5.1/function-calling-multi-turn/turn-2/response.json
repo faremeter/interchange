@@ -1,0 +1,31 @@
+{
+  "id": "chatcmpl-RpMJvtOIq3OYgd21d1u9aENp",
+  "object": "chat.completion",
+  "created": 1779305009,
+  "model": "frank/GLM-5.1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The current weather in **Boston, MA** is:\n\n- **Temperature:** 62°F\n- **Conditions:** Partly Cloudy\n- **Wind:** 8 mph\n\nIt's a mild day with some cloud cover. A light jacket might be comfortable if you're heading out!",
+        "reasoning_content": "The function returned the current weather for Boston, MA. Let me present this information clearly to the user.",
+        "name": null,
+        "tool_calls": []
+      },
+      "finish_reason": "stop",
+      "logprobs": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 239,
+    "total_tokens": 319,
+    "completion_tokens": 80,
+    "estimated_cost": 0,
+    "prompt_tokens_details": {
+      "cached_tokens": 192,
+      "cache_write_tokens": null
+    }
+  },
+  "cost": "0"
+}

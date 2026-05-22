@@ -1,0 +1,9 @@
+{
+  "model": "mimo-v2-omni",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with the single word 'ready'."
+    }
+  ]
+}

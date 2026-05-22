@@ -1,0 +1,18 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Write a 200-word description of how a sailboat works. Cover the hull, the keel, the sails, and steering. Use clear paragraphs."
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "maxOutputTokens": 400,
+    "thinkingConfig": {
+      "thinkingBudget": 0
+    }
+  }
+}

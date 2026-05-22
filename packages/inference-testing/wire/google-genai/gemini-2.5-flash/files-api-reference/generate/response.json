@@ -1,0 +1,35 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "The Adventures of Tom Sawyer follows a mischievous boy's journey through everyday pranks, thrilling pirate escapades, and a grave moral conflict stemming from a secret oath and a witnessed crime."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 268,
+    "candidatesTokenCount": 37,
+    "totalTokenCount": 1596,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 10
+      },
+      {
+        "modality": "DOCUMENT",
+        "tokenCount": 258
+      }
+    ],
+    "thoughtsTokenCount": 1291,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "TeUNavbND5jNjMcP2-Os8QI"
+}

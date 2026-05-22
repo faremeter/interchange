@@ -1,0 +1,44 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Think carefully, then use the getCurrentWeather tool to look up the current weather in Boston, MA."
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "getCurrentWeather",
+          "description": "Get the current weather conditions for a given city. Use this whenever the user asks about weather.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "The city and optional state, e.g. 'Boston, MA'."
+              }
+            },
+            "required": ["location"]
+          }
+        }
+      ]
+    }
+  ],
+  "toolConfig": {
+    "functionCallingConfig": {
+      "mode": "ANY",
+      "allowedFunctionNames": ["getCurrentWeather"]
+    }
+  },
+  "generationConfig": {
+    "thinkingConfig": {
+      "thinkingBudget": 1024,
+      "includeThoughts": true
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "model": "glm-5.1",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with the single word 'ready'."
+    }
+  ],
+  "stream": true
+}
