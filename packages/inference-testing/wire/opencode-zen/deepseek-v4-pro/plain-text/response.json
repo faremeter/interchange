@@ -1,0 +1,33 @@
+{
+  "id": "92fe9ffc-75fb-4713-9680-69bdcf9f3476",
+  "object": "chat.completion",
+  "created": 1779303921,
+  "model": "deepseek-v4-pro",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "ready",
+        "reasoning_content": "We are asked: \"Reply with the single word 'ready'.\" So we need to output exactly \"ready\". No other text."
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 91,
+    "completion_tokens": 29,
+    "total_tokens": 120,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 27
+    },
+    "prompt_cache_hit_tokens": 0,
+    "prompt_cache_miss_tokens": 91
+  },
+  "system_fingerprint": "fp_9954b31ca7_prod0820_fp8_kvcache_20260402",
+  "cost": "0"
+}

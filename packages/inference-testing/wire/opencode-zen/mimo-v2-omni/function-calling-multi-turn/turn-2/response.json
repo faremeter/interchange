@@ -1,0 +1,30 @@
+{
+  "id": "8f50d6da82a94b768a7c9dcee2bcc32a",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Hey there! The current weather in Boston, MA is **62°F (about 17°C) and partly cloudy**. There's also a gentle breeze with winds blowing at around **8 mph**.\n\nIt sounds like a pleasant day — not too hot, not too cold, with some clouds to keep things interesting. Perfect weather for a walk or some outdoor time if you're in the area! 🌤️\n\nIs there anything else you'd like to know?",
+        "role": "assistant",
+        "tool_calls": null,
+        "reasoning_content": "Great! I have the weather information. Now I'll share it with the user in a warm, conversational tone."
+      }
+    }
+  ],
+  "created": 1779305052,
+  "model": "mimo-v2-omni",
+  "object": "chat.completion",
+  "usage": {
+    "completion_tokens": 124,
+    "prompt_tokens": 587,
+    "total_tokens": 711,
+    "completion_tokens_details": {
+      "reasoning_tokens": 24
+    },
+    "prompt_tokens_details": {
+      "cached_tokens": 192
+    }
+  },
+  "cost": "0"
+}

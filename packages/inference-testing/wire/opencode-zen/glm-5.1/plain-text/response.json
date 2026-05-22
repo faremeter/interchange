@@ -1,0 +1,31 @@
+{
+  "id": "chatcmpl-RQ4ZtgE3hXQ1F49SlOVlq75o",
+  "object": "chat.completion",
+  "created": 1779303917,
+  "model": "frank/GLM-5.1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Ready",
+        "reasoning_content": "The user is asking me to reply with the single word \"ready\".",
+        "name": null,
+        "tool_calls": []
+      },
+      "finish_reason": "stop",
+      "logprobs": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 13,
+    "total_tokens": 29,
+    "completion_tokens": 16,
+    "estimated_cost": 0,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": null
+    }
+  },
+  "cost": "0"
+}

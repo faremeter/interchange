@@ -1,0 +1,40 @@
+{
+  "id": "chatcmpl-RTGyo8xTpnpH05cGJDNbnksi",
+  "object": "chat.completion",
+  "created": 1779305003,
+  "model": "frank/GLM-5.1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "The user wants to know the current weather in Boston, MA. I'll use the getCurrentWeather function with the location \"Boston, MA\".",
+        "name": null,
+        "tool_calls": [
+          {
+            "id": "call_6b0b",
+            "type": "function",
+            "function": {
+              "name": "getCurrentWeather",
+              "arguments": "{\"location\": \"Boston, MA\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls",
+      "logprobs": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 184,
+    "total_tokens": 225,
+    "completion_tokens": 41,
+    "estimated_cost": 0,
+    "prompt_tokens_details": {
+      "cached_tokens": 32,
+      "cache_write_tokens": null
+    }
+  },
+  "cost": "0"
+}

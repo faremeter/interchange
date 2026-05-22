@@ -1,0 +1,39 @@
+{
+  "id": "f6db787510bf4ce9abc88f3124a06262",
+  "choices": [
+    {
+      "finish_reason": "tool_calls",
+      "index": 0,
+      "message": {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "call_9ee65759a1e6452cabc9870c",
+            "function": {
+              "arguments": "{\"location\": \"Boston, MA\"}",
+              "name": "getCurrentWeather"
+            },
+            "type": "function"
+          }
+        ],
+        "reasoning_content": "I'll use the weather tool to get current conditions for Boston, MA."
+      }
+    }
+  ],
+  "created": 1779305048,
+  "model": "mimo-v2-omni",
+  "object": "chat.completion",
+  "usage": {
+    "completion_tokens": 41,
+    "prompt_tokens": 520,
+    "total_tokens": 561,
+    "completion_tokens_details": {
+      "reasoning_tokens": 15
+    },
+    "prompt_tokens_details": {
+      "cached_tokens": 512
+    }
+  },
+  "cost": "0"
+}

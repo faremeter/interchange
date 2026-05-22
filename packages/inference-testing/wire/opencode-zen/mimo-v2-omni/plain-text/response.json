@@ -1,0 +1,30 @@
+{
+  "id": "aff217c0a28b45acbc8b47bf56daeede",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "ready",
+        "role": "assistant",
+        "tool_calls": null,
+        "reasoning_content": "The user has given a simple instruction to reply with a single word 'ready'. This is a straightforward task with no complex requirements. \n\nThe response needs to be exactly as requested - just the word \"ready\" without any additional text or formatting. \n\nSince this is a basic command with no safety concerns or policy violations, the appropriate action is to comply directly. \n\nThe word \"ready\" alone fulfills the request completely. No further explanation or elaboration is needed."
+      }
+    }
+  ],
+  "created": 1779303944,
+  "model": "mimo-v2-omni",
+  "object": "chat.completion",
+  "usage": {
+    "completion_tokens": 98,
+    "prompt_tokens": 258,
+    "total_tokens": 356,
+    "completion_tokens_details": {
+      "reasoning_tokens": 94
+    },
+    "prompt_tokens_details": {
+      "cached_tokens": 192
+    }
+  },
+  "cost": "0"
+}
