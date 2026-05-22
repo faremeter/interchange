@@ -16,7 +16,7 @@ import type { InferenceSource } from "@intx/types/runtime";
 
 import { CODING_AGENT_SYSTEM_PROMPT } from "./prompt";
 
-export const DEFAULT_MODEL = "claude-3-5-sonnet-20241022";
+export const DEFAULT_MODEL = "claude-sonnet-4-6";
 export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 
 export type CodingAgentOptions = {

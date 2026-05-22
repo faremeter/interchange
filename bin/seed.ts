@@ -545,7 +545,7 @@ const { status: a3Status, data: a3Data } = await api(
     description: "Handles customer support tickets",
     systemPrompt:
       "You are a customer support agent. Help customers with their issues.",
-    modelConfig: { defaultModel: "claude-sonnet-4-20250514" },
+    modelConfig: { defaultModel: "claude-sonnet-4-6" },
     capabilities: { ticketManagement: true, knowledgeBase: true },
     credentialRequirements: [
       { providerName: "Anthropic", source: "tenant", scopes: ["chat"] },
@@ -635,7 +635,7 @@ const { status: prv1Status, data: prv1Data } = await api(
     plugin: "anthropic",
     metadata: {
       baseURL: "https://api.anthropic.com",
-      defaultModel: "claude-sonnet-4-20250514",
+      defaultModel: "claude-sonnet-4-6",
     },
   },
   aliceCookies,

@@ -20,7 +20,7 @@ const log = getLogger(["ring-demo"]);
 
 const ANTHROPIC_DEFAULTS = {
   baseURL: "https://api.anthropic.com",
-  model: "claude-sonnet-4-20250514",
+  model: "claude-sonnet-4-6",
 };
 
 function readSource(): InferenceSource {

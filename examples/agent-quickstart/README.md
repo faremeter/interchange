@@ -56,7 +56,7 @@ The `main()` function in `src/cli.ts` does five things in order:
    and returns exit code 1.
 2. **Resolve the inference source.** `resolveSource` reads
    `ANTHROPIC_API_KEY` from `env`, defaults the model to
-   `claude-3-5-sonnet-20241022`, synthesizes an `id` of
+   `claude-sonnet-4-6`, synthesizes an `id` of
    `${provider}:${model}`, and returns `{ ok: false, help }` when the
    env is incomplete. Tests bypass env resolution entirely by
    supplying `sourceOverride`.
