@@ -161,7 +161,7 @@ const renderPayloadDirector: ReactorDirector = {
     ) {
       // Compose a system-prompt overlay that surfaces the payload.
       const body = JSON.stringify(event.message.payload.body);
-      return caps.infer(MODEL, {
+      return caps.infer({
         systemPrompt: `${BASE_PROMPT}\n\nIncoming ${event.message.payload.type} payload: ${body}`,
         tools: TOOLS,
       });

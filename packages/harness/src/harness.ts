@@ -92,7 +92,6 @@ export function createHarness(config: HarnessConfig): Harness {
     director = config.director;
   } else {
     director = createDefaultDirector(
-      source.model,
       config.systemPrompt,
       [...getMailToolDefinitions(), ...deployToolDefs],
       config.directorPolicy ?? {},

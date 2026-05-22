@@ -343,13 +343,6 @@ export function createReactor(config: ReactorConfig): Reactor {
   }
 
   async function executeInfer(
-    // The director-requested model is informational. The active
-    // InferenceSource is authoritative: `runInference` reads `source.model`
-    // and emits `inference.start` with that model. The agent's capabilities
-    // wrapper already rewrites `infer(model)` to use the source's model
-    // before the action is built, so the value reaching here matches
-    // `source.model` in practice — but we do not rely on that.
-    _model: string,
     options: InferenceOptions | undefined,
   ): Promise<void> {
     if (stateManager === null) return;
@@ -920,7 +913,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       // Handle infer.
       const inferAction = normalized.find((a) => a.type === "infer");
       if (inferAction !== undefined && inferAction.type === "infer") {
-        await executeInfer(inferAction.model, inferAction.options);
+        await executeInfer(inferAction.options);
         continue;
       }
 

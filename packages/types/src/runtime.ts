@@ -1074,7 +1074,6 @@ export type ReactorState = {
 export type ReactorAction =
   | {
       type: "infer";
-      model: string;
       options?: InferenceOptions;
     }
   | {
@@ -1118,7 +1117,7 @@ export type ReactorAction =
  * (INFERENCE.md § Agent Reactor › Director Decision Function)
  */
 export type ReactorCapabilities = {
-  infer(model: string, options?: InferenceOptions): ReactorAction;
+  infer(options?: InferenceOptions): ReactorAction;
   executeTools(
     calls: ToolCall[],
     parallel?: boolean,
@@ -1540,7 +1539,6 @@ export function applyInferenceSourceFields(
  * (INFERENCE.md § Providers › Streaming Harness)
  */
 export type InferenceOptions = {
-  model?: string;
   maxTokens?: number;
   temperature?: number;
   thinking?: { enabled: boolean; budgetTokens?: number };
