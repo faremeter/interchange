@@ -14,15 +14,10 @@ import {
   offering,
   principal as principalTable,
   principalRole,
-  provider,
   sessionMail,
   turnPart,
 } from "@intx/db/schema";
-import {
-  resolveCredentialRequirement,
-  parseAgentSkills,
-  ProviderMetadata,
-} from "@intx/db";
+import { resolveOneCredential, parseAgentSkills } from "@intx/db";
 import type { DB } from "@intx/db";
 import { evaluateGrants, authorize } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
@@ -251,78 +246,63 @@ export function createInstanceRoutes({
 
       const sources: InferenceSource[] = [];
       for (const req of parsedRequirements) {
-        let resolved;
-        try {
-          resolved = await resolveCredentialRequirement(
-            db,
-            tenant.id,
-            req,
-            creatorPrincipalId,
-            principal.id,
-          );
-        } catch (err) {
-          return c.json(
-            {
-              error: {
-                code: "credential_error",
-                message:
-                  err instanceof Error
-                    ? err.message
-                    : "Credential resolution failed",
-              },
-            },
-            409,
-          );
+        const outcome = await resolveOneCredential(
+          db,
+          tenant.id,
+          req,
+          creatorPrincipalId,
+          principal.id,
+          defaultModel,
+        );
+        if (outcome.ok) {
+          sources.push(outcome.source);
+          continue;
         }
-
-        if (!resolved) {
-          return c.json(
-            {
-              error: {
-                code: "credential_missing",
-                message: `No credential found for provider "${req.providerName}" (source: ${req.source})`,
+        switch (outcome.reason) {
+          case "skipped":
+            // Requirement targets a principal that does not exist
+            // (creator without a creator id, or invoker without a session
+            // principal). Skip silently; the resulting empty sources[]
+            // is surfaced as a `not_launchable` 409 below.
+            continue;
+          case "credential_error":
+            return c.json(
+              {
+                error: { code: "credential_error", message: outcome.message },
               },
-            },
-            409,
-          );
-        }
-
-        const providerRow = await db.query.provider.findFirst({
-          where: eq(provider.id, resolved.providerId),
-        });
-
-        if (!providerRow) {
-          return c.json(
-            {
-              error: {
-                code: "provider_missing",
-                message: `Provider not found for credential "${resolved.id}"`,
+              409,
+            );
+          case "credential_missing":
+            return c.json(
+              {
+                error: {
+                  code: "credential_missing",
+                  message: `No credential found for provider "${outcome.requirement.providerName}" (source: ${outcome.requirement.source})`,
+                },
               },
-            },
-            409,
-          );
-        }
-
-        const metadata = ProviderMetadata(providerRow.metadata ?? {});
-        if (metadata instanceof type.errors) {
-          return c.json(
-            {
-              error: {
-                code: "provider_misconfigured",
-                message: `Provider "${providerRow.name}" metadata is invalid: ${metadata.summary}`,
+              409,
+            );
+          case "provider_missing":
+            return c.json(
+              {
+                error: {
+                  code: "provider_missing",
+                  message: `Provider not found for credential "${outcome.credentialId}"`,
+                },
               },
-            },
-            409,
-          );
+              409,
+            );
+          case "provider_misconfigured":
+            return c.json(
+              {
+                error: {
+                  code: "provider_misconfigured",
+                  message: `Provider "${outcome.providerName}" metadata is invalid: ${outcome.summary}`,
+                },
+              },
+              409,
+            );
         }
-
-        sources.push({
-          id: `${providerRow.plugin}:${defaultModel}`,
-          provider: providerRow.plugin,
-          baseURL: metadata.baseURL,
-          apiKey: resolved.secret,
-          model: defaultModel,
-        });
       }
 
       // The first resolved source becomes the active one. Pre-catalog

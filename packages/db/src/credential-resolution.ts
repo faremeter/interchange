@@ -184,18 +184,124 @@ export async function resolveCredentialRequirement(
 }
 
 /**
+ * Outcome of resolving one credential requirement to an
+ * `InferenceSource`. Callers map `failed` variants to their own
+ * error-handling convention (the API route surfaces 409s; the
+ * background credential pushers log and continue).
+ */
+export type CredentialOutcome =
+  | { ok: true; source: InferenceSource }
+  | {
+      ok: false;
+      reason: "credential_error";
+      requirement: CredentialRequirement;
+      message: string;
+    }
+  | {
+      ok: false;
+      reason: "credential_missing";
+      requirement: CredentialRequirement;
+    }
+  | {
+      ok: false;
+      reason: "skipped";
+      requirement: CredentialRequirement;
+    }
+  | {
+      ok: false;
+      reason: "provider_missing";
+      credentialId: string;
+    }
+  | {
+      ok: false;
+      reason: "provider_misconfigured";
+      providerName: string;
+      summary: string;
+    };
+
+/**
+ * Resolve one credential requirement to an `InferenceSource`, stamping
+ * `defaultModel` as the model identity. Skips silently (`reason:
+ * "skipped"`) when the requirement targets a principal that does not
+ * exist (creator without a creator id, invoker without a session
+ * principal); all other failure modes are surfaced with structured
+ * reasons.
+ */
+export async function resolveOneCredential(
+  db: DB["db"],
+  tenantId: string,
+  req: CredentialRequirement,
+  creatorPrincipalId: string | null,
+  invokerPrincipalId: string | null,
+  defaultModel: string,
+): Promise<CredentialOutcome> {
+  if (req.source === "creator" && !creatorPrincipalId) {
+    return { ok: false, reason: "skipped", requirement: req };
+  }
+  if (req.source === "invoker" && !invokerPrincipalId) {
+    return { ok: false, reason: "skipped", requirement: req };
+  }
+
+  let resolved;
+  try {
+    resolved = await resolveCredentialRequirement(
+      db,
+      tenantId,
+      req,
+      creatorPrincipalId,
+      invokerPrincipalId,
+    );
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      reason: "credential_error",
+      requirement: req,
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+  if (!resolved) {
+    return { ok: false, reason: "credential_missing", requirement: req };
+  }
+
+  const providerRow = await db.query.provider.findFirst({
+    where: eq(provider.id, resolved.providerId),
+  });
+  if (!providerRow) {
+    return { ok: false, reason: "provider_missing", credentialId: resolved.id };
+  }
+
+  const metadata = ProviderMetadata(providerRow.metadata ?? {});
+  if (metadata instanceof type.errors) {
+    return {
+      ok: false,
+      reason: "provider_misconfigured",
+      providerName: providerRow.name,
+      summary: metadata.summary,
+    };
+  }
+
+  return {
+    ok: true,
+    source: {
+      id: `${providerRow.plugin}:${defaultModel}`,
+      provider: providerRow.plugin,
+      baseURL: metadata.baseURL,
+      apiKey: resolved.secret,
+      model: defaultModel,
+    },
+  };
+}
+
+/**
  * Resolve the full `InferenceSource[]` for a single running instance by
  * re-resolving each credential requirement from the agent definition.
  *
- * The model comes from `agentRow.modelConfig.defaultModel` and is stamped
- * onto every resolved source pre-catalog. When the catalog ships, the
- * model will come from the catalog row instead. The synthesized `id` is
- * `${provider}:${model}`, which matches the pre-catalog id-synthesis
- * rule.
- *
- * Returns an empty array if no requirements are defined, the
- * `modelConfig` is missing or invalid, or no credentials could be
- * resolved.
+ * Failure modes (invalid agent definition, malformed `modelConfig`, any
+ * per-credential resolution failure) collapse to an empty array with
+ * structured `db.credentials` log lines. Callers that need to surface
+ * per-credential outcomes to operators should call `resolveOneCredential`
+ * directly — see `packages/hub-api/src/routes/instances.ts` for the
+ * 409-mapping pattern.
  */
 export async function resolveInstanceSources(
   db: DB["db"],
@@ -234,47 +340,32 @@ export async function resolveInstanceSources(
 
   const sources: InferenceSource[] = [];
   for (const req of requirements) {
-    if (req.source === "creator" && !agentRow.creatorPrincipalId) {
+    const outcome = await resolveOneCredential(
+      db,
+      tenantId,
+      req,
+      agentRow.creatorPrincipalId,
+      invokerPrincipalId,
+      defaultModel,
+    );
+    if (outcome.ok) {
+      sources.push(outcome.source);
       continue;
     }
-    if (req.source === "invoker" && !invokerPrincipalId) {
-      continue;
+    switch (outcome.reason) {
+      case "skipped":
+        break;
+      case "credential_error":
+        log.warn`Failed to resolve credential for provider ${outcome.requirement.providerName}: ${outcome.message}`;
+        break;
+      case "credential_missing":
+        break;
+      case "provider_missing":
+        break;
+      case "provider_misconfigured":
+        log.warn`Invalid provider metadata for provider ${outcome.providerName}: ${outcome.summary}`;
+        break;
     }
-
-    let resolved;
-    try {
-      resolved = await resolveCredentialRequirement(
-        db,
-        tenantId,
-        req,
-        agentRow.creatorPrincipalId,
-        invokerPrincipalId,
-      );
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.warn`Failed to resolve credential for provider ${req.providerName}: ${msg}`;
-      continue;
-    }
-    if (!resolved) continue;
-
-    const providerRow = await db.query.provider.findFirst({
-      where: eq(provider.id, resolved.providerId),
-    });
-    if (!providerRow) continue;
-
-    const metadata = ProviderMetadata(providerRow.metadata ?? {});
-    if (metadata instanceof type.errors) {
-      log.warn`Invalid provider metadata for provider ${providerRow.id}: ${metadata.summary}`;
-      continue;
-    }
-
-    sources.push({
-      id: `${providerRow.plugin}:${defaultModel}`,
-      provider: providerRow.plugin,
-      baseURL: metadata.baseURL,
-      apiKey: resolved.secret,
-      model: defaultModel,
-    });
   }
 
   return sources;
