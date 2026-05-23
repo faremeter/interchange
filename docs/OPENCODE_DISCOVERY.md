@@ -16,8 +16,8 @@ against the relay's `chat/completions` surface.
 The capture corpus lives at
 `packages/inference-testing/wire/opencode-zen/`. The
 model-to-capability matrix is authoritatively defined in the
-`SUPPORT_MATRIX` export of `@intx/inference-discovery-catalog`
-(`packages/inference-discovery-catalog/src/support-matrix.ts`).
+`SUPPORT_MATRIX` export of `@intx/inference-discovery/catalog`
+(`packages/inference-discovery/src/catalog/support-matrix.ts`).
 The fixtures are the ground truth: where the docs and the wire
 disagree, the wire wins. This document is the narrative companion
 to those bytes.
@@ -27,9 +27,10 @@ Thirty-three capture directories were committed, spanning text
 multi-turn), reasoning (streaming and non-streaming), and vision
 input. Five models were exercised: `kimi-k2.6`, `glm-5.1`,
 `deepseek-v4-pro`, `qwen3.6-plus`, and `mimo-v2-omni`. Vision input
-was captured for the three models that the registry marks as
-vision-capable; the other two are exercised by the registry guard
-itself, not by an HTTP call. The companion taxonomy document at
+was captured for the three models that `SUPPORT_MATRIX` marks as
+vision-capable; the other two have non-captured outcomes recorded
+for vision-input and the discover CLI filters them out of its run
+set. The companion taxonomy document at
 `docs/INFERENCE.md` (the "Generalized Multimodal Taxonomy" section)
 generalises these observations into the cross-provider abstractions
 that INTR-79 and INTR-80 will consume. This note records facts;
@@ -39,8 +40,8 @@ design decisions belong in the taxonomy document, not here.
 
 The per-(model, capability) behaviors documented below are the
 _narrative_ layer. The _canonical_ representation is the typed
-`SUPPORT_MATRIX` exported from `@intx/inference-discovery-catalog`
-(`packages/inference-discovery-catalog/src/support-matrix.ts`).
+`SUPPORT_MATRIX` exported from `@intx/inference-discovery/catalog`
+(`packages/inference-discovery/src/catalog/support-matrix.ts`).
 Tooling — the discovery rig, INTR-79's compat-replay layer, and any
 future readers — must consume the matrix programmatically, not parse
 this prose. When this document and the matrix disagree, the matrix
@@ -48,11 +49,10 @@ wins.
 
 ## Models in scope
 
-The five models in scope and their per-capability flags as recorded
-in `bin/opencode-discover/models.ts`:
-
-The `SUPPORT_MATRIX` from `@intx/inference-discovery-catalog` carries
-the same data in typed form.
+The five models in scope and the capability classes captured for
+each, derived from the `SUPPORT_MATRIX` export of
+`@intx/inference-discovery/catalog`
+(`packages/inference-discovery/src/catalog/support-matrix.ts`):
 
 | Model             | Vendor         | text | functionCalling | reasoning | vision |
 | ----------------- | -------------- | ---- | --------------- | --------- | ------ |
@@ -63,15 +63,15 @@ the same data in typed form.
 | `mimo-v2-omni`    | Xiaomi MiMo    | yes  | yes             | yes       | yes    |
 
 The `vision: false` entries for `glm-5.1` and `deepseek-v4-pro` are
-deliberate manual overrides on top of the auto-detected probe
-results, recorded in the comment block at the top of
-`bin/opencode-discover/models.ts`. `glm-5.1`'s probe returned HTTP
-200 but with a textual refusal ("Please provide an image so I can
+recorded in `SUPPORT_MATRIX` as deliberate non-captures: `glm-5.1`
+carries `outcome: "refused"` because the model's probe returned
+HTTP 200 with a textual refusal ("Please provide an image so I can
 describe it for you") rather than a real description, and
-`deepseek-v4-pro` returned HTTP 400 `invalid_request_error: unknown
-variant 'image_url'`. Both models are therefore excluded from the
-vision-input capture, and the capability module's early-return guard
-fires before any HTTP request is dispatched.
+`deepseek-v4-pro` carries `outcome: "http-error"` because
+submitting an OpenAI-style multimodal `messages[].content` array
+elicits HTTP 400 `invalid_request_error: unknown variant
+'image_url'`. The discover CLI filters non-captured entries out of
+its run set, so no HTTP request is dispatched for either pair.
 
 ## kimi-k2.6 (Moonshot)
 
@@ -252,13 +252,13 @@ non-streaming responses.
   identifiers (`frank/GLM-5.1` for non-streaming,
   `accounts/fireworks/models/glm-5p1` for streaming). The shape is
   the same, but the upstream-identifier metadata is not.
-- Per `bin/opencode-discover/models.ts`, vision is set to `false`
-  for `glm-5.1` because the model's probe returned an HTTP 200
-  textual refusal rather than describing the image. No vision
-  capture was attempted; the capability module's early-return guard
-  fires before any HTTP request is dispatched. No fixture under
-  `packages/inference-testing/wire/opencode-zen/glm-5.1/` exists for
-  vision-input.
+- The `SUPPORT_MATRIX` entry for `glm-5.1` vision-input carries
+  `outcome: "refused"` because the model's probe returned an HTTP
+  200 textual refusal rather than describing the image. The
+  discover CLI filters non-captured entries out of its run set, so
+  no HTTP request is dispatched. No fixture under
+  `packages/inference-testing/wire/opencode-zen/glm-5.1/` exists
+  for vision-input.
 
 ## deepseek-v4-pro (DeepSeek)
 
@@ -338,8 +338,8 @@ ends with `data: [DONE]\n\ndata: {"choices":[],"cost":"0"}`.
   value-is-non-null will misclassify DeepSeek's reasoning deltas.
 - `usage.prompt_cache_hit_tokens` and `prompt_cache_miss_tokens`
   are DeepSeek-specific fields not part of the OpenAI usage shape.
-- Per `bin/opencode-discover/models.ts`, vision is set to `false`
-  for `deepseek-v4-pro` because submitting an OpenAI-style
+- The `SUPPORT_MATRIX` entry for `deepseek-v4-pro` vision-input
+  carries `outcome: "http-error"` because submitting an OpenAI-style
   multimodal `messages[].content` array elicits an HTTP 400
   `invalid_request_error: "unknown variant 'image_url', expected
 'text'"`. The model's content path validates that user content
@@ -608,9 +608,10 @@ text on the way out, and consumers will not see content-parts
 arrays in the response. Image cost is reported in
 `usage.prompt_tokens_details.image_tokens` (or vendor-specific
 sibling fields). `glm-5.1` and `deepseek-v4-pro` are not
-vision-capable on this relay; the registry guard in
-`bin/opencode-discover/models.ts` prevents the capability module
-from attempting a capture against them.
+vision-capable on this relay; their `SUPPORT_MATRIX` entries for
+vision-input carry non-captured outcomes (`refused` and
+`http-error` respectively) and the discover CLI filters them out
+of its run set, so no capture is attempted against them.
 
 **Authentication is `Authorization: Bearer <key>`.** Every
 captured request carries this header; in the fixtures the value is
