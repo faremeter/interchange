@@ -341,7 +341,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@intx/inference": "workspace:*",
-        "@intx/inference-discovery-catalog": "workspace:*",
+        "@intx/inference-discovery": "workspace:*",
         "@intx/types": "workspace:*",
       },
     },
