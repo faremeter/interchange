@@ -1,0 +1,66 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-opus-4-1-20250805","id":"msg_012ytcntHYFx6iGGPHHTU2vG","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":449,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":5,"service_tier":"standard","inference_geo":"not_available"}}            }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}    }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user is asking about"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the weather in Boston, MA. Let me think through this step by step:\n\n1. I need to check what tools are available - I have a get"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"_weather function\n2. The get_weather function requires a \"location\" parameter\n3. The user has provided \"Boston, MA\" as the location\n4. I have all the required parameters to"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" make the function call\n\nI should call the get_weather function with location=\"Boston, MA\"."}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"Eu0ECmwIDhgCKkBc5ZcO5ayEKgBpaUbZnpI4xOwlldU4UMo+YV1K7JU5iNfEFiebAKd1BjhvM86sFbYHUwszRAQ5llDk3IUEophFMhhjbGF1ZGUtb3B1cy00LTEtMjAyNTA4MDU4AEIIdGhpbmtpbmcSDHcTPdlXsDJCEQZDbhoMiPsvT745jD3BazCGIjDaZbn8+bZcLuoHKNw9xAXHq796CESWfNpC0RSBnCQuLqVb9slClgUFnMopuERutO4qrgPzbykttSxcoei0OSdizPED6L7eGw0V35zADeMSuCPF3V3tipcuQ9G4Hh8qa5L2OTITFjOyq0FgZBKa8w3IF8TxfiF4d2KzTg5hiqA3he6lRvwkSHVgWQ2L5Jqz80dGmREzjh4AKzHZO1OuBZ0WR1GEhm/S0aDlfOeiahIbd3V9Hne3fgyb4plOxC8p4agKSsbMbdzdOWVh0dwBH0j38tnvfwUCJ2dCOv0WTGQiJ79p6URrIOas3oQ/6su+T/jCEnWyXdSCLgb2OYCEHlWJ852Rn3t6Nkpgoc7e2DaXEIqMzX+EuNBDu4Wp52H5kXQvMQ0oMBcpplj3y82LRYPYqgw7p8vlPQA1BI+cNH2fwF5EyAviXlBmUbf2zD234WPty32es/tUzWRKD/9iF1t0Ks2D5YUNOK7mxOZTKlx2e/Bbb42Cd4A7EKk7zdNBKi6CdJCCT2Ye5IYLnric6namx/hawAxAE09Rj86344KCPVEvhgnLafbW1NjiK2KPrwKODsT51mdXbrlFghd3XDxdijN34REf29ZB8Q9hkrluLeOXCRfqkY0jVNJzJ9KpzxM7GAE="}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0  }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"I need to check the current weather for Boston, MA. Let me call"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" the weather function to get this information."}           }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1            }
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_018DVgCh2frmVus5FHNLm5Bf","name":"get_weather","input":{},"caller":{"type":"direct"}}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":""} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"locati"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"on\": \"Bosto"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"n, MA"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\"}"}              }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2        }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":449,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":186}}
+
+event: message_stop
+data: {"type":"message_stop" }
+

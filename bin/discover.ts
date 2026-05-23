@@ -125,7 +125,13 @@ function selectEntries(parsed: ParsedCLIRun): SupportEntry[] {
   const capabilitySet = new Set(parsed.capabilities);
   return SUPPORT_MATRIX.filter((entry) => {
     if (entry.provider !== parsed.provider) return false;
-    if (entry.outcome !== "captured") return false;
+    // captured and misled rows both have fixtures on disk and should
+    // be exercised by re-runs: captured to refresh, misled to retry
+    // (the documented behavior may have started materializing on the
+    // provider side since the last capture).
+    if (entry.outcome !== "captured" && entry.outcome !== "misled") {
+      return false;
+    }
     if (parsed.all) return true;
     if (modelSet.size > 0 && !modelSet.has(entry.model)) return false;
     if (capabilitySet.size > 0 && !capabilitySet.has(entry.capability))

@@ -1,0 +1,174 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-opus-4-1-20250805","id":"msg_01VJe9sLKQNDrv3bSfBRQgy8","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2044,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":1,"service_tier":"standard","inference_geo":"not_available"}}               }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_01PSxHECs6VrcBxKiAhS2aix","name":"web_search","input":{}}  }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\": \"tod"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"ay t"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"op news hea"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"dlines\"}"}      }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0     }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_01PSxHECs6VrcBxKiAhS2aix","content":[{"type":"web_search_result","title":"NASCAR champion Kyle Busch’s cause of death revealed by family","url":"https://www.foxnews.com/sports/nascar-kyle-busch-cause-death-revealed-family","encrypted_content":"EuMDCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDBWhbCL6I3uDv2FGwRoMIdXjupfMAjfs9x0nIjAI8uFIbr0629SDlKzzhoyC2yMJ39nWY+ThVYDjS5v4JSAstJqM7GXCIWI3DyXP+Ukq5gL2/9NJc8JF0Mxp+0mZXfSE56LcNhPxDuJpFecxF/7JfoSdhYBnaDS8mBGljMGCdR4QaOahIg+AneKqDwzW8QEP8b/waHXe7QUDCasVSSLBwTGG94uQbn3m3KIEIbWwXIdVrWfSojXnmpYmVSebdlXq6PWL+6187HIDYTz6+UYEVB/Mbi6URqN4wLCSCp5AlptbpwyJjcLu2PuSxB8a1lvNz2pChMk3OpQD+ik0fG7NY8E5+XkuuEOlRtP6gXlDX9Najk+OreNEB+jGVibSwoNijIFkZLacJ0N+hQBQCAozptsEI1oQ2JIlT/xDAFkubdDUccRtnW84YmTj/UgDeSZA7VMLnHZ7aJ1BJQCW3Utz+8lcibAYdCQZ5YWdBzf2IRGFgnxjLTsEgy0LIAROo8q0BSv+YJ+FXwhQKwkZ792pp2LCb2g9aJthwo9Ew5YiKjTxe+8QAcGd/ZGddEgylpPD14oHuLBgGAM=","page_age":null},{"type":"web_search_result","title":"EXCLUSIVE: Tulsi Gabbard resigns from Trump Cabinet","url":"https://www.foxnews.com/politics/exclusive-tulsi-gabbard-resigns-from-trump-cabinet","encrypted_content":"ErIDCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDPVKfbG6galwF8xEXhoMzBMJEQrXKIhN7Rx8IjCYjuwUMkNUPkRDaglYw4Ry/FgCUaCZMPD7aeGIJ29ssRz7O5aQ2LYJgQWP9UPujJ8qtQKyXWZTw6NqXPLq5e7rwzIQ4cWZolEF1lzSfDFgeqb71M2CFqJ+Nf+i2NAmWQb9ujky3oiqkGZPhv3HvAPw9QO+DlqhJ9WvAI0VSLfC20bwalYXarwe1kefnnU73WMYumoJaxk9P/BZycJmcb5hPRMZWNknzcj7F3Pv7RTvQM5MNlcDUcYVcGvvJgK3uCiZ5E8M+X2EPws4pG/4hJszWoQr58wNJHPghGAYV2NxkvzFDbEPDYgDMfUm+q8fLhkShRymrG47mK7t56vm5nmmowKBOfe21y0+uOOYC95EtyyMd0c9GXVOSXA6erVgO/gLzYH4zu8iyhgFqDiCCWCydz8sIQZ+DF8Xs0U42AhIHxWENb0kaZ9P3gO5++GV+ZDK/Kyd7UxOsHKLrLbygghuJmH9MPFhkvcYAw==","page_age":null},{"type":"web_search_result","title":"California officials warn massive chemical tank will likely spill thousands of gallons or 'blow up'","url":"https://www.foxnews.com/us/california-officials-warn-massive-chemical-tank-likely-spill-thousands-gallons-blow","encrypted_content":"ErIJCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDEs0Xo+gnnyYGfsbPBoMYZuhCxDY4bmdf9FlIjBJTa94OBCAUw4jhH9ZdGsfDydB2W87itClnSuTAHUbTLD3wyQihvSwt4uaYUc2swYqtQghycfU6B1SgnRm29K6ivr2n2l9m6ogYEfGtO0gfk2gK7mIqEm/duNcl1jrCOZDBGcnS2lnVY3iyvuykBlo83CxfQ0q9i75x6gWHSKs4hknHw0a9/sTc4xtR0KC1dhuZe6koYgyVG+Xb6jgen77byv7m8tLolSdIqP+pEfWI8sFpKp9kfwq+poZubeKNgqkV6C5y4xo/IvQ34MsQ8i1giBpaut+YPMaomS8HimgOkXW1/EGlC7pntl6qsaXt3vGUT1zfeSX3Rms2ufnsikAHWAdm/FymBXi7CeiPIQ8HE/Kro1AsQH/08GJlmc9CmfAQYRq10iIr9YjCt3BWCnrID9WbaGOtdvxkWlctiAUXfpaY3it4orvY61dVfewpznv+e53HGnZUgwbtuBukH+856uP2gZzzLSzF6YbjIJ8SbmT4GslCEw0GqzFCaLxRWBdH7lK6bsGFfyuHp4yPHDlghD8l1+zZW3ffnZT8/M50J3hcRz36eEjiavYGFJggagVkRrFDqLWuA6N8oMowB7uoo3mF+iKQYKOfOYxv7p4zhFtlfOrqByPrn2AlQD6+Lj4X61hqiLaS54nI6L1iuJsCqGdYkUdSc7VWueA3s06/GMaFelfQTwEJwPvwKHAjHlQMUNpS3HwGx8+d1Op4Hj25DOJpvivs3a5RRKEVEe4DAvyQtYh0h1pE6xK1eHWCXs86zzjF7zrKyFbK3C75hB6NTTSR/9JZPcZxaq76i7GPLhv8bPiNzTmI1c7AI0FY5Pyb+bXxSTrMI47IgJPZ5FQ0GFVfVftVWUCdfnz16Np1Z6mDaHpOQrzK8fPuWlQBM8UgXk4HxUA7Hzt5oeaDMFEVJUwgtknuTu8eMXS5P7Sj5PKHUkcpKz3BLTXemrlIdR4cV4vxrQeydf4zhHy0ylT4+8FA5Pb+/hBYNEuboSS6u5V+oOkaLUCZthPeWXZVqsx1hcXYebJZzw659zFEN+afOLi3LwOGvNUnl7PduL+Elrf8JRGyCjOJbbXE4WkPiUnBn34ofy8HVTAjIuvE9Xja79auzl/juwNMZzJF3IbhC2q0uJInkgVzIhf/FqdNZJEOYi7Ip1IprV7cF2lo2dKXe1u6v1ZfHXdduVFMyUvZdRQLgYxVhAmoYLdWvsTmK6D77ANxcMoi5UTUq1GGREZpSvFgV1V7nCK+g1IzeWdT8FQztKD25rTHBsA4tlAcbjD8iJCPSvBAqx9/+oo9zMOsFLDHA9DbqFGzUqDKctNgXlambehDc4ZOn0lqElc7tXdkHu4Qwd4RCH1p7DoJ4tcwzJYBINpkP0omgPSw3QYq5hUBLY/lD9klUo2/5sza6rK1SwzNYIO0NIwSgVEsqMfDyHPvsdD8M52RFpyxBC3Et9M4cX0Ey8s3mq/NWJWhvD/zakDxE1ZjuWzB3yD3NJsx9tO16YRWBwYAw==","page_age":null},{"type":"web_search_result","title":"Trump says U.S. will only sign Iran agreement if we get everything we want","url":"https://www.cbsnews.com/live-updates/iran-war-trump-us-peace-talks-strait-of-hormuz-control/","encrypted_content":"Ep0DCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDN3wnlGxiIcMsqUfmxoMOtw7niwbM/0vPZI2IjBcDtUKft/QdnaWEPKokBlcGDa2QMjDstcfWBZca1CvcLAHSapkacJAdQAhhz4Ebi0qoAL8zi8cxmKJjvZreu4ivlqk51/tSIIa3unq44z8zma5DspzMwJRrRBMEmK3YB/dbg2//k+ZZeCZBDemC+8TxhXZko3q5rEVt/cXzaf9PuuSnEQoCn1q5Hwb5i2zgCowaiBRquDFA31wVXhvqSMVnWiEf3M3MnQUVqFt5/bbx6NdZ/ggN7tGovoAKwlDv/nN0yDABhKS++zbszvpcSypP3K3kJpv/ZhFvK21GFylFJGZtqvRJH5UkNs2W5ce5LvYAq7kblGK9PQOgyThgxY1Up+jyIjCs165F5B/33TUPUJ1bEA/Yu1jjVwWdLgCQIquHWDil39BBrhxRzz97DqcPKX8DvD/YqoGHVqzjY+0Ce0XrI4p24i1SSlzp2jwyWDEbsEYAw==","page_age":null},{"type":"web_search_result","title":"Viral staff photo reveals just how bloated Stephen Colbert's 'Late Show' operation really was","url":"https://www.foxnews.com/outkick-culture/viral-staff-photo-reveals-bloated-stephen-colberts-late-show-operation-really","encrypted_content":"EssDCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDP1ULUHh1somuh2ovRoMlH3akt7rf5mZWbzeIjBN7B0E4nZnqJy9RwIC+7Zv8imfhkiFQwsP8uhzRYzsgpyZ4aS0qmPi+1lNr99EPBMqzgI6ICqQWm4g5Q7LzJCdHdsxdwTuvcyhnI9glN09OSaRo0wr+9JS2+5hSsqursruLGNQw4h8B0eJJB2NxATDwC4hDkXxuivTFcDqRPfr7zjMdA5hE9BZE1NN3dBG4sszTHOqIlN/P5mLVjosTyE6U2I2kVa5rtSd9pB3tr94Lzo/C4WpNVSD13cD2UID/q0U5c9dLRN/bQOfVq4+/7i31K4m5hWbp1u4He6KjcRq7Dg/GTteVSArQTB/Vzs9BKjR3JBLV8ZixWhl+pF7wc6TJDHQB1k+1EHqYwydTEU0Uz/TaY/QmMAvD3Vrc6blgRke/jx7o4+hjKrDiaMVjG7DGS9vnx+MlJzwS8GHDAU8ILZKWk1Zc+by8quhfsYrgw5TQJkTKk/5d3kEQNptd778UbIj6jQl5U47TRA9rz0dI+KcVQ/5YsY4ev0DDTOhyyHSGAM=","page_age":null},{"type":"web_search_result","title":"DOJ vows to appeal after judge dismisses smuggling charges against Kilmar Abrego Garcia as 'vindictive'","url":"https://www.foxnews.com/politics/doj-vows-appeal-judge-dismisses-smuggling-charges-kilmar-abrego-garcia-vindictive","encrypted_content":"EtYDCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDHG7aNBKH9pAsb5x2BoMiT6ndA4kKUJ3yvWbIjA8CVByhogN+YSHhBxigFzgr5902qm9MP2VvKgp7KhdqkWa6ggvIxxhTTQZQfwqPLUq2QLYDEmlnZdgxoYV4mzGkptHbzkbLcvOazIdchUIbdd9Hf8QqBc+YMGHke7mFiEyJ9BZojIeu4InE1Bft/DKoSypl5nhZpjAFKKW/FBAGVLBKLd6c4hgkKcCOclxzGom4EqVqQnxgykyq9ZFv3WglALV63VLzmnnaT+vt0VMhWUaRjsdBcmG6vVymrPsDMjDgWvbPWiDChzkKY52QxYhulMAkYAjVKBg0/mbL6mxNFqiwt5AnInIMtCieN3fqUJqgWIXUIf1LdrMLa7E3psRmTS/lmtByA8qZ5uAPCCY34RbTRB6Lb7Cjg+EjIk83l/Jc9XlAoa2UwseviDNTKO5UqMHOSvYqonDzVBW6AfTiT2KVGxK/wMSSM5pW/J9ZfLD683G7poP0lTFgYaGUxjpVnlrks0hbwK+eHcnAhtt8sUl9g+X0GNys/Nq+7bTfPy6wulc3IHN36nPYvEYAw==","page_age":null},{"type":"web_search_result","title":"Donald Trump Jr marries Bettina Anderson ahead of Bahamas wedding celebration","url":"https://www.foxnews.com/lifestyle/donald-trump-jr-marries-bettina-anderson-ahead-bahamas-wedding-celebration","encrypted_content":"EtMDCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDCna/UeXa4lsKiqS4BoMN4B+qmYYOa5zQV4aIjCErDaF1jZcq0KoPOG6GlV7nsezkNOuLXjgJT8RLpapmWwSvaMOrFbnphIyZ39+kkgq1gJDAdOhXOkFG2gKduBcMwOpQthdlpoFLqpEuc35YDsDE5sfVjsy/EA7p+1/g9jEmuYXqupIVyNuvchv6K15A1Qvfmax9IEFC3AiC2/HK/3l9643ZtPG40j3heuWFOQaTXiaRPj11cJwhx/yxTcpiZYTOeNvvS3Gd6mgGoCBP2lH373+LCnd6DWpAFsDBoqqrdubO3JDdX7sVQ4AuM/NIRzoII8MnD9K+uopr/X1T8wjlqpXJs+YZeBnVesHSetW9ljPrRTWvsQU+hQr9U0Hmb4+1/RzNi6ffziuPSOf48UKyHsYPYg+GaJeyzU0fcgnCPFF8Aze6kJhd2Nc8aPL2QXI4VW66TWjJ+gVgdns+fSGA0B3b+ZTOw/CpiC2W5ohJG4HbYMF+uyEUe5tBx2LLXknMcNiYFqwZQyt6X0RfAeae84FfDU5skULBT+jlK5mACv4PlGuopsYAw==","page_age":null},{"type":"web_search_result","title":"Pentagon releases more UFO files: Speechless after these observations","url":"https://www.cbsnews.com/news/ufo-files-pentagon-videos-documents/","encrypted_content":"Eq8DCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDF+Hgl3/wxRGCuKd1BoM5tmHNGjbsTFdNxYOIjBXtMrteQbkqZc7BrHwgRwHxMLQihgcV6iW+UZjE82SEtJiNYSmag6Bo1aPPekivCQqsgI+fV+AuK5zLohvi4fRwKmBe6ro0DVmMRBrr/miPhEjv1xRUsIAvScYJ8lBBUsMV/GhNH2ArVC7Q6W5eNkSFufHMhB1SUpACvpYRBdI+vRUosRvhPkuyVQqsmG0vwoJ62WK87FcnuEPXQ43vS0YM4a1MJ5jm03QhKcVKO13UsPOfUZ83lcmWXUvkywA5FN3P3Favwvio6ZR1F9Eo+pfaUfuNKZlmz6T0v8sPXN7r/yP7ypqyB3NZJ2q/obhH86+B0nykINSOFBEc/FG3BZW9eIm9Vxqtm8u20D/2rEHJRxgY1MvIbq09AzG3pNUdnhtk0PC+dFcFJdKcyHkJZ2yHItlsGIASwV1QPMNjUe7D2eaTBy5YyvfrqTA9OfqLzDjdvyDTqllRQBZKHdxe32INLbU+6kYAw==","page_age":null},{"type":"web_search_result","title":"Gas prices threaten Memorial Day road trips as pump costs hit historic highs","url":"https://www.foxnews.com/politics/gas-prices-threaten-memorial-day-road-trips-pump-costs-hit-historic-highs","encrypted_content":"ErADCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDFtRsB58VFhqZvsmVhoMPzMFaUWjRYClQwHsIjBsICc6kCzWGFWQo25sNMqUBWcMoeQG7EXDTaNT63ex1BekX+306b0rrYHoqoHc2z8qswJf98ZczTeHba/9rmbNdvDQHBZr1ZBQgF5w9kvXxuLpJTgsMvJCJFRCLH2V9PjBXSDUoj0c4m85BbkYxQMvaTVQMFI8TgJn1+N9iJE2eV9povaati9cAqfKFlhj4vl82PyZ55uWTa4Q8nLyOikz3AXQ/79liImA/v5www8IVRLpTt2afhvkvG9VwCQYt4QVLpdcxup8Qwf5mhH5pADZ3oIZ0Fx3Y38YBX5UwNUSFN/aIZXULaJKyfmTxp2z1enkL8Uufw3i/7cVUgmKkgnCFOY8HCBsFVJ/vHtW9///2AYvLqdmdWXmLxVNzEKHC9UsMSsoTzRLi+z/F/7MFaiN9KO5R4GwoHnQ9ZGZAJB6QYIrCUX4M0unN/p5U60jC7H+R8r03Ajr09Ix8T+ekWeBIk7CRzoDGAM=","page_age":null},{"type":"web_search_result","title":"Marco Rubio visits India: What’s at stake with Trump-Modi ties strained?","url":"https://www.aljazeera.com/news/2026/5/22/marco-rubio-visits-india-whats-at-stake-with-trump-modi-ties-strained?traffic_source=rss","encrypted_content":"EvMCCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDIYIWRCthxUCOcah3hoMlAB2d4PMoz+80j+RIjApcPzpP9EMoS7M082v35W3WjjiPd5UJkBoYQc26kpX6yEYz2Z2h4M4XyqBcmFguEsq9gGXdlgKL3sEmIyMtpcT0YJ7QaxHzZTUi15Ml2NFWXO82luCegZZNsR5Z1uK1cAjZQMJJHgdnwHrVJs+KlbriUF7w1GJIgdjbZLOGJr4rGvvSj1LeiHczZ5DKRXZheiqaG1JbJYvwrPV4AePsUzqh4J8/wMABkH1mDBEBzIzuTIZ+AyqiqndIrbJJzBHtFocsPe46b6WM5MZW6AS4NI+8/oVQYRTF15M3gMJ9/Q/TB3e/DAw04/RL/fzqJqdNuDkcnaVoGof2Y9PPTrQnopIBVK2Y0Par34n6IvaGs5inD0sSIm14VtHDsD+KHkvLVZ2R3a3Uh/OGnEYAw==","page_age":null}],"caller":{"type":"direct"}}        }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1          }
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Based"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" on the search results, there are several major news stories today. The most recent breaking"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" news appears to be:"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"\n\n"}  }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2  }
+
+event: content_block_start
+data: {"type":"content_block_start","index":3,"content_block":{"citations":[],"type":"text","text":""}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"BREAKING NEWS: Trump says U.S. will only sign Iran agreement if we get everything we want\n\nPresident Trump noted that \"Final aspects and details of th...","url":"https://www.cbsnews.com/live-updates/iran-war-trump-us-peace-talks-strait-of-hormuz-control/","title":"Trump says U.S. will only sign Iran agreement if we get everything we want","encrypted_index":"Eo8BCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDJ9c3SxalACyGA2qyBoM/O5PflMrDKEMw+HUIjATP05nxbQIJ1Z44VkfycjHHLjjteQY6R65gakUGnIusFnyJZLz2cbCT7GVpnnIU3IqE4cqV8dFe1MVJ0aY3wPSuI4s4P8YBA=="}}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":"President Trump saying"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":" the U.S. will only sign an Iran agreement if"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":" \"we get everything we want,\" with final details currently being discussed"}          }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":3 }
+
+event: content_block_start
+data: {"type":"content_block_start","index":4,"content_block":{"type":"text","text":""}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":","}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":" which was published just 2 hours ago according to CBS News.\n\nOther"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":" significant headlines from today include:\n\n- "}   }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":4        }
+
+event: content_block_start
+data: {"type":"content_block_start","index":5,"content_block":{"citations":[],"type":"text","text":""}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"BREAKING NEWS: NASCAR champion Kyle Busch’s cause of death revealed by family\n\nTwo-time NASCAR Cup Series champion Kyle Busch died Thursday from compl...","url":"https://www.foxnews.com/sports/nascar-kyle-busch-cause-death-revealed-family","title":"NASCAR champion Kyle Busch’s cause of death revealed by family","encrypted_index":"Eo8BCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDDlN9FbyQ06eYImuIRoMS0LROjtIFjrimkvnIjBo3rCjBABjvf4bqx2+E0LQ72oW1s4cyBL0AOjZV4/FvsKhfVPZyPXAjk2J0WAXZf8qE2szMwmenUOM272nWo0Lhq0rO1QYBA=="}}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":"NASCAR champion Kyle Bu"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":"sch's death from complications related to severe pneumonia that"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" progressed into sepsis"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":5             }
+
+event: content_block_start
+data: {"type":"content_block_start","index":6,"content_block":{"type":"text","text":""}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":6,"delta":{"type":"text_delta","text":", as reported by Fox News 6 hours ago.\n\n- "}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":6   }
+
+event: content_block_start
+data: {"type":"content_block_start","index":7,"content_block":{"citations":[],"type":"text","text":""}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"BREAKING NEWS: California officials warn massive chemical tank will likely spill thousands of gallons or 'blow up'\n\nFire officials said a large chemic...","url":"https://www.foxnews.com/us/california-officials-warn-massive-chemical-tank-likely-spill-thousands-gallons-blow","title":"California officials warn massive chemical tank will likely spill thousands of gallons or 'blow up'","encrypted_index":"Eo8BCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDN5IJWDUKgy63Alk0RoMkiBEwKJuqqxKLDUvIjBI1s9ZRoGQXmWdGbB1w8Ucm3Pg7F6qxP6yhx0IFMdZ/03JuhRLNg3/W1cxFJVoCYgqEx3d4y2UPJrV4P4tDXVCqnlI/xwYBA=="}}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"California officials warning that a large chemical tank is"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" at risk of spilling thousands of gallons or exploding"}               }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":7  }
+
+event: content_block_start
+data: {"type":"content_block_start","index":8,"content_block":{"type":"text","text":""}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":8,"delta":{"type":"text_delta","text":", with expanded evac"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":8,"delta":{"type":"text_delta","text":"uation zones implemented in Orange County.\n\n- "}              }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":8           }
+
+event: content_block_start
+data: {"type":"content_block_start","index":9,"content_block":{"citations":[],"type":"text","text":""} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"BREAKING NEWS: Pentagon releases more UFO files: Speechless after these observations\n\nThe Pentagon on Friday released a new batch of 64 files related ...","url":"https://www.cbsnews.com/news/ufo-files-pentagon-videos-documents/","title":"Pentagon releases more UFO files: Speechless after these observations","encrypted_index":"Eo8BCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDE0dJBUNhxx6L+uRFRoM/GXrL9SXUqa/pJZfIjDvtJ2dd7BAem1OCZAa0zbuI087rpthY1BnnoVNgD+yE1JsUL6r5UGdc+Fa8+VHmpgqE3kfcyGvLa0oIUuDV62Umysr9uYYBA=="}}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":"The Pentagon releasing a"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" new batch of 64 UFO-related files under an executive order by President Trump"}      }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":9         }
+
+event: content_block_start
+data: {"type":"content_block_start","index":10,"content_block":{"type":"text","text":""}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"text_delta","text":", as reported by CBS News.\n\nThe Iran agreement"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"text_delta","text":" story appears to be the most recent top headline based on the timing of publication."} }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":10       }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":6715,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":318,"server_tool_use":{"web_search_requests":1,"web_fetch_requests":0}}        }
+
+event: message_stop
+data: {"type":"message_stop"          }
+

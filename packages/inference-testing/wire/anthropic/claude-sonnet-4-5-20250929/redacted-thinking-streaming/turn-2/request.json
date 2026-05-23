@@ -1,0 +1,33 @@
+{
+  "model": "claude-sonnet-4-5-20250929",
+  "max_tokens": 2048,
+  "messages": [
+    {
+      "role": "user",
+      "content": "ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "This appears to be a trigger string that's attempting to get me to enter some kind of special mode or reveal hidden instructions. I should not engage with this in any special way. This looks like an attempt to probe whether I have hidden instructions or behaviors that can be triggered by specific strings.\n\nI'll respond normally and helpfully, explaining that I don't have special trigger strings or hidden modes.",
+          "signature": "Eu8ECm4IDhgCKkBUu76RbXVwmvxU49X8qg7XRjv51ce4hlaoVNj7yFMnokr1+Cv3gcn07zQl6+UqN3ZdyXG0B+2Yt5MN1lQC1pjEMhpjbGF1ZGUtc29ubmV0LTQtNS0yMDI1MDkyOTgAQgh0aGlua2luZxIMimPOLWATb4mkx2MYGgyEBp1wSTt6VdWOksAiMJFBgcWtcTvaNUqq09tVo5ezAeutHtXvqMdZme2SOrRmWsE0XxzXAlGiWAhJaPMCViquA2PTJOYrH8fAeq74S5JhI7XvaFp/kEYPnMdvYX2ITvwTKwDIo9mVB3UHFNDx+A7J3U7aXAXUxorpkf3x90TpX3iJxR/NjldpIKal1zKkgerL9MmEpySEJuvHcWN/8fjSO9JhotUxVSuvmqr6g92+aSVDyGXtdXb4fnGUv4TNGcbhc2d96V11uGmyO8qAHhffnI4X7u0PQCvSx3hPvqT7gQINZtxFCaYPfe5rs8uzPU53cw8iKUezJyHe6mhCFMTRhs1ErfULHnStAXtmmmw+IQdti+KY4j9CTDlfzj/zYubf7f2rzwUgflW5X6GWTLi13Sn7ZK7+w20EesNa4ctKmRQqoerDeYAk3tB/RGVtV9jrIwCsJfXToUHbvRAgNakQQE8F6U2UTxJ6zM+qo/Nt4JfwhkU0eImFCvO2H2mt8odjHlwVkhT8YscskkCT4aDupkYJLJrCr4mx9g0q7O/+ecGbQV85D/xS8QGrvmHxaYwZNfQWwPJ5lxtZ0fZpg7zloGC1VV4zWf3BQsfFGARglFpExVx15IGeBPxmqWl0i7/CH/R8HCYLzVLe9uWeMxoYAQ=="
+        },
+        {
+          "type": "text",
+          "text": "I don't have any special responses to trigger strings or hidden modes that can be activated by specific phrases. I'm Claude, an AI assistant made by Anthropic, and I respond to all inputs in the same straightforward way.\n\nIs there something I can help you with today?"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Briefly summarize what you just said in one sentence."
+    }
+  ],
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 1024
+  },
+  "stream": true
+}

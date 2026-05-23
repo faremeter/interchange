@@ -1,0 +1,10 @@
+{
+  "model": "claude-haiku-4-5-20251001",
+  "max_tokens": 512,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with a single sentence: the capital of France is Paris."
+    }
+  ]
+}

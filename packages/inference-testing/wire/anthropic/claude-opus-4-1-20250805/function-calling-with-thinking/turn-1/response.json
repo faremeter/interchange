@@ -1,0 +1,43 @@
+{
+  "model": "claude-opus-4-1-20250805",
+  "id": "msg_01SZc4RXU1KRkzw3d2LaVWkE",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "The user is asking for the weather in Boston, MA. I have access to a weather tool called `get_weather` that takes a location parameter. The user has provided the location as \"Boston, MA\" which matches exactly what the function expects. I should call this function with the location parameter set to \"Boston, MA\".",
+      "signature": "EocECmwIDhgCKkD/BjF5RJ5plzj+AeUwENItrt9iRAG0DKuMhYXASSclj782TfuslwqOX5ilHlgKbiG8UND7D1FyCVhLn1jzp4eVMhhjbGF1ZGUtb3B1cy00LTEtMjAyNTA4MDU4AEIIdGhpbmtpbmcSDJfqY7+p7h+l6yl9wRoMWNJcw3ggPWkpb8/TIjApLT3VZQ5lOH7KnXVl1kgp6b7mIZrSDmnBx2oFfgQR85yt/FUVryTZp7ZvIzVE8hMqyAI6EYky8LQ6Y5lUBY8g8f42hgG/gUhrsNmdhVyV11fuMCxXAWPq4bqSlYom9EOR/KRcBKqVNfLpy8BLY6tWHDdgnwbWpg6nLVdm2VZ+Kv9i7BXz/dZS1LpCrJxp01tbd6gZkd1i58iYnw58g6l9VUdjiSreO5FKspIf2ZEVNgLFFFFilguEAGQ6+rPto6Y70jUmc0bjdq3v+lfjOREOfboPKP/lseDN/1AiP7NTW1RyGPMmllwUCrUKJPISjU2EmO/8/nTEvx7vv3+HPU5DHYQhO3cGcgkmoN5JM0nKG1ZiXj3tnpCfEr/yNOzOc1TL/XNQCEOu6eAOKgI8a6pJDOmxPZ3o9QdiiKWc3Fntu2NbWyJY+VYCkSuuMBLDZiafqKVuV0fAsIAOKeKidbem+abLhRU0zulN8lvlLUPoUiJj1k8dD0gJ8H9tGAE="
+    },
+    {
+      "type": "text",
+      "text": "I need to look up the current weather for Boston, MA. Let me call the weather function for you."
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_0176Jk2dfjgtJhBJmGsb1Kqa",
+      "name": "get_weather",
+      "input": {
+        "location": "Boston, MA"
+      },
+      "caller": {
+        "type": "direct"
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 449,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 153,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  }
+}

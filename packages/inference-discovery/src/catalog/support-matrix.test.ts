@@ -59,10 +59,21 @@ describe("getFixtureDir", () => {
     );
   });
 
-  test("returns null for a non-captured entry", () => {
-    const nonCaptured = SUPPORT_MATRIX.find((e) => e.outcome !== "captured");
-    expect(nonCaptured).toBeDefined();
-    if (nonCaptured === undefined) return;
-    expect(getFixtureDir(nonCaptured)).toBeNull();
+  test("returns a wire-relative path for a misled entry", () => {
+    const misled = SUPPORT_MATRIX.find((e) => e.outcome === "misled");
+    if (misled === undefined) return;
+    const dir = getFixtureDir(misled);
+    expect(dir).toBe(
+      `packages/inference-testing/wire/${misled.provider}/${misled.model}/${misled.capability}`,
+    );
+  });
+
+  test("returns null for an entry without a fixture", () => {
+    const noFixture = SUPPORT_MATRIX.find(
+      (e) => e.outcome !== "captured" && e.outcome !== "misled",
+    );
+    expect(noFixture).toBeDefined();
+    if (noFixture === undefined) return;
+    expect(getFixtureDir(noFixture)).toBeNull();
   });
 });

@@ -1,0 +1,7 @@
+{
+  "provider": "anthropic",
+  "model": "claude-opus-4-1-20250805",
+  "capability": "reasoning-content-streaming",
+  "capturedAt": "2026-05-23T20:57:46.301Z",
+  "schemaVersion": "1"
+}

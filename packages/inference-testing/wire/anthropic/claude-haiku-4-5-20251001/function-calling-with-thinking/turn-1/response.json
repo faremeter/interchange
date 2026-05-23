@@ -1,0 +1,43 @@
+{
+  "model": "claude-haiku-4-5-20251001",
+  "id": "msg_01HA9FE7qQzontYsG4WdmxLT",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "The user is asking about the weather in Boston, MA. Let me think through this step by step:\n\n1. The user wants to know the current weather in a specific location: Boston, MA\n2. I have a tool available called \"get_weather\" that takes a location parameter\n3. The user has provided the location clearly: \"Boston, MA\"\n4. This is exactly what the tool is designed for\n\nSo I should call the get_weather function with the location parameter set to \"Boston, MA\".",
+      "signature": "EpYFCm0IDhgCKkDz6b9hjp+OXPMBXNYF4hVR33gdVMMXVPn0x+uJ8dltxlejN7FeBgCAiJn3wV+Eq9OSP0fHTOkKWR4fY0ev5jU1MhljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxOABCCHRoaW5raW5nEgw3NCI5iH991abJoHcaDKcsrDkmzyd/YehVTyIw9G68XL7N5y7GlP3TijN9SkPUSsqUjiwPSE/IypWoj4rzkTyh/8Bo03LWI2FkP70NKtYDMs2ZDXewJw7ZlqUxDje73Y1Zs4BI9rZ1Fb3lzkm1BeBMjq9XyyIgF0WL9OlVRz+V4rwMrhL8+b9yrl6x3YjEQg8nyxmLhWXKlIP2XUbkAwl8TTihN6NYOsnTVUlVr3gSys5CvjLgChAlUlH9vTelxOwavomGQZBdECNGvbEZN2W6OuRMnh+PW5SB8RPwTQA6bf4oj8ZgbSej2snCu5D3cYGCg6gqTSH8+fzafml9nYAuo60YPalU14+Bg7nNpaUsb3mBfki2faFzcH/C3VWUYTLJ+EBshhu5FoeXioscF8zPEjwX8qFol5lWmaa6YxHnGq6iQ9sNb+AA53aKdjjqmMC774j0L2LY2jdtgjy1aUC8EiVgtyDIHODXX7inpNwXtaGfeLTdUGK9oIUsTFp8HsQO+faDLP4705Ih8FyOI0KQtrIUjQheJpq7EGOoXjXOhLzY4x24i268s2gt6aIhhBPgJnAn+4FKIof6bC+qZqKwPsEp6BVly2i3S5iHOiP6cCVJeM4HmV+O2Z9Sqh7RbzqGH+wjSAX7G3l4+1uFfNQSpxFSKdgFZPRReG8Im02zbNfAjW/CwYm8wH6nFZPp+c9fKFxc3jyWFbfpkXQE4LbLNfzQgIcYAQ=="
+    },
+    {
+      "type": "text",
+      "text": "Let me think through this step by step:\n\n1. The user is asking for weather information for a specific location\n2. I have a tool available called `get_weather` that can look up current weather\n3. The user has provided the location: Boston, MA\n4. I have all the required parameters to make this call\n\nNow I'll call the weather tool:"
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_01CpMCe11K7n96Uh5xFs8vYG",
+      "name": "get_weather",
+      "input": {
+        "location": "Boston, MA"
+      },
+      "caller": {
+        "type": "direct"
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 632,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 250,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  }
+}

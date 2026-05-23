@@ -1,0 +1,75 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_01YAfvebQTt2xoBYEGKNHcss","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":632,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":5,"service_tier":"standard","inference_geo":"not_available"}}            }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}              }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user is asking for"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the weather in Boston, MA. Let me think through this step by step:\n\n1. The user is asking about the weather in a specific location (Boston, MA)"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n2. I have access to a `get_weather` function that takes a location parameter\n3. The location parameter is described as \"City and optional region, e.g. 'Boston, MA"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"'.\"\n4. The user has provided exactly this format: \"Boston, MA\"\n5. This is a straightforward request that matches"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the function's purpose\n\nSo I should call the `get_weather` function with location=\"Boston, MA\"."}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EugFCm0IDhgCKkCJGyAcN2g0kg2LE91r7aU88zf+wSt2849rm9HWht/hOHMTRdCeOuf9dzzpVEVnBI0DFkFOVwdRdg8oWdGoAVFZMhljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxOABCCHRoaW5raW5nEgyEPx7zcYBHzJQZujEaDIMDTG6wwXayJmHGkyIwJsCr+pUHF6AgnV+RMCziTslcYemA5z1Mq5BseeuZROhDvTIqe5A1OIs0BylMVyjJKqgEhKlFFHU6ZJCAVbGaQz5ew4rck+iHxM79QPbr+H3k/iqGns9F1p7n6VtulXw2kC49O9Yi+wSUOSIm0ZGArK5LoGT8o4cor3n/DjoDExC/qB/9WOH7VXKdoIe2Jr+ERdXZVYEgIgdpc+O2QQgjSNYTD3NegOK1t2xVyhebBWVCfsm302m86X8nt6pUZIb42ggF+FJ/QQ0Nr/CYakx7OTca2xB/MEc6km3GTX/MIWzhtwa9WDTET0HiI3JRQWbcc3vh3JHx4g1ryUcpJdQM4pSukRKCSSG2sivGHUV2L1hVu6mO9S4Q1nNYHhz40DNKSJzhgzvMKXxbty/0BjndDHJ1Kvy5mYOCTpGjeINtj3ERrMiXdK0R4dAZrqcZF/DdZj/pBTGay6HCi8e4PmViWCg7MFTUaYhimi4VzSN1OIZpm0Ykg/I/lceEVsuylRudv43MCn949wfc/rDThCg9/LYNAkCgGqTqzjl5bGbW2QZ+ZcMTM+25ODZdaf6SXhKzcYKsqXTYIla7pVbtZQt9p0vf1cX/CTM5XpJTNtwxklA79Mt5R898UL1B5AWrtHHTaZjfT/1V09mgDCwSkaQoc5p5ShIqStzboMYAR6W8WOwcwZHWBUfxXJ1J8leoM+wfYbYjIf+8F3CDxUyJVghe3rgx02XEvWWdSyJiuWUd6TKfJhik8uQO92K1Q+H+XPzPcj8ElOd/6zZWkv/ZCBvxWsHSNKn+BwmijO5bGAE="}  }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0          }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Let me think through this step by step:"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n\n1. The user is asking for the current weather in a specific location: Boston, MA\n2. I have a `get_weather` tool available"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" that takes a location parameter\n3. The user has provided the location in the exact format the tool expects: \"City and optional region\"\n4. I have all"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" the required information to make this function call\n\nNow I'll call the tool:"}           }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1  }
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_01JHcMuHByMpAi2dZ5sZrivN","name":"get_weather","input":{},"caller":{"type":"direct"}}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":""}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"locatio"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"n\": \"Bost"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"on, MA"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\"}"} }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2    }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":632,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":290}               }
+
+event: message_stop
+data: {"type":"message_stop"    }
+

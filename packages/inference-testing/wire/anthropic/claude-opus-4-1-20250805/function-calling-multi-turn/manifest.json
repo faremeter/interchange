@@ -1,0 +1,7 @@
+{
+  "provider": "anthropic",
+  "model": "claude-opus-4-1-20250805",
+  "capability": "function-calling-multi-turn",
+  "capturedAt": "2026-05-23T20:56:25.320Z",
+  "schemaVersion": "1"
+}

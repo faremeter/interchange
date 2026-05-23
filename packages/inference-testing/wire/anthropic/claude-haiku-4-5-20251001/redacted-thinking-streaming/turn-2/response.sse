@@ -1,0 +1,51 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_01FKuJ6owrgtTfNniW535HmP","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":218,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":2,"service_tier":"standard","inference_geo":"not_available"}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}          }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" is asking me to summarize my previous response in one sentence. This is a straightforward request. I should provide a concise summary of what I said, which"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" was that there are no magic strings or hidden triggers that can unlock special behaviors in me.\n\nA good one-sentence summary would be something like: \"There are no magic strings or hidden commands"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" that activate special modes in me—I work the same way regardless of what you input"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":".\"\n\nOr more simply: \"No magic strings can trigger hidden behaviors in me;"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" I function consistently regardless of the input.\""}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EokGCm0IDhgCKkAHpfRdc1Gn71qIz1cA6/3keqW3kDHy/3RNJF+6yEaL0ovsknBzFbE9GKpsrEZ/GKjqPfhOJ97aHlTnZWGft5fsMhljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxOABCCHRoaW5raW5nEgzXANv0mWzuspu5d6MaDFd1ZI8ayqTmm+uCyCIw7iFF4tkpvtp28Kf0FZSVUrAkBqtraOpQw/lBlZTdyIrgpwIEjPKE59155OgnwI/jKskEb1zm2d3m9BfoMGFmNtZq8h6Ds3RBAWWoyKV37niDZnSJrkJW7E4USfLvYqw+mPBeKjX3sDrmdDnsRI/oU3MtS3n3GWbhBz7XFBpqrw5ABfNa40qixx7LI+R+ShHLq7kIAKc9QzcXrI3baAtFNOn5LIRQ0SINHocdqHlr3D31E109P8Y+2YcYn9Ap9y7R1PM48MOVNnGXg48afJjwWoZfO0NW+NDxMeAeDaQc+9EPWAARDZMPlZFQaE0CI3tBpag2hWMypsD2HRoiQ0o4bY0sY44Ioga8ndhuGg52QN/KwzWoItYD2WOKs1yuYoLj5CBa/2h2cYzsHfu7DtgJ8sgb0WQzNjflBrOsJdBeSxF1obSx78aeQ5VQcEOlwB16PFKDa5du0A6uPkIoTyyljKo/uNdAnQrNr+u4L9lZcMJFHxs8OirUNAUuhYZJYkW77/2gFBt/EOcsIsUhgzixAVLJguSkqTKaMFrPNyRwskpDgpQa7ndMCwybV4MK0tB1mL91hGRyXjiEz7W4P5dvwh1OcVo4Rc5lX2nbzvEMli56gQd4dfWc8vrS4bnZJPhysRXnQybQkYGJ2xyL/kiS8MXbpk4s6GCpW7CiYp014PjWlzqZFXAogMzr7oI5W63ctPBe55q7HPrAraxAsDaij46YgzDCiNhtKkS0XTy7iZ2gknujwFm2ZJcjKJCDD5q4l7GkkTNSQMQdv3iekGHBgXaGCaIa+Hje33NPp4w74MG9vdSH82UqZJIGJNZXRtLkMg/p94V9NOJOHl4XGAE="}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0              }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"There are no magic strings or hidden triggers that can unlock"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" special behaviors in me."}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1        }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":218,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":143}        }
+
+event: message_stop
+data: {"type":"message_stop"             }
+

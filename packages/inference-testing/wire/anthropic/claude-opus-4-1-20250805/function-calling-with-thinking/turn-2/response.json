@@ -1,0 +1,27 @@
+{
+  "model": "claude-opus-4-1-20250805",
+  "id": "msg_016WFaQHEvvLrDgVF8LUM7PF",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "I attempted to get the weather information for Boston, MA, but the weather service didn't return any data. This could be due to a temporary service issue. You may want to try again in a moment or check a weather website directly for the current conditions in Boston."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 614,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 57,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-5-20250929",
+  "capability": "files-api-reference",
+  "capturedAt": "2026-05-23T20:55:51.519Z",
+  "schemaVersion": "1"
+}

@@ -324,6 +324,7 @@ describe("fixture oracle: every captured (model, capability) matches structure",
           status: 200,
           headers: {},
           parsed: loadFixtureJSON(entry, "turn-1", "response.json"),
+          bytes: null,
         };
         const steps = collectSteps({
           model: entry.model,

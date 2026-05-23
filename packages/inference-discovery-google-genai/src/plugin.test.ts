@@ -508,6 +508,7 @@ describe("fixture-oracle: iterateCaptureSteps structurally matches every capture
           status: 200,
           headers: {},
           parsed: turn1ParsedResponse,
+          bytes: null,
         };
         const steps = collectSteps({
           model: entry.model,
@@ -545,6 +546,7 @@ describe("fixture-oracle: iterateCaptureSteps structurally matches every capture
           status: 200,
           headers: {},
           parsed: readFixtureJSON(fixtureDir, "upload", "response.json"),
+          bytes: null,
         };
         const steps = collectSteps({
           model: entry.model,

@@ -35,177 +35,242 @@ headers map for the steps that need them, not in `buildAuthHeaders`.
 | ---------------------------- | --------- | ----------------- | ------ | -------------- | -------------- | ---------- |
 | `claude-sonnet-4-5-20250929` | Workhorse | yes               | yes    | yes            | yes            | yes        |
 | `claude-opus-4-1-20250805`   | Flagship  | yes               | yes    | yes            | yes            | yes        |
-| `claude-haiku-4-5-20251022`  | Cheap     | yes               | yes    | yes            | yes            | yes        |
+| `claude-haiku-4-5-20251001`  | Cheap     | yes               | yes    | yes            | yes            | yes        |
 
 Anthropic does not expose audio input, video input, or image output on
 any first-party model, so those entries land as `outcome: "unsupported"`
-in `SUPPORT_MATRIX` with a notes line explaining why.
-
-## Capability dimensions captured
-
-Per model, the following capabilities are exercised end to end:
-
-- `plain-text(-streaming)` — single user message, single text reply.
-- `function-calling` — single-turn tool declaration, no follow-up.
-- `function-calling-multi-turn(-streaming)` — turn-1 issues the tool
-  call, turn-2 echoes the assistant content blocks verbatim and supplies
-  a `tool_result` user message.
-- `function-calling-with-thinking(-streaming)` — same as multi-turn but
-  with `thinking: {type: "enabled", budget_tokens: 1024}` enabled on
-  both turns.
-- `vision-input(-streaming)` — inline base64 image in the user content
-  array.
-- `document-input(-streaming)` — inline base64 PDF in the user content
-  array.
-- `code-execution(-streaming)` — server-side `code_execution_20250522`
-  tool with the corresponding beta header.
-- `reasoning-content(-streaming)` — `thinking` enabled, no tool calls,
-  exposes assistant thinking blocks.
-- `grounding(-streaming)` — server-side `web_search_20250305` tool. The
-  observed wire shape determines whether these rows land as `captured`
-  (with notes describing the divergence from Gemini's
-  `groundingMetadata` blob) or `unsupported` (with notes describing
-  what was observed and what a future `web-search(-streaming)`
-  capability would look like).
-- `files-api-reference(-streaming)` — turn-1 uploads the PDF via a real
-  multipart POST to `/v1/files` with `anthropic-beta: files-api-2025-04-14`;
-  turn-2 generates with a `{type: "document", source: {type: "file", file_id}}`
-  reference.
-- `redacted-thinking(-streaming)` — turn-1 issues the documented canary
-  prompt that triggers `redacted_thinking` content blocks; turn-2
-  echoes the assistant blocks verbatim and prompts a brief follow-up
-  so the round-trip is exercised on the wire.
+in `SUPPORT_MATRIX` with self-contained notes explaining why.
 
 ## Per-capability observed vs documented
-
-The Observed subsections below are populated alongside the fixture
-corpus. Each section pins the exact wire shape that landed on disk and
-cites the fixture path so a reader can verify directly.
 
 ### plain-text and plain-text-streaming
 
 **Documented:** `POST /v1/messages` with `{model, max_tokens, messages: [{role: "user", content: <string>}]}`.
-Streaming sets `stream: true` and emits the named SSE event stream
-described under "Anthropic SSE protocol" below.
+Streaming sets `stream: true` and emits a named SSE event stream.
 
-**Observed:** _(to be filled in alongside the captured fixture)._
+**Observed** (`wire/anthropic/claude-sonnet-4-5-20250929/plain-text/`):
+the assistant message envelope carries `usage` with cache-related
+sub-fields (`cache_creation_input_tokens`, `cache_read_input_tokens`,
+`cache_creation.ephemeral_5m_input_tokens`, `…ephemeral_1h_input_tokens`)
+plus `service_tier: "standard"` and `inference_geo: "not_available"`.
+The envelope also carries a nullable `stop_details` field alongside
+`stop_reason` and `stop_sequence`. None of these are listed in the
+public Messages API reference today.
 
-### function-calling
+### function-calling and function-calling-multi-turn
 
-**Documented:** Same as plain-text plus `tools: [{name, description, input_schema}]`.
-Assistant response includes a `tool_use` content block.
+**Documented:** Tool decls go in `tools[]` with `{name, description, input_schema}`.
+Assistant response includes a `tool_use` content block; multi-turn echoes
+the assistant content verbatim and appends a `tool_result` user message
+keyed by `tool_use_id`.
 
-**Observed:** _(to be filled in alongside the captured fixture)._
-
-### function-calling-multi-turn and -streaming
-
-**Documented:** Turn-2 echoes the assistant content blocks verbatim
-and appends a user message whose content array contains a `tool_result`
-block carrying `{tool_use_id, content}`.
-
-**Observed:** _(to be filled in alongside the captured fixture)._
+**Observed** (`wire/anthropic/claude-sonnet-4-5-20250929/function-calling-multi-turn/turn-1/`):
+the assistant `tool_use` content block carries a `caller: {type: "direct"}`
+sub-object that is not in the public reference. Turn-2 echoes it back
+along with the rest of the content array; Anthropic accepts it.
 
 ### function-calling-with-thinking and -streaming
 
-**Documented:** Adds `thinking: {type: "enabled", budget_tokens: 1024}`
-to the request. Assistant response includes `thinking` content blocks
-with a `signature` field whose presence the client must round-trip in
-turn-2.
+**Documented:** Adds `thinking: {type: "enabled", budget_tokens: N}` to
+the request (with `max_tokens > budget_tokens`). The assistant response
+includes a `thinking` content block with a `signature` field; the
+client must round-trip the signature in turn-2 or Anthropic rejects the
+follow-up.
 
-**Observed:** _(to be filled in alongside the captured fixture)._
+**Observed** (`wire/anthropic/claude-sonnet-4-5-20250929/function-calling-with-thinking/turn-1/`,
+streaming variant at `…function-calling-with-thinking-streaming/turn-1/`):
+the thinking block consistently arrives first in `content[]`, followed
+by a free-text block and then the `tool_use` block. The streaming
+variant delivers the thinking text incrementally via `thinking_delta`
+events and the signature in a single `signature_delta` event before
+`content_block_stop` — there is no observed case where the signature
+is split across multiple deltas. The signature itself is a long
+base64-encoded blob (~700 chars for the captured turns); shape pinned
+in the fixture.
 
 ### vision-input and -streaming
 
-**Documented:** User message content is an array containing
-`{type: "image", source: {type: "base64", media_type, data}}` and a
+**Documented:** User message content array contains
+`{type: "image", source: {type: "base64", media_type, data}}` plus a
 text block.
 
-**Observed:** _(to be filled in alongside the captured fixture)._
+**Observed** (`wire/anthropic/claude-sonnet-4-5-20250929/vision-input/`):
+exact shape per docs; the response collapses to a single text block.
+No image-specific metadata in the response envelope.
 
 ### document-input and -streaming
 
 **Documented:** User message content array contains
 `{type: "document", source: {type: "base64", media_type: "application/pdf", data}}`.
 
-**Observed:** _(to be filled in alongside the captured fixture)._
+**Observed** (`wire/anthropic/claude-sonnet-4-5-20250929/document-input/`):
+exact shape per docs. The response is a single text summary of the PDF
+contents — no inline citations in the captured single-turn case. (When
+documents arrive via the Files API path with citations enabled, the
+shape differs; see grounding below for the closest analog of inline
+citation blocks.)
 
 ### code-execution and -streaming
 
 **Documented:** `tools: [{type: "code_execution_20250522", name: "code_execution"}]`
-plus the `anthropic-beta: code-execution-2025-05-22` request header.
-Assistant response includes server-side tool blocks describing the
-executed code and its output.
+plus `anthropic-beta: code-execution-2025-05-22`. The assistant response
+includes a `server_tool_use` block describing the code and a
+`code_execution_tool_result` block with the execution output.
 
-**Observed:** _(to be filled in alongside the captured fixture)._
+**Observed** (`wire/anthropic/claude-sonnet-4-5-20250929/code-execution/`):
+the response top level carries a `container: {id, expires_at}` object
+that pins the sandboxed execution container; the `usage` block gains a
+`server_tool_use` counter alongside the regular token counts. The
+`code_execution_tool_result.content` carries `{type: "code_execution_result", stdout, stderr, return_code, content: [], abort_reason}`
+— five fields, all populated even when empty.
 
 ### reasoning-content and -streaming
 
-**Documented:** Same enablement as function-calling-with-thinking but
-without tools. Assistant response surfaces thinking blocks containing
-the model's reasoning before the final answer.
+**Documented:** Same thinking enablement as
+function-calling-with-thinking, no tools. The assistant response
+surfaces thinking blocks containing the model's reasoning before the
+final answer.
 
-**Observed:** _(to be filled in alongside the captured fixture)._
+**Observed** (`wire/anthropic/claude-sonnet-4-5-20250929/reasoning-content/`):
+shape matches docs; thinking precedes text as elsewhere. The plug-in's
+`extractReasoningTrace` hook emits a `reasoning-trace.json` sidecar
+with the field path and a sample of the thinking content for these
+captures.
 
 ### grounding and -streaming
 
 **Documented (Anthropic):** `tools: [{type: "web_search_20250305", name: "web_search"}]`.
-Assistant response includes server-side tool blocks describing the
-search and citations attached to the assistant text.
+Assistant response includes a `server_tool_use` block for the search
+and a `web_search_tool_result` block whose `content` array carries
+`web_search_result` entries with `{title, url, encrypted_content, page_age}`.
+Text blocks that cite the search carry inline `citations: []` arrays.
 
 **Documented (catalog vocabulary):** `grounding` was introduced for
 Gemini's Google Search grounding, which surfaces a top-level
 `groundingMetadata` blob on each candidate. Anthropic's `web_search` is
-structurally a tool invocation pattern.
+structurally a tool-invocation pattern. Same semantic role (model-
+augmented retrieval with citation provenance), different wire shape.
 
-**Observed:** _(decision lands here: whether the captured wire shape
-fits the `grounding` semantics with a divergence note, or whether a
-dedicated `web-search(-streaming)` capability is the honest framing.)_
+**Observed** (`wire/anthropic/claude-sonnet-4-5-20250929/grounding/`):
+captures cleanly. The decision recorded here: keep it under the
+`grounding` capability with this divergence note rather than introduce
+a parallel `web-search(-streaming)` capability. The semantic match
+(grounded retrieval with citations) is strong; the wire-shape
+divergence is faithfully recorded in the fixture corpus. Should a
+future consumer need to discriminate by wire shape, that is a
+canonical-renaming exercise on top of an already-captured fixture, not
+a re-capture.
 
 ### files-api-reference and -streaming
 
 **Documented:** Two-step upload. The upload is
-`POST /v1/files` with `multipart/form-data` (`file` field) and the
-`anthropic-beta: files-api-2025-04-14` request header. The response
-carries `{id, ...}`. The generate request references the uploaded file
-via `{type: "document", source: {type: "file", file_id}}`.
+`POST /v1/files` with `multipart/form-data` (`file` field) plus
+`anthropic-beta: files-api-2025-04-14`. The response carries
+`{type: "file", id, ...}`. The generate request references the
+uploaded file via `{type: "document", source: {type: "file", file_id}}`.
 
-**Observed:** _(to be filled in alongside the captured fixture; pins
-the precise multipart boundary handling and the upload response
-envelope shape.)_
+**Observed** (`wire/anthropic/claude-sonnet-4-5-20250929/files-api-reference/upload/`,
+`…/generate/`): upload response shape is
+`{type: "file", id, size_bytes, created_at, filename, mime_type, downloadable}`
+where `downloadable: false` for uploaded source PDFs. File IDs use the
+`file_011C…` prefix. The generate step's referenced file_id is accepted
+without an additional content-availability check.
 
 ### redacted-thinking and -streaming
 
-**Documented:** Anthropic publishes a magic canary string that
-deterministically triggers a `redacted_thinking` content block. The
-block carries an opaque encrypted `data` field; clients must echo it
-back verbatim on subsequent turns or the conversation breaks.
+**Documented:** Anthropic publishes a magic canary string
+(`ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_…`) that
+deterministically triggers a `redacted_thinking` content block carrying
+an opaque encrypted `data` field. Clients must echo the block back
+verbatim on subsequent turns or the conversation breaks.
 
-**Observed:** _(to be filled in alongside the captured fixture; pins
-the exact `content_block_start` shape for `redacted_thinking` — one-shot
-or delta-streamed — and confirms the round-trip acceptance on turn-2.)_
+**Observed** (`wire/anthropic/claude-sonnet-4-5-20250929/redacted-thinking/turn-1/`,
+streaming variant at `…redacted-thinking-streaming/turn-1/`): in the
+current captures (Sonnet 4.5, Opus 4.1, Haiku 4.5 on `2026-05-23`), the
+documented canary did **not** trigger a `redacted_thinking` block on
+any model. Each model returned a regular `thinking` block in which
+Claude recognized the input as a probe ("This appears to be a trigger
+string … I'll respond normally") and explained itself in a follow-up
+`text` block. The provider's documented behavior for the canary input
+did not materialize.
+
+The six rows in `SUPPORT_MATRIX` for the two redacted-thinking
+capabilities carry `outcome: "misled"` (see the outcome vocabulary
+comment in `packages/inference-discovery/src/catalog/support-matrix.ts`):
+HTTP succeeded, the model responded normally, the wire shape the
+capability's name implies did not appear. The fixture on disk
+documents what the wire actually returned for the documented input,
+not what the documentation said it would return.
+
+The plug-in and SSE parser are already set up for the `redacted_thinking`
+shape — `packages/inference-discovery-anthropic/src/sse.ts` accumulates
+`redacted_thinking` as one-shot at `content_block_start` (no deltas),
+and the turn-2 builder echoes the assistant content array verbatim,
+including any `redacted_thinking` blocks. A re-capture on a day the
+safety classifier does fire (`bun bin/discover.ts --provider anthropic --only redacted-thinking --only redacted-thinking-streaming`)
+will land the redacted shape without code changes and will flip these
+six rows from `misled` to `captured`.
 
 ## Cross-cutting observations
 
-The list below names the recurring patterns worth documenting once the
-fixtures land. Each item is populated from the actual captures.
+### Streaming SSE protocol
 
-- `redacted_thinking` wire shape — whether `content_block_start` is
-  one-shot (carries `data` directly) or delta-streamed.
-- Signature carriage — whether `signature_delta` events appear before
-  `content_block_stop`, and the interleave ordering across multiple
-  thinking blocks at distinct content indices when text or `tool_use`
-  blocks are interleaved.
-- Citation wire shape — Anthropic emits citations inline with assistant
-  content when documents are attached; pin the precise shape.
-- Server-side tool wire shapes — `code_execution_tool_use`,
-  `code_execution_tool_result`, `server_tool_use`, and
-  `web_search_tool_result` blocks observed in responses.
-- SSE event terminator and trailer behavior — Anthropic's protocol uses
-  named `event:` lines (`message_start`, `content_block_start`,
-  `content_block_delta`, `content_block_stop`, `message_delta`,
-  `message_stop`, `ping`). Confirm whether any post-`message_stop`
-  chunks appear in practice and document the tolerance expected of a
-  replay simulator.
+Anthropic's `/v1/messages` streaming surface uses named SSE events:
+`message_start`, `content_block_start`, `content_block_delta`,
+`content_block_stop`, `message_delta`, `message_stop`, `ping`. Observed
+behaviors worth pinning:
+
+- Every captured stream terminates with `message_stop`. No
+  post-`message_stop` chunks observed; a replay simulator can treat
+  the stream as definitively closed at that event.
+- `ping` events appear interleaved between content events, not on a
+  fixed schedule.
+- Every `data: { … }` line has trailing whitespace inside the closing
+  brace (e.g. `…}   }`). `JSON.parse` tolerates it; ad-hoc parsers must.
+- The streaming and non-streaming shapes for a given assistant message
+  reconcile exactly: SSE reconstructs the same `content[]` array order
+  and the same per-block fields (text, signature, tool_use input JSON).
+
+### Signature carriage on thinking blocks
+
+In non-streaming responses the signature is a single field on the
+`thinking` block. In streaming, it arrives via one `signature_delta`
+event near the end of the block, never split across multiple deltas in
+the observed corpus. Multi-block thinking (multiple thinking blocks at
+distinct content indices) was not observed in this capture set; the
+single-block pattern dominated.
+
+### Server-side tool wire shapes
+
+Both `code_execution` and `web_search` use the same outer pattern:
+`{type: "server_tool_use", id, name, input}` followed by a result block
+keyed by `tool_use_id`. The result-block type names diverge
+(`code_execution_tool_result` vs `web_search_tool_result`) and the
+inner `content` shape diverges (`code_execution_result` with stdout /
+stderr / return_code vs an array of `web_search_result` entries with
+title/url/encrypted_content/page_age). The `web_search_tool_result`
+block also carries a `caller: {type: "direct"}` sub-object mirroring
+the one observed on regular `tool_use` blocks.
+
+### Citation wire shape
+
+When `web_search` runs, text blocks in the assistant response that
+reference the search carry an inline `citations: []` array attached to
+the same text block (not as a separate content block). The shape
+pinned in `wire/anthropic/.../grounding/response.json` is
+authoritative.
+
+### Envelope fields not in the public reference
+
+Every captured non-streaming response carries `stop_details` (nullable)
+alongside `stop_reason` and `stop_sequence`, and the `usage` block
+carries `cache_creation_input_tokens`, `cache_read_input_tokens`,
+`cache_creation.ephemeral_5m_input_tokens`,
+`cache_creation.ephemeral_1h_input_tokens`, `service_tier`, and
+`inference_geo`. Code execution responses additionally carry a
+top-level `container: {id, expires_at}` object and a
+`usage.server_tool_use` counter. These appear stable across all three
+models and across both streaming and non-streaming.
 
 ## Regeneration
 
@@ -216,5 +281,5 @@ bun bin/discover.ts --provider anthropic --all
 Requires `ANTHROPIC_API_KEY` in `.env`. The plug-in hard-fails when `CI`
 is set (mirrors the other rigs). Estimated cost is on the order of
 $5–$20 across all captures, dominated by the extended-thinking and
-multimodal requests; the `--only` and `--model` flags allow targeted
+multimodal requests. The `--only` and `--model` flags allow targeted
 re-captures during iteration.

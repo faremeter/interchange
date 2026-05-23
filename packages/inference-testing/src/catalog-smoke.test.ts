@@ -31,11 +31,13 @@ describe("inference discovery catalog contract", () => {
     expect(new Set(CAPABILITIES).size).toBe(CAPABILITIES.length);
   });
 
-  test("every captured entry resolves on disk and its manifest validates", () => {
-    const captured = SUPPORT_MATRIX.filter((e) => e.outcome === "captured");
-    expect(captured.length).toBeGreaterThan(0);
+  test("every fixture-bearing entry resolves on disk and its manifest validates", () => {
+    const fixtureBearing = SUPPORT_MATRIX.filter(
+      (e) => e.outcome === "captured" || e.outcome === "misled",
+    );
+    expect(fixtureBearing.length).toBeGreaterThan(0);
 
-    for (const entry of captured) {
+    for (const entry of fixtureBearing) {
       const rel = getFixtureDir(entry);
       expect(rel).not.toBeNull();
       if (rel === null) continue;
@@ -58,9 +60,11 @@ describe("inference discovery catalog contract", () => {
     }
   });
 
-  test("getFixtureDir returns null for non-captured entries", () => {
-    const nonCaptured = SUPPORT_MATRIX.filter((e) => e.outcome !== "captured");
-    for (const entry of nonCaptured) {
+  test("getFixtureDir returns null for entries without fixtures", () => {
+    const noFixture = SUPPORT_MATRIX.filter(
+      (e) => e.outcome !== "captured" && e.outcome !== "misled",
+    );
+    for (const entry of noFixture) {
       expect(getFixtureDir(entry)).toBeNull();
     }
   });

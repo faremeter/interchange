@@ -1,0 +1,7 @@
+{
+  "provider": "anthropic",
+  "model": "claude-opus-4-1-20250805",
+  "capability": "grounding",
+  "capturedAt": "2026-05-23T22:00:17.382Z",
+  "schemaVersion": "1"
+}

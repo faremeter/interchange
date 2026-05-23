@@ -1,0 +1,55 @@
+{
+  "model": "claude-sonnet-4-5-20250929",
+  "id": "msg_017UmBWMEw89CjQ1ndDVbcAq",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_019fjMgVLagrHDhXk9G69pu1",
+      "name": "code_execution",
+      "input": {
+        "code": "\ndef fibonacci(n):\n    \"\"\"Compute the nth Fibonacci number\"\"\"\n    if n <= 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        a, b = 0, 1\n        for _ in range(2, n + 1):\n            a, b = b, a + b\n        return b\n\n# Compute the 12th Fibonacci number\nresult = fibonacci(12)\nprint(f\"The 12th Fibonacci number is: {result}\")\n"
+      }
+    },
+    {
+      "type": "code_execution_tool_result",
+      "tool_use_id": "srvtoolu_019fjMgVLagrHDhXk9G69pu1",
+      "content": {
+        "type": "code_execution_result",
+        "stdout": "The 12th Fibonacci number is: 144",
+        "stderr": "",
+        "return_code": 0,
+        "content": [],
+        "abort_reason": null
+      }
+    },
+    {
+      "type": "text",
+      "text": "The 12th Fibonacci number is **144**.\n\nThe Fibonacci sequence starts with 0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, ..."
+    }
+  ],
+  "container": {
+    "id": "container_011CbLAdxJfkq9QVLCPs519u",
+    "expires_at": "2026-05-23T21:55:19.421851Z"
+  },
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 2083,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 236,
+    "service_tier": "standard",
+    "inference_geo": "not_available",
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    }
+  }
+}
