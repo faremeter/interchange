@@ -1,0 +1,7 @@
+{
+  "provider": "anthropic",
+  "model": "claude-opus-4-1-20250805",
+  "capability": "vision-input",
+  "capturedAt": "2026-05-23T20:56:51.238Z",
+  "schemaVersion": "1"
+}

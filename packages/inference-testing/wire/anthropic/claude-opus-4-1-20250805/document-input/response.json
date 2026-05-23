@@ -1,0 +1,27 @@
+{
+  "model": "claude-opus-4-1-20250805",
+  "id": "msg_013HBjFXx1zwEWeVUwYPPiER",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "This document appears to be a table of contents or chapter listing from \"The Adventures of Tom Sawyer,\" showing the first 17 chapters with their titles and brief descriptions of the events in each chapter."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 1976,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 45,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  }
+}

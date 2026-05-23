@@ -488,6 +488,27 @@ function partitionFollowUps(intent: CapabilityIntent): {
   return out;
 }
 
+// When an intent has no tool-role followUp (true for
+// function-calling-with-thinking, whose INTENTS record declares only a
+// prompt and a tool decl), fall back to the tool name from intent.tools
+// with an empty JSON object payload. Matches the deriveToolFollowUp
+// fallback in @intx/inference-discovery-google-genai.
+function deriveToolFollowUp(intent: CapabilityIntent): ToolFollowUp {
+  const followUps = partitionFollowUps(intent);
+  if (followUps.tool !== undefined) return followUps.tool;
+  const tools = intent.tools;
+  if (tools === undefined || tools.length === 0) {
+    throw new Error(
+      "anthropic multi-turn: intent has neither followUp.tool nor tools",
+    );
+  }
+  const [tool] = tools;
+  if (tool === undefined) {
+    throw new Error("anthropic multi-turn: intent.tools[0] is undefined");
+  }
+  return { toolName: tool.name, content: "{}" };
+}
+
 export function buildFunctionCallingTurn2Body(opts: {
   model: string;
   capability: Capability;
@@ -497,13 +518,7 @@ export function buildFunctionCallingTurn2Body(opts: {
 }): AnthropicRequestBody {
   const assistantBlocks = extractAssistantContentBlocks(opts.turn1Response);
   const toolUse = findFirstToolUse(assistantBlocks);
-  const followUps = partitionFollowUps(opts.intent);
-  const toolFollowUp = followUps.tool;
-  if (toolFollowUp === undefined) {
-    throw new Error(
-      "anthropic multi-turn: intent.followUp must include a tool entry",
-    );
-  }
+  const toolFollowUp = deriveToolFollowUp(opts.intent);
   const messages: AnthropicMessage[] = [
     ...opts.turn1Body.messages,
     { role: "assistant", content: assistantBlocks },

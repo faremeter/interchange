@@ -1,0 +1,7 @@
+{
+  "provider": "anthropic",
+  "model": "claude-haiku-4-5-20251001",
+  "capability": "function-calling-multi-turn",
+  "capturedAt": "2026-05-23T21:48:14.101Z",
+  "schemaVersion": "1"
+}

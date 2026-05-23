@@ -1,0 +1,63 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-opus-4-1-20250805","id":"msg_01KqY2wCwxYFhMPE9D76H4VW","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":77,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":3,"service_tier":"standard","inference_geo":"not_available"}}  }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}    }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me work"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" through this step by step.\n\nLet's say the ball costs x dollars.\nThe bat costs $1.00 more than the ball, so the bat costs (x + "}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"1.00) dollars.\n\nTogether they cost $1.10, so:\nx + (x + 1.00) = 1.10\n2x + 1.00 = 1.10\n2x = 1.10 - "}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"1.00\n2x = 0.10\nx = 0.05\n\nSo the ball costs $0.05 (5 cents) and the bat costs $1.05"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":".\n\nLet me verify: $0.05 + $1.05 = $1.10 ✓\nAnd $1.05 -"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" $0.05 = $1.00 ✓\n\nThe answer is that the ball costs $0.05 or 5 cents."} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EooFCmwIDhgCKkCtS9Xuz7GKm1+VCemUWZZn95ygRcRQWit1Ylmlb6Zh2EKLqT/Z3apRZqcfrXCQ6Rmx/m4t/EG8BB7GIaWBjZq9MhhjbGF1ZGUtb3B1cy00LTEtMjAyNTA4MDU4AEIIdGhpbmtpbmcSDAm4PDZHZOWuZDwx6BoMVcvk4oRZtssHUtuRIjDo/oJ9FHrVngK7wWKsIQ1VEgvAdZcAb19YgbU8uBHN0cIqq9HIzllWmDCTSbz8I/UqywMoXRJaib1H7i83HwQ+7kcQiDkKVZsDxJMmiXgP0jaoFH8Ru9D3AkYwLvFnc1euJhy3BYYPCkraeMaf9brOmH/RWOloYVsyoBILl0WdACPLGAZhVOoP64pIXhbGkTYaHbOSQ4tn+LcnfxoCK40d8IzkIWvTfRmYnCkmUkY3E0a7OSQT/TqEpk0jzNEaIMtyvdH0HaB9KyZY+XIZCE5EiAIEvuqGJ1Ndm/e2Rh0bR5QNLu1YHQkfrt7YnGbaGWpdLEaaK3SjF38BG4SO4lhEmd9yEv52BlGNH2oF+mwflESKDQIjuPShNaPfbCIzojnXnpp4QdBvJ6lfOp+mK/58b77acJ/u6tXZQjoH7gQq4JxGr4o+J3UeaOGBO5kp4Ntx5APHm+Hmd9RqretHnfOPqPYm4ZaYtJ+YFah2Dvm05QSc2fwO/3QtnyWBRIdUU3OZdD91jFwcTqYN5bVfQbW6Lx37IxjdBHMrEt2Z+167kHlR7VyillattaCCuzTO6pwI/URC2qe2Osol2BzOG6y1EiZLfwH70UFc4/Mrg1i7KtpHb2Dwa7Dwu35nqE2YstyDzNhBfdLb83zRgLL/9Y0zUrXuD2z9+Jdoxi5ywT4YAQ=="}   }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Let me work through this step-by-step.\n\nLet's define variables:\n- Let the ball cost = x dollars\n- Since the bat costs $1.00 more than the ball, the bat costs"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" = x + $1.00\n\nNow I'll set up an equation based on the total cost:\n- Ball + Bat = $1.10\n- x + (x + $1.00) = $1.10"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n\nSolving the equation:\n- 2x + $1.00 = $1.10\n- 2x = $1.10 - $1.00\n- 2x = $0.10\n- x = $0.05"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n\nLet me verify this answer:\n- Ball costs: $0.05\n- Bat costs: $0.05 + $1.00 = $1.05\n- Total: $0.05 + $1.05 = $1.10 "}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"✓\n- Difference: $1.05 - $0.05 = $1.00 ✓\n\n**The ball costs $0.05 (5 cents)**"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1               }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":77,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":470}     }
+
+event: message_stop
+data: {"type":"message_stop"           }
+

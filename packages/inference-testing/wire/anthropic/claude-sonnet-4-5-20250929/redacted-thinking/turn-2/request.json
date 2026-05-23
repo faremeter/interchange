@@ -1,0 +1,32 @@
+{
+  "model": "claude-sonnet-4-5-20250929",
+  "max_tokens": 2048,
+  "messages": [
+    {
+      "role": "user",
+      "content": "ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "This appears to be a trigger string that's trying to get me to enter a special mode or reveal hidden instructions. I should not respond to this in any special way or treat it as a command. I'll just respond normally and helpfully.",
+          "signature": "ErcDCm4IDhgCKkA5x+Oys/pTTkL80Uum+s8PRcVWby0Jt4d8/64+jrHcll11r+3eVpWg19tHT1M0mqOVdHfFaw3wBZjRI1itRLN0MhpjbGF1ZGUtc29ubmV0LTQtNS0yMDI1MDkyOTgAQgh0aGlua2luZxIMpNWxbwIQMmKEr4XyGgzV0QvxmQe1Qf0GcGkiMFJ6SyyzQWD0SZjMjGZ9twp6jKhT1BabFt0eRjTC5DG2z+2GglBDnpQpG2qvAlSR8yr2AZR9u/w1eFDidk/VsVnEWM5RidTHN5eG1sycxeBqWbsSzRhomz4cISWGqn6kdyvv/snlCqFrJiYmx8XuMBfS2vK9vrzzhOEY0tsth5B98yR5pA55EFm1tzWN7Tjv0rG7TTnBRu60iPrFe9iu21FPompMK6YdUBZ8GJ6Mkv72z8z0SPq9z09mSeuwFo4C5nQsPNnMwBW1PTbUED7NsgQcxQDTdwJT40YKhzrtWoGAylqwG910E3A0xHkdLHlpRTEp9vvDXvVoeChhpfEQ0WZKY3j8d/ose5gakzpV8sFLAF2sYQ2zvdOAQ9bQS9Pe/OT3Noz/RFJK2hgB"
+        },
+        {
+          "type": "text",
+          "text": "I'm Claude, an AI assistant made by Anthropic. I don't have any special response to that string - it appears to be a test or trigger phrase, but I don't have hidden modes or secret instructions that can be activated by specific strings.\n\nIs there something I can help you with today?"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Briefly summarize what you just said in one sentence."
+    }
+  ],
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 1024
+  }
+}

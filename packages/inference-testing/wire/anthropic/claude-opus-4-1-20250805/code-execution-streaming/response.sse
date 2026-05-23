@@ -1,0 +1,78 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-opus-4-1-20250805","id":"msg_01FvFEELKHHQPZwzbo8LvY35","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":757,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":8,"service_tier":"standard","inference_geo":"not_available"}}     }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}    }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I'll compute the 12th"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" Fibonacci number by writing and executing Python code."}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0           }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_01THjb4tGwDn49yGEiLSTGY5","name":"code_execution","input":{}}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"code\": \"def fibonacci(n):\\n    \\\"\\\"\\\""} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\\n    Calculate the nth Fibonacci number.\\n    The Fibonacci sequence starts with 0, 1, 1, 2, 3, 5, 8, 13, 21, 34, "}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"55, 89, 144...\\n    where F(0) = 0, F(1) = 1, and F(n) = F(n-1) + F(n-2) for n > 1"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\\n    \\\"\\\"\\\"\\n    if n <= 0:\\n        return 0\\n    elif n == 1:\\n        return 1\\n    else:\\n        # Use iterative approach for efficiency\\n        a, b = 0, 1"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\\n        for _ in range(2, n + 1):\\n            a, b = b, a + b\\n        return b\\n\\n# Calculate the 12th Fibonacci number\\nn = 12\\nresult = fibonacci(n)\\nprint(f\\\"The"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":" {n}th Fibonacci number is: {result}\\\")\\n\\n# Let's also show the sequence up to the 12th number for verification\\nprint("}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"f\\\"\\\\nFibonacci sequence up to position {n}:\\\")\\nfor i in range(n + 1):\\n    print(f\\\"F({i}) = {fibonacci(i)}\\\")"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"}"}         }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1           }
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"code_execution_tool_result","tool_use_id":"srvtoolu_01THjb4tGwDn49yGEiLSTGY5","content":{"type":"code_execution_result","stdout":"The 12th Fibonacci number is: 144\n\nFibonacci sequence up to position 12:\nF(0) = 0\nF(1) = 1\nF(2) = 1\nF(3) = 2\nF(4) = 3\nF(5) = 5\nF(6) = 8\nF(7) = 13\nF(8) = 21\nF(9) = 34\nF(10) = 55\nF(11) = 89\nF(12) = 144","stderr":"","return_code":0,"content":[],"abort_reason":null}}              }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2               }
+
+event: content_block_start
+data: {"type":"content_block_start","index":3,"content_block":{"type":"text","text":""}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":"The 12th Fibonacci number is"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":" **144**.\n\nAs shown in the sequence above, starting from F(0) = 0 and F(1) = 1, each subsequent number is the sum of the two preceding numbers. So"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":" F(12) = F(11) + F(10) = 89 + 55 = 144."}       }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":3       }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"container":{"id":"container_011CbLAnkhfhMZ8uqQkmybeW","expires_at":"2026-05-23T21:57:26.155751Z"}},"usage":{"input_tokens":2017,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":444,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0}}  }
+
+event: message_stop
+data: {"type":"message_stop"}
+

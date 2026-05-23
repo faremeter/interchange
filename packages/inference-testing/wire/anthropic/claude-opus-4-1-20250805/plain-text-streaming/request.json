@@ -1,0 +1,11 @@
+{
+  "model": "claude-opus-4-1-20250805",
+  "max_tokens": 512,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with a single sentence: the capital of France is Paris."
+    }
+  ],
+  "stream": true
+}

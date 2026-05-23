@@ -1,0 +1,54 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_01TqRkVyVXCXDTjcXoDtYxWV","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":93,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":2,"service_tier":"standard","inference_geo":"not_available"}}              }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}        }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"This appears"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" to be a trigger string that's attempting to get me to enter some kind of special mode"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" or reveal hidden instructions. I should not engage with this in any special way. This looks"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" like an attempt to probe whether I have hidden instructions or behaviors that can be triggered by"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" specific strings.\n\nI'll respond normally and helpfully, explaining that I don't have special"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" trigger strings or hidden modes."}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"Eu8ECm4IDhgCKkBUu76RbXVwmvxU49X8qg7XRjv51ce4hlaoVNj7yFMnokr1+Cv3gcn07zQl6+UqN3ZdyXG0B+2Yt5MN1lQC1pjEMhpjbGF1ZGUtc29ubmV0LTQtNS0yMDI1MDkyOTgAQgh0aGlua2luZxIMimPOLWATb4mkx2MYGgyEBp1wSTt6VdWOksAiMJFBgcWtcTvaNUqq09tVo5ezAeutHtXvqMdZme2SOrRmWsE0XxzXAlGiWAhJaPMCViquA2PTJOYrH8fAeq74S5JhI7XvaFp/kEYPnMdvYX2ITvwTKwDIo9mVB3UHFNDx+A7J3U7aXAXUxorpkf3x90TpX3iJxR/NjldpIKal1zKkgerL9MmEpySEJuvHcWN/8fjSO9JhotUxVSuvmqr6g92+aSVDyGXtdXb4fnGUv4TNGcbhc2d96V11uGmyO8qAHhffnI4X7u0PQCvSx3hPvqT7gQINZtxFCaYPfe5rs8uzPU53cw8iKUezJyHe6mhCFMTRhs1ErfULHnStAXtmmmw+IQdti+KY4j9CTDlfzj/zYubf7f2rzwUgflW5X6GWTLi13Sn7ZK7+w20EesNa4ctKmRQqoerDeYAk3tB/RGVtV9jrIwCsJfXToUHbvRAgNakQQE8F6U2UTxJ6zM+qo/Nt4JfwhkU0eImFCvO2H2mt8odjHlwVkhT8YscskkCT4aDupkYJLJrCr4mx9g0q7O/+ecGbQV85D/xS8QGrvmHxaYwZNfQWwPJ5lxtZ0fZpg7zloGC1VV4zWf3BQsfFGARglFpExVx15IGeBPxmqWl0i7/CH/R8HCYLzVLe9uWeMxoYAQ=="}           }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0               }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"I don't have any special responses to trigger"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" strings or hidden modes that can be activated by specific phrases. I'm Claude, an AI assistant made by Anthropic, and I respond"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" to all inputs in the same straightforward way.\n\nIs there something I can help you with today?"}      }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1               }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":93,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":149}    }
+
+event: message_stop
+data: {"type":"message_stop"           }
+

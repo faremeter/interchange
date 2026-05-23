@@ -1,0 +1,32 @@
+{
+  "model": "claude-haiku-4-5-20251001",
+  "id": "msg_013WRSjWgMBAexRzYofctrpV",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "The user is asking me to summarize my previous response in one sentence. This is a straightforward, legitimate request. Let me provide a concise summary of what I said.\n\nMy previous response said that:\n1. I don't have special magic triggers or hidden modes\n2. I'm Claude made by Anthropic\n3. I operate consistently according to my values regardless of prompts\n4. I offered to help with something specific\n\nA one-sentence summary could be: \"I don't have hidden modes or magic triggers, and I operate consistently according to my values regardless of what prompts I receive.\"",
+      "signature": "Eo0GCm0IDhgCKkDS7kV9e/lmBOtlU50ybdTk4lYVDknbosz0RNnObpNjeet1NlDWLEX0/E8RG/acakalEm6YALUNCrbQWMse3EltMhljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxOABCCHRoaW5raW5nEgwYN+d0h8D0DsbdiLsaDHrvNEUusW7zHR2S7yIwh3iTo5EdZ65mu3Oc7OH1rF450PPOfL+P0Us/v8rgcr96Y7GjZEfHfmCom4sG4LLeKs0E7/OCqi42YPzEFdDcHP+0lmeOCPOtZGP7hvc7lKCYVK5OeFshseVtIPQRcH4k/yUfKe0urMj6ivnkWdCHKrtskQPcNO3rqGBqUanPtIZgB9Af0eTeKyO37VFT6QVDLwdGlud8gU4vnX4OpsbgitvpjyIMoevd5pQZNIULtAYx7u53jMXXci2yDmLxXyUO9zUq/Yv+vS5eRPzAyXSjsU3b0Tw48T+FGK2lqPg7/L42YSNpjpjETgDC6Xu+AvpZD5gdflnwpKBAUSGQG7vB+QLlf5rF/K9aD5yzrwjfWn91ewCWGLochpEa1NRxX+ZJ3/ucAPnKrLZbNJRO8EqTM+YgwwPMwfNHT5NjK8g61BBb7hVZrrmwChxwEqtyfPBXEnaKJT+F24iG293jEU7cH3WZHTpAPjRfvls7fVD0a2RI9LsFPXRJVA+Zg4O8F8IPcdkDLOEN18B/sXNwK5mT/wVq0QOkw8tMN4RETlONHW5wW2rOXNmIUQKTP1fQenPc0Pv0q5oq/7c25UlOn3kH6qoXiktCC4RwO9rRti32PdKNTo1ccVLCR4z1b8RkE/ufsJH06drjOdN/yK/BWn7MnkqM9R3qKfPrCz/NyWJWy8WTvUa4Xyxm1+gs3vKJ3N1/COZN/AqodtR1z5wDwMmA9OPSdQtoo+zh2GtxwZL97uuxHCi3EsgeXHbUiUC1COJpbdpir7kX4ddl/RUaQnG7g8webwTiyd6OCHtEh2RaXIb3TQOUD0UC4aV8nDqH5OuRzP8ltRyPeah2n9ugqgfYuxgB"
+    },
+    {
+      "type": "text",
+      "text": "I don't have hidden modes or special triggers, and I operate consistently according to my values regardless of what inputs I receive."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 188,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 163,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  }
+}

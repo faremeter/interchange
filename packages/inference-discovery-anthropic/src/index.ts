@@ -23,16 +23,16 @@ import {
   buildFunctionCallingTurn2Body,
   buildRedactedThinkingTurn2Body,
   buildRequestBody,
-  type AnthropicRequestBody,
 } from "./request-body";
 import { extractReasoningTrace } from "./reasoning";
+import { extractContentBlocksFromSSE } from "./sse";
 
 const PROVIDER_NAME = "anthropic";
 
 const MODELS = [
   "claude-sonnet-4-5-20250929",
   "claude-opus-4-1-20250805",
-  "claude-haiku-4-5-20251022",
+  "claude-haiku-4-5-20251001",
 ] as const;
 
 const REDACT_REQUEST_HEADERS = ["x-api-key"] as const;
@@ -188,7 +188,7 @@ function extractFileId(parsed: unknown): string {
 function makeJsonStep(opts: {
   capability: Capability;
   subdir: string | null;
-  body: AnthropicRequestBody;
+  body: unknown;
 }): CaptureStep {
   return withPerCapabilityHeaders(opts.capability, {
     kind: "json",
@@ -196,6 +196,22 @@ function makeJsonStep(opts: {
     url: buildMessagesURL(),
     body: opts.body,
   });
+}
+
+// Reconstructs the assistant content blocks from turn-1's CapturedResponse.
+// For JSON turn-1, that is the parsed message body. For SSE turn-1, the
+// runner returns bytes and we parse them through the SSE event stream.
+// Both paths surface the blocks in the shape buildFunctionCallingTurn2Body
+// and buildRedactedThinkingTurn2Body expect.
+function turn1AssistantResponse(turn1: CapturedResponse): unknown {
+  if (turn1.parsed !== null) return turn1.parsed;
+  if (turn1.bytes === null) {
+    throw new Error(
+      "anthropic multi-turn: turn-1 CapturedResponse had neither parsed body nor SSE bytes",
+    );
+  }
+  const blocks = extractContentBlocksFromSSE(turn1.bytes);
+  return { content: blocks };
 }
 
 export function* iterateCaptureSteps(
@@ -233,7 +249,7 @@ export function* iterateCaptureSteps(
       capability,
       intent,
       turn1Body,
-      turn1Response: turn1Response.parsed,
+      turn1Response: turn1AssistantResponse(turn1Response),
     });
     yield makeJsonStep({
       capability,
@@ -259,7 +275,7 @@ export function* iterateCaptureSteps(
       model,
       intent,
       turn1Body,
-      turn1Response: turn1Response.parsed,
+      turn1Response: turn1AssistantResponse(turn1Response),
     });
     yield makeJsonStep({
       capability,

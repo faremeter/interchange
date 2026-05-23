@@ -145,15 +145,19 @@ async function captureStep(args: {
 
   let captured: ResponseBody;
   let parsedForGenerator: unknown | null;
+  let bytesForGenerator: Uint8Array | null;
   if (kind === "sse") {
     const buf = await response.arrayBuffer();
-    captured = { kind: "sse", bytes: new Uint8Array(buf) };
+    const bytes = new Uint8Array(buf);
+    captured = { kind: "sse", bytes };
     parsedForGenerator = null;
+    bytesForGenerator = bytes;
   } else {
     const text = await response.text();
     const parsed: unknown = JSON.parse(text);
     captured = { kind: "json", body: parsed };
     parsedForGenerator = parsed;
+    bytesForGenerator = null;
   }
 
   const captureInput: WriteCaptureInput = {
@@ -185,6 +189,7 @@ async function captureStep(args: {
     status: response.status,
     headers: responseHeaders,
     parsed: parsedForGenerator,
+    bytes: bytesForGenerator,
   };
 }
 

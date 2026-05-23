@@ -1,0 +1,59 @@
+{
+  "model": "claude-opus-4-1-20250805",
+  "id": "msg_01M5PCmAeRYwWNrXkFW41mRB",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "I'll compute the 12th Fibonacci number using Python code."
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_01FJscv4P3xF7f4eHr2yYDzh",
+      "name": "code_execution",
+      "input": {
+        "code": "def fibonacci(n):\n    \"\"\"\n    Compute the nth Fibonacci number.\n    The Fibonacci sequence starts with 0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144...\n    where F(0) = 0, F(1) = 1, and F(n) = F(n-1) + F(n-2) for n > 1\n    \"\"\"\n    if n <= 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        # Use iterative approach for efficiency\n        a, b = 0, 1\n        for _ in range(2, n + 1):\n            a, b = b, a + b\n        return b\n\n# Compute the 12th Fibonacci number\nn = 12\nresult = fibonacci(n)\nprint(f\"The {n}th Fibonacci number is: {result}\")\n\n# Let's also show the sequence up to the 12th number for verification\nprint(f\"\\nFibonacci sequence up to the {n}th number:\")\nfor i in range(n + 1):\n    print(f\"F({i}) = {fibonacci(i)}\")"
+      }
+    },
+    {
+      "type": "code_execution_tool_result",
+      "tool_use_id": "srvtoolu_01FJscv4P3xF7f4eHr2yYDzh",
+      "content": {
+        "type": "code_execution_result",
+        "stdout": "The 12th Fibonacci number is: 144\n\nFibonacci sequence up to the 12th number:\nF(0) = 0\nF(1) = 1\nF(2) = 1\nF(3) = 2\nF(4) = 3\nF(5) = 5\nF(6) = 8\nF(7) = 13\nF(8) = 21\nF(9) = 34\nF(10) = 55\nF(11) = 89\nF(12) = 144",
+        "stderr": "",
+        "return_code": 0,
+        "content": [],
+        "abort_reason": null
+      }
+    },
+    {
+      "type": "text",
+      "text": "The **12th Fibonacci number is 144**.\n\nAs shown in the output, the Fibonacci sequence starting from F(0) = 0 progresses as: 0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144. Each number is the sum of the two preceding numbers, and F(12) = 144."
+    }
+  ],
+  "container": {
+    "id": "container_011CbLAmuetschSPBPEpRMyX",
+    "expires_at": "2026-05-23T21:57:11.181531Z"
+  },
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 2020,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 463,
+    "service_tier": "standard",
+    "inference_geo": "not_available",
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    }
+  }
+}

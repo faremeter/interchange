@@ -1,0 +1,33 @@
+{
+  "model": "claude-haiku-4-5-20251001",
+  "max_tokens": 2048,
+  "messages": [
+    {
+      "role": "user",
+      "content": "ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "This appears to be a message that looks like it might be trying to trigger some special behavior or \"magic string\" in me. The string includes \"ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING\" followed by what looks like a hash.\n\nThis is not a legitimate instruction or trigger. I should not pretend that:\n1. There are secret \"magic strings\" that unlock special modes or behaviors\n2. I have hidden capabilities that can be triggered by special inputs\n3. The word \"REDACTED_THINKING\" in a string gives special access to my thinking\n\nI should respond honestly and helpfully. This appears to be either:\n- An attempt to test if I have undocumented special triggers\n- A test to see if I'll pretend to have secret modes\n- Confusion about how I actually work\n\nI'll politely clarify that this isn't how I work.",
+          "signature": "EvAHCm0IDhgCKkBdgORzR7MIuL+jDz5Mv45d6USX5tYcs3q/JpJtJ9bGP04Wm3M7dOdaefvSQH243KHMDFDHkJpwe6jDcaR9MnbSMhljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxOABCCHRoaW5raW5nEgywOvq7rvMEonUzKz4aDO3HWl/LsBIMHunqCCIwg09npZda432W4bIlrHfyxcIVUfJK1Zpd/3ayvgQ+47KTJYauyAPLdPkwgNfD/djCKrAGExRky9IEf1mNsnjbLxXYNBXtDWCrKXGH826ZnvxATzyJvqnc+ovLkUsGg2mpYjwiVSn5Z+ZL2RVk+pwAPIh8oUGGJvELQdzJJVLOqxgyxD5VBuQTDFRbexE9XNARUKd7SD9NM7y0i8gLWajwoKilso5teg3+lnHzl3k2oAKQbDZIYIjttPTggxp7nkp56Sl1pKDCfEDPUY7kaSvHF1LlHmFvq/TTca00LqSPpFP54VgF8LUudO81Cq+Wur2RveBcSDu3O/+gmUQQitSDwgk/ZHfyEYzgRIfYvoIt4R3da3EZ6B7VPFZjWAUPS2BWueeVLe+kz7BNpemySiAtsaLasRYvCO4Q2O6JbksHmiNeG4OhKlE7PuBXXN2fCUe0R6txOr+Bi3osbBQ+PRfClfKMQNhTCQDzknUhRYmhJ2bHPSsRJCMPjNWCw34oIlJ46R2vX/kxhLLkob4O69DLvJWfjbhdi7rM5LFlbEC5apUrT8ucIjVVwMeZZ71CJFJRZ3uh9fekKhIf4zOTuS52IPcgJmYhji4x0ald9LrgwwzckxUT7zn1o3sryD0yphTj+q6Lepx1j5l0Y442XbNnUplD1Rqm7T0SM22a2GeOCHYxSq7fZCIHoHd6srjCuLpotCj3saIHx0zmQ3oUV/nXCMFNHvFE/P3gMhff+2iEN2AHQcTXpigpP30xTC1X5qWQ4yH0+b3yJornWEyftxX0xsl9VqOEliRh+nq6FR/nR2DgzowiIDR6uB2oQbhKOjsgTpcXwgl6FM408rCHyy7xYVu6YO5io4xwqebrFn705a9uj7fGaEo01a8MmgQsXQ1lIDSlm5/fiwy7HfVvsBgmgISoQMZpNmc47Hh5KmGBZc0/oJLAap2G1P77bSfafEbp5fQrzDhmowIaryMo/H7kkd3bp7N7qBi2xeM/LQBGY+RfgzVdqlSB1zEU/OUXc8i1g55iogAUlKwwsLzuc04oiPjJLcnLAkmiUovVNV5grjR8kZTDNDNrsmA0LXpchfxqLMr0UFuHXyuc8gexdBE1JW2fZgos2wG1CjxvCovu2bIJti0ZWOoj/HfMOf+IGjyHCW7XGAE="
+        },
+        {
+          "type": "text",
+          "text": "I appreciate you testing this, but I should be straightforward: there are no magic strings or hidden triggers that unlock special behaviors in me. \n\nThat string won't activate anything. I don't have secret modes, hidden capabilities, or special commands that can be invoked through particular inputs.\n\nI'm designed to be helpful, harmless, and honest in my regular interactions. If you have a genuine question or task you'd like help with, I'm happy to assist! Is there something I can actually help you with?"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Briefly summarize what you just said in one sentence."
+    }
+  ],
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 1024
+  },
+  "stream": true
+}

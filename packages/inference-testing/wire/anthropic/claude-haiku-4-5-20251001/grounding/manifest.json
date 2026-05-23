@@ -1,0 +1,7 @@
+{
+  "provider": "anthropic",
+  "model": "claude-haiku-4-5-20251001",
+  "capability": "grounding",
+  "capturedAt": "2026-05-23T22:00:36.220Z",
+  "schemaVersion": "1"
+}

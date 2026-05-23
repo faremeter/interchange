@@ -1,0 +1,84 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_0178XiCWQziz9umTsgshvR31","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2227,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":1,"service_tier":"standard","inference_geo":"not_available"}}               }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_019PiCdawCYXzDvNCvF7Eyyk","name":"web_search","input":{}}}
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\""}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"query"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\": \"to"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"p ne"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"ws tod"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"ay\"}"}           }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0           }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_019PiCdawCYXzDvNCvF7Eyyk","content":[{"type":"web_search_result","title":"NASCAR champion Kyle Busch’s cause of death revealed by family","url":"https://www.foxnews.com/sports/nascar-kyle-busch-cause-death-revealed-family","encrypted_content":"EuMDCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDB/ZI+O4eKoYu+7tcxoMSxwnPFTMcENZ/WUAIjApYJGUte+9XtxQqshslKBkozuuamZ212cf/eyHvauFhLtVuw9SN3c2Zhqn82d9+JAq5gLF76ll20ucwQBrdQFNWu2KB0naWck6qfoXtCOKzQD7AgUj7m8AcKZsvn2kmdHfTyPuxlPj8ie+G1jHoKFhjuKCzl9ajjlp4JTC1RKQWmDh8UgRDgXaf/YYcRjvxxn8/rYJG1GUP9U6jeHxzCB7+9YluEe4tYX0rPgF8iim5FELLmw4tN+W9yCFZt30Clqv/hNK3s402cmPPGZF0Eh/aFoXGY451dngPQ725A7V2SekVBOCSbTQxrMbkAlntlTk+jJpfC/3FSs2tw4MR2Qv80dLwLn9+8J9kNynjGuxXDh9CZF7bybc1ZQ0bgRJZHIw6SQekT+h7U4PTTmINc1aAXgxTY2jQf0tpSHpyHKyDzgZ41q0Z3luGq8+BdRIwdtc4mz+aPxI3tMABxTmLK9dEhUXsG6kyF5+/S6xr8GS14i9YS8nPPBLrq2M/7HYZlFgwWYedlQn3oSN+kD2G74WQr1n2brV0RXjGAM=","page_age":null},{"type":"web_search_result","title":"EXCLUSIVE: Tulsi Gabbard resigns from Trump Cabinet","url":"https://www.foxnews.com/politics/exclusive-tulsi-gabbard-resigns-from-trump-cabinet","encrypted_content":"ErIDCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDBUPOYYcRVnpQMgdBRoM8n6EQf6ca4Cu5TeUIjBB83kZupqhCMXdkNtCiijUnrV1FVo5pgV3d3r/MP5elqC6oX/nCZSAelQCnjzAPyEqtQJXwscdu/lXEuKM3HFO9n7KfRX2D+4Z/b8p9i0I/rpr4LNjYkipNriApk2inlIurOrvVUdSL+i7M4Y44dpah5shO+CVW+sp4gZKlKjxGJvMKkHznUSy8yQhdzaEGXjkDOI6D7AdM8ti7EyQWatUVpNFT3+x6J823hhpntCZpMI6cp9tSiPV1V3eeGyUXXKsviFbP3jmNzfQ0fcCOtotoxhDrasuUoIDM0rAecDOPsEJpkvv1TLJbx8QWU4p8eIYiWFANsrRxdXAYoN9EKnT0m58zMljIHcJo0YEwm9lhqein1FGPh7K3azL/ypJMO4FbmGlRrlXWqITK2rjIrtP3pMUPlJs2fMmDWEGa+4yhqMUf4syjaaGx+GYp1DgaJBnOvIPyTXyEl1NTShbSsfP7NfabWf4a/cYAw==","page_age":null},{"type":"web_search_result","title":"California officials warn massive chemical tank will likely spill thousands of gallons or 'blow up'","url":"https://www.foxnews.com/us/california-officials-warn-massive-chemical-tank-likely-spill-thousands-gallons-blow","encrypted_content":"ErIJCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDL/LrORAOcM0TWvNABoM32qHUeP935E7+A3yIjDa2hOSHIJVH+fd2gIbk+/br4p8MOAizLmfpz8ZdzJ8KfMfff2RU9jOLZwp+4UAeP4qtQitbxCntt3y0znaVcnyKW8higCxLHRvCmpWiN1raNWee797YG+mKJsd7rmExbj11Gic4eWRyFWje4BXg2SIS0QAtWUx3QiMdqwb/m9gGIuTYx3BZRRXLPDbIRj1E6uvCfO5wFIzjkPr0NA4ZhVV2gVuNAF3y7AD7RC9R/f2xn8JnvxWIjUh4ocIZmYqKze68D/1sqW28DvHngbC0NIHnz/av+G90AQu6pgOaxhX3GO308s4GKn1UErNaEOgaR/Ovc36gHo1H+4yoglhkGpFOs1imTAlL+/Wy//Rorh0Fqcg732K+rVrVeTtTY+7jN6Fe8lgVPmC+lMNiLl+qlMKMGHf9mKboAz6Qfojomb0irxdwaTN4byMW8oEBYFu+7PTqQyg8gVLKY5Ll03k+hoE+ZZunBdWHxcP/pOv1yBEXVZxGycQq+Tsd0XT8ZtnlVm2XgwyrM00YuD9hWTv6eIguSOYTvkHBmF6EU68EyMzpPe06+G/bfwFAXS77jy4mMKyy9O34DFpu+HXW5CJ1zXog0pr9cntFi1CzlyUOYKx1Wh/DauETsB2LPVd+O17rFya+nruMqV0jtfk0ZHixb1dPkIJcbQumqwPtps3dQg3IRGVfxIE8RTOGCKC8Z4WMhbmFMMT7YsHVt7/adoQLp73Kxb8vnIRPG7cnN2phrLKO8X/UztNnEsmOzZowGVvFeGBmJHBZyLHumqX3m+xIE0trYdQxGXiZzltl2kFbFeXFptwXHssvdzh0IMGsQKDB0Lzj4ycrjCurMOZVeiNUzue3KXu8jhvv3ul3/HFN1gH/4vk4QC0fVjiAJ4bH6XnGmNfHXFsvUq+5lY3uUi1hW2SB6F357L1Qlnp1mrIPubeUS1WYt+tfZnP5ZiHBMEe+3awfgFFVaFFZQcNfLHI6ZBPZ+QtuHmaRPE/zYyIQQfLeDkqABVD1hd8XBLhsMsGuV+J1gYxHw0t/Q5ypJJBAZIG1leZNaKzcuyQT/lyBgcD+3nCa8TGaYTpOLs04X0Qn0uItS0o+LYbkdbZrbwkTd3yie/6nDwRRlI05Cyhp2Aey5rvZqhUvFyZfCQ3EodKrdrhOY9nHA30y8btlnks3sACcwPWctup1yUt2gDLI7mNqgarF20/e5350Wx/to/e3+Mr0VeKTghAAzsFpHHBRlgs/s3fWtKjORGFdqWHqBNHJuFHeA6as4AV007H6cI4OanJ0KY00y+3O5avkUG0/81RN+Qh9vJ3AJ1lEp5yZBFjzK6tuebmNXSjm+AaCzH47cMTJTMAng3Apu1/5JybI6mG3++OkyCB8wBztGrMnRzB6RSQOqDsgoteZxjoOAkokGAAQh3FDKMNcyINsIAOy6pqzWCNofUWCxSTAzE3eHllqQvBHO1QIe9KjKSHNLRKAUYf7Pc8hZ2RHrYAD4LTgQwykrfKgBjcA/sYAw==","page_age":null},{"type":"web_search_result","title":"Trump says U.S. will only sign Iran agreement if we get everything we want","url":"https://www.cbsnews.com/live-updates/iran-war-trump-us-peace-talks-strait-of-hormuz-control/","encrypted_content":"Ep0DCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDPpb7hiPMDhwAVG+YRoM7EPW6gBEXkn2E2veIjCiEHEyPC9O6kJPQXf+1aLM5iFF2XMplsDAQVz/8VK0q0C7lRD9kYSdzFV0Zx4H4hoqoAJaahB5U9p/WV6mNV5u5KQD2O4Oq4X7xaLoXikradzukwu8wPXPZ/X9BPeLKTUxQBapCNgGCDbZgkveqPf1y1T57N9nHUqPW5V/T9bRB0guTUe3GA6SMm3/DHfaGxKWkBBnIyXNVD1iYkjTrE6+X8ViNeW1PB8GVcSVpd9HnN9+gQrmTw1Rih0HnZxFo6NXT6ey9jmSNJWYVMNSyXKZflhUYm51UH9t5WJHvWM0C8wW9tAr2qi8C1PrYry8W5Gpipud8ymkzVD+aJV9vqbR1K+xvA6w2s1bu4vUg2aF/AzCO8h9wve9j4ULS2NxGiUqBJmKjI8POZvGL7BuPLx/h1nNJ9p/jFY3w/ZlM1EftZDQw7oWkDhEnHwujnnribfc0wAYAw==","page_age":null},{"type":"web_search_result","title":"Viral staff photo reveals just how bloated Stephen Colbert's 'Late Show' operation really was","url":"https://www.foxnews.com/outkick-culture/viral-staff-photo-reveals-bloated-stephen-colberts-late-show-operation-really","encrypted_content":"EssDCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDFN+KqqK04RPRxC5lxoM+U69JLjOGlbvaRHZIjBO67uQQ9DnHBgGIs3Qvat2/N1JnNb5IGXXqDo/8rGJqTQIwBb17V8Nc9AlWxY/8P8qzgJVwaA/DU+UU6orVwKMZTfEKRQ6koShpcarOPAE20FnhAuRuwRO3/Bn78acUhzbRBHslj8d1vbPq+lScIZs2P1f32cmpLSiFGZkViqY0xhf5dBCxTFv6sA19x2Vhjr8nXNZ0+g9O3fBIHg2j1q4iwS0U+I19t1Q0jSIqqufknviitJ6rURDQM5NTk5UmOXBJeM8y1itT/vLRkHGVbMNyJx3qEuUnItWjMBIJfuJqv0tE2G6lCYAbyQkWX7CAu/lLH8pDE+hdLKqyum/SZxQEKl7z5vFY2PT5mC7zpEjiuvDtfjJ16sEKcPOGkiX8uQQ1vtVw/txOEpUNOI9I8pwrHtuehQrXtFPw16fsV6wMCb76NmVD58P/L1ViB489lfb+gnv/HSVtAkyxgftmyCU5Dhqtyo+kebzjWix4jAdxjjhHfBmSA/caBkELjKhir4OGAM=","page_age":null},{"type":"web_search_result","title":"DOJ vows to appeal after judge dismisses smuggling charges against Kilmar Abrego Garcia as 'vindictive'","url":"https://www.foxnews.com/politics/doj-vows-appeal-judge-dismisses-smuggling-charges-kilmar-abrego-garcia-vindictive","encrypted_content":"EtYDCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDIctzkRP1AJVkL/ewBoMEslzm5bdSuMejJlSIjDh+JQ54XRPpzsxszr7EKdxs0jckEKkNhvHBQ49E2N7vg33iKwYV12/ZRy7JoJrbOkq2QKOIACsu/XqJRnwDvzLCe2WgAjKeXcAghKanbNDAmCV9BRg8DrlQNGFkW72tcnxoOISBoM8kDTHUuJ0m+oAEhz0EhaifM5Vq7TScyzwSBCMFg+wxZusYlEsGHFgpewRtJGIre3a2UY0qojK7x3inP7dw3T/NwWTIb13yNTT/Hfy6p7pgjlU9FNKyvn5Njv2nQshWxrfF83MEwol9bNX6JENVe9zlfIHcKt/Nt+b6XePZMv1ucQ2EzM2StbIuZIN1calQmWegXWNRtgrAoVvtbYt5eB03Ik1ExvkH5+Nw5W1Icoi++81WV3jsgRvfR5p9pc8M53HcMZaAENTHO/1q0yqK0TVEp6vc8D2HWpdyd8YBn3P88renaqkm406aIqCwKR0ar8tvHCjj6tI+MVNyEv9uRvYx8yjij8fW19sSzcMkmGX4lbqitWp55OpVbDDqC5qrNccIVQFLcYYAw==","page_age":null},{"type":"web_search_result","title":"Donald Trump Jr marries Bettina Anderson ahead of Bahamas wedding celebration","url":"https://www.foxnews.com/lifestyle/donald-trump-jr-marries-bettina-anderson-ahead-bahamas-wedding-celebration","encrypted_content":"EtMDCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDI/Z3a9XMew2PL32lBoMbvsyXt3BQT1ATsnlIjBV+8z9/Cgx8JQEFdEoQ/E2tf/wq7n0+AcBLwP+vv2w5jh5LSbr4K5O3h0v/xQ95oEq1gJ7JKzKoW0nB3t3Qjjhe2H10WFQvl20yS3xDloCIOEW7PqmZ7lsRG2wXDEpV2B7CMEIXRn/77DzYqMQeSCaFY7h+zo+g4QqzS0kkpLg4HT1YceoWqF92yMYaXOTJQGVfIOhlXeG+tQHFTX5ZDV5F9L4x4hghsiZeITQBAEXrnuLrYyWRBOKB/IpWfQKqAUSdYCfGdcNAVkyNWB8yiG3MQkpGFjNS4kRmvc9WBM034zWRVFfFdb6DzIK7is0LUCBMvgCB+6QlsWeJf60LPqWlBkoHnYygpdmcqMejep9fT6GNBUgLAhMZUE4ZpVOwxgKdhgDbRRqII28IC7P6M4nJf0zP69zfIDR2EVJCvJE267Ucpjbbcs9g4O3WWb36NM4RLNPRng2pbxjYvIDyjB5wABXuCombykS9d8NHse1CFP9hfHHjL+/G65sb1zWNWkiiFmuDzHIE6UYAw==","page_age":null},{"type":"web_search_result","title":"Pentagon releases more UFO files: Speechless after these observations","url":"https://www.cbsnews.com/news/ufo-files-pentagon-videos-documents/","encrypted_content":"Eq8DCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDFKyTT4+Ka8ih/lmDRoMxuEXkvMClzRaMK4NIjCsBfS/hHw1hUrAS7EL8g//cvMUnc6YXUYT0aHYjnc8uqKL+CIAFKvw+D0x/s8JVwMqsgKmxezkffbLcIdV6yRvqHa1nkbU/uErRXHt2D7DS30TXVorZutuVPoqLdE5cp1glag7D2GHdOLISbgba7idgVcmNuReJ5n9tJypVyZifQMVqcIcaFE+qQYnOanRrLPdVwotLKEFKZe0ykuWASK7t88e/k2XWr+nCq1tVdCucZEN9GdhUuyk5WWIh+2G8W9rr6DKD36tyMoseKaXbW14KnwrxPXbQf7PehrVKf7c/aSNIMBC16i3eWVC9h14bZ33sYjFPNyxDpD3dLX+hGFMOhdFRsqpwkpEJ10/NR51cUry6vl9bCq3wX0g88BJzmTcWdDfv3YdA6+IjT84JLLgEtqqX6JLaC4QzrlAw1RcWx594y7bSRFfoiVlBLHQYT9kxt8DpT59ApVkOVj+FHymlKp1ZoIYAw==","page_age":null},{"type":"web_search_result","title":"Gas prices threaten Memorial Day road trips as pump costs hit historic highs","url":"https://www.foxnews.com/politics/gas-prices-threaten-memorial-day-road-trips-pump-costs-hit-historic-highs","encrypted_content":"ErADCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDC/B1eGLFlg/wH9/XhoMqZQqpzPEKC/IacSIIjDvSANe85ewXnQ6KWBjPeXGBmJJXQcxUXEo96SdWRXRNmdHCfX5K6cSsSlOWhmobPcqswJNCQICyYsQjTKWeUO+tRffE6oI0r7oE20oORdI0bzfSdMBFJiD1xHv3tU0xlQ5xHKEP28UjuOrln+5l5kxARUl9gBIJ8bwx3qoe2DbkpoFuBIeDDHwwz0FD+WgxvqRcs0K2V7SQSWWX+TrtZDNiz4dzkkVYObe8ZW7BzB777nf+m0W9OAw2xYo/y93NKe+VzjZ5jF01dzWYRH878aBOhHdXxXaR9AoO/H5ZqFSbibNLilvG/lN0/6F0P2E5T1TXsjPKCxNLCboUq0JUWQo8rKbUmcKNqwrVO8ATAPjdZsS3PGUaqIHX/iUMVjyGHIwl/A4wkhQClVOPAfVXBMvmduYzR7zv+NGOZ0AY8VwKdMupMWX/7ODPXbUrNrY1UTDnTIkEKrtCbjZon0Z/LVBXIXaWDS3GAM=","page_age":null},{"type":"web_search_result","title":"Marco Rubio visits India: What’s at stake with Trump-Modi ties strained?","url":"https://www.aljazeera.com/news/2026/5/22/marco-rubio-visits-india-whats-at-stake-with-trump-modi-ties-strained?traffic_source=rss","encrypted_content":"EvMCCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDO8bse1rejriEqgleRoMYyAzt279Mqiity1xIjAGFSvJY0OV698KXTDFmv5jq3EEb5uckBZrDvjQf+RKiWtquKdbOhrtKWZNTr9qrL8q9gFtY2Tn30mi3qmGDw1DYBdOuWLg13i/X8UAw5ZEjOktoZi/IXnr9QPjnV4Ic0nmn4JRaNjdUXTpU8+aFUvjhcD+zB6CNYSxnel4J5iF3iNleVTe8JZT2R6YRviDyw0HjTiAQOeevBFkXIONpUO9EWzT+VbD6+60Vezy5Dd2mBsd1eGW5pq28OFRSjCPFv1r9sXQIGFLPclP5dCy3Ou477e77sjs7vltdbTFs33nTrFiQaQJhebXB8Yg6VwHnMeIIQYQywesLlCcCgpnbMXhir3vwGfLBIWp9If2za+DOSYwkprn7f+itev5NYw+j8w1DEu7vuRBQuYYAw==","page_age":null}],"caller":{"type":"direct"}}          }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1 }
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Based"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" on the latest news, one of today's top headlines is: "}       }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2        }
+
+event: content_block_start
+data: {"type":"content_block_start","index":3,"content_block":{"citations":[],"type":"text","text":""}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"BREAKING NEWS: NASCAR champion Kyle Busch’s cause of death revealed by family\n\nTwo-time NASCAR Cup Series champion Kyle Busch died Thursday from compl...","url":"https://www.foxnews.com/sports/nascar-kyle-busch-cause-death-revealed-family","title":"NASCAR champion Kyle Busch’s cause of death revealed by family","encrypted_index":"Eo8BCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDLNqqXHfKAKxe0drbxoMzRm/0DIYt9K2FqqtIjCl+lSJiJx7alt0iUS3M1JC7t9A8GGoTAl4hTBPWQZFgkfVS7WuocOaDSSAf5HerDoqE/jkQC+rFaXdKLHk8AJdVs5TS0gYBA=="}}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":"Two-time NASCAR Cup Series champion Kyle Busch died Thursday from complications related to severe pneumonia that progressed into sepsis"}         }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":3          }
+
+event: content_block_start
+data: {"type":"content_block_start","index":4,"content_block":{"type":"text","text":""}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":", according to FOX News (published 6 hours ago on May 23"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":", 2026).\n\nOther major headlines today include President Trump's statement on Iran"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":" peace negotiations and rising gas prices threatening Memorial Day travel plans."}            }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":4}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":7080,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":160,"server_tool_use":{"web_search_requests":1,"web_fetch_requests":0}}       }
+
+event: message_stop
+data: {"type":"message_stop"               }
+

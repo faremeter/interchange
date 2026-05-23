@@ -1,0 +1,7 @@
+{
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-5-20250929",
+  "capability": "function-calling-multi-turn-streaming",
+  "capturedAt": "2026-05-23T20:54:46.600Z",
+  "schemaVersion": "1"
+}

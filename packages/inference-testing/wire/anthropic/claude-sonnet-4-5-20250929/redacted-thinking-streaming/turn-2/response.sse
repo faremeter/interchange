@@ -1,0 +1,48 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_012TEVEWJwbHFZucku5TRGgi","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":169,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":8,"service_tier":"standard","inference_geo":"not_available"}}         }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}            }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user is asking me to summarize"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" my previous response in one sentence. I said that I don't have special responses to trigger strings or hidden modes, and I'm Claude made"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" by Anthropic who responds straightforwardly to all inputs, then offered to help.\n\nA brief"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" one-sentence summary would be: I explained that I don't have hidden modes activated by trigger strings and asked if I"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" could help with something."}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EucECm4IDhgCKkBmKqWceoA7EDZQklUOpkUpOaBZsA+RoAMDiAykEVcTxrdAllSrSCwdnDnM4e7p/WUFqTStgl6Bdgj7CQmBqF9xMhpjbGF1ZGUtc29ubmV0LTQtNS0yMDI1MDkyOTgAQgh0aGlua2luZxIMsvhgQC2qIx24NbWkGgzRfPwIlzi7BAzkyeoiMJUhrA5bLcaZOAVSlYfgzZ6fUEyk5dfdCa3BhZ2521hPr09N9IoVjvuRtqoDKp6MQiqmA33abDYWLjyGL3LN10Sk1Yst2GE3jNzcZ2x72oFbTllYip9bnyBt8nrjAyzvqdgHwddfKIaTiJunXyiS7ZOYq+4QFIG0v+YpizTajr2v9TRtbe6gYFgjkUMX6ax1RdEdd3KtsOQU2aRQzGh7gxdPqkJk4QS0OsCDFIsmOZ8PL8t4wvMOf0fbx8hI7/q0JkOW9/LSbdWnz1K53vKrxbmG3rVHGflOiS381e2G0c1hHFB5y9c12PIlhnE2lFV6LwsL0tKc3nc6f9dgPXvBwbg0GmMcUVD8S1j6XI7tSkpiJbiAoaw1tAWj3O47GHxfQIPq3R0/HEa063Y5trO2dzl3PvD+NsPQAdJmtyCLF96HHU/oCQjUwlejMhpqTuw5dpGRgk9ozWDof1JIOOTBbMK8b/8Fm/VXz0Q89QSfWfRYo6brENVQXbYwSIba0QjLsUI3TlUVdz4oCTxoWr9I7FGFGnl5icumzbLUXM5N2mcF8g2Yj+9/CL153NOWrPuAz/VhXyMRk6U0ewnSdZLXTFmFurU9M/7S2a+qEq3+LDtEoi7JHIr9+xWzGAE="}             }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0              }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"I explained that I don't have hidden modes activated by special strings and offered to help you"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" with something."}       }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1       }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":169,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":119}          }
+
+event: message_stop
+data: {"type":"message_stop"           }
+

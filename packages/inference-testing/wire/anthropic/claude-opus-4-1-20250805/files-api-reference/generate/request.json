@@ -1,0 +1,22 @@
+{
+  "model": "claude-opus-4-1-20250805",
+  "max_tokens": 512,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "document",
+          "source": {
+            "type": "file",
+            "file_id": "file_011CbLAq8vTADjmjNwQ86CiJ"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Summarize the attached document in one sentence."
+        }
+      ]
+    }
+  ]
+}

@@ -20,7 +20,39 @@ import {
 } from "./request-body";
 import { extractReasoningTrace } from "./reasoning";
 import { createAnthropicPlugin, iterateCaptureSteps } from "./index";
-import type { AnthropicContentBlock } from "./request-body";
+import type {
+  AnthropicContentBlock,
+  AnthropicMessage,
+  AnthropicRequestBody,
+} from "./request-body";
+
+function isAnthropicBody(value: unknown): value is AnthropicRequestBody {
+  if (typeof value !== "object" || value === null) return false;
+  if (!("model" in value) || typeof value.model !== "string") return false;
+  if (!("max_tokens" in value) || typeof value.max_tokens !== "number") {
+    return false;
+  }
+  if (!("messages" in value) || !Array.isArray(value.messages)) return false;
+  return true;
+}
+
+function expectAnthropicBody(value: unknown): AnthropicRequestBody {
+  if (!isAnthropicBody(value)) {
+    throw new Error(
+      "expected AnthropicRequestBody {model: string, max_tokens: number, messages: array}",
+    );
+  }
+  return value;
+}
+
+function expectArrayContent(
+  message: AnthropicMessage,
+): AnthropicContentBlock[] {
+  if (typeof message.content === "string") {
+    throw new Error("expected an array-content message");
+  }
+  return message.content;
+}
 
 const TEST_API_KEY = "test-anthropic-key";
 const SONNET = "claude-sonnet-4-5-20250929";
@@ -56,7 +88,7 @@ describe("createAnthropicPlugin", () => {
     expect(plugin.models).toEqual([
       "claude-sonnet-4-5-20250929",
       "claude-opus-4-1-20250805",
-      "claude-haiku-4-5-20251022",
+      "claude-haiku-4-5-20251001",
     ]);
     expect(plugin.redactRequestHeaders).toEqual(["x-api-key"]);
     expect(plugin.redactResponseHeaders).toEqual([]);
@@ -435,6 +467,7 @@ describe("iterateCaptureSteps", () => {
           },
         ],
       },
+      bytes: null,
     };
     const steps = collectSteps({
       model: SONNET,
@@ -460,6 +493,7 @@ describe("iterateCaptureSteps", () => {
           { type: "text", text: "Done." },
         ],
       },
+      bytes: null,
     };
     const steps = collectSteps({
       model: SONNET,
@@ -476,6 +510,7 @@ describe("iterateCaptureSteps", () => {
       status: 200,
       headers: {},
       parsed: { id: "file_abc", filename: "sample.pdf" },
+      bytes: null,
     };
     const steps = collectSteps({
       model: SONNET,
@@ -498,6 +533,65 @@ describe("iterateCaptureSteps", () => {
     expect(generate.kind).toBe("json");
     expect(generate.subdir).toBe("generate");
     expect(generate.url).toBe("https://api.anthropic.com/v1/messages");
+  });
+
+  test("streaming multi-turn reconstructs assistant blocks from turn-1 SSE bytes", () => {
+    const turn1Sse = [
+      "event: message_start",
+      'data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[]}}',
+      "",
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_sse_1","name":"get_weather","input":{}}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"location\\":\\"Boston, MA\\"}"}}',
+      "",
+      "event: content_block_stop",
+      'data: {"type":"content_block_stop","index":0}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+    ].join("\n");
+    const turn1Response: CapturedResponse = {
+      status: 200,
+      headers: {},
+      parsed: null,
+      bytes: new TextEncoder().encode(turn1Sse),
+    };
+    const steps = collectSteps({
+      model: SONNET,
+      capability: "function-calling-multi-turn-streaming",
+      responses: [turn1Response],
+    });
+    expect(steps.length).toBe(2);
+    const turn2 = steps[1];
+    if (turn2 === undefined || turn2.kind !== "json") {
+      throw new Error("expected JSON turn-2");
+    }
+    const body = expectAnthropicBody(turn2.body);
+    const assistantTurn = body.messages[1];
+    if (assistantTurn === undefined || assistantTurn.role !== "assistant") {
+      throw new Error("turn-2 messages[1] is not the assistant echo");
+    }
+    expect(assistantTurn.content).toEqual([
+      {
+        type: "tool_use",
+        id: "toolu_sse_1",
+        name: "get_weather",
+        input: { location: "Boston, MA" },
+      },
+    ]);
+    const userFollowUp = body.messages[2];
+    if (userFollowUp === undefined || userFollowUp.role !== "user") {
+      throw new Error("turn-2 messages[2] is not the user follow-up");
+    }
+    const userContent = expectArrayContent(userFollowUp);
+    const toolResult = userContent[0];
+    if (toolResult === undefined || toolResult.type !== "tool_result") {
+      throw new Error("turn-2 user follow-up missing a tool_result block");
+    }
+    expect(toolResult.tool_use_id).toBe("toolu_sse_1");
   });
 
   test("code-execution carries the beta header on the per-step headers map", () => {

@@ -3,7 +3,12 @@ import type { Capability, CapabilityIntent } from "./catalog";
 export interface CapturedResponse {
   status: number;
   headers: Record<string, string>;
+  // Populated for application/json responses; null for SSE.
   parsed: unknown | null;
+  // Populated for text/event-stream responses; null otherwise. Iterators
+  // that consume streaming turn-1 responses to build a turn-2 body parse
+  // these bytes themselves — the runner does not interpret SSE.
+  bytes: Uint8Array | null;
 }
 
 export interface IterateCaptureStepsOpts {

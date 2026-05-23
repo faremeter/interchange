@@ -1,0 +1,32 @@
+{
+  "model": "claude-opus-4-1-20250805",
+  "id": "msg_011jk4Ns6KgayMzyTefGWZt6",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "The human asked me to summarize my previous response in one sentence. My previous response was about not being able to process a specific string of characters and offering to help if they have a regular question. I should provide a brief, one-sentence summary of that.",
+      "signature": "EtsDCmwIDhgCKkBXv9je5JdNBcMGyPMEs7PJRd5gzz4C8UZOGMxoOwIfPrx7C6NfsrpV5DYZUQSXD7Gq2RNgyFnnINdRMdAKDoIAMhhjbGF1ZGUtb3B1cy00LTEtMjAyNTA4MDU4AEIIdGhpbmtpbmcSDClaBFvqf4yONulFkBoMylFrxM6YooOflePLIjBR819Br7wcvv+ncCeCCt82jbVyzyCpY1fVI0xlB999Zzf3W5hXfZ0wh3NXna9YtcgqnALRqxQRWnXiUj7pRtyM/keUkqFldXIQF+SJ0fdkGsnjDKDswCAGUVkfr1oFH71jgmMw0LX9qdBFH2Iuob+tGfQi/pg9WjNqut1ufF5FPy2h20PDOWthcsN+8BKaS192Xx5Vg4aWOOAfZ8fcvKGFoLI2W+lsw2s0E2bUIhEuNtkCl3Y6rIb/lK51nzjSma+DEEwxnWFVKPY8Tl9OSVrCNHIrj5WWRIeIQeBZ+tt4BaVCUdFGWWCrznDpLsmm5vtj5w2ViCOCJ5GIK1cHVyffcwApGFzxIO2QWLEV6avmPCtLcjAcpCuDhIaY9erqiqC8kJ1aZmtOua7CBm7uVbyOlWdX5Id44eovnhT8M/DHfpYRqUjX9WX9O67OOcAZ2xgB"
+    },
+    {
+      "type": "text",
+      "text": "I said I couldn't process that character string but would be happy to help with any regular questions you might have."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 157,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 87,
+    "service_tier": "standard",
+    "inference_geo": "not_available"
+  }
+}

@@ -1,0 +1,69 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_01QDBwQyj8bymqvut8ReDpyA","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":632,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":3,"service_tier":"standard","inference_geo":"not_available"}}               }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}     }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user is"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" asking for the weather in Boston, MA. Let me think step by step:\n\n1. I need to find the current weather for a"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" specific location\n2. The location is \"Boston, MA\"\n3. I have a tool called \"get_weather\" that looks"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" up the current weather for a city\n4. The function requires a \"location\" parameter\n5. The user has provided the location: \"Boston, MA\"\n\nSo"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" I should call the get_weather function with location=\"Boston, MA\"."}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EvoECm4IDhgCKkAoY3SAyMceFBP09/zzy31t0he0i1YP9RleYw1pjUIxxhqYeumB1WcpuIT5CmRpoUOpAw/r9YwUDyV1J7DE55/KMhpjbGF1ZGUtc29ubmV0LTQtNS0yMDI1MDkyOTgAQgh0aGlua2luZxIMRniGaFXxlSS1Kdv8Ggx5tnebdmC4T/lOzAkiMLa5B+xD1RnQ5PyWCj4NnzYji2rPkja27B08OoMw+IOkInLMBQ8vqTpynD+81xOMtSq5A47hutUlLFqwAodYoGb3D6F0h9CW47m3KNuB/0iIpizsWfCNzGNBhhOIO9HO0Uq2fRnZrA15kxt9K/GvgF4mihhqZOrGywMPpsActLhjvVviKVq5Qu/rP2DPRmkXsyYJesAQIs/AGQS1nYVVRGMyML9KWKYorZsoLb00zhRKbwZcvvgMJgT2rm/7/QX18Pe0rx3Z2sLW8ZaNvvoQ9Q10gN3R2D6It6k/tqR3e0ZTHlm+bHs8UFXK0UY5zuyR8oiC3YGtLna8FoPd3LU5Hqj1h0/7BLI9Pti1M82xVHa0zc1IqksZhi6LEq0Ied6uC0HzgO9tulstaTTWhN1jboG1XqGjB34sMEG3V5GQ2Pj65+wTTStk35m0BJ1FE9uXjpbpEAlH1/adWEM+4J9yaSO7U16BeU75me1qX9limnwRUHoLDJKjcpmeceeDu1MVocO0LI1uRpciTjIRObCwU2sJW1lTR6U355hGt5sENCEZRabTRmFESKB5NIUUoNO/PyxRN6RxkNB8dNkWgi2Y4aFI4++tZViegcWz1hJmF5C294adI0TPJhY6WCmfWsiXsd6/niIX+/v6tmMIdBgB"}          }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0              }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"I need to look up the current weather for Boston, MA. I"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"'ll use the `get_weather` function with the location parameter set to \"Boston, MA\"."}       }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1          }
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_01R5qJxhy1cC2L1TmHeFGCua","name":"get_weather","input":{},"caller":{"type":"direct"}}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":""}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"location"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\": "}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\"Boston, "}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"MA\"}"} }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2  }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":632,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":207}        }
+
+event: message_stop
+data: {"type":"message_stop" }
+
