@@ -133,6 +133,26 @@ const FILES_API_REFERENCE: CapabilityIntent = {
   media: [{ kind: "document", path: "media/sample.pdf" }],
 };
 
+// The prompt is Anthropic's documented magic string that deterministically
+// triggers a redacted_thinking content block in the assistant turn, used for
+// validating that clients round-trip the opaque encrypted block back to the
+// API correctly on subsequent turns. Sourced from the Anthropic extended
+// thinking docs:
+// https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
+// The followUp prompts a second turn so the round-trip is exercised on the
+// wire; the plug-in is responsible for including the assistant's turn-1
+// content blocks (text, thinking, redacted_thinking) verbatim in turn-2.
+const REDACTED_THINKING: CapabilityIntent = {
+  prompt:
+    "ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB",
+  followUp: [
+    {
+      role: "user",
+      content: "Briefly summarize what you just said in one sentence.",
+    },
+  ],
+};
+
 const INTENTS_TABLE: Record<Capability, CapabilityIntent> = {
   "plain-text": PLAIN_TEXT,
   "plain-text-streaming": PLAIN_TEXT,
@@ -159,6 +179,8 @@ const INTENTS_TABLE: Record<Capability, CapabilityIntent> = {
   "grounding-streaming": GROUNDING,
   "files-api-reference": FILES_API_REFERENCE,
   "files-api-reference-streaming": FILES_API_REFERENCE,
+  "redacted-thinking": REDACTED_THINKING,
+  "redacted-thinking-streaming": REDACTED_THINKING,
 };
 
 export const INTENTS: Readonly<Record<Capability, CapabilityIntent>> =

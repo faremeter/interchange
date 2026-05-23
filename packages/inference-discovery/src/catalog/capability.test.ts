@@ -3,8 +3,8 @@ import { type } from "arktype";
 import { CAPABILITIES, Capability } from "./capability";
 
 describe("CAPABILITIES vocabulary", () => {
-  test("declares exactly 25 capabilities", () => {
-    expect(CAPABILITIES.length).toBe(25);
+  test("declares exactly 27 capabilities", () => {
+    expect(CAPABILITIES.length).toBe(27);
   });
 
   test("contains no duplicate names", () => {
