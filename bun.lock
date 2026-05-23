@@ -320,6 +320,14 @@
         "arktype": "catalog:",
       },
     },
+    "packages/inference-discovery-anthropic": {
+      "name": "@intx/inference-discovery-anthropic",
+      "version": "0.0.0",
+      "dependencies": {
+        "@intx/inference-discovery": "workspace:*",
+        "arktype": "catalog:",
+      },
+    },
     "packages/inference-discovery-google-genai": {
       "name": "@intx/inference-discovery-google-genai",
       "version": "0.0.0",
@@ -674,6 +682,8 @@
     "@intx/inference": ["@intx/inference@workspace:packages/inference"],
 
     "@intx/inference-discovery": ["@intx/inference-discovery@workspace:packages/inference-discovery"],
+
+    "@intx/inference-discovery-anthropic": ["@intx/inference-discovery-anthropic@workspace:packages/inference-discovery-anthropic"],
 
     "@intx/inference-discovery-google-genai": ["@intx/inference-discovery-google-genai@workspace:packages/inference-discovery-google-genai"],
 
