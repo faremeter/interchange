@@ -6,13 +6,18 @@ import { buildManifest } from "./manifest";
 import type { CaptureStep, CapturedResponse, ProviderPlugin } from "./plugin";
 import {
   writeCapture,
+  type RequestBody,
   type ResponseBody,
   type WriteCaptureInput,
 } from "./write-capture";
 
 export type FetchLike = (
   input: string,
-  init: { method: string; headers: Record<string, string>; body: string },
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    body: string | Uint8Array;
+  },
 ) => Promise<Response>;
 
 export interface RunCaptureOpts {
@@ -23,6 +28,18 @@ export interface RunCaptureOpts {
   outDir: string;
   now?: () => Date;
   fetch?: FetchLike;
+}
+
+const REASONING_TRACE_CAPABILITY_PREFIXES = [
+  "reasoning-content",
+  "redacted-thinking",
+] as const;
+
+function shouldEmitReasoningTrace(capability: Capability): boolean {
+  for (const prefix of REASONING_TRACE_CAPABILITY_PREFIXES) {
+    if (capability.startsWith(prefix)) return true;
+  }
+  return false;
 }
 
 function headersToObject(headers: Headers): Record<string, string> {
@@ -40,6 +57,63 @@ const defaultFetch: FetchLike = (input, init) =>
     body: init.body,
   });
 
+function mergeHeaders(
+  defaults: Record<string, string>,
+  stepHeaders: Record<string, string>,
+  authHeaders: Record<string, string>,
+): Record<string, string> {
+  const authKeys = new Set(
+    Object.keys(authHeaders).map((k) => k.toLowerCase()),
+  );
+  for (const key of Object.keys(stepHeaders)) {
+    if (authKeys.has(key.toLowerCase())) {
+      throw new Error(
+        `capture step attempted to override plug-in auth header '${key}'; ` +
+          `auth headers are plug-in-wide and cannot be overridden per step`,
+      );
+    }
+  }
+  // Default → step overrides default → auth wins over everything.
+  return { ...defaults, ...stepHeaders, ...authHeaders };
+}
+
+function buildRequestForStep(
+  step: CaptureStep,
+  authHeaders: Record<string, string>,
+): {
+  method: string;
+  headers: Record<string, string>;
+  body: string | Uint8Array;
+  request: RequestBody;
+} {
+  const method = step.method ?? "POST";
+  const stepHeaders = step.headers ?? {};
+  if (step.kind === "raw") {
+    const headers = mergeHeaders(
+      { "Content-Type": step.contentType },
+      stepHeaders,
+      authHeaders,
+    );
+    return {
+      method,
+      headers,
+      body: step.body,
+      request: { kind: "raw", bytes: step.body, contentType: step.contentType },
+    };
+  }
+  const headers = mergeHeaders(
+    { "Content-Type": "application/json" },
+    stepHeaders,
+    authHeaders,
+  );
+  return {
+    method,
+    headers,
+    body: JSON.stringify(step.body),
+    request: { kind: "json", body: step.body },
+  };
+}
+
 async function captureStep(args: {
   step: CaptureStep;
   outDir: string;
@@ -51,18 +125,19 @@ async function captureStep(args: {
 
   const stepDir =
     step.subdir === null ? outDir : path.join(outDir, step.subdir);
-  const serializedBody = JSON.stringify(step.body);
 
   const authHeaders = plugin.buildAuthHeaders();
-  const requestHeaders: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...authHeaders,
-  };
+  const {
+    method,
+    headers: requestHeaders,
+    body,
+    request,
+  } = buildRequestForStep(step, authHeaders);
 
   const response = await doFetch(step.url, {
-    method: "POST",
+    method,
     headers: requestHeaders,
-    body: serializedBody,
+    body,
   });
 
   const responseHeaders = headersToObject(response.headers);
@@ -82,7 +157,7 @@ async function captureStep(args: {
   }
 
   const captureInput: WriteCaptureInput = {
-    request: step.body,
+    request,
     requestHeaders,
     redactRequestHeaders: plugin.redactRequestHeaders,
     response: captured,
@@ -94,7 +169,7 @@ async function captureStep(args: {
 
   if (
     plugin.extractReasoningTrace !== undefined &&
-    capability.startsWith("reasoning-content") &&
+    shouldEmitReasoningTrace(capability) &&
     parsedForGenerator !== null
   ) {
     const trace = plugin.extractReasoningTrace(parsedForGenerator);

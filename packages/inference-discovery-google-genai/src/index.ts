@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import {
   resolveMediaPath,
   type Capability,
@@ -43,16 +43,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-interface UploadEnvelope {
-  method: "POST";
+interface UploadStepDescriptor {
   url: string;
   mimeType: string;
-  contentLength: number;
   displayName: string;
-  assetPath: string;
+  bytes: Uint8Array;
 }
 
-function buildUploadEnvelope(intent: CapabilityIntent): UploadEnvelope {
+function buildUploadDescriptor(intent: CapabilityIntent): UploadStepDescriptor {
   const media = intent.media?.[0];
   if (media === undefined) {
     throw new Error(
@@ -60,13 +58,12 @@ function buildUploadEnvelope(intent: CapabilityIntent): UploadEnvelope {
         "files-api-reference intent must declare the document to upload.",
     );
   }
+  const bytes = readFileSync(resolveMediaPath(media));
   return {
-    method: "POST",
     url: FILES_API_UPLOAD_URL,
     mimeType: mimeTypeForMedia(media),
-    contentLength: statSync(resolveMediaPath(media)).size,
     displayName: basename(media.path),
-    assetPath: media.path,
+    bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
   };
 }
 
@@ -254,11 +251,18 @@ export function* iterateCaptureSteps(
   const { model, capability, intent } = opts;
 
   if (FILES_API_CAPABILITIES.has(capability)) {
-    const uploadBody = buildUploadEnvelope(intent);
+    const upload = buildUploadDescriptor(intent);
     const uploadResponse = yield {
+      kind: "raw",
       subdir: "upload",
-      url: uploadBody.url,
-      body: uploadBody,
+      url: upload.url,
+      method: "POST",
+      contentType: upload.mimeType,
+      headers: {
+        "X-Goog-Upload-Protocol": "raw",
+        "X-Goog-Upload-File-Name": upload.displayName,
+      },
+      body: upload.bytes,
     };
     const fileUri = extractFileUri(uploadResponse.parsed);
     const mimeType = extractMimeTypeFromUpload(uploadResponse.parsed);
@@ -268,6 +272,7 @@ export function* iterateCaptureSteps(
       mimeType,
     });
     yield {
+      kind: "json",
       subdir: "generate",
       url: buildEndpointURL({ model, capability }),
       body: generateBody,
@@ -279,6 +284,7 @@ export function* iterateCaptureSteps(
     const turn1Body = buildRequestBody({ model, capability, intent });
     const url = buildEndpointURL({ model, capability });
     const turn1Response = yield {
+      kind: "json",
       subdir: "turn-1",
       url,
       body: turn1Body,
@@ -290,6 +296,7 @@ export function* iterateCaptureSteps(
       turn1Response: turn1Response.parsed,
     });
     yield {
+      kind: "json",
       subdir: "turn-2",
       url,
       body: turn2Body,
@@ -298,6 +305,7 @@ export function* iterateCaptureSteps(
   }
 
   yield {
+    kind: "json",
     subdir: null,
     url: buildEndpointURL({ model, capability }),
     body: buildRequestBody({ model, capability, intent }),

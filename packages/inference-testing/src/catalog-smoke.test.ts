@@ -13,6 +13,7 @@ const repoRoot = join(import.meta.dir, "..", "..", "..");
 
 function hasCapturedRequest(dir: string): boolean {
   if (existsSync(join(dir, "request.json"))) return true;
+  if (existsSync(join(dir, "request.bin"))) return true;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.isDirectory() && hasCapturedRequest(join(dir, entry.name))) {
       return true;

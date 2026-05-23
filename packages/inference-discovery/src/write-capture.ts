@@ -5,8 +5,12 @@ export type ResponseBody =
   | { kind: "json"; body: unknown }
   | { kind: "sse"; bytes: Uint8Array };
 
+export type RequestBody =
+  | { kind: "json"; body: unknown }
+  | { kind: "raw"; bytes: Uint8Array; contentType: string };
+
 export interface WriteCaptureInput {
-  request: unknown;
+  request: RequestBody;
   requestHeaders: Record<string, string>;
   redactRequestHeaders: readonly string[];
   response: ResponseBody;
@@ -43,10 +47,14 @@ export async function writeCapture(
     input.redactResponseHeaders,
   );
 
-  await fs.writeFile(
-    path.join(dir, "request.json"),
-    `${JSON.stringify(input.request, null, 2)}\n`,
-  );
+  if (input.request.kind === "json") {
+    await fs.writeFile(
+      path.join(dir, "request.json"),
+      `${JSON.stringify(input.request.body, null, 2)}\n`,
+    );
+  } else {
+    await fs.writeFile(path.join(dir, "request.bin"), input.request.bytes);
+  }
   await fs.writeFile(
     path.join(dir, "request-headers.json"),
     `${JSON.stringify(redactedRequest, null, 2)}\n`,

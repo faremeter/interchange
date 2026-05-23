@@ -14,6 +14,7 @@ function* singleStepIterator(opts: {
   intent: CapabilityIntent;
 }): Generator<CaptureStep, void, CapturedResponse> {
   yield {
+    kind: "json",
     subdir: null,
     url: `https://example.test/${opts.model}/${opts.capability}`,
     body: { prompt: opts.intent.prompt },
@@ -36,6 +37,10 @@ async function makeTempDir(): Promise<string> {
   return await fs.mkdtemp(path.join(os.tmpdir(), "runner-test-"));
 }
 
+function bodyToString(body: string | Uint8Array): string {
+  return typeof body === "string" ? body : new TextDecoder().decode(body);
+}
+
 describe("runCapture", () => {
   let dir: string;
 
@@ -50,7 +55,7 @@ describe("runCapture", () => {
   test("captures a JSON response into the expected files", async () => {
     let observedURL = "";
     let observedHeaders: Record<string, string> = {};
-    let observedBody = "";
+    let observedBody: string | Uint8Array = "";
 
     const stubFetch: FetchLike = async (url, init) => {
       observedURL = url;
@@ -75,7 +80,7 @@ describe("runCapture", () => {
     expect(observedURL).toBe("https://example.test/test-model/plain-text");
     expect(observedHeaders["Content-Type"]).toBe("application/json");
     expect(observedHeaders["X-Api-Key"]).toBe("secret-key");
-    expect(JSON.parse(observedBody)).toEqual({ prompt: "hi" });
+    expect(JSON.parse(bodyToString(observedBody))).toEqual({ prompt: "hi" });
 
     const entries = (await fs.readdir(dir)).sort();
     expect(entries).toEqual([
@@ -188,6 +193,36 @@ describe("runCapture", () => {
     expect(trace).toEqual({ fieldPath: "x", text: "thoughts" });
   });
 
+  test("invokes extractReasoningTrace for redacted-thinking captures and writes the trace", async () => {
+    let invoked = false;
+    const plugin = makePlugin({
+      extractReasoningTrace: () => {
+        invoked = true;
+        return { fieldPath: "content[0].data", text: "<redacted>" };
+      },
+    });
+    const stubFetch: FetchLike = async () =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    await runCapture({
+      plugin,
+      model: "test-model",
+      capability: "redacted-thinking",
+      intent: INTENT,
+      outDir: dir,
+      fetch: stubFetch,
+    });
+
+    expect(invoked).toBe(true);
+    const trace = JSON.parse(
+      await fs.readFile(path.join(dir, "reasoning-trace.json"), "utf8"),
+    );
+    expect(trace).toEqual({ fieldPath: "content[0].data", text: "<redacted>" });
+  });
+
   test("does not write reasoning-trace.json when extractReasoningTrace returns null", async () => {
     const plugin = makePlugin({
       extractReasoningTrace: () => null,
@@ -248,11 +283,13 @@ describe("runCapture", () => {
       intent: CapabilityIntent;
     }): Generator<CaptureStep, void, CapturedResponse> {
       const first = yield {
+        kind: "json",
         subdir: "turn-1",
         url: `https://example.test/${opts.model}/${opts.capability}/turn-1`,
         body: { prompt: opts.intent.prompt },
       };
       yield {
+        kind: "json",
         subdir: "turn-2",
         url: `https://example.test/${opts.model}/${opts.capability}/turn-2`,
         body: { prior: first.parsed, prompt: "follow-up" },
@@ -264,7 +301,7 @@ describe("runCapture", () => {
     const stubFetch: FetchLike = async (url, init) => {
       fetchCalls += 1;
       observedURLs.push(url);
-      observedBodies.push(JSON.parse(init.body));
+      observedBodies.push(JSON.parse(bodyToString(init.body)));
       return new Response(JSON.stringify({ step: fetchCalls }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -313,6 +350,137 @@ describe("runCapture", () => {
       capability: "function-calling-multi-turn",
       schemaVersion: "1",
     });
+  });
+
+  test("captures a raw-bytes step into request.bin with the supplied content-type", async () => {
+    const payload = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31]);
+    let observedHeaders: Record<string, string> = {};
+    let observedBody: string | Uint8Array = "";
+
+    function* rawIterator(): Generator<CaptureStep, void, CapturedResponse> {
+      yield {
+        kind: "raw",
+        subdir: "upload",
+        url: "https://example.test/upload",
+        method: "POST",
+        contentType: "application/pdf",
+        headers: { "X-Upload-Protocol": "raw" },
+        body: payload,
+      };
+    }
+
+    const plugin = makePlugin({ iterateCaptureSteps: rawIterator });
+    const stubFetch: FetchLike = async (_url, init) => {
+      observedHeaders = init.headers;
+      observedBody = init.body;
+      return new Response(JSON.stringify({ fileId: "abc" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    await runCapture({
+      plugin,
+      model: "test-model",
+      capability: "files-api-reference",
+      intent: INTENT,
+      outDir: dir,
+      fetch: stubFetch,
+    });
+
+    expect(observedHeaders["Content-Type"]).toBe("application/pdf");
+    expect(observedHeaders["X-Upload-Protocol"]).toBe("raw");
+    expect(observedHeaders["X-Api-Key"]).toBe("secret-key");
+    if (typeof observedBody === "string") {
+      throw new Error("expected raw step to send Uint8Array body");
+    }
+    expect(observedBody).toBeInstanceOf(Uint8Array);
+    expect(Array.from(observedBody)).toEqual(Array.from(payload));
+
+    const uploadEntries = (await fs.readdir(path.join(dir, "upload"))).sort();
+    expect(uploadEntries).toEqual([
+      "request-headers.json",
+      "request.bin",
+      "response-headers.json",
+      "response.json",
+    ]);
+    const writtenBytes = await fs.readFile(
+      path.join(dir, "upload", "request.bin"),
+    );
+    expect(Array.from(writtenBytes)).toEqual(Array.from(payload));
+  });
+
+  test("rejects step.headers that collide with plug-in auth headers", async () => {
+    function* collidingIterator(): Generator<
+      CaptureStep,
+      void,
+      CapturedResponse
+    > {
+      yield {
+        kind: "json",
+        subdir: null,
+        url: "https://example.test/collide",
+        headers: { "x-api-key": "step-override" },
+        body: {},
+      };
+    }
+    const plugin = makePlugin({ iterateCaptureSteps: collidingIterator });
+    const stubFetch: FetchLike = async () =>
+      new Response("{}", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    await expect(
+      runCapture({
+        plugin,
+        model: "test-model",
+        capability: "plain-text",
+        intent: INTENT,
+        outDir: dir,
+        fetch: stubFetch,
+      }),
+    ).rejects.toThrow(/override plug-in auth header/);
+  });
+
+  test("step.headers can override the default content-type without auth collision", async () => {
+    let observedHeaders: Record<string, string> = {};
+
+    function* overrideIterator(): Generator<
+      CaptureStep,
+      void,
+      CapturedResponse
+    > {
+      yield {
+        kind: "json",
+        subdir: null,
+        url: "https://example.test/override",
+        headers: { "Content-Type": "application/x-overridden+json" },
+        body: { x: 1 },
+      };
+    }
+    const plugin = makePlugin({ iterateCaptureSteps: overrideIterator });
+    const stubFetch: FetchLike = async (_url, init) => {
+      observedHeaders = init.headers;
+      return new Response("{}", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    await runCapture({
+      plugin,
+      model: "test-model",
+      capability: "plain-text",
+      intent: INTENT,
+      outDir: dir,
+      fetch: stubFetch,
+    });
+
+    expect(observedHeaders["Content-Type"]).toBe(
+      "application/x-overridden+json",
+    );
+    expect(observedHeaders["X-Api-Key"]).toBe("secret-key");
   });
 
   test("throws when the iterator yields no steps", async () => {

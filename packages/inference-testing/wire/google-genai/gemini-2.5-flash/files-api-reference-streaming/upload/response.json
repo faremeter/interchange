@@ -1,13 +1,13 @@
 {
   "file": {
-    "name": "files/amegsn8xbcgk",
+    "name": "files/ub8ska7qvvn2",
     "mimeType": "application/pdf",
     "sizeBytes": "4193",
-    "createTime": "2026-05-20T17:49:36.575434Z",
-    "updateTime": "2026-05-20T17:49:36.575434Z",
-    "expirationTime": "2026-05-22T17:49:36.226458567Z",
+    "createTime": "2026-05-23T20:23:11.502567Z",
+    "updateTime": "2026-05-23T20:23:11.502567Z",
+    "expirationTime": "2026-05-25T20:23:11.324856383Z",
     "sha256Hash": "YmU5ZmVkZTMzMTk5NDhlZjRkZGFiNzU2MGI0NDNlZjg3ZTUyMGY2NzA4OGIzZWE1OGI0MzU3MWQxOTEzMjNkNg==",
-    "uri": "https://generativelanguage.googleapis.com/v1beta/files/amegsn8xbcgk",
+    "uri": "https://generativelanguage.googleapis.com/v1beta/files/ub8ska7qvvn2",
     "state": "ACTIVE",
     "source": "UPLOADED"
   }
