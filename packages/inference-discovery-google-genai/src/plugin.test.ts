@@ -34,6 +34,11 @@ function readFixtureJSON(fixtureDir: string, ...parts: string[]): unknown {
   return JSON.parse(raw);
 }
 
+function readFixtureBytes(fixtureDir: string, ...parts: string[]): Uint8Array {
+  const buf = readFileSync(join(REPO_ROOT, fixtureDir, ...parts));
+  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+}
+
 function fixtureFileExists(fixtureDir: string, ...parts: string[]): boolean {
   try {
     readFileSync(join(REPO_ROOT, fixtureDir, ...parts));
@@ -563,18 +568,25 @@ describe("fixture-oracle: iterateCaptureSteps structurally matches every capture
           }),
         );
 
-        const capturedUpload = readFixtureJSON(
+        if (uploadStep.kind !== "raw") {
+          throw new Error("expected files-api upload step to be raw-bytes");
+        }
+        const capturedUploadBytes = readFixtureBytes(
           fixtureDir,
           "upload",
-          "request.json",
+          "request.bin",
         );
+        expect(uploadStep.contentType).toBe("application/pdf");
+        expect(Array.from(uploadStep.body)).toEqual(
+          Array.from(capturedUploadBytes),
+        );
+        if (generateStep.kind !== "json") {
+          throw new Error("expected files-api generate step to be JSON");
+        }
         const capturedGenerate = readFixtureJSON(
           fixtureDir,
           "generate",
           "request.json",
-        );
-        expect(normalizeForStructuralComparison(uploadStep.body)).toEqual(
-          normalizeForStructuralComparison(capturedUpload),
         );
         expect(normalizeForStructuralComparison(generateStep.body)).toEqual(
           normalizeForStructuralComparison(capturedGenerate),

@@ -1,4 +1,4 @@
 {
-  "content-type": "application/json",
-  "x-goog-api-key": "<redacted>"
+  "Content-Type": "application/json",
+  "x-goog-api-key": "<REDACTED>"
 }

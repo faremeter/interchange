@@ -4,12 +4,12 @@
       "role": "user",
       "parts": [
         {
-          "text": "Summarize this PDF in one short sentence."
+          "text": "Summarize the attached document in one sentence."
         },
         {
           "fileData": {
             "mimeType": "application/pdf",
-            "fileUri": "https://generativelanguage.googleapis.com/v1beta/files/amegsn8xbcgk"
+            "fileUri": "https://generativelanguage.googleapis.com/v1beta/files/ub8ska7qvvn2"
           }
         }
       ]

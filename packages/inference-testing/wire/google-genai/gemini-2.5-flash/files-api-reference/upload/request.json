@@ -1,8 +1,0 @@
-{
-  "method": "POST",
-  "url": "https://generativelanguage.googleapis.com/upload/v1beta/files",
-  "mimeType": "application/pdf",
-  "contentLength": 4193,
-  "displayName": "sample.pdf",
-  "assetPath": "bin/gemini-discover/assets/sample.pdf"
-}

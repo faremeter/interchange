@@ -4,7 +4,7 @@
       "content": {
         "parts": [
           {
-            "text": "The Adventures of Tom Sawyer follows a mischievous boy's journey through everyday pranks, thrilling pirate escapades, and a grave moral conflict stemming from a secret oath and a witnessed crime."
+            "text": "This document presents a list of the first seventeen chapter titles from \"The Adventures of Tom Sawyer,\" outlining key events and themes throughout those initial sections of the book."
           }
         ],
         "role": "model"
@@ -15,8 +15,8 @@
   ],
   "usageMetadata": {
     "promptTokenCount": 268,
-    "candidatesTokenCount": 37,
-    "totalTokenCount": 1596,
+    "candidatesTokenCount": 32,
+    "totalTokenCount": 466,
     "promptTokensDetails": [
       {
         "modality": "TEXT",
@@ -27,9 +27,9 @@
         "tokenCount": 258
       }
     ],
-    "thoughtsTokenCount": 1291,
+    "thoughtsTokenCount": 166,
     "serviceTier": "standard"
   },
   "modelVersion": "gemini-2.5-flash",
-  "responseId": "TeUNavbND5jNjMcP2-Os8QI"
+  "responseId": "rAwSaqbmF6PfjMcPsOH98Ag"
 }

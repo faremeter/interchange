@@ -1,7 +1,6 @@
 {
-  "x-goog-api-key": "<redacted>",
-  "x-goog-upload-protocol": "raw",
-  "x-goog-upload-file-name": "sample.pdf",
-  "content-type": "application/pdf",
-  "content-length": "4193"
+  "Content-Type": "application/pdf",
+  "X-Goog-Upload-Protocol": "raw",
+  "X-Goog-Upload-File-Name": "sample.pdf",
+  "x-goog-api-key": "<REDACTED>"
 }

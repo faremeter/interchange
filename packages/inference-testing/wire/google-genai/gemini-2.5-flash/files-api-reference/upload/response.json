@@ -1,13 +1,13 @@
 {
   "file": {
-    "name": "files/bazi800pl384",
+    "name": "files/s2ghlgffaar6",
     "mimeType": "application/pdf",
     "sizeBytes": "4193",
-    "createTime": "2026-05-20T16:46:05.099765Z",
-    "updateTime": "2026-05-20T16:46:05.099765Z",
-    "expirationTime": "2026-05-22T16:46:04.895080935Z",
+    "createTime": "2026-05-23T20:23:08.244832Z",
+    "updateTime": "2026-05-23T20:23:08.244832Z",
+    "expirationTime": "2026-05-25T20:23:07.905443659Z",
     "sha256Hash": "YmU5ZmVkZTMzMTk5NDhlZjRkZGFiNzU2MGI0NDNlZjg3ZTUyMGY2NzA4OGIzZWE1OGI0MzU3MWQxOTEzMjNkNg==",
-    "uri": "https://generativelanguage.googleapis.com/v1beta/files/bazi800pl384",
+    "uri": "https://generativelanguage.googleapis.com/v1beta/files/s2ghlgffaar6",
     "state": "ACTIVE",
     "source": "UPLOADED"
   }
