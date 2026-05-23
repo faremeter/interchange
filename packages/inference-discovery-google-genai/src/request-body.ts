@@ -367,6 +367,8 @@ export function buildRequestBody(opts: {
     case "function-calling":
     case "reasoning-content":
     case "reasoning-content-streaming":
+    case "redacted-thinking":
+    case "redacted-thinking-streaming":
       throw new Error(
         `google-genai: capability ${opts.capability} is not supported by any google-genai model`,
       );
