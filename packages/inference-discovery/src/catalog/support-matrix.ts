@@ -101,7 +101,7 @@ const MATRIX: SupportEntry[] = [
     capability: "vision-input",
     outcome: "refused",
     notes:
-      "Registry override in bin/opencode-discover/models.ts: probe returned HTTP 200 with the textual refusal 'Please provide an image so I can describe it for you' rather than a real image description, so the vision flag is forced to false and no capture is attempted.",
+      "Probe returned HTTP 200 with the textual refusal 'Please provide an image so I can describe it for you' rather than a real image description; recorded as 'refused' here so no capture is attempted.",
   },
   {
     provider: OPENCODE_PROVIDER,
@@ -109,7 +109,7 @@ const MATRIX: SupportEntry[] = [
     capability: "vision-input",
     outcome: "http-error",
     notes:
-      "OpenAI-style multimodal messages[].content elicits HTTP 400 invalid_request_error \"unknown variant 'image_url', expected 'text'\". Registry override in bin/opencode-discover/models.ts forces vision to false.",
+      "OpenAI-style multimodal messages[].content elicits HTTP 400 invalid_request_error \"unknown variant 'image_url', expected 'text'\"; recorded as 'http-error' here so no capture is attempted.",
   },
 ];
 
