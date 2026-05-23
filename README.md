@@ -71,3 +71,15 @@ generated into [`docs/API.md`](./docs/API.md) by
 [`bin/gen-api-docs.ts`](./bin/gen-api-docs.ts) from ArkType
 introspection over the type definitions in
 [`@intx/types`](./packages/types).
+
+## Inference discovery
+
+A wire-capture rig records real upstream responses from Gemini
+and the OpenCode Zen relay's five models across text, multimodal,
+function calling, and reasoning capabilities; the captured bytes
+back deterministic tests in
+[`@intx/inference-testing`](./packages/inference-testing). See
+[`@intx/inference-discovery`](./packages/inference-discovery) for
+the runtime and CLI, and
+[`docs/OPENCODE_DISCOVERY.md`](./docs/OPENCODE_DISCOVERY.md) for
+the OpenCode Zen observed-vs-documented narrative.
