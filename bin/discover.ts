@@ -16,6 +16,7 @@ import {
   type ParsedCLIRun,
   type ProviderPlugin,
 } from "@intx/inference-discovery";
+import { createAnthropicPlugin } from "@intx/inference-discovery-anthropic";
 import { createGoogleGenaiPlugin } from "@intx/inference-discovery-google-genai";
 import { createOpencodeZenPlugin } from "@intx/inference-discovery-openai";
 
@@ -25,6 +26,14 @@ interface RegisteredPlugin {
   name: string;
   requiredEnv: readonly string[];
   create(env: Record<string, string>): ProviderPlugin;
+}
+
+function anthropicCreate(env: Record<string, string>): ProviderPlugin {
+  const apiKey = env.ANTHROPIC_API_KEY;
+  if (apiKey === undefined) {
+    throw new Error("ANTHROPIC_API_KEY missing from validated env");
+  }
+  return createAnthropicPlugin({ apiKey });
 }
 
 function googleGenaiCreate(env: Record<string, string>): ProviderPlugin {
@@ -47,6 +56,11 @@ function opencodeZenCreate(env: Record<string, string>): ProviderPlugin {
 }
 
 const PLUGIN_REGISTRY: readonly RegisteredPlugin[] = [
+  {
+    name: "anthropic",
+    requiredEnv: ["ANTHROPIC_API_KEY"],
+    create: anthropicCreate,
+  },
   {
     name: "google-genai",
     requiredEnv: ["GOOGLE_API_KEY"],
