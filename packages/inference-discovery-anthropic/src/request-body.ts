@@ -410,6 +410,8 @@ export function buildRequestBody(opts: {
     case "video-input-streaming":
     case "image-output":
     case "image-output-streaming":
+    case "safety-classification":
+    case "safety-classification-streaming":
       throw new Error(
         `anthropic: capability ${opts.capability} is not supported by any Anthropic model`,
       );

@@ -264,6 +264,16 @@ describe("buildRequestBody — unsupported pairs", () => {
     ).toThrow(/does not support capability/);
   });
 
+  test("throws when capability is not in the model's matrix (image model + safety-classification)", () => {
+    expect(() =>
+      buildRequestBody({
+        model: "gemini-2.5-flash-image",
+        capability: "safety-classification",
+        intent: INTENTS["safety-classification"],
+      }),
+    ).toThrow(/does not support capability/);
+  });
+
   test("throws for an unknown model", () => {
     expect(() =>
       buildRequestBody({
@@ -413,6 +423,36 @@ describe("buildRequestBody — wire-shape spot checks", () => {
       ],
       tools: [{ codeExecution: {} }],
     });
+  });
+
+  test("safety-classification produces an unconstrained single user turn (no generationConfig)", () => {
+    const body = buildRequestBody({
+      model: "gemini-2.5-flash",
+      capability: "safety-classification",
+      intent: INTENTS["safety-classification"],
+    });
+    expect(body).toEqual({
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: INTENTS["safety-classification"].prompt }],
+        },
+      ],
+    });
+  });
+
+  test("safety-classification-streaming produces the same body as non-streaming (endpoint differs, not body)", () => {
+    const nonStreaming = buildRequestBody({
+      model: "gemini-2.5-flash",
+      capability: "safety-classification",
+      intent: INTENTS["safety-classification"],
+    });
+    const streaming = buildRequestBody({
+      model: "gemini-2.5-flash",
+      capability: "safety-classification-streaming",
+      intent: INTENTS["safety-classification-streaming"],
+    });
+    expect(streaming).toEqual(nonStreaming);
   });
 
   test("grounding declares the googleSearch tool", () => {

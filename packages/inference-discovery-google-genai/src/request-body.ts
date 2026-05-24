@@ -31,6 +31,8 @@ const TEXT_MODEL_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   "grounding-streaming",
   "files-api-reference",
   "files-api-reference-streaming",
+  "safety-classification",
+  "safety-classification-streaming",
 ]);
 
 const IMAGE_MODEL_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
@@ -317,6 +319,19 @@ function groundingBody(intent: CapabilityIntent): GeminiRequestBody {
   };
 }
 
+// Shape-identical between streaming and non-streaming variants — only the
+// endpoint differs (handled by buildEndpointURL). The streaming variant
+// deliberately does NOT clamp `thinkingBudget: 0` the way plain-text
+// streaming does: the safety classifier's engagement may depend on
+// whether the model goes through a thinking phase, and the probe's job
+// is to observe natural classifier behavior at default generation
+// settings, not constrained ones.
+function safetyClassificationBody(intent: CapabilityIntent): GeminiRequestBody {
+  return {
+    contents: [userTextContent(intent.prompt)],
+  };
+}
+
 export function buildRequestBody(opts: {
   model: string;
   capability: Capability;
@@ -359,6 +374,9 @@ export function buildRequestBody(opts: {
     case "grounding":
     case "grounding-streaming":
       return groundingBody(opts.intent);
+    case "safety-classification":
+    case "safety-classification-streaming":
+      return safetyClassificationBody(opts.intent);
     case "files-api-reference":
     case "files-api-reference-streaming":
       throw new Error(

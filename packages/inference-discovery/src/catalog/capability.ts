@@ -28,6 +28,8 @@ export const CAPABILITIES = [
   "files-api-reference-streaming",
   "redacted-thinking",
   "redacted-thinking-streaming",
+  "safety-classification",
+  "safety-classification-streaming",
 ] as const;
 
 export const Capability = type.enumerated(...CAPABILITIES);

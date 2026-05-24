@@ -296,6 +296,8 @@ describe("buildRequestBody — wire-shape spot checks", () => {
       "video-input-streaming",
       "image-output",
       "image-output-streaming",
+      "safety-classification",
+      "safety-classification-streaming",
     ];
     for (const capability of unsupported) {
       expect(() =>
