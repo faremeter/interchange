@@ -440,11 +440,36 @@ describe("MediaSource validator", () => {
     expect(result instanceof type.errors).toBe(true);
   });
 
-  test("rejects an unknown kind", () => {
+  test("accepts a well-formed url source", () => {
     const result = MediaSource({
       kind: "url",
       mimeType: "image/png",
       url: "https://example.com/img.png",
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a url source missing mimeType", () => {
+    const result = MediaSource({
+      kind: "url",
+      url: "https://example.com/img.png",
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a url source missing url", () => {
+    const result = MediaSource({
+      kind: "url",
+      mimeType: "image/png",
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an unknown kind", () => {
+    const result = MediaSource({
+      kind: "data-uri",
+      mimeType: "image/png",
+      data: "aGVsbG8=",
     });
     expect(result instanceof type.errors).toBe(true);
   });

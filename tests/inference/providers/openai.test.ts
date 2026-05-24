@@ -274,6 +274,50 @@ describe("OpenAI adapter: buildRequest", () => {
     expect(body.max_tokens).toBe(256);
   });
 
+  test("emits a URL image as { type: image_url, image_url: { url } } passing the URL verbatim", () => {
+    // OpenAI's image_url accepts a public URL alongside the data-URL
+    // form. The URL is passed verbatim — no data: prefix synthesis,
+    // no mimeType on the wire (OpenAI infers from the URL response).
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              kind: "url",
+              mimeType: "image/png",
+              url: "https://example.com/cat.png",
+            },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    const message = body.messages[0];
+    if (!message || !Array.isArray(message.content)) {
+      throw new Error("expected a user message with array content");
+    }
+    const part = message.content[0];
+    if (
+      !part ||
+      typeof part !== "object" ||
+      !("type" in part) ||
+      part.type !== "image_url" ||
+      !("image_url" in part) ||
+      typeof part.image_url !== "object" ||
+      part.image_url === null ||
+      !("url" in part.image_url) ||
+      typeof part.image_url.url !== "string"
+    ) {
+      throw new Error("expected an image_url part with a string url");
+    }
+    expect(part.image_url.url).toBe("https://example.com/cat.png");
+  });
+
   test("rejects a file-reference image source with a message naming the reference", () => {
     // OpenAI's Chat Completions doesn't accept opaque file references
     // — only data URLs and public URLs through `image_url`. The throw
