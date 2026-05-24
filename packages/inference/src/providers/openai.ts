@@ -178,6 +178,18 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
       throw new Error(
         `OpenAI adapter does not yet handle ${block.type} content blocks.`,
       );
+    case "citation":
+      // Citation blocks are server-emitted attribution metadata for
+      // content the model already produced; they're not part of the
+      // active conversation state the next turn needs to make sense
+      // of. OpenAI's Chat Completions has no input wire shape for
+      // citations either, so re-uploading them on a follow-up turn
+      // would be ignored at best. Drop them when serializing history
+      // to OpenAI; a downstream consumer that wants to preserve them
+      // across provider switches reads the finalized turn's content[]
+      // directly. See INFERENCE.md § Cross-Provider Message
+      // Transformation for the general policy on history-drop fields.
+      return "";
     case "thinking":
       // Thinking blocks are not forwarded to OpenAI endpoints.
       return "";

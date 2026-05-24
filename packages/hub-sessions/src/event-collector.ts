@@ -250,6 +250,12 @@ export function createEventCollector(
           // Tool results in the content block are echoes of earlier
           // tool.done events. Skip to avoid duplication.
           break;
+        case "citation":
+          // Citations annotate model output by reference (URI or
+          // document index). Persistence semantics — whether the
+          // cited source warrants an audit row of its own — are not
+          // yet settled; skip until they are.
+          break;
         case "image":
         case "audio":
         case "video":

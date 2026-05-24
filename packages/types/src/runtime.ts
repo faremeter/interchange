@@ -665,9 +665,67 @@ const ToolCallBlock = type({
   name: "string",
   arguments: "Record<string, unknown>",
 });
+/**
+ * Location of a citation's cited span within its source document.
+ * The unit of `start` and `end` varies by `kind`:
+ *   - "page": 1-indexed page numbers (Anthropic `page_location`).
+ *   - "char": UTF-16 character offsets, matching JS string semantics
+ *     (Anthropic `char_location`; Gemini `groundingSupports[].segment`).
+ *   - "content-block": index into a structured source's content blocks
+ *     (Anthropic `content_block_location`).
+ */
+const CitationLocation = type({
+  kind: "'page' | 'char' | 'content-block'",
+  start: "number",
+  end: "number",
+});
+
+const CitationSource = type({
+  "title?": "string",
+  // Self-contained dereferenceable URL — populated by providers whose
+  // citations carry URLs directly (Gemini `groundingChunks[].web.uri`).
+  "uri?": "string",
+  // Back-pointer into the request's `documents` array, populated by
+  // providers that cite uploaded documents by position (Anthropic
+  // `document_index`).
+  "documentRef?": type({ index: "number" }),
+});
+
+/**
+ * A citation that supports a span of assistant text. Emitted in
+ * conversation-turn order immediately following the TextBlock it
+ * annotates. Consumers MUST attribute trailing CitationBlocks to the
+ * nearest preceding TextBlock in the same turn.
+ *
+ * Citations are deliberately excluded from ToolResultBlock.content
+ * — they annotate model output, not tool output.
+ *
+ * Exported because `inference.citation` events reference it by name,
+ * following the same pattern as `AssistantTurn`, `ToolCall`, and
+ * `ToolResult`.
+ */
+export const CitationBlock = type({
+  type: "'citation'",
+  // The exact substring of the preceding TextBlock this citation
+  // supports. Both providers emit it; required for inspection and
+  // for fallback offset reconstruction.
+  citedText: "string",
+  source: CitationSource,
+  "location?": CitationLocation,
+  // UTF-16 character offsets into the preceding TextBlock's text.
+  // Providers that emit offsets natively populate these directly;
+  // adapters that derive offsets from a cited substring populate
+  // them only when the substring appears unambiguously in the
+  // preceding text. Omitted when the offset cannot be determined.
+  "textOffset?": type({ start: "number", end: "number" }),
+});
+export type CitationBlock = typeof CitationBlock.infer;
+
 const ToolResultBlock = type({
   type: "'tool_result'",
   callId: "string",
+  // Deliberately narrow: tool results carry user-facing media, not
+  // CitationBlocks (citations annotate the model's text output).
   content: TextBlock.or(ImageBlock)
     .or(AudioBlock)
     .or(VideoBlock)
@@ -682,6 +740,7 @@ export const ContentBlock = TextBlock.or(ThinkingBlock)
   .or(AudioBlock)
   .or(VideoBlock)
   .or(DocumentBlock)
+  .or(CitationBlock)
   .or(ToolCallBlock)
   .or(ToolResultBlock);
 export type ContentBlock = typeof ContentBlock.infer;
@@ -863,6 +922,11 @@ export const InferenceEvent = type({
     data: { error: InferenceError, partial: PartialMessage },
   })
   .or({
+    type: "'inference.citation'",
+    seq: "number",
+    data: { citation: CitationBlock },
+  })
+  .or({
     type: "'tool.start'",
     seq: "number",
     data: { call: ToolCall },
@@ -1007,6 +1071,11 @@ export type InferenceEvent =
       type: "inference.error";
       seq: number;
       data: { error: InferenceError; partial: PartialMessage };
+    }
+  | {
+      type: "inference.citation";
+      seq: number;
+      data: { citation: CitationBlock };
     }
   | { type: "tool.start"; seq: number; data: { call: ToolCall } }
   | {
