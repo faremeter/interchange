@@ -570,6 +570,14 @@ export interface ToolRunner {
  * content blocks seen so far so late-joining subscribers receive current
  * state without replaying deltas.
  *
+ * `text` and `thinking` are cumulative across every emitted delta of
+ * that kind in the current turn — intentionally flat, even when the
+ * harness's per-index block tracking has split the stream into
+ * multiple ThinkingBlocks or TextBlocks. Consumers that need per-block
+ * structure walk the finalized inference.done turn's content[]; this
+ * snapshot is the live "what bytes has the assistant streamed so
+ * far" view.
+ *
  * (INFERENCE.md § Event Protocol › Partial State)
  */
 export const PartialMessage = type({
