@@ -1767,6 +1767,15 @@ export type AbortReason = typeof AbortReason.infer;
  */
 export const InferenceSourceDefaults = type({
   "maxTokens?": "number",
+  // A bag of provider-native knobs the caller wants merged into the
+  // outbound request body (Anthropic's `metadata.user_id`,
+  // OpenAI's `user`, Gemini's `safetySettings`, etc.). Adapters that
+  // recognize keys translate; unrecognized keys are passed through or
+  // dropped per the adapter's documented behavior. The merge into
+  // per-call `InferenceOptions.providerOptions` is shallow — a per-
+  // call providerOptions object wholesale replaces the source-bound
+  // one, it does not deep-merge per key.
+  "providerOptions?": "Record<string, unknown>",
 });
 export type InferenceSourceDefaults = typeof InferenceSourceDefaults.infer;
 
@@ -1870,6 +1879,15 @@ export type InferenceOptions = {
    * field. When omitted the provider's default modalities apply.
    */
   responseModalities?: ("text" | "image" | "audio")[];
+  /**
+   * A bag of provider-native knobs the adapter merges into the outbound
+   * request body. Primary home is `InferenceSourceDefaults.providerOptions`
+   * (model-bound); this field exists for per-call overrides through the
+   * standard merge precedence at the top of `runInference`. The merge is
+   * shallow: a per-call providerOptions object wholesale replaces the
+   * source-bound one, it does not deep-merge per key.
+   */
+  providerOptions?: Record<string, unknown>;
   /**
    * Per-call inactivity timeout in milliseconds. If the harness yields no
    * event (other than `inference.start`) for this many ms, the underlying
