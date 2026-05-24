@@ -22,7 +22,6 @@ import type {
   InferenceOptions,
   InferenceSource,
   PartialMessage,
-  RedactedThinkingBlock,
   TokenUsage,
   AssistantTurn,
   ContentBlock,
@@ -159,22 +158,26 @@ export async function* runInference(
 
   // Mutable partial state — the harness owns this.
   const partial: PartialMessage = { text: "" };
-  let thinkingBuffer = "";
-  // Cryptographic signature for the thinking block, when the provider
-  // emits one. Anthropic requires this signature to be echoed back on
-  // any follow-up turn that includes the thinking block in history; see
-  // `inference.thinking.signature` in `runtime.ts`.
-  let thinkingSignature: string | undefined;
-  // Redacted thinking blocks delivered as one-shots inside
-  // content_block_start. Each block's opaque `data` blob must echo back
-  // verbatim on follow-up turns; the harness preserves insertion order
-  // here so the final assistant turn carries them in the same sequence
-  // they arrived on the wire.
-  const redactedThinkingBlocks: RedactedThinkingBlock[] = [];
-  // Citations streamed from the provider, in arrival order. Each
-  // citation typically annotates the most recently emitted text run;
-  // preserving the streaming order lets downstream consumers
-  // re-attach citations to their text regions.
+  // Per-index block tracking. The map preserves insertion order (JS
+  // Map guarantee, even for integer keys — unlike plain objects).
+  // Each entry records one block's running state; final-turn
+  // assembly walks the map in arrival order and emits one ContentBlock
+  // per entry. The `tool_use` entries are index markers only — the
+  // tool-call state machine lives in `openToolCalls` /
+  // `completedToolCalls` and is resolved into the final block at
+  // assembly time via the marker's `callId`.
+  type BlockState =
+    | { kind: "text"; text: string }
+    | { kind: "thinking"; text: string; signature?: string }
+    | { kind: "redacted_thinking"; data: string }
+    | { kind: "tool_use"; callId: string };
+  const blockMap = new Map<number, BlockState>();
+  // Citations streamed from the provider, in arrival order. The
+  // `inference.citation` event today doesn't carry the source content
+  // block index (citations attribute to the nearest preceding
+  // TextBlock per the CitationBlock docstring), so citations are
+  // collected as a flat array and appended after the per-index walk
+  // in final-turn assembly.
   const citationBlocks: CitationBlock[] = [];
   let usageSeen: TokenUsage | null = null;
 
@@ -427,7 +430,22 @@ export async function* runInference(
         for (const raw of rawEvents) {
           switch (raw.type) {
             case "inference.text.delta": {
-              guardNonZeroIndex(raw, "text");
+              const idx = requireIndex(raw, "text.delta");
+              const existing = blockMap.get(idx);
+              if (existing === undefined) {
+                blockMap.set(idx, { kind: "text", text: raw.data.token });
+              } else if (existing.kind === "text") {
+                existing.text += raw.data.token;
+              } else {
+                throw new ProtocolMismatchError(
+                  `harness: text.delta at index ${String(idx)} collides with existing ${existing.kind} block`,
+                  raw,
+                );
+              }
+              // Running concat of all text deltas — backwards
+              // compatible with consumers that treat `partial.text` as
+              // "everything the assistant has typed so far," regardless
+              // of which content block it came from.
               partial.text += raw.data.token;
               yield {
                 type: "inference.text.delta",
@@ -441,9 +459,26 @@ export async function* runInference(
             }
 
             case "inference.thinking.delta": {
-              guardNonZeroIndex(raw, "thinking");
-              thinkingBuffer += raw.data.token;
-              partial.thinking = thinkingBuffer;
+              const idx = requireIndex(raw, "thinking.delta");
+              const existing = blockMap.get(idx);
+              if (existing === undefined) {
+                blockMap.set(idx, { kind: "thinking", text: raw.data.token });
+              } else if (existing.kind === "thinking") {
+                existing.text += raw.data.token;
+              } else {
+                throw new ProtocolMismatchError(
+                  `harness: thinking.delta at index ${String(idx)} collides with existing ${existing.kind} block`,
+                  raw,
+                );
+              }
+              // Running concat of all thinking deltas across every
+              // thinking block. Under interleaving (thinking@0 "A",
+              // text@1 "X", thinking@2 "B"), `partial.thinking` ends
+              // up "AB" — backwards compatible with the pre-per-index
+              // single-buffer semantics. Consumers needing per-block
+              // structure walk the finalized turn's `content[]`.
+              const concat = (partial.thinking ?? "") + raw.data.token;
+              partial.thinking = concat;
               yield {
                 type: "inference.thinking.delta",
                 seq: nextSeq(),
@@ -456,12 +491,21 @@ export async function* runInference(
             }
 
             case "inference.thinking.signature": {
-              // Anthropic emits the signature once per thinking block, after
-              // the thinking_delta stream. The harness collapses all thinking
-              // content into a single block today, so a single trailing
-              // signature is captured here and attached at finalisation.
-              guardNonZeroIndex(raw, "signature");
-              thinkingSignature = raw.data.signature;
+              const idx = requireIndex(raw, "thinking.signature");
+              const existing = blockMap.get(idx);
+              if (existing === undefined) {
+                throw new ProtocolMismatchError(
+                  `harness: thinking.signature at index ${String(idx)} has no preceding thinking block at that index`,
+                  raw,
+                );
+              }
+              if (existing.kind !== "thinking") {
+                throw new ProtocolMismatchError(
+                  `harness: thinking.signature at index ${String(idx)} targets an existing ${existing.kind} block, not a thinking block`,
+                  raw,
+                );
+              }
+              existing.signature = raw.data.signature;
               yield {
                 type: "inference.thinking.signature",
                 seq: nextSeq(),
@@ -471,10 +515,11 @@ export async function* runInference(
             }
 
             case "inference.citation": {
-              // Citations stream interleaved with text deltas. The
-              // harness preserves arrival order so consumers building
-              // citation-aware UI can re-attach each citation to the
-              // text region that immediately precedes it.
+              // Citations don't carry a content-block index on their
+              // event payload today, so they're collected flat and
+              // appended at the end of the final turn per the
+              // CitationBlock attribution rule. Index-precise
+              // attribution is tracked separately.
               citationBlocks.push(raw.data.citation);
               yield {
                 type: "inference.citation",
@@ -485,31 +530,24 @@ export async function* runInference(
             }
 
             case "inference.thinking.redacted": {
-              // Redacted thinking blocks arrive as one-shots inside
-              // content_block_start (no delta stream). Preserve insertion
-              // order so multi-block scenarios reproduce the wire order in
-              // the final assistant turn. The block's `data` is opaque
-              // base64 that must echo back verbatim on every follow-up
-              // turn — passing it through the runtime type rather than
-              // re-serializing protects it from any accidental mutation.
-              //
-              // The conditional spread on `index` is forced by the
-              // runtime type's `"index?": "number"`: the field is
-              // omit-or-number, not omit-or-number-or-undefined, so
-              // passing `raw.data.index` directly when it could be
-              // undefined fails TypeScript narrowing. Today's parser
-              // always sets it, but the harness accepts other emitters
-              // that may not.
-              guardNonZeroIndex(raw, "redacted_thinking");
-              redactedThinkingBlocks.push(raw.data.redactedThinking);
+              const idx = requireIndex(raw, "thinking.redacted");
+              const existing = blockMap.get(idx);
+              if (existing !== undefined) {
+                throw new ProtocolMismatchError(
+                  `harness: thinking.redacted at index ${String(idx)} collides with existing ${existing.kind} block`,
+                  raw,
+                );
+              }
+              blockMap.set(idx, {
+                kind: "redacted_thinking",
+                data: raw.data.redactedThinking.data,
+              });
               yield {
                 type: "inference.thinking.redacted",
                 seq: nextSeq(),
                 data: {
                   redactedThinking: raw.data.redactedThinking,
-                  ...(raw.data.index !== undefined
-                    ? { index: raw.data.index }
-                    : {}),
+                  index: idx,
                 },
               };
               break;
@@ -518,10 +556,48 @@ export async function* runInference(
             case "inference.tool_call.start": {
               const { callId, name } = raw.data;
               openToolCalls.set(callId, { callId, name, argsBuffer: "" });
-              // OpenAI sends deltas with a string index ("0", "1", ...) as the
-              // callId. Map each index to the real callId so deltas resolve.
-              // The index is the position of this tool call in the current batch.
-              indexToCallId.set(String(openToolCalls.size - 1), callId);
+              // OpenAI-flavoured adapters synthesize a placeholder
+              // callId on tool_call.delta events (the real id is only
+              // present on the start). Key the resolution map on the
+              // start event's `data.index` so the placeholder the
+              // delta emits (`String(blockIndex)`) maps back to the
+              // real id even when `tcDelta.index` is non-zero or
+              // non-contiguous. The fallback to arrival-order
+              // (`openToolCalls.size - 1`) preserves behaviour for
+              // legacy adapters that don't propagate index on the
+              // start event.
+              if (raw.data.index !== undefined) {
+                indexToCallId.set(String(raw.data.index), callId);
+              } else {
+                indexToCallId.set(String(openToolCalls.size - 1), callId);
+              }
+              // Anchor the tool_use position in the per-index map.
+              // The map walk in final assembly will resolve the marker
+              // via `completedToolCalls` so the tool_use block lands
+              // in its wire-arrival position relative to text and
+              // thinking blocks. Collisions with another kind at the
+              // same index throw, matching the discipline of the
+              // text/thinking/redacted_thinking branches above —
+              // distinct kinds cannot share an index without losing
+              // the per-index ordering guarantee. When the parser
+              // doesn't supply an index (legacy emitters), the marker
+              // is skipped and the tool call falls back to the
+              // append-after-walk path in final assembly.
+              const toolIdx = raw.data.index;
+              if (toolIdx !== undefined) {
+                const existingAtIdx = blockMap.get(toolIdx);
+                if (existingAtIdx === undefined) {
+                  blockMap.set(toolIdx, { kind: "tool_use", callId });
+                } else if (
+                  existingAtIdx.kind !== "tool_use" ||
+                  existingAtIdx.callId !== callId
+                ) {
+                  throw new ProtocolMismatchError(
+                    `harness: tool_call.start at index ${String(toolIdx)} collides with existing ${existingAtIdx.kind} block`,
+                    raw,
+                  );
+                }
+              }
               partial.toolCalls = [
                 ...(partial.toolCalls ?? []),
                 {
@@ -672,31 +748,74 @@ export async function* runInference(
       };
     }
 
-    // Build the final assistant message.
+    // Build the final assistant message by walking the per-index map
+    // in insertion order. JS `Map` preserves insertion order for all
+    // keys (including integers — distinct from plain object behaviour),
+    // so iteration here reproduces the wire-arrival order of content
+    // blocks regardless of the numeric values. Tool-call markers are
+    // resolved to the finalized ContentBlock from the completedToolCalls
+    // array via the marker's callId.
+    const completedToolCallsByCallId = new Map<string, ContentBlock>();
+    for (const tc of completedToolCalls) {
+      if (tc.type === "tool_call") {
+        completedToolCallsByCallId.set(tc.id, tc);
+      }
+    }
     const contentBlocks: ContentBlock[] = [];
-    if (thinkingBuffer.length > 0) {
-      contentBlocks.push({
-        type: "thinking",
-        thinking: thinkingBuffer,
-        ...(thinkingSignature !== undefined
-          ? { signature: thinkingSignature }
-          : {}),
-      });
+    const emittedToolCallIds = new Set<string>();
+    for (const entry of blockMap.values()) {
+      if (entry.kind === "text") {
+        if (entry.text.length > 0) {
+          contentBlocks.push({ type: "text", text: entry.text });
+        }
+        continue;
+      }
+      if (entry.kind === "thinking") {
+        // Emit thinking blocks even when text is empty if a signature
+        // was captured — Anthropic's redacted-adjacent flow can
+        // produce a thinking block whose visible text is empty but
+        // whose signature must round-trip on follow-up turns.
+        if (entry.text.length === 0 && entry.signature === undefined) {
+          continue;
+        }
+        contentBlocks.push({
+          type: "thinking",
+          thinking: entry.text,
+          ...(entry.signature !== undefined
+            ? { signature: entry.signature }
+            : {}),
+        });
+        continue;
+      }
+      if (entry.kind === "redacted_thinking") {
+        contentBlocks.push({ type: "redacted_thinking", data: entry.data });
+        continue;
+      }
+      if (entry.kind === "tool_use") {
+        const finalized = completedToolCallsByCallId.get(entry.callId);
+        if (finalized !== undefined) {
+          contentBlocks.push(finalized);
+          emittedToolCallIds.add(entry.callId);
+        }
+        continue;
+      }
+      entry satisfies never;
     }
-    // Redacted thinking blocks land before the assistant text on the
-    // wire (Anthropic streams them ahead of any text block); preserving
-    // that order is what lets the request builder echo them back in the
-    // same position on the next turn.
-    contentBlocks.push(...redactedThinkingBlocks);
-    if (partial.text.length > 0) {
-      contentBlocks.push({ type: "text", text: partial.text });
+    // Tool calls that completed without a corresponding tool_use
+    // marker in the map (legacy callers that don't propagate index
+    // through tool_call.start) still land in the final turn so the
+    // pre-per-index behaviour is preserved.
+    for (const tc of completedToolCalls) {
+      if (tc.type === "tool_call" && !emittedToolCallIds.has(tc.id)) {
+        contentBlocks.push(tc);
+      }
     }
-    // Citations are appended after the text they annotate. The
-    // CitationBlock type documents this attribution rule
-    // (CitationBlock comment in runtime.ts): consumers attribute
-    // trailing CitationBlocks to the nearest preceding TextBlock.
+    // Citations append after the per-index walk. Their event payload
+    // doesn't carry the source content-block index today, so they
+    // attribute by adjacency to the nearest preceding TextBlock per
+    // the CitationBlock docstring. Index-precise attribution is a
+    // separately tracked extension.
     contentBlocks.push(...citationBlocks);
-    contentBlocks.push(...completedToolCalls);
 
     const finalTurn: AssistantTurn = {
       role: "assistant",
@@ -835,36 +954,33 @@ function snapshotPartial(partial: PartialMessage): PartialMessage {
   };
 }
 
-// Guards the single-buffer text accumulator, the single-buffer thinking
-// accumulator, and the single-slot thinking-signature capture against
-// non-zero block indices. Per-block routing requires a per-index
-// accumulator that does not yet exist in the harness; without it,
-// deltas from different blocks would silently concatenate into the
-// same buffer (or, for the signature, the later block would overwrite
-// the earlier). The guard makes that failure surface loudly.
-//
-// Thrown as a `ProtocolMismatchError` so the harness's stream-error
-// catch routes it through `classifyStreamError` to the
-// `"protocol_mismatch"` category — non-retryable — rather than the
-// generic-Error `"retryable"` fallback that would invite a retry loop
-// to mask a deterministic wiring bug.
-function guardNonZeroIndex(
+// The harness's per-index routing is load-bearing on every delta
+// carrying an `index`. Provider adapters synthesize a default at the
+// adapter boundary if their wire shape doesn't carry one (e.g.
+// OpenAI Chat Completions emits `index: 0` explicitly on text and
+// thinking deltas because Chat Completions ships a single content
+// block per kind per response). A delta arriving at the harness
+// without an index is a wiring bug at the adapter, not data the
+// harness should silently route to block 0 — surfacing it as a
+// ProtocolMismatchError is the load-bearing alternative to corrupt
+// state.
+function requireIndex(
   event: {
     type: string;
     data: { index?: number };
   },
-  bufferName: string,
-): void {
+  variant: string,
+): number {
   const index = event.data.index;
-  if (index !== undefined && index !== 0) {
+  if (index === undefined) {
     throw new ProtocolMismatchError(
-      `harness received ${event.type} carrying index=${String(index)}; ` +
-        `the single-buffer ${bufferName} accumulator cannot route per-index ` +
-        `deltas. The per-index harness refactor must precede parsers that ` +
-        `emit non-zero indices.`,
+      `harness received ${event.type} (${variant}) without an index; ` +
+        `provider adapters must synthesize an index at the boundary even ` +
+        `when the wire shape doesn't carry one`,
       event,
     );
   }
+  return index;
 }
 
 function mergeUsage(

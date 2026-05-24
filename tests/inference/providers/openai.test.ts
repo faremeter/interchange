@@ -1,5 +1,5 @@
 import { type } from "arktype";
-import { describe, test, expect } from "bun:test";
+import { beforeEach, describe, test, expect } from "bun:test";
 import { wire } from "@intx/inference-testing";
 import {
   parseSSE,
@@ -9,7 +9,16 @@ import {
 } from "@intx/inference";
 import type { ConversationTurn, InferenceEvent } from "@intx/types/runtime";
 
-const adapter = createOpenAIAdapter();
+// A fresh adapter per test: the OpenAI parser holds per-request
+// indexer state (text/thinking/tool_call block indices allocated in
+// arrival order) on the adapter instance, and sharing one adapter
+// across tests would leak indexer state, making per-index assertions
+// order-dependent and surprising. A test-local re-creation guards
+// against that footgun.
+let adapter: ProviderAdapter;
+beforeEach(() => {
+  adapter = createOpenAIAdapter();
+});
 
 const OpenAIFunctionCall = type({
   name: "string",
@@ -555,6 +564,40 @@ describe("OpenAI adapter: parseResponse", () => {
       expect(events[0].data.argumentFragment).toBe('{"q":"');
       expect(events[0].data.index).toBe(0);
     }
+  });
+
+  test("tool_call emitted before text content gets a distinct content-block index", async () => {
+    // Regression: when the OpenAI stream emits a tool_call before any
+    // text content, the parser's per-request indexer must allocate a
+    // fresh content-block index for the tool_call rather than reusing
+    // 0 — otherwise a later text delta would also land at 0 and
+    // collide with the tool_use marker in the harness's per-index map.
+    // The harness would (correctly) raise a protocol_mismatch error;
+    // the bug surfaces as the whole turn failing instead of producing
+    // [tool_call, text] in the final content[].
+    const events = await parseWire(adapter, [
+      wire.openai.toolCallStart(0, "call_first", "search"),
+      wire.openai.toolCallArgumentsDelta(0, '{"q":"hi"}'),
+      wire.openai.chunk({ content: "Calling search now." }),
+    ]);
+
+    const starts = events.filter((e) => e.type === "inference.tool_call.start");
+    const textDeltas = events.filter((e) => e.type === "inference.text.delta");
+    expect(starts).toHaveLength(1);
+    expect(textDeltas).toHaveLength(1);
+
+    const start = starts[0];
+    const textDelta = textDeltas[0];
+    if (
+      start?.type !== "inference.tool_call.start" ||
+      textDelta?.type !== "inference.text.delta"
+    ) {
+      throw new Error("expected one tool_call.start and one text.delta");
+    }
+    // The tool_call lands at content-block index 0 (first observed);
+    // the text lands at 1 (next free) — NOT both at 0.
+    expect(start.data.index).toBe(0);
+    expect(textDelta.data.index).toBe(1);
   });
 
   test("propagates distinct tool_calls indices to data.index across parallel tool calls", async () => {

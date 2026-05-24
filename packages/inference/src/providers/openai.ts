@@ -300,7 +300,62 @@ const OpenAIChunk = type({
   "usage?": OpenAIChunkUsage.or("null"),
 });
 
-function parseResponse(sseData: string): InferenceEvent[] {
+// Per-request state for the OpenAI parser. OpenAI's Chat Completions
+// has no wire-level content_block index — reasoning_content, content,
+// and tool_calls all appear as fields on the same delta chunk
+// without per-block positional indices. The harness's per-index
+// routing nevertheless requires distinct indices for distinct
+// content blocks at distinct positions, so the parser assigns block
+// indices on first observation in arrival order, threaded through
+// this shared counter. Tool calls share the same counter to avoid
+// colliding with text/thinking indices: a tool_call that arrives
+// before any text gets the next free block index, NOT zero, so the
+// later text doesn't try to land on top of it.
+//
+// `tcDelta.index` (OpenAI's position in `tool_calls[]`) is a
+// tool-call-local index, distinct from a content-block index. The
+// indexer maintains a `toolCallBlockIndex` map from tcDelta.index to
+// the block index assigned at first observation; subsequent deltas
+// for the same tcDelta.index reuse it.
+type OpenAIBlockIndexer = {
+  nextIndex: number;
+  textIndex: number | null;
+  thinkingIndex: number | null;
+  toolCallBlockIndex: Map<number, number>;
+};
+
+function getOrAssignTextIndex(state: OpenAIBlockIndexer): number {
+  if (state.textIndex === null) {
+    state.textIndex = state.nextIndex;
+    state.nextIndex += 1;
+  }
+  return state.textIndex;
+}
+
+function getOrAssignThinkingIndex(state: OpenAIBlockIndexer): number {
+  if (state.thinkingIndex === null) {
+    state.thinkingIndex = state.nextIndex;
+    state.nextIndex += 1;
+  }
+  return state.thinkingIndex;
+}
+
+function getOrAssignToolCallIndex(
+  state: OpenAIBlockIndexer,
+  toolCallIndex: number,
+): number {
+  const existing = state.toolCallBlockIndex.get(toolCallIndex);
+  if (existing !== undefined) return existing;
+  const assigned = state.nextIndex;
+  state.nextIndex += 1;
+  state.toolCallBlockIndex.set(toolCallIndex, assigned);
+  return assigned;
+}
+
+function parseResponse(
+  sseData: string,
+  indexer: OpenAIBlockIndexer,
+): InferenceEvent[] {
   // parseSSE strips the `[DONE]` sentinel before yielding payloads, so
   // anything that reaches us here is supposed to be a JSON chunk. A
   // JSON.parse failure or an arktype rejection means the upstream
@@ -359,12 +414,25 @@ function parseResponse(sseData: string): InferenceEvent[] {
   //   - kimi (via OpenRouter): delta.reasoning
   //   - kimi (direct): delta.reasoning_content
   //   - DeepSeek / others: delta.reasoning_content
+  //
+  // OpenAI's Chat Completions ships reasoning_content and content as
+  // separate logical content blocks without a wire-level block index.
+  // The parser assigns indices on first observation in arrival order
+  // via the per-request `indexer`: whichever kind streams first lands
+  // at 0, the other (if it appears) at 1. This satisfies the harness's
+  // per-index routing contract — distinct kinds get distinct indices
+  // and the harness's collision detection between block kinds at the
+  // same index never fires from a normal OpenAI response.
   const reasoning = delta.reasoning_content ?? delta.reasoning;
   if (typeof reasoning === "string" && reasoning.length > 0) {
     events.push({
       type: "inference.thinking.delta",
       seq,
-      data: { token: reasoning, partial: EMPTY_PARTIAL },
+      data: {
+        token: reasoning,
+        partial: EMPTY_PARTIAL,
+        index: getOrAssignThinkingIndex(indexer),
+      },
     });
   }
 
@@ -373,7 +441,11 @@ function parseResponse(sseData: string): InferenceEvent[] {
     events.push({
       type: "inference.text.delta",
       seq,
-      data: { token: content, partial: EMPTY_PARTIAL },
+      data: {
+        token: content,
+        partial: EMPTY_PARTIAL,
+        index: getOrAssignTextIndex(indexer),
+      },
     });
   }
 
@@ -381,7 +453,14 @@ function parseResponse(sseData: string): InferenceEvent[] {
 
   if (toolCallDeltas !== undefined) {
     for (const tcDelta of toolCallDeltas) {
-      const index = tcDelta.index ?? 0;
+      const toolCallSlot = tcDelta.index ?? 0;
+      // The harness's per-index map keys on content-block index, not
+      // OpenAI's `tool_calls[]` slot. Map this tool call's slot to a
+      // content-block index that doesn't collide with text/thinking:
+      // first observation of each unique `tcDelta.index` allocates a
+      // fresh content-block index from the shared `nextIndex`
+      // counter; subsequent deltas for the same slot reuse it.
+      const blockIndex = getOrAssignToolCallIndex(indexer, toolCallSlot);
       // Normalize null → undefined: Fireworks emits literal null on every
       // delta after the first; we treat that the same as the field being
       // absent so the start / fragment branches below remain simple.
@@ -402,35 +481,46 @@ function parseResponse(sseData: string): InferenceEvent[] {
       // carry both a start signal (id + non-null name) and an argument
       // fragment; both must be emitted.
       //
-      // Two `index`-shaped fields participate here and they are NOT
-      // interchangeable:
-      //   - `data.callId`: the OpenAI-provided id when present
-      //     (`tcDelta.id`); when absent on continuation deltas, we
-      //     synthesize a per-stream placeholder from `index` so the
-      //     harness's index-keyed accumulator can merge fragments
-      //     until the real id resolves at finalize time.
-      //   - `data.index`: the wire-level position in `tool_calls[]`,
-      //     propagated from `tcDelta.index`. This is real provider
-      //     state and downstream consumers can rely on it for per-block
-      //     routing.
-      // The two fields happen to stringify-equal when there is only
-      // one tool call (both are "0") but they describe different things.
+      // `data.callId` is the OpenAI-provided id when present
+      // (`tcDelta.id`); when absent on continuation deltas, the
+      // adapter synthesizes a per-stream placeholder from
+      // `toolCallSlot` so the harness's id-keyed accumulator can
+      // merge fragments until the real id resolves at finalize time.
+      // `data.index` is the content-block index allocated above —
+      // namespaced into the same counter as text/thinking indices so
+      // a tool_call arriving before any text doesn't collide with a
+      // later text block at the same numeric index.
       if (id !== undefined && name !== undefined) {
         events.push({
           type: "inference.tool_call.start",
           seq,
-          data: { callId: id, name, partial: EMPTY_PARTIAL, index },
+          data: {
+            callId: id,
+            name,
+            partial: EMPTY_PARTIAL,
+            index: blockIndex,
+          },
         });
       }
       if (argFragment !== undefined && argFragment.length > 0) {
+        // The delta's `callId` is a per-stream placeholder used by the
+        // harness to resolve fragments to the real id minted on the
+        // start event. Use `String(blockIndex)` rather than
+        // `String(toolCallSlot)` so the placeholder matches the key
+        // the harness registers in `indexToCallId` on start —
+        // otherwise a non-zero, non-contiguous `tcDelta.index`
+        // (single tool at slot 3, or parallel tools at slots 0/3)
+        // would land its fragments under a key the harness never
+        // registered, and the harness's accumulator would silently
+        // drop them.
         events.push({
           type: "inference.tool_call.delta",
           seq,
           data: {
-            callId: String(index),
+            callId: String(blockIndex),
             argumentFragment: argFragment,
             partial: EMPTY_PARTIAL,
-            index,
+            index: blockIndex,
           },
         });
       }
@@ -511,9 +601,19 @@ function parseDuration(value: string): number | undefined {
 }
 
 export function createOpenAIAdapter(): ProviderAdapter {
+  // Per-request indexer state. Adapter instances are created per
+  // request (see `adapter.ts`), so each call to `createOpenAIAdapter`
+  // gets a fresh counter for assigning block indices to reasoning vs.
+  // content streams in arrival order.
+  const indexer: OpenAIBlockIndexer = {
+    nextIndex: 0,
+    textIndex: null,
+    thinkingIndex: null,
+    toolCallBlockIndex: new Map<number, number>(),
+  };
   return {
     buildRequest,
-    parseResponse,
+    parseResponse: (sseData) => parseResponse(sseData, indexer),
     extractRetryAfterMs,
     extractPacingDelayMs,
   };
