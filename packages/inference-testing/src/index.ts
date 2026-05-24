@@ -45,12 +45,27 @@ export type { UnmatchedFetchInfo, AmbiguousFetchInfo } from "./errors";
 
 export * as wire from "./wire";
 
-export { expectEvents, expectToolCalls, expectToolCall } from "./matchers";
+export {
+  expectEvents,
+  expectMediaBlock,
+  expectToolCalls,
+  expectToolCall,
+} from "./matchers";
 export type {
   EventAssertion,
   EventPartial,
   ToolCallsAssertion,
   ToolCallPartial,
   CollectedToolCall,
+  MediaBlock,
+  MediaBlockAssertion,
+  ExpectMediaBlockOpts,
   SingleToolCallAssertion,
 } from "./matchers";
+
+export { INVARIANTS, formatEventBrief } from "./invariants";
+export type {
+  Invariant,
+  InvariantViolation,
+  ReplayContext,
+} from "./invariants";
