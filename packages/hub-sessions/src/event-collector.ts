@@ -250,12 +250,26 @@ export function createEventCollector(
           // Tool results in the content block are echoes of earlier
           // tool.done events. Skip to avoid duplication.
           break;
-        case "image":
-          await insertPart("file", null, {
-            mimeType: block.mimeType,
-            dataLength: block.data.length,
-          });
+        case "image": {
+          const source = block.source;
+          if (source.kind === "base64") {
+            await insertPart("file", null, {
+              kind: "base64",
+              mimeType: source.mimeType,
+              dataLength: source.data.length,
+            });
+          } else if (source.kind === "file-reference") {
+            await insertPart("file", null, {
+              kind: "file-reference",
+              mimeType: source.mimeType,
+              reference: source.reference,
+            });
+          } else {
+            source satisfies never;
+            throw new Error(`unreachable: unknown MediaSource kind`);
+          }
           break;
+        }
       }
     }
 

@@ -1,6 +1,8 @@
 import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
 import {
+  ContentBlock,
+  MediaSource,
   TransformRecord,
   type ContextTransform,
   type ToolResultTransform,
@@ -385,5 +387,115 @@ describe("createBlobReader", () => {
     }
     expect(thrown?.message).toContain("invalid tool-output URI scheme");
     expect(touched).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MediaSource validator and ImageBlock shape
+// ---------------------------------------------------------------------------
+
+describe("MediaSource validator", () => {
+  test("accepts a well-formed base64 source", () => {
+    const result = MediaSource({
+      kind: "base64",
+      mimeType: "image/png",
+      data: "aGVsbG8=",
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a well-formed file-reference source", () => {
+    const result = MediaSource({
+      kind: "file-reference",
+      mimeType: "application/pdf",
+      reference: "file_abc123",
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a base64 source missing mimeType", () => {
+    const result = MediaSource({ kind: "base64", data: "aGVsbG8=" });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a base64 source missing data", () => {
+    const result = MediaSource({ kind: "base64", mimeType: "image/png" });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a file-reference source missing mimeType", () => {
+    const result = MediaSource({
+      kind: "file-reference",
+      reference: "file_abc",
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a file-reference source missing reference", () => {
+    const result = MediaSource({
+      kind: "file-reference",
+      mimeType: "image/png",
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an unknown kind", () => {
+    const result = MediaSource({
+      kind: "url",
+      mimeType: "image/png",
+      url: "https://example.com/img.png",
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+});
+
+describe("ImageBlock shape on ContentBlock", () => {
+  test("accepts an image block with a base64 source", () => {
+    const result = ContentBlock({
+      type: "image",
+      source: { kind: "base64", mimeType: "image/png", data: "aGVsbG8=" },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts an image block with a file-reference source", () => {
+    const result = ContentBlock({
+      type: "image",
+      source: {
+        kind: "file-reference",
+        mimeType: "application/pdf",
+        reference: "file_abc",
+      },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects the legacy flat shape (mimeType/data without source)", () => {
+    const result = ContentBlock({
+      type: "image",
+      mimeType: "image/png",
+      data: "aGVsbG8=",
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an image block without a source", () => {
+    const result = ContentBlock({ type: "image" });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("accepts an image inside a tool_result content array", () => {
+    const result = ContentBlock({
+      type: "tool_result",
+      callId: "call_abc",
+      content: [
+        { type: "text", text: "the screenshot:" },
+        {
+          type: "image",
+          source: { kind: "base64", mimeType: "image/png", data: "aGVsbG8=" },
+        },
+      ],
+    });
+    expect(result instanceof type.errors).toBe(false);
   });
 });

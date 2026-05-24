@@ -153,11 +153,25 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
   switch (block.type) {
     case "text":
       return block.text;
-    case "image":
-      return {
-        type: "image_url",
-        image_url: { url: `data:${block.mimeType};base64,${block.data}` },
-      };
+    case "image": {
+      const source = block.source;
+      if (source.kind === "base64") {
+        return {
+          type: "image_url",
+          image_url: {
+            url: `data:${source.mimeType};base64,${source.data}`,
+          },
+        };
+      }
+      if (source.kind === "file-reference") {
+        throw new Error(
+          "OpenAI adapter does not yet handle file-reference image " +
+            "sources.",
+        );
+      }
+      source satisfies never;
+      throw new Error(`unreachable: unknown MediaSource kind`);
+    }
     case "thinking":
       // Thinking blocks are not forwarded to OpenAI endpoints.
       return "";

@@ -126,15 +126,29 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
           : {}),
       };
 
-    case "image":
-      return {
-        type: "image",
-        source: {
-          type: "base64",
-          media_type: block.mimeType,
-          data: block.data,
-        },
-      };
+    case "image": {
+      const source = block.source;
+      if (source.kind === "base64") {
+        return {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: source.mimeType,
+            data: source.data,
+          },
+        };
+      }
+      if (source.kind === "file-reference") {
+        throw new Error(
+          "Anthropic adapter does not yet handle file-reference image " +
+            "sources.",
+        );
+      }
+      // Exhaustiveness: a new MediaSource variant added without a case
+      // here fails this compile-time check.
+      source satisfies never;
+      throw new Error(`unreachable: unknown MediaSource kind`);
+    }
 
     case "tool_call":
       return {
@@ -152,10 +166,25 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
           if (c.type === "text") {
             return { type: "text", text: c.text };
           }
-          return {
-            type: "image",
-            source: { type: "base64", media_type: c.mimeType, data: c.data },
-          };
+          const source = c.source;
+          if (source.kind === "base64") {
+            return {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: source.mimeType,
+                data: source.data,
+              },
+            };
+          }
+          if (source.kind === "file-reference") {
+            throw new Error(
+              "Anthropic adapter does not yet handle file-reference image " +
+                "sources in tool results.",
+            );
+          }
+          source satisfies never;
+          throw new Error(`unreachable: unknown MediaSource kind`);
         }),
         ...(block.isError ? { is_error: true } : {}),
       };
