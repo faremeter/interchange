@@ -2,7 +2,13 @@ import { describe, test, expect } from "bun:test";
 
 import type { InferenceEvent, PartialMessage } from "@intx/types/runtime";
 
-import { expectEvents, expectToolCall, expectToolCalls } from "./matchers";
+import {
+  expectEvents,
+  expectMediaBlock,
+  expectToolCall,
+  expectToolCalls,
+  type MediaBlock,
+} from "./matchers";
 
 const EMPTY_PARTIAL: PartialMessage = { text: "" };
 
@@ -204,5 +210,167 @@ describe("expectToolCall(name).from(events).toHaveBeenCalledTimes", () => {
       .from(events)
       .toHaveBeenCalledTimes(1)
       .toHaveBeenCalledTimes(1);
+  });
+});
+
+// A tiny base64 blob (~64 chars → ~48 decoded bytes); the contents are
+// realistic-looking but small, so a failed assertion that accidentally
+// leaks the data is easy to spot.
+const SHORT_B64 = "aGVsbG8gd29ybGQ=";
+// A larger base64 string (1024 chars → 768 decoded bytes). 1024 is a
+// multiple of 4 with no padding required, so the formula gives an exact
+// decoded count and the fixture is well-formed.
+const LONG_B64 = "A".repeat(1024);
+
+function baseBlock(
+  type: MediaBlock["type"],
+  mimeType: string,
+  data: string,
+): MediaBlock {
+  return { type, source: { kind: "base64", mimeType, data } };
+}
+
+function referenceBlock(
+  type: MediaBlock["type"],
+  mimeType: string,
+  reference: string,
+): MediaBlock {
+  return { type, source: { kind: "file-reference", mimeType, reference } };
+}
+
+describe("expectMediaBlock — happy paths", () => {
+  test.each(["image", "audio", "video", "document"] as const)(
+    "accepts a %s base64 block matching mimeType and byte length",
+    (type) => {
+      const block = baseBlock(type, "application/octet-stream", SHORT_B64);
+      expectMediaBlock(block, { source: "base64" })
+        .toHaveMimeType("application/octet-stream")
+        .toHaveByteLengthAtLeast(5)
+        .toHaveByteLength(11); // "hello world" = 11 bytes
+    },
+  );
+
+  test.each(["image", "audio", "video", "document"] as const)(
+    "accepts a %s file-reference block matching mimeType",
+    (type) => {
+      const block = referenceBlock(type, "image/png", "file_abc");
+      expectMediaBlock(block, { source: "file-reference" }).toHaveMimeType(
+        "image/png",
+      );
+    },
+  );
+
+  test("is chainable across all assertions", () => {
+    const block = baseBlock("image", "image/png", SHORT_B64);
+    expectMediaBlock(block)
+      .toHaveMimeType("image/png")
+      .toHaveByteLengthAtLeast(1)
+      .toHaveByteLengthAtLeast(5);
+  });
+
+  test("chain returns the same assertion object every step", () => {
+    // The chain identity matters because each terminal method returns
+    // `this`; if any returned a fresh assertion, callers could miss
+    // state-carrying behavior in future extensions of the matcher.
+    const block = baseBlock("image", "image/png", SHORT_B64);
+    const a = expectMediaBlock(block);
+    const b = a.toHaveMimeType("image/png");
+    const c = b.toHaveByteLengthAtLeast(1);
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+  });
+
+  test("base64ByteLength throws on input whose length is not a multiple of 4", () => {
+    // "===" is three padding chars — neither a valid base64 nor a sane
+    // input to the byte-length helper. Surfacing it as a thrown error
+    // beats returning a negative byte count that callers then assert
+    // against without realising they're operating on garbage.
+    const block = baseBlock("image", "image/png", "===");
+    expect(() => expectMediaBlock(block).toHaveByteLength(0)).toThrow(
+      /not a multiple of 4/,
+    );
+  });
+});
+
+describe("expectMediaBlock — failure paths", () => {
+  test("rejects on wrong source kind via opts", () => {
+    const block = baseBlock("image", "image/png", SHORT_B64);
+    expect(() => expectMediaBlock(block, { source: "file-reference" })).toThrow(
+      /expected source=file-reference/,
+    );
+  });
+
+  test("rejects on mismatched mimeType", () => {
+    const block = baseBlock("image", "image/png", SHORT_B64);
+    expect(() => expectMediaBlock(block).toHaveMimeType("image/jpeg")).toThrow(
+      /toHaveMimeType/,
+    );
+  });
+
+  test("rejects byte-length assertions on file-reference sources", () => {
+    const block = referenceBlock("image", "image/png", "file_abc");
+    expect(() => expectMediaBlock(block).toHaveByteLength(100)).toThrow(
+      /not observable on file-reference sources/,
+    );
+    expect(() => expectMediaBlock(block).toHaveByteLengthAtLeast(100)).toThrow(
+      /not observable on file-reference sources/,
+    );
+  });
+
+  test("rejects when actual byte length is below minimum", () => {
+    const block = baseBlock("audio", "audio/wav", SHORT_B64);
+    expect(() =>
+      expectMediaBlock(block).toHaveByteLengthAtLeast(1_000_000),
+    ).toThrow(/toHaveByteLengthAtLeast/);
+  });
+
+  test("rejects when exact byte length mismatches", () => {
+    const block = baseBlock("audio", "audio/wav", SHORT_B64);
+    expect(() => expectMediaBlock(block).toHaveByteLength(99)).toThrow(
+      /toHaveByteLength/,
+    );
+  });
+});
+
+describe("expectMediaBlock — failure messages never leak base64 payload", () => {
+  // This is the load-bearing property of the helper. A failing assertion
+  // on a megabyte-sized image must NOT dump the raw payload into test
+  // logs; the elided format is what callers debug against.
+
+  function captureError(fn: () => void): string {
+    try {
+      fn();
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+    throw new Error("expected the assertion to throw");
+  }
+
+  test("mismatched mimeType error elides the payload", () => {
+    const block = baseBlock("image", "image/png", LONG_B64);
+    const msg = captureError(() =>
+      expectMediaBlock(block).toHaveMimeType("image/jpeg"),
+    );
+    expect(msg).not.toContain(LONG_B64);
+    expect(msg).toContain("bytes=");
+    expect(msg).toContain("source=base64");
+  });
+
+  test("byte-length-below-minimum error elides the payload", () => {
+    const block = baseBlock("video", "video/mp4", LONG_B64);
+    const msg = captureError(() =>
+      expectMediaBlock(block).toHaveByteLengthAtLeast(10_000_000),
+    );
+    expect(msg).not.toContain(LONG_B64);
+    expect(msg).toContain("bytes=");
+  });
+
+  test("wrong-source-kind error elides the payload", () => {
+    const block = baseBlock("document", "application/pdf", LONG_B64);
+    const msg = captureError(() =>
+      expectMediaBlock(block, { source: "file-reference" }),
+    );
+    expect(msg).not.toContain(LONG_B64);
+    expect(msg).toContain("source=base64");
   });
 });
