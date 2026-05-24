@@ -6,6 +6,8 @@ import type {
   InferenceEvent,
   InferenceOptions,
   MediaSource,
+  PartialMessage,
+  TokenUsage,
 } from "@intx/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { CREDENTIAL_SENTINEL } from "../auth";
@@ -453,22 +455,187 @@ function toGeminiModality(m: "text" | "image" | "audio"): string {
 
 // ---------------------------------------------------------------------------
 // Response parsing
+//
+// Each Gemini SSE event is one complete JSON object delivered through
+// `parseSSE` (event boundary `\n\n`); a partial JSON would mean the
+// SSE framing layer broke its contract, not a Gemini protocol
+// violation. Per the adapter contract in
+// `packages/inference/src/adapter.ts`, `ProtocolMismatchError` is the
+// only throw type the parser is allowed to raise -- the harness's
+// `classifyStreamError` recognizes it.
+//
+// Text deltas on the Gemini wire are incremental: each event carries
+// only the new tokens, not the accumulated text. The harness owns
+// partial-state accumulation; the parser emits placeholder
+// `EMPTY_PARTIAL` and the harness fills the real value in.
 // ---------------------------------------------------------------------------
 
+const EMPTY_PARTIAL: PartialMessage = { text: "" };
+
+// Wire shape: every field is optional. Gemini emits candidates without
+// content during safety-filter rejections, sends events with only
+// `usageMetadata` populated, and may omit `finishReason` on every
+// event except the terminal one. The parser handles the absences
+// directly rather than via schema-default coercion.
+const GeminiPart = type({
+  "text?": "string",
+});
+
+const GeminiContent = type({
+  "parts?": GeminiPart.array(),
+  "role?": "string",
+});
+
+const GeminiCandidate = type({
+  "content?": GeminiContent,
+  "finishReason?": "string",
+  "index?": "number",
+});
+
+// `cachedContentTokenCount` is present when context caching is in
+// use; the plain-text streaming path does not exercise caching so
+// the field is absent here. The thinking commit will revisit
+// `thoughtsTokenCount` once thought-part round-trip lands; for now
+// it is also absent on the plain-text wire (thinking budget = 0
+// when streaming plain text per the discovery-side body builder).
+const GeminiUsageMetadata = type({
+  "promptTokenCount?": "number",
+  "candidatesTokenCount?": "number",
+  "totalTokenCount?": "number",
+  "thoughtsTokenCount?": "number",
+  "cachedContentTokenCount?": "number",
+});
+
+const GeminiSSEEvent = type({
+  "candidates?": GeminiCandidate.array(),
+  "usageMetadata?": GeminiUsageMetadata,
+  // `modelVersion` and `responseId` are dropped at this layer. The
+  // harness's `AssistantTurn.model` is set from the requested model
+  // string, not from the served `modelVersion` -- which can differ
+  // (`gemini-2.5-flash` requested may return `gemini-2.5-flash-001`).
+  // Surfacing the served version is a separate concern; for now the
+  // request-side identifier is what downstream consumers see.
+  "modelVersion?": "string",
+  "responseId?": "string",
+});
+
 function parseResponse(sseData: string): InferenceEvent[] {
-  // The parser is unimplemented. Throwing
-  // `ProtocolMismatchError` -- the only throw type the adapter
-  // contract (`packages/inference/src/adapter.ts`) permits parsers
-  // to raise -- routes the failure through the harness's
-  // `classifyStreamError`, which surfaces it as
-  // `inference.error` with category `"protocol_mismatch"` instead
-  // of silently dropping events.
-  throw new ProtocolMismatchError(
-    "Google GenAI parseResponse is not implemented.",
-    sseData,
-  );
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(sseData);
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    throw new ProtocolMismatchError(
+      `google-genai parseResponse: malformed JSON in SSE data payload: ${message}`,
+      sseData,
+    );
+  }
+
+  const event = GeminiSSEEvent(parsed);
+  if (event instanceof type.errors) {
+    throw new ProtocolMismatchError(
+      `google-genai parseResponse: SSE event failed schema validation: ${event.summary}`,
+      parsed,
+    );
+  }
+
+  const candidates = event.candidates ?? [];
+
+  // The adapter's `buildRequest` never requests `candidateCount > 1`,
+  // so a multi-candidate response means the wire shape diverged from
+  // what was requested. Surface the mismatch loudly with the full
+  // payload in `error.raw` rather than silently picking `[0]`.
+  if (candidates.length > 1) {
+    throw new ProtocolMismatchError(
+      `google-genai parseResponse: expected at most one candidate, got ${String(candidates.length)}.`,
+      parsed,
+    );
+  }
+
+  // The seq field is a placeholder 0 -- the harness assigns real
+  // sequence numbers.
+  const seq = 0;
+  const out: InferenceEvent[] = [];
+
+  // Plain-text streaming has a single logical block at index 0. The
+  // multi-block indexer (text + image, text + functionCall, ...)
+  // arrives when those part kinds land; for now `index: 0` is
+  // correct by construction and any future kind would need its own
+  // index allocator.
+  const blockIndex = 0;
+
+  const candidate = candidates[0];
+  if (candidate?.content?.parts !== undefined) {
+    for (const part of candidate.content.parts) {
+      if (part.text === undefined || part.text === "") {
+        // Empty text parts are dropped. The single-block plain-text
+        // path needs no per-index anchoring, so there is no reason
+        // to emit a zero-token delta. Future multi-block paths may
+        // need an anchoring emission for empty parts; revisit when
+        // adding those kinds.
+        continue;
+      }
+      out.push({
+        type: "inference.text.delta",
+        seq,
+        data: {
+          token: part.text,
+          partial: EMPTY_PARTIAL,
+          index: blockIndex,
+        },
+      });
+    }
+  }
+
+  // `finishReason` arrives only on the terminal event. Emit usage at
+  // exactly that point: Gemini's `usageMetadata` is cumulative in
+  // every event, so the terminal-event snapshot is the final count
+  // and intermediate emissions would be pure noise that the
+  // harness's `inference.done` would discard anyway.
+  //
+  // `MAX_TOKENS`, `SAFETY`, `RECITATION`, and `OTHER` reach this
+  // layer but do not yet surface as `inference.error` -- emitting
+  // those needs fixtures showing the full error envelope shape,
+  // which the plain-text path does not exercise.
+  if (candidate?.finishReason !== undefined) {
+    const usage = event.usageMetadata;
+    if (usage === undefined) {
+      throw new ProtocolMismatchError(
+        `google-genai parseResponse: terminal event (finishReason=${JSON.stringify(candidate.finishReason)}) missing usageMetadata.`,
+        parsed,
+      );
+    }
+    const tokenUsage: TokenUsage = {
+      input: usage.promptTokenCount ?? 0,
+      output: usage.candidatesTokenCount ?? 0,
+      // Gemini exposes context caching via `cachedContentTokenCount`
+      // (single counter; the API does not distinguish "read" from
+      // "write" the way Anthropic does). The plain-text path does
+      // not exercise caching, so the field is absent here. A future
+      // caching commit decides whether to route the count into
+      // `cacheRead` or carry both fields.
+      cacheRead: usage.cachedContentTokenCount ?? 0,
+      cacheWrite: 0,
+      // `thoughtsTokenCount` is absent on the plain-text wire
+      // (thinking budget is zero). When the thinking commit lands,
+      // it will set this from the wire.
+      thinking: usage.thoughtsTokenCount ?? 0,
+    };
+    out.push({
+      type: "inference.usage",
+      seq,
+      data: { usage: tokenUsage },
+    });
+  }
+
+  return out;
 }
 
 export function createGoogleGenAIAdapter(): ProviderAdapter {
+  // Both functions are pure -- no per-request state is needed for
+  // the plain-text path. State enters this adapter when the
+  // multimodal/function-calling/thinking paths land and require
+  // cross-event coordination (e.g., a callId-to-block-index map
+  // analogous to the anthropic adapter's `blockIndexToCallId`).
   return { buildRequest, parseResponse };
 }

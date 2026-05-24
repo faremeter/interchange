@@ -1,5 +1,6 @@
 import type { ProviderAdapter } from "../adapter";
 import { createAnthropicAdapter } from "./anthropic";
+import { createGoogleGenAIAdapter } from "./google-genai";
 import { createOpenAIAdapter } from "./openai";
 
 type AdapterFactory = () => ProviderAdapter;
@@ -9,6 +10,7 @@ const registry = new Map<string, AdapterFactory>();
 registry.set("anthropic", createAnthropicAdapter);
 registry.set("openai", createOpenAIAdapter);
 registry.set("openai-compatible", createOpenAIAdapter);
+registry.set("google-genai", createGoogleGenAIAdapter);
 
 export function registerProvider(id: string, factory: AdapterFactory): void {
   registry.set(id, factory);
