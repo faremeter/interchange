@@ -350,6 +350,107 @@ describe("runInference — source.defaults merge precedence", () => {
   });
 });
 
+// providerOptions on InferenceSourceDefaults is the model-bound bag of
+// provider-native knobs. Per-call InferenceOptions.providerOptions
+// overrides via the same shallow-spread merge that handles maxTokens.
+// The merge is shallow: a per-call providerOptions object wholesale
+// replaces the source-bound one rather than deep-merging per key.
+describe("runInference — providerOptions merge precedence", () => {
+  function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
+  async function captureAdapterOptions(opts: {
+    sourceProviderOptions?: Record<string, unknown>;
+    perCallProviderOptions?: Record<string, unknown>;
+  }): Promise<Record<string, unknown> | undefined> {
+    // Use a fresh provider name per call so concurrent test runs don't
+    // race on the global registry. The `registerProvider` API has no
+    // unregister counterpart; leaked test providers are inert.
+    const providerName = `test-provideroptions-${Math.random().toString(36).slice(2)}`;
+    let captured: Record<string, unknown> | undefined | "absent" = "absent";
+
+    const { registerProvider } = await import("./providers/registry");
+    registerProvider(providerName, () => ({
+      buildRequest: (_messages, _model, options) => {
+        captured = isRecord(options.providerOptions)
+          ? options.providerOptions
+          : undefined;
+        return {
+          url: "/test",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        };
+      },
+      parseResponse: () => [],
+    }));
+
+    const source: InferenceSource = {
+      id: `${providerName}:test-model`,
+      provider: providerName,
+      baseURL: "https://test.invalid",
+      apiKey: "test",
+      model: "test-model",
+      ...(opts.sourceProviderOptions !== undefined
+        ? { defaults: { providerOptions: opts.sourceProviderOptions } }
+        : {}),
+    };
+
+    const deps: Dependencies = {
+      fetch: () =>
+        Promise.resolve(
+          new Response("", {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        ),
+    };
+
+    let seq = 0;
+    await collect(
+      runInference({
+        turns: [userTurn("hi")],
+        source,
+        ...(opts.perCallProviderOptions !== undefined
+          ? {
+              inferenceOptions: {
+                providerOptions: opts.perCallProviderOptions,
+              },
+            }
+          : {}),
+        nextSeq: () => ++seq,
+        deps,
+      }),
+    );
+
+    if (captured === "absent")
+      throw new Error("adapter buildRequest not called");
+    return captured;
+  }
+
+  test("source-bound providerOptions reaches the adapter when no per-call override", async () => {
+    const seen = await captureAdapterOptions({
+      sourceProviderOptions: { user: "user_123", store: false },
+    });
+    expect(seen).toEqual({ user: "user_123", store: false });
+  });
+
+  test("per-call providerOptions wholesale replaces the source-bound bag", async () => {
+    const seen = await captureAdapterOptions({
+      sourceProviderOptions: { user: "user_123", store: false },
+      perCallProviderOptions: { user: "user_999" },
+    });
+    // Shallow merge: per-call object wins entirely, source-bound `store`
+    // does NOT survive the override.
+    expect(seen).toEqual({ user: "user_999" });
+  });
+
+  test("neither set: the adapter sees options.providerOptions === undefined", async () => {
+    const seen = await captureAdapterOptions({});
+    expect(seen).toBeUndefined();
+  });
+});
+
 // The JSDoc on `Dependencies` documents which reflective APIs leak the
 // optional `[HarnessId]` tag. Pin those claims so a future refactor that
 // makes the tag enumerable (e.g., renaming it to a string key) cannot
