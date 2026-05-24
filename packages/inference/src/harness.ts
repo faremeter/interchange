@@ -16,6 +16,7 @@
 import { type } from "arktype";
 
 import type {
+  CitationBlock,
   ConversationTurn,
   InferenceEvent,
   InferenceOptions,
@@ -170,6 +171,11 @@ export async function* runInference(
   // here so the final assistant turn carries them in the same sequence
   // they arrived on the wire.
   const redactedThinkingBlocks: RedactedThinkingBlock[] = [];
+  // Citations streamed from the provider, in arrival order. Each
+  // citation typically annotates the most recently emitted text run;
+  // preserving the streaming order lets downstream consumers
+  // re-attach citations to their text regions.
+  const citationBlocks: CitationBlock[] = [];
   let usageSeen: TokenUsage | null = null;
 
   // Tool call state: keyed by callId (or index for OpenAI).
@@ -464,6 +470,20 @@ export async function* runInference(
               break;
             }
 
+            case "inference.citation": {
+              // Citations stream interleaved with text deltas. The
+              // harness preserves arrival order so consumers building
+              // citation-aware UI can re-attach each citation to the
+              // text region that immediately precedes it.
+              citationBlocks.push(raw.data.citation);
+              yield {
+                type: "inference.citation",
+                seq: nextSeq(),
+                data: { citation: raw.data.citation },
+              };
+              break;
+            }
+
             case "inference.thinking.redacted": {
               // Redacted thinking blocks arrive as one-shots inside
               // content_block_start (no delta stream). Preserve insertion
@@ -671,6 +691,11 @@ export async function* runInference(
     if (partial.text.length > 0) {
       contentBlocks.push({ type: "text", text: partial.text });
     }
+    // Citations are appended after the text they annotate. The
+    // CitationBlock type documents this attribution rule
+    // (CitationBlock comment in runtime.ts): consumers attribute
+    // trailing CitationBlocks to the nearest preceding TextBlock.
+    contentBlocks.push(...citationBlocks);
     contentBlocks.push(...completedToolCalls);
 
     const finalTurn: AssistantTurn = {
