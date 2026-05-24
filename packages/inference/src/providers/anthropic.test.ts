@@ -402,6 +402,54 @@ describe("Anthropic parser — citations_delta to inference.citation", () => {
     expect(ev.data.citation.location).toBeUndefined();
     // textOffset is intentionally never populated at this layer.
     expect(ev.data.citation.textOffset).toBeUndefined();
+    // The content_block_delta.index from the wire propagates onto the
+    // emitted event so the harness can interleave the citation at the
+    // matching block position in the finalized turn.
+    expect(ev.data.index).toBe(3);
+  });
+
+  test("citations on two different block indices preserve their respective indices", () => {
+    // Catches a regression where the parser caches the most recent
+    // content_block_delta.index across subsequent citation events
+    // instead of reading it fresh for each.
+    const adapter = createAnthropicAdapter();
+    const events = [
+      ...parse(adapter, {
+        type: "content_block_delta",
+        index: 1,
+        delta: {
+          type: "citations_delta",
+          citation: {
+            type: "web_search_result_location",
+            cited_text: "First citation.",
+            url: "https://example.com/a",
+            title: "A",
+            encrypted_index: "EA==",
+          },
+        },
+      }),
+      ...parse(adapter, {
+        type: "content_block_delta",
+        index: 5,
+        delta: {
+          type: "citations_delta",
+          citation: {
+            type: "web_search_result_location",
+            cited_text: "Second citation.",
+            url: "https://example.com/b",
+            title: "B",
+            encrypted_index: "EB==",
+          },
+        },
+      }),
+    ];
+    const citations = events.filter(
+      (ev): ev is Extract<InferenceEvent, { type: "inference.citation" }> =>
+        ev.type === "inference.citation",
+    );
+    expect(citations).toHaveLength(2);
+    expect(citations[0]?.data.index).toBe(1);
+    expect(citations[1]?.data.index).toBe(5);
   });
 
   test("page_location maps to location.kind=page with start/end page numbers", () => {

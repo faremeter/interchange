@@ -172,13 +172,14 @@ export async function* runInference(
     | { kind: "redacted_thinking"; data: string }
     | { kind: "tool_use"; callId: string };
   const blockMap = new Map<number, BlockState>();
-  // Citations streamed from the provider, in arrival order. The
-  // `inference.citation` event today doesn't carry the source content
-  // block index (citations attribute to the nearest preceding
-  // TextBlock per the CitationBlock docstring), so citations are
-  // collected as a flat array and appended after the per-index walk
-  // in final-turn assembly.
-  const citationBlocks: CitationBlock[] = [];
+  // Citations streamed from the provider. Indexed citations attribute
+  // to the block at the matching index and interleave into the
+  // finalized turn immediately after that block; unindexed citations
+  // append at the end of `content[]` per the CitationBlock attribution
+  // rule. The two collections capture distinct semantics, not just
+  // different keys.
+  const citationsByIndex = new Map<number, CitationBlock[]>();
+  const unindexedCitations: CitationBlock[] = [];
   let usageSeen: TokenUsage | null = null;
 
   // Tool call state: keyed by callId (or index for OpenAI).
@@ -515,16 +516,25 @@ export async function* runInference(
             }
 
             case "inference.citation": {
-              // Citations don't carry a content-block index on their
-              // event payload today, so they're collected flat and
-              // appended at the end of the final turn per the
-              // CitationBlock attribution rule. Index-precise
-              // attribution is tracked separately.
-              citationBlocks.push(raw.data.citation);
+              const citation = raw.data.citation;
+              const citationIndex = raw.data.index;
+              if (citationIndex !== undefined) {
+                let list = citationsByIndex.get(citationIndex);
+                if (list === undefined) {
+                  list = [];
+                  citationsByIndex.set(citationIndex, list);
+                }
+                list.push(citation);
+              } else {
+                unindexedCitations.push(citation);
+              }
               yield {
                 type: "inference.citation",
                 seq: nextSeq(),
-                data: { citation: raw.data.citation },
+                data:
+                  citationIndex !== undefined
+                    ? { citation, index: citationIndex }
+                    : { citation },
               };
               break;
             }
@@ -759,10 +769,28 @@ export async function* runInference(
       }
     }
     const contentBlocks: ContentBlock[] = [];
-    for (const entry of blockMap.values()) {
+    // Emit a content block and immediately append (and consume) any
+    // citations registered at that block's index. Centralizing the
+    // per-emission interleave step here means each arm of the walk
+    // below just calls `emit(block, idx)`; a new block kind can't
+    // forget the interleave step. Consumed indices are deleted from
+    // `citationsByIndex` so the post-walk check below can detect any
+    // citation whose index pointed at a block that never emitted
+    // (orphan reference or block filtered out during finalization)
+    // and surface it loudly rather than silently dropping the
+    // citation from `content[]`.
+    const emit = (block: ContentBlock, idx: number) => {
+      contentBlocks.push(block);
+      const atIdx = citationsByIndex.get(idx);
+      if (atIdx !== undefined) {
+        contentBlocks.push(...atIdx);
+        citationsByIndex.delete(idx);
+      }
+    };
+    for (const [idx, entry] of blockMap.entries()) {
       if (entry.kind === "text") {
         if (entry.text.length > 0) {
-          contentBlocks.push({ type: "text", text: entry.text });
+          emit({ type: "text", text: entry.text }, idx);
         }
         continue;
       }
@@ -774,17 +802,20 @@ export async function* runInference(
         if (entry.text.length === 0 && entry.signature === undefined) {
           continue;
         }
-        contentBlocks.push({
-          type: "thinking",
-          thinking: entry.text,
-          ...(entry.signature !== undefined
-            ? { signature: entry.signature }
-            : {}),
-        });
+        emit(
+          {
+            type: "thinking",
+            thinking: entry.text,
+            ...(entry.signature !== undefined
+              ? { signature: entry.signature }
+              : {}),
+          },
+          idx,
+        );
         continue;
       }
       if (entry.kind === "redacted_thinking") {
-        contentBlocks.push({ type: "redacted_thinking", data: entry.data });
+        emit({ type: "redacted_thinking", data: entry.data }, idx);
         continue;
       }
       if (entry.kind === "tool_use") {
@@ -804,17 +835,28 @@ export async function* runInference(
             entry,
           );
         }
-        contentBlocks.push(finalized);
+        emit(finalized, idx);
         continue;
       }
       entry satisfies never;
     }
-    // Citations append after the per-index walk. Their event payload
-    // doesn't carry the source content-block index today, so they
-    // attribute by adjacency to the nearest preceding TextBlock per
-    // the CitationBlock docstring. Index-precise attribution is a
-    // separately tracked extension.
-    contentBlocks.push(...citationBlocks);
+    if (citationsByIndex.size > 0) {
+      // A citation whose `index` pointed at a block that never made
+      // it into `content[]` would otherwise be silently dropped. The
+      // cases that get here in practice are upstream bugs: an adapter
+      // emitted a citation indexed at a block that doesn't exist, or
+      // at a block that the finalize walk filtered out (empty text,
+      // empty thinking with no signature). Surface the bookkeeping
+      // mismatch loudly rather than papering over it.
+      const orphanIndices = Array.from(citationsByIndex.keys()).sort(
+        (a, b) => a - b,
+      );
+      throw new ProtocolMismatchError(
+        `harness: ${String(citationsByIndex.size)} citation index/indices have no matching emitted block in the final turn: ${orphanIndices.join(", ")}`,
+        { orphanIndices },
+      );
+    }
+    contentBlocks.push(...unindexedCitations);
 
     const finalTurn: AssistantTurn = {
       role: "assistant",

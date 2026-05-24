@@ -728,17 +728,19 @@ const CitationSource = type({
 });
 
 /**
- * A citation that supports a span of assistant text. Emitted in
- * conversation-turn order immediately following the TextBlock it
- * annotates. Consumers MUST attribute trailing CitationBlocks to the
- * nearest preceding TextBlock in the same turn.
+ * A citation that supports a span of assistant text. Consumers
+ * receiving a CitationBlock without a paired source-block index MUST
+ * attribute it by adjacency to the nearest preceding TextBlock in the
+ * same turn.
  *
  * Citations are deliberately excluded from ToolResultBlock.content
  * — they annotate model output, not tool output.
  *
  * Exported because `inference.citation` events reference it by name,
  * following the same pattern as `AssistantTurn`, `ToolCall`, and
- * `ToolResult`.
+ * `ToolResult`. See the `inference.citation` event docstring for how
+ * a paired source-block index is carried on the wire and consumed by
+ * the harness.
  */
 export const CitationBlock = type({
   type: "'citation'",
@@ -1062,7 +1064,15 @@ export const InferenceEvent = type({
   .or({
     type: "'inference.citation'",
     seq: "number",
-    data: { citation: CitationBlock },
+    // `index`, when present, names the source content block (typically
+    // a TextBlock) the citation annotates. The harness uses it to
+    // interleave the citation into the finalized turn's `content[]`
+    // immediately after the matching block. Adapters whose wire
+    // protocol does not carry per-citation block indices omit the
+    // field; the harness then appends those citations at the end of
+    // `content[]` and consumers attribute them to the nearest
+    // preceding TextBlock per the CitationBlock docstring.
+    data: { citation: CitationBlock, "index?": "number" },
   })
   .or({
     type: "'inference.code_execution.start'",
@@ -1263,7 +1273,7 @@ export type InferenceEvent =
   | {
       type: "inference.citation";
       seq: number;
-      data: { citation: CitationBlock };
+      data: { citation: CitationBlock; index?: number };
     }
   | {
       type: "inference.code_execution.start";
