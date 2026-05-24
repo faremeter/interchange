@@ -34,6 +34,7 @@ export { transformMessages, createIDNormalizer } from "./transform";
 export type { TransformOptions, IDNormalizer } from "./transform";
 export { createAnthropicAdapter } from "./providers/anthropic";
 export { createOpenAIAdapter } from "./providers/openai";
+export { createGoogleGenAIAdapter } from "./providers/google-genai";
 
 export { createReactor } from "./reactor";
 export type { Reactor, ReactorConfig, ReactorEmittedEvent } from "./reactor";
