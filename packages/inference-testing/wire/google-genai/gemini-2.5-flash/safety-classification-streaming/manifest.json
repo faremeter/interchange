@@ -1,0 +1,7 @@
+{
+  "provider": "google-genai",
+  "model": "gemini-2.5-flash",
+  "capability": "safety-classification-streaming",
+  "capturedAt": "2026-05-24T17:10:12.492Z",
+  "schemaVersion": "1"
+}
