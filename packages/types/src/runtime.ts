@@ -608,10 +608,34 @@ export type TokenUsage = typeof TokenUsage.infer;
  * (INFERENCE.md § Message Format › Content Types)
  */
 const TextBlock = type({ type: "'text'", text: "string" });
-const ImageBlock = type({
-  type: "'image'",
+
+/**
+ * How a media payload is carried by a content block. Either inline as a
+ * base64-encoded string, or by reference to an opaque provider-native
+ * handle (e.g. a Gemini fileUri, an Anthropic file_id). The wire shape
+ * each provider expects is built by the provider adapter; MediaSource is
+ * the internal, provider-agnostic representation.
+ *
+ * (INFERENCE.md § Generalized Multimodal Taxonomy)
+ */
+const MediaSourceBase64 = type({
+  kind: "'base64'",
   mimeType: "string",
   data: "string",
+});
+
+const MediaSourceFileReference = type({
+  kind: "'file-reference'",
+  mimeType: "string",
+  reference: "string",
+});
+
+export const MediaSource = MediaSourceBase64.or(MediaSourceFileReference);
+export type MediaSource = typeof MediaSource.infer;
+
+const ImageBlock = type({
+  type: "'image'",
+  source: MediaSource,
 });
 
 const ThinkingBlock = type({

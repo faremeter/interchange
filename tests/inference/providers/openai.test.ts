@@ -260,6 +260,29 @@ describe("OpenAI adapter: buildRequest", () => {
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
     expect(body.max_tokens).toBe(256);
   });
+
+  test("rejects a file-reference image source until Files API wiring lands", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              kind: "file-reference",
+              mimeType: "image/png",
+              reference: "file_abc123",
+            },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+      /file-reference image sources/,
+    );
+  });
 });
 
 describe("OpenAI adapter: parseResponse", () => {

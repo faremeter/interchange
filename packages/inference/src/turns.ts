@@ -9,39 +9,6 @@ import type {
 
 export type { ConversationTurn, ContentBlock, AssistantTurn };
 
-export type TextBlock = { type: "text"; text: string };
-
-export type ThinkingBlock = {
-  type: "thinking";
-  thinking: string;
-  signature?: string;
-  redacted?: boolean;
-};
-
-export type ImageBlock = {
-  type: "image";
-  mimeType: string;
-  data: string;
-};
-
-export type ToolCallBlock = {
-  type: "tool_call";
-  id: string;
-  name: string;
-  arguments: Record<string, unknown>;
-};
-
-export type ToolResultBlock = {
-  type: "tool_result";
-  callId: string;
-  content: (
-    | { type: "text"; text: string }
-    | { type: "image"; mimeType: string; data: string }
-  )[];
-  detail?: unknown;
-  isError?: boolean;
-};
-
 export type { ToolCall, ToolResult };
 
 export function createInboundTurn(

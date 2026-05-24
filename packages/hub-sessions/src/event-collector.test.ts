@@ -162,6 +162,55 @@ describe("EventCollector", () => {
     expect(at(parts, 4).values.type).toBe("step-finish");
   });
 
+  test("image content blocks insert a file part keyed by source kind", async () => {
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    await collector.onEvent(
+      event("inference.done", 5, {
+        turn: {
+          role: "assistant",
+          content: [
+            {
+              type: "image",
+              source: {
+                kind: "base64",
+                mimeType: "image/png",
+                data: "aGVsbG8=",
+              },
+            },
+            {
+              type: "image",
+              source: {
+                kind: "file-reference",
+                mimeType: "application/pdf",
+                reference: "file_abc123",
+              },
+            },
+          ],
+          model: "gpt-4",
+        },
+        usage: { input: 10, output: 5 },
+      }),
+    );
+
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
+    // step-start + base64 file + file-reference file + step-finish = 4 parts
+    expect(parts).toHaveLength(4);
+
+    expect(at(parts, 1).values.type).toBe("file");
+    expect(at(parts, 1).values.metadata).toEqual({
+      kind: "base64",
+      mimeType: "image/png",
+      dataLength: 8,
+    });
+
+    expect(at(parts, 2).values.type).toBe("file");
+    expect(at(parts, 2).values.metadata).toEqual({
+      kind: "file-reference",
+      mimeType: "application/pdf",
+      reference: "file_abc123",
+    });
+  });
+
   test("tool.done inserts a tool result part", async () => {
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(

@@ -336,6 +336,58 @@ describe("Anthropic adapter: buildRequest", () => {
     const body = AnthropicRequestBody.assert(JSON.parse(req.body));
     expect(body.max_tokens).toBe(512);
   });
+
+  test("rejects a file-reference image source until Files API wiring lands", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              kind: "file-reference",
+              mimeType: "image/png",
+              reference: "file_abc123",
+            },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    expect(() =>
+      adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {}),
+    ).toThrow(/file-reference image sources\./);
+  });
+
+  test("rejects a file-reference image inside a tool_result", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            callId: "call_xyz",
+            content: [
+              {
+                type: "image",
+                source: {
+                  kind: "file-reference",
+                  mimeType: "image/png",
+                  reference: "file_abc123",
+                },
+              },
+            ],
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    expect(() =>
+      adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {}),
+    ).toThrow(/file-reference image sources in tool results/);
+  });
 });
 
 describe("Anthropic adapter: parseResponse", () => {
