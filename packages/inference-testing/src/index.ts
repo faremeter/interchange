@@ -69,3 +69,10 @@ export type {
   InvariantViolation,
   ReplayContext,
 } from "./invariants";
+
+export { runCompatReplay } from "./compat-replay";
+export type {
+  CompatReplayOpts,
+  CompatReplayResult,
+  CompatReplaySkipReason,
+} from "./compat-replay";
