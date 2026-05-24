@@ -256,9 +256,19 @@ export type AnthropicRawEvent =
   | { kind: "message_stop" }
   | { kind: "skip" };
 
+// Anthropic's SSE protocol guarantees `index` on every content_block_*
+// event. Parsing it as required (not optional) means the type system
+// carries the guarantee through to every emission site below — no
+// defensive `?? 0` fallback that would silently route real protocol
+// violations to block 0 and corrupt the `blockIndexToCallId` cache the
+// parser uses to resolve input_json_delta lookups across multiple
+// tool_use blocks at distinct indices. A malformed upstream missing
+// `index` surfaces as a ProtocolMismatchError via the schema-validation
+// throw site, with the offending payload preserved in `error.raw` for
+// inspection.
 const ContentBlockDelta = type({
   type: "'content_block_delta'",
-  "index?": "number",
+  index: "number",
   delta: {
     type: "string",
     "text?": "string",
@@ -270,7 +280,7 @@ const ContentBlockDelta = type({
 
 const ContentBlockStart = type({
   type: "'content_block_start'",
-  "index?": "number",
+  index: "number",
   // Anthropic sends either content_block (snake_case) or contentBlock (camelCase).
   "content_block?": { type: "string", "id?": "string", "name?": "string" },
   "contentBlock?": { type: "string", "id?": "string", "name?": "string" },
@@ -278,7 +288,7 @@ const ContentBlockStart = type({
 
 const ContentBlockStop = type({
   type: "'content_block_stop'",
-  "index?": "number",
+  index: "number",
 });
 
 const MessageDelta = type({
@@ -343,7 +353,7 @@ function parseResponse(
 
   switch (event.type) {
     case "content_block_delta": {
-      const { delta } = event;
+      const { delta, index } = event;
 
       if (delta.type === "text_delta") {
         const token = delta.text ?? "";
@@ -351,7 +361,7 @@ function parseResponse(
           {
             type: "inference.text.delta",
             seq,
-            data: { token, partial: EMPTY_PARTIAL },
+            data: { token, partial: EMPTY_PARTIAL, index },
           },
         ];
       }
@@ -362,7 +372,7 @@ function parseResponse(
           {
             type: "inference.thinking.delta",
             seq,
-            data: { token, partial: EMPTY_PARTIAL },
+            data: { token, partial: EMPTY_PARTIAL, index },
           },
         ];
       }
@@ -379,13 +389,12 @@ function parseResponse(
           {
             type: "inference.thinking.signature",
             seq,
-            data: { signature },
+            data: { signature, index },
           },
         ];
       }
 
       if (delta.type === "input_json_delta") {
-        const index = event.index ?? 0;
         const callId = blockIndexToCallId.get(index);
         if (callId === undefined) {
           throw new ProtocolMismatchError(
@@ -402,6 +411,7 @@ function parseResponse(
               callId,
               argumentFragment: fragment,
               partial: EMPTY_PARTIAL,
+              index,
             },
           },
         ];
@@ -415,7 +425,7 @@ function parseResponse(
       if (block === undefined) return [];
 
       if (block.type === "tool_use") {
-        const index = event.index ?? 0;
+        const { index } = event;
         const callId = block.id ?? String(index);
         blockIndexToCallId.set(index, callId);
         const name = block.name ?? "";
@@ -423,10 +433,18 @@ function parseResponse(
           {
             type: "inference.tool_call.start",
             seq,
-            data: { callId, name, partial: EMPTY_PARTIAL },
+            data: { callId, name, partial: EMPTY_PARTIAL, index },
           },
         ];
       }
+      // Non-tool_use content_block_start events (text, thinking) emit
+      // nothing here by design: each content_block_delta arrives with
+      // a typed delta (text_delta, thinking_delta, signature_delta)
+      // that the switch above discriminates on directly, so an upfront
+      // start emission would be redundant. Tool calls are the
+      // exception because their callId arrives only in the start
+      // event and must be cached against the block index for
+      // subsequent input_json_delta lookups.
       return [];
     }
 
