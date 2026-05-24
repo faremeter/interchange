@@ -26,6 +26,7 @@ This inverts the typical approach where each provider implements the full stream
 
 - **Anthropic** — Messages API with streaming, extended thinking, prompt caching
 - **OpenAI-compatible** — Covers OpenAI, OpenRouter, OpenCode Go/Zen, and self-hosted endpoints (Ollama, vLLM)
+- **Google GenAI** — Gemini `streamGenerateContent` over SSE. The request builder translates the internal `ConversationTurn[]` format into Gemini's `contents`/`systemInstruction`/`tools`/`generationConfig` shape, including the three `MediaSource` variants (`base64` → `inlineData`, `file-reference` and `url` → `fileData`/`fileUri`), `tool_call`/`tool_result` round-trip (with a callId-to-name lookup built from prior assistant turns), and lowercase-to-uppercase `responseModalities`. The SSE response parser is not implemented; a live call surfaces the gap via `inference.error` with category `protocol_mismatch` rather than silently dropping events.
 
 ### Provider Registry
 
