@@ -115,9 +115,6 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
       return { type: "text", text: block.text };
 
     case "thinking":
-      if (block.redacted) {
-        return { type: "thinking", thinking: "", thinking_type: "redacted" };
-      }
       return {
         type: "thinking",
         thinking: block.thinking,
@@ -125,6 +122,12 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
           ? { signature: block.signature }
           : {}),
       };
+
+    case "redacted_thinking":
+      throw new Error(
+        "Anthropic adapter does not yet echo redacted_thinking content " +
+          "blocks back on follow-up turns.",
+      );
 
     case "image": {
       const source = block.source;

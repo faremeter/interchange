@@ -236,6 +236,13 @@ export function createEventCollector(
         case "thinking":
           await insertPart("reasoning", block.thinking, null);
           break;
+        case "redacted_thinking":
+          // The opaque `data` blob is meaningless to humans and
+          // must be preserved verbatim for echo-back on follow-up
+          // turns; persisting it as a reasoning row would invite
+          // truncation or display. Skip and let the adapter layer
+          // own the round-trip.
+          break;
         case "tool_call":
           callNames.set(block.id, block.name);
           callArgs.set(block.id, block.arguments);

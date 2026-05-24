@@ -215,6 +215,10 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
     case "thinking":
       // Thinking blocks are not forwarded to OpenAI endpoints.
       return "";
+    case "redacted_thinking":
+      // Redacted thinking blocks are opaque by design; the cross-
+      // provider mapping is meaningless on OpenAI's surface.
+      return "";
     case "tool_call":
     case "tool_result":
       // These are handled separately in toOpenAIMessage.
