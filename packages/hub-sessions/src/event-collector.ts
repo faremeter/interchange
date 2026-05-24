@@ -250,7 +250,14 @@ export function createEventCollector(
           // Tool results in the content block are echoes of earlier
           // tool.done events. Skip to avoid duplication.
           break;
-        case "image": {
+        case "image":
+        case "audio":
+        case "video":
+        case "document": {
+          // All media block variants persist into the generic "file"
+          // part bucket. The block's own `type` distinguishes the
+          // semantic role; `mimeType` distinguishes the encoding; the
+          // MediaSource discriminant distinguishes inline vs reference.
           const source = block.source;
           if (source.kind === "base64") {
             await insertPart("file", null, {

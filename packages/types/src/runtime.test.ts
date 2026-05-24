@@ -499,3 +499,90 @@ describe("ImageBlock shape on ContentBlock", () => {
     expect(result instanceof type.errors).toBe(false);
   });
 });
+
+describe("AudioBlock / VideoBlock / DocumentBlock variants on ContentBlock", () => {
+  test.each([
+    ["audio", "audio/wav", "UklGRg=="],
+    ["video", "video/mp4", "AAAAGGZ0eXA="],
+    ["document", "application/pdf", "JVBERi0="],
+  ])("accepts a %s block with a base64 source", (kind, mimeType, data) => {
+    const result = ContentBlock({
+      type: kind,
+      source: { kind: "base64", mimeType, data },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test.each([
+    ["audio", "audio/wav"],
+    ["video", "video/mp4"],
+    ["document", "application/pdf"],
+  ])("accepts a %s block with a file-reference source", (kind, mimeType) => {
+    const result = ContentBlock({
+      type: kind,
+      source: { kind: "file-reference", mimeType, reference: "file_abc" },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test.each(["audio", "video", "document"])(
+    "rejects a %s block without a source",
+    (kind) => {
+      const result = ContentBlock({ type: kind });
+      expect(result instanceof type.errors).toBe(true);
+    },
+  );
+
+  test.each(["audio", "video", "document"])(
+    "rejects a %s block with the legacy flat shape (mimeType/data, no source)",
+    (kind) => {
+      const result = ContentBlock({
+        type: kind,
+        mimeType: "application/octet-stream",
+        data: "aGVsbG8=",
+      });
+      expect(result instanceof type.errors).toBe(true);
+    },
+  );
+
+  test.each([
+    ["audio", "audio/wav", "UklGRg=="],
+    ["video", "video/mp4", "AAAAGGZ0eXA="],
+    ["document", "application/pdf", "JVBERi0="],
+  ])(
+    "accepts a %s block (base64) inside a tool_result content array",
+    (kind, mimeType, data) => {
+      const result = ContentBlock({
+        type: "tool_result",
+        callId: "call_xyz",
+        content: [
+          { type: "text", text: "the payload:" },
+          { type: kind, source: { kind: "base64", mimeType, data } },
+        ],
+      });
+      expect(result instanceof type.errors).toBe(false);
+    },
+  );
+
+  test.each([
+    ["audio", "audio/wav", "file_audio"],
+    ["video", "video/mp4", "file_video"],
+    ["document", "application/pdf", "file_doc"],
+  ])(
+    "accepts a %s block (file-reference) inside a tool_result content array",
+    (kind, mimeType, reference) => {
+      const result = ContentBlock({
+        type: "tool_result",
+        callId: "call_xyz",
+        content: [
+          { type: "text", text: "the payload:" },
+          {
+            type: kind,
+            source: { kind: "file-reference", mimeType, reference },
+          },
+        ],
+      });
+      expect(result instanceof type.errors).toBe(false);
+    },
+  );
+});

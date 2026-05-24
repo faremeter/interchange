@@ -283,6 +283,32 @@ describe("OpenAI adapter: buildRequest", () => {
       /file-reference image sources/,
     );
   });
+
+  test.each(["audio", "video", "document"] as const)(
+    "rejects a %s content block until provider support is wired",
+    (blockType) => {
+      const messages: ConversationTurn[] = [
+        {
+          role: "user",
+          content: [
+            {
+              type: blockType,
+              source: {
+                kind: "base64",
+                mimeType: "application/octet-stream",
+                data: "aGVsbG8=",
+              },
+            },
+          ],
+          timestamp: 1000,
+        },
+      ];
+
+      expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+        new RegExp(`${blockType} content blocks`),
+      );
+    },
+  );
 });
 
 describe("OpenAI adapter: parseResponse", () => {
