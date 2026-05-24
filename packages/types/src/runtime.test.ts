@@ -926,3 +926,87 @@ describe("RedactedThinkingBlock and inference.thinking.redacted event", () => {
     expect(result instanceof type.errors).toBe(true);
   });
 });
+
+describe("optional index on delta event variants", () => {
+  const partial = { text: "" };
+
+  const cases: { name: string; type: string; data: Record<string, unknown> }[] =
+    [
+      {
+        name: "inference.text.delta",
+        type: "inference.text.delta",
+        data: { token: "x", partial },
+      },
+      {
+        name: "inference.thinking.delta",
+        type: "inference.thinking.delta",
+        data: { token: "x", partial },
+      },
+      {
+        name: "inference.thinking.signature",
+        type: "inference.thinking.signature",
+        data: { signature: "sig_abc" },
+      },
+      {
+        name: "inference.tool_call.start",
+        type: "inference.tool_call.start",
+        data: { callId: "call_1", name: "fn", partial },
+      },
+      {
+        name: "inference.tool_call.delta",
+        type: "inference.tool_call.delta",
+        data: { callId: "call_1", argumentFragment: "{", partial },
+      },
+      {
+        name: "inference.tool_call.end",
+        type: "inference.tool_call.end",
+        data: { callId: "call_1", name: "fn", arguments: {}, partial },
+      },
+    ];
+
+  for (const c of cases) {
+    test(`${c.name} accepts an optional index field`, () => {
+      const result = InferenceEvent({
+        type: c.type,
+        seq: 1,
+        data: { ...c.data, index: 3 },
+      });
+      expect(result instanceof type.errors).toBe(false);
+    });
+  }
+
+  test("two text.delta events with different indices round-trip distinctly", () => {
+    // Locks the per-block semantic: index 0 and index 1 are distinct
+    // blocks, not aliases for "same buffer."
+    const e0 = InferenceEvent({
+      type: "inference.text.delta",
+      seq: 1,
+      data: { token: "hello", partial, index: 0 },
+    });
+    const e1 = InferenceEvent({
+      type: "inference.text.delta",
+      seq: 2,
+      data: { token: "world", partial, index: 1 },
+    });
+    expect(e0 instanceof type.errors).toBe(false);
+    expect(e1 instanceof type.errors).toBe(false);
+    if (e0 instanceof type.errors || e1 instanceof type.errors) return;
+    if (e0.type !== "inference.text.delta") {
+      throw new Error("e0 narrowed incorrectly");
+    }
+    if (e1.type !== "inference.text.delta") {
+      throw new Error("e1 narrowed incorrectly");
+    }
+    expect(e0.data.index).toBe(0);
+    expect(e1.data.index).toBe(1);
+  });
+
+  test("rejects a malformed (non-number) index value", () => {
+    const result = InferenceEvent({
+      type: "inference.text.delta",
+      seq: 1,
+      data: { token: "x", partial, index: "two" },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+});

@@ -34,6 +34,7 @@ import {
   classifyAbortError,
   classifyStreamError,
   classifyTimeoutError,
+  ProtocolMismatchError,
 } from "./errors";
 
 /**
@@ -413,6 +414,7 @@ export async function* runInference(
         for (const raw of rawEvents) {
           switch (raw.type) {
             case "inference.text.delta": {
+              guardNonZeroIndex(raw, "text");
               partial.text += raw.data.token;
               yield {
                 type: "inference.text.delta",
@@ -426,6 +428,7 @@ export async function* runInference(
             }
 
             case "inference.thinking.delta": {
+              guardNonZeroIndex(raw, "thinking");
               thinkingBuffer += raw.data.token;
               partial.thinking = thinkingBuffer;
               yield {
@@ -444,6 +447,7 @@ export async function* runInference(
               // the thinking_delta stream. The harness collapses all thinking
               // content into a single block today, so a single trailing
               // signature is captured here and attached at finalisation.
+              guardNonZeroIndex(raw, "signature");
               thinkingSignature = raw.data.signature;
               yield {
                 type: "inference.thinking.signature",
@@ -761,6 +765,38 @@ function snapshotPartial(partial: PartialMessage): PartialMessage {
         }
       : {}),
   };
+}
+
+// Guards the single-buffer text accumulator, the single-buffer thinking
+// accumulator, and the single-slot thinking-signature capture against
+// non-zero block indices. Per-block routing requires a per-index
+// accumulator that does not yet exist in the harness; without it,
+// deltas from different blocks would silently concatenate into the
+// same buffer (or, for the signature, the later block would overwrite
+// the earlier). The guard makes that failure surface loudly.
+//
+// Thrown as a `ProtocolMismatchError` so the harness's stream-error
+// catch routes it through `classifyStreamError` to the
+// `"protocol_mismatch"` category — non-retryable — rather than the
+// generic-Error `"retryable"` fallback that would invite a retry loop
+// to mask a deterministic wiring bug.
+function guardNonZeroIndex(
+  event: {
+    type: string;
+    data: { index?: number };
+  },
+  bufferName: string,
+): void {
+  const index = event.data.index;
+  if (index !== undefined && index !== 0) {
+    throw new ProtocolMismatchError(
+      `harness received ${event.type} carrying index=${String(index)}; ` +
+        `the single-buffer ${bufferName} accumulator cannot route per-index ` +
+        `deltas. The per-index harness refactor must precede parsers that ` +
+        `emit non-zero indices.`,
+      event,
+    );
+  }
 }
 
 function mergeUsage(

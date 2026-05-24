@@ -974,12 +974,16 @@ export const InferenceEvent = type({
   .or({
     type: "'inference.thinking.delta'",
     seq: "number",
-    data: { token: "string", partial: PartialMessage },
+    data: {
+      token: "string",
+      partial: PartialMessage,
+      "index?": "number",
+    },
   })
   .or({
     type: "'inference.thinking.signature'",
     seq: "number",
-    data: { signature: "string" },
+    data: { signature: "string", "index?": "number" },
   })
   .or({
     type: "'inference.thinking.redacted'",
@@ -989,12 +993,21 @@ export const InferenceEvent = type({
   .or({
     type: "'inference.text.delta'",
     seq: "number",
-    data: { token: "string", partial: PartialMessage },
+    data: {
+      token: "string",
+      partial: PartialMessage,
+      "index?": "number",
+    },
   })
   .or({
     type: "'inference.tool_call.start'",
     seq: "number",
-    data: { callId: "string", name: "string", partial: PartialMessage },
+    data: {
+      callId: "string",
+      name: "string",
+      partial: PartialMessage,
+      "index?": "number",
+    },
   })
   .or({
     type: "'inference.tool_call.delta'",
@@ -1003,6 +1016,7 @@ export const InferenceEvent = type({
       callId: "string",
       argumentFragment: "string",
       partial: PartialMessage,
+      "index?": "number",
     },
   })
   .or({
@@ -1013,6 +1027,7 @@ export const InferenceEvent = type({
       name: "string",
       arguments: "Record<string, unknown>",
       partial: PartialMessage,
+      "index?": "number",
     },
   })
   .or({
@@ -1149,12 +1164,12 @@ export type InferenceEvent =
   | {
       type: "inference.thinking.delta";
       seq: number;
-      data: { token: string; partial: PartialMessage };
+      data: { token: string; partial: PartialMessage; index?: number };
     }
   | {
       type: "inference.thinking.signature";
       seq: number;
-      data: { signature: string };
+      data: { signature: string; index?: number };
     }
   | {
       type: "inference.thinking.redacted";
@@ -1164,12 +1179,17 @@ export type InferenceEvent =
   | {
       type: "inference.text.delta";
       seq: number;
-      data: { token: string; partial: PartialMessage };
+      data: { token: string; partial: PartialMessage; index?: number };
     }
   | {
       type: "inference.tool_call.start";
       seq: number;
-      data: { callId: string; name: string; partial: PartialMessage };
+      data: {
+        callId: string;
+        name: string;
+        partial: PartialMessage;
+        index?: number;
+      };
     }
   | {
       type: "inference.tool_call.delta";
@@ -1178,6 +1198,7 @@ export type InferenceEvent =
         callId: string;
         argumentFragment: string;
         partial: PartialMessage;
+        index?: number;
       };
     }
   | {
@@ -1188,6 +1209,7 @@ export type InferenceEvent =
         name: string;
         arguments: Record<string, unknown>;
         partial: PartialMessage;
+        index?: number;
       };
     }
   | {
