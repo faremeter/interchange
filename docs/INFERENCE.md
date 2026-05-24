@@ -141,6 +141,7 @@ Transformations:
 - **Tool call ID normalization** — Provider ID formats vary (OpenAI Responses API generates 450+ character IDs with pipes; Anthropic has strict format requirements). IDs are normalized to a portable format with a bidirectional mapping for round-trip fidelity.
 - **Thinking block handling** — Encrypted/redacted reasoning blocks are valid only for the originating model. Stripped when replaying to a different provider.
 - **Thinking signature preservation** — Opaque signatures for multi-turn reasoning continuity are kept for same-model, dropped for cross-model.
+- **Citation block handling** — Citation blocks are server-emitted attribution metadata for content the model already produced; they are not part of the active conversation state subsequent turns need to make sense of, and not every provider's input wire shape accepts them. Dropped when serializing history to a target provider whose wire shape has no citation input; downstream consumers that need to preserve citation attribution across provider switches read the finalized turn's `content[]` directly rather than relying on echo-back through history.
 - **Orphaned tool call recovery** — Interrupted conversations show tool calls without results. Synthetic error results are injected so the target model sees a complete tool sequence.
 - **Incomplete turn filtering** — Error/aborted assistant messages are filtered during replay to prevent "reasoning without output" errors on the target model.
 

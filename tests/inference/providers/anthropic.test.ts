@@ -418,6 +418,26 @@ describe("Anthropic adapter: buildRequest", () => {
     },
   );
 
+  test("rejects a citation content block in a request", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "citation",
+            citedText: "the answer",
+            source: { uri: "https://example.com/" },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    expect(() =>
+      adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {}),
+    ).toThrow(/citation content blocks/);
+  });
+
   test("rejects a file-reference image inside a tool_result", () => {
     const messages: ConversationTurn[] = [
       {

@@ -309,6 +309,29 @@ describe("OpenAI adapter: buildRequest", () => {
       );
     },
   );
+
+  test("silently drops citation content blocks (not part of OpenAI surface)", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Hello" },
+          {
+            type: "citation",
+            citedText: "x",
+            source: { uri: "https://example.com/" },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    // The citation block contributes an empty string; the text remains.
+    const msg = OpenAIPlainMessage.assert(body.messages[0]);
+    expect(msg.content).toBe("Hello");
+  });
 });
 
 describe("OpenAI adapter: parseResponse", () => {

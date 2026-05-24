@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
 import {
   ContentBlock,
+  InferenceEvent,
   MediaSource,
   TransformRecord,
   type ContextTransform,
@@ -585,4 +586,125 @@ describe("AudioBlock / VideoBlock / DocumentBlock variants on ContentBlock", () 
       expect(result instanceof type.errors).toBe(false);
     },
   );
+});
+
+describe("CitationBlock", () => {
+  test("accepts a minimal citation with a uri source", () => {
+    const result = ContentBlock({
+      type: "citation",
+      citedText: "the answer is 42",
+      source: { uri: "https://example.com/article", title: "Article" },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a citation with a documentRef source", () => {
+    const result = ContentBlock({
+      type: "citation",
+      citedText: "per the report",
+      source: { documentRef: { index: 0 }, title: "Q3.pdf" },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a citation with both location and textOffset", () => {
+    const result = ContentBlock({
+      type: "citation",
+      citedText: "Martinis.",
+      source: { uri: "https://example.com/" },
+      location: { kind: "char", start: 100, end: 109 },
+      textOffset: { start: 99, end: 108 },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test.each(["page", "char", "content-block"] as const)(
+    "accepts a citation with location kind=%s",
+    (kind) => {
+      const result = ContentBlock({
+        type: "citation",
+        citedText: "x",
+        source: { uri: "https://example.com/" },
+        location: { kind, start: 1, end: 2 },
+      });
+      expect(result instanceof type.errors).toBe(false);
+    },
+  );
+
+  test("rejects a citation with an unknown location kind", () => {
+    const result = ContentBlock({
+      type: "citation",
+      citedText: "x",
+      source: { uri: "https://example.com/" },
+      location: { kind: "span", start: 1, end: 2 },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a citation missing citedText", () => {
+    const result = ContentBlock({
+      type: "citation",
+      source: { uri: "https://example.com/" },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a citation missing source", () => {
+    const result = ContentBlock({ type: "citation", citedText: "x" });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a citation block inside a tool_result content array", () => {
+    // tool_result.content is deliberately narrow; citations annotate
+    // model output, not tool output.
+    const result = ContentBlock({
+      type: "tool_result",
+      callId: "call_abc",
+      content: [
+        {
+          type: "citation",
+          citedText: "x",
+          source: { uri: "https://example.com/" },
+        },
+      ],
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+});
+
+describe("inference.citation event", () => {
+  test("accepts an inference.citation event wrapping a CitationBlock", () => {
+    const result = InferenceEvent({
+      type: "inference.citation",
+      seq: 7,
+      data: {
+        citation: {
+          type: "citation",
+          citedText: "the answer is 42",
+          source: { uri: "https://example.com/" },
+          location: { kind: "char", start: 0, end: 16 },
+          textOffset: { start: 0, end: 16 },
+        },
+      },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects an inference.citation event missing the citation payload", () => {
+    const result = InferenceEvent({
+      type: "inference.citation",
+      seq: 7,
+      data: {},
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an inference.citation event with a malformed citation", () => {
+    const result = InferenceEvent({
+      type: "inference.citation",
+      seq: 7,
+      data: { citation: { type: "citation", citedText: "x" } },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
 });
