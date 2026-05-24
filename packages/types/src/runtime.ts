@@ -1861,6 +1861,16 @@ export type InferenceOptions = {
   systemPrompt?: string;
   tools?: ToolDefinition[];
   /**
+   * Modalities the caller wants the model to emit. Adapters translate
+   * to the provider-native shape (Gemini's
+   * `generationConfig.responseModalities` accepts `"TEXT"` / `"IMAGE"`
+   * uppercase; see `packages/inference-testing/wire/google-genai/
+   * gemini-2.5-flash-image/image-output/request.json` for the captured
+   * shape). Providers that do not expose a modality switch ignore the
+   * field. When omitted the provider's default modalities apply.
+   */
+  responseModalities?: ("text" | "image" | "audio")[];
+  /**
    * Per-call inactivity timeout in milliseconds. If the harness yields no
    * event (other than `inference.start`) for this many ms, the underlying
    * fetch is aborted and the call ends with `inference.error` of category
