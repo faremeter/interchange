@@ -588,7 +588,7 @@ function parseResponse(
           {
             type: "inference.citation",
             seq,
-            data: { citation },
+            data: { citation, index },
           },
         ];
       }

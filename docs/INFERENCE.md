@@ -162,11 +162,13 @@ A streaming response can interleave thinking, text, tool_use, and other blocks a
 
 Every delta event arriving at the harness must carry an `index`. Providers without a wire-level block index (OpenAI Chat Completions) synthesize one at the adapter boundary in arrival order — whichever kind streams first lands at 0, the other (if it appears) at 1. A missing index at the harness boundary surfaces as a `ProtocolMismatchError`.
 
+Citations participate in per-index ordering when their event payload carries an `index`: the harness routes them into a per-index bucket on arrival and interleaves them into the finalized turn immediately after the block at the matching index. Citations whose event payload omits `index` are collected separately and appended at the tail of `content[]`, where consumers attribute them by adjacency per the CitationBlock attribution rule.
+
 #### InferenceEvent variants
 
 The event protocol extensions that surface multimodal content:
 
-- `inference.citation` — emitted when a provider streams citation metadata attached to a text region.
+- `inference.citation` — emitted when a provider streams citation metadata attached to a text region. The optional `index` field on the event payload names the source content block; when present, the harness interleaves the citation immediately after the block at that index in the finalized turn's `content[]`.
 - `inference.thinking.redacted` — emitted when the provider delivers a redacted_thinking block (one-shot, no delta stream).
 - `inference.image_output` — emitted mid-stream when an adapter finalizes an image-output block, signaling that the image is ready for downstream handoff before the full `inference.done` lands.
 - `inference.code_execution.{start,delta,result}` — emitted when the model invokes a server-side code-execution tool; results pair to requests by `requestId`.
