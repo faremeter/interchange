@@ -6,7 +6,7 @@
 // throws a descriptive `Error` on failure — callers should let those bubble
 // up through bun:test's normal failure machinery.
 
-import type { InferenceEvent } from "@intx/types/runtime";
+import type { ContentBlock, InferenceEvent } from "@intx/types/runtime";
 
 /**
  * Partial expectation against an `InferenceEvent`. The `type` is required;
@@ -289,4 +289,138 @@ export function expectToolCall(name: string): {
       return assertion;
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Media block matchers
+//
+// Content blocks that carry a MediaSource (image, audio, video, document)
+// can hold base64 payloads in the megabyte range — Anthropic's image-output
+// captures show ~1MB blobs. A failing assertion that serializes the whole
+// block leaves multi-MB of base64 in test logs, which makes debugging the
+// failure dramatically worse than the failure itself.
+//
+// `expectMediaBlock` is the assertion entry point that formats failure
+// messages with an elided representation: kind, mime, source discriminant,
+// and decoded byte length — never the raw `data` field. Use this matcher
+// instead of `expect(block).toEqual(...)` for any media block whose source
+// kind might be `"base64"`.
+// ---------------------------------------------------------------------------
+
+export type MediaBlock = Extract<
+  ContentBlock,
+  { type: "image" | "audio" | "video" | "document" }
+>;
+
+export type ExpectMediaBlockOpts = {
+  /** When supplied, asserts the block's source.kind matches before any chain. */
+  source?: "base64" | "file-reference";
+};
+
+export type MediaBlockAssertion = {
+  /** Assert the block's mimeType (sources record their own mimeType). */
+  toHaveMimeType(expected: string): MediaBlockAssertion;
+  /**
+   * Assert the decoded payload byte count is at least `min`. Only valid on
+   * base64 sources — throws on file-reference sources because their byte
+   * length is provider-side and not observable from the block.
+   */
+  toHaveByteLengthAtLeast(min: number): MediaBlockAssertion;
+  /**
+   * Exact byte count. Use sparingly — provider re-encodes are common and
+   * `toHaveByteLengthAtLeast` is usually the right assertion. Same
+   * file-reference caveat as `toHaveByteLengthAtLeast`.
+   */
+  toHaveByteLength(exact: number): MediaBlockAssertion;
+};
+
+/**
+ * Decode the byte length of a base64 string without materializing the
+ * decoded bytes. Each four base64 characters encode three bytes, less
+ * trailing `=` padding.
+ *
+ * Validates structural invariants — length divisible by 4 and at most
+ * two trailing padding chars — and throws on violation. A silent
+ * fallback that returns a meaningless count (negative numbers for
+ * stray `=` clusters) would let downstream assertions like
+ * `toHaveByteLengthAtLeast(-2)` pass on garbage; surfacing the
+ * malformed input loudly forces callers to feed real base64.
+ */
+function base64ByteLength(b64: string): number {
+  if (b64.length % 4 !== 0) {
+    throw new Error(
+      `base64ByteLength: input length ${String(b64.length)} is not a multiple of 4; not a well-formed base64 string`,
+    );
+  }
+  const padMatch = /=+$/.exec(b64);
+  const pad = padMatch === null ? 0 : padMatch[0].length;
+  if (pad > 2) {
+    throw new Error(
+      `base64ByteLength: input carries ${String(pad)} trailing padding chars; base64 permits at most 2`,
+    );
+  }
+  return Math.floor((b64.length * 3) / 4) - pad;
+}
+
+function describeMediaBlock(block: MediaBlock): string {
+  const src = block.source;
+  if (src.kind === "base64") {
+    return `<${block.type} mime=${src.mimeType} source=base64 bytes=${String(
+      base64ByteLength(src.data),
+    )}>`;
+  }
+  return `<${block.type} mime=${src.mimeType} source=file-reference reference=${src.reference}>`;
+}
+
+export function expectMediaBlock(
+  block: MediaBlock,
+  opts: ExpectMediaBlockOpts = {},
+): MediaBlockAssertion {
+  if (opts.source !== undefined && block.source.kind !== opts.source) {
+    throw new Error(
+      `expectMediaBlock: expected source=${opts.source}, got ${describeMediaBlock(block)}`,
+    );
+  }
+
+  const assertion: MediaBlockAssertion = {
+    toHaveMimeType(expected) {
+      if (block.source.mimeType !== expected) {
+        throw new Error(
+          `expectMediaBlock.toHaveMimeType(${JSON.stringify(expected)}): got ${describeMediaBlock(block)}`,
+        );
+      }
+      return assertion;
+    },
+
+    toHaveByteLengthAtLeast(min) {
+      if (block.source.kind !== "base64") {
+        throw new Error(
+          `expectMediaBlock.toHaveByteLengthAtLeast: byte length is not observable on file-reference sources; got ${describeMediaBlock(block)}`,
+        );
+      }
+      const actual = base64ByteLength(block.source.data);
+      if (actual < min) {
+        throw new Error(
+          `expectMediaBlock.toHaveByteLengthAtLeast(${String(min)}): got ${describeMediaBlock(block)} (actual ${String(actual)} bytes)`,
+        );
+      }
+      return assertion;
+    },
+
+    toHaveByteLength(exact) {
+      if (block.source.kind !== "base64") {
+        throw new Error(
+          `expectMediaBlock.toHaveByteLength: byte length is not observable on file-reference sources; got ${describeMediaBlock(block)}`,
+        );
+      }
+      const actual = base64ByteLength(block.source.data);
+      if (actual !== exact) {
+        throw new Error(
+          `expectMediaBlock.toHaveByteLength(${String(exact)}): got ${describeMediaBlock(block)} (actual ${String(actual)} bytes)`,
+        );
+      }
+      return assertion;
+    },
+  };
+  return assertion;
 }
