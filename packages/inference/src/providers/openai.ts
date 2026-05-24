@@ -388,17 +388,28 @@ function parseResponse(sseData: string): InferenceEvent[] {
       // Treat the two signals independently. A single delta may legitimately
       // carry both a start signal (id + non-null name) and an argument
       // fragment; both must be emitted.
+      //
+      // Two `index`-shaped fields participate here and they are NOT
+      // interchangeable:
+      //   - `data.callId`: the OpenAI-provided id when present
+      //     (`tcDelta.id`); when absent on continuation deltas, we
+      //     synthesize a per-stream placeholder from `index` so the
+      //     harness's index-keyed accumulator can merge fragments
+      //     until the real id resolves at finalize time.
+      //   - `data.index`: the wire-level position in `tool_calls[]`,
+      //     propagated from `tcDelta.index`. This is real provider
+      //     state and downstream consumers can rely on it for per-block
+      //     routing.
+      // The two fields happen to stringify-equal when there is only
+      // one tool call (both are "0") but they describe different things.
       if (id !== undefined && name !== undefined) {
         events.push({
           type: "inference.tool_call.start",
           seq,
-          data: { callId: id, name, partial: EMPTY_PARTIAL },
+          data: { callId: id, name, partial: EMPTY_PARTIAL, index },
         });
       }
       if (argFragment !== undefined && argFragment.length > 0) {
-        // Argument fragment. We use the index as a temporary callId placeholder
-        // since the upstream harness merges fragments by index — the real id is
-        // resolved at finalize time.
         events.push({
           type: "inference.tool_call.delta",
           seq,
@@ -406,6 +417,7 @@ function parseResponse(sseData: string): InferenceEvent[] {
             callId: String(index),
             argumentFragment: argFragment,
             partial: EMPTY_PARTIAL,
+            index,
           },
         });
       }

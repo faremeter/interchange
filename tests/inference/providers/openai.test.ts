@@ -499,7 +499,7 @@ describe("OpenAI adapter: parseResponse", () => {
     expect(events).toEqual([]);
   });
 
-  test("parses tool_call start with id and name", async () => {
+  test("parses tool_call start with id and name and propagates the wire index", async () => {
     const events = await parseWire(adapter, [
       wire.openai.toolCallStart(0, "call_xyz", "search"),
     ]);
@@ -508,10 +508,11 @@ describe("OpenAI adapter: parseResponse", () => {
     if (events[0]?.type === "inference.tool_call.start") {
       expect(events[0].data.callId).toBe("call_xyz");
       expect(events[0].data.name).toBe("search");
+      expect(events[0].data.index).toBe(0);
     }
   });
 
-  test("parses tool_call argument fragment", async () => {
+  test("parses tool_call argument fragment and propagates the wire index", async () => {
     const events = await parseWire(adapter, [
       wire.openai.toolCallArgumentsDelta(0, '{"q":"'),
     ]);
@@ -519,7 +520,55 @@ describe("OpenAI adapter: parseResponse", () => {
     expect(events[0]?.type).toBe("inference.tool_call.delta");
     if (events[0]?.type === "inference.tool_call.delta") {
       expect(events[0].data.argumentFragment).toBe('{"q":"');
+      expect(events[0].data.index).toBe(0);
     }
+  });
+
+  test("propagates distinct tool_calls indices to data.index across parallel tool calls", async () => {
+    // Multi-tool-call regression target: two parallel tool calls in
+    // a single response stream interleaved deltas at indices 0 and 1.
+    // The parser must propagate each delta's wire-level `index` to
+    // the emitted event's `data.index` so the harness's per-block
+    // routing resolves to the right tool. Collapsing both indices to
+    // 0 would route the second tool's argument fragments onto the
+    // first tool's accumulator.
+    const events = await parseWire(adapter, [
+      wire.openai.toolCallStart(0, "call_first", "alpha"),
+      wire.openai.toolCallStart(1, "call_second", "beta"),
+      wire.openai.toolCallArgumentsDelta(0, '{"a":1}'),
+      wire.openai.toolCallArgumentsDelta(1, '{"b":2}'),
+    ]);
+
+    const starts = events.filter((e) => e.type === "inference.tool_call.start");
+    const deltas = events.filter((e) => e.type === "inference.tool_call.delta");
+    expect(starts).toHaveLength(2);
+    expect(deltas).toHaveLength(2);
+
+    const start0 = starts[0];
+    const start1 = starts[1];
+    if (
+      start0?.type !== "inference.tool_call.start" ||
+      start1?.type !== "inference.tool_call.start"
+    ) {
+      throw new Error("expected two start events");
+    }
+    expect(start0.data.callId).toBe("call_first");
+    expect(start0.data.index).toBe(0);
+    expect(start1.data.callId).toBe("call_second");
+    expect(start1.data.index).toBe(1);
+
+    const delta0 = deltas[0];
+    const delta1 = deltas[1];
+    if (
+      delta0?.type !== "inference.tool_call.delta" ||
+      delta1?.type !== "inference.tool_call.delta"
+    ) {
+      throw new Error("expected two delta events");
+    }
+    expect(delta0.data.index).toBe(0);
+    expect(delta0.data.argumentFragment).toBe('{"a":1}');
+    expect(delta1.data.index).toBe(1);
+    expect(delta1.data.argumentFragment).toBe('{"b":2}');
   });
 
   test("parses usage from final chunk", async () => {
