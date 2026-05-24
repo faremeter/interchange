@@ -256,6 +256,14 @@ export function createEventCollector(
           // cited source warrants an audit row of its own — are not
           // yet settled; skip until they are.
           break;
+        case "code_execution_request":
+        case "code_execution_result":
+          // Server-side code execution requests and results.
+          // Persistence semantics — whether the code and its output
+          // warrant audit rows of their own, and how to relate the
+          // pair through the requestId back-pointer — are not yet
+          // settled; skip until they are.
+          break;
         case "image":
         case "audio":
         case "video":

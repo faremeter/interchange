@@ -162,6 +162,12 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
         "Anthropic adapter does not yet emit citation content blocks.",
       );
 
+    case "code_execution_request":
+    case "code_execution_result":
+      throw new Error(
+        `Anthropic adapter does not yet emit ${block.type} content blocks.`,
+      );
+
     case "tool_call":
       return {
         type: "tool_use",

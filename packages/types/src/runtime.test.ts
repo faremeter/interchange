@@ -708,3 +708,173 @@ describe("inference.citation event", () => {
     expect(result instanceof type.errors).toBe(true);
   });
 });
+
+describe("CodeExecutionRequestBlock and CodeExecutionResultBlock", () => {
+  test("accepts a minimal code_execution_request", () => {
+    const result = ContentBlock({
+      type: "code_execution_request",
+      id: "srvtoolu_01",
+      code: "print('hi')",
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a code_execution_request with language and index", () => {
+    const result = ContentBlock({
+      type: "code_execution_request",
+      id: "srvtoolu_01",
+      code: "print('hi')",
+      language: "python",
+      index: 2,
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a code_execution_request missing id", () => {
+    const result = ContentBlock({
+      type: "code_execution_request",
+      code: "print('hi')",
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a code_execution_request missing code", () => {
+    const result = ContentBlock({
+      type: "code_execution_request",
+      id: "srvtoolu_01",
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test.each(["ok", "error", "aborted", "timeout"] as const)(
+    "accepts a code_execution_result with status=%s",
+    (status) => {
+      const result = ContentBlock({
+        type: "code_execution_result",
+        requestId: "srvtoolu_01",
+        status,
+      });
+      expect(result instanceof type.errors).toBe(false);
+    },
+  );
+
+  test("accepts a code_execution_result with all optional fields populated", () => {
+    const result = ContentBlock({
+      type: "code_execution_result",
+      requestId: "srvtoolu_01",
+      status: "ok",
+      stdout: "144\n",
+      stderr: "",
+      returnCode: 0,
+      providerOutcome: "OUTCOME_OK",
+      index: 3,
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a code_execution_result with abortReason on an aborted run", () => {
+    const result = ContentBlock({
+      type: "code_execution_result",
+      requestId: "srvtoolu_01",
+      status: "aborted",
+      abortReason: "execution time exceeded the 30s limit",
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a code_execution_result missing requestId", () => {
+    const result = ContentBlock({
+      type: "code_execution_result",
+      status: "ok",
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a code_execution_result with an unknown status value", () => {
+    const result = ContentBlock({
+      type: "code_execution_result",
+      requestId: "srvtoolu_01",
+      status: "unknown",
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a code_execution_request or _result inside tool_result content", () => {
+    // tool_result.content is deliberately narrow; server-side code
+    // execution has a distinct lifecycle from the user-tool round-trip.
+    const requestInTool = ContentBlock({
+      type: "tool_result",
+      callId: "call_abc",
+      content: [
+        { type: "code_execution_request", id: "srvtoolu_01", code: "x" },
+      ],
+    });
+    expect(requestInTool instanceof type.errors).toBe(true);
+
+    const resultInTool = ContentBlock({
+      type: "tool_result",
+      callId: "call_abc",
+      content: [
+        {
+          type: "code_execution_result",
+          requestId: "srvtoolu_01",
+          status: "ok",
+        },
+      ],
+    });
+    expect(resultInTool instanceof type.errors).toBe(true);
+  });
+});
+
+describe("inference.code_execution.* events", () => {
+  test("accepts a start event wrapping a CodeExecutionRequestBlock", () => {
+    const result = InferenceEvent({
+      type: "inference.code_execution.start",
+      seq: 4,
+      data: {
+        request: {
+          type: "code_execution_request",
+          id: "srvtoolu_01",
+          code: "print('hi')",
+          language: "python",
+        },
+      },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a delta event with a code fragment", () => {
+    const result = InferenceEvent({
+      type: "inference.code_execution.delta",
+      seq: 5,
+      data: { requestId: "srvtoolu_01", codeFragment: "print(" },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a result event wrapping a CodeExecutionResultBlock", () => {
+    const result = InferenceEvent({
+      type: "inference.code_execution.result",
+      seq: 6,
+      data: {
+        result: {
+          type: "code_execution_result",
+          requestId: "srvtoolu_01",
+          status: "ok",
+          stdout: "hi\n",
+          returnCode: 0,
+        },
+      },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a code_execution event with a malformed payload", () => {
+    const result = InferenceEvent({
+      type: "inference.code_execution.start",
+      seq: 4,
+      data: { request: { type: "code_execution_request", id: "x" } },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+});

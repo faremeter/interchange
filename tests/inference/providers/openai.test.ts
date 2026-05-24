@@ -310,6 +310,67 @@ describe("OpenAI adapter: buildRequest", () => {
     },
   );
 
+  test.each(["code_execution_request", "code_execution_result"] as const)(
+    "rejects a %s content block (no OpenAI surface)",
+    (blockType) => {
+      const block =
+        blockType === "code_execution_request"
+          ? {
+              type: blockType,
+              id: "srvtoolu_01",
+              code: "print('hi')",
+            }
+          : {
+              type: blockType,
+              requestId: "srvtoolu_01",
+              status: "ok" as const,
+            };
+      const messages: ConversationTurn[] = [
+        {
+          role: "assistant",
+          content: [block],
+          timestamp: 1000,
+        },
+      ];
+
+      expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+        new RegExp(`${blockType} content blocks`),
+      );
+    },
+  );
+
+  test("throws on a mixed-content assistant turn that includes code execution", () => {
+    // Guards the placement of the assistant-role detection loop. The
+    // loop must fire even when valid text and tool_call blocks are
+    // present alongside the code execution block — a regression that
+    // moved the check after the existing field filters would silently
+    // succeed on the simpler single-block test, but must fail here.
+    const messages: ConversationTurn[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Running the calculation:" },
+          {
+            type: "code_execution_request",
+            id: "srvtoolu_01",
+            code: "print('hi')",
+          },
+          {
+            type: "tool_call",
+            id: "call_abc",
+            name: "search",
+            arguments: { q: "x" },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+      /code_execution_request content blocks/,
+    );
+  });
+
   test("silently drops citation content blocks (not part of OpenAI surface)", () => {
     const messages: ConversationTurn[] = [
       {
