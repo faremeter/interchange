@@ -72,10 +72,23 @@ describe("anthropic wire DSL", () => {
     const thinkEvents = events.filter(
       (e) => e.type === "inference.thinking.delta",
     );
-    expect(thinkEvents).toHaveLength(1);
-    if (thinkEvents[0]?.type === "inference.thinking.delta") {
-      expect(thinkEvents[0].data.token).toBe("Let me think...");
+    // The parser anchors the thinking block at content_block_start
+    // with an empty-token thinking.delta so the harness can attach a
+    // later signature_delta even when no visible text streams in
+    // between. The thinkingBlock wire helper emits content_block_start
+    // + content_block_delta, so a single visible-text block yields
+    // two thinking.delta events: the empty anchor and the content.
+    expect(thinkEvents).toHaveLength(2);
+    const anchor = thinkEvents[0];
+    const content = thinkEvents[1];
+    if (
+      anchor?.type !== "inference.thinking.delta" ||
+      content?.type !== "inference.thinking.delta"
+    ) {
+      throw new Error("expected two thinking.delta events");
     }
+    expect(anchor.data.token).toBe("");
+    expect(content.data.token).toBe("Let me think...");
   });
 
   test("thinkingBlock with signature emits inference.thinking.signature", async () => {

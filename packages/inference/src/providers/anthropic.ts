@@ -607,6 +607,27 @@ function parseResponse(
         ];
       }
 
+      if (block.type === "thinking") {
+        // Anchor the thinking block in the harness's per-index map
+        // via an empty thinking.delta. Anthropic can stream a
+        // signature_delta for a thinking block whose visible text is
+        // empty (redacted-adjacent flow); without this anchor, the
+        // signature would arrive at the harness with no preceding
+        // thinking entry at the same index and the per-index router
+        // would (correctly) reject it as a protocol violation. The
+        // empty-token delta is the parser-side analogue of the wire's
+        // `content_block_start` for thinking — it carries no visible
+        // content but reserves the index.
+        const { index } = event;
+        return [
+          {
+            type: "inference.thinking.delta",
+            seq,
+            data: { token: "", partial: EMPTY_PARTIAL, index },
+          },
+        ];
+      }
+
       if (block.type === "redacted_thinking") {
         // Anthropic delivers redacted_thinking as a one-shot inside
         // content_block_start (no delta stream). The opaque `data`
