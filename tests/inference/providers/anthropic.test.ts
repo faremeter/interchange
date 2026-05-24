@@ -360,6 +360,64 @@ describe("Anthropic adapter: buildRequest", () => {
     ).toThrow(/file-reference image sources\./);
   });
 
+  test.each(["audio", "video", "document"] as const)(
+    "rejects a %s content block until provider support is wired",
+    (blockType) => {
+      const messages: ConversationTurn[] = [
+        {
+          role: "user",
+          content: [
+            {
+              type: blockType,
+              source: {
+                kind: "base64",
+                mimeType: "application/octet-stream",
+                data: "aGVsbG8=",
+              },
+            },
+          ],
+          timestamp: 1000,
+        },
+      ];
+
+      expect(() =>
+        adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {}),
+      ).toThrow(new RegExp(`${blockType} content blocks`));
+    },
+  );
+
+  test.each(["audio", "video", "document"] as const)(
+    "rejects a %s content block inside a tool_result",
+    (blockType) => {
+      const messages: ConversationTurn[] = [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              callId: "call_xyz",
+              content: [
+                {
+                  type: blockType,
+                  source: {
+                    kind: "base64",
+                    mimeType: "application/octet-stream",
+                    data: "aGVsbG8=",
+                  },
+                },
+              ],
+            },
+          ],
+          timestamp: 1000,
+        },
+      ];
+
+      expect(() =>
+        adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {}),
+      ).toThrow(new RegExp(`${blockType} content blocks in tool results`));
+    },
+  );
+
   test("rejects a file-reference image inside a tool_result", () => {
     const messages: ConversationTurn[] = [
       {

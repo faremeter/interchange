@@ -172,6 +172,12 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
       source satisfies never;
       throw new Error(`unreachable: unknown MediaSource kind`);
     }
+    case "audio":
+    case "video":
+    case "document":
+      throw new Error(
+        `OpenAI adapter does not yet handle ${block.type} content blocks.`,
+      );
     case "thinking":
       // Thinking blocks are not forwarded to OpenAI endpoints.
       return "";

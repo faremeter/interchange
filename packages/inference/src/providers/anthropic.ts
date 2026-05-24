@@ -150,6 +150,13 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
       throw new Error(`unreachable: unknown MediaSource kind`);
     }
 
+    case "audio":
+    case "video":
+    case "document":
+      throw new Error(
+        `Anthropic adapter does not yet handle ${block.type} content blocks.`,
+      );
+
     case "tool_call":
       return {
         type: "tool_use",
@@ -165,6 +172,15 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
         content: block.content.map((c) => {
           if (c.type === "text") {
             return { type: "text", text: c.text };
+          }
+          if (c.type !== "image") {
+            // audio / video / document in tool_result content. The
+            // ContentBlock union allows these so the type system can
+            // grow uniformly; no Anthropic wire path exists today.
+            throw new Error(
+              `Anthropic adapter does not yet handle ${c.type} content ` +
+                `blocks in tool results.`,
+            );
           }
           const source = c.source;
           if (source.kind === "base64") {

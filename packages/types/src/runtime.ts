@@ -638,6 +638,21 @@ const ImageBlock = type({
   source: MediaSource,
 });
 
+const AudioBlock = type({
+  type: "'audio'",
+  source: MediaSource,
+});
+
+const VideoBlock = type({
+  type: "'video'",
+  source: MediaSource,
+});
+
+const DocumentBlock = type({
+  type: "'document'",
+  source: MediaSource,
+});
+
 const ThinkingBlock = type({
   type: "'thinking'",
   thinking: "string",
@@ -653,13 +668,20 @@ const ToolCallBlock = type({
 const ToolResultBlock = type({
   type: "'tool_result'",
   callId: "string",
-  content: TextBlock.or(ImageBlock).array(),
+  content: TextBlock.or(ImageBlock)
+    .or(AudioBlock)
+    .or(VideoBlock)
+    .or(DocumentBlock)
+    .array(),
   "detail?": "unknown",
   "isError?": "boolean",
 });
 
 export const ContentBlock = TextBlock.or(ThinkingBlock)
   .or(ImageBlock)
+  .or(AudioBlock)
+  .or(VideoBlock)
+  .or(DocumentBlock)
   .or(ToolCallBlock)
   .or(ToolResultBlock);
 export type ContentBlock = typeof ContentBlock.infer;

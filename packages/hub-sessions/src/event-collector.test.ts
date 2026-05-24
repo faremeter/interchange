@@ -162,7 +162,7 @@ describe("EventCollector", () => {
     expect(at(parts, 4).values.type).toBe("step-finish");
   });
 
-  test("image content blocks insert a file part keyed by source kind", async () => {
+  test("media content blocks insert a file part keyed by source kind", async () => {
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(
       event("inference.done", 5, {
@@ -185,6 +185,30 @@ describe("EventCollector", () => {
                 reference: "file_abc123",
               },
             },
+            {
+              type: "audio",
+              source: {
+                kind: "base64",
+                mimeType: "audio/wav",
+                data: "UklGRg==",
+              },
+            },
+            {
+              type: "video",
+              source: {
+                kind: "file-reference",
+                mimeType: "video/mp4",
+                reference: "file_video",
+              },
+            },
+            {
+              type: "document",
+              source: {
+                kind: "file-reference",
+                mimeType: "application/pdf",
+                reference: "file_report",
+              },
+            },
           ],
           model: "gpt-4",
         },
@@ -193,8 +217,8 @@ describe("EventCollector", () => {
     );
 
     const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
-    // step-start + base64 file + file-reference file + step-finish = 4 parts
-    expect(parts).toHaveLength(4);
+    // step-start + 5 media parts + step-finish = 7 parts
+    expect(parts).toHaveLength(7);
 
     expect(at(parts, 1).values.type).toBe("file");
     expect(at(parts, 1).values.metadata).toEqual({
@@ -208,6 +232,27 @@ describe("EventCollector", () => {
       kind: "file-reference",
       mimeType: "application/pdf",
       reference: "file_abc123",
+    });
+
+    expect(at(parts, 3).values.type).toBe("file");
+    expect(at(parts, 3).values.metadata).toEqual({
+      kind: "base64",
+      mimeType: "audio/wav",
+      dataLength: 8,
+    });
+
+    expect(at(parts, 4).values.type).toBe("file");
+    expect(at(parts, 4).values.metadata).toEqual({
+      kind: "file-reference",
+      mimeType: "video/mp4",
+      reference: "file_video",
+    });
+
+    expect(at(parts, 5).values.type).toBe("file");
+    expect(at(parts, 5).values.metadata).toEqual({
+      kind: "file-reference",
+      mimeType: "application/pdf",
+      reference: "file_report",
     });
   });
 
