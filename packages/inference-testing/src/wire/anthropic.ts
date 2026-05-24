@@ -316,3 +316,133 @@ export function unknownDelta(index = 0): Uint8Array {
     delta: { type: "garbage_delta", text: "ignored" },
   });
 }
+
+/**
+ * Convenience: emit a complete redacted_thinking content block. Anthropic
+ * delivers redacted thinking as a one-shot inside `content_block_start`
+ * carrying an opaque `data` blob — no delta stream. The block must echo
+ * back verbatim on follow-up turns or the API rejects the request.
+ *
+ * `index` defaults to 0; supply a higher index when interleaving with
+ * other content blocks.
+ */
+export function redactedThinkingBlock(data: string, index = 0): Uint8Array[] {
+  return [
+    contentBlockStart({
+      index,
+      kind: "raw",
+      contentBlock: { type: "redacted_thinking", data },
+    }),
+    contentBlockStop({ index }),
+  ];
+}
+
+/**
+ * Convenience: emit a complete server_tool_use content block. Anthropic
+ * uses this for server-side tools (code_execution, web_search, etc.).
+ * Wire pattern mirrors `tool_use`: start with empty input, stream the
+ * input as JSON via `input_json_delta`, then stop. `name` selects which
+ * server-side tool (e.g., `"code_execution"`).
+ *
+ * `index` defaults to 0.
+ */
+export function serverToolUseBlock(
+  id: string,
+  name: string,
+  argsJSON: string,
+  index = 0,
+): Uint8Array[] {
+  return [
+    contentBlockStart({
+      index,
+      kind: "raw",
+      contentBlock: { type: "server_tool_use", id, name, input: {} },
+    }),
+    contentBlockDelta({
+      index,
+      kind: "input_json_delta",
+      partialJson: argsJSON,
+    }),
+    contentBlockStop({ index }),
+  ];
+}
+
+/**
+ * Inner result shape for `codeExecutionToolResultBlock`. Mirrors
+ * Anthropic's `code_execution_result` payload as captured in
+ * `wire/anthropic/.../code-execution/response.json`.
+ */
+export type AnthropicCodeExecutionResult = {
+  stdout?: string;
+  stderr?: string;
+  return_code?: number;
+  abort_reason?: string | null;
+  content?: Record<string, unknown>[];
+};
+
+/**
+ * Convenience: emit a complete code_execution_tool_result content block.
+ * Anthropic delivers this as a one-shot inside `content_block_start`
+ * with the full `code_execution_result` payload baked in — no delta
+ * stream. `toolUseId` correlates the result back to the preceding
+ * `server_tool_use` block's id.
+ *
+ * `index` defaults to 0; in a normal code-execution response the
+ * server_tool_use is at index N and the result follows at index N+1.
+ */
+export function codeExecutionToolResultBlock(
+  toolUseId: string,
+  result: AnthropicCodeExecutionResult,
+  index = 0,
+): Uint8Array[] {
+  return [
+    contentBlockStart({
+      index,
+      kind: "raw",
+      contentBlock: {
+        type: "code_execution_tool_result",
+        tool_use_id: toolUseId,
+        content: { type: "code_execution_result", ...result },
+      },
+    }),
+    contentBlockStop({ index }),
+  ];
+}
+
+/**
+ * Convenience: emit a complete text content block carrying inline
+ * citations. Anthropic's citation wire shape is a text block initialized
+ * with an empty `citations: []` array, followed by `text_delta` events
+ * for the body, then one `content_block_delta` per citation with
+ * `delta.type === "citations_delta"`. Each citation's inner shape varies
+ * by source (e.g., `web_search_result_location` for web_search,
+ * `char_location` / `page_location` / `content_block_location` for
+ * document-based citations); pass them in already-shaped.
+ *
+ * `index` defaults to 0.
+ */
+export function textBlockWithCitations(
+  text: string,
+  citations: Record<string, unknown>[],
+  index = 0,
+): Uint8Array[] {
+  const events: Uint8Array[] = [
+    contentBlockStart({
+      index,
+      kind: "raw",
+      contentBlock: { type: "text", text: "", citations: [] },
+    }),
+    contentBlockDelta({ index, kind: "text_delta", text }),
+  ];
+  for (const citation of citations) {
+    events.push(
+      contentBlockDelta({
+        index,
+        kind: "raw",
+        delta: { type: "citations_delta", citation },
+      }),
+    );
+  }
+  events.push(contentBlockStop({ index }));
+  return events;
+}
