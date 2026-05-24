@@ -1,13 +1,17 @@
-// Tests for the Gemini (`google-genai`) provider adapter's request
-// builder. The adapter's parseResponse stub is also exercised so a
-// future regression that accidentally implements it incompletely is
-// caught.
+// Tests for the Gemini (`google-genai`) provider adapter. Coverage
+// splits into three layers:
 //
-// The interesting assertions live around shape parity with the
-// `inference-testing/wire/google-genai/...` fixtures: those request
-// bodies were captured against live Gemini endpoints, so any drift
-// between what the adapter builds and what those fixtures show is a
-// real protocol drift, not a stylistic preference.
+//   - buildRequest shape assertions, including byte-for-byte
+//     fixture parity for plain-text and function-calling-multi-turn
+//   - parseResponse per-event behavior and end-to-end fixture replay
+//     of the plain-text-streaming SSE capture
+//   - a harness-level round trip via `runInference` that asserts the
+//     accumulated `PartialMessage` and final `inference.done` turn
+//     line up with the parser's emissions
+//
+// The fixtures live in `packages/inference-testing/wire/google-genai`
+// and were captured against live Gemini endpoints; any drift between
+// adapter output and fixture is a real protocol mismatch.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,10 +22,18 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import {
   CREDENTIAL_SENTINEL,
   createGoogleGenAIAdapter,
+  parseSSE,
   ProtocolMismatchError,
+  runInference,
+  type Dependencies,
   type ProviderAdapter,
+  type Scheduler,
 } from "@intx/inference";
-import type { ConversationTurn } from "@intx/types/runtime";
+import type {
+  ConversationTurn,
+  InferenceEvent,
+  InferenceSource,
+} from "@intx/types/runtime";
 
 const FIXTURE_ROOT = join(
   import.meta.dir,
@@ -1073,17 +1085,370 @@ describe("Google GenAI adapter: unsupported blocks", () => {
   });
 });
 
-describe("Google GenAI adapter: parseResponse stub", () => {
-  test("throws ProtocolMismatchError so the harness can classify it", () => {
-    // The adapter contract at packages/inference/src/adapter.ts forbids
-    // any throw type other than ProtocolMismatchError; the harness's
-    // classifyStreamError recognizes only that one and routes the
-    // failure to inference.error with category "protocol_mismatch".
-    // A plain Error would slip past the classifier into the unhandled-
-    // exception path.
-    expect(() => adapter.parseResponse("data: {}")).toThrow(
+// ---------------------------------------------------------------------------
+// parseResponse -- plain-text streaming
+// ---------------------------------------------------------------------------
+
+// Drives a sequence of SSE-framed Uint8Array chunks through the
+// production SSE parser and the supplied adapter's parseResponse,
+// mirroring the harness's pipeline. Returns the flattened sequence
+// of emitted events so the test site can assert on them.
+async function parseWire(
+  adapterInstance: ProviderAdapter,
+  chunks: Uint8Array[],
+): Promise<InferenceEvent[]> {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  const events: InferenceEvent[] = [];
+  for await (const payload of parseSSE(stream)) {
+    events.push(...adapterInstance.parseResponse(payload));
+  }
+  return events;
+}
+
+// Frames a single JSON object as one SSE event (one `data:` line +
+// terminating blank line). Mirrors what the Gemini endpoint emits per
+// SSE event, so synthetic events can be driven through the same
+// parseSSE -> parseResponse pipeline as the captured fixtures.
+function sseFrame(obj: unknown): Uint8Array {
+  return new TextEncoder().encode(`data: ${JSON.stringify(obj)}\n\n`);
+}
+
+describe("Google GenAI adapter: parseResponse plain text", () => {
+  test("text part emits inference.text.delta with the token and index 0", async () => {
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "Hello, world." }] },
+            index: 0,
+          },
+        ],
+      }),
+    ]);
+    expect(events).toEqual([
+      {
+        type: "inference.text.delta",
+        seq: 0,
+        data: {
+          token: "Hello, world.",
+          partial: { text: "" },
+          index: 0,
+        },
+      },
+    ]);
+  });
+
+  test("multiple text parts in one event emit multiple text deltas in order", async () => {
+    // A single candidate.content.parts[] with two text entries
+    // produces two text.delta events in the order parts appear,
+    // both at index 0 (single logical block for plain text).
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ text: "first " }, { text: "second" }],
+            },
+            index: 0,
+          },
+        ],
+      }),
+    ]);
+    const tokens = events
+      .filter((e) => e.type === "inference.text.delta")
+      .map((e) => (e.type === "inference.text.delta" ? e.data.token : ""));
+    expect(tokens).toEqual(["first ", "second"]);
+  });
+
+  test("empty text parts are dropped (no zero-token delta)", async () => {
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "" }, { text: "x" }] },
+            index: 0,
+          },
+        ],
+      }),
+    ]);
+    expect(
+      events.filter((e) => e.type === "inference.text.delta"),
+    ).toHaveLength(1);
+  });
+
+  test("finishReason event emits usage with mapped TokenUsage", async () => {
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "done." }] },
+            finishReason: "STOP",
+            index: 0,
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 10,
+          candidatesTokenCount: 3,
+          totalTokenCount: 13,
+        },
+      }),
+    ]);
+    const usage = events.find((e) => e.type === "inference.usage");
+    expect(usage).toBeDefined();
+    if (usage?.type !== "inference.usage") {
+      throw new Error("expected an inference.usage event");
+    }
+    expect(usage.data.usage).toEqual({
+      input: 10,
+      output: 3,
+      cacheRead: 0,
+      cacheWrite: 0,
+      thinking: 0,
+    });
+  });
+
+  test("non-terminal events emit no usage (cadence is finishReason-gated)", async () => {
+    // Every Gemini SSE event carries cumulative usageMetadata, but
+    // the parser emits usage only at the terminal event. The harness's
+    // inference.done captures the final usage snapshot via the single
+    // emission; intermediate emissions would be pure noise.
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "partial" }] },
+            index: 0,
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 10,
+          candidatesTokenCount: 1,
+          totalTokenCount: 11,
+        },
+      }),
+    ]);
+    expect(events.filter((e) => e.type === "inference.usage")).toHaveLength(0);
+  });
+
+  test("candidates-less event with usageMetadata emits nothing (usage gated on finishReason)", async () => {
+    const events = await parseWire(adapter, [
+      sseFrame({
+        usageMetadata: {
+          promptTokenCount: 10,
+          candidatesTokenCount: 0,
+          totalTokenCount: 10,
+        },
+      }),
+    ]);
+    expect(events).toHaveLength(0);
+  });
+
+  test("plain-text-streaming fixture replay yields exactly 8 text deltas + 1 usage", async () => {
+    // The captured plain-text-streaming response.sse has 8 SSE
+    // events; the last carries finishReason: "STOP" and the
+    // cumulative usage snapshot. The parser is expected to produce
+    // exactly 8 inference.text.delta events (the new tokens from
+    // each event, in order) followed by exactly 1 inference.usage
+    // event with the cumulative counts from the final event.
+    const sseBytes = readFileSync(
+      join(
+        FIXTURE_ROOT,
+        "gemini-2.5-flash",
+        "plain-text-streaming",
+        "response.sse",
+      ),
+    );
+    const events = await parseWire(adapter, [sseBytes]);
+
+    const textEvents = events.filter((e) => e.type === "inference.text.delta");
+    const usageEvents = events.filter((e) => e.type === "inference.usage");
+    expect(textEvents).toHaveLength(8);
+    expect(usageEvents).toHaveLength(1);
+    expect(events.length).toBe(9);
+    // Usage is the last emission (per the inference.usage-before-
+    // inference.done contract that the harness applies).
+    expect(events[events.length - 1]?.type).toBe("inference.usage");
+
+    // Final cumulative usage from the fixture: promptTokenCount=33,
+    // candidatesTokenCount=281, totalTokenCount=314.
+    const usage = usageEvents[0];
+    if (usage?.type !== "inference.usage") {
+      throw new Error("expected inference.usage");
+    }
+    expect(usage.data.usage).toEqual({
+      input: 33,
+      output: 281,
+      cacheRead: 0,
+      cacheWrite: 0,
+      thinking: 0,
+    });
+
+    // Every text delta carries index 0 (single logical block for
+    // plain text) and a non-empty token.
+    for (const ev of textEvents) {
+      if (ev.type !== "inference.text.delta") continue;
+      expect(ev.data.index).toBe(0);
+      expect(ev.data.token.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("Google GenAI adapter: parseResponse error surface", () => {
+  test("malformed JSON in SSE payload throws ProtocolMismatchError", () => {
+    expect(() => adapter.parseResponse("{not json}")).toThrow(
       ProtocolMismatchError,
     );
-    expect(() => adapter.parseResponse("data: {}")).toThrow(/not implemented/i);
+    expect(() => adapter.parseResponse("{not json}")).toThrow(/malformed JSON/);
+  });
+
+  test("schema mismatch (usageMetadata as string) throws ProtocolMismatchError", () => {
+    const bad = JSON.stringify({
+      candidates: [
+        { content: { role: "model", parts: [{ text: "x" }] }, index: 0 },
+      ],
+      usageMetadata: "not-an-object",
+    });
+    expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
+    expect(() => adapter.parseResponse(bad)).toThrow(/schema validation/);
+  });
+
+  test("candidates.length > 1 throws ProtocolMismatchError (adapter never requests n>1)", () => {
+    const bad = JSON.stringify({
+      candidates: [
+        { content: { role: "model", parts: [{ text: "a" }] }, index: 0 },
+        { content: { role: "model", parts: [{ text: "b" }] }, index: 1 },
+      ],
+    });
+    expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
+    expect(() => adapter.parseResponse(bad)).toThrow(/at most one candidate/);
+  });
+
+  test("terminal event missing usageMetadata throws ProtocolMismatchError", () => {
+    // finishReason without usageMetadata would silently produce a
+    // zero-usage tally; surface the malformed terminal event loudly
+    // instead.
+    const bad = JSON.stringify({
+      candidates: [
+        {
+          content: { role: "model", parts: [{ text: "x" }] },
+          finishReason: "STOP",
+          index: 0,
+        },
+      ],
+    });
+    expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
+    expect(() => adapter.parseResponse(bad)).toThrow(/missing usageMetadata/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Harness-level round trip
+// ---------------------------------------------------------------------------
+
+describe("Google GenAI adapter: harness round trip", () => {
+  const inertScheduler: Scheduler = {
+    setTimeout: () => () => {
+      /* tests do not exercise timer firing */
+    },
+  };
+
+  const SOURCE: InferenceSource = {
+    id: "google-genai:gemini-2.5-flash",
+    provider: "google-genai",
+    baseURL: "https://generativelanguage.googleapis.com",
+    apiKey: "test-key",
+    model: "gemini-2.5-flash",
+  };
+
+  test("plain-text-streaming fixture flows through runInference end-to-end", async () => {
+    // Replays the captured SSE response through the full harness
+    // pipeline (parseSSE + parseResponse + partial-state
+    // accumulation + inference.done emission). Asserts the
+    // accumulated PartialMessage.text matches the concatenation of
+    // every parsed text delta, and that the final inference.done
+    // carries a turn with one text block whose text is the full
+    // response and a usage that matches the wire's terminal
+    // cumulative snapshot.
+    const sseBytes = readFileSync(
+      join(
+        FIXTURE_ROOT,
+        "gemini-2.5-flash",
+        "plain-text-streaming",
+        "response.sse",
+      ),
+    );
+
+    const fetchImpl: Dependencies["fetch"] = () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(sseBytes);
+              controller.close();
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          },
+        ),
+      );
+
+    let seq = 0;
+    const events: InferenceEvent[] = [];
+    for await (const ev of runInference({
+      turns: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "Tell me about sailboats." }],
+          timestamp: 0,
+        },
+      ],
+      source: SOURCE,
+      nextSeq: () => seq++,
+      deps: { fetch: fetchImpl, scheduler: inertScheduler },
+    })) {
+      events.push(ev);
+    }
+
+    const done = events.find((e) => e.type === "inference.done");
+    expect(done).toBeDefined();
+    if (done?.type !== "inference.done") {
+      throw new Error("expected inference.done event");
+    }
+
+    // The harness should produce a single text block whose text is
+    // the full concatenated response. The exact prefix is captured
+    // from the fixture's first SSE event so the assertion catches a
+    // regression that drops the first chunk.
+    expect(done.data.turn.content).toHaveLength(1);
+    const first = done.data.turn.content[0];
+    if (first?.type !== "text") {
+      throw new Error("expected first content block to be text");
+    }
+    expect(first.text.startsWith("A sailboat harnesses the wind")).toBe(true);
+    expect(first.text.endsWith("powered solely by the wind.")).toBe(true);
+
+    // Usage should reflect the final cumulative snapshot from the
+    // last SSE event.
+    expect(done.data.usage).toEqual({
+      input: 33,
+      output: 281,
+      cacheRead: 0,
+      cacheWrite: 0,
+      thinking: 0,
+    });
+
+    // The harness emits inference.usage before inference.done.
+    const usageIdx = events.findIndex((e) => e.type === "inference.usage");
+    const doneIdx = events.findIndex((e) => e.type === "inference.done");
+    expect(usageIdx).toBeGreaterThan(-1);
+    expect(usageIdx).toBeLessThan(doneIdx);
   });
 });
