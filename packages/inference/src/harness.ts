@@ -646,12 +646,21 @@ export async function* runInference(
 
             case "inference.usage": {
               // Accumulate usage — providers may send multiple usage events
-              // (e.g., Anthropic sends one at message_start, one at message_delta).
+              // (e.g., Anthropic sends one at message_start with input
+              // tokens, then one at message_delta with output tokens
+              // and input deliberately set to 0 by the parser to mean
+              // "no change to input"). Emit the cumulative
+              // post-merge total rather than the raw incoming so
+              // downstream consumers and invariants see a monotone
+              // non-decreasing stream — the raw incoming would
+              // observably "decrease" input from a real count back
+              // to 0 between the two events even though no decrease
+              // occurred in the underlying counter.
               usageSeen = mergeUsage(usageSeen, raw.data.usage);
               yield {
                 type: "inference.usage",
                 seq: nextSeq(),
-                data: { usage: raw.data.usage },
+                data: { usage: usageSeen },
               };
               break;
             }
