@@ -5,6 +5,7 @@ import type {
   ContentBlock,
   InferenceEvent,
   InferenceOptions,
+  MediaSource,
   PartialMessage,
   TokenUsage,
 } from "@intx/types/runtime";
@@ -109,6 +110,34 @@ function toAnthropicMessage(
   return { role, content };
 }
 
+// Marshal a MediaSource into Anthropic's nested `source` shape.
+// Base64 sources carry the mimeType on the wire as `media_type`.
+// File-reference sources carry only the file id — Anthropic identifies
+// the file by id alone, encoding the content-type server-side at
+// upload time, so the MediaSource's mimeType is intentionally dropped
+// at this layer. The internal `mimeType` requirement on
+// `MediaSourceFileReference` keeps callers honest about what they
+// have in hand even when the provider doesn't need it.
+function toAnthropicMediaSource(source: MediaSource): Record<string, unknown> {
+  if (source.kind === "base64") {
+    return {
+      type: "base64",
+      media_type: source.mimeType,
+      data: source.data,
+    };
+  }
+  if (source.kind === "file-reference") {
+    return {
+      type: "file",
+      file_id: source.reference,
+    };
+  }
+  // Exhaustiveness: a new MediaSource variant added without a case
+  // here fails this compile-time check.
+  source satisfies never;
+  throw new Error(`unreachable: unknown MediaSource kind`);
+}
+
 function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
   switch (block.type) {
     case "text":
@@ -134,33 +163,14 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
       // base64); pass through untouched.
       return { type: "redacted_thinking", data: block.data };
 
-    case "image": {
-      const source = block.source;
-      if (source.kind === "base64") {
-        return {
-          type: "image",
-          source: {
-            type: "base64",
-            media_type: source.mimeType,
-            data: source.data,
-          },
-        };
-      }
-      if (source.kind === "file-reference") {
-        throw new Error(
-          "Anthropic adapter does not yet handle file-reference image " +
-            "sources.",
-        );
-      }
-      // Exhaustiveness: a new MediaSource variant added without a case
-      // here fails this compile-time check.
-      source satisfies never;
-      throw new Error(`unreachable: unknown MediaSource kind`);
-    }
+    case "image":
+      return { type: "image", source: toAnthropicMediaSource(block.source) };
+
+    case "document":
+      return { type: "document", source: toAnthropicMediaSource(block.source) };
 
     case "audio":
     case "video":
-    case "document":
       throw new Error(
         `Anthropic adapter does not yet handle ${block.type} content blocks.`,
       );
@@ -192,34 +202,25 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
           if (c.type === "text") {
             return { type: "text", text: c.text };
           }
-          if (c.type !== "image") {
-            // audio / video / document in tool_result content. The
-            // ContentBlock union allows these so the type system can
-            // grow uniformly; no Anthropic wire path exists today.
-            throw new Error(
-              `Anthropic adapter does not yet handle ${c.type} content ` +
-                `blocks in tool results.`,
-            );
-          }
-          const source = c.source;
-          if (source.kind === "base64") {
+          if (c.type === "image") {
             return {
               type: "image",
-              source: {
-                type: "base64",
-                media_type: source.mimeType,
-                data: source.data,
-              },
+              source: toAnthropicMediaSource(c.source),
             };
           }
-          if (source.kind === "file-reference") {
-            throw new Error(
-              "Anthropic adapter does not yet handle file-reference image " +
-                "sources in tool results.",
-            );
-          }
-          source satisfies never;
-          throw new Error(`unreachable: unknown MediaSource kind`);
+          // Anthropic's tool_result.content accepts only `text` and
+          // `image` blocks today. `document` in particular is rejected
+          // at the API edge; surface the failure at the marshaling
+          // site with the specific block type so the failure shows
+          // where the wrong block type was authored, not as an opaque
+          // HTTP 400 a round-trip later. The ContentBlock union allows
+          // these so the type system can grow uniformly; the wire
+          // surface lags.
+          throw new Error(
+            `Anthropic adapter does not handle ${c.type} content blocks ` +
+              `inside tool_result.content; the API accepts only text and ` +
+              `image here.`,
+          );
         }),
         ...(block.isError ? { is_error: true } : {}),
       };
