@@ -554,6 +554,7 @@ export async function* runInference(
             }
 
             case "inference.tool_call.start": {
+              const toolIdx = requireIndex(raw, "tool_call.start");
               const { callId, name } = raw.data;
               openToolCalls.set(callId, { callId, name, argsBuffer: "" });
               // OpenAI-flavoured adapters synthesize a placeholder
@@ -562,15 +563,8 @@ export async function* runInference(
               // start event's `data.index` so the placeholder the
               // delta emits (`String(blockIndex)`) maps back to the
               // real id even when `tcDelta.index` is non-zero or
-              // non-contiguous. The fallback to arrival-order
-              // (`openToolCalls.size - 1`) preserves behaviour for
-              // legacy adapters that don't propagate index on the
-              // start event.
-              if (raw.data.index !== undefined) {
-                indexToCallId.set(String(raw.data.index), callId);
-              } else {
-                indexToCallId.set(String(openToolCalls.size - 1), callId);
-              }
+              // non-contiguous.
+              indexToCallId.set(String(toolIdx), callId);
               // Anchor the tool_use position in the per-index map.
               // The map walk in final assembly will resolve the marker
               // via `completedToolCalls` so the tool_use block lands
@@ -579,24 +573,18 @@ export async function* runInference(
               // same index throw, matching the discipline of the
               // text/thinking/redacted_thinking branches above —
               // distinct kinds cannot share an index without losing
-              // the per-index ordering guarantee. When the parser
-              // doesn't supply an index (legacy emitters), the marker
-              // is skipped and the tool call falls back to the
-              // append-after-walk path in final assembly.
-              const toolIdx = raw.data.index;
-              if (toolIdx !== undefined) {
-                const existingAtIdx = blockMap.get(toolIdx);
-                if (existingAtIdx === undefined) {
-                  blockMap.set(toolIdx, { kind: "tool_use", callId });
-                } else if (
-                  existingAtIdx.kind !== "tool_use" ||
-                  existingAtIdx.callId !== callId
-                ) {
-                  throw new ProtocolMismatchError(
-                    `harness: tool_call.start at index ${String(toolIdx)} collides with existing ${existingAtIdx.kind} block`,
-                    raw,
-                  );
-                }
+              // the per-index ordering guarantee.
+              const existingAtIdx = blockMap.get(toolIdx);
+              if (existingAtIdx === undefined) {
+                blockMap.set(toolIdx, { kind: "tool_use", callId });
+              } else if (
+                existingAtIdx.kind !== "tool_use" ||
+                existingAtIdx.callId !== callId
+              ) {
+                throw new ProtocolMismatchError(
+                  `harness: tool_call.start at index ${String(toolIdx)} collides with existing ${existingAtIdx.kind} block`,
+                  raw,
+                );
               }
               partial.toolCalls = [
                 ...(partial.toolCalls ?? []),
@@ -771,7 +759,6 @@ export async function* runInference(
       }
     }
     const contentBlocks: ContentBlock[] = [];
-    const emittedToolCallIds = new Set<string>();
     for (const entry of blockMap.values()) {
       if (entry.kind === "text") {
         if (entry.text.length > 0) {
@@ -802,22 +789,25 @@ export async function* runInference(
       }
       if (entry.kind === "tool_use") {
         const finalized = completedToolCallsByCallId.get(entry.callId);
-        if (finalized !== undefined) {
-          contentBlocks.push(finalized);
-          emittedToolCallIds.add(entry.callId);
+        if (finalized === undefined) {
+          // Every tool_use marker is added in the
+          // inference.tool_call.start handler at the same time the
+          // entry is inserted into openToolCalls. The finalize loop
+          // above turns every openToolCalls entry into a
+          // completedToolCalls entry. So a marker whose callId is
+          // missing from completedToolCallsByCallId here would mean
+          // the start-time bookkeeping diverged from the finalize-
+          // time bookkeeping — surface it loudly rather than dropping
+          // the tool call from the final turn.
+          throw new ProtocolMismatchError(
+            `harness: tool_use marker at callId ${entry.callId} has no matching completed tool call`,
+            entry,
+          );
         }
+        contentBlocks.push(finalized);
         continue;
       }
       entry satisfies never;
-    }
-    // Tool calls that completed without a corresponding tool_use
-    // marker in the map (legacy callers that don't propagate index
-    // through tool_call.start) still land in the final turn so the
-    // pre-per-index behaviour is preserved.
-    for (const tc of completedToolCalls) {
-      if (tc.type === "tool_call" && !emittedToolCallIds.has(tc.id)) {
-        contentBlocks.push(tc);
-      }
     }
     // Citations append after the per-index walk. Their event payload
     // doesn't carry the source content-block index today, so they
