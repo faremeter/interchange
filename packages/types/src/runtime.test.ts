@@ -878,3 +878,51 @@ describe("inference.code_execution.* events", () => {
     expect(result instanceof type.errors).toBe(true);
   });
 });
+
+describe("RedactedThinkingBlock and inference.thinking.redacted event", () => {
+  test("accepts a minimal redacted_thinking block", () => {
+    const result = ContentBlock({
+      type: "redacted_thinking",
+      data: "EncryptedOpaqueBlobAAAA==",
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a redacted_thinking block with an index", () => {
+    const result = ContentBlock({
+      type: "redacted_thinking",
+      data: "EncryptedOpaqueBlobAAAA==",
+      index: 0,
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a redacted_thinking block missing data", () => {
+    const result = ContentBlock({ type: "redacted_thinking" });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("accepts an inference.thinking.redacted event wrapping the block", () => {
+    const result = InferenceEvent({
+      type: "inference.thinking.redacted",
+      seq: 3,
+      data: {
+        redactedThinking: {
+          type: "redacted_thinking",
+          data: "EncryptedOpaqueBlobAAAA==",
+          index: 1,
+        },
+      },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects an inference.thinking.redacted event with a malformed payload", () => {
+    const result = InferenceEvent({
+      type: "inference.thinking.redacted",
+      seq: 3,
+      data: { redactedThinking: { type: "redacted_thinking" } },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+});

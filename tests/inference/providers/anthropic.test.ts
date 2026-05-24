@@ -418,6 +418,25 @@ describe("Anthropic adapter: buildRequest", () => {
     },
   );
 
+  test("rejects a redacted_thinking content block (echo-back not yet wired)", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "redacted_thinking",
+            data: "EncryptedOpaqueBlobAAAA==",
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    expect(() =>
+      adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {}),
+    ).toThrow(/redacted_thinking content blocks/);
+  });
+
   test.each(["code_execution_request", "code_execution_result"] as const)(
     "rejects a %s content block in a request",
     (blockType) => {

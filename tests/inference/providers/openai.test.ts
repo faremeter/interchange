@@ -371,6 +371,27 @@ describe("OpenAI adapter: buildRequest", () => {
     );
   });
 
+  test("silently drops redacted_thinking content blocks (opaque, no OpenAI surface)", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Hello" },
+          {
+            type: "redacted_thinking",
+            data: "EncryptedOpaqueBlobAAAA==",
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    const msg = OpenAIPlainMessage.assert(body.messages[0]);
+    expect(msg.content).toBe("Hello");
+  });
+
   test("silently drops citation content blocks (not part of OpenAI surface)", () => {
     const messages: ConversationTurn[] = [
       {

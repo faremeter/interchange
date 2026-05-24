@@ -657,8 +657,26 @@ const ThinkingBlock = type({
   type: "'thinking'",
   thinking: "string",
   "signature?": "string",
-  "redacted?": "boolean",
 });
+
+/**
+ * A thinking block whose content the provider has filtered. The
+ * opaque `data` blob must echo back verbatim on every follow-up turn
+ * — Anthropic 400s the request if it changes or goes missing. Treat
+ * the bytes as opaque: do not log them and do not render them to
+ * users.
+ *
+ * Exported because `inference.thinking.redacted` events reference it
+ * by name.
+ */
+export const RedactedThinkingBlock = type({
+  type: "'redacted_thinking'",
+  data: "string",
+  // Index in the response's content-block stream, matching the
+  // provider-native content_block index where the block originated.
+  "index?": "number",
+});
+export type RedactedThinkingBlock = typeof RedactedThinkingBlock.infer;
 const ToolCallBlock = type({
   type: "'tool_call'",
   id: "string",
@@ -823,6 +841,7 @@ const ToolResultBlock = type({
 });
 
 export const ContentBlock = TextBlock.or(ThinkingBlock)
+  .or(RedactedThinkingBlock)
   .or(ImageBlock)
   .or(AudioBlock)
   .or(VideoBlock)
@@ -961,6 +980,11 @@ export const InferenceEvent = type({
     type: "'inference.thinking.signature'",
     seq: "number",
     data: { signature: "string" },
+  })
+  .or({
+    type: "'inference.thinking.redacted'",
+    seq: "number",
+    data: { redactedThinking: RedactedThinkingBlock },
   })
   .or({
     type: "'inference.text.delta'",
@@ -1131,6 +1155,11 @@ export type InferenceEvent =
       type: "inference.thinking.signature";
       seq: number;
       data: { signature: string };
+    }
+  | {
+      type: "inference.thinking.redacted";
+      seq: number;
+      data: { redactedThinking: RedactedThinkingBlock };
     }
   | {
       type: "inference.text.delta";
