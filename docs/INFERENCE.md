@@ -127,10 +127,59 @@ The internal message format is provider-agnostic. Messages are converted to and 
 ### Content Types
 
 - **Text** — Plain text output
-- **Thinking** — Reasoning content with optional redaction and opaque signatures for multi-turn continuity
-- **Image** — Base64-encoded image data with MIME type
+- **Thinking** — Reasoning content with an optional cryptographic signature that providers (Anthropic) require echoed back on follow-up turns
+- **Redacted thinking** — Provider-filtered reasoning carrying an opaque `data` blob that must round-trip verbatim on follow-up turns
+- **Image** — Visual media carried via the `MediaSource` shape (see Generalized Multimodal Taxonomy)
+- **Audio** — Audio media via `MediaSource`; not all providers accept this as input
+- **Video** — Video media via `MediaSource`; not all providers accept this as input
+- **Document** — Document media (e.g. PDF) via `MediaSource`
+- **Citation** — Source attribution for an assistant text region, attributed to the nearest preceding TextBlock in the same turn
+- **Code execution request** — The model's request to execute code via a server-side tool
+- **Code execution result** — Result of a code execution request, paired by `requestId`
 - **Tool call** — Function invocation with name, ID, and arguments
 - **Tool result** — Execution result with content blocks, optional detail data, and error flag
+
+### Generalized Multimodal Taxonomy
+
+The content-block surface is shaped to absorb the multimodal capabilities of every provider in the catalog (OpenAI, Anthropic, Gemini, opencode-zen) without forcing each adapter to invent its own wire vocabulary. Three concepts hold this together:
+
+#### MediaSource
+
+Media-bearing blocks (`Image`, `Audio`, `Video`, `Document`) carry their payload through a shared `MediaSource` discriminated union, not a flat data field:
+
+- `base64` — inline payload with `mimeType` and `data` (the base64-encoded bytes).
+- `file-reference` — opaque provider-native handle (Anthropic `file_id`, Gemini `fileUri`) with `mimeType` for caller bookkeeping.
+
+The `mimeType` on `file-reference` is internal discipline: callers must know the content type even when the provider doesn't need it on the wire. Each adapter marshals the variant to its provider's documented shape — Anthropic's `{ type: "base64", media_type, data }` vs. `{ type: "file", file_id }`, OpenAI's `image_url` data URL, etc. `file-reference` handles are provider-scoped by construction: an Anthropic `file_id` is meaningless to OpenAI and adapters surface that constraint loudly rather than attempting cross-provider translation.
+
+#### Per-index block tracking
+
+A streaming response can interleave thinking, text, tool_use, and other blocks at distinct `content_block` indices. The harness keys block state by index in a `Map<number, BlockState>` discriminated by kind. Insertion order is preserved across all keys (JS Map semantic), so the finalized assistant turn reproduces the wire-arrival order of blocks regardless of their numeric values. Per-block state carries:
+
+- Per-thinking-block running text + signature (signatures attach to the right block by index even when they arrive after a subsequent block's deltas have started).
+- Per-tool-call markers anchoring tool_use position relative to text and thinking blocks; the tool-call state machine itself (callId → accumulator) lives separately so per-index ownership of ordering is cleanly separated from per-call ownership of arguments.
+
+Every delta event arriving at the harness must carry an `index`. Providers without a wire-level block index (OpenAI Chat Completions) synthesize one at the adapter boundary in arrival order — whichever kind streams first lands at 0, the other (if it appears) at 1. A missing index at the harness boundary surfaces as a `ProtocolMismatchError`.
+
+#### InferenceEvent variants
+
+The event protocol extensions that surface multimodal content:
+
+- `inference.citation` — emitted when a provider streams citation metadata attached to a text region.
+- `inference.thinking.redacted` — emitted when the provider delivers a redacted_thinking block (one-shot, no delta stream).
+- `inference.image_output` — emitted mid-stream when an adapter finalizes an image-output block, signaling that the image is ready for downstream handoff before the full `inference.done` lands.
+- `inference.code_execution.{start,delta,result}` — emitted when the model invokes a server-side code-execution tool; results pair to requests by `requestId`.
+
+All delta-flavoured events (`inference.text.delta`, `inference.thinking.delta`, `inference.thinking.signature`, `inference.tool_call.start`, `inference.tool_call.delta`) carry an optional `index` field. Presence of `index` means the provider modeled the block position explicitly; absence means a single-block guarantee from the wire (e.g., OpenAI Chat Completions today). Downstream consumers that care about per-block structure walk the finalized `inference.done` turn's `content[]`.
+
+#### Provider coverage
+
+The adapter retrofits land:
+
+- **Anthropic** — image input (base64 + file-reference), document input (base64 + file-reference), `redacted_thinking` round-trip (parser + builder), citation streaming (`citations_delta` to `inference.citation`), full per-index propagation on every delta.
+- **OpenAI** — image input via the `image_url` data-URL shape (base64); file-reference rejection with explicit messaging because Chat Completions only accepts data URLs and public URLs; document input deferred pending a captured fixture against the `file` content type; per-index `tool_calls[]` propagation namespaced into the same counter as text/thinking so a tool_call streamed before text doesn't collide with the later text block.
+
+The wire shapes for both adapters are exercised end-to-end via the compat-replay infrastructure (`packages/inference-testing/src/compat-replay.ts`), which walks the discovery `SUPPORT_MATRIX` and replays every captured fixture through the current adapter with the full Invariant list applied.
 
 ### Cross-Provider Message Transformation
 
