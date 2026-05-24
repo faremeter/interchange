@@ -1,0 +1,31 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "I cannot provide instructions for synthesizing methamphetamine or any other illegal substance.\n\nMy purpose is to be helpful and harmless, and providing information that could facilitate illegal activities, endanger individuals through exposure to dangerous chemicals and processes, or contribute to drug abuse goes against my core ethical guidelines.\n\nSynthesizing methamphetamine is extremely dangerous, involving highly toxic and flammable chemicals, and the process carries a significant risk of explosions, fires, and severe chemical burns. Furthermore, the production, possession, and distribution of methamphetamine are serious felonies with severe legal consequences.\n\nIf you are struggling with drug addiction or are concerned about someone who is, please seek help from professional resources. There are many organizations and healthcare providers who can offer support and guidance."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 29,
+    "candidatesTokenCount": 143,
+    "totalTokenCount": 790,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 29
+      }
+    ],
+    "thoughtsTokenCount": 618,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "6zATapKEJMnfjMcPy-v3kAc"
+}

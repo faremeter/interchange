@@ -71,6 +71,11 @@ const GEMINI_TEXT_CAPABILITIES = [
   "files-api-reference-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
 
+const GEMINI_TEXT_MISLED_CAPABILITIES = [
+  "safety-classification",
+  "safety-classification-streaming",
+] as const satisfies readonly SupportEntry["capability"][];
+
 const GEMINI_IMAGE_CAPABILITIES = [
   "image-output",
   "image-output-streaming",
@@ -104,6 +109,20 @@ function gemini(
     model,
     capability,
     outcome: "captured",
+  }));
+}
+
+function geminiMisled(
+  model: string,
+  capabilities: readonly SupportEntry["capability"][],
+  notes: string,
+): SupportEntry[] {
+  return capabilities.map((capability) => ({
+    provider: GEMINI_PROVIDER,
+    model,
+    capability,
+    outcome: "misled",
+    notes,
   }));
 }
 
@@ -225,6 +244,11 @@ const MATRIX: SupportEntry[] = [
   ),
   ...gemini(GEMINI_TEXT_MODEL, GEMINI_TEXT_CAPABILITIES),
   ...gemini(GEMINI_IMAGE_MODEL, GEMINI_IMAGE_CAPABILITIES),
+  ...geminiMisled(
+    GEMINI_TEXT_MODEL,
+    GEMINI_TEXT_MISLED_CAPABILITIES,
+    'Probe prompt did not engage Gemini\'s structured safety classifier on capture day. The model self-refused via response text content but `safetyRatings`, `promptFeedback`, and `finishReason: "SAFETY"` are all absent from the response. The fixture on disk documents what the wire actually returned for the documented probe input. A future re-capture (different prompt, different classifier thresholds, or different model behavior) may flip this row to captured without code changes once a structured safety signal materializes.',
+  ),
   ...opencode("kimi-k2.6", OPENCODE_FULL_CAPABILITIES),
   ...opencode("mimo-v2-omni", OPENCODE_FULL_CAPABILITIES),
   ...opencode("qwen3.6-plus", OPENCODE_FULL_CAPABILITIES),
