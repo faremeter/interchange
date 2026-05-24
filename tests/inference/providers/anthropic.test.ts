@@ -18,6 +18,7 @@ const AnthropicContentBlock = type({
   "signature?": "string",
   "id?": "string",
   "name?": "string",
+  "data?": "string",
   "cache_control?": { type: "string" },
 });
 
@@ -418,23 +419,51 @@ describe("Anthropic adapter: buildRequest", () => {
     },
   );
 
-  test("rejects a redacted_thinking content block (echo-back not yet wired)", () => {
+  test("echoes a redacted_thinking content block back verbatim", () => {
+    // Anthropic delivers redacted_thinking as a one-shot start event
+    // carrying an opaque `data` blob. That blob must echo back
+    // verbatim on every follow-up turn that includes the block —
+    // mutation or omission produces a 400 or silent context
+    // corruption.
+    const data = "EncryptedOpaqueBlobAAAA==";
     const messages: ConversationTurn[] = [
       {
         role: "assistant",
         content: [
           {
             type: "redacted_thinking",
-            data: "EncryptedOpaqueBlobAAAA==",
+            data,
           },
         ],
         timestamp: 1000,
       },
     ];
 
-    expect(() =>
-      adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {}),
-    ).toThrow(/redacted_thinking content blocks/);
+    const req = adapter.buildRequest(
+      messages,
+      "claude-3-5-sonnet-20241022",
+      {},
+    );
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    const assistantMsg = body.messages.find((m) => m.role === "assistant");
+    if (assistantMsg === undefined) {
+      throw new Error("expected an assistant message in the request body");
+    }
+    const block = assistantMsg.content.find(
+      (b) => b.type === "redacted_thinking",
+    );
+    if (block === undefined) {
+      throw new Error(
+        "expected a redacted_thinking block in the assistant message",
+      );
+    }
+    expect(block.data).toBe(data);
+    // Negative: must NOT carry the legacy wire-invalid shape that an
+    // earlier branch of this adapter emitted
+    // ({ type: "thinking", thinking: "", thinking_type: "redacted" }).
+    expect(block.thinking).toBeUndefined();
+    // The arktype schema does not list `thinking_type`, so the assert
+    // call above already rejects any block carrying it.
   });
 
   test.each(["code_execution_request", "code_execution_result"] as const)(
@@ -632,6 +661,28 @@ describe("Anthropic adapter: parseResponse", () => {
     expect(events[0]?.type).toBe("inference.thinking.signature");
     if (events[0]?.type === "inference.thinking.signature") {
       expect(events[0].data.signature).toBe("sig_abc123");
+    }
+  });
+
+  test("parses redacted_thinking content_block_start into inference.thinking.redacted", async () => {
+    // Anthropic delivers redacted thinking as a one-shot inside
+    // content_block_start carrying an opaque `data` blob — no delta
+    // stream. The parser must surface it as inference.thinking.redacted
+    // with the index propagated for downstream routing.
+    const a = createAnthropicAdapter();
+    const events = await parseWire(
+      a,
+      wire.anthropic.redactedThinkingBlock("OpaqueBlobXYZ==", 0),
+    );
+    const redactedEvents = events.filter(
+      (e) => e.type === "inference.thinking.redacted",
+    );
+    expect(redactedEvents).toHaveLength(1);
+    const ev = redactedEvents[0];
+    if (ev?.type === "inference.thinking.redacted") {
+      expect(ev.data.redactedThinking.type).toBe("redacted_thinking");
+      expect(ev.data.redactedThinking.data).toBe("OpaqueBlobXYZ==");
+      expect(ev.data.index).toBe(0);
     }
   });
 

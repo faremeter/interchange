@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { InferenceEvent } from "@intx/types/runtime";
+import type { ConversationTurn, InferenceEvent } from "@intx/types/runtime";
 
 import { ProtocolMismatchError } from "../errors";
 import { createAnthropicAdapter } from "./anthropic";
@@ -193,7 +193,7 @@ describe("Anthropic parser — multi-tool callId routing across indices", () => 
 describe("Anthropic parser — required-index schema enforcement", () => {
   // Anthropic's SSE protocol guarantees `index` on every content_block_*
   // event. A missing `index` is a protocol violation, not a "default to
-  // 0" situation — the harness's per-index routing (task #22) is
+  // 0" situation — the parser's `blockIndexToCallId` cache is
   // load-bearing on the index being real, not synthesized.
 
   test("content_block_delta without index throws ProtocolMismatchError", () => {
@@ -236,5 +236,127 @@ describe("Anthropic parser — required-index schema enforcement", () => {
       thrown = e;
     }
     expect(thrown).toBeInstanceOf(ProtocolMismatchError);
+  });
+});
+
+// All redacted_thinking test fixtures below are SYNTHETIC: derived
+// from Anthropic's documented wire shape rather than from a real
+// captured response. The fixture corpus carries no captured
+// redacted_thinking bytes today because Anthropic's documented canary
+// did not trigger the safety classifier on capture day — every
+// `redacted-thinking[-streaming]` row landed in the corpus with
+// `outcome: "misled"` and contains regular `thinking` blocks instead.
+//
+// The opaque `data` payload below mimics Anthropic's format
+// (long base64-looking string) but carries no real cryptographic
+// content. Round-trip tests assert the harness/adapter pass the
+// bytes verbatim — the actual contents are irrelevant to the
+// invariant being tested.
+const SYNTHETIC_REDACTED_DATA =
+  "ErUBCkYIBxgCKkABEHk1RmZpaWlsOXJxN0Z6cVB" +
+  "QcjBQYS9wQUdBQUFBQUFBQUFBQUFRQUFBQUFBQU" +
+  "FBQUFBQUFBQUFBQT09EhJYWXpBOXJxN0Z6cVBQc" +
+  "jBQYS9wAAA=";
+
+function pickFirstThinkingRedacted(
+  events: InferenceEvent[],
+): Extract<InferenceEvent, { type: "inference.thinking.redacted" }> {
+  const ev = events[0];
+  if (ev === undefined) throw new Error("expected at least one event");
+  if (ev.type !== "inference.thinking.redacted") {
+    throw new Error(`expected inference.thinking.redacted, got ${ev.type}`);
+  }
+  return ev;
+}
+
+describe("Anthropic parser — redacted_thinking content_block_start", () => {
+  test("emits inference.thinking.redacted carrying the data and source index", () => {
+    const adapter = createAnthropicAdapter();
+    const events = parse(adapter, {
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "redacted_thinking",
+        data: SYNTHETIC_REDACTED_DATA,
+      },
+    });
+    expect(events).toHaveLength(1);
+    const ev = pickFirstThinkingRedacted(events);
+    expect(ev.data.index).toBe(0);
+    expect(ev.data.redactedThinking.type).toBe("redacted_thinking");
+    expect(ev.data.redactedThinking.data).toBe(SYNTHETIC_REDACTED_DATA);
+  });
+
+  test("preserves the data verbatim — no normalization or transformation", () => {
+    const adapter = createAnthropicAdapter();
+    // The data is an opaque blob; any mutation breaks the round-trip.
+    // Use a string with characters that an over-eager normalizer would
+    // touch (newlines, whitespace, base64 padding).
+    const adversarial = "abc\n  ==\r\n\tdef==";
+    const events = parse(adapter, {
+      type: "content_block_start",
+      index: 2,
+      content_block: { type: "redacted_thinking", data: adversarial },
+    });
+    const ev = pickFirstThinkingRedacted(events);
+    expect(ev.data.redactedThinking.data).toBe(adversarial);
+  });
+
+  test("missing `data` field throws ProtocolMismatchError naming the field", () => {
+    const adapter = createAnthropicAdapter();
+    let thrown: unknown;
+    try {
+      parse(adapter, {
+        type: "content_block_start",
+        index: 4,
+        content_block: { type: "redacted_thinking" },
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(ProtocolMismatchError);
+    if (thrown instanceof ProtocolMismatchError) {
+      expect(thrown.message).toMatch(/redacted_thinking/);
+      expect(thrown.message).toMatch(/data/);
+      expect(thrown.message).toMatch(/index 4/);
+    }
+  });
+});
+
+describe("Anthropic adapter — redacted_thinking parser-to-builder round-trip", () => {
+  // The parser-side wire shape and the request-builder-side wire shape
+  // are tested independently elsewhere. This test closes the loop: it
+  // proves that the opaque `data` blob the parser surfaces in
+  // `inference.thinking.redacted` reconstructs back to a request body
+  // that carries the same bytes verbatim. That round-trip is the
+  // invariant Anthropic requires on every follow-up turn.
+  test("data survives parse → reconstruct → buildRequest unchanged", () => {
+    const adapter = createAnthropicAdapter();
+    const events = parse(adapter, {
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "redacted_thinking",
+        data: SYNTHETIC_REDACTED_DATA,
+      },
+    });
+    const ev = pickFirstThinkingRedacted(events);
+    const reconstructed: ConversationTurn = {
+      role: "assistant",
+      content: [ev.data.redactedThinking],
+      timestamp: 0,
+    };
+    const req = adapter.buildRequest([reconstructed], "claude-test", {
+      maxTokens: 100,
+    });
+    // The structural shape of the body is asserted elsewhere — here
+    // we care only that the opaque `data` survives the round-trip.
+    // Use a structural extraction via JSON.parse + cast through unknown
+    // because the integration-style assertion lives in the broader
+    // tests/inference/providers/anthropic.test.ts and is already
+    // exercised.
+    const bodyText = req.body;
+    expect(bodyText).toContain(SYNTHETIC_REDACTED_DATA);
+    expect(bodyText).toContain(`"type":"redacted_thinking"`);
   });
 });

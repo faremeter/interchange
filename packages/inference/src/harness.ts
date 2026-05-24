@@ -21,6 +21,7 @@ import type {
   InferenceOptions,
   InferenceSource,
   PartialMessage,
+  RedactedThinkingBlock,
   TokenUsage,
   AssistantTurn,
   ContentBlock,
@@ -163,6 +164,12 @@ export async function* runInference(
   // any follow-up turn that includes the thinking block in history; see
   // `inference.thinking.signature` in `runtime.ts`.
   let thinkingSignature: string | undefined;
+  // Redacted thinking blocks delivered as one-shots inside
+  // content_block_start. Each block's opaque `data` blob must echo back
+  // verbatim on follow-up turns; the harness preserves insertion order
+  // here so the final assistant turn carries them in the same sequence
+  // they arrived on the wire.
+  const redactedThinkingBlocks: RedactedThinkingBlock[] = [];
   let usageSeen: TokenUsage | null = null;
 
   // Tool call state: keyed by callId (or index for OpenAI).
@@ -457,6 +464,37 @@ export async function* runInference(
               break;
             }
 
+            case "inference.thinking.redacted": {
+              // Redacted thinking blocks arrive as one-shots inside
+              // content_block_start (no delta stream). Preserve insertion
+              // order so multi-block scenarios reproduce the wire order in
+              // the final assistant turn. The block's `data` is opaque
+              // base64 that must echo back verbatim on every follow-up
+              // turn — passing it through the runtime type rather than
+              // re-serializing protects it from any accidental mutation.
+              //
+              // The conditional spread on `index` is forced by the
+              // runtime type's `"index?": "number"`: the field is
+              // omit-or-number, not omit-or-number-or-undefined, so
+              // passing `raw.data.index` directly when it could be
+              // undefined fails TypeScript narrowing. Today's parser
+              // always sets it, but the harness accepts other emitters
+              // that may not.
+              guardNonZeroIndex(raw, "redacted_thinking");
+              redactedThinkingBlocks.push(raw.data.redactedThinking);
+              yield {
+                type: "inference.thinking.redacted",
+                seq: nextSeq(),
+                data: {
+                  redactedThinking: raw.data.redactedThinking,
+                  ...(raw.data.index !== undefined
+                    ? { index: raw.data.index }
+                    : {}),
+                },
+              };
+              break;
+            }
+
             case "inference.tool_call.start": {
               const { callId, name } = raw.data;
               openToolCalls.set(callId, { callId, name, argsBuffer: "" });
@@ -625,6 +663,11 @@ export async function* runInference(
           : {}),
       });
     }
+    // Redacted thinking blocks land before the assistant text on the
+    // wire (Anthropic streams them ahead of any text block); preserving
+    // that order is what lets the request builder echo them back in the
+    // same position on the next turn.
+    contentBlocks.push(...redactedThinkingBlocks);
     if (partial.text.length > 0) {
       contentBlocks.push({ type: "text", text: partial.text });
     }
