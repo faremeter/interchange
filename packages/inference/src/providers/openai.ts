@@ -199,9 +199,22 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
     }
     case "audio":
     case "video":
-    case "document":
       throw new Error(
         `OpenAI adapter does not yet handle ${block.type} content blocks.`,
+      );
+    case "document":
+      // OpenAI's Chat Completions added a `file` content type with
+      // `file_data`/`file_id` for PDF inputs, but the exact field
+      // names and required metadata (filename, content disposition)
+      // are version-sensitive and the OpenCode-Zen capture corpus
+      // carries no OpenAI document-input fixtures to ground-truth
+      // against. Surface the failure with explicit context rather
+      // than emitting an unverified wire shape that may 400 or — worse
+      // — silently land as malformed input the model ignores.
+      throw new Error(
+        "OpenAI adapter does not yet emit document content blocks; the " +
+          "Chat Completions file-content-type wire shape needs a captured " +
+          "fixture before the adapter can be wired against it.",
       );
     case "citation":
       // Citation blocks are server-emitted attribution metadata for

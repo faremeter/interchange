@@ -348,7 +348,7 @@ describe("OpenAI adapter: buildRequest", () => {
     expect(imageParts[1]?.image_url.url).toBe("data:image/jpeg;base64,SECOND");
   });
 
-  test.each(["audio", "video", "document"] as const)(
+  test.each(["audio", "video"] as const)(
     "rejects a %s content block until provider support is wired",
     (blockType) => {
       const messages: ConversationTurn[] = [
@@ -373,6 +373,39 @@ describe("OpenAI adapter: buildRequest", () => {
       );
     },
   );
+
+  test("rejects a document content block with a message naming the missing capture", () => {
+    // OpenAI's Chat Completions has a `file` content type for PDFs,
+    // but the exact wire shape (field names, required filename
+    // metadata) is version-sensitive and the capture corpus has no
+    // OpenAI document fixtures to verify against. The throw is the
+    // honest answer: surface explicit context rather than emitting
+    // an unverified shape that might silently land as malformed
+    // input the model ignores.
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: {
+              kind: "base64",
+              mimeType: "application/pdf",
+              data: "JVBERi0xLjQK",
+            },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+      /document content blocks/,
+    );
+    expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+      /captured fixture/,
+    );
+  });
 
   test.each(["code_execution_request", "code_execution_result"] as const)(
     "rejects a %s content block (no OpenAI surface)",
