@@ -113,11 +113,12 @@ function toAnthropicMessage(
 
 // Marshal a MediaSource into Anthropic's nested `source` shape.
 // Base64 sources carry the mimeType on the wire as `media_type`.
-// File-reference sources carry only the file id — Anthropic identifies
-// the file by id alone, encoding the content-type server-side at
-// upload time, so the MediaSource's mimeType is intentionally dropped
-// at this layer. The internal `mimeType` requirement on
-// `MediaSourceFileReference` keeps callers honest about what they
+// File-reference and URL sources carry no mimeType: Anthropic
+// identifies file-reference content by id alone (encoded server-side
+// at upload time) and infers URL-sourced content from the response of
+// the fetch it performs. The MediaSource's mimeType is intentionally
+// dropped at this layer for both. The internal `mimeType` requirement
+// on the non-base64 variants keeps callers honest about what they
 // have in hand even when the provider doesn't need it.
 function toAnthropicMediaSource(source: MediaSource): Record<string, unknown> {
   if (source.kind === "base64") {
@@ -131,6 +132,12 @@ function toAnthropicMediaSource(source: MediaSource): Record<string, unknown> {
     return {
       type: "file",
       file_id: source.reference,
+    };
+  }
+  if (source.kind === "url") {
+    return {
+      type: "url",
+      url: source.url,
     };
   }
   // Exhaustiveness: a new MediaSource variant added without a case

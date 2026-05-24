@@ -177,6 +177,19 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
           },
         };
       }
+      if (source.kind === "url") {
+        // OpenAI's image_url accepts a public URL verbatim alongside
+        // the data-URL form. The MediaSource's mimeType is not
+        // propagated on the wire — OpenAI infers content type from
+        // the URL response. The internal mimeType requirement still
+        // keeps the caller honest about what they have in hand.
+        return {
+          type: "image_url",
+          image_url: {
+            url: source.url,
+          },
+        };
+      }
       if (source.kind === "file-reference") {
         // OpenAI's Chat Completions endpoint accepts images only via
         // `image_url: { url }` (data URL or public URL). It does not

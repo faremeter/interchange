@@ -618,11 +618,12 @@ export type TokenUsage = typeof TokenUsage.infer;
 const TextBlock = type({ type: "'text'", text: "string" });
 
 /**
- * How a media payload is carried by a content block. Either inline as a
- * base64-encoded string, or by reference to an opaque provider-native
- * handle (e.g. a Gemini fileUri, an Anthropic file_id). The wire shape
- * each provider expects is built by the provider adapter; MediaSource is
- * the internal, provider-agnostic representation.
+ * How a media payload is carried by a content block. One of three
+ * variants: inline as a base64-encoded string, by reference to an
+ * opaque provider-native handle (e.g. a Gemini fileUri, an Anthropic
+ * file_id), or by public URL the provider fetches itself. The wire
+ * shape each provider expects is built by the provider adapter;
+ * MediaSource is the internal, provider-agnostic representation.
  *
  * (INFERENCE.md § Generalized Multimodal Taxonomy)
  */
@@ -638,7 +639,15 @@ const MediaSourceFileReference = type({
   reference: "string",
 });
 
-export const MediaSource = MediaSourceBase64.or(MediaSourceFileReference);
+const MediaSourceUrl = type({
+  kind: "'url'",
+  mimeType: "string",
+  url: "string",
+});
+
+export const MediaSource = MediaSourceBase64.or(MediaSourceFileReference).or(
+  MediaSourceUrl,
+);
 export type MediaSource = typeof MediaSource.infer;
 
 // Exported because `inference.image_output` events reference it by

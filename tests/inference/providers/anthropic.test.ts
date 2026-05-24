@@ -38,6 +38,11 @@ const AnthropicMediaSourceFile = type({
   file_id: "string",
 });
 
+const AnthropicMediaSourceUrl = type({
+  type: "'url'",
+  url: "string",
+});
+
 const AnthropicMessage = type({
   role: "string",
   content: AnthropicContentBlock.array(),
@@ -388,6 +393,80 @@ describe("Anthropic adapter: buildRequest", () => {
     const source = AnthropicMediaSourceFile.assert(block.source);
     expect(source.type).toBe("file");
     expect(source.file_id).toBe("file_abc123");
+  });
+
+  test("emits a URL image as { type: url, url }", () => {
+    // Anthropic accepts public URLs alongside base64 and file uploads
+    // for both image and document inputs. The provider fetches the URL
+    // itself and infers content type from the response, so the
+    // MediaSource's `mimeType` is intentionally not propagated to the
+    // wire.
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              kind: "url",
+              mimeType: "image/png",
+              url: "https://example.com/cat.png",
+            },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    const req = adapter.buildRequest(
+      messages,
+      "claude-3-5-sonnet-20241022",
+      {},
+    );
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    const block = body.messages[0]?.content[0];
+    if (block?.type !== "image") {
+      throw new Error("expected image block in the request");
+    }
+    const source = AnthropicMediaSourceUrl.assert(block.source);
+    expect(source.type).toBe("url");
+    expect(source.url).toBe("https://example.com/cat.png");
+  });
+
+  test("emits a URL document as { type: url, url }", () => {
+    // Anthropic's url variant accepts documents under the same shape
+    // as images. No media_type is sent on the wire; the provider
+    // infers from the fetch response.
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: {
+              kind: "url",
+              mimeType: "application/pdf",
+              url: "https://example.com/manual.pdf",
+            },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    const req = adapter.buildRequest(
+      messages,
+      "claude-3-5-sonnet-20241022",
+      {},
+    );
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    const block = body.messages[0]?.content[0];
+    if (block?.type !== "document") {
+      throw new Error("expected document block in the request");
+    }
+    const source = AnthropicMediaSourceUrl.assert(block.source);
+    expect(source.type).toBe("url");
+    expect(source.url).toBe("https://example.com/manual.pdf");
   });
 
   test("emits a base64 document as { type: document, source: { type: base64, media_type, data } }", () => {

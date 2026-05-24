@@ -149,8 +149,9 @@ Media-bearing blocks (`Image`, `Audio`, `Video`, `Document`) carry their payload
 
 - `base64` — inline payload with `mimeType` and `data` (the base64-encoded bytes).
 - `file-reference` — opaque provider-native handle (Anthropic `file_id`, Gemini `fileUri`) with `mimeType` for caller bookkeeping.
+- `url` — public URL (`https://...`, `gs://...`) the provider fetches itself, with `mimeType` for caller bookkeeping. The harness does not download bytes; the URL is passed to the provider verbatim on the wire and the provider performs the fetch.
 
-The `mimeType` on `file-reference` is internal discipline: callers must know the content type even when the provider doesn't need it on the wire. Each adapter marshals the variant to its provider's documented shape — Anthropic's `{ type: "base64", media_type, data }` vs. `{ type: "file", file_id }`, OpenAI's `image_url` data URL, etc. `file-reference` handles are provider-scoped by construction: an Anthropic `file_id` is meaningless to OpenAI and adapters surface that constraint loudly rather than attempting cross-provider translation.
+The `mimeType` on `file-reference` and `url` is internal discipline: callers must know the content type even when the provider doesn't need it on the wire. Each adapter marshals the variant to its provider's documented shape — Anthropic's `{ type: "base64", media_type, data }` vs. `{ type: "file", file_id }` vs. `{ type: "url", url }`, OpenAI's `image_url` accepting either a data URL or a public URL, Gemini's `fileData: { fileUri, mimeType }`. `file-reference` handles are provider-scoped by construction: an Anthropic `file_id` is meaningless to OpenAI and adapters surface that constraint loudly rather than attempting cross-provider translation. `url` variants are not provider-scoped and round-trip across adapters as long as the URL is reachable from the provider.
 
 #### Per-index block tracking
 
@@ -176,8 +177,8 @@ All delta-flavoured events (`inference.text.delta`, `inference.thinking.delta`, 
 
 The adapter retrofits land:
 
-- **Anthropic** — image input (base64 + file-reference), document input (base64 + file-reference), `redacted_thinking` round-trip (parser + builder), citation streaming (`citations_delta` to `inference.citation`), full per-index propagation on every delta.
-- **OpenAI** — image input via the `image_url` data-URL shape (base64); file-reference rejection with explicit messaging because Chat Completions only accepts data URLs and public URLs; document input deferred pending a captured fixture against the `file` content type; per-index `tool_calls[]` propagation namespaced into the same counter as text/thinking so a tool_call streamed before text doesn't collide with the later text block.
+- **Anthropic** — image input (base64 + file-reference + url), document input (base64 + file-reference + url), `redacted_thinking` round-trip (parser + builder), citation streaming (`citations_delta` to `inference.citation`), full per-index propagation on every delta.
+- **OpenAI** — image input via the `image_url` shape (base64 data URL + public url passed verbatim); file-reference rejection with explicit messaging because Chat Completions only accepts data URLs and public URLs; document input deferred pending a captured fixture against the `file` content type; per-index `tool_calls[]` propagation namespaced into the same counter as text/thinking so a tool_call streamed before text doesn't collide with the later text block.
 
 The wire shapes for both adapters are exercised end-to-end via the compat-replay infrastructure (`packages/inference-testing/src/compat-replay.ts`), which walks the discovery `SUPPORT_MATRIX` and replays every captured fixture through the current adapter with the full Invariant list applied.
 
