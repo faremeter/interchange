@@ -124,10 +124,15 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
       };
 
     case "redacted_thinking":
-      throw new Error(
-        "Anthropic adapter does not yet echo redacted_thinking content " +
-          "blocks back on follow-up turns.",
-      );
+      // The opaque `data` blob must echo back verbatim on every
+      // follow-up turn that includes this block as context. Any
+      // mutation (truncation, base64-decoding-and-reencoding,
+      // whitespace normalization) produces a 400 from Anthropic with
+      // "messages.N.content.M.redacted_thinking: Field required" or
+      // a context-corruption error on subsequent turns. The
+      // RedactedThinkingBlock type carries it as `string` (opaque
+      // base64); pass through untouched.
+      return { type: "redacted_thinking", data: block.data };
 
     case "image": {
       const source = block.source;
@@ -281,9 +286,24 @@ const ContentBlockDelta = type({
 const ContentBlockStart = type({
   type: "'content_block_start'",
   index: "number",
-  // Anthropic sends either content_block (snake_case) or contentBlock (camelCase).
-  "content_block?": { type: "string", "id?": "string", "name?": "string" },
-  "contentBlock?": { type: "string", "id?": "string", "name?": "string" },
+  // Anthropic sends either content_block (snake_case) or contentBlock
+  // (camelCase). `data` is optional on the shared shape because only
+  // redacted_thinking blocks carry it; the redacted_thinking branch in
+  // the parser asserts presence and throws ProtocolMismatchError when
+  // it is missing, rather than synthesizing an empty string that would
+  // round-trip back to Anthropic as a corrupted block.
+  "content_block?": {
+    type: "string",
+    "id?": "string",
+    "name?": "string",
+    "data?": "string",
+  },
+  "contentBlock?": {
+    type: "string",
+    "id?": "string",
+    "name?": "string",
+    "data?": "string",
+  },
 });
 
 const ContentBlockStop = type({
@@ -437,14 +457,47 @@ function parseResponse(
           },
         ];
       }
-      // Non-tool_use content_block_start events (text, thinking) emit
-      // nothing here by design: each content_block_delta arrives with
-      // a typed delta (text_delta, thinking_delta, signature_delta)
-      // that the switch above discriminates on directly, so an upfront
-      // start emission would be redundant. Tool calls are the
-      // exception because their callId arrives only in the start
-      // event and must be cached against the block index for
-      // subsequent input_json_delta lookups.
+
+      if (block.type === "redacted_thinking") {
+        // Anthropic delivers redacted_thinking as a one-shot inside
+        // content_block_start (no delta stream). The opaque `data`
+        // blob must echo back verbatim on every follow-up turn —
+        // mutating or synthesizing it corrupts the conversation
+        // context. A start event missing `data` is a protocol
+        // violation, not a default-to-empty case.
+        const { index } = event;
+        if (block.data === undefined) {
+          throw new ProtocolMismatchError(
+            `anthropic parseResponse: content_block_start of type redacted_thinking ` +
+              `at index ${String(index)} missing required \`data\` field`,
+            event,
+          );
+        }
+        return [
+          {
+            type: "inference.thinking.redacted",
+            seq,
+            data: {
+              redactedThinking: {
+                type: "redacted_thinking",
+                data: block.data,
+              },
+              index,
+            },
+          },
+        ];
+      }
+
+      // Non-tool_use, non-redacted_thinking content_block_start events
+      // (text, thinking) emit nothing here by design: each
+      // content_block_delta arrives with a typed delta (text_delta,
+      // thinking_delta, signature_delta) that the switch above
+      // discriminates on directly, so an upfront start emission would
+      // be redundant. Tool calls are the exception because their
+      // callId arrives only in the start event and must be cached
+      // against the block index for subsequent input_json_delta
+      // lookups; redacted_thinking is the exception because the block
+      // is delivered start-only with no follow-on deltas.
       return [];
     }
 
