@@ -178,9 +178,20 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
         };
       }
       if (source.kind === "file-reference") {
+        // OpenAI's Chat Completions endpoint accepts images only via
+        // `image_url: { url }` (data URL or public URL). It does not
+        // accept opaque uploaded-file references the way Anthropic's
+        // `{ type: "file", file_id }` does. A `file-reference`
+        // handle minted by some other provider (an Anthropic file_id,
+        // a Gemini fileUri) is meaningless to OpenAI; the adapter
+        // would have to round-trip the bytes through base64 to be
+        // useful, which is a caller-level choice, not an adapter one.
+        // Surface the constraint loudly with the apparent reference
+        // so an operator triaging the failure sees what was sent.
         throw new Error(
-          "OpenAI adapter does not yet handle file-reference image " +
-            "sources.",
+          `OpenAI Chat Completions does not accept file-reference image ` +
+            `sources; the API only takes base64 data URLs or public URLs ` +
+            `via image_url. Received reference: ${source.reference}`,
         );
       }
       source satisfies never;

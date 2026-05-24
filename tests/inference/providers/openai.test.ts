@@ -22,15 +22,19 @@ const OpenAIToolCall = type({
   function: OpenAIFunctionCall,
 });
 
+// `content` is either a plain string (text-only messages) or an array
+// of content parts (multimodal: text + image_url etc). The schema
+// accepts either shape with passthrough for parts so each test site
+// validates the specific shape it cares about.
 const OpenAIAssistantMessage = type({
   role: "string",
-  "content?": "string | null",
+  "content?": "string | null | unknown[]",
   "tool_calls?": OpenAIToolCall.array(),
 });
 
 const OpenAIPlainMessage = type({
   role: "string",
-  "content?": "string | null",
+  "content?": "string | null | unknown[]",
   "tool_call_id?": "string",
 });
 
@@ -261,7 +265,12 @@ describe("OpenAI adapter: buildRequest", () => {
     expect(body.max_tokens).toBe(256);
   });
 
-  test("rejects a file-reference image source until Files API wiring lands", () => {
+  test("rejects a file-reference image source with a message naming the reference", () => {
+    // OpenAI's Chat Completions doesn't accept opaque file references
+    // — only data URLs and public URLs through `image_url`. The throw
+    // names the actual reference value so an operator triaging the
+    // failure sees what was sent (a stale Anthropic file_id, a Gemini
+    // fileUri, etc.) rather than just "not supported."
     const messages: ConversationTurn[] = [
       {
         role: "user",
@@ -282,6 +291,61 @@ describe("OpenAI adapter: buildRequest", () => {
     expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
       /file-reference image sources/,
     );
+    expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+      /file_abc123/,
+    );
+  });
+
+  test("emits multiple base64 image content parts preserving wire order", () => {
+    // A single user turn may carry multiple image content blocks
+    // (e.g., before/after comparison). The adapter must preserve their
+    // order on the wire — a reordering bug would invert "compare
+    // these two screenshots" prompts and produce wrong answers
+    // silently. Each image lands as a distinct `image_url` content
+    // part with its own data URL.
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Compare:" },
+          {
+            type: "image",
+            source: { kind: "base64", mimeType: "image/png", data: "FIRST" },
+          },
+          {
+            type: "image",
+            source: { kind: "base64", mimeType: "image/jpeg", data: "SECOND" },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    const userMsg = body.messages[0];
+    if (userMsg === undefined) {
+      throw new Error("expected one message");
+    }
+    const content = userMsg.content;
+    if (!Array.isArray(content)) {
+      throw new Error("expected content to be an array of parts");
+    }
+    const isRecord = (v: unknown): v is Record<string, unknown> =>
+      typeof v === "object" && v !== null && !Array.isArray(v);
+    const isImagePart = (
+      p: unknown,
+    ): p is { type: "image_url"; image_url: { url: string } } => {
+      if (!isRecord(p)) return false;
+      if (p["type"] !== "image_url") return false;
+      const inner = p["image_url"];
+      if (!isRecord(inner)) return false;
+      return typeof inner["url"] === "string";
+    };
+    const imageParts = content.filter(isImagePart);
+    expect(imageParts).toHaveLength(2);
+    expect(imageParts[0]?.image_url.url).toBe("data:image/png;base64,FIRST");
+    expect(imageParts[1]?.image_url.url).toBe("data:image/jpeg;base64,SECOND");
   });
 
   test.each(["audio", "video", "document"] as const)(
