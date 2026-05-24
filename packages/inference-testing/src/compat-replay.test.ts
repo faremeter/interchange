@@ -1,7 +1,12 @@
 import * as path from "node:path";
 import { describe, expect, test } from "bun:test";
 
-import { runCompatReplay } from "./compat-replay";
+import {
+  runCompatReplay,
+  runCompatReplayCorpus,
+  type CompatReplayCorpusResult,
+  type CompatReplaySkipReason,
+} from "./compat-replay";
 
 // Workspace-relative fixture root. The compat-replay helper requires an
 // absolute path; tests resolve against the workspace root by walking up
@@ -105,5 +110,85 @@ describe("runCompatReplay — skip behavior", () => {
       throw new Error("expected runCompatReplay to throw");
     }
     expect(thrown.message).toMatch(/fixture appears malformed/);
+  });
+});
+
+describe("runCompatReplayCorpus — full SUPPORT_MATRIX iteration", () => {
+  // Walk every captured row in the discovery support matrix through
+  // the replay pipeline. The corpus is the contract: each captured
+  // fixture must replay through the current adapter without
+  // producing invariant violations, OR skip with a structured
+  // reason that names why. A new invariant landing in INVARIANTS
+  // surfaces here as a failure across the whole corpus — exactly
+  // what the typed Invariant list was built for.
+  //
+  // Expected skip reasons:
+  //   - no_adapter_registered: google-genai rows (Gemini adapter not yet wired).
+  //   - non_streaming_capture: response.json-only captures (no SSE).
+  //   - raw_bytes_upload: files-api `upload/` subdirs carrying request.bin.
+  //   - non_captured_outcome: misled/refused/http-error/unsupported rows.
+  test("every captured leaf either replays clean or skips with a known reason", async () => {
+    const results = await runCompatReplayCorpus({
+      workspaceRoot: WORKSPACE_ROOT,
+    });
+
+    // Sanity: the corpus is non-empty (a future regression that
+    // empties SUPPORT_MATRIX would otherwise silently pass).
+    expect(results.length).toBeGreaterThan(0);
+
+    const ALLOWED_SKIP_REASONS: readonly CompatReplaySkipReason[] = [
+      "no_adapter_registered",
+      "non_streaming_capture",
+      "raw_bytes_upload",
+      "non_captured_outcome",
+    ];
+
+    const replayedWithViolations: CompatReplayCorpusResult[] = [];
+    const skippedUnknown: CompatReplayCorpusResult[] = [];
+
+    for (const result of results) {
+      if (result.kind === "skipped") {
+        if (!ALLOWED_SKIP_REASONS.includes(result.reason)) {
+          skippedUnknown.push(result);
+        }
+        continue;
+      }
+      if (result.violations.length > 0) {
+        replayedWithViolations.push(result);
+      }
+    }
+
+    if (skippedUnknown.length > 0) {
+      throw new Error(
+        `compat-replay corpus: unrecognized skip reasons:\n${skippedUnknown
+          .map(
+            (r) =>
+              `  ${r.entry.provider}/${r.entry.model}/${r.entry.capability}${r.subPath === "" ? "" : `/${r.subPath}`}: ${r.kind === "skipped" ? r.reason : "???"}`,
+          )
+          .join("\n")}`,
+      );
+    }
+
+    if (replayedWithViolations.length > 0) {
+      throw new Error(
+        `compat-replay corpus: ${String(replayedWithViolations.length)} captured replays produced invariant violations:\n${replayedWithViolations
+          .map(
+            (r) =>
+              `  ${r.entry.provider}/${r.entry.model}/${r.entry.capability}${r.subPath === "" ? "" : `/${r.subPath}`}: ${r.kind === "replayed" ? JSON.stringify(r.violations).slice(0, 200) : "???"}`,
+          )
+          .join("\n")}`,
+      );
+    }
+
+    // The corpus should include both real replays (anthropic +
+    // opencode-zen captured rows) and structured skips
+    // (google-genai, misled, etc.). A complete absence of either
+    // category would mean the catalog or the adapter wiring shifted
+    // in a way this suite isn't covering — surface that loudly
+    // rather than as a green pass.
+    const replayedCount = results.filter((r) => r.kind === "replayed").length;
+    const skippedCount = results.filter((r) => r.kind === "skipped").length;
+    expect(replayedCount).toBeGreaterThan(0);
+    expect(skippedCount).toBeGreaterThan(0);
   });
 });
