@@ -633,10 +633,14 @@ const MediaSourceFileReference = type({
 export const MediaSource = MediaSourceBase64.or(MediaSourceFileReference);
 export type MediaSource = typeof MediaSource.infer;
 
-const ImageBlock = type({
+// Exported because `inference.image_output` events reference it by
+// name, following the same pattern as `CitationBlock`,
+// `CodeExecutionRequestBlock`, and `RedactedThinkingBlock`.
+export const ImageBlock = type({
   type: "'image'",
   source: MediaSource,
 });
+export type ImageBlock = typeof ImageBlock.infer;
 
 const AudioBlock = type({
   type: "'audio'",
@@ -672,9 +676,6 @@ const ThinkingBlock = type({
 export const RedactedThinkingBlock = type({
   type: "'redacted_thinking'",
   data: "string",
-  // Index in the response's content-block stream, matching the
-  // provider-native content_block index where the block originated.
-  "index?": "number",
 });
 export type RedactedThinkingBlock = typeof RedactedThinkingBlock.infer;
 const ToolCallBlock = type({
@@ -766,11 +767,6 @@ export const CodeExecutionRequestBlock = type({
   // adapters MUST NOT default this — callers narrow on its
   // presence rather than fall through to a guessed language.
   "language?": "string",
-  // Index in the response's content-block stream. Provider-native
-  // when available (Anthropic content_block index); otherwise
-  // synthesized by the adapter to preserve ordering with other
-  // blocks in the same response.
-  "index?": "number",
 });
 export type CodeExecutionRequestBlock = typeof CodeExecutionRequestBlock.infer;
 
@@ -818,9 +814,6 @@ export const CodeExecutionResultBlock = type({
   // Human-readable reason populated when status is "aborted"
   // (Anthropic `abort_reason`). Absent otherwise.
   "abortReason?": "string",
-  // Index in the response's content-block stream. Same semantics
-  // as CodeExecutionRequestBlock.index.
-  "index?": "number",
 });
 export type CodeExecutionResultBlock = typeof CodeExecutionResultBlock.infer;
 
@@ -988,7 +981,7 @@ export const InferenceEvent = type({
   .or({
     type: "'inference.thinking.redacted'",
     seq: "number",
-    data: { redactedThinking: RedactedThinkingBlock },
+    data: { redactedThinking: RedactedThinkingBlock, "index?": "number" },
   })
   .or({
     type: "'inference.text.delta'",
@@ -1057,17 +1050,40 @@ export const InferenceEvent = type({
   .or({
     type: "'inference.code_execution.start'",
     seq: "number",
-    data: { request: CodeExecutionRequestBlock },
+    data: { request: CodeExecutionRequestBlock, "index?": "number" },
   })
   .or({
     type: "'inference.code_execution.delta'",
     seq: "number",
-    data: { requestId: "string", codeFragment: "string" },
+    // requestId correlates fragments back to the originating
+    // CodeExecutionRequestBlock; index is the positional hint into
+    // the response's content-block stream. They are independent: a
+    // single response may stream code execution for multiple
+    // requests interleaved, distinguished by requestId; index lets
+    // the harness's per-block accumulator route the fragment to
+    // the correct block when the array isn't yet finalized.
+    data: {
+      requestId: "string",
+      codeFragment: "string",
+      "index?": "number",
+    },
   })
   .or({
     type: "'inference.code_execution.result'",
     seq: "number",
-    data: { result: CodeExecutionResultBlock },
+    data: { result: CodeExecutionResultBlock, "index?": "number" },
+  })
+  .or({
+    type: "'inference.image_output'",
+    seq: "number",
+    // Fires mid-stream when an adapter finalizes an image-output
+    // block, signaling that the image is ready for downstream
+    // handoff before the full inference.done lands. The wrapped
+    // ImageBlock typically carries a base64 MediaSource — the
+    // payload can be large (Gemini's image-output captures show
+    // ~1MB inline blobs); consumers that subscribe to this event
+    // should treat it as a non-trivial transport size.
+    data: { image: ImageBlock, "index?": "number" },
   })
   .or({
     type: "'tool.start'",
@@ -1174,7 +1190,7 @@ export type InferenceEvent =
   | {
       type: "inference.thinking.redacted";
       seq: number;
-      data: { redactedThinking: RedactedThinkingBlock };
+      data: { redactedThinking: RedactedThinkingBlock; index?: number };
     }
   | {
       type: "inference.text.delta";
@@ -1235,17 +1251,22 @@ export type InferenceEvent =
   | {
       type: "inference.code_execution.start";
       seq: number;
-      data: { request: CodeExecutionRequestBlock };
+      data: { request: CodeExecutionRequestBlock; index?: number };
     }
   | {
       type: "inference.code_execution.delta";
       seq: number;
-      data: { requestId: string; codeFragment: string };
+      data: { requestId: string; codeFragment: string; index?: number };
     }
   | {
       type: "inference.code_execution.result";
       seq: number;
-      data: { result: CodeExecutionResultBlock };
+      data: { result: CodeExecutionResultBlock; index?: number };
+    }
+  | {
+      type: "inference.image_output";
+      seq: number;
+      data: { image: ImageBlock; index?: number };
     }
   | { type: "tool.start"; seq: number; data: { call: ToolCall } }
   | {

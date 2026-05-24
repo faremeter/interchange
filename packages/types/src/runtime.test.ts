@@ -719,13 +719,12 @@ describe("CodeExecutionRequestBlock and CodeExecutionResultBlock", () => {
     expect(result instanceof type.errors).toBe(false);
   });
 
-  test("accepts a code_execution_request with language and index", () => {
+  test("accepts a code_execution_request with a language hint", () => {
     const result = ContentBlock({
       type: "code_execution_request",
       id: "srvtoolu_01",
       code: "print('hi')",
       language: "python",
-      index: 2,
     });
     expect(result instanceof type.errors).toBe(false);
   });
@@ -767,7 +766,6 @@ describe("CodeExecutionRequestBlock and CodeExecutionResultBlock", () => {
       stderr: "",
       returnCode: 0,
       providerOutcome: "OUTCOME_OK",
-      index: 3,
     });
     expect(result instanceof type.errors).toBe(false);
   });
@@ -888,15 +886,6 @@ describe("RedactedThinkingBlock and inference.thinking.redacted event", () => {
     expect(result instanceof type.errors).toBe(false);
   });
 
-  test("accepts a redacted_thinking block with an index", () => {
-    const result = ContentBlock({
-      type: "redacted_thinking",
-      data: "EncryptedOpaqueBlobAAAA==",
-      index: 0,
-    });
-    expect(result instanceof type.errors).toBe(false);
-  });
-
   test("rejects a redacted_thinking block missing data", () => {
     const result = ContentBlock({ type: "redacted_thinking" });
     expect(result instanceof type.errors).toBe(true);
@@ -910,8 +899,8 @@ describe("RedactedThinkingBlock and inference.thinking.redacted event", () => {
         redactedThinking: {
           type: "redacted_thinking",
           data: "EncryptedOpaqueBlobAAAA==",
-          index: 1,
         },
+        index: 1,
       },
     });
     expect(result instanceof type.errors).toBe(false);
@@ -1006,6 +995,86 @@ describe("optional index on delta event variants", () => {
       type: "inference.text.delta",
       seq: 1,
       data: { token: "x", partial, index: "two" },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+});
+
+describe("inference.image_output event", () => {
+  test("accepts an event wrapping an ImageBlock with a base64 source", () => {
+    const result = InferenceEvent({
+      type: "inference.image_output",
+      seq: 8,
+      data: {
+        image: {
+          type: "image",
+          source: {
+            kind: "base64",
+            mimeType: "image/png",
+            data: "iVBORw0KGgo=",
+          },
+        },
+      },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts an event with an index field", () => {
+    const result = InferenceEvent({
+      type: "inference.image_output",
+      seq: 8,
+      data: {
+        image: {
+          type: "image",
+          source: {
+            kind: "base64",
+            mimeType: "image/png",
+            data: "iVBORw0KGgo=",
+          },
+        },
+        index: 1,
+      },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts an event wrapping an ImageBlock with a file-reference", () => {
+    const result = InferenceEvent({
+      type: "inference.image_output",
+      seq: 8,
+      data: {
+        image: {
+          type: "image",
+          source: {
+            kind: "file-reference",
+            mimeType: "image/png",
+            reference: "file_generated",
+          },
+        },
+      },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects an event missing the image payload", () => {
+    const result = InferenceEvent({
+      type: "inference.image_output",
+      seq: 8,
+      data: {},
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an event with a malformed image block", () => {
+    const result = InferenceEvent({
+      type: "inference.image_output",
+      seq: 8,
+      data: {
+        image: {
+          type: "image",
+          // Missing `source` field.
+        },
+      },
     });
     expect(result instanceof type.errors).toBe(true);
   });
