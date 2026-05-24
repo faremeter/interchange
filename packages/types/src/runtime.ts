@@ -721,11 +721,98 @@ export const CitationBlock = type({
 });
 export type CitationBlock = typeof CitationBlock.infer;
 
+/**
+ * The model's request to execute code via a server-side execution tool.
+ * Paired with a CodeExecutionResultBlock carrying the same `id` as the
+ * result's `requestId`. Streaming order within a single execution is
+ * `inference.code_execution.start` → zero or more
+ * `inference.code_execution.delta` → `inference.code_execution.result`,
+ * uninterrupted by other events that share the same `requestId`; events
+ * with different `requestId`s or for other block kinds at distinct
+ * `index`es may interleave.
+ *
+ * Exported because `inference.code_execution.start` references it by
+ * name.
+ */
+export const CodeExecutionRequestBlock = type({
+  type: "'code_execution_request'",
+  // Identifier for the execution request. Populated from the
+  // provider's call id where one exists (Anthropic
+  // `srvtoolu_...`); synthesized by the adapter for providers that
+  // don't emit one (Gemini), using a deterministic per-response
+  // position-based scheme so replays match.
+  id: "string",
+  // Source code the model is asking to execute.
+  code: "string",
+  // Language hint. Absent when the provider does not emit one;
+  // adapters MUST NOT default this — callers narrow on its
+  // presence rather than fall through to a guessed language.
+  "language?": "string",
+  // Index in the response's content-block stream. Provider-native
+  // when available (Anthropic content_block index); otherwise
+  // synthesized by the adapter to preserve ordering with other
+  // blocks in the same response.
+  "index?": "number",
+});
+export type CodeExecutionRequestBlock = typeof CodeExecutionRequestBlock.infer;
+
+/**
+ * The result of executing a CodeExecutionRequestBlock. The `requestId`
+ * back-points to the request block's `id`. Status is normalized across
+ * providers; raw provider signals (return code, native outcome string,
+ * abort reason) are preserved on optional fields for callers that need
+ * them.
+ *
+ * File outputs from code execution (e.g. generated plots that
+ * Anthropic returns in `code_execution_tool_result.content`) are NOT
+ * modeled by this block today. The block carries no field for them;
+ * surfacing file outputs is a separate concern.
+ *
+ * Exported because `inference.code_execution.result` references it by
+ * name.
+ */
+export const CodeExecutionResultBlock = type({
+  type: "'code_execution_result'",
+  // Back-pointer to the originating CodeExecutionRequestBlock.id.
+  requestId: "string",
+  // Normalized outcome. Translated from provider-specific signals:
+  //   - Anthropic: derived from `return_code` (0 → "ok", non-zero →
+  //     "error") and `abort_reason` (non-null → "aborted" or
+  //     "timeout" per the reason).
+  //   - Gemini: derived from the `outcome` enum
+  //     (OUTCOME_OK → "ok", OUTCOME_FAILED → "error",
+  //     OUTCOME_DEADLINE_EXCEEDED → "timeout", etc.).
+  status: "'ok' | 'error' | 'aborted' | 'timeout'",
+  // Standard output. Providers that don't split stdout from stderr
+  // (Gemini) map their combined `output` here and leave `stderr` empty.
+  "stdout?": "string",
+  // Standard error. Empty for providers that don't split.
+  "stderr?": "string",
+  // Provider-native numeric return code when available
+  // (Anthropic `return_code`). Absent for providers whose outcome
+  // is enum-only (Gemini).
+  "returnCode?": "number",
+  // Provider-native outcome string preserved verbatim for callers
+  // that need the raw signal (Gemini `OUTCOME_OK` /
+  // `OUTCOME_FAILED` / `OUTCOME_DEADLINE_EXCEEDED` / ...). Absent
+  // when the provider does not emit one (Anthropic).
+  "providerOutcome?": "string",
+  // Human-readable reason populated when status is "aborted"
+  // (Anthropic `abort_reason`). Absent otherwise.
+  "abortReason?": "string",
+  // Index in the response's content-block stream. Same semantics
+  // as CodeExecutionRequestBlock.index.
+  "index?": "number",
+});
+export type CodeExecutionResultBlock = typeof CodeExecutionResultBlock.infer;
+
 const ToolResultBlock = type({
   type: "'tool_result'",
   callId: "string",
   // Deliberately narrow: tool results carry user-facing media, not
-  // CitationBlocks (citations annotate the model's text output).
+  // CitationBlocks (citations annotate the model's text output) and
+  // not CodeExecution blocks (server-side code execution is a
+  // distinct lifecycle from the user-tool round-trip).
   content: TextBlock.or(ImageBlock)
     .or(AudioBlock)
     .or(VideoBlock)
@@ -741,6 +828,8 @@ export const ContentBlock = TextBlock.or(ThinkingBlock)
   .or(VideoBlock)
   .or(DocumentBlock)
   .or(CitationBlock)
+  .or(CodeExecutionRequestBlock)
+  .or(CodeExecutionResultBlock)
   .or(ToolCallBlock)
   .or(ToolResultBlock);
 export type ContentBlock = typeof ContentBlock.infer;
@@ -927,6 +1016,21 @@ export const InferenceEvent = type({
     data: { citation: CitationBlock },
   })
   .or({
+    type: "'inference.code_execution.start'",
+    seq: "number",
+    data: { request: CodeExecutionRequestBlock },
+  })
+  .or({
+    type: "'inference.code_execution.delta'",
+    seq: "number",
+    data: { requestId: "string", codeFragment: "string" },
+  })
+  .or({
+    type: "'inference.code_execution.result'",
+    seq: "number",
+    data: { result: CodeExecutionResultBlock },
+  })
+  .or({
     type: "'tool.start'",
     seq: "number",
     data: { call: ToolCall },
@@ -1076,6 +1180,21 @@ export type InferenceEvent =
       type: "inference.citation";
       seq: number;
       data: { citation: CitationBlock };
+    }
+  | {
+      type: "inference.code_execution.start";
+      seq: number;
+      data: { request: CodeExecutionRequestBlock };
+    }
+  | {
+      type: "inference.code_execution.delta";
+      seq: number;
+      data: { requestId: string; codeFragment: string };
+    }
+  | {
+      type: "inference.code_execution.result";
+      seq: number;
+      data: { result: CodeExecutionResultBlock };
     }
   | { type: "tool.start"; seq: number; data: { call: ToolCall } }
   | {

@@ -418,6 +418,35 @@ describe("Anthropic adapter: buildRequest", () => {
     },
   );
 
+  test.each(["code_execution_request", "code_execution_result"] as const)(
+    "rejects a %s content block in a request",
+    (blockType) => {
+      const block =
+        blockType === "code_execution_request"
+          ? {
+              type: blockType,
+              id: "srvtoolu_01",
+              code: "print('hi')",
+            }
+          : {
+              type: blockType,
+              requestId: "srvtoolu_01",
+              status: "ok" as const,
+            };
+      const messages: ConversationTurn[] = [
+        {
+          role: "assistant",
+          content: [block],
+          timestamp: 1000,
+        },
+      ];
+
+      expect(() =>
+        adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {}),
+      ).toThrow(new RegExp(`${blockType} content blocks`));
+    },
+  );
+
   test("rejects a citation content block in a request", () => {
     const messages: ConversationTurn[] = [
       {

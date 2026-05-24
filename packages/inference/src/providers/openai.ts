@@ -104,6 +104,20 @@ function toOpenAIMessage(msg: ConversationTurn): unknown[] {
   }
 
   if (msg.role === "assistant") {
+    // Detect block types that cannot survive the OpenAI assistant
+    // message shape and surface the failure rather than silently
+    // dropping them. Code execution blocks are first-class semantic
+    // content; their loss would corrupt cross-provider conversations.
+    for (const block of msg.content) {
+      if (
+        block.type === "code_execution_request" ||
+        block.type === "code_execution_result"
+      ) {
+        throw new Error(
+          `OpenAI adapter does not handle ${block.type} content blocks.`,
+        );
+      }
+    }
     const textBlocks = msg.content.filter(
       (b): b is { type: "text"; text: string } => b.type === "text",
     );
@@ -190,6 +204,14 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
       // directly. See INFERENCE.md § Cross-Provider Message
       // Transformation for the general policy on history-drop fields.
       return "";
+    case "code_execution_request":
+    case "code_execution_result":
+      // Code execution blocks are first-class semantic content; silently
+      // dropping them would lose the model's tool invocation entirely.
+      // OpenAI has no first-class code execution surface today.
+      throw new Error(
+        `OpenAI adapter does not handle ${block.type} content blocks.`,
+      );
     case "thinking":
       // Thinking blocks are not forwarded to OpenAI endpoints.
       return "";
