@@ -9,6 +9,7 @@ import type {
   TokenUsage,
 } from "@intx/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
+import { BEARER_CREDENTIAL_SENTINEL } from "../auth";
 import { ProtocolMismatchError } from "../errors";
 
 // ---------------------------------------------------------------------------
@@ -57,7 +58,7 @@ function buildRequest(
     url: "/chat/completions",
     headers: {
       "content-type": "application/json",
-      authorization: "", // Filled by the harness: "Bearer <apiKey>"
+      authorization: BEARER_CREDENTIAL_SENTINEL,
     },
     body: JSON.stringify(body),
   };
