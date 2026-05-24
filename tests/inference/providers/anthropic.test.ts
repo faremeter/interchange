@@ -19,7 +19,23 @@ const AnthropicContentBlock = type({
   "id?": "string",
   "name?": "string",
   "data?": "string",
+  // `source` is a nested object whose shape depends on the block
+  // variant (base64 vs file). Validated separately via
+  // AnthropicMediaSourceBase64 / AnthropicMediaSourceFile at each
+  // test site rather than baking the union here.
+  "source?": "unknown",
   "cache_control?": { type: "string" },
+});
+
+const AnthropicMediaSourceBase64 = type({
+  type: "'base64'",
+  media_type: "string",
+  data: "string",
+});
+
+const AnthropicMediaSourceFile = type({
+  type: "'file'",
+  file_id: "string",
 });
 
 const AnthropicMessage = type({
@@ -338,7 +354,10 @@ describe("Anthropic adapter: buildRequest", () => {
     expect(body.max_tokens).toBe(512);
   });
 
-  test("rejects a file-reference image source until Files API wiring lands", () => {
+  test("emits a file-reference image as { type: file, file_id }", () => {
+    // Anthropic identifies uploaded files by id alone; the
+    // content-type is encoded server-side at upload time. The
+    // MediaSource's `mimeType` is intentionally not propagated.
     const messages: ConversationTurn[] = [
       {
         role: "user",
@@ -356,12 +375,91 @@ describe("Anthropic adapter: buildRequest", () => {
       },
     ];
 
-    expect(() =>
-      adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {}),
-    ).toThrow(/file-reference image sources\./);
+    const req = adapter.buildRequest(
+      messages,
+      "claude-3-5-sonnet-20241022",
+      {},
+    );
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    const block = body.messages[0]?.content[0];
+    if (block?.type !== "image") {
+      throw new Error("expected image block in the request");
+    }
+    const source = AnthropicMediaSourceFile.assert(block.source);
+    expect(source.type).toBe("file");
+    expect(source.file_id).toBe("file_abc123");
   });
 
-  test.each(["audio", "video", "document"] as const)(
+  test("emits a base64 document as { type: document, source: { type: base64, media_type, data } }", () => {
+    // PDF input — Anthropic's documented multimodal-pdf shape carries
+    // `media_type: "application/pdf"` and base64 payload.
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: {
+              kind: "base64",
+              mimeType: "application/pdf",
+              data: "JVBERi0xLjQK", // truncated PDF magic
+            },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    const req = adapter.buildRequest(
+      messages,
+      "claude-3-5-sonnet-20241022",
+      {},
+    );
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    const block = body.messages[0]?.content[0];
+    if (block?.type !== "document") {
+      throw new Error("expected document block in the request");
+    }
+    const source = AnthropicMediaSourceBase64.assert(block.source);
+    expect(source.type).toBe("base64");
+    expect(source.media_type).toBe("application/pdf");
+    expect(source.data).toBe("JVBERi0xLjQK");
+  });
+
+  test("emits a file-reference document as { type: file, file_id }", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: {
+              kind: "file-reference",
+              mimeType: "application/pdf",
+              reference: "file_doc_456",
+            },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    const req = adapter.buildRequest(
+      messages,
+      "claude-3-5-sonnet-20241022",
+      {},
+    );
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    const block = body.messages[0]?.content[0];
+    if (block?.type !== "document") {
+      throw new Error("expected document block in the request");
+    }
+    const source = AnthropicMediaSourceFile.assert(block.source);
+    expect(source.type).toBe("file");
+    expect(source.file_id).toBe("file_doc_456");
+  });
+
+  test.each(["audio", "video"] as const)(
     "rejects a %s content block until provider support is wired",
     (blockType) => {
       const messages: ConversationTurn[] = [
@@ -413,9 +511,16 @@ describe("Anthropic adapter: buildRequest", () => {
         },
       ];
 
+      // Anthropic's tool_result.content accepts only text and image
+      // blocks; document/audio/video are surfaced at the marshaling
+      // site rather than as an opaque HTTP error from Anthropic.
       expect(() =>
         adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {}),
-      ).toThrow(new RegExp(`${blockType} content blocks in tool results`));
+      ).toThrow(
+        new RegExp(
+          `does not handle ${blockType} content blocks inside tool_result`,
+        ),
+      );
     },
   );
 
@@ -515,7 +620,7 @@ describe("Anthropic adapter: buildRequest", () => {
     ).toThrow(/citation content blocks/);
   });
 
-  test("rejects a file-reference image inside a tool_result", () => {
+  test("emits a file-reference image inside a tool_result", () => {
     const messages: ConversationTurn[] = [
       {
         role: "user",
@@ -539,11 +644,50 @@ describe("Anthropic adapter: buildRequest", () => {
       },
     ];
 
-    expect(() =>
-      adapter.buildRequest(messages, "claude-3-5-sonnet-20241022", {}),
-    ).toThrow(/file-reference image sources in tool results/);
+    const req = adapter.buildRequest(
+      messages,
+      "claude-3-5-sonnet-20241022",
+      {},
+    );
+    // The arktype AnthropicRequestBody schema doesn't carry the
+    // tool_result.content[].source shape (it's deeply nested and
+    // variant-specific). Walk into the body with type-guard helpers
+    // so each step surfaces violations explicitly rather than via
+    // `as` casts.
+    const parsed: unknown = JSON.parse(req.body);
+    if (!isRecord(parsed)) throw new Error("expected body to be a JSON object");
+    const msgs = parsed["messages"];
+    if (!Array.isArray(msgs) || msgs.length === 0) {
+      throw new Error("expected messages array");
+    }
+    const firstMsg = msgs[0];
+    if (!isRecord(firstMsg)) throw new Error("expected first message");
+    const content = firstMsg["content"];
+    if (!Array.isArray(content) || content.length === 0) {
+      throw new Error("expected content array");
+    }
+    const tr = content[0];
+    if (!isRecord(tr) || tr["type"] !== "tool_result") {
+      throw new Error("expected tool_result content[0]");
+    }
+    const trContent = tr["content"];
+    if (!Array.isArray(trContent) || trContent.length === 0) {
+      throw new Error("expected tool_result.content to be a non-empty array");
+    }
+    const inner = trContent[0];
+    if (!isRecord(inner)) {
+      throw new Error("expected tool_result.content[0] to be a JSON object");
+    }
+    expect(inner["type"]).toBe("image");
+    const source = AnthropicMediaSourceFile.assert(inner["source"]);
+    expect(source.type).toBe("file");
+    expect(source.file_id).toBe("file_abc123");
   });
 });
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 describe("Anthropic adapter: parseResponse", () => {
   test("throws ProtocolMismatchError on malformed JSON in SSE payload", () => {
