@@ -31,6 +31,15 @@ This inverts the typical approach where each provider implements the full stream
 
 Providers register as adapter pairs (request builder + response parser). Registration is a map keyed by provider identifier. Custom providers register the same way built-in providers do. No lazy loading ceremony, no class hierarchy.
 
+### Credential Injection
+
+Adapters never see the API key. The harness performs credential substitution between the adapter's `buildRequest` and `fetch`, scanning every header value for sentinel placeholders and replacing exact matches with material derived from `InferenceSource.apiKey`. Two sentinels are defined:
+
+- `CREDENTIAL_SENTINEL` — replaced with the API key verbatim. Use for headers like `x-api-key` (Anthropic) and `x-goog-api-key` (Google).
+- `BEARER_CREDENTIAL_SENTINEL` — replaced with `Bearer <apiKey>`. Use for `authorization` headers in providers that follow the Bearer convention (OpenAI and OpenAI-compatible).
+
+A new provider declares its credential header by placing the appropriate sentinel as the header value in its `buildRequest`; no harness change is required. Both sentinels are exported from `@intx/inference` so third-party adapters registered via `registerProvider` can use them directly. Match is exact: substring occurrences are not replaced.
+
 ### Capability Detection
 
 Not all OpenAI-compatible endpoints support the same features. "Speaks the OpenAI protocol" is not a single capability — it's a family of overlapping feature sets.

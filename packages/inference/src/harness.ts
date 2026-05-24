@@ -29,6 +29,7 @@ import type {
 
 import { parseSSE } from "./sse";
 import { lookupProvider } from "./providers/registry";
+import { injectCredentials } from "./auth";
 import {
   classifyHTTPError,
   classifyNetworkError,
@@ -1044,23 +1045,6 @@ function resolveURL(path: string, baseURL: string): string {
   }
   const base = baseURL.endsWith("/") ? baseURL.slice(0, -1) : baseURL;
   return base + path;
-}
-
-function injectCredentials(
-  headers: Record<string, string>,
-  source: InferenceSource,
-): Record<string, string> {
-  const result = { ...headers };
-
-  if ("x-api-key" in result) {
-    result["x-api-key"] = source.apiKey;
-  }
-
-  if ("authorization" in result) {
-    result["authorization"] = `Bearer ${source.apiKey}`;
-  }
-
-  return result;
 }
 
 const ParsedToolArgs = type("Record<string, unknown>");
