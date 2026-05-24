@@ -360,3 +360,305 @@ describe("Anthropic adapter — redacted_thinking parser-to-builder round-trip",
     expect(bodyText).toContain(`"type":"redacted_thinking"`);
   });
 });
+
+function pickFirstCitation(
+  events: InferenceEvent[],
+): Extract<InferenceEvent, { type: "inference.citation" }> {
+  const ev = events[0];
+  if (ev === undefined) throw new Error("expected at least one event");
+  if (ev.type !== "inference.citation") {
+    throw new Error(`expected inference.citation, got ${ev.type}`);
+  }
+  return ev;
+}
+
+describe("Anthropic parser — citations_delta to inference.citation", () => {
+  test("web_search_result_location maps to source.uri + title with no location", () => {
+    // Anthropic's web_search citations carry url + title + cited_text +
+    // encrypted_index. The encrypted_index has no echo-back target in
+    // CitationBlock today and is intentionally dropped at the adapter.
+    const adapter = createAnthropicAdapter();
+    const events = parse(adapter, {
+      type: "content_block_delta",
+      index: 3,
+      delta: {
+        type: "citations_delta",
+        citation: {
+          type: "web_search_result_location",
+          cited_text: "Quoted span from the web search result.",
+          url: "https://example.com/article",
+          title: "Example Article Title",
+          encrypted_index: "EncryptedIndexAAAA==",
+        },
+      },
+    });
+    const ev = pickFirstCitation(events);
+    expect(ev.data.citation.type).toBe("citation");
+    expect(ev.data.citation.citedText).toBe(
+      "Quoted span from the web search result.",
+    );
+    expect(ev.data.citation.source.uri).toBe("https://example.com/article");
+    expect(ev.data.citation.source.title).toBe("Example Article Title");
+    expect(ev.data.citation.location).toBeUndefined();
+    // textOffset is intentionally never populated at this layer.
+    expect(ev.data.citation.textOffset).toBeUndefined();
+  });
+
+  test("page_location maps to location.kind=page with start/end page numbers", () => {
+    const adapter = createAnthropicAdapter();
+    const events = parse(adapter, {
+      type: "content_block_delta",
+      index: 0,
+      delta: {
+        type: "citations_delta",
+        citation: {
+          type: "page_location",
+          cited_text: "Excerpt from page 4.",
+          document_index: 0,
+          document_title: "Quarterly Report",
+          start_page_number: 4,
+          end_page_number: 5,
+        },
+      },
+    });
+    const ev = pickFirstCitation(events);
+    expect(ev.data.citation.citedText).toBe("Excerpt from page 4.");
+    expect(ev.data.citation.source.title).toBe("Quarterly Report");
+    expect(ev.data.citation.source.documentRef).toEqual({ index: 0 });
+    expect(ev.data.citation.location).toEqual({
+      kind: "page",
+      start: 4,
+      end: 5,
+    });
+  });
+
+  test("char_location maps to location.kind=char with character offsets", () => {
+    const adapter = createAnthropicAdapter();
+    const events = parse(adapter, {
+      type: "content_block_delta",
+      index: 1,
+      delta: {
+        type: "citations_delta",
+        citation: {
+          type: "char_location",
+          cited_text: "Inline quote.",
+          document_index: 2,
+          document_title: "Spec",
+          start_char_index: 1024,
+          end_char_index: 1037,
+        },
+      },
+    });
+    const ev = pickFirstCitation(events);
+    expect(ev.data.citation.source.documentRef).toEqual({ index: 2 });
+    expect(ev.data.citation.location).toEqual({
+      kind: "char",
+      start: 1024,
+      end: 1037,
+    });
+  });
+
+  test("content_block_location maps to location.kind=content-block", () => {
+    const adapter = createAnthropicAdapter();
+    const events = parse(adapter, {
+      type: "content_block_delta",
+      index: 0,
+      delta: {
+        type: "citations_delta",
+        citation: {
+          type: "content_block_location",
+          cited_text: "Block-indexed quote.",
+          document_index: 1,
+          document_title: "Structured doc",
+          start_block_index: 7,
+          end_block_index: 8,
+        },
+      },
+    });
+    const ev = pickFirstCitation(events);
+    expect(ev.data.citation.source.documentRef).toEqual({ index: 1 });
+    expect(ev.data.citation.location).toEqual({
+      kind: "content-block",
+      start: 7,
+      end: 8,
+    });
+  });
+
+  test("unrecognized citation variant throws ProtocolMismatchError naming the variant", () => {
+    const adapter = createAnthropicAdapter();
+    let thrown: unknown;
+    try {
+      parse(adapter, {
+        type: "content_block_delta",
+        index: 0,
+        delta: {
+          type: "citations_delta",
+          citation: {
+            type: "future_unknown_location",
+            cited_text: "x",
+          },
+        },
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(ProtocolMismatchError);
+    if (thrown instanceof ProtocolMismatchError) {
+      expect(thrown.message).toMatch(/unrecognized citation variant/);
+      expect(thrown.message).toMatch(/future_unknown_location/);
+    }
+  });
+
+  test("citations_delta missing citation payload throws ProtocolMismatchError", () => {
+    const adapter = createAnthropicAdapter();
+    let thrown: unknown;
+    try {
+      parse(adapter, {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "citations_delta" },
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(ProtocolMismatchError);
+    if (thrown instanceof ProtocolMismatchError) {
+      expect(thrown.message).toMatch(/missing citation payload/);
+    }
+  });
+
+  test("citation missing cited_text throws ProtocolMismatchError", () => {
+    // CitationBlock.citedText is required ("Both providers emit it;
+    // required for inspection and for fallback offset reconstruction"
+    // — runtime.ts). Surfacing a missing wire field as a thrown error
+    // is the load-bearing alternative to coalescing to an empty
+    // string and silently emitting a content-free citation.
+    const adapter = createAnthropicAdapter();
+    let thrown: unknown;
+    try {
+      parse(adapter, {
+        type: "content_block_delta",
+        index: 0,
+        delta: {
+          type: "citations_delta",
+          citation: {
+            type: "web_search_result_location",
+            url: "https://example.com/",
+            title: "Title",
+          },
+        },
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(ProtocolMismatchError);
+    if (thrown instanceof ProtocolMismatchError) {
+      expect(thrown.message).toMatch(/cited_text/);
+      expect(thrown.message).toMatch(/block 0/);
+    }
+  });
+
+  test("citations interleave with text deltas preserving arrival order", () => {
+    // Anthropic streams citations attached to the most recent text
+    // run as `citations_delta` events interleaved with subsequent
+    // `text_delta`s. Downstream consumers building citation-aware UI
+    // re-attach each citation to the text region preceding it, so
+    // the parser-emitted event stream must preserve the wire order
+    // exactly. Feed a mixed sequence and assert the emitted events
+    // come out in the same order they went in.
+    const adapter = createAnthropicAdapter();
+    const events: InferenceEvent[] = [];
+    events.push(
+      ...parse(adapter, {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "First claim. " },
+      }),
+    );
+    events.push(
+      ...parse(adapter, {
+        type: "content_block_delta",
+        index: 0,
+        delta: {
+          type: "citations_delta",
+          citation: {
+            type: "web_search_result_location",
+            cited_text: "supporting quote one",
+            url: "https://example.com/one",
+            title: "Source One",
+          },
+        },
+      }),
+    );
+    events.push(
+      ...parse(adapter, {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "Second claim. " },
+      }),
+    );
+    events.push(
+      ...parse(adapter, {
+        type: "content_block_delta",
+        index: 0,
+        delta: {
+          type: "citations_delta",
+          citation: {
+            type: "web_search_result_location",
+            cited_text: "supporting quote two",
+            url: "https://example.com/two",
+            title: "Source Two",
+          },
+        },
+      }),
+    );
+
+    const types = events.map((e) => e.type);
+    expect(types).toEqual([
+      "inference.text.delta",
+      "inference.citation",
+      "inference.text.delta",
+      "inference.citation",
+    ]);
+    // Verify each citation's citedText so the alternation isn't just
+    // type-correct but content-accurate.
+    const citations = events.filter((e) => e.type === "inference.citation");
+    expect(citations).toHaveLength(2);
+    const first = citations[0];
+    const second = citations[1];
+    if (
+      first?.type !== "inference.citation" ||
+      second?.type !== "inference.citation"
+    ) {
+      throw new Error("expected two citation events");
+    }
+    expect(first.data.citation.citedText).toBe("supporting quote one");
+    expect(second.data.citation.citedText).toBe("supporting quote two");
+  });
+
+  test("page_location missing start_page_number throws ProtocolMismatchError", () => {
+    const adapter = createAnthropicAdapter();
+    let thrown: unknown;
+    try {
+      parse(adapter, {
+        type: "content_block_delta",
+        index: 0,
+        delta: {
+          type: "citations_delta",
+          citation: {
+            type: "page_location",
+            cited_text: "Quote",
+            document_index: 0,
+            end_page_number: 5,
+          },
+        },
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(ProtocolMismatchError);
+    if (thrown instanceof ProtocolMismatchError) {
+      expect(thrown.message).toMatch(/start_page_number/);
+    }
+  });
+});

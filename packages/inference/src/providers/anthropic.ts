@@ -9,6 +9,7 @@ import type {
   PartialMessage,
   TokenUsage,
 } from "@intx/types/runtime";
+import { CitationBlock as CitationBlockType } from "@intx/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { ProtocolMismatchError } from "../errors";
 
@@ -136,6 +137,107 @@ function toAnthropicMediaSource(source: MediaSource): Record<string, unknown> {
   // here fails this compile-time check.
   source satisfies never;
   throw new Error(`unreachable: unknown MediaSource kind`);
+}
+
+// Map an Anthropic-streamed citation onto the internal CitationBlock.
+// `textOffset` is intentionally not populated for any variant:
+// Anthropic's offsets are document-relative (page numbers, doc char
+// offsets, doc block indices) rather than text-relative — they don't
+// correspond to UTF-16 positions in the preceding TextBlock that
+// `CitationBlock.textOffset` describes. Computing text-relative
+// offsets from `cited_text` substring search produces wrong answers
+// whenever `cited_text` is paraphrased, appears multiple times, or
+// spans wire-chunk boundaries; better to leave the field unset than
+// guess.
+//
+// `encrypted_index` (web_search_result_location) has no echo-back
+// target in CitationBlock today and is intentionally dropped at this
+// layer. When echo-back of citation context lands, this is the layer
+// to preserve it from.
+function toCitationBlock(
+  wire: typeof AnthropicCitation.infer,
+  index: number,
+): typeof CitationBlockType.infer {
+  if (wire.cited_text === undefined) {
+    throw new ProtocolMismatchError(
+      `anthropic parseResponse: citation at block ${index} missing required \`cited_text\``,
+      wire,
+    );
+  }
+  const citedText = wire.cited_text;
+  const source: {
+    title?: string;
+    uri?: string;
+    documentRef?: { index: number };
+  } = {};
+  if (wire.title !== undefined) source.title = wire.title;
+  if (wire.url !== undefined) source.uri = wire.url;
+  if (wire.document_title !== undefined && source.title === undefined) {
+    source.title = wire.document_title;
+  }
+  if (wire.document_index !== undefined) {
+    source.documentRef = { index: wire.document_index };
+  }
+
+  switch (wire.type) {
+    case "web_search_result_location":
+      return { type: "citation", citedText, source };
+    case "page_location": {
+      // Anthropic page numbers are 1-indexed and inclusive on both
+      // ends per the documented PDF citation shape.
+      const start = wire.start_page_number;
+      const end = wire.end_page_number;
+      if (start === undefined || end === undefined) {
+        throw new ProtocolMismatchError(
+          `anthropic parseResponse: page_location citation at block ${index} missing start_page_number or end_page_number`,
+          wire,
+        );
+      }
+      return {
+        type: "citation",
+        citedText,
+        source,
+        location: { kind: "page", start, end },
+      };
+    }
+    case "char_location": {
+      const start = wire.start_char_index;
+      const end = wire.end_char_index;
+      if (start === undefined || end === undefined) {
+        throw new ProtocolMismatchError(
+          `anthropic parseResponse: char_location citation at block ${index} missing start_char_index or end_char_index`,
+          wire,
+        );
+      }
+      return {
+        type: "citation",
+        citedText,
+        source,
+        location: { kind: "char", start, end },
+      };
+    }
+    case "content_block_location": {
+      const start = wire.start_block_index;
+      const end = wire.end_block_index;
+      if (start === undefined || end === undefined) {
+        throw new ProtocolMismatchError(
+          `anthropic parseResponse: content_block_location citation at block ${index} missing start_block_index or end_block_index`,
+          wire,
+        );
+      }
+      return {
+        type: "citation",
+        citedText,
+        source,
+        location: { kind: "content-block", start, end },
+      };
+    }
+    default:
+      throw new ProtocolMismatchError(
+        `anthropic parseResponse: unrecognized citation variant "${wire.type}" at block ${index}`,
+        wire,
+      );
+  }
 }
 
 function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
@@ -272,6 +374,33 @@ export type AnthropicRawEvent =
 // `index` surfaces as a ProtocolMismatchError via the schema-validation
 // throw site, with the offending payload preserved in `error.raw` for
 // inspection.
+// Anthropic's wire shape for a single citation, streamed inside a
+// `citations_delta`. The `type` discriminator selects the location
+// model:
+//   - web_search_result_location: URL + title, no document offsets
+//   - page_location: 1-indexed page numbers (inclusive start/end)
+//   - char_location: 0-indexed character offsets into the document
+//   - content_block_location: index into the document's content blocks
+// Fields not relevant to a given variant are absent; the union is
+// flat at the wire level. `encrypted_index` (web_search) is recorded
+// only on the wire — it has no echo-back target in the internal
+// CitationBlock today, so the adapter drops it.
+const AnthropicCitation = type({
+  type: "string",
+  "cited_text?": "string",
+  "url?": "string",
+  "title?": "string",
+  "encrypted_index?": "string",
+  "document_index?": "number",
+  "document_title?": "string",
+  "start_page_number?": "number",
+  "end_page_number?": "number",
+  "start_char_index?": "number",
+  "end_char_index?": "number",
+  "start_block_index?": "number",
+  "end_block_index?": "number",
+});
+
 const ContentBlockDelta = type({
   type: "'content_block_delta'",
   index: "number",
@@ -281,6 +410,7 @@ const ContentBlockDelta = type({
     "thinking?": "string",
     "partial_json?": "string",
     "signature?": "string",
+    "citation?": AnthropicCitation,
   },
 });
 
@@ -434,6 +564,24 @@ function parseResponse(
               partial: EMPTY_PARTIAL,
               index,
             },
+          },
+        ];
+      }
+
+      if (delta.type === "citations_delta") {
+        const wireCitation = delta.citation;
+        if (wireCitation === undefined) {
+          throw new ProtocolMismatchError(
+            `anthropic parseResponse: citations_delta missing citation payload at block ${index}`,
+            event,
+          );
+        }
+        const citation = toCitationBlock(wireCitation, index);
+        return [
+          {
+            type: "inference.citation",
+            seq,
+            data: { citation },
           },
         ];
       }
