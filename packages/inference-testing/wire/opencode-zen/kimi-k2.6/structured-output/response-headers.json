@@ -1,0 +1,10 @@
+{
+  "cf-placement": "remote-ORD",
+  "cf-ray": "a017e578bd631bb9-OMA",
+  "connection": "keep-alive",
+  "content-encoding": "br",
+  "content-type": "application/json",
+  "date": "Mon, 25 May 2026 22:15:02 GMT",
+  "server": "cloudflare",
+  "transfer-encoding": "chunked"
+}

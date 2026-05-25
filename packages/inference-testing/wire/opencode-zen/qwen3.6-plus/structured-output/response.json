@@ -1,0 +1,30 @@
+{
+  "choices": [
+    {
+      "message": {
+        "content": "{\"name\": \"Alice\", \"age\": 30, \"email\": \"alice@example.com\"}",
+        "reasoning_content": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Input sentence:** \"Alice is 30 years old and her email is alice@example.com.\"\n   - **Task:** Extract structured fields from the sentence.\n   - **Output format:** JSON object only, no markdown fences, no prose.\n\n2.  **Identify Entities/Fields in the Sentence:**\n   - Name: Alice\n   - Age: 30\n   - Email: alice@example.com\n\n3.  **Determine JSON Structure:**\n   Need to map these to logical keys. Common choices: `name`, `age`, `email`.\n   Values should be appropriately typed: string for name/email, integer for age.\n   ```json\n   {\n     \"name\": \"Alice\",\n     \"age\": 30,\n     \"email\": \"alice@example.com\"\n   }\n   ```\n\n4.  **Apply Constraints:**\n   - \"Reply with only the JSON object — no markdown fences, no prose.\"\n   - This means I must output exactly the raw JSON string, starting with `{` and ending with `}`, with no extra characters, backticks, or explanations.\n\n5.  **Draft Output:**\n   {\"name\": \"Alice\", \"age\": 30, \"email\": \"alice@example.com\"}\n\n6.  **Self-Correction/Verification:**\n   - Does it extract structured fields? Yes.\n   - Is it valid JSON? Yes.\n   - Does it follow the strict formatting rule? Yes, no markdown, no extra text.\n   - Age is correctly typed as a number (not a string), which is best practice.\n   - All constraints met.\n\n   Proceed.✅",
+        "role": "assistant"
+      },
+      "finish_reason": "stop",
+      "index": 0,
+      "logprobs": null
+    }
+  ],
+  "object": "chat.completion",
+  "usage": {
+    "prompt_tokens": 48,
+    "completion_tokens": 396,
+    "total_tokens": 444,
+    "completion_tokens_details": {
+      "reasoning_tokens": 371,
+      "text_tokens": 396
+    },
+    "prompt_tokens_details": { "text_tokens": 48 }
+  },
+  "created": 1779747328,
+  "system_fingerprint": null,
+  "model": "qwen3.6-plus",
+  "id": "chatcmpl-7ce294e7-8cc1-43d6-9a87-55f8deb669f9",
+  "cost": "0.00121200"
+}
