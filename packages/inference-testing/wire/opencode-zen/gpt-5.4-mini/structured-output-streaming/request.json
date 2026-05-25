@@ -1,0 +1,33 @@
+{
+  "model": "gpt-5.4-mini",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Extract structured fields from this sentence: Alice is 30 years old and her email is alice@example.com."
+    }
+  ],
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "user_info",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "age": {
+            "type": "integer"
+          },
+          "email": {
+            "type": "string"
+          }
+        },
+        "required": ["name", "age", "email"],
+        "additionalProperties": false
+      },
+      "strict": true
+    }
+  },
+  "stream": true
+}
