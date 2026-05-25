@@ -2,8 +2,8 @@
 // for every captured exchange, register tool handlers that serve
 // captured dispatch results verbatim, and drive production
 // `runInference` through it. Replay surfaces orchestration-layer
-// regressions that the single-exchange compat-replay layer (INTR-79)
-// cannot see — multi-turn body construction, conversation history
+// regressions that the single-exchange compat-replay layer cannot
+// see — multi-turn body construction, conversation history
 // threading, dispatch wiring, terminal sequencing across turns.
 //
 // Captured tool results are baked in: real tool handlers are NOT
@@ -635,7 +635,37 @@ export async function createReplayHarness(
     }
     if (collectResult.status === "rejected") {
       poisoned = true;
-      throw collectResult.reason;
+      // Detect the "no onTool handler registered for tool X" error
+      // the inner harness throws when production runInference emits
+      // a tool_call.end for a tool name the capture has no dispatches
+      // for. The error originates inside @intx/inference-testing's
+      // own harness.ts and the message is stable within this package;
+      // translate it to a SessionReplayMismatchError so the caller
+      // sees a discriminated mismatch instead of a generic
+      // "Harness.runInference" failure.
+      const reason = collectResult.reason;
+      if (reason instanceof Error) {
+        const match = /tool "([^"]+)" but no handler was registered/.exec(
+          reason.message,
+        );
+        if (match !== null) {
+          const toolName = match[1] ?? "<unknown>";
+          throw new SessionReplayMismatchError({
+            kind: "dispatches_over_consumed",
+            toolName,
+            captured: [],
+            actual: null,
+            diff:
+              `Production runInference emitted a tool_call.end for tool ` +
+              `"${toolName}" during exchange ${String(exchangeIndex)}, but the ` +
+              `captured session has no dispatches recorded for that tool. ` +
+              `Either the production reactor's wire output diverged from ` +
+              `the recording (more likely), or the capture is incomplete.`,
+            sessionDir,
+          });
+        }
+      }
+      throw reason;
     }
 
     // Sanity: exactly one new matched request should have landed on

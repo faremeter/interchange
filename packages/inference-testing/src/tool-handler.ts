@@ -35,23 +35,19 @@ export type ToolHandlerReturn<R> =
 export type ToolHandler = (args: unknown) => ToolHandlerReturn<unknown>;
 
 /**
- * Internal: detect whether a returned (or resolved) value is the
- * `{ result, virtualDelayMs }` envelope rather than a bare result. We accept
- * the envelope only when both fields are present and `virtualDelayMs` is a
- * finite non-negative number; any other object shape falls through to the
- * "treat as sync result" branch, including objects that happen to have a
- * `result` key for other reasons.
- */
-/**
  * Returns true iff `value` would be unwrapped by `ToolHandlerRegistry`
- * as a delayed envelope. Exported so session capture and replay can
- * reject results that collide with this shape — recording would
- * mis-classify them as test-harness constructs, and replay would
- * unwrap them and serve the inner `result` to the reactor.
+ * as a delayed envelope. The envelope is accepted only when both
+ * `result` and `virtualDelayMs` are present and `virtualDelayMs` is a
+ * finite non-negative number; any other object shape falls through
+ * to the "treat as sync result" branch, including objects that
+ * happen to have a `result` key for other reasons.
  *
- * Both this package's recording and replay paths reject envelope-
- * shaped results before they reach the registry; the symmetry is
- * load-bearing.
+ * Exported so session capture and replay can reject results that
+ * collide with this shape: recording would mis-classify them as
+ * test-harness constructs, and replay would unwrap them and serve
+ * the inner `result` to the reactor. Both this package's recording
+ * and replay paths reject envelope-shaped results before they reach
+ * the registry; the symmetry is load-bearing.
  */
 export function isDelayedEnvelope(
   value: unknown,

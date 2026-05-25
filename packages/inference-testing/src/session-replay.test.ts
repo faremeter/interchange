@@ -243,13 +243,11 @@ describe("createReplayHarness", () => {
       }
       expect(toolCall.name).toBe("weather");
 
-      // Turn 2: thread the captured dispatch result back as a
-      // tool_result block. This mirrors what the real reactor does
-      // — the dispatch result was served from the replay harness's
-      // onTool handler, so the test can read it from the captured
-      // dispatches.
-      const dispatch = replay.capturedDispatches[0];
-      if (dispatch === undefined) throw new Error("expected one dispatch");
+      // Turn 2: thread the tool_result block back into the user
+      // turn. The recording-time helper threaded a hardcoded
+      // "68F, fog" string (not `JSON.stringify(dispatch.result)`)
+      // so the replay must mirror that exact string to make the
+      // body-aware matcher fire.
       const turn2Events = await replay.runTurn({
         turns: [
           userTurn("weather in SF?"),
@@ -260,9 +258,6 @@ describe("createReplayHarness", () => {
               {
                 type: "tool_result",
                 callId: toolCall.id,
-                // Mirror the recording-time tool_result content (the
-                // recording test threaded a hardcoded string, not the
-                // dispatch result object, into the next-turn body).
                 content: [{ type: "text", text: "68F, fog" }],
               },
             ],
@@ -283,7 +278,6 @@ describe("createReplayHarness", () => {
       expect(finalText.text).toBe("It is 68F and foggy in SF.");
 
       replay.assertFullyConsumed();
-      void dispatch;
     } finally {
       replay.dispose();
     }
