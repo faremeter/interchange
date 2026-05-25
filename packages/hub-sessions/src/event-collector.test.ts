@@ -162,6 +162,38 @@ describe("EventCollector", () => {
     expect(at(parts, 4).values.type).toBe("step-finish");
   });
 
+  test("refusal content blocks insert a refusal part carrying the reason", async () => {
+    // RefusalBlock landed in the ContentBlock union as part of the
+    // structured-outputs work; the collector's switch must handle
+    // it explicitly or the refusal text silently disappears from
+    // session persistence. Pin a dedicated `refusal` part kind so
+    // session readers can distinguish a policy decline from
+    // ordinary assistant text or an HTTP error.
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    await collector.onEvent(
+      event("inference.done", 5, {
+        turn: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Let me see..." },
+            { type: "refusal", reason: "I cannot help with that." },
+          ],
+          model: "gpt-4",
+          timestamp: 1234,
+        },
+        usage: { input: 10, output: 20 },
+      }),
+    );
+
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
+    // step-start + text + refusal + step-finish = 4 parts
+    expect(parts).toHaveLength(4);
+    expect(at(parts, 1).values.type).toBe("text");
+    expect(at(parts, 1).values.content).toBe("Let me see...");
+    expect(at(parts, 2).values.type).toBe("refusal");
+    expect(at(parts, 2).values.content).toBe("I cannot help with that.");
+  });
+
   test("media content blocks insert a file part keyed by source kind", async () => {
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(

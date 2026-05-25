@@ -243,6 +243,17 @@ export function createEventCollector(
           // truncation or display. Skip and let the adapter layer
           // own the round-trip.
           break;
+        case "refusal":
+          // Refusal blocks carry human-readable text the model
+          // emitted when it declined a structured-output request.
+          // A dedicated `refusal` part kind keeps the signal
+          // distinct from ordinary `text` (the model produced
+          // schema-conformant content) and from `error` (the HTTP
+          // call failed or the protocol mismatched). Session
+          // readers can branch on the part type to render policy
+          // declines differently from regular assistant output.
+          await insertPart("refusal", block.reason, null);
+          break;
         case "tool_call":
           callNames.set(block.id, block.name);
           callArgs.set(block.id, block.arguments);

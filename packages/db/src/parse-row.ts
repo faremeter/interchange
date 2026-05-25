@@ -58,6 +58,7 @@ const turnPartTypes = [
   "tool",
   "file",
   "error",
+  "refusal",
   "step-start",
   "step-finish",
   "snapshot",
