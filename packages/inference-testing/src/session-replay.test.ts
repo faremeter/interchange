@@ -573,6 +573,94 @@ describe("createReplayHarness", () => {
     }
   });
 
+  test("KNOWN tool overrun: queue exhaustion throws kind=dispatches_over_consumed", async () => {
+    // A captured tool has N dispatches; replay-time invocation N+1
+    // exhausts the per-tool queue. The queue handler throws inside
+    // the inner harness's runInference iterator and the rejection
+    // surfaces via `collectResult` — but it's already a
+    // SessionReplayMismatchError, so runTurn re-throws it unchanged.
+    const dir = await makeTmpDir();
+    await recordToolRoundtripSession(dir);
+
+    // Mutate exchange 0 to emit TWO tool_calls for "weather"; the
+    // capture's dispatches/ dir still has only one entry, so the
+    // second invocation exhausts the queue.
+    const newResponse = mergeChunks(
+      wire.completeResponse("anthropic", {
+        toolCalls: [
+          {
+            callId: "call_w_1",
+            name: "weather",
+            argsJSON: '{"location":"SF"}',
+          },
+          {
+            callId: "call_w_2",
+            name: "weather",
+            argsJSON: '{"location":"SF"}',
+          },
+        ],
+        headUsage: ZERO_USAGE,
+        tailUsage: { ...ZERO_USAGE, output: 2 },
+      }),
+    );
+    await fs.writeFile(
+      path.join(dir, "exchanges", "0", "response.sse"),
+      newResponse,
+    );
+
+    const replay = await createReplayHarness({ sessionDir: dir });
+    try {
+      let err: unknown = null;
+      try {
+        await replay.runTurn({ turns: [userTurn("weather in SF?")] });
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(SessionReplayMismatchError);
+      if (err instanceof SessionReplayMismatchError) {
+        expect(err.kind).toBe("dispatches_over_consumed");
+        expect(err.toolName).toBe("weather");
+      }
+    } finally {
+      replay.dispose();
+    }
+  });
+
+  test("UNKNOWN tool: 'no handler registered' error is translated to dispatches_over_consumed", async () => {
+    // Production runInference emits a tool_call.end for a tool name
+    // the capture has zero dispatches for. The inner harness throws
+    // its "no handler was registered" error; runTurn's regex on
+    // session-replay.ts pattern-matches the message and translates
+    // to SessionReplayMismatchError. Pin this so a wording change to
+    // the inner harness's error message surfaces as a deliberate
+    // failure here rather than as a silent regression.
+    const dir = await makeTmpDir();
+    await recordToolRoundtripSession(dir);
+    // Drop the captured dispatch directory entirely so the wire's
+    // tool_call.end has no corresponding onTool handler at replay.
+    await fs.rm(path.join(dir, "dispatches"), {
+      recursive: true,
+      force: true,
+    });
+
+    const replay = await createReplayHarness({ sessionDir: dir });
+    try {
+      let err: unknown = null;
+      try {
+        await replay.runTurn({ turns: [userTurn("weather in SF?")] });
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(SessionReplayMismatchError);
+      if (err instanceof SessionReplayMismatchError) {
+        expect(err.kind).toBe("dispatches_over_consumed");
+        expect(err.toolName).toBe("weather");
+      }
+    } finally {
+      replay.dispose();
+    }
+  });
+
   test("poisons the harness after a runTurn failure so retries fail fast", async () => {
     const dir = await makeTmpDir();
     await recordSingleTurnTextSession(dir);
