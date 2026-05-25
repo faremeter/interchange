@@ -38,6 +38,7 @@ export type SessionReplayMismatchKind =
   | "body_diverged"
   | "no_matcher_fired"
   | "exchanges_under_consumed"
+  | "exchanges_over_consumed"
   | "dispatches_under_consumed"
   | "dispatches_over_consumed";
 
@@ -485,13 +486,43 @@ export async function createReplayHarness(
     });
   }
 
+  // After a runTurn throws a `SessionReplayMismatchError`, the inner
+  // harness retains the stream and matcher we registered for the
+  // failed turn — the harness exposes no API to retract a matcher.
+  // Subsequent runTurn calls would register the next exchange's
+  // matcher on top of the stale one, and the predicates only happen
+  // to converge because both exchanges' canonical bodies differ.
+  // Rather than rely on the accident, the harness is poisoned after
+  // any runTurn failure: a fresh replay harness is required to
+  // re-drive the session.
+  let poisoned = false;
+
   const runTurn = async (runOpts: RunTurnOpts): Promise<InferenceEvent[]> => {
+    if (poisoned) {
+      throw new Error(
+        `Session replay: this harness was poisoned by an earlier runTurn ` +
+          `failure. Construct a fresh replay harness to re-drive the session.`,
+      );
+    }
     const exchangeIndex = turnCount;
     if (exchangeIndex >= exchanges.length) {
-      throw new Error(
-        `Session replay: runTurn called ${String(turnCount + 1)} times but the ` +
-          `capture has only ${String(exchanges.length)} exchanges`,
-      );
+      const lastExchange = exchanges[exchanges.length - 1];
+      if (lastExchange === undefined) {
+        throw new Error(
+          `Session replay: exchanges array is empty (internal bug; loader ` +
+            `should have rejected this session)`,
+        );
+      }
+      throw new SessionReplayMismatchError({
+        kind: "exchanges_over_consumed",
+        exchangeIndex,
+        captured: lastExchange.capturedRequest,
+        actual: null,
+        diff:
+          `runTurn called ${String(turnCount + 1)} times but the capture has only ` +
+          `${String(exchanges.length)} exchanges.`,
+        sessionDir,
+      });
     }
     const exchange = exchanges[exchangeIndex];
     if (exchange === undefined) {
@@ -574,6 +605,7 @@ export async function createReplayHarness(
       // downstream symptom of the same cause.
       await collector.catch(() => undefined);
       const cause = runResult.reason;
+      poisoned = true;
       if (cause instanceof UnmatchedFetchError) {
         const fetches = cause.waiting;
         const headerLines = fetches
@@ -602,6 +634,7 @@ export async function createReplayHarness(
       throw cause;
     }
     if (collectResult.status === "rejected") {
+      poisoned = true;
       throw collectResult.reason;
     }
 
@@ -613,6 +646,7 @@ export async function createReplayHarness(
     const matchedAfter = inner.scenario.matchedRequests().length;
     const newlyMatched = matchedAfter - matchedBefore;
     if (newlyMatched !== 1) {
+      poisoned = true;
       throw new Error(
         `Session replay: runTurn expected exactly one matched request for ` +
           `exchange ${String(exchangeIndex)} but observed ${String(newlyMatched)}. ` +
@@ -628,18 +662,27 @@ export async function createReplayHarness(
     if (turnCount < exchanges.length) {
       const expectedIndex = turnCount;
       const expected = exchanges[expectedIndex];
-      if (expected !== undefined) {
-        throw new SessionReplayMismatchError({
-          kind: "exchanges_under_consumed",
-          exchangeIndex: expectedIndex,
-          captured: expected.capturedRequest,
-          actual: null,
-          diff:
-            `Replay ended after ${String(turnCount)} exchange(s), but the capture has ${String(exchanges.length)}. ` +
-            `The caller stopped driving runTurn before all captured exchanges were consumed.`,
-          sessionDir,
-        });
+      // `turnCount < exchanges.length` proves `expectedIndex` is in
+      // range and `loadExchanges` has already verified the array
+      // density, so `expected` must be defined here. Invariant-throw
+      // rather than silently skip so a future refactor that breaks
+      // the invariant fails loudly.
+      if (expected === undefined) {
+        throw new Error(
+          `Session replay: exchanges[${String(expectedIndex)}] missing despite ` +
+            `turnCount=${String(turnCount)} < length=${String(exchanges.length)} (internal bug)`,
+        );
       }
+      throw new SessionReplayMismatchError({
+        kind: "exchanges_under_consumed",
+        exchangeIndex: expectedIndex,
+        captured: expected.capturedRequest,
+        actual: null,
+        diff:
+          `Replay ended after ${String(turnCount)} exchange(s), but the capture has ${String(exchanges.length)}. ` +
+          `The caller stopped driving runTurn before all captured exchanges were consumed.`,
+        sessionDir,
+      });
     }
     for (const [toolName, queue] of dispatchQueues) {
       if (queue.consumed < queue.results.length) {
