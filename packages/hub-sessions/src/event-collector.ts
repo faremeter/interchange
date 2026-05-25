@@ -296,14 +296,19 @@ export function createEventCollector(
             // The `url` MediaSource variant carries a self-contained
             // dereferenceable HTTP(S) URL (Gemini accepts these in
             // `fileData/fileUri`; other adapters route similarly).
-            // The session record carries a `reference` field for
-            // both file-reference and url sources -- the URL is the
-            // dereferencer, treated symmetrically with a stored
-            // file id.
+            // The session record keeps the URL on a distinct `url`
+            // field rather than reusing the `reference` slot that
+            // `file-reference` uses: a session reader that filters
+            // or joins on `metadata->>'reference'` should see
+            // provider-opaque file ids only, with public URLs
+            // surfaced under their own field. The discriminant
+            // `kind` is the structural source of truth, and the
+            // field-per-variant shape keeps naive substring queries
+            // honest.
             await insertPart("file", null, {
               kind: "url",
               mimeType: source.mimeType,
-              reference: source.url,
+              url: source.url,
             });
           } else {
             source satisfies never;
