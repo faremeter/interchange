@@ -594,6 +594,234 @@ describe("Google GenAI adapter: MediaSource variants", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Multimodal-input round-trip parity against captured fixtures
+// ---------------------------------------------------------------------------
+//
+// The MediaSource variants are covered structurally in the block above;
+// these tests pin the BYTE-FOR-BYTE body match between what the adapter
+// produces for a `ConversationTurn` carrying a media block and what
+// was captured on the wire when the same prompt was issued against the
+// live Gemini endpoint. A regression in part ordering, optional-key
+// emission, or field naming surfaces here as a fixture mismatch.
+//
+// The base64 in each fixture is read from disk and threaded back into
+// the input turn so the test exercises the SHAPE translation, not
+// arbitrary bytes; the data round-trips through the adapter unchanged.
+
+describe("Google GenAI adapter: multimodal input fixture parity", () => {
+  // Fixture payloads are validated with arktype rather than narrowed
+  // via type assertion -- the fixtures are external data, so the
+  // runtime schema is the honest way to pull `{mimeType, data}` and
+  // `{mimeType, fileUri}` out of them.
+  const FixtureInlineDataPart = type({
+    inlineData: { mimeType: "string", data: "string" },
+  });
+  const FixtureFileDataPart = type({
+    fileData: { mimeType: "string", fileUri: "string" },
+  });
+
+  // Drill into the second part of a fixture's first user turn. The
+  // captured fixtures all place the prompt text at parts[0] and the
+  // media part at parts[1]; reaching past either bound throws
+  // explicitly so a future capture with a different shape surfaces
+  // its mismatch at the indexing site rather than as an arktype
+  // schema error against undefined (`?.` chaining would silently
+  // forward undefined into the validator, masking the structural
+  // problem as a schema mismatch).
+  function mediaPartOf(fixture: typeof GeminiBody.infer): unknown {
+    const contents = GeminiContents.assert(fixture.contents);
+    const firstTurn = contents[0];
+    if (firstTurn === undefined) {
+      throw new Error("fixture contents[] is empty");
+    }
+    // The captured fixtures are all single-turn user prompts. A
+    // model-role first turn would mean the capture started from a
+    // priming response or a wholly different shape; either way it
+    // is not what this helper is designed to read, so fail loudly
+    // rather than silently return that turn's `parts[1]` and let a
+    // downstream byte-equality assertion produce a confusing diff.
+    if (firstTurn.role !== "user") {
+      throw new Error(
+        `fixture first turn role is ${JSON.stringify(firstTurn.role)}; expected "user"`,
+      );
+    }
+    if (firstTurn.parts.length < 2) {
+      throw new Error(
+        `fixture first turn has ${String(firstTurn.parts.length)} part(s); expected at least 2`,
+      );
+    }
+    return firstTurn.parts[1];
+  }
+
+  // Read a fixture once and pull its inlineData payload out of it,
+  // returning both the parsed body and the destructured payload so
+  // a test site can equality-check the body and thread the payload
+  // back into its input turn without re-parsing the file.
+  function loadInlineDataFixture(...path: string[]): {
+    fixture: typeof GeminiBody.infer;
+    mimeType: string;
+    data: string;
+  } {
+    const fixture = readFixtureJSON(...path);
+    const { mimeType, data } = FixtureInlineDataPart.assert(
+      mediaPartOf(fixture),
+    ).inlineData;
+    return { fixture, mimeType, data };
+  }
+
+  test("vision: base64 image round-trips byte-for-byte against fixture", () => {
+    const { fixture, mimeType, data } = loadInlineDataFixture(
+      "gemini-2.5-flash",
+      "vision-input-streaming",
+      "request.json",
+    );
+    const req = adapter.buildRequest(
+      [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Describe the picture in one short sentence.",
+            },
+            {
+              type: "image",
+              source: { kind: "base64", mimeType, data },
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      "gemini-2.5-flash",
+      {},
+    );
+    expect(parseBody(req.body)).toEqual(fixture);
+  });
+
+  test("audio: base64 audio round-trips byte-for-byte against fixture", () => {
+    const { fixture, mimeType, data } = loadInlineDataFixture(
+      "gemini-2.5-flash",
+      "audio-input-streaming",
+      "request.json",
+    );
+    const req = adapter.buildRequest(
+      [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Transcribe the spoken words in this audio clip.",
+            },
+            {
+              type: "audio",
+              source: { kind: "base64", mimeType, data },
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      "gemini-2.5-flash",
+      {},
+    );
+    expect(parseBody(req.body)).toEqual(fixture);
+  });
+
+  test("video: base64 video round-trips byte-for-byte against fixture", () => {
+    const { fixture, mimeType, data } = loadInlineDataFixture(
+      "gemini-2.5-flash",
+      "video-input-streaming",
+      "request.json",
+    );
+    const req = adapter.buildRequest(
+      [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Describe what happens in this video in one short sentence.",
+            },
+            {
+              type: "video",
+              source: { kind: "base64", mimeType, data },
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      "gemini-2.5-flash",
+      {},
+    );
+    expect(parseBody(req.body)).toEqual(fixture);
+  });
+
+  test("document: base64 PDF round-trips byte-for-byte against fixture", () => {
+    const { fixture, mimeType, data } = loadInlineDataFixture(
+      "gemini-2.5-flash",
+      "document-input-streaming",
+      "request.json",
+    );
+    const req = adapter.buildRequest(
+      [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Summarize this PDF in one short sentence." },
+            {
+              type: "document",
+              source: { kind: "base64", mimeType, data },
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      "gemini-2.5-flash",
+      {},
+    );
+    expect(parseBody(req.body)).toEqual(fixture);
+  });
+
+  test("files-api: file-reference document round-trips byte-for-byte against fixture", () => {
+    // The Files API capture uses Gemini's `fileData/fileUri` shape
+    // (the same field the URL variant targets); the URI here is the
+    // upload endpoint's returned handle, not a public URL. The
+    // adapter does not distinguish the two on the wire -- both
+    // `file-reference` and `url` MediaSources land in `fileData`.
+    const fixture = readFixtureJSON(
+      "gemini-2.5-flash",
+      "files-api-reference-streaming",
+      "generate",
+      "request.json",
+    );
+    const { mimeType, fileUri } = FixtureFileDataPart.assert(
+      mediaPartOf(fixture),
+    ).fileData;
+    const req = adapter.buildRequest(
+      [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Summarize the attached document in one sentence.",
+            },
+            {
+              type: "document",
+              source: { kind: "file-reference", reference: fileUri, mimeType },
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      "gemini-2.5-flash",
+      {},
+    );
+    expect(parseBody(req.body)).toEqual(fixture);
+  });
+});
+
 describe("Google GenAI adapter: conversation-turn mapping", () => {
   function lastTurnParts(body: typeof GeminiBody.infer): unknown[] {
     const contents = GeminiContents.assert(body.contents);
