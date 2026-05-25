@@ -76,3 +76,9 @@ export type {
   CompatReplayResult,
   CompatReplaySkipReason,
 } from "./compat-replay";
+
+export {
+  SessionManifest,
+  loadSessionManifest,
+  writeSessionManifest,
+} from "./session-manifest";
