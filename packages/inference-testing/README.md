@@ -303,13 +303,13 @@ orchestration layer above the adapter — multi-turn body construction,
 conversation history threading, tool dispatch wiring, terminal
 sequencing across turns.
 
-Where the existing `runCompatReplay` (INTR-79) holds **one** exchange
-constant to surface adapter regressions, session replay holds an
-**entire conversation** constant: every exchange plus every tool
-dispatch. If the production reactor changes how it serialises a
-`tool_result` block, or how it threads previous turns into a new
-request body, the corresponding exchange's body diverges from
-capture and `SessionReplayMismatchError` fires with a diff.
+Where the existing `runCompatReplay` holds **one** exchange constant
+to surface adapter regressions, session replay holds an **entire
+conversation** constant: every exchange plus every tool dispatch.
+If the production reactor changes how it serialises a `tool_result`
+block, or how it threads previous turns into a new request body,
+the corresponding exchange's body diverges from capture and
+`SessionReplayMismatchError` fires with a diff.
 
 ### Terminology
 
@@ -468,7 +468,7 @@ and dispatch counts match the capture.
 
 The replay harness serves captured dispatch results verbatim. Real
 tool handlers do **not** run at replay time. This is the locked
-design call from INTR-93, and it matters: re-invoking a real handler
+design call baked into this surface, and it matters: re-invoking a real handler
 risks producing a result that diverges from the captured result,
 which causes the next turn's request body to diverge from capture,
 which makes the captured response no longer a valid reply — replay
@@ -518,6 +518,21 @@ captured session for a regression test.
   mis-serving the inner result to the reactor. The recording
   harness rejects this shape at write time; the replay harness
   rejects it at load time.
+- **Response content-types must be `text/event-stream` or
+  `application/json`.** The recording wrapper buffers the response
+  via `detectResponseKind` from `@intx/inference-discovery`, which
+  throws on missing or unrecognised content-types. The current
+  inference adapters only ever produce SSE or JSON responses;
+  recording another shape (`text/plain`, `application/octet-stream`)
+  raises a load-time error rather than capturing the body as raw
+  bytes.
+- **The first dispatch failure wins.** If two recording-time
+  dispatches reject concurrently, the harness stashes the first
+  rejection and surfaces it through the iterator or `finalize`;
+  the second is silently swallowed. Production reactor flows
+  dispatch tools serially, so this is a hypothetical concern
+  today, but worth knowing when debugging a recording with
+  multiple genuinely-broken handlers.
 
 ### Dependency on `@intx/inference-discovery`
 

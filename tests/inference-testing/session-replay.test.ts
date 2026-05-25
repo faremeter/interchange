@@ -8,7 +8,7 @@
 // hold: the conversation length grows as the capture grew, dispatch
 // results land in the correct subsequent exchange request bodies, the
 // terminal event sequence for each turn validates against the shape
-// invariants declared by INTR-79's compat-replay layer.
+// invariants declared by the existing compat-replay layer.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import path from "node:path";

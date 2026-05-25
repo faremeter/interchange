@@ -383,8 +383,17 @@ export function createRecordingHarness(
     if (extracted.bodyForSend !== null) {
       realInit.body = extracted.bodyForSend;
     }
-    if (init?.signal !== undefined && init.signal !== null) {
-      realInit.signal = init.signal;
+    // Forward an abort signal from either `init.signal` or — when
+    // the caller passed a `Request` as the first argument — from the
+    // Request's own signal. The body/headers/method extraction path
+    // already handles the Request input form symmetrically; doing
+    // the same for `signal` keeps the wrapper transparent.
+    const callerSignal = init?.signal ?? null;
+    const requestSignal =
+      input instanceof Request && callerSignal === null ? input.signal : null;
+    const effectiveSignal = callerSignal ?? requestSignal;
+    if (effectiveSignal !== null) {
+      realInit.signal = effectiveSignal;
     }
 
     const response = await underlyingFetch(extracted.url, realInit);
