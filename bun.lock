@@ -104,6 +104,14 @@
         "@intx/types": "workspace:*",
       },
     },
+    "examples/agent-gemini-image": {
+      "name": "@intx/example-agent-gemini-image",
+      "version": "0.0.0",
+      "dependencies": {
+        "@intx/inference": "workspace:*",
+        "@intx/types": "workspace:*",
+      },
+    },
     "examples/agent-multi-provider": {
       "name": "@intx/example-agent-multi-provider",
       "version": "0.0.0",
@@ -648,6 +656,8 @@
     "@intx/example-agent-blob-spill": ["@intx/example-agent-blob-spill@workspace:examples/agent-blob-spill"],
 
     "@intx/example-agent-common": ["@intx/example-agent-common@workspace:examples/agent-common"],
+
+    "@intx/example-agent-gemini-image": ["@intx/example-agent-gemini-image@workspace:examples/agent-gemini-image"],
 
     "@intx/example-agent-multi-provider": ["@intx/example-agent-multi-provider@workspace:examples/agent-multi-provider"],
 
