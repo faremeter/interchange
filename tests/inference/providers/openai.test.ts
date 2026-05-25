@@ -522,6 +522,43 @@ describe("OpenAI adapter: buildRequest", () => {
     );
   });
 
+  test("throws on an assistant turn carrying a refusal content block", () => {
+    // RefusalBlocks come from this adapter's own delta.refusal
+    // parsing, but the round-trip back through OpenAI's input
+    // message shape is not modeled. Surface the failure at the
+    // marshaling boundary rather than silently drop the refusal
+    // text (which would render as content: null in the wire body).
+    const messages: ConversationTurn[] = [
+      {
+        role: "assistant",
+        content: [{ type: "refusal", reason: "I cannot help with that." }],
+        timestamp: 1000,
+      },
+    ];
+
+    expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+      /refusal content blocks/,
+    );
+  });
+
+  test("throws on a user turn carrying a refusal content block", () => {
+    // Echoing a refusal into a user-role content array is even
+    // odder than the assistant case — there's no OpenAI wire shape
+    // for it at all. The user-role serializer must also fail
+    // loudly rather than emit a `null` part.
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [{ type: "refusal", reason: "Earlier refusal." }],
+        timestamp: 1000,
+      },
+    ];
+
+    expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+      /refusal content blocks/,
+    );
+  });
+
   test("silently drops redacted_thinking content blocks (opaque, no OpenAI surface)", () => {
     const messages: ConversationTurn[] = [
       {

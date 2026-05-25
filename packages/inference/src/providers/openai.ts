@@ -139,10 +139,16 @@ function toOpenAIMessage(msg: ConversationTurn): unknown[] {
     // message shape and surface the failure rather than silently
     // dropping them. Code execution blocks are first-class semantic
     // content; their loss would corrupt cross-provider conversations.
+    // RefusalBlocks are this adapter's own output (delta.refusal
+    // accumulates into one) but the round-trip back through history
+    // is not modeled — a silent drop would erase the refusal text on
+    // any continuation request, so the marshaling fails loudly
+    // alongside code_execution.
     for (const block of msg.content) {
       if (
         block.type === "code_execution_request" ||
-        block.type === "code_execution_result"
+        block.type === "code_execution_result" ||
+        block.type === "refusal"
       ) {
         throw new Error(
           `OpenAI adapter does not handle ${block.type} content blocks.`,
@@ -291,6 +297,13 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
     case "tool_result":
       // These are handled separately in toOpenAIMessage.
       return "";
+    case "refusal":
+      // RefusalBlocks are output-only (delta.refusal accumulates into
+      // one). Echoing one back inside a user-role content array has
+      // no defined OpenAI wire shape; fail at the marshaling
+      // boundary rather than silently emit `null` part bytes that
+      // would round-trip as an unrecognized fragment.
+      throw new Error("OpenAI adapter does not handle refusal content blocks.");
   }
 }
 
