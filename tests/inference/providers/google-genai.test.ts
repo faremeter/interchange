@@ -3072,6 +3072,351 @@ describe("Google GenAI adapter: harness round trip with image output", () => {
 });
 
 // ---------------------------------------------------------------------------
+// parseResponse -- grounding-as-citation
+// ---------------------------------------------------------------------------
+
+describe("Google GenAI adapter: parseResponse grounding", () => {
+  test("groundingSupport expands into one citation per chunk index it references", async () => {
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ text: "John won the prize." }],
+            },
+            groundingMetadata: {
+              groundingChunks: [
+                { web: { uri: "https://a.example", title: "A" } },
+                { web: { uri: "https://b.example", title: "B" } },
+              ],
+              groundingSupports: [
+                {
+                  segment: {
+                    startIndex: 0,
+                    endIndex: 19,
+                    text: "John won the prize.",
+                  },
+                  groundingChunkIndices: [0, 1],
+                },
+              ],
+            },
+            finishReason: "STOP",
+            index: 0,
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 5,
+          candidatesTokenCount: 5,
+          totalTokenCount: 10,
+        },
+      }),
+    ]);
+
+    const citations = events.filter((e) => e.type === "inference.citation");
+    expect(citations).toHaveLength(2);
+
+    const first = citations[0];
+    const second = citations[1];
+    if (
+      first?.type !== "inference.citation" ||
+      second?.type !== "inference.citation"
+    ) {
+      throw new Error("expected two inference.citation events");
+    }
+
+    // Both citations carry identical citedText and textOffset --
+    // the support's segment -- but distinct sources from the
+    // chunks it references.
+    expect(first.data.index).toBe(0);
+    expect(first.data.citation.citedText).toBe("John won the prize.");
+    expect(first.data.citation.textOffset).toEqual({ start: 0, end: 19 });
+    expect(first.data.citation.source).toEqual({
+      uri: "https://a.example",
+      title: "A",
+    });
+
+    expect(second.data.index).toBe(0);
+    expect(second.data.citation.source).toEqual({
+      uri: "https://b.example",
+      title: "B",
+    });
+  });
+
+  test("citation events are emitted before the terminal inference.usage", async () => {
+    // Citations belong to the model's output and should precede
+    // the bookkeeping signal that closes the response. The harness
+    // relies on this ordering for the final-walk's
+    // post-block-emission interleave; a citation arriving after
+    // its block emission would land in the orphan-citation check.
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ text: "x" }],
+            },
+            groundingMetadata: {
+              groundingChunks: [{ web: { uri: "u", title: "t" } }],
+              groundingSupports: [
+                {
+                  segment: { startIndex: 0, endIndex: 1, text: "x" },
+                  groundingChunkIndices: [0],
+                },
+              ],
+            },
+            finishReason: "STOP",
+            index: 0,
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 1,
+          candidatesTokenCount: 1,
+          totalTokenCount: 2,
+        },
+      }),
+    ]);
+    const citationIdx = events.findIndex(
+      (e) => e.type === "inference.citation",
+    );
+    const usageIdx = events.findIndex((e) => e.type === "inference.usage");
+    expect(citationIdx).toBeGreaterThanOrEqual(0);
+    expect(usageIdx).toBeGreaterThan(citationIdx);
+  });
+
+  test("groundingMetadata with no current text block throws ProtocolMismatchError", () => {
+    const bad = JSON.stringify({
+      candidates: [
+        {
+          content: { role: "model", parts: [] },
+          groundingMetadata: {
+            groundingChunks: [{ web: { uri: "u", title: "t" } }],
+            groundingSupports: [
+              {
+                segment: { startIndex: 0, endIndex: 1, text: "x" },
+                groundingChunkIndices: [0],
+              },
+            ],
+          },
+          index: 0,
+        },
+      ],
+    });
+    expect(() => createGoogleGenAIAdapter().parseResponse(bad)).toThrow(
+      ProtocolMismatchError,
+    );
+    expect(() => createGoogleGenAIAdapter().parseResponse(bad)).toThrow(
+      /without a current text block/,
+    );
+  });
+
+  test("out-of-range groundingChunkIndex throws ProtocolMismatchError", () => {
+    const bad = JSON.stringify({
+      candidates: [
+        {
+          content: { role: "model", parts: [{ text: "x" }] },
+          groundingMetadata: {
+            groundingChunks: [{ web: { uri: "u", title: "t" } }],
+            groundingSupports: [
+              {
+                segment: { startIndex: 0, endIndex: 1, text: "x" },
+                groundingChunkIndices: [0, 99],
+              },
+            ],
+          },
+          index: 0,
+        },
+      ],
+    });
+    expect(() => createGoogleGenAIAdapter().parseResponse(bad)).toThrow(
+      ProtocolMismatchError,
+    );
+    expect(() => createGoogleGenAIAdapter().parseResponse(bad)).toThrow(
+      /chunk index 99/,
+    );
+  });
+
+  test("non-web chunk kinds are skipped without throwing", async () => {
+    // A future grounding chunk that lacks the `web` shape has no
+    // `uri`/`title` to populate `CitationSource`. The parser
+    // silently drops it rather than synthesize a placeholder
+    // citation. Supports referencing only non-web chunks emit
+    // zero citations; supports referencing a mix emit citations
+    // only for the web-shaped chunks.
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "x" }] },
+            groundingMetadata: {
+              groundingChunks: [
+                {}, // non-web chunk: no `web` field
+                { web: { uri: "u", title: "t" } },
+              ],
+              groundingSupports: [
+                {
+                  segment: { startIndex: 0, endIndex: 1, text: "x" },
+                  groundingChunkIndices: [0, 1],
+                },
+              ],
+            },
+            finishReason: "STOP",
+            index: 0,
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 1,
+          candidatesTokenCount: 1,
+          totalTokenCount: 2,
+        },
+      }),
+    ]);
+    const citations = events.filter((e) => e.type === "inference.citation");
+    expect(citations).toHaveLength(1);
+    if (citations[0]?.type !== "inference.citation") {
+      throw new Error("expected inference.citation");
+    }
+    expect(citations[0].data.citation.source.uri).toBe("u");
+  });
+
+  test("grounding-streaming fixture replay produces multiple citations anchored to the single text block", async () => {
+    const sseBytes = readFileSync(
+      join(
+        FIXTURE_ROOT,
+        "gemini-2.5-flash",
+        "grounding-streaming",
+        "response.sse",
+      ),
+    );
+    const events = await parseWire(adapter, [sseBytes]);
+
+    const citations = events.filter((e) => e.type === "inference.citation");
+    // The captured fixture's groundingSupports references multiple
+    // chunks per support, so the expanded citation count is
+    // greater than the number of supports.
+    expect(citations.length).toBeGreaterThan(3);
+
+    // Every citation anchors to text block index 0 (the single
+    // logical text block the response produced).
+    for (const ev of citations) {
+      if (ev.type !== "inference.citation") continue;
+      expect(ev.data.index).toBe(0);
+      expect(ev.data.citation.source.uri).toMatch(/^https:\/\//);
+      expect(ev.data.citation.citedText.length).toBeGreaterThan(0);
+    }
+
+    // Citations precede the inference.usage emission in the event
+    // stream.
+    const usageIdx = events.findIndex((e) => e.type === "inference.usage");
+    const lastCitationIdx = events.reduce(
+      (acc, e, i) => (e.type === "inference.citation" ? i : acc),
+      -1,
+    );
+    expect(lastCitationIdx).toBeGreaterThan(-1);
+    expect(usageIdx).toBeGreaterThan(lastCitationIdx);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Harness round trip -- grounding
+// ---------------------------------------------------------------------------
+
+describe("Google GenAI adapter: harness round trip with grounding", () => {
+  const inertScheduler: Scheduler = {
+    setTimeout: () => () => {
+      /* tests do not exercise timer firing */
+    },
+  };
+
+  const SOURCE: InferenceSource = {
+    id: "google-genai:gemini-2.5-flash",
+    provider: "google-genai",
+    baseURL: "https://generativelanguage.googleapis.com",
+    apiKey: "test-key",
+    model: "gemini-2.5-flash",
+  };
+
+  test("grounding-streaming fixture replay produces a final turn with text then citations interleaved", async () => {
+    const sseBytes = readFileSync(
+      join(
+        FIXTURE_ROOT,
+        "gemini-2.5-flash",
+        "grounding-streaming",
+        "response.sse",
+      ),
+    );
+
+    const fetchImpl: Dependencies["fetch"] = () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(sseBytes);
+              controller.close();
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          },
+        ),
+      );
+
+    let seq = 0;
+    const events: InferenceEvent[] = [];
+    for await (const ev of runInference({
+      turns: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Who won the 2025 Nobel Prize in Physics?",
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      source: SOURCE,
+      nextSeq: () => seq++,
+      deps: { fetch: fetchImpl, scheduler: inertScheduler },
+    })) {
+      events.push(ev);
+    }
+
+    const done = events.find((e) => e.type === "inference.done");
+    if (done?.type !== "inference.done") {
+      throw new Error("expected inference.done event");
+    }
+
+    const blocks = done.data.turn.content;
+    // The final turn must lead with the text block, then carry
+    // citations interleaved immediately after it (the harness's
+    // emit() helper does this interleave at the matched index).
+    const firstBlock = blocks[0];
+    if (firstBlock?.type !== "text") {
+      throw new Error("expected first content block to be text");
+    }
+    expect(firstBlock.text.length).toBeGreaterThan(0);
+
+    const citationBlocks = blocks.filter((b) => b.type === "citation");
+    expect(citationBlocks.length).toBeGreaterThan(3);
+    // Citations interleave IMMEDIATELY after the text block they
+    // attribute. The harness's `emit()` helper runs the per-index
+    // citation append directly after a block emission, so the
+    // expected shape is `[text, citation, citation, ...]` with no
+    // intervening block of another kind. Locking this here keeps
+    // the documented "interleaved immediately after" invariant
+    // from quietly regressing if a future change introduces an
+    // unrelated block kind between the text and its citations.
+    for (let i = 1; i < 1 + citationBlocks.length; i++) {
+      expect(blocks[i]?.type).toBe("citation");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // parseResponse -- code-execution path
 // ---------------------------------------------------------------------------
 

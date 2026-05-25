@@ -607,10 +607,56 @@ const GeminiContent = type({
   "role?": "string",
 });
 
+// Grounding metadata rides on a candidate whenever the request
+// enabled `tools: [{googleSearch: {}}]`. The captured fixture
+// shows `groundingMetadata: {}` present on every SSE event with
+// `groundingChunks`/`groundingSupports` populated only on the
+// terminal event; intermediate empty-metadata events short-circuit
+// in `emitGroundingCitations` via the `supports.length === 0`
+// early return. The two arrays the parser consumes are:
+//
+//   - `groundingChunks[].web`: per-source `{uri, title}` entries.
+//     Indexed positionally; the chunks are the citation sources.
+//
+//   - `groundingSupports[]`: pairings between an output text span
+//     (`segment: {startIndex, endIndex, text}`) and one or more
+//     chunk indices (`groundingChunkIndices: number[]`). Each
+//     index-into-chunks expands into one CitationBlock during
+//     emission.
+//
+// `searchEntryPoint` (HTML rendering widget) and `webSearchQueries`
+// (the model-issued queries) carry no per-text-span attribution and
+// are not surfaced as citation blocks. Validating them here would
+// pin a wire shape the parser does not consume; the schema admits
+// them implicitly via arktype's open-object semantics.
+const GeminiGroundingChunk = type({
+  // Each chunk currently arrives with a single `web` shape. Other
+  // chunk kinds (e.g. document, retrieved-context) are not in the
+  // captured corpus; admitting them as schema-validated absences
+  // keeps `web`-shaped chunks well-typed without committing to a
+  // discriminated union the parser cannot dispatch over.
+  "web?": type({ uri: "string", title: "string" }),
+});
+
+const GeminiGroundingSupport = type({
+  segment: {
+    startIndex: "number",
+    endIndex: "number",
+    text: "string",
+  },
+  groundingChunkIndices: "number[]",
+});
+
+const GeminiGroundingMetadata = type({
+  "groundingChunks?": GeminiGroundingChunk.array(),
+  "groundingSupports?": GeminiGroundingSupport.array(),
+});
+
 const GeminiCandidate = type({
   "content?": GeminiContent,
   "finishReason?": "string",
   "index?": "number",
+  "groundingMetadata?": GeminiGroundingMetadata,
 });
 
 // `thoughtsTokenCount` is populated on responses with thinking
@@ -1107,6 +1153,101 @@ function emitPart(
   );
 }
 
+// Emit `inference.citation` events from a candidate's
+// `groundingMetadata`. Each `groundingSupport` expands into one
+// citation per referenced chunk: a span that cites four sources
+// produces four citations with the same `citedText` and
+// `textOffset` but distinct `source` entries. Consumers see the
+// full attribution list and can de-duplicate by URI if they want
+// to collapse identical sources.
+//
+// The text-block anchor is read from `state.currentBlock` -- the
+// just-processed text parts in this same event will have left it
+// set to the running text block. If currentBlock is not text (or
+// is null), Gemini delivered grounding without a preceding text
+// anchor, which has no defined attribution per the
+// `CitationBlock` contract; surface as a protocol mismatch
+// rather than synthesize an arbitrary index.
+//
+// `groundingChunks` entries without the `web` shape (a future
+// chunk kind) are skipped silently for now -- their source has no
+// `uri`/`title` to populate `CitationSource`, and synthesizing a
+// placeholder citation would misrepresent the wire. Supports that
+// reference an out-of-range chunk index throw -- the wire is
+// pointing at a chunk slot the response never delivered, which is
+// a wire bug we want to see.
+function emitGroundingCitations(
+  metadata: typeof GeminiGroundingMetadata.infer,
+  state: GeminiParserState,
+  seq: number,
+  out: InferenceEvent[],
+  raw: unknown,
+): void {
+  const supports = metadata.groundingSupports ?? [];
+  const chunks = metadata.groundingChunks ?? [];
+  if (supports.length === 0) {
+    return;
+  }
+
+  const anchor = state.currentBlock;
+  if (anchor === null || anchor.kind !== "text") {
+    throw new ProtocolMismatchError(
+      `google-genai parseResponse: groundingMetadata arrived without a ` +
+        `current text block to anchor citations against (currentBlock=` +
+        `${anchor === null ? "null" : JSON.stringify(anchor.kind)}). The ` +
+        `wire convention places groundingMetadata on the terminal event ` +
+        `alongside the text it grounds.`,
+      raw,
+    );
+  }
+  const index = anchor.index;
+
+  for (const support of supports) {
+    const { segment, groundingChunkIndices } = support;
+    for (const chunkIdx of groundingChunkIndices) {
+      const chunk = chunks[chunkIdx];
+      if (chunk === undefined) {
+        throw new ProtocolMismatchError(
+          `google-genai parseResponse: groundingSupport references ` +
+            `chunk index ${String(chunkIdx)} but the response has only ` +
+            `${String(chunks.length)} grounding chunk(s).`,
+          raw,
+        );
+      }
+      const web = chunk.web;
+      if (web === undefined) {
+        // Non-web chunk kinds (retrieved-context, document, etc.)
+        // have no `web.uri`/`web.title` to populate a
+        // CitationSource. Skipping rather than synthesizing keeps
+        // the citation faithful to the wire shape the parser
+        // actually models -- the schema admits non-web chunks
+        // implicitly so a wider chunk kind reaching the parser
+        // does not fail schema validation, but it has no defined
+        // mapping into `CitationSource` until its discriminator
+        // is modeled here.
+        continue;
+      }
+      const citation = {
+        type: "citation" as const,
+        citedText: segment.text,
+        source: {
+          uri: web.uri,
+          title: web.title,
+        },
+        textOffset: {
+          start: segment.startIndex,
+          end: segment.endIndex,
+        },
+      };
+      out.push({
+        type: "inference.citation",
+        seq,
+        data: { citation, index },
+      });
+    }
+  }
+}
+
 // Map Gemini's `codeExecutionResult.outcome` enum onto the
 // internal `CodeExecutionResultBlock.status` union. The switch is
 // exhaustive over the three values Gemini documents today; an
@@ -1237,6 +1378,24 @@ function parseResponse(
     for (const part of candidate.content.parts) {
       emitPart(part, state, seq, out, parsed);
     }
+  }
+
+  // `groundingMetadata` rides on the candidate alongside the parts
+  // and the finishReason. It is processed AFTER the parts have
+  // settled so any text deltas in the same event extend the
+  // currentBlock first; `emitGroundingCitations` reads the
+  // currentBlock's index to attribute each citation to the right
+  // text block. Citations precede the terminal usage emission --
+  // they belong to the model's output, not to the bookkeeping
+  // signal that closes the response.
+  if (candidate?.groundingMetadata !== undefined) {
+    emitGroundingCitations(
+      candidate.groundingMetadata,
+      state,
+      seq,
+      out,
+      parsed,
+    );
   }
 
   // `finishReason` arrives only on the terminal event. Emit usage at
