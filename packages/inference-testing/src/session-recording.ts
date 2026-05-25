@@ -98,18 +98,23 @@ export interface RecordingHarness {
 
 export class SessionRecordingBudgetExceededError extends Error {
   readonly maxExchanges: number;
-  readonly observed: number;
+  /** Number of fetches the harness wrapped before the budget tripped. */
+  readonly wrapped: number;
+  /** Number of fetches attempted (always `wrapped + 1`). */
+  readonly attempted: number;
 
-  constructor(maxExchanges: number, observed: number) {
+  constructor(maxExchanges: number, wrapped: number) {
     super(
       `Session recording exceeded maxExchanges=${String(maxExchanges)} ` +
-        `(${String(observed)} fetches wrapped). A runaway reactor loop or a ` +
-        `mis-sized budget is likely; raise maxExchanges only after confirming ` +
-        `the conversation is what you expected.`,
+        `on the ${String(wrapped + 1)}th attempted fetch (${String(wrapped)} ` +
+        `fetches wrapped before the budget tripped). A runaway reactor loop ` +
+        `or a mis-sized budget is likely; raise maxExchanges only after ` +
+        `confirming the conversation is what you expected.`,
     );
     this.name = "SessionRecordingBudgetExceededError";
     this.maxExchanges = maxExchanges;
-    this.observed = observed;
+    this.wrapped = wrapped;
+    this.attempted = wrapped + 1;
   }
 }
 
@@ -144,17 +149,30 @@ function headersToRecord(
       // TypeScript enforces string values in HeadersInit array
       // tuples, but the recording wrapper is a public entry point —
       // a JS caller could violate the contract at runtime. Reject
-      // non-strings explicitly rather than let a non-string land in
-      // the captured headers file.
-      if (typeof k !== "string" || typeof v !== "string") continue;
+      // non-strings explicitly so the captured headers file never
+      // carries non-string values.
+      if (typeof k !== "string" || typeof v !== "string") {
+        throw new Error(
+          `Session recording: array-tuple header entry has non-string ` +
+            `key or value (key type=${typeof k}, value type=${typeof v}); ` +
+            `headers must be strings.`,
+        );
+      }
       out[k] = v;
     }
     return out;
   }
   for (const [k, v] of Object.entries(headers)) {
-    if (typeof v === "string") {
-      out[k] = v;
+    // Record-style headers reach this branch. Same non-string
+    // rejection applies — the captured file is strictly string-
+    // valued and we will not silently coerce.
+    if (typeof v !== "string") {
+      throw new Error(
+        `Session recording: header "${k}" has non-string value ` +
+          `(type=${typeof v}); headers must be strings.`,
+      );
     }
+    out[k] = v;
   }
   return out;
 }
@@ -191,7 +209,10 @@ async function extractRequest(
   let bodyForSend: string | Uint8Array | null;
   let bodyForCapture: ExtractedRequest["bodyForCapture"];
 
-  if (body === null || body === undefined) {
+  if (body === null || body === undefined || body === "") {
+    // Empty string is treated as "no body" too — undici rejects an
+    // empty-string body on GET/HEAD, and there's no behavior the
+    // empty string forwards that `null` does not.
     bodyForSend = null;
     bodyForCapture = { kind: "raw", bytes: new Uint8Array(), contentType };
   } else if (typeof body === "string") {
@@ -344,7 +365,7 @@ export function createRecordingHarness(
     if (exchangeCount >= maxExchanges) {
       const err = new SessionRecordingBudgetExceededError(
         maxExchanges,
-        exchangeCount + 1,
+        exchangeCount,
       );
       budgetError = err;
       throw err;

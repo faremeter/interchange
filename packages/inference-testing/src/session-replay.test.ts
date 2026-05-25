@@ -565,6 +565,39 @@ describe("createReplayHarness", () => {
     }
   });
 
+  test("throws SessionReplayMismatchError when runTurn is called past the captured exchange count", async () => {
+    const dir = await makeTmpDir();
+    await recordSingleTurnTextSession(dir);
+    const replay = await createReplayHarness({ sessionDir: dir });
+    try {
+      await replay.runTurn({ turns: [userTurn("say hi")] });
+      await expect(
+        replay.runTurn({ turns: [userTurn("say hi again")] }),
+      ).rejects.toBeInstanceOf(SessionReplayMismatchError);
+    } finally {
+      replay.dispose();
+    }
+  });
+
+  test("poisons the harness after a runTurn failure so retries fail fast", async () => {
+    const dir = await makeTmpDir();
+    await recordSingleTurnTextSession(dir);
+    const replay = await createReplayHarness({ sessionDir: dir });
+    try {
+      await expect(
+        replay.runTurn({ turns: [userTurn("wrong prompt")] }),
+      ).rejects.toBeInstanceOf(SessionReplayMismatchError);
+      // A subsequent runTurn must fail loudly rather than try to re-
+      // register a matcher on top of the stale one from the failed
+      // attempt. The error message says so explicitly.
+      await expect(
+        replay.runTurn({ turns: [userTurn("say hi")] }),
+      ).rejects.toThrow(/poisoned/);
+    } finally {
+      replay.dispose();
+    }
+  });
+
   test("assertFullyConsumed throws when the caller stops short", async () => {
     const dir = await makeTmpDir();
     await recordToolRoundtripSession(dir);
