@@ -26,6 +26,7 @@ import type {
 import { UnmatchedFetchError } from "./errors";
 import { setupHarness } from "./harness";
 import { loadSessionManifest, type SessionManifest } from "./session-manifest";
+import { isDelayedEnvelope } from "./tool-handler";
 
 /**
  * Discriminates the specific shape of the contract violation. Used by
@@ -239,27 +240,22 @@ async function fileExists(p: string): Promise<boolean> {
 
 // A captured dispatch result shaped `{ result, virtualDelayMs: <finite
 // non-negative number> }` collides with the test-harness "delayed
-// envelope" return shape that `ToolHandlerRegistry.isDelayedEnvelope`
-// unwraps. If a session ever carried such a result and the replay
-// harness served it verbatim to `scenario.onTool`, the registry would
-// schedule a virtual delay and pass only the inner `.result` to the
-// reactor. That's wrong-but-not-loud behavior; recording rejects it
-// at write time too. Reject at load time so the failure is contained
-// to the load boundary.
+// envelope" return shape that `ToolHandlerRegistry` unwraps. If a
+// session ever carried such a result and the replay harness served
+// it verbatim to `scenario.onTool`, the registry would schedule a
+// virtual delay and pass only the inner `.result` to the reactor.
+// That's wrong-but-not-loud behavior; recording rejects it at write
+// time too via the same predicate. Reject at load time so the
+// failure is contained to the load boundary.
 function rejectEnvelopeShape(
   index: number,
   toolName: string,
   result: unknown,
 ): void {
-  if (result === null || typeof result !== "object") return;
-  if (!("result" in result) || !("virtualDelayMs" in result)) return;
-  const delay: unknown = Reflect.get(result, "virtualDelayMs");
-  if (typeof delay !== "number" || !Number.isFinite(delay) || delay < 0) {
-    return;
-  }
+  if (!isDelayedEnvelope(result)) return;
   throw new Error(
     `Session replay: dispatch ${String(index)} for tool "${toolName}" has a ` +
-      `captured result shaped { result, virtualDelayMs: ${String(delay)} }, which ` +
+      `captured result shaped { result, virtualDelayMs: ${String(result.virtualDelayMs)} }, which ` +
       `would be unwrapped as a test-harness delayed envelope by the tool ` +
       `dispatch registry. Captured results must not collide with that shape.`,
   );

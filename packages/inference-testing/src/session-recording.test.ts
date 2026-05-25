@@ -490,6 +490,78 @@ describe("createRecordingHarness end-to-end", () => {
     expect(exchangeFiles).not.toContain("request.json");
   });
 
+  test("envelope-returning handler surfaces via the iterator, not as an unhandled rejection", async () => {
+    // Pins the contract that a recording handler returning the
+    // test-harness `{ result, virtualDelayMs }` envelope surfaces
+    // its rejection through the normal caller flow — either the
+    // `for await` iterator's eventual completion or
+    // `await finalize()`. The earlier fire-and-forget pattern let
+    // the rejection escape as unhandled before either await point
+    // could observe it.
+    const dir = await makeTmpDir();
+    const harness = createRecordingHarness({
+      outputDir: dir,
+      source: ANTHROPIC_SOURCE,
+      maxExchanges: 1,
+      redactRequestHeaders: [],
+      redactResponseHeaders: [],
+      fetch: async () => {
+        return sseResponseFromChunks(
+          wire.completeResponse("anthropic", {
+            toolCalls: [
+              {
+                callId: "call_w_1",
+                name: "weather",
+                argsJSON: '{"location":"SF"}',
+              },
+            ],
+            headUsage: ZERO_USAGE,
+            tailUsage: { ...ZERO_USAGE, output: 1 },
+          }),
+        );
+      },
+      bypassCIGuardForTests: true,
+    });
+
+    harness.onTool("weather", () => ({
+      result: { temperatureF: 68 },
+      virtualDelayMs: 5,
+    }));
+
+    let seq = 0;
+    let iterErr: unknown = null;
+    try {
+      for await (const _ev of harness.runInference({
+        turns: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "weather?" }],
+            timestamp: 0,
+          },
+        ],
+        source: ANTHROPIC_SOURCE,
+        nextSeq: () => ++seq,
+      })) {
+        // drain
+      }
+    } catch (e) {
+      iterErr = e;
+    }
+    let finalizeErr: unknown = null;
+    try {
+      await harness.finalize();
+    } catch (e) {
+      finalizeErr = e;
+    }
+
+    const found =
+      (iterErr instanceof Error &&
+        iterErr.message.includes("virtualDelayMs")) ||
+      (finalizeErr instanceof Error &&
+        finalizeErr.message.includes("virtualDelayMs"));
+    expect(found).toBe(true);
+  });
+
   test("omits init.body on requests with no body so GET/HEAD adapters work", async () => {
     const dir = await makeTmpDir();
     const seen: { bodyKeyPresent: boolean | null; method: string | null } = {

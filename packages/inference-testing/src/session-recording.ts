@@ -26,7 +26,7 @@ import {
 import type { InferenceEvent } from "@intx/types/runtime";
 
 import { writeSessionManifest, type SessionManifest } from "./session-manifest";
-import type { ToolHandler } from "./tool-handler";
+import { isDelayedEnvelope, type ToolHandler } from "./tool-handler";
 
 /**
  * The recording harness's fetch override has the same signature as the
@@ -418,7 +418,17 @@ export function createRecordingHarness(
   // recording.
   const handlers = new Map<string, ToolHandler>();
   let dispatchCount = 0;
+  // Each `captureDispatch` returns a promise we cannot block the
+  // iterator on (the production runInference would deadlock waiting
+  // for the iterator to advance). We park each promise in
+  // `inFlightDispatches` for `finalize` to await. The promises also
+  // attach a `.catch` that stashes the first failure into
+  // `firstDispatchError` so the iterator's yield path and
+  // `finalize` can surface the rejection to the caller — without
+  // the catch, Bun/Node would raise the rejection as unhandled
+  // before either await point could observe it.
   const inFlightDispatches: Promise<void>[] = [];
+  let firstDispatchError: unknown = null;
 
   const onTool = (name: string, handler: ToolHandler): void => {
     if (handlers.has(name)) {
@@ -440,11 +450,7 @@ export function createRecordingHarness(
     // values, and is a no-op for plain values — covers all three
     // handler return shapes (sync, async, native promise) in one path.
     const resolved: unknown = await Promise.resolve(ret);
-    if (
-      resolved !== null &&
-      typeof resolved === "object" &&
-      "virtualDelayMs" in resolved
-    ) {
+    if (isDelayedEnvelope(resolved)) {
       throw new Error(
         `Session recording: handler for tool "${name}" returned a ` +
           `{ result, virtualDelayMs } envelope. Virtual delays are a test-harness ` +
@@ -478,9 +484,26 @@ export function createRecordingHarness(
             );
           }
           const index = dispatchCount++;
-          inFlightDispatches.push(captureDispatch(index, name, args, handler));
+          // Attach `.catch` immediately so the rejection lands in
+          // `firstDispatchError` rather than escaping as an
+          // unhandled rejection. The original promise still goes
+          // into `inFlightDispatches` so `finalize` awaits its
+          // settlement; the catch produces a settled-void promise
+          // that follows the same lifecycle.
+          const tracked = captureDispatch(index, name, args, handler).catch(
+            (err: unknown) => {
+              if (firstDispatchError === null) firstDispatchError = err;
+            },
+          );
+          inFlightDispatches.push(tracked);
+        }
+        if (firstDispatchError !== null) {
+          throw firstDispatchError;
         }
         yield event;
+      }
+      if (firstDispatchError !== null) {
+        throw firstDispatchError;
       }
       if (budgetError !== null) {
         throw budgetError;
@@ -503,7 +526,14 @@ export function createRecordingHarness(
       capturedAt,
     });
     if (inFlightDispatches.length > 0) {
+      // The tracked promises have a catch attached that stashes any
+      // rejection into `firstDispatchError`; `Promise.all` here
+      // therefore never rejects, it just resolves once every
+      // captureDispatch has settled.
       await Promise.all(inFlightDispatches);
+    }
+    if (firstDispatchError !== null) {
+      throw firstDispatchError;
     }
     if (budgetError !== null) {
       throw budgetError;
