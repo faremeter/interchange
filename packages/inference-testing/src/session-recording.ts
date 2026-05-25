@@ -117,7 +117,11 @@ interface ExtractedRequest {
   url: string;
   method: string;
   headers: Record<string, string>;
-  bodyForSend: string | Uint8Array;
+  // `null` distinguishes "no body" from "empty body". Node's undici
+  // rejects bodies on GET/HEAD methods with a TypeError; passing
+  // `null` here lets `recordingFetch` leave `init.body` unset on
+  // those methods.
+  bodyForSend: string | Uint8Array | null;
   bodyForCapture:
     | { kind: "json"; body: unknown }
     | { kind: "raw"; bytes: Uint8Array; contentType: string };
@@ -137,7 +141,12 @@ function headersToRecord(
   if (Array.isArray(headers)) {
     for (const entry of headers) {
       const [k, v] = entry;
-      if (k === undefined || v === undefined) continue;
+      // TypeScript enforces string values in HeadersInit array
+      // tuples, but the recording wrapper is a public entry point —
+      // a JS caller could violate the contract at runtime. Reject
+      // non-strings explicitly rather than let a non-string land in
+      // the captured headers file.
+      if (typeof k !== "string" || typeof v !== "string") continue;
       out[k] = v;
     }
     return out;
@@ -179,17 +188,30 @@ async function extractRequest(
       ([k]) => k.toLowerCase() === "content-type",
     )?.[1] ?? "application/octet-stream";
 
-  let bodyForSend: string | Uint8Array;
+  let bodyForSend: string | Uint8Array | null;
   let bodyForCapture: ExtractedRequest["bodyForCapture"];
 
   if (body === null || body === undefined) {
-    bodyForSend = "";
+    bodyForSend = null;
     bodyForCapture = { kind: "raw", bytes: new Uint8Array(), contentType };
   } else if (typeof body === "string") {
     bodyForSend = body;
     if (contentType.startsWith("application/json")) {
-      const parsed: unknown = JSON.parse(body);
-      bodyForCapture = { kind: "json", body: parsed };
+      // Recording is meant to be observation, not validation. A
+      // malformed JSON body is something the production code would
+      // happily forward to the network — surfacing it as a recording
+      // failure would change the program's behavior under recording.
+      // Fall back to raw capture when JSON.parse rejects.
+      try {
+        const parsed: unknown = JSON.parse(body);
+        bodyForCapture = { kind: "json", body: parsed };
+      } catch {
+        bodyForCapture = {
+          kind: "raw",
+          bytes: new TextEncoder().encode(body),
+          contentType,
+        };
+      }
     } else {
       bodyForCapture = {
         kind: "raw",
@@ -232,12 +254,24 @@ async function bufferResponseBody(
   if (kind === "sse") {
     return { captured: { kind: "sse", bytes }, reconstructed: bytes };
   }
+  // A malformed JSON response is something the production adapter
+  // would surface from its own parser. The recording wrapper should
+  // not crash differently than production would; fall back to SSE-
+  // shaped raw capture when JSON.parse rejects so the response bytes
+  // still make it to disk verbatim.
   const text = new TextDecoder().decode(bytes);
-  const parsed: unknown = JSON.parse(text);
-  return {
-    captured: { kind: "json", body: parsed },
-    reconstructed: bytes,
-  };
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return {
+      captured: { kind: "json", body: parsed },
+      reconstructed: bytes,
+    };
+  } catch {
+    return {
+      captured: { kind: "sse", bytes },
+      reconstructed: bytes,
+    };
+  }
 }
 
 function dispatchFilename(index: number, toolName: string): string {
@@ -321,8 +355,13 @@ export function createRecordingHarness(
     const realInit: RequestInit = {
       method: extracted.method,
       headers: extracted.headers,
-      body: extracted.bodyForSend,
     };
+    // GET/HEAD methods reject any body (including the empty string).
+    // Leave `init.body` unset entirely when no body is present so
+    // hypothetical future adapters that issue GETs work.
+    if (extracted.bodyForSend !== null) {
+      realInit.body = extracted.bodyForSend;
+    }
     if (init?.signal !== undefined && init.signal !== null) {
       realInit.signal = init.signal;
     }
@@ -451,18 +490,24 @@ export function createRecordingHarness(
   };
 
   const finalize = async (): Promise<void> => {
-    if (inFlightDispatches.length > 0) {
-      await Promise.all(inFlightDispatches);
-    }
-    if (budgetError !== null) {
-      throw budgetError;
-    }
+    // Write the session manifest FIRST so that even if a downstream
+    // step throws — a dispatch write failing, the budget guard
+    // tripping — the directory on disk has a loadable session.json.
+    // The replay loader treats a missing session.json as a hard
+    // error, and we'd rather hand an interrupted recording back to
+    // the user as a partially-loadable artifact than a black hole.
     const capturedAt = (now ?? (() => new Date()))().toISOString();
     await writeSessionManifest(outputDir, {
       sessionSchemaVersion: "1",
       source,
       capturedAt,
     });
+    if (inFlightDispatches.length > 0) {
+      await Promise.all(inFlightDispatches);
+    }
+    if (budgetError !== null) {
+      throw budgetError;
+    }
   };
 
   return { deps, onTool, runInference: harnessRunInference, finalize };

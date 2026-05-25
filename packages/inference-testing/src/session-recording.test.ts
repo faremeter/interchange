@@ -446,4 +446,77 @@ describe("createRecordingHarness end-to-end", () => {
       SessionRecordingBudgetExceededError,
     );
   });
+
+  test("falls back to raw capture for a malformed JSON request body", async () => {
+    const dir = await makeTmpDir();
+    const seen: { body: string | null } = { body: null };
+    const harness = createRecordingHarness({
+      outputDir: dir,
+      source: ANTHROPIC_SOURCE,
+      maxExchanges: 1,
+      redactRequestHeaders: [],
+      redactResponseHeaders: [],
+      fetch: async (_input, init) => {
+        seen.body = typeof init?.body === "string" ? init.body : "(non-string)";
+        const chunks = wire.completeResponse("anthropic", {
+          text: "ok",
+          headUsage: ZERO_USAGE,
+          tailUsage: { ...ZERO_USAGE, output: 1 },
+        });
+        return sseResponseFromChunks(chunks);
+      },
+      bypassCIGuardForTests: true,
+    });
+
+    // Drive a hand-crafted recording fetch with a malformed JSON
+    // body — production adapters never do this, but the recording
+    // wrapper is positioned as a transparent observer and must not
+    // crash on inputs the adapter would forward.
+    await harness.deps.fetch("https://example.invalid/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"not json',
+    });
+    await harness.finalize();
+
+    // The body was forwarded to the underlying fetch byte-for-byte.
+    expect(seen.body).toBe('{"not json');
+
+    // The capture wrote request.bin (raw fallback), not request.json.
+    const exchangeFiles = (
+      await fs.readdir(path.join(dir, "exchanges", "0"))
+    ).sort();
+    expect(exchangeFiles).toContain("request.bin");
+    expect(exchangeFiles).not.toContain("request.json");
+  });
+
+  test("writes session.json even when finalize is called early in a partial recording", async () => {
+    const dir = await makeTmpDir();
+    const harness = createRecordingHarness({
+      outputDir: dir,
+      source: ANTHROPIC_SOURCE,
+      maxExchanges: 1,
+      redactRequestHeaders: [],
+      redactResponseHeaders: [],
+      fetch: async () =>
+        sseResponseFromChunks(
+          wire.completeResponse("anthropic", {
+            text: "hi",
+            headUsage: ZERO_USAGE,
+            tailUsage: { ...ZERO_USAGE, output: 1 },
+          }),
+        ),
+      bypassCIGuardForTests: true,
+      now: () => new Date("2026-05-25T12:00:00Z"),
+    });
+
+    // Call finalize without ever calling runInference. The README
+    // advertises that an aborted recording produces a (truncated
+    // but readable) session — at minimum that means a loadable
+    // session.json must exist.
+    await harness.finalize();
+
+    const parsed = await readJSONRecord(path.join(dir, "session.json"));
+    expect(expectStringField(parsed, "sessionSchemaVersion")).toBe("1");
+  });
 });
