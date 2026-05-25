@@ -287,7 +287,7 @@ const MATRIX: SupportEntry[] = [
     capability: "structured-output",
     outcome: "http-error",
     notes:
-      "Probe against /zen/v1 returned HTTP 401 ModelError 'Model deepseek-v4-pro is not supported' on the structured-output schema; deepseek-v4-pro's reasoning-content captures live on the older /zen/go/v1 tier and the v1 tier appears to gate the model out.",
+      "Probe against /zen/v1 returned HTTP 401 with body {type:'error',error:{type:'ModelError',message:'Model deepseek-v4-pro is not supported'}}. The HTTP status is the relay's chosen code for the routing miss, not an auth failure; deepseek-v4-pro's reasoning-content captures live on the older /zen/go/v1 tier and the v1 tier does not route the model.",
   },
   {
     provider: OPENCODE_PROVIDER,
@@ -295,7 +295,7 @@ const MATRIX: SupportEntry[] = [
     capability: "structured-output-streaming",
     outcome: "http-error",
     notes:
-      "Probe against /zen/v1 returned HTTP 401 ModelError 'Model deepseek-v4-pro is not supported' on the structured-output schema; deepseek-v4-pro's reasoning-content captures live on the older /zen/go/v1 tier and the v1 tier appears to gate the model out.",
+      "Probe against /zen/v1 returned HTTP 401 with body {type:'error',error:{type:'ModelError',message:'Model deepseek-v4-pro is not supported'}}. The HTTP status is the relay's chosen code for the routing miss, not an auth failure; deepseek-v4-pro's reasoning-content captures live on the older /zen/go/v1 tier and the v1 tier does not route the model.",
   },
   {
     provider: OPENCODE_PROVIDER,
@@ -303,7 +303,7 @@ const MATRIX: SupportEntry[] = [
     capability: "structured-output",
     outcome: "http-error",
     notes:
-      "Probe against /zen/v1 returned HTTP 401 ModelError 'Model mimo-v2-omni is not supported' on the structured-output schema; mimo-v2-omni's other captures live on the older /zen/go/v1 tier and the v1 tier appears to gate the model out.",
+      "Probe against /zen/v1 returned HTTP 401 with body {type:'error',error:{type:'ModelError',message:'Model mimo-v2-omni is not supported'}}. The HTTP status is the relay's chosen code for the routing miss, not an auth failure; mimo-v2-omni's other captures live on the older /zen/go/v1 tier and the v1 tier does not route the model.",
   },
   {
     provider: OPENCODE_PROVIDER,
@@ -311,7 +311,7 @@ const MATRIX: SupportEntry[] = [
     capability: "structured-output-streaming",
     outcome: "http-error",
     notes:
-      "Probe against /zen/v1 returned HTTP 401 ModelError 'Model mimo-v2-omni is not supported' on the structured-output schema; mimo-v2-omni's other captures live on the older /zen/go/v1 tier and the v1 tier appears to gate the model out.",
+      "Probe against /zen/v1 returned HTTP 401 with body {type:'error',error:{type:'ModelError',message:'Model mimo-v2-omni is not supported'}}. The HTTP status is the relay's chosen code for the routing miss, not an auth failure; mimo-v2-omni's other captures live on the older /zen/go/v1 tier and the v1 tier does not route the model.",
   },
   {
     provider: OPENCODE_PROVIDER,
