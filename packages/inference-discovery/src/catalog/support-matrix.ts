@@ -69,6 +69,8 @@ const GEMINI_TEXT_CAPABILITIES = [
   "grounding-streaming",
   "files-api-reference",
   "files-api-reference-streaming",
+  "structured-output",
+  "structured-output-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
 
 const GEMINI_TEXT_MISLED_CAPABILITIES = [
