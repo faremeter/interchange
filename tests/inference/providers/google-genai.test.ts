@@ -3070,3 +3070,603 @@ describe("Google GenAI adapter: harness round trip with image output", () => {
     expect(imageEvent).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// parseResponse -- code-execution path
+// ---------------------------------------------------------------------------
+
+describe("Google GenAI adapter: parseResponse code execution", () => {
+  test("executableCode then codeExecutionResult yields start + result with back-pointer", async () => {
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  executableCode: {
+                    language: "PYTHON",
+                    code: "print(1 + 2)",
+                  },
+                },
+              ],
+            },
+            index: 0,
+          },
+        ],
+      }),
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  codeExecutionResult: {
+                    outcome: "OUTCOME_OK",
+                    output: "3\n",
+                  },
+                },
+              ],
+            },
+            finishReason: "STOP",
+            index: 0,
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 5,
+          candidatesTokenCount: 10,
+          totalTokenCount: 15,
+        },
+      }),
+    ]);
+
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.code_execution.start",
+      "inference.code_execution.result",
+      "inference.usage",
+    ]);
+
+    const start = events[0];
+    if (start?.type !== "inference.code_execution.start") {
+      throw new Error("expected inference.code_execution.start");
+    }
+    expect(start.data.index).toBe(0);
+    expect(start.data.request).toEqual({
+      type: "code_execution_request",
+      id: "gemini-exec-0",
+      code: "print(1 + 2)",
+      language: "PYTHON",
+    });
+
+    const result = events[1];
+    if (result?.type !== "inference.code_execution.result") {
+      throw new Error("expected inference.code_execution.result");
+    }
+    expect(result.data.index).toBe(1);
+    expect(result.data.result).toEqual({
+      type: "code_execution_result",
+      requestId: "gemini-exec-0",
+      status: "ok",
+      stdout: "3\n",
+      providerOutcome: "OUTCOME_OK",
+    });
+  });
+
+  test("OUTCOME_FAILED maps to status 'error' and OUTCOME_DEADLINE_EXCEEDED maps to 'timeout'", async () => {
+    const failed = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ executableCode: { language: "PYTHON", code: "x" } }],
+            },
+            index: 0,
+          },
+        ],
+      }),
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  codeExecutionResult: {
+                    outcome: "OUTCOME_FAILED",
+                    output: "Traceback...",
+                  },
+                },
+              ],
+            },
+            index: 0,
+          },
+        ],
+      }),
+    ]);
+    const failedResult = failed.find(
+      (e) => e.type === "inference.code_execution.result",
+    );
+    if (failedResult?.type !== "inference.code_execution.result") {
+      throw new Error("expected inference.code_execution.result");
+    }
+    expect(failedResult.data.result.status).toBe("error");
+    expect(failedResult.data.result.providerOutcome).toBe("OUTCOME_FAILED");
+
+    // Fresh adapter to reset per-request state for the second case.
+    const adapter2 = createGoogleGenAIAdapter();
+    const timeout = await parseWire(adapter2, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ executableCode: { language: "PYTHON", code: "x" } }],
+            },
+            index: 0,
+          },
+        ],
+      }),
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  codeExecutionResult: {
+                    outcome: "OUTCOME_DEADLINE_EXCEEDED",
+                  },
+                },
+              ],
+            },
+            index: 0,
+          },
+        ],
+      }),
+    ]);
+    const timeoutResult = timeout.find(
+      (e) => e.type === "inference.code_execution.result",
+    );
+    if (timeoutResult?.type !== "inference.code_execution.result") {
+      throw new Error("expected inference.code_execution.result");
+    }
+    expect(timeoutResult.data.result.status).toBe("timeout");
+    // Output is optional; absent on the timeout response.
+    expect(timeoutResult.data.result.stdout).toBeUndefined();
+  });
+
+  test("unknown outcome throws ProtocolMismatchError naming the value", () => {
+    // The codeExecutionResult must follow an executableCode part
+    // for the pairing to be valid; seed the pending request via a
+    // prior event. The parser's state machine clears
+    // `pendingExecutionRequestId` only on the success path, so a
+    // throw leaves the state mid-mutation -- each `expect(() =>
+    // ...)` call needs a fresh adapter so the second call does not
+    // see the first throw's residue.
+    function buildPendingAdapter(): ProviderAdapter {
+      const a = createGoogleGenAIAdapter();
+      a.parseResponse(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [{ executableCode: { language: "PYTHON", code: "x" } }],
+              },
+              index: 0,
+            },
+          ],
+        }),
+      );
+      return a;
+    }
+    const bad = JSON.stringify({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              {
+                codeExecutionResult: { outcome: "OUTCOME_FOO", output: "x" },
+              },
+            ],
+          },
+          index: 0,
+        },
+      ],
+    });
+    expect(() => buildPendingAdapter().parseResponse(bad)).toThrow(
+      ProtocolMismatchError,
+    );
+    expect(() => buildPendingAdapter().parseResponse(bad)).toThrow(
+      /OUTCOME_FOO/,
+    );
+  });
+
+  test("two executableCode parts without an intervening result throws", () => {
+    const bad = JSON.stringify({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              { executableCode: { language: "PYTHON", code: "a" } },
+              { executableCode: { language: "PYTHON", code: "b" } },
+            ],
+          },
+          index: 0,
+        },
+      ],
+    });
+    expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
+    expect(() => adapter.parseResponse(bad)).toThrow(
+      /second executableCode part/,
+    );
+  });
+
+  test("codeExecutionResult with no preceding executableCode throws", () => {
+    const bad = JSON.stringify({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              { codeExecutionResult: { outcome: "OUTCOME_OK", output: "" } },
+            ],
+          },
+          index: 0,
+        },
+      ],
+    });
+    expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
+    expect(() => adapter.parseResponse(bad)).toThrow(
+      /no preceding executableCode part/,
+    );
+  });
+
+  test("terminal event with an unmatched executableCode throws", () => {
+    const bad = JSON.stringify({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [{ executableCode: { language: "PYTHON", code: "x" } }],
+          },
+          finishReason: "STOP",
+          index: 0,
+        },
+      ],
+      usageMetadata: {
+        promptTokenCount: 1,
+        candidatesTokenCount: 1,
+        totalTokenCount: 2,
+      },
+    });
+    // Fresh adapter per `toThrow` so the first call's mid-mutation
+    // throw doesn't leave residue that changes the error message on
+    // the second call.
+    expect(() => createGoogleGenAIAdapter().parseResponse(bad)).toThrow(
+      ProtocolMismatchError,
+    );
+    expect(() => createGoogleGenAIAdapter().parseResponse(bad)).toThrow(
+      /unmatched code-execution request/,
+    );
+  });
+
+  test("code-execution-streaming fixture replay produces start, result, two text deltas, and usage", async () => {
+    const sseBytes = readFileSync(
+      join(
+        FIXTURE_ROOT,
+        "gemini-2.5-flash",
+        "code-execution-streaming",
+        "response.sse",
+      ),
+    );
+    const events = await parseWire(adapter, [sseBytes]);
+
+    const types = events.map((e) => e.type);
+    expect(types).toEqual([
+      "inference.code_execution.start",
+      "inference.code_execution.result",
+      "inference.text.delta",
+      "inference.text.delta",
+      "inference.usage",
+    ]);
+
+    const start = events[0];
+    if (start?.type !== "inference.code_execution.start") {
+      throw new Error("expected inference.code_execution.start");
+    }
+    expect(start.data.request.id).toBe("gemini-exec-0");
+    expect(start.data.request.code).toContain("fibonacci");
+    expect(start.data.request.language).toBe("PYTHON");
+    expect(start.data.index).toBe(0);
+
+    const result = events[1];
+    if (result?.type !== "inference.code_execution.result") {
+      throw new Error("expected inference.code_execution.result");
+    }
+    expect(result.data.result.requestId).toBe("gemini-exec-0");
+    expect(result.data.result.status).toBe("ok");
+    expect(result.data.result.stdout).toContain("6765");
+    expect(result.data.index).toBe(1);
+
+    // The follow-on text deltas land at a fresh index (2), not at
+    // index 0 -- the executableCode + codeExecutionResult pair
+    // closed the current block, and the next text is a new logical
+    // block.
+    const textIndices = events
+      .filter((e) => e.type === "inference.text.delta")
+      .map((e) => (e.type === "inference.text.delta" ? e.data.index : -1));
+    expect(textIndices).toEqual([2, 2]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Harness round trip -- code execution
+// ---------------------------------------------------------------------------
+
+describe("Google GenAI adapter: harness round trip with code execution", () => {
+  const inertScheduler: Scheduler = {
+    setTimeout: () => () => {
+      /* tests do not exercise timer firing */
+    },
+  };
+
+  const SOURCE: InferenceSource = {
+    id: "google-genai:gemini-2.5-flash",
+    provider: "google-genai",
+    baseURL: "https://generativelanguage.googleapis.com",
+    apiKey: "test-key",
+    model: "gemini-2.5-flash",
+  };
+
+  test("code-execution-streaming fixture flows through runInference into a final turn carrying request + result + text", async () => {
+    const sseBytes = readFileSync(
+      join(
+        FIXTURE_ROOT,
+        "gemini-2.5-flash",
+        "code-execution-streaming",
+        "response.sse",
+      ),
+    );
+
+    const fetchImpl: Dependencies["fetch"] = () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(sseBytes);
+              controller.close();
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          },
+        ),
+      );
+
+    let seq = 0;
+    const events: InferenceEvent[] = [];
+    for await (const ev of runInference({
+      turns: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Use Python to compute the 20th Fibonacci number.",
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      source: SOURCE,
+      nextSeq: () => seq++,
+      deps: { fetch: fetchImpl, scheduler: inertScheduler },
+    })) {
+      events.push(ev);
+    }
+
+    const done = events.find((e) => e.type === "inference.done");
+    if (done?.type !== "inference.done") {
+      throw new Error("expected inference.done event");
+    }
+
+    const blocks = done.data.turn.content;
+    expect(blocks).toHaveLength(3);
+
+    const request = blocks[0];
+    if (request?.type !== "code_execution_request") {
+      throw new Error(
+        "expected first content block to be code_execution_request",
+      );
+    }
+    expect(request.id).toBe("gemini-exec-0");
+    expect(request.code).toContain("fibonacci");
+
+    const result = blocks[1];
+    if (result?.type !== "code_execution_result") {
+      throw new Error(
+        "expected second content block to be code_execution_result",
+      );
+    }
+    expect(result.requestId).toBe("gemini-exec-0");
+    expect(result.status).toBe("ok");
+    expect(result.stdout).toContain("6765");
+
+    const text = blocks[2];
+    if (text?.type !== "text") {
+      throw new Error("expected third content block to be text");
+    }
+    expect(text.text).toContain("Fibonacci");
+  });
+
+  test("harness accumulates code_execution.delta fragments into the final request block (synthetic adapter)", async () => {
+    // No Gemini fixture exercises code_execution.delta -- Gemini
+    // delivers `executableCode` atomically. The harness wires the
+    // delta path for providers that DO stream code in chunks;
+    // this test drives the path with a hand-built event sequence
+    // through a synthetic adapter and asserts the final block
+    // carries the concatenated code.
+    //
+    // The synthetic adapter sidesteps the JSON round-trip the SSE
+    // pipeline imposes by carrying a per-call queue in the closure
+    // and yielding one event per `parseResponse` invocation.
+    // Crafting events as static literals and pulling them from the
+    // queue preserves the full `InferenceEvent` discriminated-union
+    // typing without resorting to runtime narrowing of `unknown`
+    // through arktype (the inferred runtime type is broader than
+    // the strict TypeScript union and would not satisfy
+    // `ResponseParser`).
+    const eventQueue: InferenceEvent[] = [
+      {
+        type: "inference.code_execution.start",
+        seq: 0,
+        data: {
+          request: {
+            type: "code_execution_request",
+            id: "synth-1",
+            code: "",
+            language: "PYTHON",
+          },
+          index: 0,
+        },
+      },
+      {
+        type: "inference.code_execution.delta",
+        seq: 0,
+        data: { requestId: "synth-1", codeFragment: "print(", index: 0 },
+      },
+      {
+        type: "inference.code_execution.delta",
+        seq: 0,
+        data: { requestId: "synth-1", codeFragment: "'hi')", index: 0 },
+      },
+      {
+        type: "inference.code_execution.result",
+        seq: 0,
+        data: {
+          result: {
+            type: "code_execution_result",
+            requestId: "synth-1",
+            status: "ok",
+            stdout: "hi\n",
+            providerOutcome: "OUTCOME_OK",
+          },
+          index: 1,
+        },
+      },
+      {
+        type: "inference.usage",
+        seq: 0,
+        data: {
+          usage: {
+            input: 1,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            thinking: 0,
+          },
+        },
+      },
+    ];
+    const syntheticAdapter: ProviderAdapter = {
+      buildRequest: () => ({
+        url: "/synthetic",
+        headers: {},
+        body: JSON.stringify({}),
+      }),
+      // Each SSE frame carries a single integer index into the queue;
+      // the parser returns that event. The queue holds the strictly-
+      // typed `InferenceEvent` values, so no narrowing is required.
+      parseResponse: (sseData) => {
+        const parsed: unknown = JSON.parse(sseData);
+        if (typeof parsed !== "string") {
+          throw new Error(
+            `synthetic frame payload must be a string queue index`,
+          );
+        }
+        const idx = Number.parseInt(parsed, 10);
+        const ev = eventQueue[idx];
+        if (ev === undefined) {
+          throw new Error(
+            `synthetic queue has no event at index ${String(idx)}`,
+          );
+        }
+        return [ev];
+      },
+    };
+
+    // One SSE frame per queued event; each frame's payload is just
+    // the queue index as a JSON-encoded string.
+    const sseChunks = eventQueue
+      .map((_, i) => `data: ${JSON.stringify(String(i))}\n\n`)
+      .join("");
+    const sseBytes = new TextEncoder().encode(sseChunks);
+
+    const fetchImpl: Dependencies["fetch"] = () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(sseBytes);
+              controller.close();
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          },
+        ),
+      );
+
+    // Register the synthetic adapter on a unique provider id so this
+    // test doesn't disturb the production registration.
+    const { registerProvider } = await import("@intx/inference");
+    registerProvider("synthetic-code-exec", () => syntheticAdapter);
+
+    let seq = 0;
+    const events: InferenceEvent[] = [];
+    for await (const ev of runInference({
+      turns: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "go" }],
+          timestamp: 0,
+        },
+      ],
+      source: {
+        id: "synthetic-code-exec:test",
+        provider: "synthetic-code-exec",
+        baseURL: "https://example.invalid",
+        apiKey: "test",
+        model: "test",
+      },
+      nextSeq: () => seq++,
+      deps: { fetch: fetchImpl, scheduler: inertScheduler },
+    })) {
+      events.push(ev);
+    }
+
+    const done = events.find((e) => e.type === "inference.done");
+    if (done?.type !== "inference.done") {
+      throw new Error("expected inference.done event");
+    }
+
+    const request = done.data.turn.content.find(
+      (b) => b.type === "code_execution_request",
+    );
+    if (request?.type !== "code_execution_request") {
+      throw new Error("expected code_execution_request in turn content");
+    }
+    // The harness accumulated `print(` + `'hi')` into the running
+    // block; the final code is the concatenation.
+    expect(request.code).toBe("print('hi')");
+    expect(request.id).toBe("synth-1");
+  });
+});

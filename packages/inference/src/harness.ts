@@ -17,6 +17,8 @@ import { type } from "arktype";
 
 import type {
   CitationBlock,
+  CodeExecutionRequestBlock,
+  CodeExecutionResultBlock,
   ConversationTurn,
   ImageBlock,
   InferenceEvent,
@@ -173,7 +175,9 @@ export async function* runInference(
     | { kind: "thinking"; text: string; signature?: string }
     | { kind: "redacted_thinking"; data: string }
     | { kind: "tool_use"; callId: string }
-    | { kind: "image"; image: ImageBlock };
+    | { kind: "image"; image: ImageBlock }
+    | { kind: "code_execution_request"; request: CodeExecutionRequestBlock }
+    | { kind: "code_execution_result"; result: CodeExecutionResultBlock };
   const blockMap = new Map<number, BlockState>();
   // Citations streamed from the provider. Indexed citations attribute
   // to the block at the matching index and interleave into the
@@ -678,6 +682,106 @@ export async function* runInference(
               break;
             }
 
+            case "inference.code_execution.start": {
+              const ceIdx = requireIndex(raw, "code_execution.start");
+              const existing = blockMap.get(ceIdx);
+              if (existing === undefined) {
+                blockMap.set(ceIdx, {
+                  kind: "code_execution_request",
+                  request: raw.data.request,
+                });
+              } else {
+                // Code-execution request blocks are atomic per
+                // event in their current form (Gemini delivers the
+                // full `code` in one part); a `delta` may extend
+                // the running request below, but the start handler
+                // never reuses an existing slot. Collision with a
+                // different kind at the same index is a wire bug.
+                throw new ProtocolMismatchError(
+                  `harness: code_execution.start at index ${String(ceIdx)} collides with existing ${existing.kind} block`,
+                  raw,
+                );
+              }
+              yield {
+                type: "inference.code_execution.start",
+                seq: nextSeq(),
+                data: { request: raw.data.request, index: ceIdx },
+              };
+              break;
+            }
+
+            case "inference.code_execution.delta": {
+              // Append a code fragment to the running request at
+              // the event's index. Gemini does not emit deltas
+              // (its `executableCode` is atomic), but the type
+              // system commits to the streaming lifecycle
+              // (`start -> delta* -> result`), so the handler is
+              // wired for providers that do chunk source code. The
+              // per-index router resolves the target block via
+              // the event's `index`; the `requestId` is then
+              // verified against the block's stored id as a
+              // consistency check that the routed block matches
+              // the back-pointer the delta carries (a mismatch
+              // would mean an upstream rerouting bug producing a
+              // confidently-wrong concatenation).
+              const ceIdx = requireIndex(raw, "code_execution.delta");
+              const existing = blockMap.get(ceIdx);
+              if (existing === undefined) {
+                throw new ProtocolMismatchError(
+                  `harness: code_execution.delta at index ${String(ceIdx)} with no preceding code_execution.start`,
+                  raw,
+                );
+              }
+              if (existing.kind !== "code_execution_request") {
+                throw new ProtocolMismatchError(
+                  `harness: code_execution.delta at index ${String(ceIdx)} routed to a ${existing.kind} block`,
+                  raw,
+                );
+              }
+              if (existing.request.id !== raw.data.requestId) {
+                throw new ProtocolMismatchError(
+                  `harness: code_execution.delta requestId ${JSON.stringify(raw.data.requestId)} does not match the block's request id ${JSON.stringify(existing.request.id)} at index ${String(ceIdx)}`,
+                  raw,
+                );
+              }
+              existing.request = {
+                ...existing.request,
+                code: existing.request.code + raw.data.codeFragment,
+              };
+              yield {
+                type: "inference.code_execution.delta",
+                seq: nextSeq(),
+                data: {
+                  requestId: raw.data.requestId,
+                  codeFragment: raw.data.codeFragment,
+                  index: ceIdx,
+                },
+              };
+              break;
+            }
+
+            case "inference.code_execution.result": {
+              const ceIdx = requireIndex(raw, "code_execution.result");
+              const existing = blockMap.get(ceIdx);
+              if (existing === undefined) {
+                blockMap.set(ceIdx, {
+                  kind: "code_execution_result",
+                  result: raw.data.result,
+                });
+              } else {
+                throw new ProtocolMismatchError(
+                  `harness: code_execution.result at index ${String(ceIdx)} collides with existing ${existing.kind} block`,
+                  raw,
+                );
+              }
+              yield {
+                type: "inference.code_execution.result",
+                seq: nextSeq(),
+                data: { result: raw.data.result, index: ceIdx },
+              };
+              break;
+            }
+
             case "inference.usage": {
               // Accumulate usage — providers may send multiple usage events
               // (e.g., Anthropic sends one at message_start with input
@@ -882,6 +986,20 @@ export async function* runInference(
         // verbatim. Citation interleave applies the same way as
         // any other block kind.
         emit(entry.image, idx);
+        continue;
+      }
+      if (entry.kind === "code_execution_request") {
+        // The request block carries whatever code accumulated
+        // across `code_execution.start` plus any subsequent
+        // `code_execution.delta` events at this index. Gemini's
+        // current wire delivers all of it atomically on `start`;
+        // streaming providers would extend `request.code` via the
+        // delta handler before this walk runs.
+        emit(entry.request, idx);
+        continue;
+      }
+      if (entry.kind === "code_execution_result") {
+        emit(entry.result, idx);
         continue;
       }
       entry satisfies never;

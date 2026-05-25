@@ -1,6 +1,8 @@
 import { type } from "arktype";
 
 import type {
+  CodeExecutionRequestBlock,
+  CodeExecutionResultBlock,
   ConversationTurn,
   ContentBlock,
   InferenceEvent,
@@ -546,10 +548,12 @@ const EMPTY_PARTIAL: PartialMessage = { text: "" };
 // event except the terminal one. The parser handles the absences
 // directly rather than via schema-default coercion.
 //
-// The schema models the three payload kinds the parser handles:
-// `text`, `functionCall`, and `inlineData` (image output). They are
-// mutually exclusive on the wire: a single part is one kind of
-// content. Arktype's open-object semantics will accept multiple set
+// The schema models the five payload kinds the parser handles:
+// `text`, `functionCall`, `inlineData` (image output),
+// `executableCode` (code-execution request), and
+// `codeExecutionResult` (code-execution result). They are mutually
+// exclusive on the wire: a single part is one kind of content.
+// Arktype's open-object semantics will accept multiple set
 // simultaneously, so `parseResponse` enforces the exclusivity at
 // the boundary via `assertSinglePayload` and throws
 // `ProtocolMismatchError` on a violation. `inlineData` is
@@ -574,12 +578,28 @@ const GeminiInlineDataPayload = type({
   data: "string",
 });
 
+const GeminiExecutableCodePayload = type({
+  language: "string",
+  code: "string",
+});
+
+const GeminiCodeExecutionResultPayload = type({
+  outcome: "string",
+  // The combined stdout/stderr stream. Gemini does not split the
+  // streams; the parser routes this verbatim into the result
+  // block's `stdout` and leaves `stderr` empty (per the contract
+  // documented on `CodeExecutionResultBlock`).
+  "output?": "string",
+});
+
 const GeminiPart = type({
   "text?": "string",
   "thought?": "boolean",
   "thoughtSignature?": "string",
   "functionCall?": GeminiFunctionCallPayload,
   "inlineData?": GeminiInlineDataPayload,
+  "executableCode?": GeminiExecutableCodePayload,
+  "codeExecutionResult?": GeminiCodeExecutionResultPayload,
 });
 
 const GeminiContent = type({
@@ -650,6 +670,17 @@ interface GeminiParserState {
   nextBlockIndex: number;
   currentBlock: { kind: "text" | "thinking"; index: number } | null;
   pendingSignatureAnchor: number | null;
+  // Unmatched-request stack of depth 1: when the parser emits an
+  // `inference.code_execution.start` for an `executableCode` part,
+  // the synthetic request id lands here and is consumed by the
+  // immediately-following `codeExecutionResult` part. The wire
+  // convention (from the captured Gemini fixture) is strict LIFO
+  // with depth 1: request, then result, then optional follow-on
+  // text. The depth-1 invariant is enforced: a second request
+  // arriving while the slot is occupied, a result arriving with
+  // the slot empty, and a non-empty slot at the end of a response
+  // all throw `ProtocolMismatchError`.
+  pendingExecutionRequestId: string | null;
 }
 
 function createParserState(): GeminiParserState {
@@ -657,6 +688,7 @@ function createParserState(): GeminiParserState {
     nextBlockIndex: 0,
     currentBlock: null,
     pendingSignatureAnchor: null,
+    pendingExecutionRequestId: null,
   };
 }
 
@@ -710,13 +742,14 @@ function closeCurrentBlock(
 
 // Enforce mutual exclusivity of payload-bearing fields and correct
 // placement of the `thought` flag on a single part. The schema
-// models three payload fields (`text`, `functionCall`, `inlineData`);
-// arktype's open-object semantics would otherwise admit a part with
-// more than one set, or with `thought: true` on a non-text part.
-// Both are wire violations and surface as `ProtocolMismatchError`
-// here. A part with zero payload fields is only legal when a
-// `thoughtSignature` is present (signature-carrier-only part, not
-// seen in the current corpus but spec-permitted).
+// models five payload fields (`text`, `functionCall`, `inlineData`,
+// `executableCode`, `codeExecutionResult`); arktype's open-object
+// semantics would otherwise admit a part with more than one set,
+// or with `thought: true` on a non-text part. Both are wire
+// violations and surface as `ProtocolMismatchError` here. A part
+// with zero payload fields is only legal when a `thoughtSignature`
+// is present (signature-carrier-only part, not seen in the current
+// corpus but spec-permitted).
 function assertSinglePayload(
   part: typeof GeminiPart.infer,
   raw: unknown,
@@ -725,13 +758,17 @@ function assertSinglePayload(
   if (part.text !== undefined) payloads.push("text");
   if (part.functionCall !== undefined) payloads.push("functionCall");
   if (part.inlineData !== undefined) payloads.push("inlineData");
+  if (part.executableCode !== undefined) payloads.push("executableCode");
+  if (part.codeExecutionResult !== undefined) {
+    payloads.push("codeExecutionResult");
+  }
 
   if (payloads.length > 1) {
     throw new ProtocolMismatchError(
       `google-genai parseResponse: part has multiple payload fields set ` +
         `(${payloads.join("+")}); exactly one of ` +
-        `{text, functionCall, inlineData} must be present per Gemini ` +
-        `wire convention.`,
+        `{text, functionCall, inlineData, executableCode, ` +
+        `codeExecutionResult} must be present per Gemini wire convention.`,
       raw,
     );
   }
@@ -938,6 +975,113 @@ function emitPart(
     return;
   }
 
+  // executableCode part -- atomic code-execution request block.
+  // Gemini delivers the full source in one part (no chunked code
+  // streaming), so a fresh block index is allocated and the request
+  // block is emitted in one `inference.code_execution.start` event.
+  // The synthetic id is `gemini-exec-<index>` where `index` is the
+  // content-block index allocated within THIS response (deterministic
+  // per-response so replays of the same response produce the same
+  // ids). It satisfies the `CodeExecutionRequestBlock.id` contract
+  // ("synthesized by the adapter for providers that don't emit one,
+  // using a deterministic per-response position-based scheme so
+  // replays match"). The id then lands in
+  // `pendingExecutionRequestId` so the next codeExecutionResult
+  // part can back-point its `requestId` to it.
+  if (part.executableCode !== undefined) {
+    // Precondition first, before any state mutation or event
+    // emission: a depth-1 violation must not leave a half-applied
+    // close/allocate/settle sequence in `state` and `out`. The
+    // caller discards `out` on throw today, so the difference is
+    // not observable, but the ordering keeps the throw faithful
+    // to "this part was rejected entirely."
+    if (state.pendingExecutionRequestId !== null) {
+      throw new ProtocolMismatchError(
+        `google-genai parseResponse: encountered a second executableCode ` +
+          `part while the prior code-execution request ` +
+          `${JSON.stringify(state.pendingExecutionRequestId)} is still ` +
+          `unmatched. The wire convention is strict LIFO with depth 1 ` +
+          `(request, then result); no fixture exercises depth > 1.`,
+        raw,
+      );
+    }
+    closeCurrentBlock(state, raw);
+    const index = state.nextBlockIndex++;
+    settleCarrierOpportunity(state, part.thoughtSignature, seq, out, raw);
+
+    const requestId = `gemini-exec-${String(index)}`;
+    state.pendingExecutionRequestId = requestId;
+
+    const ec = part.executableCode;
+    const request: CodeExecutionRequestBlock = {
+      type: "code_execution_request",
+      id: requestId,
+      code: ec.code,
+      // Pass `language` through verbatim. Gemini emits SCREAMING_CASE
+      // (e.g. `"PYTHON"`); the type contract is "adapters MUST NOT
+      // default this -- callers narrow on its presence." Comparing
+      // values cross-provider requires case-insensitive logic at
+      // the consumer.
+      language: ec.language,
+    };
+    out.push({
+      type: "inference.code_execution.start",
+      seq,
+      data: { request, index },
+    });
+    return;
+  }
+
+  // codeExecutionResult part -- atomic result block. Pairs against
+  // the most recently emitted `executableCode` part via
+  // `pendingExecutionRequestId` (Gemini's wire carries no explicit
+  // back-pointer; the immediately-preceding request is the
+  // implicit owner). The slot read is destructive: clearing it
+  // here forces the depth-1 invariant on subsequent parts, and a
+  // result arriving with the slot empty throws.
+  if (part.codeExecutionResult !== undefined) {
+    // Precondition first, before any state mutation or event
+    // emission: an empty-slot violation must not leave a
+    // half-applied close/allocate/settle sequence behind. Same
+    // discipline as the executableCode branch above.
+    const requestId = state.pendingExecutionRequestId;
+    if (requestId === null) {
+      throw new ProtocolMismatchError(
+        `google-genai parseResponse: codeExecutionResult part has no ` +
+          `preceding executableCode part in this request to pair against.`,
+        raw,
+      );
+    }
+    // outcomeToStatus throws on an unknown outcome -- run it before
+    // any other state mutation so the throw cleanly rejects the
+    // part without partial side effects.
+    const cer = part.codeExecutionResult;
+    const status = outcomeToStatus(cer.outcome, raw);
+
+    closeCurrentBlock(state, raw);
+    const index = state.nextBlockIndex++;
+    settleCarrierOpportunity(state, part.thoughtSignature, seq, out, raw);
+    state.pendingExecutionRequestId = null;
+
+    const result: CodeExecutionResultBlock = {
+      type: "code_execution_result",
+      requestId,
+      status,
+      // Gemini's `output` is the combined stdout+stderr stream.
+      // Per the `CodeExecutionResultBlock.stdout` comment, providers
+      // that don't split the streams map their combined output here
+      // and leave `stderr` empty.
+      ...(cer.output !== undefined ? { stdout: cer.output } : {}),
+      providerOutcome: cer.outcome,
+    };
+    out.push({
+      type: "inference.code_execution.result",
+      seq,
+      data: { result, index },
+    });
+    return;
+  }
+
   // Signature-only part (no payload, signature set). A still-open
   // thinking block is closed first so its index lands in
   // `pendingSignatureAnchor` before `consumeSignature` claims it --
@@ -951,15 +1095,47 @@ function emitPart(
 
   // `assertSinglePayload` above rules out the no-payload-no-signature
   // case, so a part that lands here had a payload that no earlier
-  // branch claimed. The schema models `text`, `functionCall`, and
-  // `inlineData`; all three have their own branches above. Reaching
-  // this line implies the schema has grown a new payload field
-  // without a matching branch in `emitPart`.
+  // branch claimed. The schema models five payload fields (`text`,
+  // `functionCall`, `inlineData`, `executableCode`,
+  // `codeExecutionResult`); all five have their own branches
+  // above. Reaching this line implies the schema has grown a new
+  // payload field without a matching branch in `emitPart`.
   throw new ProtocolMismatchError(
     `google-genai parseResponse: unhandled part shape; the schema admits ` +
       `a payload field that emitPart has no branch for.`,
     raw,
   );
+}
+
+// Map Gemini's `codeExecutionResult.outcome` enum onto the
+// internal `CodeExecutionResultBlock.status` union. The switch is
+// exhaustive over the three values Gemini documents today; an
+// unknown outcome string surfaces as a `ProtocolMismatchError`
+// naming the value verbatim rather than being bucketed into a
+// fallback status. Adding a new outcome to this mapping is a
+// deliberate code change, not an implicit acceptance of whatever
+// Gemini sends next.
+function outcomeToStatus(
+  outcome: string,
+  raw: unknown,
+): "ok" | "error" | "aborted" | "timeout" {
+  switch (outcome) {
+    case "OUTCOME_OK":
+      return "ok";
+    case "OUTCOME_FAILED":
+      return "error";
+    case "OUTCOME_DEADLINE_EXCEEDED":
+      return "timeout";
+    default:
+      throw new ProtocolMismatchError(
+        `google-genai parseResponse: unknown codeExecutionResult.outcome ` +
+          `${JSON.stringify(outcome)}; the mapping recognizes ` +
+          `OUTCOME_OK, OUTCOME_FAILED, OUTCOME_DEADLINE_EXCEEDED. ` +
+          `A new outcome value is a deliberate adapter change, not a ` +
+          `silent fallback.`,
+        raw,
+      );
+  }
 }
 
 // Settle the carrier-opportunity lifecycle for a non-thinking part
@@ -1099,6 +1275,22 @@ function parseResponse(
       seq,
       data: { usage: tokenUsage },
     });
+
+    // Terminal events seal the response. A still-pending
+    // code-execution request at this point would mean Gemini
+    // emitted an executableCode part without a matching
+    // codeExecutionResult before stopping -- a wire bug, not a
+    // case the harness should silently swallow.
+    if (state.pendingExecutionRequestId !== null) {
+      throw new ProtocolMismatchError(
+        `google-genai parseResponse: response terminated with an ` +
+          `unmatched code-execution request ` +
+          `${JSON.stringify(state.pendingExecutionRequestId)}; the wire ` +
+          `must deliver a codeExecutionResult part before the terminal ` +
+          `finishReason.`,
+        parsed,
+      );
+    }
   }
 
   return out;
