@@ -2692,3 +2692,381 @@ describe("Google GenAI adapter: harness round trip with thinking + tool_call", (
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// parseResponse -- image-output path
+// ---------------------------------------------------------------------------
+
+describe("Google GenAI adapter: parseResponse image output", () => {
+  test("inlineData part emits inference.image_output with the bytes wrapped as a base64 ImageBlock", async () => {
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: "image/png",
+                    data: "iVBORw0KGgoAAAA",
+                  },
+                },
+              ],
+            },
+            index: 0,
+          },
+        ],
+      }),
+    ]);
+
+    expect(events.map((e) => e.type)).toEqual(["inference.image_output"]);
+    const out = events[0];
+    if (out?.type !== "inference.image_output") {
+      throw new Error("expected inference.image_output");
+    }
+    expect(out.data.index).toBe(0);
+    expect(out.data.image).toEqual({
+      type: "image",
+      source: {
+        kind: "base64",
+        mimeType: "image/png",
+        data: "iVBORw0KGgoAAAA",
+      },
+    });
+  });
+
+  test("text then inlineData then text allocates three distinct block indices", async () => {
+    // Pins the per-part block allocation for the image-output
+    // shape: consecutive text parts coalesce into index 0, the
+    // image is atomic at index 1, and trailing text reopens at
+    // index 2 (a NEW logical block, not a return to index 0).
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                { text: "Here " },
+                { text: "you go: " },
+                {
+                  inlineData: {
+                    mimeType: "image/png",
+                    data: "AAA",
+                  },
+                },
+                { text: "(done)" },
+              ],
+            },
+            finishReason: "STOP",
+            index: 0,
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 1,
+          candidatesTokenCount: 1,
+          totalTokenCount: 2,
+        },
+      }),
+    ]);
+
+    const indexedTypes = events
+      .filter(
+        (e) =>
+          e.type === "inference.text.delta" ||
+          e.type === "inference.image_output",
+      )
+      .map((e) => ({ type: e.type, index: e.data.index }));
+
+    expect(indexedTypes).toEqual([
+      { type: "inference.text.delta", index: 0 },
+      { type: "inference.text.delta", index: 0 },
+      { type: "inference.image_output", index: 1 },
+      { type: "inference.text.delta", index: 2 },
+    ]);
+  });
+
+  test("thinking text then inlineData with thoughtSignature pairs the signature to the thinking block", async () => {
+    // The inlineData carrier path mirrors the functionCall carrier
+    // path: a thoughtSignature on the inlineData part settles
+    // against the preceding thinking block via the pending anchor,
+    // NOT against the newly-allocated image block. The signature
+    // event must precede the image_output event so the harness's
+    // per-index router lands the signature at the thinking block's
+    // index rather than at the image's.
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ text: "reasoning", thought: true }],
+            },
+            index: 0,
+          },
+        ],
+      }),
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  inlineData: { mimeType: "image/png", data: "AAA" },
+                  thoughtSignature: "IMG_CARRIER_SIG",
+                },
+              ],
+            },
+            finishReason: "STOP",
+            index: 0,
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 1,
+          candidatesTokenCount: 1,
+          totalTokenCount: 2,
+        },
+      }),
+    ]);
+
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.thinking.delta",
+      "inference.thinking.signature",
+      "inference.image_output",
+      "inference.usage",
+    ]);
+
+    const sig = events[1];
+    if (sig?.type !== "inference.thinking.signature") {
+      throw new Error("expected inference.thinking.signature");
+    }
+    expect(sig.data.signature).toBe("IMG_CARRIER_SIG");
+    expect(sig.data.index).toBe(0);
+
+    const image = events[2];
+    if (image?.type !== "inference.image_output") {
+      throw new Error("expected inference.image_output");
+    }
+    expect(image.data.index).toBe(1);
+  });
+
+  test("inlineData with thoughtSignature but no preceding thinking throws", () => {
+    const bad = JSON.stringify({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              {
+                inlineData: { mimeType: "image/png", data: "AAA" },
+                thoughtSignature: "STRAY",
+              },
+            ],
+          },
+          index: 0,
+        },
+      ],
+    });
+    expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
+    expect(() => adapter.parseResponse(bad)).toThrow(
+      /no preceding thinking block/,
+    );
+  });
+
+  test("inlineData with a non-image MIME throws ProtocolMismatchError", () => {
+    // The parser wraps inlineData as a base64 ImageBlock; an audio
+    // or document MIME would silently mistype the payload as an
+    // image. Reject at the boundary rather than produce a
+    // confidently-wrong ContentBlock.
+    const bad = JSON.stringify({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [{ inlineData: { mimeType: "audio/wav", data: "AAA" } }],
+          },
+          index: 0,
+        },
+      ],
+    });
+    expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
+    expect(() => adapter.parseResponse(bad)).toThrow(/non-image mimeType/);
+  });
+
+  test("inlineData with a multi-payload part throws ProtocolMismatchError", () => {
+    // Mutual-exclusivity of payload fields covers inlineData too.
+    const bad = JSON.stringify({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              {
+                text: "ambiguous",
+                inlineData: { mimeType: "image/png", data: "AAA" },
+              },
+            ],
+          },
+          index: 0,
+        },
+      ],
+    });
+    expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
+    expect(() => adapter.parseResponse(bad)).toThrow(/text\+inlineData/);
+  });
+
+  test("image-output-streaming fixture replay yields text deltas, one image_output, and usage", async () => {
+    // The captured response.sse delivers text "Here" + " you go: " in
+    // events 0-1 (coalesce into one text block at index 0), the
+    // complete image as a single inlineData part in event 2 (index 1),
+    // and a final empty-text STOP event with cumulative usage. The
+    // empty-text part emits no delta but does carry the terminal
+    // finishReason.
+    const sseBytes = readFileSync(
+      join(
+        FIXTURE_ROOT,
+        "gemini-2.5-flash-image",
+        "image-output-streaming",
+        "response.sse",
+      ),
+    );
+    const events = await parseWire(adapter, [sseBytes]);
+
+    const textDeltas = events.filter((e) => e.type === "inference.text.delta");
+    const imageOutputs = events.filter(
+      (e) => e.type === "inference.image_output",
+    );
+    const usageEvents = events.filter((e) => e.type === "inference.usage");
+
+    expect(textDeltas).toHaveLength(2);
+    expect(imageOutputs).toHaveLength(1);
+    expect(usageEvents).toHaveLength(1);
+
+    for (const d of textDeltas) {
+      if (d.type !== "inference.text.delta") continue;
+      expect(d.data.index).toBe(0);
+    }
+    const image = imageOutputs[0];
+    if (image?.type !== "inference.image_output") {
+      throw new Error("expected inference.image_output");
+    }
+    expect(image.data.index).toBe(1);
+    if (image.data.image.source.kind !== "base64") {
+      throw new Error("expected base64 source on the emitted image");
+    }
+    expect(image.data.image.source.mimeType).toBe("image/png");
+    // The captured fixture's base64 is ~380KB. The parser passes the
+    // bytes through verbatim; elision is the logger's concern.
+    expect(image.data.image.source.data.length).toBeGreaterThan(100_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Harness round trip -- image output
+// ---------------------------------------------------------------------------
+
+describe("Google GenAI adapter: harness round trip with image output", () => {
+  const inertScheduler: Scheduler = {
+    setTimeout: () => () => {
+      /* tests do not exercise timer firing */
+    },
+  };
+
+  const SOURCE: InferenceSource = {
+    id: "google-genai:gemini-2.5-flash-image",
+    provider: "google-genai",
+    baseURL: "https://generativelanguage.googleapis.com",
+    apiKey: "test-key",
+    model: "gemini-2.5-flash-image",
+  };
+
+  test("image-output-streaming fixture replay produces a final turn with text then ImageBlock", async () => {
+    // Proves the parser + harness wire image_output end-to-end: the
+    // final turn's content[] must contain the ImageBlock with the
+    // full base64 payload intact. Without the harness's
+    // image_output case handler, this assertion would fail with the
+    // single text block alone and the image would silently drop
+    // from replay; with the handler, both blocks land in arrival
+    // order.
+    const sseBytes = readFileSync(
+      join(
+        FIXTURE_ROOT,
+        "gemini-2.5-flash-image",
+        "image-output-streaming",
+        "response.sse",
+      ),
+    );
+
+    const fetchImpl: Dependencies["fetch"] = () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(sseBytes);
+              controller.close();
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          },
+        ),
+      );
+
+    let seq = 0;
+    const events: InferenceEvent[] = [];
+    for await (const ev of runInference({
+      turns: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Generate a small illustration of a red apple on a white background.",
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      source: SOURCE,
+      nextSeq: () => seq++,
+      deps: { fetch: fetchImpl, scheduler: inertScheduler },
+    })) {
+      events.push(ev);
+    }
+
+    const done = events.find((e) => e.type === "inference.done");
+    if (done?.type !== "inference.done") {
+      throw new Error("expected inference.done event");
+    }
+
+    const blocks = done.data.turn.content;
+    expect(blocks).toHaveLength(2);
+
+    const text = blocks[0];
+    if (text?.type !== "text") {
+      throw new Error("expected first content block to be text");
+    }
+    expect(text.text).toBe("Here you go: ");
+
+    const image = blocks[1];
+    if (image?.type !== "image") {
+      throw new Error("expected second content block to be image");
+    }
+    if (image.source.kind !== "base64") {
+      throw new Error("expected base64 source on the image block");
+    }
+    expect(image.source.mimeType).toBe("image/png");
+    expect(image.source.data.length).toBeGreaterThan(100_000);
+
+    // The harness also yields a mid-stream inference.image_output
+    // event that consumers can subscribe to without waiting for
+    // inference.done. Verifying it lands in the event stream guards
+    // against a regression where the harness's case handler is
+    // removed or silently broken.
+    const imageEvent = events.find((e) => e.type === "inference.image_output");
+    expect(imageEvent).toBeDefined();
+  });
+});

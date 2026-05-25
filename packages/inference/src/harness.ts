@@ -18,6 +18,7 @@ import { type } from "arktype";
 import type {
   CitationBlock,
   ConversationTurn,
+  ImageBlock,
   InferenceEvent,
   InferenceOptions,
   InferenceSource,
@@ -171,7 +172,8 @@ export async function* runInference(
     | { kind: "text"; text: string }
     | { kind: "thinking"; text: string; signature?: string }
     | { kind: "redacted_thinking"; data: string }
-    | { kind: "tool_use"; callId: string };
+    | { kind: "tool_use"; callId: string }
+    | { kind: "image"; image: ImageBlock };
   const blockMap = new Map<number, BlockState>();
   // Citations streamed from the provider. Indexed citations attribute
   // to the block at the matching index and interleave into the
@@ -643,6 +645,39 @@ export async function* runInference(
               break;
             }
 
+            case "inference.image_output": {
+              const imgIdx = requireIndex(raw, "image_output");
+              const existing = blockMap.get(imgIdx);
+              if (existing === undefined) {
+                blockMap.set(imgIdx, { kind: "image", image: raw.data.image });
+              } else {
+                // Image blocks are atomic per event (no streaming
+                // chunks the way text deltas accumulate). A second
+                // image_output event at the same index, or any
+                // collision with a different block kind, is a
+                // protocol violation -- there is no coalesce branch
+                // for image_output by design.
+                throw new ProtocolMismatchError(
+                  `harness: image_output at index ${String(imgIdx)} collides with existing ${existing.kind} block`,
+                  raw,
+                );
+              }
+              // The `partial` snapshot is intentionally not updated:
+              // images are not streamed, so there is no
+              // "partial-image" concept to surface to snapshot
+              // consumers. The atomic event itself is the signal
+              // that the image has arrived. The forwarded payload
+              // carries the ImageBlock verbatim; elision (for logs)
+              // is the consumer's job and is enforced by the
+              // existing invariant test against `image_output`.
+              yield {
+                type: "inference.image_output",
+                seq: nextSeq(),
+                data: { image: raw.data.image, index: imgIdx },
+              };
+              break;
+            }
+
             case "inference.usage": {
               // Accumulate usage — providers may send multiple usage events
               // (e.g., Anthropic sends one at message_start with input
@@ -837,6 +872,16 @@ export async function* runInference(
           );
         }
         emit(finalized, idx);
+        continue;
+      }
+      if (entry.kind === "image") {
+        // Image blocks land here when an adapter delivered an
+        // `inference.image_output` event at this index. The
+        // ImageBlock is stored complete on the entry (images are
+        // atomic, not streamed), so the final-walk emits it
+        // verbatim. Citation interleave applies the same way as
+        // any other block kind.
+        emit(entry.image, idx);
         continue;
       }
       entry satisfies never;

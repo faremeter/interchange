@@ -546,12 +546,17 @@ const EMPTY_PARTIAL: PartialMessage = { text: "" };
 // event except the terminal one. The parser handles the absences
 // directly rather than via schema-default coercion.
 //
-// The schema models the two payload kinds the parser handles today,
-// `text` and `functionCall`. They are mutually exclusive on the wire
-// -- a single part is one kind of content. Arktype's open-object
-// semantics will accept both set simultaneously, so `parseResponse`
-// enforces the exclusivity at the boundary via `assertSinglePayload`
-// and throws `ProtocolMismatchError` on a violation.
+// The schema models the three payload kinds the parser handles:
+// `text`, `functionCall`, and `inlineData` (image output). They are
+// mutually exclusive on the wire: a single part is one kind of
+// content. Arktype's open-object semantics will accept multiple set
+// simultaneously, so `parseResponse` enforces the exclusivity at
+// the boundary via `assertSinglePayload` and throws
+// `ProtocolMismatchError` on a violation. `inlineData` is
+// additionally constrained to `image/*` MIME types at the
+// `emitPart` boundary; a non-image MIME on `inlineData` is treated
+// as a wire shape the parser does not handle (rather than silently
+// wrapping arbitrary bytes as an ImageBlock).
 //
 // `thought` and `thoughtSignature` are metadata that ride alongside
 // the payload: `thought: true` is only meaningful on a `text` part
@@ -564,11 +569,17 @@ const GeminiFunctionCallPayload = type({
   args: "Record<string, unknown>",
 });
 
+const GeminiInlineDataPayload = type({
+  mimeType: "string",
+  data: "string",
+});
+
 const GeminiPart = type({
   "text?": "string",
   "thought?": "boolean",
   "thoughtSignature?": "string",
   "functionCall?": GeminiFunctionCallPayload,
+  "inlineData?": GeminiInlineDataPayload,
 });
 
 const GeminiContent = type({
@@ -699,13 +710,13 @@ function closeCurrentBlock(
 
 // Enforce mutual exclusivity of payload-bearing fields and correct
 // placement of the `thought` flag on a single part. The schema
-// models two payload fields (`text` and `functionCall`); arktype's
-// open-object semantics would otherwise admit a part with both set,
-// or with `thought: true` on a non-text part. Both are wire
-// violations and surface as `ProtocolMismatchError` here. A part
-// with zero payload fields is only legal when a `thoughtSignature`
-// is present (signature-carrier-only part, not seen in the current
-// corpus but spec-permitted).
+// models three payload fields (`text`, `functionCall`, `inlineData`);
+// arktype's open-object semantics would otherwise admit a part with
+// more than one set, or with `thought: true` on a non-text part.
+// Both are wire violations and surface as `ProtocolMismatchError`
+// here. A part with zero payload fields is only legal when a
+// `thoughtSignature` is present (signature-carrier-only part, not
+// seen in the current corpus but spec-permitted).
 function assertSinglePayload(
   part: typeof GeminiPart.infer,
   raw: unknown,
@@ -713,12 +724,14 @@ function assertSinglePayload(
   const payloads: string[] = [];
   if (part.text !== undefined) payloads.push("text");
   if (part.functionCall !== undefined) payloads.push("functionCall");
+  if (part.inlineData !== undefined) payloads.push("inlineData");
 
   if (payloads.length > 1) {
     throw new ProtocolMismatchError(
       `google-genai parseResponse: part has multiple payload fields set ` +
-        `(${payloads.join("+")}); exactly one of {text, functionCall} ` +
-        `must be present per Gemini wire convention.`,
+        `(${payloads.join("+")}); exactly one of ` +
+        `{text, functionCall, inlineData} must be present per Gemini ` +
+        `wire convention.`,
       raw,
     );
   }
@@ -883,6 +896,48 @@ function emitPart(
     return;
   }
 
+  // inlineData part -- atomic image-output block. The image arrives
+  // complete in a single SSE event (no streaming chunks of base64),
+  // so a new block index is allocated and the ImageBlock is emitted
+  // in one `inference.image_output` event. The signature carrier
+  // semantics mirror the functionCall path: any pending thinking
+  // signature is settled BEFORE the image_output event so it
+  // attaches to the preceding thinking block, not the image block.
+  if (part.inlineData !== undefined) {
+    // The parser wraps inlineData as an `ImageBlock`, so a non-
+    // image MIME (e.g. audio/wav, application/pdf) would silently
+    // mistype the payload. Reject at the boundary rather than
+    // produce a confidently-wrong ContentBlock.
+    if (!part.inlineData.mimeType.startsWith("image/")) {
+      throw new ProtocolMismatchError(
+        `google-genai parseResponse: inlineData part has non-image ` +
+          `mimeType ${JSON.stringify(part.inlineData.mimeType)}; the ` +
+          `parser wraps inlineData as an ImageBlock and does not ` +
+          `handle other modalities on this code path.`,
+        raw,
+      );
+    }
+    closeCurrentBlock(state, raw);
+    const index = state.nextBlockIndex++;
+    settleCarrierOpportunity(state, part.thoughtSignature, seq, out, raw);
+    out.push({
+      type: "inference.image_output",
+      seq,
+      data: {
+        image: {
+          type: "image",
+          source: {
+            kind: "base64",
+            mimeType: part.inlineData.mimeType,
+            data: part.inlineData.data,
+          },
+        },
+        index,
+      },
+    });
+    return;
+  }
+
   // Signature-only part (no payload, signature set). A still-open
   // thinking block is closed first so its index lands in
   // `pendingSignatureAnchor` before `consumeSignature` claims it --
@@ -896,10 +951,10 @@ function emitPart(
 
   // `assertSinglePayload` above rules out the no-payload-no-signature
   // case, so a part that lands here had a payload that no earlier
-  // branch claimed. The schema today only models `text` and
-  // `functionCall`; both have their own branches above. Reaching this
-  // line implies the schema has grown a new payload field without a
-  // matching branch in `emitPart`.
+  // branch claimed. The schema models `text`, `functionCall`, and
+  // `inlineData`; all three have their own branches above. Reaching
+  // this line implies the schema has grown a new payload field
+  // without a matching branch in `emitPart`.
   throw new ProtocolMismatchError(
     `google-genai parseResponse: unhandled part shape; the schema admits ` +
       `a payload field that emitPart has no branch for.`,
