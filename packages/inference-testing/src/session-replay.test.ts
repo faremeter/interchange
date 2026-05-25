@@ -435,6 +435,136 @@ describe("createReplayHarness", () => {
     );
   });
 
+  test("serves captured dispatches for parallel tool_calls in streaming order", async () => {
+    // Pins the per-tool FIFO contract the replay harness uses: when
+    // two captured dispatches share a tool name, they must be served
+    // back to the reactor in the order they were observed at
+    // `inference.tool_call.end`. A future change to the production
+    // iterator that re-orders parallel tool_calls within a single
+    // message would break this — and that breakage must surface as a
+    // body divergence rather than a silently-wrong dispatch result.
+    const dir = await makeTmpDir();
+    let exchangeIndex = 0;
+    const harness = createRecordingHarness({
+      outputDir: dir,
+      source: {
+        provider: "anthropic",
+        model: "claude-test",
+        baseURL: "https://api.anthropic.com",
+      },
+      maxExchanges: 2,
+      redactRequestHeaders: [],
+      redactResponseHeaders: [],
+      fetch: async () => {
+        if (exchangeIndex === 0) {
+          exchangeIndex++;
+          return sseResponse(
+            wire.completeResponse("anthropic", {
+              toolCalls: [
+                {
+                  callId: "call_a",
+                  name: "lookup",
+                  argsJSON: '{"key":"A"}',
+                },
+                {
+                  callId: "call_b",
+                  name: "lookup",
+                  argsJSON: '{"key":"B"}',
+                },
+              ],
+              headUsage: ZERO_USAGE,
+              tailUsage: { ...ZERO_USAGE, output: 2 },
+            }),
+          );
+        }
+        exchangeIndex++;
+        return sseResponse(
+          wire.completeResponse("anthropic", {
+            text: "done",
+            headUsage: ZERO_USAGE,
+            tailUsage: { ...ZERO_USAGE, output: 1 },
+          }),
+        );
+      },
+      bypassCIGuardForTests: true,
+    });
+
+    const observed: string[] = [];
+    harness.onTool("lookup", (args) => {
+      if (
+        args !== null &&
+        typeof args === "object" &&
+        "key" in args &&
+        typeof args.key === "string"
+      ) {
+        observed.push(args.key);
+        return { key: args.key, value: `result-${args.key}` };
+      }
+      throw new Error("unexpected lookup args");
+    });
+
+    let seq = 0;
+    const t1Events: InferenceEvent[] = [];
+    for await (const ev of harness.runInference({
+      turns: [userTurn("look up A and B")],
+      source: ANTHROPIC_SOURCE,
+      nextSeq: () => ++seq,
+    })) {
+      t1Events.push(ev);
+    }
+    const t1Done = t1Events.find((e) => e.type === "inference.done");
+    if (t1Done === undefined || t1Done.type !== "inference.done") {
+      throw new Error("expected inference.done in turn 1");
+    }
+    for await (const _ev of harness.runInference({
+      turns: [
+        userTurn("look up A and B"),
+        t1Done.data.turn,
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              callId: "call_a",
+              content: [{ type: "text", text: "rA" }],
+            },
+            {
+              type: "tool_result",
+              callId: "call_b",
+              content: [{ type: "text", text: "rB" }],
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      source: ANTHROPIC_SOURCE,
+      nextSeq: () => ++seq,
+    })) {
+      // drain
+    }
+    await harness.finalize();
+
+    expect(observed).toEqual(["A", "B"]);
+
+    const replay = await createReplayHarness({ sessionDir: dir });
+    try {
+      expect(replay.capturedDispatches).toHaveLength(2);
+      expect(replay.capturedDispatches[0]?.args).toEqual({ key: "A" });
+      expect(replay.capturedDispatches[1]?.args).toEqual({ key: "B" });
+
+      // Drive turn 1: the body-aware matcher routes the fetch and
+      // production runInference dispatches both tools. The replay
+      // harness's per-tool FIFO must serve A's result first, then
+      // B's. If FIFO ordering ever flips, the next turn's request
+      // body would carry the wrong values for the call_a/call_b
+      // tool_result blocks — surfaced as SessionReplayMismatchError
+      // on the second runTurn.
+      await replay.runTurn({ turns: [userTurn("look up A and B")] });
+    } finally {
+      replay.dispose();
+    }
+  });
+
   test("assertFullyConsumed throws when the caller stops short", async () => {
     const dir = await makeTmpDir();
     await recordToolRoundtripSession(dir);
