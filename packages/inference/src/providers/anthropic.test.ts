@@ -710,3 +710,52 @@ describe("Anthropic parser — citations_delta to inference.citation", () => {
     }
   });
 });
+
+describe("Anthropic adapter — responseFormat boundary", () => {
+  const conversation: ConversationTurn[] = [
+    {
+      role: "user",
+      content: [{ type: "text", text: "Extract structured fields." }],
+      timestamp: 1000,
+    },
+  ];
+
+  test("omitted responseFormat builds a request without throwing", () => {
+    const adapter = createAnthropicAdapter();
+    const req = adapter.buildRequest(conversation, "claude-sonnet-4", {});
+    expect(req.url).toBe("/v1/messages");
+  });
+
+  test("responseFormat.kind=text builds a request without throwing", () => {
+    // Free-form text is Anthropic's default; the option is a no-op
+    // here rather than a throw so the cross-provider call site can
+    // pass `{ kind: "text" }` uniformly without conditional logic.
+    const adapter = createAnthropicAdapter();
+    const req = adapter.buildRequest(conversation, "claude-sonnet-4", {
+      responseFormat: { kind: "text" },
+    });
+    expect(req.url).toBe("/v1/messages");
+  });
+
+  test("responseFormat.kind=json throws at the marshaling boundary", () => {
+    const adapter = createAnthropicAdapter();
+    expect(() =>
+      adapter.buildRequest(conversation, "claude-sonnet-4", {
+        responseFormat: { kind: "json" },
+      }),
+    ).toThrow(/does not support structured outputs/);
+  });
+
+  test("responseFormat.kind=json-schema throws and names the kind", () => {
+    const adapter = createAnthropicAdapter();
+    expect(() =>
+      adapter.buildRequest(conversation, "claude-sonnet-4", {
+        responseFormat: {
+          kind: "json-schema",
+          name: "user",
+          schema: { type: "object" },
+        },
+      }),
+    ).toThrow(/json-schema/);
+  });
+});
