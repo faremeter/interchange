@@ -209,6 +209,14 @@ describe("EventCollector", () => {
                 reference: "file_report",
               },
             },
+            {
+              type: "image",
+              source: {
+                kind: "url",
+                mimeType: "image/jpeg",
+                url: "https://example.com/photo.jpg",
+              },
+            },
           ],
           model: "gpt-4",
         },
@@ -217,8 +225,8 @@ describe("EventCollector", () => {
     );
 
     const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
-    // step-start + 5 media parts + step-finish = 7 parts
-    expect(parts).toHaveLength(7);
+    // step-start + 6 media parts + step-finish = 8 parts
+    expect(parts).toHaveLength(8);
 
     expect(at(parts, 1).values.type).toBe("file");
     expect(at(parts, 1).values.metadata).toEqual({
@@ -253,6 +261,13 @@ describe("EventCollector", () => {
       kind: "file-reference",
       mimeType: "application/pdf",
       reference: "file_report",
+    });
+
+    expect(at(parts, 6).values.type).toBe("file");
+    expect(at(parts, 6).values.metadata).toEqual({
+      kind: "url",
+      mimeType: "image/jpeg",
+      reference: "https://example.com/photo.jpg",
     });
   });
 

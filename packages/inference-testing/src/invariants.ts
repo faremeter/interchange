@@ -94,10 +94,24 @@ export function formatEventBrief(event: InferenceEvent): string {
       // file-reference URIs can be signed URLs or other large opaque
       // handles; abbreviate them with the same threshold the rest of
       // the helper uses for string fields rather than dump them verbatim.
-      const summary =
-        src.kind === "base64"
-          ? `base64 mime=${src.mimeType} <${String(src.data.length)} chars>`
-          : `file-reference mime=${src.mimeType} reference=${abbreviateString(src.reference)}`;
+      // The `url` source variant lands in the same shape category as
+      // `file-reference` for log-summary purposes -- both are
+      // dereferencable references rather than inline bytes.
+      let summary: string;
+      switch (src.kind) {
+        case "base64":
+          summary = `base64 mime=${src.mimeType} <${String(src.data.length)} chars>`;
+          break;
+        case "file-reference":
+          summary = `file-reference mime=${src.mimeType} reference=${abbreviateString(src.reference)}`;
+          break;
+        case "url":
+          summary = `url mime=${src.mimeType} url=${abbreviateString(src.url)}`;
+          break;
+        default:
+          src satisfies never;
+          throw new Error(`unreachable: unknown MediaSource kind`);
+      }
       return `${head} { image: ${summary} }`;
     }
     case "inference.citation":

@@ -314,7 +314,7 @@ export type MediaBlock = Extract<
 
 export type ExpectMediaBlockOpts = {
   /** When supplied, asserts the block's source.kind matches before any chain. */
-  source?: "base64" | "file-reference";
+  source?: "base64" | "file-reference" | "url";
 };
 
 export type MediaBlockAssertion = {
@@ -322,14 +322,15 @@ export type MediaBlockAssertion = {
   toHaveMimeType(expected: string): MediaBlockAssertion;
   /**
    * Assert the decoded payload byte count is at least `min`. Only valid on
-   * base64 sources — throws on file-reference sources because their byte
-   * length is provider-side and not observable from the block.
+   * base64 sources — throws on non-base64 sources (file-reference, url)
+   * because their byte length is provider-side and not observable from
+   * the block.
    */
   toHaveByteLengthAtLeast(min: number): MediaBlockAssertion;
   /**
    * Exact byte count. Use sparingly — provider re-encodes are common and
    * `toHaveByteLengthAtLeast` is usually the right assertion. Same
-   * file-reference caveat as `toHaveByteLengthAtLeast`.
+   * non-base64 caveat as `toHaveByteLengthAtLeast`.
    */
   toHaveByteLength(exact: number): MediaBlockAssertion;
 };
@@ -364,12 +365,19 @@ function base64ByteLength(b64: string): number {
 
 function describeMediaBlock(block: MediaBlock): string {
   const src = block.source;
-  if (src.kind === "base64") {
-    return `<${block.type} mime=${src.mimeType} source=base64 bytes=${String(
-      base64ByteLength(src.data),
-    )}>`;
+  switch (src.kind) {
+    case "base64":
+      return `<${block.type} mime=${src.mimeType} source=base64 bytes=${String(
+        base64ByteLength(src.data),
+      )}>`;
+    case "file-reference":
+      return `<${block.type} mime=${src.mimeType} source=file-reference reference=${src.reference}>`;
+    case "url":
+      return `<${block.type} mime=${src.mimeType} source=url url=${src.url}>`;
+    default:
+      src satisfies never;
+      throw new Error(`unreachable: unknown MediaSource kind`);
   }
-  return `<${block.type} mime=${src.mimeType} source=file-reference reference=${src.reference}>`;
 }
 
 export function expectMediaBlock(
@@ -395,7 +403,7 @@ export function expectMediaBlock(
     toHaveByteLengthAtLeast(min) {
       if (block.source.kind !== "base64") {
         throw new Error(
-          `expectMediaBlock.toHaveByteLengthAtLeast: byte length is not observable on file-reference sources; got ${describeMediaBlock(block)}`,
+          `expectMediaBlock.toHaveByteLengthAtLeast: byte length is not observable on non-base64 sources; got ${describeMediaBlock(block)}`,
         );
       }
       const actual = base64ByteLength(block.source.data);
@@ -410,7 +418,7 @@ export function expectMediaBlock(
     toHaveByteLength(exact) {
       if (block.source.kind !== "base64") {
         throw new Error(
-          `expectMediaBlock.toHaveByteLength: byte length is not observable on file-reference sources; got ${describeMediaBlock(block)}`,
+          `expectMediaBlock.toHaveByteLength: byte length is not observable on non-base64 sources; got ${describeMediaBlock(block)}`,
         );
       }
       const actual = base64ByteLength(block.source.data);
