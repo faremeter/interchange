@@ -19,12 +19,19 @@
 // direct OpenAI deployment plug-in is wired.
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { type } from "arktype";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { runCompatReplay } from "@intx/inference-testing";
-import type { InferenceEvent } from "@intx/types/runtime";
+import { createOpenAIAdapter, createGoogleGenAIAdapter } from "@intx/inference";
+import { INTENTS } from "@intx/inference-discovery/catalog";
+import type {
+  ConversationTurn,
+  InferenceEvent,
+  InferenceOptions,
+} from "@intx/types/runtime";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -60,7 +67,7 @@ function accumulateText(events: readonly InferenceEvent[]): string {
     .join("");
 }
 
-async function replayStreamingFixture(opts: {
+async function replayFixture(opts: {
   provider: string;
   model: string;
   capability: string;
@@ -89,39 +96,222 @@ async function replayStreamingFixture(opts: {
   return result.events;
 }
 
+function assertSchemaConformant(events: readonly InferenceEvent[]): void {
+  const accumulated = accumulateText(events).trim();
+  const parsed: unknown = JSON.parse(accumulated);
+  const validated = UserInfo.assert(parsed);
+  // The catalog intent's prompt names Alice / 30 / alice@example.com
+  // verbatim; on the capture day the model surfaced those values.
+  // Future re-captures may produce different equivalent JSON, so the
+  // assertion sticks to the schema shape rather than the specific
+  // values.
+  expect(typeof validated.name).toBe("string");
+  expect(Number.isInteger(validated.age)).toBe(true);
+  expect(typeof validated.email).toBe("string");
+}
+
+// Non-streaming captures live as response.json (the raw provider
+// response body), not response.sse. runCompatReplay is SSE-only —
+// the harness consumes the streaming wire format end-to-end. For
+// the non-streaming variant the test extracts the response payload
+// directly from disk and pulls the assistant content via a
+// provider-specific path. The runtime adapter does not parse
+// non-streaming responses today (that's its own concern), so the
+// extraction lives here.
+
+const OpenAIChatCompletion = type({
+  choices: type({
+    message: type({
+      "content?": "string | null",
+    }),
+  }).array(),
+});
+
+const GeminiResponse = type({
+  candidates: type({
+    content: type({
+      parts: type({
+        "text?": "string",
+      }).array(),
+    }),
+  }).array(),
+});
+
+function readOpenAINonStreamingContent(opts: {
+  provider: string;
+  model: string;
+  capability: string;
+}): string {
+  const responsePath = path.join(
+    FIXTURE_ROOT,
+    opts.provider,
+    opts.model,
+    opts.capability,
+    "response.json",
+  );
+  const raw = JSON.parse(readFileSync(responsePath, "utf8"));
+  const parsed = OpenAIChatCompletion.assert(raw);
+  const content = parsed.choices[0]?.message.content;
+  if (typeof content !== "string") {
+    throw new Error(
+      `expected non-empty string content in ${responsePath}; got ${typeof content}`,
+    );
+  }
+  return content;
+}
+
+function readGeminiNonStreamingContent(opts: {
+  provider: string;
+  model: string;
+  capability: string;
+}): string {
+  const responsePath = path.join(
+    FIXTURE_ROOT,
+    opts.provider,
+    opts.model,
+    opts.capability,
+    "response.json",
+  );
+  const raw = JSON.parse(readFileSync(responsePath, "utf8"));
+  const parsed = GeminiResponse.assert(raw);
+  const text = parsed.candidates[0]?.content.parts
+    .map((p) => p.text ?? "")
+    .join("");
+  if (text === undefined || text.length === 0) {
+    throw new Error(`expected non-empty text in ${responsePath}`);
+  }
+  return text;
+}
+
+function assertContentSchemaConformant(content: string): void {
+  const parsed: unknown = JSON.parse(content.trim());
+  const validated = UserInfo.assert(parsed);
+  expect(typeof validated.name).toBe("string");
+  expect(Number.isInteger(validated.age)).toBe(true);
+  expect(typeof validated.email).toBe("string");
+}
+
 describe("structured-output round-trip — opencode-zen gpt-5.4-mini", () => {
+  test("non-streaming JSON parses against the catalog schema", () => {
+    const content = readOpenAINonStreamingContent({
+      provider: "opencode-zen",
+      model: "gpt-5.4-mini",
+      capability: "structured-output",
+    });
+    assertContentSchemaConformant(content);
+  });
+
   test("streaming JSON parses against the catalog schema", async () => {
-    const events = await replayStreamingFixture({
+    const events = await replayFixture({
       provider: "opencode-zen",
       model: "gpt-5.4-mini",
       capability: "structured-output-streaming",
     });
-    const accumulated = accumulateText(events).trim();
-    const parsed: unknown = JSON.parse(accumulated);
-    const validated = UserInfo.assert(parsed);
-    // The catalog intent's prompt names Alice / 30 / alice@example.com
-    // verbatim; on the capture day the model surfaced those values.
-    // Future re-captures may produce different equivalent JSON, so
-    // the assertion sticks to the schema shape rather than the
-    // specific values.
-    expect(typeof validated.name).toBe("string");
-    expect(Number.isInteger(validated.age)).toBe(true);
-    expect(typeof validated.email).toBe("string");
+    assertSchemaConformant(events);
   });
 });
 
 describe("structured-output round-trip — google-genai gemini-2.5-flash", () => {
+  test("non-streaming JSON parses against the catalog schema", () => {
+    const content = readGeminiNonStreamingContent({
+      provider: "google-genai",
+      model: "gemini-2.5-flash",
+      capability: "structured-output",
+    });
+    assertContentSchemaConformant(content);
+  });
+
   test("streaming JSON parses against the catalog schema", async () => {
-    const events = await replayStreamingFixture({
+    const events = await replayFixture({
       provider: "google-genai",
       model: "gemini-2.5-flash",
       capability: "structured-output-streaming",
     });
-    const accumulated = accumulateText(events).trim();
-    const parsed: unknown = JSON.parse(accumulated);
-    const validated = UserInfo.assert(parsed);
-    expect(typeof validated.name).toBe("string");
-    expect(Number.isInteger(validated.age)).toBe(true);
-    expect(typeof validated.email).toBe("string");
+    assertSchemaConformant(events);
+  });
+});
+
+// Drift guard: the per-provider responseFormat translation lives in
+// two places — the runtime adapter (`@intx/inference`) and the
+// discovery plug-in (`@intx/inference-discovery-*`). The two
+// builders read from the same CapabilityIntent shape and must
+// produce the same provider-native wire payload, but nothing in the
+// type system pins that. These tests build a request through the
+// adapter using the catalog intent's responseFormat as input, then
+// load the captured request body from disk (which the discovery
+// plug-in produced), and assert the provider-native structured-
+// output field is byte-equal. A drift between the two builders
+// fails one of these tests with the diff.
+
+const STRUCTURED_INTENT = INTENTS["structured-output"];
+const PROMPT_TURN: ConversationTurn = {
+  role: "user",
+  content: [{ type: "text", text: STRUCTURED_INTENT.prompt }],
+  timestamp: 0,
+};
+const OPTIONS_FROM_INTENT: InferenceOptions = {
+  ...(STRUCTURED_INTENT.responseFormat !== undefined
+    ? { responseFormat: STRUCTURED_INTENT.responseFormat }
+    : {}),
+};
+
+const CapturedOpenAIBody = type({
+  "response_format?": "unknown",
+});
+
+const CapturedGeminiBody = type({
+  "generationConfig?": type({
+    "responseMimeType?": "string",
+    "responseSchema?": "unknown",
+  }),
+});
+
+describe("translation drift guard — adapter vs discovery plug-in", () => {
+  test("OpenAI: adapter.response_format matches captured request body", () => {
+    const adapter = createOpenAIAdapter();
+    const adapterReq = adapter.buildRequest(
+      [PROMPT_TURN],
+      "gpt-5.4-mini",
+      OPTIONS_FROM_INTENT,
+    );
+    const adapterBody = CapturedOpenAIBody.assert(JSON.parse(adapterReq.body));
+    const capturedRaw = readFileSync(
+      path.join(
+        FIXTURE_ROOT,
+        "opencode-zen/gpt-5.4-mini/structured-output/request.json",
+      ),
+      "utf8",
+    );
+    const capturedBody = CapturedOpenAIBody.assert(JSON.parse(capturedRaw));
+    expect(adapterBody.response_format).toEqual(capturedBody.response_format);
+  });
+
+  test("Google GenAI: adapter.generationConfig matches captured request body", () => {
+    const adapter = createGoogleGenAIAdapter();
+    const adapterReq = adapter.buildRequest(
+      [PROMPT_TURN],
+      "gemini-2.5-flash",
+      OPTIONS_FROM_INTENT,
+    );
+    const adapterBody = CapturedGeminiBody.assert(JSON.parse(adapterReq.body));
+    const capturedRaw = readFileSync(
+      path.join(
+        FIXTURE_ROOT,
+        "google-genai/gemini-2.5-flash/structured-output/request.json",
+      ),
+      "utf8",
+    );
+    const capturedBody = CapturedGeminiBody.assert(JSON.parse(capturedRaw));
+    // Only the structured-output-relevant subset of generationConfig
+    // is in the contract: maxOutputTokens / thinkingConfig / etc.
+    // may differ between the discovery probe and an adapter call
+    // configured with different timeouts. Pin only responseMimeType
+    // and responseSchema.
+    expect(adapterBody.generationConfig?.responseMimeType).toBe(
+      capturedBody.generationConfig?.responseMimeType,
+    );
+    expect(adapterBody.generationConfig?.responseSchema).toEqual(
+      capturedBody.generationConfig?.responseSchema,
+    );
   });
 });
