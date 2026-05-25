@@ -490,6 +490,40 @@ describe("createRecordingHarness end-to-end", () => {
     expect(exchangeFiles).not.toContain("request.json");
   });
 
+  test("omits init.body on requests with no body so GET/HEAD adapters work", async () => {
+    const dir = await makeTmpDir();
+    const seen: { bodyKeyPresent: boolean | null; method: string | null } = {
+      bodyKeyPresent: null,
+      method: null,
+    };
+    const harness = createRecordingHarness({
+      outputDir: dir,
+      source: ANTHROPIC_SOURCE,
+      maxExchanges: 1,
+      redactRequestHeaders: [],
+      redactResponseHeaders: [],
+      fetch: async (_input, init) => {
+        // The wrapper must not pass `body` at all on GET/HEAD — undici
+        // rejects bodies on those methods, including the empty string.
+        seen.bodyKeyPresent = init !== undefined && "body" in init;
+        seen.method = init?.method ?? null;
+        return new Response("{}", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      bypassCIGuardForTests: true,
+    });
+
+    await harness.deps.fetch("https://example.invalid/health", {
+      method: "GET",
+    });
+    await harness.finalize();
+
+    expect(seen.method).toBe("GET");
+    expect(seen.bodyKeyPresent).toBe(false);
+  });
+
   test("writes session.json even when finalize is called early in a partial recording", async () => {
     const dir = await makeTmpDir();
     const harness = createRecordingHarness({
