@@ -2,16 +2,19 @@
 
 This note records the live wire behaviour of the OpenCode Zen relay
 as observed during the INTR-78 Phase 2 capture campaign. OpenCode Zen
-is an OpenAI-compatible Chat Completions relay that fronts five
-upstream model providers (Moonshot, Z.AI, DeepSeek, Alibaba, and
-Xiaomi MiMo) behind the single endpoint
-`https://opencode.ai/zen/go/v1/chat/completions`. For each model and
-each captured capability we contrast the OpenAI Chat Completions
-reference shape (and, where applicable, the upstream vendor's own
-documentation) against the bytes the relay actually emitted, and
-call out every place the two diverged. The captures were taken on
-2026-05-20 using `Authorization: Bearer <key>` authentication
-against the relay's `chat/completions` surface.
+is an OpenAI-compatible Chat Completions relay that fronts upstream
+model providers behind a single endpoint. The captures discussed
+here were taken against the open-weights tier at
+`https://opencode.ai/zen/go/v1/chat/completions` (Moonshot, Z.AI,
+DeepSeek, Alibaba, and Xiaomi MiMo); later captures target the
+broader `/zen/v1` tier, which is a superset and exposes hosted GPT,
+Claude, and Gemini alongside the open-weights catalog. For each
+model and each captured capability we contrast the OpenAI Chat
+Completions reference shape (and, where applicable, the upstream
+vendor's own documentation) against the bytes the relay actually
+emitted, and call out every place the two diverged. The original
+captures were taken on 2026-05-20 using `Authorization: Bearer <key>`
+authentication against the relay's `chat/completions` surface.
 
 The capture corpus lives at
 `packages/inference-testing/wire/opencode-zen/`. The
