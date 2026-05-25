@@ -336,6 +336,105 @@ describe("createReplayHarness", () => {
     );
   });
 
+  test("rejects when an exchange has a raw-body request capture", async () => {
+    const dir = await makeTmpDir();
+    await fs.writeFile(
+      path.join(dir, "session.json"),
+      JSON.stringify({
+        sessionSchemaVersion: "1",
+        source: { provider: "x", model: "y", baseURL: "z" },
+        capturedAt: "2026-05-25T12:00:00Z",
+      }),
+    );
+    await fs.mkdir(path.join(dir, "exchanges", "0"), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, "exchanges", "0", "request.bin"),
+      new Uint8Array([1, 2, 3]),
+    );
+    await fs.writeFile(
+      path.join(dir, "exchanges", "0", "request-headers.json"),
+      "{}",
+    );
+    await fs.writeFile(
+      path.join(dir, "exchanges", "0", "response.sse"),
+      new Uint8Array(),
+    );
+    await fs.writeFile(
+      path.join(dir, "exchanges", "0", "response-headers.json"),
+      "{}",
+    );
+    await expect(createReplayHarness({ sessionDir: dir })).rejects.toThrow(
+      /raw-body request \(request\.bin\)/,
+    );
+  });
+
+  test("rejects when an exchange has both response.sse and response.json", async () => {
+    const dir = await makeTmpDir();
+    await fs.writeFile(
+      path.join(dir, "session.json"),
+      JSON.stringify({
+        sessionSchemaVersion: "1",
+        source: { provider: "x", model: "y", baseURL: "z" },
+        capturedAt: "2026-05-25T12:00:00Z",
+      }),
+    );
+    await fs.mkdir(path.join(dir, "exchanges", "0"), { recursive: true });
+    await fs.writeFile(path.join(dir, "exchanges", "0", "request.json"), "{}");
+    await fs.writeFile(
+      path.join(dir, "exchanges", "0", "request-headers.json"),
+      "{}",
+    );
+    await fs.writeFile(
+      path.join(dir, "exchanges", "0", "response.sse"),
+      new Uint8Array(),
+    );
+    await fs.writeFile(path.join(dir, "exchanges", "0", "response.json"), "{}");
+    await fs.writeFile(
+      path.join(dir, "exchanges", "0", "response-headers.json"),
+      "{}",
+    );
+    await expect(createReplayHarness({ sessionDir: dir })).rejects.toThrow(
+      /both response\.sse and response\.json/,
+    );
+  });
+
+  test("rejects a dispatch whose captured result collides with the delayed-envelope shape", async () => {
+    const dir = await makeTmpDir();
+    await fs.writeFile(
+      path.join(dir, "session.json"),
+      JSON.stringify({
+        sessionSchemaVersion: "1",
+        source: { provider: "x", model: "y", baseURL: "z" },
+        capturedAt: "2026-05-25T12:00:00Z",
+      }),
+    );
+    await fs.mkdir(path.join(dir, "exchanges", "0"), { recursive: true });
+    await fs.writeFile(path.join(dir, "exchanges", "0", "request.json"), "{}");
+    await fs.writeFile(
+      path.join(dir, "exchanges", "0", "request-headers.json"),
+      "{}",
+    );
+    await fs.writeFile(
+      path.join(dir, "exchanges", "0", "response.sse"),
+      new Uint8Array(),
+    );
+    await fs.writeFile(
+      path.join(dir, "exchanges", "0", "response-headers.json"),
+      "{}",
+    );
+    await fs.mkdir(path.join(dir, "dispatches"), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, "dispatches", "0-weather.json"),
+      JSON.stringify({
+        args: { location: "SF" },
+        result: { result: "inner", virtualDelayMs: 50 },
+      }),
+    );
+    await expect(createReplayHarness({ sessionDir: dir })).rejects.toThrow(
+      /delayed envelope/,
+    );
+  });
+
   test("assertFullyConsumed throws when the caller stops short", async () => {
     const dir = await makeTmpDir();
     await recordToolRoundtripSession(dir);

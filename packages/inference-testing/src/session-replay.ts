@@ -27,26 +27,52 @@ import { UnmatchedFetchError } from "./errors";
 import { setupHarness } from "./harness";
 import { loadSessionManifest, type SessionManifest } from "./session-manifest";
 
+/**
+ * Discriminates the specific shape of the contract violation. Used by
+ * `SessionReplayMismatchError.kind` so callers can branch (e.g., "I
+ * expected the conversation to terminate early; ignore
+ * exchanges_under_consumed but re-raise body_diverged").
+ */
+export type SessionReplayMismatchKind =
+  | "body_diverged"
+  | "no_matcher_fired"
+  | "exchanges_under_consumed"
+  | "dispatches_under_consumed"
+  | "dispatches_over_consumed";
+
 export class SessionReplayMismatchError extends Error {
-  readonly exchangeIndex: number;
+  readonly kind: SessionReplayMismatchKind;
+  readonly exchangeIndex: number | null;
+  readonly toolName: string | null;
   readonly captured: unknown;
   readonly actual: unknown;
   readonly diff: string;
   readonly sessionDir: string;
 
   constructor(opts: {
-    exchangeIndex: number;
+    kind: SessionReplayMismatchKind;
+    exchangeIndex?: number | null;
+    toolName?: string | null;
     captured: unknown;
     actual: unknown;
     diff: string;
     sessionDir: string;
   }) {
+    const exchangeIndex = opts.exchangeIndex ?? null;
+    const toolName = opts.toolName ?? null;
+    const subject =
+      exchangeIndex !== null
+        ? `exchange ${String(exchangeIndex)}`
+        : toolName !== null
+          ? `tool "${toolName}"`
+          : "(session)";
     super(
-      `Session replay: exchange ${String(opts.exchangeIndex)} request body ` +
-        `did not match the captured request in ${opts.sessionDir}.\n${opts.diff}`,
+      `Session replay [${opts.kind}]: ${subject} in ${opts.sessionDir}.\n${opts.diff}`,
     );
     this.name = "SessionReplayMismatchError";
-    this.exchangeIndex = opts.exchangeIndex;
+    this.kind = opts.kind;
+    this.exchangeIndex = exchangeIndex;
+    this.toolName = toolName;
     this.captured = opts.captured;
     this.actual = opts.actual;
     this.diff = opts.diff;
@@ -197,25 +223,46 @@ function canonicaliseJSONText(text: string): string {
   return JSON.stringify(canonicalise(parsed));
 }
 
-function shortDiff(captured: unknown, actual: unknown): string {
-  const capturedText = JSON.stringify(canonicalise(captured), null, 2);
-  const actualText = JSON.stringify(canonicalise(actual), null, 2);
-  const capLines = capturedText.split("\n");
-  const actLines = actualText.split("\n");
-  const lines: string[] = ["Captured request body did not match actual:"];
-  const max = Math.max(capLines.length, actLines.length);
-  for (let i = 0; i < max; i++) {
-    const c = capLines[i];
-    const a = actLines[i];
-    if (c === a) continue;
-    lines.push(`  -- captured[${String(i)}]: ${c ?? "<missing>"}`);
-    lines.push(`  ++ actual  [${String(i)}]: ${a ?? "<missing>"}`);
-    if (lines.length >= 24) {
-      lines.push("  (diff truncated)");
-      break;
-    }
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(p);
+    return stat.isFile();
+  } catch (cause) {
+    const code =
+      cause !== null && typeof cause === "object" && "code" in cause
+        ? cause.code
+        : undefined;
+    if (code === "ENOENT") return false;
+    throw cause;
   }
-  return lines.join("\n");
+}
+
+// A captured dispatch result shaped `{ result, virtualDelayMs: <finite
+// non-negative number> }` collides with the test-harness "delayed
+// envelope" return shape that `ToolHandlerRegistry.isDelayedEnvelope`
+// unwraps. If a session ever carried such a result and the replay
+// harness served it verbatim to `scenario.onTool`, the registry would
+// schedule a virtual delay and pass only the inner `.result` to the
+// reactor. That's wrong-but-not-loud behavior; recording rejects it
+// at write time too. Reject at load time so the failure is contained
+// to the load boundary.
+function rejectEnvelopeShape(
+  index: number,
+  toolName: string,
+  result: unknown,
+): void {
+  if (result === null || typeof result !== "object") return;
+  if (!("result" in result) || !("virtualDelayMs" in result)) return;
+  const delay: unknown = Reflect.get(result, "virtualDelayMs");
+  if (typeof delay !== "number" || !Number.isFinite(delay) || delay < 0) {
+    return;
+  }
+  throw new Error(
+    `Session replay: dispatch ${String(index)} for tool "${toolName}" has a ` +
+      `captured result shaped { result, virtualDelayMs: ${String(delay)} }, which ` +
+      `would be unwrapped as a test-harness delayed envelope by the tool ` +
+      `dispatch registry. Captured results must not collide with that shape.`,
+  );
 }
 
 async function readJSONObject(
@@ -250,10 +297,37 @@ async function loadExchanges(sessionDir: string): Promise<InternalExchange[]> {
   const out: InternalExchange[] = [];
   for (const { name, index } of parsed) {
     const dir = path.join(exchangesRoot, name);
-    const requestText = await fs.readFile(
-      path.join(dir, "request.json"),
-      "utf-8",
-    );
+
+    // The recording side can write either `request.json` (JSON body)
+    // or `request.bin` (raw bytes) — they're mutually exclusive in a
+    // well-formed capture. Replay today only matches JSON bodies via
+    // canonical comparison; if `request.bin` is present, we cannot
+    // serve this session and the right move is to reject loudly at
+    // load time rather than fail later with an opaque ENOENT.
+    const requestJsonPath = path.join(dir, "request.json");
+    const requestBinPath = path.join(dir, "request.bin");
+    const jsonRequestExists = await fileExists(requestJsonPath);
+    const binRequestExists = await fileExists(requestBinPath);
+    if (binRequestExists && !jsonRequestExists) {
+      throw new Error(
+        `Session replay: exchange ${String(index)} in ${dir} has a raw-body ` +
+          `request (request.bin) but session replay only supports JSON request ` +
+          `bodies. Sessions with raw-body requests cannot be replayed yet.`,
+      );
+    }
+    if (binRequestExists && jsonRequestExists) {
+      throw new Error(
+        `Session replay: exchange ${String(index)} in ${dir} has both ` +
+          `request.json and request.bin; the capture is malformed.`,
+      );
+    }
+    if (!jsonRequestExists) {
+      throw new Error(
+        `Session replay: exchange ${String(index)} in ${dir} has no ` +
+          `request.json (and no request.bin); the capture is malformed.`,
+      );
+    }
+    const requestText = await fs.readFile(requestJsonPath, "utf-8");
     const capturedRequest: unknown = JSON.parse(requestText);
 
     const parsedHeaders = await readJSONObject(
@@ -266,29 +340,29 @@ async function loadExchanges(sessionDir: string): Promise<InternalExchange[]> {
 
     const ssePath = path.join(dir, "response.sse");
     const jsonPath = path.join(dir, "response.json");
+    const sseExists = await fileExists(ssePath);
+    const jsonExists = await fileExists(jsonPath);
+    // Both present is a sign of a bad merge or partial regeneration;
+    // refuse to guess which one is canonical.
+    if (sseExists && jsonExists) {
+      throw new Error(
+        `Session replay: exchange ${String(index)} in ${dir} has both ` +
+          `response.sse and response.json; the capture is malformed.`,
+      );
+    }
     let responseBytes: Uint8Array;
     let responseKind: "sse" | "json";
-    let sseExists = false;
-    try {
-      const stat = await fs.stat(ssePath);
-      sseExists = stat.isFile();
-    } catch {
-      sseExists = false;
-    }
     if (sseExists) {
       responseBytes = new Uint8Array(await fs.readFile(ssePath));
       responseKind = "sse";
+    } else if (jsonExists) {
+      const text = await fs.readFile(jsonPath, "utf-8");
+      responseBytes = new TextEncoder().encode(text);
+      responseKind = "json";
     } else {
-      try {
-        const text = await fs.readFile(jsonPath, "utf-8");
-        responseBytes = new TextEncoder().encode(text);
-        responseKind = "json";
-      } catch (cause) {
-        throw new Error(
-          `Session replay: exchange ${String(index)} in ${dir} has neither response.sse nor response.json`,
-          { cause },
-        );
-      }
+      throw new Error(
+        `Session replay: exchange ${String(index)} in ${dir} has neither response.sse nor response.json`,
+      );
     }
 
     out.push({
@@ -337,6 +411,7 @@ async function loadDispatches(sessionDir: string): Promise<CapturedDispatch[]> {
         `Session replay: dispatch ${name} is missing "args" or "result"`,
       );
     }
+    rejectEnvelopeShape(index, toolName, fileRecord["result"]);
     out.push({
       index,
       toolName,
@@ -398,10 +473,16 @@ export async function createReplayHarness(
   for (const [toolName, queue] of dispatchQueues) {
     inner.scenario.onTool(toolName, () => {
       if (queue.consumed >= queue.results.length) {
-        throw new Error(
-          `Session replay: tool "${toolName}" dispatched more times than the ` +
-            `capture recorded (${String(queue.results.length)} captured dispatches)`,
-        );
+        throw new SessionReplayMismatchError({
+          kind: "dispatches_over_consumed",
+          toolName,
+          captured: queue.results,
+          actual: null,
+          diff:
+            `Tool "${toolName}" dispatched more times than the capture recorded ` +
+            `(${String(queue.results.length)} captured dispatches).`,
+          sessionDir,
+        });
       }
       const next = queue.results[queue.consumed++];
       return next;
@@ -422,13 +503,24 @@ export async function createReplayHarness(
         `Session replay: exchange ${String(exchangeIndex)} missing from loaded set (internal bug)`,
       );
     }
-    turnCount++;
+    // Track which matched request count we had BEFORE the turn so we
+    // can identify this turn's matched request by index after it
+    // fires. We rely on the invariant that runTurn is the only code
+    // path in this harness that registers matchers — see the index
+    // safety check below.
+    const matchedBefore = inner.scenario.matchedRequests().length;
 
     // Register this turn's matcher and enqueue its response stream
     // RIGHT NOW so chunks fire at the current virtual time. Lazy
     // registration is what makes the multi-turn shape work: we want
     // turn N's chunks scheduled relative to clock.now() at the moment
     // turn N starts, not relative to harness construction.
+    //
+    // The body-aware predicate is the only place the actual body is
+    // compared against the captured body. If the canonical forms
+    // disagree the predicate returns false, no matcher binds, and
+    // the harness eventually raises `UnmatchedFetchError` — which
+    // we translate to `SessionReplayMismatchError` below.
     const stream = inner.scenario.createStream();
     stream.enqueueAt(inner.clock.now() + 1, exchange.responseBytes);
     stream.closeAt(inner.clock.now() + 2);
@@ -446,21 +538,46 @@ export async function createReplayHarness(
       { headers: exchange.responseHeaders },
     );
 
+    // Only bump `turnCount` once this turn settles successfully.
+    // Otherwise a throw leaves `turnCount` at a value that no
+    // longer matches `exchanges[turnCount]`, and the next runTurn
+    // call would register the wrong exchange's matcher on top of
+    // the stale one.
     const nextSeq = runOpts.nextSeq ?? (() => ++internalSeq);
+    const inferenceController = new AbortController();
     const events: InferenceEvent[] = [];
-    const collector = (async () => {
+    const collector = (async (): Promise<void> => {
       for await (const ev of inner.runInference({
         turns: runOpts.turns,
         source,
         nextSeq,
+        signal: inferenceController.signal,
       })) {
         events.push(ev);
       }
     })();
 
-    try {
-      await Promise.all([collector, inner.run()]);
-    } catch (cause) {
+    // `Promise.allSettled` lets us inspect both promises even when
+    // the run path rejects first. If the harness raised
+    // `UnmatchedFetchError`, the collector promise is still awaiting
+    // an iterator that will never resolve — we abort it so the
+    // surrounding test does not inherit a phantom in-flight
+    // iteration.
+    const [runResult, collectResult] = await Promise.allSettled([
+      inner.run(),
+      collector,
+    ]);
+
+    if (runResult.status === "rejected") {
+      // Abort the iterator so its parked `await fetch(...)` rejects
+      // promptly rather than hanging until `dispose()`.
+      inferenceController.abort();
+      // Drain the collector's rejection so the unhandled-rejection
+      // tracker doesn't fire. We re-throw the run-side error which
+      // is the primary failure; the collector's rejection is a
+      // downstream symptom of the same cause.
+      await collector.catch(() => undefined);
+      const cause = runResult.reason;
       if (cause instanceof UnmatchedFetchError) {
         const fetches = cause.waiting;
         const headerLines = fetches
@@ -474,6 +591,7 @@ export async function createReplayHarness(
           )
           .join("\n");
         throw new SessionReplayMismatchError({
+          kind: "no_matcher_fired",
           exchangeIndex,
           captured: exchange.capturedRequest,
           actual: null,
@@ -487,29 +605,26 @@ export async function createReplayHarness(
       }
       throw cause;
     }
-
-    // Verify the actual body matches even when canonicalisation
-    // would have produced a false positive (rare — would require two
-    // distinct shapes to canonicalise identically). The matched
-    // request is the most recent one routed; `matchedRequests` is
-    // ordered, so the matched index corresponds to `turnCount - 1`.
-    const allMatched = inner.scenario.matchedRequests();
-    const actualRequest = allMatched[turnCount - 1];
-    if (actualRequest !== undefined) {
-      const actualBodyText = await actualRequest.text();
-      const actualCanonical = canonicaliseJSONText(actualBodyText);
-      if (actualCanonical !== exchange.canonicalRequestText) {
-        const actualJSON: unknown = JSON.parse(actualBodyText);
-        throw new SessionReplayMismatchError({
-          exchangeIndex,
-          captured: exchange.capturedRequest,
-          actual: actualJSON,
-          diff: shortDiff(exchange.capturedRequest, actualJSON),
-          sessionDir,
-        });
-      }
+    if (collectResult.status === "rejected") {
+      throw collectResult.reason;
     }
 
+    // Sanity: exactly one new matched request should have landed on
+    // the inner harness during this turn. Anything else means a
+    // future helper has started routing fetches outside `runTurn` —
+    // and the `allMatched[turnCount]` indexing pattern this harness
+    // uses would silently desync, so fail loudly.
+    const matchedAfter = inner.scenario.matchedRequests().length;
+    const newlyMatched = matchedAfter - matchedBefore;
+    if (newlyMatched !== 1) {
+      throw new Error(
+        `Session replay: runTurn expected exactly one matched request for ` +
+          `exchange ${String(exchangeIndex)} but observed ${String(newlyMatched)}. ` +
+          `runTurn must be the only path that routes fetches through this harness.`,
+      );
+    }
+
+    turnCount++;
     return events;
   };
 
@@ -519,6 +634,7 @@ export async function createReplayHarness(
       const expected = exchanges[expectedIndex];
       if (expected !== undefined) {
         throw new SessionReplayMismatchError({
+          kind: "exchanges_under_consumed",
           exchangeIndex: expectedIndex,
           captured: expected.capturedRequest,
           actual: null,
@@ -531,11 +647,16 @@ export async function createReplayHarness(
     }
     for (const [toolName, queue] of dispatchQueues) {
       if (queue.consumed < queue.results.length) {
-        throw new Error(
-          `Session replay: tool "${toolName}" was dispatched ` +
-            `${String(queue.consumed)} time(s), but the capture has ` +
-            `${String(queue.results.length)} dispatch(es) recorded.`,
-        );
+        throw new SessionReplayMismatchError({
+          kind: "dispatches_under_consumed",
+          toolName,
+          captured: queue.results,
+          actual: queue.consumed,
+          diff:
+            `Tool "${toolName}" was dispatched ${String(queue.consumed)} time(s), ` +
+            `but the capture has ${String(queue.results.length)} dispatch(es) recorded.`,
+          sessionDir,
+        });
       }
     }
   };
