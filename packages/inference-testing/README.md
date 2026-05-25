@@ -383,8 +383,10 @@ const harness = createRecordingHarness({
 
 // Real handlers run during recording. The harness observes the args
 // the reactor produced and the value the handler returned, and writes
-// both to `dispatches/<index>-<toolName>.json`.
-harness.scenario.onTool("weather", (args) => callRealWeatherAPI(args));
+// both to `dispatches/<index>-<toolName>.json`. The recording harness
+// exposes `onTool` directly (not nested under `scenario` — that's a
+// quirk of `setupHarness` which the recording harness does not share).
+harness.onTool("weather", (args) => callRealWeatherAPI(args));
 
 let seq = 0;
 for await (const _ev of harness.runInference({
@@ -478,6 +480,52 @@ regressions show up cleanly.
 If you need to exercise a real handler against captured wire (to
 surface tool-side regressions), that's a different testing mode with
 different trade-offs and is out of scope for the session harness.
+
+### Limitations and contracts
+
+Session captures sit on top of several invariants that aren't
+obvious from the type signatures. Read these before trusting a
+captured session for a regression test.
+
+- **Request bodies must be JSON.** Replay matches actual requests
+  against captured requests via canonical JSON comparison. A
+  session whose exchange has a raw-body request capture
+  (`request.bin` — multipart upload, octet-stream, etc.) is
+  rejected at load time with a clear error. The recording harness
+  can write such captures; the replay harness cannot yet read them.
+- **`tool_result.content[].text` rendering is the caller's
+  responsibility.** When the reactor produces a dispatch result
+  (an arbitrary JSON value) and the next turn must serialise it
+  into a `tool_result` block's text field, the rendering is
+  purely a convention between the recording author and the replay
+  consumer. The committed example sessions and the integration
+  test use `JSON.stringify(dispatchResult)`. If a recording author
+  changes that rendering, the replay caller must change to match,
+  or the next-turn body will diverge from capture and
+  `SessionReplayMismatchError` will surface. There is no automated
+  enforcement of this rendering across the two sides.
+- **JSON response bodies are NOT byte-identical to what the server
+  sent.** `writeCapture` pretty-prints JSON responses
+  (`JSON.stringify(body, null, 2)`). Replay serves those
+  pretty-printed bytes to the adapter. Adapters that re-parse JSON
+  (the common case) do not care. Adapters that inspect raw bytes —
+  signed JSON, JSON-LD canonical form, line-delimited JSON encoded
+  inside one response — would see different bytes on replay than
+  on recording. See INTR-122 for the upstream fix.
+- **Captured response chunk boundaries are NOT preserved.** The
+  recording wrapper buffers the entire response via
+  `response.arrayBuffer()` and serves it back as a single chunk
+  at replay time. Tests that assert on inter-chunk virtual
+  deadlines will see artificial timing on replay — the
+  orchestration assertions this rig targets do not care, but the
+  chunk-boundary fidelity gap is real.
+- **Captured dispatch results must not be shaped
+  `{ result, virtualDelayMs: <finite non-negative number> }`.** That
+  shape collides with the test-harness delayed-envelope return
+  contract and would be unwrapped by the tool dispatch registry,
+  mis-serving the inner result to the reactor. The recording
+  harness rejects this shape at write time; the replay harness
+  rejects it at load time.
 
 ### Dependency on `@intx/inference-discovery`
 
