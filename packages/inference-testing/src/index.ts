@@ -82,3 +82,13 @@ export {
   loadSessionManifest,
   writeSessionManifest,
 } from "./session-manifest";
+
+export {
+  createRecordingHarness,
+  SessionRecordingBudgetExceededError,
+} from "./session-recording";
+export type {
+  CreateRecordingHarnessOpts,
+  RecordingFetchLike,
+  RecordingHarness,
+} from "./session-recording";

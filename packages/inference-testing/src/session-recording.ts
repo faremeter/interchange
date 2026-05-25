@@ -1,0 +1,469 @@
+// Session recording: drive real `runInference` calls against real (or
+// test-supplied) providers, observing every request/response exchange and
+// every tool dispatch, and writing the conversation to disk in the session
+// capture format.
+//
+// Recorded sessions later feed `createReplayHarness` so the orchestration
+// regressions only surface when turns chain (cross-turn body construction,
+// dispatch wiring, conversation length growth) can be re-run against
+// frozen wire and frozen tool I/O.
+
+import fs from "node:fs/promises";
+import path from "node:path";
+
+import {
+  assertNotCI,
+  detectResponseKind,
+  writeCapture,
+  type ResponseBody,
+} from "@intx/inference-discovery";
+import {
+  HarnessId,
+  runInference,
+  type Dependencies,
+  type InferenceHarnessOptions,
+} from "@intx/inference";
+import type { InferenceEvent } from "@intx/types/runtime";
+
+import { writeSessionManifest, type SessionManifest } from "./session-manifest";
+import type { ToolHandler } from "./tool-handler";
+
+/**
+ * The recording harness's fetch override has the same signature as the
+ * production `Dependencies["fetch"]`. Tests pass a stub that returns
+ * synthetic provider wire bytes; production recording scripts omit this
+ * field and let the harness call real `globalThis.fetch`.
+ */
+export type RecordingFetchLike = Dependencies["fetch"];
+
+export interface CreateRecordingHarnessOpts {
+  /** Absolute path to the session directory. Created if it does not exist. */
+  outputDir: string;
+  /**
+   * Provider/model/baseURL the recording targets. Written verbatim into
+   * the top-level `session.json`. The replay harness consumes this to
+   * construct the `InferenceSource` passed to `runInference`.
+   */
+  source: SessionManifest["source"];
+  /**
+   * Hard ceiling on how many fetch calls the harness will wrap before
+   * throwing `SessionRecordingBudgetExceededError`. Guards against
+   * runaway reactor loops silently racking up provider charges.
+   */
+  maxExchanges: number;
+  /** Header names redacted from each captured request. Case-insensitive. */
+  redactRequestHeaders: readonly string[];
+  /** Header names redacted from each captured response. Case-insensitive. */
+  redactResponseHeaders: readonly string[];
+  /**
+   * Test seam: when supplied, used in place of `globalThis.fetch`. Must
+   * be paired with `bypassCIGuardForTests: true`; supplying one without
+   * the other throws at construction.
+   */
+  fetch?: RecordingFetchLike;
+  /**
+   * Test seam: skip the inference-discovery CI guard at construction
+   * time. Must be paired with a `fetch` override; supplying one without
+   * the other throws.
+   */
+  bypassCIGuardForTests?: boolean;
+  /** Override for the `capturedAt` timestamp written to `session.json`. */
+  now?: () => Date;
+}
+
+export interface RecordingHarness {
+  /** Dependencies object to pass into production `runInference` calls. */
+  readonly deps: Dependencies;
+  /**
+   * Register a real tool handler. The recording harness calls it
+   * whenever the reactor emits `inference.tool_call.end`, observes the
+   * args and the returned value, and writes both to
+   * `dispatches/<index>-<toolName>.json`.
+   */
+  onTool(name: string, handler: ToolHandler): void;
+  /**
+   * Drive a `runInference` call. Wraps production `runInference` with
+   * `deps` already injected and intercepts tool dispatch.
+   */
+  runInference(
+    opts: Omit<InferenceHarnessOptions, "deps">,
+  ): AsyncIterable<InferenceEvent>;
+  /**
+   * Write `session.json`. Required for the directory to be a complete
+   * session capture. Callers wrap in try/finally so an aborted
+   * recording still produces a (truncated but readable) session.
+   */
+  finalize(): Promise<void>;
+}
+
+export class SessionRecordingBudgetExceededError extends Error {
+  readonly maxExchanges: number;
+  readonly observed: number;
+
+  constructor(maxExchanges: number, observed: number) {
+    super(
+      `Session recording exceeded maxExchanges=${String(maxExchanges)} ` +
+        `(${String(observed)} fetches wrapped). A runaway reactor loop or a ` +
+        `mis-sized budget is likely; raise maxExchanges only after confirming ` +
+        `the conversation is what you expected.`,
+    );
+    this.name = "SessionRecordingBudgetExceededError";
+    this.maxExchanges = maxExchanges;
+    this.observed = observed;
+  }
+}
+
+interface ExtractedRequest {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  bodyForSend: string | Uint8Array;
+  bodyForCapture:
+    | { kind: "json"; body: unknown }
+    | { kind: "raw"; bytes: Uint8Array; contentType: string };
+}
+
+function headersToRecord(
+  headers: NonNullable<RequestInit["headers"]> | Headers | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (headers === undefined) return out;
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => {
+      out[key] = value;
+    });
+    return out;
+  }
+  if (Array.isArray(headers)) {
+    for (const entry of headers) {
+      const [k, v] = entry;
+      if (k === undefined || v === undefined) continue;
+      out[k] = v;
+    }
+    return out;
+  }
+  for (const [k, v] of Object.entries(headers)) {
+    if (typeof v === "string") {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+async function extractRequest(
+  input: string | URL | Request,
+  init: RequestInit | undefined,
+): Promise<ExtractedRequest> {
+  let url: string;
+  let method: string;
+  let headers: Record<string, string>;
+  let body: RequestInit["body"];
+
+  if (input instanceof Request) {
+    url = input.url;
+    method = init?.method ?? input.method;
+    headers = headersToRecord(init?.headers ?? input.headers);
+    body =
+      init?.body !== undefined
+        ? init.body
+        : new Uint8Array(await input.clone().arrayBuffer());
+  } else {
+    url = input instanceof URL ? input.toString() : input;
+    method = init?.method ?? "GET";
+    headers = headersToRecord(init?.headers);
+    body = init?.body ?? null;
+  }
+
+  const contentType =
+    Object.entries(headers).find(
+      ([k]) => k.toLowerCase() === "content-type",
+    )?.[1] ?? "application/octet-stream";
+
+  let bodyForSend: string | Uint8Array;
+  let bodyForCapture: ExtractedRequest["bodyForCapture"];
+
+  if (body === null || body === undefined) {
+    bodyForSend = "";
+    bodyForCapture = { kind: "raw", bytes: new Uint8Array(), contentType };
+  } else if (typeof body === "string") {
+    bodyForSend = body;
+    if (contentType.startsWith("application/json")) {
+      const parsed: unknown = JSON.parse(body);
+      bodyForCapture = { kind: "json", body: parsed };
+    } else {
+      bodyForCapture = {
+        kind: "raw",
+        bytes: new TextEncoder().encode(body),
+        contentType,
+      };
+    }
+  } else if (body instanceof Uint8Array) {
+    bodyForSend = body;
+    bodyForCapture = { kind: "raw", bytes: body, contentType };
+  } else if (body instanceof ArrayBuffer) {
+    const bytes = new Uint8Array(body);
+    bodyForSend = bytes;
+    bodyForCapture = { kind: "raw", bytes, contentType };
+  } else {
+    throw new Error(
+      `Session recording: unsupported request body type ${String(
+        Object.prototype.toString.call(body),
+      )}; session captures expect string or byte bodies from the inference layer`,
+    );
+  }
+
+  return { url, method, headers, bodyForSend, bodyForCapture };
+}
+
+function responseHeadersToRecord(response: Response): Record<string, string> {
+  const out: Record<string, string> = {};
+  response.headers.forEach((value, key) => {
+    out[key] = value;
+  });
+  return out;
+}
+
+async function bufferResponseBody(
+  response: Response,
+): Promise<{ captured: ResponseBody; reconstructed: Uint8Array }> {
+  const kind = detectResponseKind(response.headers);
+  const buf = await response.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  if (kind === "sse") {
+    return { captured: { kind: "sse", bytes }, reconstructed: bytes };
+  }
+  const text = new TextDecoder().decode(bytes);
+  const parsed: unknown = JSON.parse(text);
+  return {
+    captured: { kind: "json", body: parsed },
+    reconstructed: bytes,
+  };
+}
+
+function dispatchFilename(index: number, toolName: string): string {
+  return `${String(index)}-${toolName}.json`;
+}
+
+async function writeDispatch(
+  outputDir: string,
+  index: number,
+  toolName: string,
+  args: unknown,
+  result: unknown,
+): Promise<void> {
+  const dispatchesDir = path.join(outputDir, "dispatches");
+  await fs.mkdir(dispatchesDir, { recursive: true });
+  await fs.writeFile(
+    path.join(dispatchesDir, dispatchFilename(index, toolName)),
+    `${JSON.stringify({ args, result }, null, 2)}\n`,
+  );
+}
+
+export function createRecordingHarness(
+  opts: CreateRecordingHarnessOpts,
+): RecordingHarness {
+  const {
+    outputDir,
+    source,
+    maxExchanges,
+    redactRequestHeaders,
+    redactResponseHeaders,
+    fetch: fetchOverride,
+    bypassCIGuardForTests,
+    now,
+  } = opts;
+
+  if ((fetchOverride !== undefined) !== (bypassCIGuardForTests === true)) {
+    throw new Error(
+      "createRecordingHarness: `fetch` and `bypassCIGuardForTests: true` " +
+        "must be supplied together. They form the unit test seam; " +
+        "supplying one without the other risks either an accidentally " +
+        "live recording in CI or a production script that silently " +
+        "skipped the CI guard.",
+    );
+  }
+
+  if (bypassCIGuardForTests !== true) {
+    assertNotCI();
+  }
+
+  if (!Number.isInteger(maxExchanges) || maxExchanges <= 0) {
+    throw new Error(
+      `createRecordingHarness: maxExchanges must be a positive integer (got ${String(maxExchanges)})`,
+    );
+  }
+
+  const underlyingFetch: RecordingFetchLike =
+    fetchOverride ?? globalThis.fetch.bind(globalThis);
+
+  let exchangeCount = 0;
+  // When the budget trips inside `recordingFetch`, production
+  // `runInference` catches the throw and converts it to an
+  // `inference.error` event — the iterator completes normally and the
+  // caller never sees the real cause. Stash the error here so
+  // `harnessRunInference` can re-throw it after iteration drains, and
+  // so `finalize` can refuse to write a manifest over a truncated
+  // capture.
+  let budgetError: SessionRecordingBudgetExceededError | null = null;
+
+  const recordingFetch: Dependencies["fetch"] = async (input, init) => {
+    if (exchangeCount >= maxExchanges) {
+      const err = new SessionRecordingBudgetExceededError(
+        maxExchanges,
+        exchangeCount + 1,
+      );
+      budgetError = err;
+      throw err;
+    }
+    const exchangeIndex = exchangeCount++;
+
+    const extracted = await extractRequest(input, init);
+    const realInit: RequestInit = {
+      method: extracted.method,
+      headers: extracted.headers,
+      body: extracted.bodyForSend,
+    };
+    if (init?.signal !== undefined && init.signal !== null) {
+      realInit.signal = init.signal;
+    }
+
+    const response = await underlyingFetch(extracted.url, realInit);
+    const responseHeaders = responseHeadersToRecord(response);
+    const { captured, reconstructed } = await bufferResponseBody(response);
+
+    const exchangeDir = path.join(
+      outputDir,
+      "exchanges",
+      String(exchangeIndex),
+    );
+    await writeCapture(exchangeDir, {
+      request: extracted.bodyForCapture,
+      requestHeaders: extracted.headers,
+      redactRequestHeaders,
+      response: captured,
+      responseHeaders,
+      redactResponseHeaders,
+    });
+
+    return new Response(reconstructed, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  };
+
+  // Production scheduler — recording drives real fetch on the real
+  // wall clock, so production `runInference` timers should fire
+  // normally. (The default scheduler created by `runInference` when
+  // `deps.scheduler` is omitted would work too, but providing it
+  // explicitly here keeps the dependency surface visible.)
+  const harnessSymbol = Symbol("RecordingHarnessInstance");
+  const deps: Dependencies = {
+    fetch: recordingFetch,
+    scheduler: {
+      setTimeout(callback, delayMs) {
+        const handle = setTimeout(callback, delayMs);
+        return () => {
+          clearTimeout(handle);
+        };
+      },
+    },
+    [HarnessId]: harnessSymbol,
+  };
+
+  // Tool dispatch capture. Handlers run for real; their args and return
+  // values are written to disk. Sync and promise-returning handlers are
+  // supported; the `{ result, virtualDelayMs }` delayed-envelope shape
+  // accepted by `setupHarness` is rejected here, because virtual delays
+  // are a test-harness construct that has no meaning during a real
+  // recording.
+  const handlers = new Map<string, ToolHandler>();
+  let dispatchCount = 0;
+  const inFlightDispatches: Promise<void>[] = [];
+
+  const onTool = (name: string, handler: ToolHandler): void => {
+    if (handlers.has(name)) {
+      throw new Error(
+        `createRecordingHarness.onTool: a handler is already registered for tool "${name}"`,
+      );
+    }
+    handlers.set(name, handler);
+  };
+
+  const captureDispatch = async (
+    index: number,
+    name: string,
+    args: unknown,
+    handler: ToolHandler,
+  ): Promise<void> => {
+    const ret: unknown = handler(args);
+    // `Promise.resolve` unwraps both real promises and PromiseLike
+    // values, and is a no-op for plain values — covers all three
+    // handler return shapes (sync, async, native promise) in one path.
+    const resolved: unknown = await Promise.resolve(ret);
+    if (
+      resolved !== null &&
+      typeof resolved === "object" &&
+      "virtualDelayMs" in resolved
+    ) {
+      throw new Error(
+        `Session recording: handler for tool "${name}" returned a ` +
+          `{ result, virtualDelayMs } envelope. Virtual delays are a test-harness ` +
+          `construct and are not supported during recording. Return the result ` +
+          `directly (or a promise that resolves to the result).`,
+      );
+    }
+    if (resolved === undefined) {
+      throw new Error(
+        `Session recording: handler for tool "${name}" resolved to undefined; ` +
+          `return a concrete result so the dispatch can be captured.`,
+      );
+    }
+    await writeDispatch(outputDir, index, name, args, resolved);
+  };
+
+  const harnessRunInference = (
+    opts: Omit<InferenceHarnessOptions, "deps">,
+  ): AsyncIterable<InferenceEvent> => {
+    async function* iterate(): AsyncGenerator<InferenceEvent> {
+      const inner = runInference({ ...opts, deps });
+      for await (const event of inner) {
+        if (event.type === "inference.tool_call.end") {
+          const { name, arguments: args } = event.data;
+          const handler = handlers.get(name);
+          if (handler === undefined) {
+            throw new Error(
+              `Session recording: inference.tool_call.end observed for tool ` +
+                `"${name}" but no handler was registered via onTool. Register ` +
+                `a handler so the dispatch can be captured.`,
+            );
+          }
+          const index = dispatchCount++;
+          inFlightDispatches.push(captureDispatch(index, name, args, handler));
+        }
+        yield event;
+      }
+      if (budgetError !== null) {
+        throw budgetError;
+      }
+    }
+    return iterate();
+  };
+
+  const finalize = async (): Promise<void> => {
+    if (inFlightDispatches.length > 0) {
+      await Promise.all(inFlightDispatches);
+    }
+    if (budgetError !== null) {
+      throw budgetError;
+    }
+    const capturedAt = (now ?? (() => new Date()))().toISOString();
+    await writeSessionManifest(outputDir, {
+      sessionSchemaVersion: "1",
+      source,
+      capturedAt,
+    });
+  };
+
+  return { deps, onTool, runInference: harnessRunInference, finalize };
+}
