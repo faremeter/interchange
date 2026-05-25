@@ -92,3 +92,15 @@ export type {
   RecordingFetchLike,
   RecordingHarness,
 } from "./session-recording";
+
+export {
+  createReplayHarness,
+  SessionReplayMismatchError,
+} from "./session-replay";
+export type {
+  CapturedDispatch,
+  CapturedExchange,
+  CreateReplayHarnessOpts,
+  ReplayHarness,
+  RunTurnOpts,
+} from "./session-replay";
