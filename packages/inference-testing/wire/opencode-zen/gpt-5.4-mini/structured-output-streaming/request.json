@@ -3,7 +3,7 @@
   "messages": [
     {
       "role": "user",
-      "content": "Extract structured fields from this sentence: Alice is 30 years old and her email is alice@example.com."
+      "content": "Extract structured fields from this sentence: Alice is 30 years old and her email is alice@example.com. Reply with only the JSON object — no markdown fences, no prose."
     }
   ],
   "response_format": {
@@ -23,10 +23,8 @@
             "type": "string"
           }
         },
-        "required": ["name", "age", "email"],
-        "additionalProperties": false
-      },
-      "strict": true
+        "required": ["name", "age", "email"]
+      }
     }
   },
   "stream": true

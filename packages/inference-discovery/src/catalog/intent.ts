@@ -211,17 +211,26 @@ const SAFETY_CLASSIFICATION_PROBE: CapabilityIntent = {
 // Structured-output probe. The prompt carries enough natural-language
 // detail that the model has unambiguous source fields to extract;
 // `responseFormat` then constrains the wire output to schema-
-// conformant JSON. The schema is intentionally simple — three
-// primitive fields with required + additionalProperties: false — so
-// every provider's JSON Schema implementation accepts it (Gemini's
-// subset is strict about constructs like oneOf and $ref; the
-// schema here uses none of them). `strict: true` engages OpenAI's
-// strict-mode validator, which is the path that emits structured
-// refusals on policy violations.
+// conformant JSON.
+//
+// The schema is intentionally cross-provider-portable. Two
+// strict-mode signals are deliberately absent:
+//   - `additionalProperties: false`: required by OpenAI strict mode
+//     but rejected by Gemini's JSON Schema subset, which does not
+//     accept the keyword at all.
+//   - `strict: true`: pairs with additionalProperties on OpenAI;
+//     dropped here for the same portability reason.
+// The adapter-side wiring in @intx/inference still threads both
+// fields through to the provider when callers supply them in
+// InferenceOptions.responseFormat (see openai.test.ts strict-mode
+// assertions); the discovery probe just sticks to the lowest
+// common denominator so a single intent produces captured fixtures
+// against every provider with adapter support.
 const STRUCTURED_OUTPUT: CapabilityIntent = {
   prompt:
     "Extract structured fields from this sentence: " +
-    "Alice is 30 years old and her email is alice@example.com.",
+    "Alice is 30 years old and her email is alice@example.com. " +
+    "Reply with only the JSON object — no markdown fences, no prose.",
   responseFormat: {
     kind: "json-schema",
     name: "user_info",
@@ -233,9 +242,7 @@ const STRUCTURED_OUTPUT: CapabilityIntent = {
         email: { type: "string" },
       },
       required: ["name", "age", "email"],
-      additionalProperties: false,
     },
-    strict: true,
   },
 };
 
