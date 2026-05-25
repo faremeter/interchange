@@ -1,0 +1,9 @@
+{
+  "sessionSchemaVersion": "1",
+  "source": {
+    "provider": "anthropic",
+    "model": "claude-test",
+    "baseURL": "https://api.anthropic.com"
+  },
+  "capturedAt": "2026-05-25T12:00:00.000Z"
+}

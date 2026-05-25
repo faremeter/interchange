@@ -1,0 +1,9 @@
+{
+  "args": {
+    "location": "SF"
+  },
+  "result": {
+    "temperatureF": 68,
+    "conditions": "fog"
+  }
+}
