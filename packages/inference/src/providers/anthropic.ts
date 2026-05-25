@@ -23,6 +23,7 @@ function buildRequest(
   model: string,
   options: InferenceOptions,
 ): BuiltRequest {
+  rejectUnsupportedResponseFormat(options.responseFormat);
   const systemMessages = messages.filter((m) => m.role === "system");
   const conversationMessages = messages.filter((m) => m.role !== "system");
 
@@ -95,6 +96,24 @@ function buildRequest(
     },
     body: JSON.stringify(body),
   };
+}
+
+// Anthropic's Messages API has no native structured-outputs surface.
+// `text` is the default and a no-op. `json` and `json-schema` raise
+// here at the marshaling boundary rather than silently dropping the
+// field; the codebase prefers loud failure at the wire boundary over
+// a forward-synthesis shim (a hidden tool whose input_schema mirrors
+// the requested schema) because no other adapter shim synthesizes
+// requests the caller didn't author.
+function rejectUnsupportedResponseFormat(
+  format: InferenceOptions["responseFormat"],
+): void {
+  if (format === undefined) return;
+  if (format.kind === "text") return;
+  throw new Error(
+    `Anthropic adapter does not support structured outputs ` +
+      `(responseFormat.kind="${format.kind}").`,
+  );
 }
 
 function toAnthropicMessage(
