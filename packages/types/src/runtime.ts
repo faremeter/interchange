@@ -716,7 +716,15 @@ export type RedactedThinkingBlock = typeof RedactedThinkingBlock.infer;
  */
 export const RefusalBlock = type({
   type: "'refusal'",
-  reason: "string",
+  // Refusals must carry text — a zero-length reason corrupts the
+  // "human-readable text the model emitted in lieu of conformant
+  // output" contract and would round-trip indistinguishably from a
+  // refusal block whose payload was lost. The arktype constraint is
+  // belt-and-braces alongside the adapter's wire-boundary filter on
+  // empty `delta.refusal` chunks: synthetic fixtures or future
+  // adapters without that filter still cannot construct a vacuous
+  // refusal.
+  reason: "string > 0",
 });
 export type RefusalBlock = typeof RefusalBlock.infer;
 const ToolCallBlock = type({

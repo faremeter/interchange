@@ -174,6 +174,7 @@ export async function* runInference(
     | { kind: "text"; text: string }
     | { kind: "thinking"; text: string; signature?: string }
     | { kind: "redacted_thinking"; data: string }
+    | { kind: "refusal"; reason: string }
     | { kind: "tool_use"; callId: string }
     | { kind: "image"; image: ImageBlock }
     | { kind: "code_execution_request"; request: CodeExecutionRequestBlock }
@@ -461,6 +462,38 @@ export async function* runInference(
                 data: {
                   token: raw.data.token,
                   partial: snapshotPartial(partial),
+                },
+              };
+              break;
+            }
+
+            case "inference.refusal.delta": {
+              const idx = requireIndex(raw, "refusal.delta");
+              const existing = blockMap.get(idx);
+              if (existing === undefined) {
+                blockMap.set(idx, { kind: "refusal", reason: raw.data.token });
+              } else if (existing.kind === "refusal") {
+                existing.reason += raw.data.token;
+              } else {
+                throw new ProtocolMismatchError(
+                  `harness: refusal.delta at index ${String(idx)} collides with existing ${existing.kind} block`,
+                  raw,
+                );
+              }
+              // Re-yield with a fresh seq; the partial snapshot does
+              // not currently carry a `refusal` field (PartialMessage
+              // only knows text and thinking today), so the snapshot
+              // here reflects the surrounding text/thinking state.
+              // Subscribers needing the running refusal string
+              // accumulate tokens from the emitted delta events
+              // themselves, or read the finalized turn's RefusalBlock.
+              yield {
+                type: "inference.refusal.delta",
+                seq: nextSeq(),
+                data: {
+                  token: raw.data.token,
+                  partial: snapshotPartial(partial),
+                  index: idx,
                 },
               };
               break;
@@ -956,6 +989,18 @@ export async function* runInference(
       }
       if (entry.kind === "redacted_thinking") {
         emit({ type: "redacted_thinking", data: entry.data }, idx);
+        continue;
+      }
+      if (entry.kind === "refusal") {
+        // Empty-reason refusals were filtered at the adapter's wire
+        // boundary (the OpenAI parser skips delta.refusal chunks with
+        // length 0), so an entry that reaches the final walk with an
+        // empty reason indicates either a synthetic capture or a
+        // future adapter without that guard. Skip rather than emit a
+        // RefusalBlock with reason: "" which would fail the type's
+        // documented "human-readable text the model emitted" contract.
+        if (entry.reason.length === 0) continue;
+        emit({ type: "refusal", reason: entry.reason }, idx);
         continue;
       }
       if (entry.kind === "tool_use") {
