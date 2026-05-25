@@ -35,6 +35,12 @@ export type { TransformOptions, IDNormalizer } from "./transform";
 export { createAnthropicAdapter } from "./providers/anthropic";
 export { createOpenAIAdapter } from "./providers/openai";
 export { createGoogleGenAIAdapter } from "./providers/google-genai";
+export { uploadGoogleGenAIFile } from "./providers/google-genai-files";
+export type {
+  UploadGoogleGenAIFileOpts,
+  UploadGoogleGenAIFileFetch,
+  UploadedGoogleGenAIFile,
+} from "./providers/google-genai-files";
 
 export { createReactor } from "./reactor";
 export type { Reactor, ReactorConfig, ReactorEmittedEvent } from "./reactor";
