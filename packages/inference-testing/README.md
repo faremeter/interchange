@@ -292,6 +292,205 @@ try {
 turn-1 → tool-dispatch → turn-2 round-trip with captured request bodies
 proving the tool-result block propagates into the turn-2 wire payload.
 
+## Session capture and replay
+
+The harness primitives above (matchers, tool handlers, virtual clock)
+script wire bytes the test author writes. Session capture and replay
+go a step further: they record an entire conversation against a real
+provider, then re-drive that captured wire and the captured tool I/O
+through production `runInference` to catch regressions in the
+orchestration layer above the adapter — multi-turn body construction,
+conversation history threading, tool dispatch wiring, terminal
+sequencing across turns.
+
+Where the existing `runCompatReplay` (INTR-79) holds **one** exchange
+constant to surface adapter regressions, session replay holds an
+**entire conversation** constant: every exchange plus every tool
+dispatch. If the production reactor changes how it serialises a
+`tool_result` block, or how it threads previous turns into a new
+request body, the corresponding exchange's body diverges from
+capture and `SessionReplayMismatchError` fires with a diff.
+
+### Terminology
+
+- **Exchange.** One HTTP request/response with the provider. Wire
+  level; curlable. `writeCapture` (imported from
+  `@intx/inference-discovery`) writes the bytes.
+- **Dispatch.** One tool-handler invocation by the reactor in response
+  to `inference.tool_call.end`. Never crosses the network. Recorded
+  as `{ args, result }`.
+
+The two are wired together: dispatch N's result becomes a
+`tool_result` block inside exchange N+1's request body. Freezing the
+dispatch results is what makes a captured session deterministic at
+replay time — without it, a flaky handler would make the next
+exchange's body diverge and break replay.
+
+### Capture format
+
+```
+packages/inference-testing/sessions/<name>/
+├── session.json
+├── exchanges/
+│   ├── 0/
+│   │   ├── request.json            # via writeCapture
+│   │   ├── request-headers.json    # via writeCapture
+│   │   ├── response.sse            # via writeCapture (or response.json)
+│   │   └── response-headers.json   # via writeCapture
+│   ├── 1/
+│   └── …
+└── dispatches/
+    ├── 0-weather.json              # { "args": …, "result": … }
+    ├── 1-time.json
+    └── …
+```
+
+The `session.json` at the root carries only session-level facts that
+describe the session as a whole — `sessionSchemaVersion`, `source`
+(provider/model/baseURL), `capturedAt`. There is no catalog of the
+contents underneath; ordering and naming come from the filesystem
+layout itself, so the metadata cannot go stale.
+
+Exchange directories are byte-identical to the discovery rig's
+captures (they're written by the same `writeCapture` function).
+Dispatch entries are a single JSON file each because both `args` and
+`result` are small JSON values.
+
+### Recording
+
+```ts
+import { createRecordingHarness } from "@intx/inference-testing";
+import { requireEnv } from "@intx/inference-discovery";
+
+const apiKey = requireEnv("ANTHROPIC_API_KEY");
+
+const harness = createRecordingHarness({
+  outputDir: "packages/inference-testing/sessions/my-scenario",
+  source: {
+    provider: "anthropic",
+    model: "claude-sonnet-x",
+    baseURL: "https://api.anthropic.com",
+  },
+  // Hard ceiling — recording stops with a clear error if the reactor
+  // tries to make more fetch calls than expected, so a runaway loop
+  // can't silently rack up provider charges.
+  maxExchanges: 8,
+  // Header redaction is plumbed through to the same logic the
+  // discovery rig uses for its captures.
+  redactRequestHeaders: ["x-api-key", "authorization"],
+  redactResponseHeaders: [],
+});
+
+// Real handlers run during recording. The harness observes the args
+// the reactor produced and the value the handler returned, and writes
+// both to `dispatches/<index>-<toolName>.json`.
+harness.scenario.onTool("weather", (args) => callRealWeatherAPI(args));
+
+let seq = 0;
+for await (const _ev of harness.runInference({
+  turns: [
+    {
+      role: "user",
+      content: [{ type: "text", text: "weather?" }],
+      timestamp: 0,
+    },
+  ],
+  source: { id, provider: "anthropic", baseURL, apiKey, model },
+  nextSeq: () => ++seq,
+})) {
+  // drain or assert on events
+}
+
+// Required to write `session.json`. Wrap recording in try/finally so
+// an aborted run still produces a truncated-but-readable capture.
+await harness.finalize();
+```
+
+`@intx/inference-discovery`'s `assertNotCI` runs at construction by
+default — recordings make live network calls and must not run in CI.
+The paired `fetch: FetchLike` + `bypassCIGuardForTests: true` test
+seam is reserved for this package's own unit tests; production
+recording scripts should never pass either flag.
+
+`packages/inference-testing/bin/record-example-sessions.ts` is a small
+script that uses the test seam to regenerate the committed example
+sessions without provider credentials. Run it with
+`bun packages/inference-testing/bin/record-example-sessions.ts`.
+
+### Replay
+
+```ts
+import { createReplayHarness, INVARIANTS } from "@intx/inference-testing";
+
+const replay = await createReplayHarness({
+  sessionDir: "packages/inference-testing/sessions/my-scenario",
+});
+try {
+  // Production runInference is single-turn; the caller drives the
+  // multi-turn loop just as the existing multi-turn-harness tests do.
+  // Each runTurn call routes the adapter's fetch through one captured
+  // exchange's body-aware matcher; the replay harness enforces that
+  // the actual request body canonicalises to the captured body
+  // exactly, surfacing SessionReplayMismatchError with a diff on any
+  // divergence.
+  let conversation = [
+    {
+      role: "user",
+      content: [{ type: "text", text: "weather?" }],
+      timestamp: 0,
+    },
+  ];
+  const turn1 = await replay.runTurn({ turns: conversation });
+
+  // Inspect events, validate INVARIANTS, build the next turn's
+  // conversation from `turn1Done.data.turn` plus a `tool_result`
+  // user turn assembled from `replay.capturedDispatches`. The
+  // captured dispatch results are also served from
+  // `scenario.onTool` automatically — real tool handlers do NOT
+  // run at replay time.
+  // …
+
+  replay.assertFullyConsumed();
+} finally {
+  replay.dispose();
+}
+```
+
+`tests/inference-testing/session-replay.test.ts` is the canonical
+end-to-end replay test. It loads each committed session, drives every
+captured turn through `runInference`, asserts the `INVARIANTS` event
+shape contract holds for each turn, and verifies the full exchange
+and dispatch counts match the capture.
+
+### Captured-dispatch-results design
+
+The replay harness serves captured dispatch results verbatim. Real
+tool handlers do **not** run at replay time. This is the locked
+design call from INTR-93, and it matters: re-invoking a real handler
+risks producing a result that diverges from the captured result,
+which causes the next turn's request body to diverge from capture,
+which makes the captured response no longer a valid reply — replay
+fails out before the orchestration layer has been exercised at all.
+Handler correctness is a separate test concern with its own tests;
+session replay holds tool I/O constant so that orchestration
+regressions show up cleanly.
+
+If you need to exercise a real handler against captured wire (to
+surface tool-side regressions), that's a different testing mode with
+different trade-offs and is out of scope for the session harness.
+
+### Dependency on `@intx/inference-discovery`
+
+The session harness builds on:
+
+- `writeCapture` — the per-exchange directory layout is byte-identical
+  to discovery's, so recording the same conversation through either
+  rig produces the same exchange files.
+- `assertNotCI` — recording harnesses hard-fail if `CI` is set.
+- `requireEnv` / `requireEnvSet` — the env-var loading pattern
+  recording scripts should follow.
+- The redaction-hook signature — same `readonly string[]` shape.
+
 ## Wire DSL
 
 Per-provider helpers compose into byte sequences:
