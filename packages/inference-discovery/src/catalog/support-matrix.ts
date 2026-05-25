@@ -266,6 +266,10 @@ const MATRIX: SupportEntry[] = [
   ...opencode("qwen3.6-plus", OPENCODE_FULL_CAPABILITIES),
   ...opencode("glm-5.1", OPENCODE_NON_VISION_CAPABILITIES),
   ...opencode("deepseek-v4-pro", OPENCODE_NON_VISION_CAPABILITIES),
+  ...opencode("gpt-5.4-mini", [
+    "structured-output",
+    "structured-output-streaming",
+  ]),
   {
     provider: OPENCODE_PROVIDER,
     model: "glm-5.1",

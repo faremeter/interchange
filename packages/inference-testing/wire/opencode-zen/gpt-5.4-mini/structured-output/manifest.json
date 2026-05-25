@@ -1,0 +1,7 @@
+{
+  "provider": "opencode-zen",
+  "model": "gpt-5.4-mini",
+  "capability": "structured-output",
+  "capturedAt": "2026-05-25T21:47:30.212Z",
+  "schemaVersion": "1"
+}
