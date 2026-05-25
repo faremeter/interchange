@@ -267,7 +267,7 @@ describe("EventCollector", () => {
     expect(at(parts, 6).values.metadata).toEqual({
       kind: "url",
       mimeType: "image/jpeg",
-      reference: "https://example.com/photo.jpg",
+      url: "https://example.com/photo.jpg",
     });
   });
 
