@@ -25,15 +25,21 @@ The fixtures are the ground truth: where the docs and the wire
 disagree, the wire wins. This document is the narrative companion
 to those bytes.
 
-Thirty-three capture directories were committed, spanning text
-(streaming and non-streaming), function calling (single-turn and
-multi-turn), reasoning (streaming and non-streaming), and vision
-input. Five models were exercised: `kimi-k2.6`, `glm-5.1`,
-`deepseek-v4-pro`, `qwen3.6-plus`, and `mimo-v2-omni`. Vision input
-was captured for the three models that `SUPPORT_MATRIX` marks as
-vision-capable; the other two have non-captured outcomes recorded
-for vision-input and the discover CLI filters them out of its run
-set. The companion taxonomy document at
+The originally-committed corpus held thirty-three capture
+directories spanning text (streaming and non-streaming), function
+calling (single-turn and multi-turn), reasoning (streaming and
+non-streaming), and vision input across five models: `kimi-k2.6`,
+`glm-5.1`, `deepseek-v4-pro`, `qwen3.6-plus`, and `mimo-v2-omni`.
+Vision input was captured for the three models that `SUPPORT_MATRIX`
+marks as vision-capable; the other two have non-captured outcomes
+recorded for vision-input and the discover CLI filters them out of
+its run set. Subsequent work added structured-output coverage on
+the `/zen/v1` tier for `gpt-5.4-mini`, `kimi-k2.6`, `glm-5.1`, and
+`qwen3.6-plus` (`deepseek-v4-pro` and `mimo-v2-omni` are not routed
+on the v1 tier and carry `http-error` rows). The current matrix is
+the authoritative inventory; this narrative is provenance for the
+original campaign and does not enumerate later additions.
+The companion taxonomy document at
 `docs/INFERENCE.md` (the "Generalized Multimodal Taxonomy" section)
 generalises these observations into the cross-provider abstractions
 that INTR-79 and INTR-80 will consume. This note records facts;
