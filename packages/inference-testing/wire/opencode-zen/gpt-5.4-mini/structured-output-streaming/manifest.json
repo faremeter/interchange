@@ -2,6 +2,6 @@
   "provider": "opencode-zen",
   "model": "gpt-5.4-mini",
   "capability": "structured-output-streaming",
-  "capturedAt": "2026-05-25T21:47:31.010Z",
+  "capturedAt": "2026-05-25T21:53:36.084Z",
   "schemaVersion": "1"
 }

@@ -1,22 +1,22 @@
 {
-  "id": "chatcmpl_05b9c19a34a32dcf006a14c3719994819487da2394c3717060",
+  "id": "chatcmpl_0eaeb331f3804744006a14c4dd4d2c8194a780923f09ac5582",
   "object": "chat.completion",
-  "created": 1779745650,
+  "created": 1779746014,
   "model": "gpt-5.4-mini",
   "choices": [
     {
       "index": 0,
       "message": {
         "role": "assistant",
-        "content": "{\n  \"name\": \"Alice\",\n  \"age\": 30,\n  \"email\": \"alice@example.com\"\n}"
+        "content": "{\"name\":\"Alice\",\"age\":30,\"email\":\"alice@example.com\"}"
       },
       "finish_reason": null
     }
   ],
   "usage": {
-    "prompt_tokens": 27,
-    "completion_tokens": 75,
-    "total_tokens": 102,
+    "prompt_tokens": 41,
+    "completion_tokens": 67,
+    "total_tokens": 108,
     "prompt_tokens_details": { "cached_tokens": 0 }
   }
 }
