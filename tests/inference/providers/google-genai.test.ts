@@ -1020,19 +1020,6 @@ describe("Google GenAI adapter: providerOptions escape hatch", () => {
 });
 
 describe("Google GenAI adapter: unsupported blocks", () => {
-  test("thinking in incoming turn throws", () => {
-    const turns: ConversationTurn[] = [
-      {
-        role: "assistant",
-        content: [{ type: "thinking", thinking: "internal reasoning" }],
-        timestamp: 0,
-      },
-    ];
-    expect(() => adapter.buildRequest(turns, "gemini-2.5-flash", {})).toThrow(
-      /thinking content blocks/,
-    );
-  });
-
   test("redacted_thinking throws (Anthropic-specific)", () => {
     const turns: ConversationTurn[] = [
       {
@@ -1450,5 +1437,1030 @@ describe("Google GenAI adapter: harness round trip", () => {
     const doneIdx = events.findIndex((e) => e.type === "inference.done");
     expect(usageIdx).toBeGreaterThan(-1);
     expect(usageIdx).toBeLessThan(doneIdx);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseResponse -- function-calling and thought-signature paths
+// ---------------------------------------------------------------------------
+
+describe("Google GenAI adapter: parseResponse function-calling", () => {
+  test("single functionCall part emits tool_call.start + tool_call.delta at index 0", async () => {
+    // Mirrors the function-calling-multi-turn-streaming/turn-1
+    // wire shape: one SSE event, one functionCall part, finishReason
+    // STOP, cumulative usageMetadata. The parser is expected to
+    // synthesize a callId (Gemini has no wire-level id field) and
+    // emit the args complete in a single delta (atomic; no JSON
+    // streaming).
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  functionCall: {
+                    name: "getCurrentWeather",
+                    args: { location: "Boston, MA" },
+                  },
+                },
+              ],
+            },
+            finishReason: "STOP",
+            index: 0,
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 81,
+          candidatesTokenCount: 16,
+          totalTokenCount: 97,
+        },
+      }),
+    ]);
+
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.tool_call.start",
+      "inference.tool_call.delta",
+      "inference.usage",
+    ]);
+
+    const start = events[0];
+    if (start?.type !== "inference.tool_call.start") {
+      throw new Error("expected inference.tool_call.start");
+    }
+    expect(start.data.name).toBe("getCurrentWeather");
+    expect(start.data.index).toBe(0);
+    expect(start.data.callId).toBe("0");
+
+    const delta = events[1];
+    if (delta?.type !== "inference.tool_call.delta") {
+      throw new Error("expected inference.tool_call.delta");
+    }
+    expect(delta.data.callId).toBe("0");
+    expect(delta.data.index).toBe(0);
+    expect(JSON.parse(delta.data.argumentFragment)).toEqual({
+      location: "Boston, MA",
+    });
+  });
+
+  test("thinking text part emits inference.thinking.delta at the thinking block index", async () => {
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ text: "step-by-step reasoning", thought: true }],
+            },
+            index: 0,
+          },
+        ],
+      }),
+    ]);
+
+    expect(events).toEqual([
+      {
+        type: "inference.thinking.delta",
+        seq: 0,
+        data: {
+          token: "step-by-step reasoning",
+          partial: { text: "" },
+          index: 0,
+        },
+      },
+    ]);
+  });
+
+  test("thinking text followed by functionCall-with-signature in separate events pairs them positionally", async () => {
+    // Mirrors function-calling-with-thinking-streaming/turn-1: a
+    // thinking text part in one event, a functionCall part with
+    // thoughtSignature in the next. The parser must emit the
+    // signature event BEFORE the tool_call.start/delta pair so the
+    // signature attaches to the thinking block's index and not to
+    // the freshly opened tool_call block.
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ text: "Determining weather query.", thought: true }],
+            },
+            index: 0,
+          },
+        ],
+      }),
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  functionCall: {
+                    name: "getCurrentWeather",
+                    args: { location: "Boston, MA" },
+                  },
+                  thoughtSignature: "OPAQUE_SIGNATURE",
+                },
+              ],
+            },
+            finishReason: "STOP",
+            index: 0,
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 85,
+          candidatesTokenCount: 15,
+          totalTokenCount: 153,
+          thoughtsTokenCount: 53,
+        },
+      }),
+    ]);
+
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.thinking.delta",
+      "inference.thinking.signature",
+      "inference.tool_call.start",
+      "inference.tool_call.delta",
+      "inference.usage",
+    ]);
+
+    const thinkingDelta = events[0];
+    if (thinkingDelta?.type !== "inference.thinking.delta") {
+      throw new Error("expected inference.thinking.delta");
+    }
+    expect(thinkingDelta.data.index).toBe(0);
+
+    const signature = events[1];
+    if (signature?.type !== "inference.thinking.signature") {
+      throw new Error("expected inference.thinking.signature");
+    }
+    expect(signature.data.index).toBe(0);
+    expect(signature.data.signature).toBe("OPAQUE_SIGNATURE");
+
+    const toolStart = events[2];
+    if (toolStart?.type !== "inference.tool_call.start") {
+      throw new Error("expected inference.tool_call.start");
+    }
+    // Thinking is block 0; the tool_call must allocate the next
+    // index (1), not collide with the thinking block.
+    expect(toolStart.data.index).toBe(1);
+    expect(toolStart.data.callId).toBe("1");
+
+    const usage = events[4];
+    if (usage?.type !== "inference.usage") {
+      throw new Error("expected inference.usage");
+    }
+    expect(usage.data.usage).toEqual({
+      input: 85,
+      output: 15,
+      cacheRead: 0,
+      cacheWrite: 0,
+      // thoughtsTokenCount=53 flows to TokenUsage.thinking. The
+      // wire-up was already present in the parser; this test pins
+      // it now that thinking is exercised.
+      thinking: 53,
+    });
+  });
+
+  test("thoughtSignature with no preceding thinking block throws ProtocolMismatchError", () => {
+    const bad = JSON.stringify({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              {
+                functionCall: { name: "x", args: {} },
+                thoughtSignature: "SIG",
+              },
+            ],
+          },
+          index: 0,
+        },
+      ],
+    });
+    expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
+    expect(() => adapter.parseResponse(bad)).toThrow(
+      /no preceding thinking block/,
+    );
+  });
+
+  test("interleaved text and functionCall in one candidate allocate separate block indices", async () => {
+    // No fixture exercises this shape -- Gemini's corpus is
+    // text-only OR thinking+functionCall in practice -- but the
+    // coalescing rules support it for free. Pin the behavior so a
+    // future change to allocation doesn't drift.
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                { text: "before " },
+                {
+                  functionCall: { name: "f", args: { k: "v" } },
+                },
+                { text: "after" },
+              ],
+            },
+            finishReason: "STOP",
+            index: 0,
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 1,
+          candidatesTokenCount: 1,
+          totalTokenCount: 2,
+        },
+      }),
+    ]);
+
+    const indicesByType = events
+      .filter(
+        (e) =>
+          e.type === "inference.text.delta" ||
+          e.type === "inference.tool_call.start",
+      )
+      .map((e) => ({ type: e.type, index: e.data.index }));
+
+    // The text-before block gets index 0; the functionCall block
+    // gets index 1 (closing the text block); the text-after block
+    // gets index 2 (the closed-then-reopened text block is a NEW
+    // block, not a return to index 0). The rule is "consecutive
+    // same-kind parts coalesce; different-kind closes the current
+    // block and allocates a new one." Reopening with the same kind
+    // after a different-kind interruption deliberately allocates a
+    // fresh index because the wire semantics treat the spans as
+    // distinct logical blocks.
+    expect(indicesByType).toEqual([
+      { type: "inference.text.delta", index: 0 },
+      { type: "inference.tool_call.start", index: 1 },
+      { type: "inference.text.delta", index: 2 },
+    ]);
+  });
+
+  test("part with multiple payload fields throws ProtocolMismatchError", () => {
+    const bad = JSON.stringify({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              {
+                text: "ambiguous",
+                functionCall: { name: "f", args: {} },
+              },
+            ],
+          },
+          index: 0,
+        },
+      ],
+    });
+    expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
+    expect(() => adapter.parseResponse(bad)).toThrow(/multiple payload fields/);
+  });
+
+  test("part with multiple payload fields names every payload in the diagnostic", () => {
+    // The diagnostic must enumerate every payload that's set, not
+    // just the first one detected -- the violation is "more than one
+    // payload" and the user can only act on it if the error names
+    // both.
+    const bad = JSON.stringify({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              {
+                text: "ambiguous",
+                functionCall: { name: "f", args: {} },
+              },
+            ],
+          },
+          index: 0,
+        },
+      ],
+    });
+    expect(() => adapter.parseResponse(bad)).toThrow(/text\+functionCall/);
+  });
+
+  test("thought: true on a non-text part throws ProtocolMismatchError", () => {
+    // arktype's open-object schema accepts `thought: true` on any
+    // part shape; `assertSinglePayload` is the boundary that rejects
+    // the flag on parts where it has no defined wire meaning. A
+    // `thought` flag on a functionCall is one such wire violation.
+    const bad = JSON.stringify({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              {
+                functionCall: { name: "f", args: {} },
+                thought: true,
+              },
+            ],
+          },
+          index: 0,
+        },
+      ],
+    });
+    expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
+    expect(() => adapter.parseResponse(bad)).toThrow(
+      /`thought: true` set on a part with no `text` payload/,
+    );
+  });
+
+  test("empty-text part bearing thoughtSignature claims the pending thinking anchor", async () => {
+    // Pins the empty-text carrier path: a `text: ""` part with a
+    // `thoughtSignature` lands the signature on the preceding
+    // thinking block instead of silently evaporating. The empty-
+    // payload-but-signature-present shape is spec-permitted and not
+    // covered by the corpus, but the parser must handle it because
+    // otherwise an authenticated thinking round-trip silently loses
+    // its attestation.
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ text: "reasoning", thought: true }],
+            },
+            index: 0,
+          },
+        ],
+      }),
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ text: "", thoughtSignature: "EMPTY_CARRIER_SIG" }],
+            },
+            index: 0,
+          },
+        ],
+      }),
+    ]);
+
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.thinking.delta",
+      "inference.thinking.signature",
+    ]);
+    const sig = events[1];
+    if (sig?.type !== "inference.thinking.signature") {
+      throw new Error("expected inference.thinking.signature");
+    }
+    expect(sig.data.signature).toBe("EMPTY_CARRIER_SIG");
+    expect(sig.data.index).toBe(0);
+  });
+
+  test("signature-only part after a non-thinking currentBlock throws (no anchor to claim)", async () => {
+    // After a text block, `currentBlock` is text and no thinking
+    // anchor is pending. A signature-only part has nothing to
+    // attach to and must throw. Verifies the close-then-consume
+    // fix on the signature-only branch did NOT accidentally let a
+    // stray signature succeed when no thinking precedes it.
+    await expect(
+      parseWire(adapter, [
+        sseFrame({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [{ text: "non-thinking" }],
+              },
+              index: 0,
+            },
+          ],
+        }),
+        sseFrame({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [{ thoughtSignature: "STRAY" }],
+              },
+              index: 0,
+            },
+          ],
+        }),
+      ]),
+    ).rejects.toThrow(/no preceding thinking block/);
+  });
+
+  test("signature-only part after thinking whose carrier already declined throws", async () => {
+    // thinking → unsigned-text carrier → signature-only.
+    // The text carrier had the anchor and declined to claim it
+    // (settleCarrierOpportunity discards the anchor). A subsequent
+    // signature-only part cannot retroactively claim the same
+    // thinking block's anchor -- the carrier opportunity is gone.
+    await expect(
+      parseWire(adapter, [
+        sseFrame({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  { text: "reasoning", thought: true },
+                  { text: "carrier" },
+                ],
+              },
+              index: 0,
+            },
+          ],
+        }),
+        sseFrame({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [{ thoughtSignature: "LATE" }],
+              },
+              index: 0,
+            },
+          ],
+        }),
+      ]),
+    ).rejects.toThrow(/no preceding thinking block/);
+  });
+
+  test("signature-only part directly after thinking claims the pending anchor", async () => {
+    // The signature-only carrier shape is the third reachable
+    // payload-less variant (alongside empty-text-with-signature
+    // and the corpus-seen functionCall-with-signature). Same
+    // close-then-consume pattern: a still-open thinking block must
+    // be closed so its index lands in `pendingSignatureAnchor`
+    // before `consumeSignature` claims it. Without the close, the
+    // anchor would still be null and consumeSignature would throw
+    // "no preceding thinking block."
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ text: "reasoning", thought: true }],
+            },
+            index: 0,
+          },
+        ],
+      }),
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ thoughtSignature: "SIG_ONLY" }],
+            },
+            index: 0,
+          },
+        ],
+      }),
+    ]);
+
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.thinking.delta",
+      "inference.thinking.signature",
+    ]);
+    const sig = events[1];
+    if (sig?.type !== "inference.thinking.signature") {
+      throw new Error("expected inference.thinking.signature");
+    }
+    expect(sig.data.signature).toBe("SIG_ONLY");
+    expect(sig.data.index).toBe(0);
+  });
+
+  test("unsigned non-thinking carrier between two thinking blocks does not trip the anchor guard", async () => {
+    // After a thinking block closes, the FIRST non-thinking part is
+    // the only carrier opportunity for that block's signature. A
+    // carrier that passes without a signature ends the opportunity;
+    // the anchor must be discarded so that a LATER thinking block
+    // does not trip the "two thinking blocks closed" guard on a
+    // stale anchor the first carrier already declined. The shape
+    // (unsigned thinking → unsigned text → unsigned thinking →
+    // functionCall) is spec-permitted and the parser must accept
+    // it.
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                { text: "reasoning A", thought: true },
+                { text: "carrier" },
+                { text: "reasoning B", thought: true },
+                { functionCall: { name: "f", args: {} } },
+              ],
+            },
+            finishReason: "STOP",
+            index: 0,
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 1,
+          candidatesTokenCount: 1,
+          totalTokenCount: 2,
+        },
+      }),
+    ]);
+
+    // Block indices: thinking-A = 0, text = 1, thinking-B = 2,
+    // functionCall = 3. The four parts allocate four distinct
+    // indices because consecutive different-kind parts each close
+    // the current block.
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.thinking.delta",
+      "inference.text.delta",
+      "inference.thinking.delta",
+      "inference.tool_call.start",
+      "inference.tool_call.delta",
+      "inference.usage",
+    ]);
+    const indices = events
+      .filter(
+        (e) =>
+          e.type === "inference.thinking.delta" ||
+          e.type === "inference.text.delta" ||
+          e.type === "inference.tool_call.start",
+      )
+      .map((e) => e.data.index);
+    expect(indices).toEqual([0, 1, 2, 3]);
+  });
+
+  test("empty part with no payload and no thoughtSignature throws ProtocolMismatchError", () => {
+    const bad = JSON.stringify({
+      candidates: [
+        {
+          content: { role: "model", parts: [{}] },
+          index: 0,
+        },
+      ],
+    });
+    expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
+    expect(() => adapter.parseResponse(bad)).toThrow(/no payload/);
+  });
+
+  test("multi-turn-streaming fixture replay yields tool_call + delta + usage", async () => {
+    const sseBytes = readFileSync(
+      join(
+        FIXTURE_ROOT,
+        "gemini-2.5-flash",
+        "function-calling-multi-turn-streaming",
+        "turn-1",
+        "response.sse",
+      ),
+    );
+    const events = await parseWire(adapter, [sseBytes]);
+
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.tool_call.start",
+      "inference.tool_call.delta",
+      "inference.usage",
+    ]);
+
+    const delta = events[1];
+    if (delta?.type !== "inference.tool_call.delta") {
+      throw new Error("expected inference.tool_call.delta");
+    }
+    expect(JSON.parse(delta.data.argumentFragment)).toEqual({
+      location: "Boston, MA",
+    });
+
+    const usage = events[2];
+    if (usage?.type !== "inference.usage") {
+      throw new Error("expected inference.usage");
+    }
+    expect(usage.data.usage).toEqual({
+      input: 81,
+      output: 16,
+      cacheRead: 0,
+      cacheWrite: 0,
+      thinking: 0,
+    });
+  });
+
+  test("with-thinking-streaming fixture replay pairs signature to the thinking block", async () => {
+    const sseBytes = readFileSync(
+      join(
+        FIXTURE_ROOT,
+        "gemini-2.5-flash",
+        "function-calling-with-thinking-streaming",
+        "turn-1",
+        "response.sse",
+      ),
+    );
+    const events = await parseWire(adapter, [sseBytes]);
+
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.thinking.delta",
+      "inference.thinking.signature",
+      "inference.tool_call.start",
+      "inference.tool_call.delta",
+      "inference.usage",
+    ]);
+
+    const signature = events[1];
+    if (signature?.type !== "inference.thinking.signature") {
+      throw new Error("expected inference.thinking.signature");
+    }
+    // Signature attaches to the thinking block at index 0, NOT to
+    // the tool_call block at index 1. Decoupling thinking-block
+    // attachment from tool_call-block attachment is the point of
+    // emitting the signature event before the tool_call.start.
+    expect(signature.data.index).toBe(0);
+    expect(signature.data.signature.length).toBeGreaterThan(0);
+
+    const toolStart = events[2];
+    if (toolStart?.type !== "inference.tool_call.start") {
+      throw new Error("expected inference.tool_call.start");
+    }
+    expect(toolStart.data.index).toBe(1);
+
+    const usage = events[4];
+    if (usage?.type !== "inference.usage") {
+      throw new Error("expected inference.usage");
+    }
+    expect(usage.data.usage).toEqual({
+      input: 85,
+      output: 15,
+      cacheRead: 0,
+      cacheWrite: 0,
+      thinking: 53,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRequest -- thinking and tool_call round-trip
+// ---------------------------------------------------------------------------
+
+describe("Google GenAI adapter: buildRequest thinking round trip", () => {
+  test("thinking block translates to {text, thought: true} with no signature on that part", () => {
+    const req = adapter.buildRequest(
+      [
+        {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "internal reasoning" }],
+          timestamp: 0,
+        },
+      ],
+      "gemini-2.5-flash",
+      {},
+    );
+    const body = parseBody(req.body);
+    const contents = GeminiContents.assert(body.contents);
+    const parts = contents[0]?.parts;
+    expect(parts).toEqual([{ text: "internal reasoning", thought: true }]);
+  });
+
+  test("signed thinking + tool_call attaches the signature to the functionCall part, not the thinking part", () => {
+    // This is the round-trip shape captured in
+    // function-calling-with-thinking-streaming/turn-2/request.json:
+    // signature is on the functionCall, thinking text is signature-
+    // less. A second turn echoing the model's prior thinking
+    // requires this exact placement; mis-placing the signature
+    // would cause Gemini to reject the request as a corrupted
+    // thinking attestation.
+    const req = adapter.buildRequest(
+      [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "thinking",
+              thinking: "Determining weather query.",
+              signature: "OPAQUE_SIGNATURE",
+            },
+            {
+              type: "tool_call",
+              id: "1",
+              name: "getCurrentWeather",
+              arguments: { location: "Boston, MA" },
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      "gemini-2.5-flash",
+      {},
+    );
+    const body = parseBody(req.body);
+    const contents = GeminiContents.assert(body.contents);
+    expect(contents[0]?.parts).toEqual([
+      { text: "Determining weather query.", thought: true },
+      {
+        functionCall: {
+          name: "getCurrentWeather",
+          args: { location: "Boston, MA" },
+        },
+        thoughtSignature: "OPAQUE_SIGNATURE",
+      },
+    ]);
+  });
+
+  test("unsigned thinking + tool_call leaves the tool_call without a thoughtSignature", () => {
+    // A thinking block without a signature stands alone -- its
+    // presence does not force a thoughtSignature on the next part.
+    const req = adapter.buildRequest(
+      [
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "musing" },
+            {
+              type: "tool_call",
+              id: "1",
+              name: "noop",
+              arguments: {},
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      "gemini-2.5-flash",
+      {},
+    );
+    const body = parseBody(req.body);
+    const contents = GeminiContents.assert(body.contents);
+    expect(contents[0]?.parts).toEqual([
+      { text: "musing", thought: true },
+      { functionCall: { name: "noop", args: {} } },
+    ]);
+  });
+
+  test("turn ending on a signed thinking block with no follow-on part throws", () => {
+    expect(() =>
+      adapter.buildRequest(
+        [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "thinking",
+                thinking: "trailing",
+                signature: "STRAY",
+              },
+            ],
+            timestamp: 0,
+          },
+        ],
+        "gemini-2.5-flash",
+        {},
+      ),
+    ).toThrow(/signature awaiting a carrier part/);
+  });
+
+  test("two signed thinking blocks without an intervening non-thinking carrier throws", () => {
+    expect(() =>
+      adapter.buildRequest(
+        [
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "first", signature: "SIG1" },
+              { type: "thinking", thinking: "second", signature: "SIG2" },
+              {
+                type: "tool_call",
+                id: "1",
+                name: "noop",
+                arguments: {},
+              },
+            ],
+            timestamp: 0,
+          },
+        ],
+        "gemini-2.5-flash",
+        {},
+      ),
+    ).toThrow(/second thinking block on assistant turn/);
+  });
+
+  test("turn-2 round-trip fixture parity for function-calling-with-thinking-streaming", () => {
+    // The harness ought to be able to reconstruct turn-2's request
+    // from a ConversationTurn list that includes the thinking +
+    // tool_call + tool_result blocks. We assert byte-equivalent
+    // parts -- a regression in the signature placement or in the
+    // thinking text would break Gemini's signed-thinking
+    // attestation on the next turn.
+    const FIXTURE = readFixtureJSON(
+      "gemini-2.5-flash",
+      "function-calling-with-thinking-streaming",
+      "turn-2",
+      "request.json",
+    );
+    const fixtureParts = GeminiContents.assert(FIXTURE.contents)[1]?.parts;
+    // Narrow the two fixture parts with arktype rather than a type
+    // assertion -- the fixture file is external data and a runtime
+    // schema is the honest way to extract `thinking` text and
+    // `thoughtSignature`. A type assertion would be a compile-time
+    // lie against the actual file contents.
+    const FixtureThinkingPart = type({
+      text: "string",
+      thought: "true",
+    });
+    const FixtureFunctionCallPart = type({
+      functionCall: { name: "string", args: "Record<string, unknown>" },
+      thoughtSignature: "string",
+    });
+    const thinkingText = FixtureThinkingPart.assert(fixtureParts?.[0]).text;
+    const thoughtSignature = FixtureFunctionCallPart.assert(
+      fixtureParts?.[1],
+    ).thoughtSignature;
+
+    const req = adapter.buildRequest(
+      [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Think carefully, then use the getCurrentWeather tool to look up the current weather in Boston, MA.",
+            },
+          ],
+          timestamp: 0,
+        },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "thinking",
+              thinking: thinkingText,
+              signature: thoughtSignature,
+            },
+            {
+              type: "tool_call",
+              id: "1",
+              name: "getCurrentWeather",
+              arguments: { location: "Boston, MA" },
+            },
+          ],
+          timestamp: 0,
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              callId: "1",
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    location: "Boston, MA",
+                    temperatureF: 62,
+                    conditions: "partly cloudy",
+                    windMph: 8,
+                  }),
+                },
+              ],
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      "gemini-2.5-flash",
+      {
+        tools: [
+          {
+            name: "getCurrentWeather",
+            description:
+              "Get the current weather conditions for a given city. Use this whenever the user asks about weather.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                location: {
+                  type: "string",
+                  description:
+                    "The city and optional state, e.g. 'Boston, MA'.",
+                },
+              },
+              required: ["location"],
+            },
+          },
+        ],
+        thinking: { enabled: true, budgetTokens: 1024 },
+      },
+    );
+
+    const body = parseBody(req.body);
+    // The assistant turn is the second `contents[]` element. Pin
+    // its parts byte-for-byte against the fixture; the surrounding
+    // user turns are exercised by other tests.
+    const contents = GeminiContents.assert(body.contents);
+    expect(contents[1]?.parts).toEqual(fixtureParts);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Harness round trip -- thinking + tool_call
+// ---------------------------------------------------------------------------
+
+describe("Google GenAI adapter: harness round trip with thinking + tool_call", () => {
+  const inertScheduler: Scheduler = {
+    setTimeout: () => () => {
+      /* tests do not exercise timer firing */
+    },
+  };
+
+  const SOURCE: InferenceSource = {
+    id: "google-genai:gemini-2.5-flash",
+    provider: "google-genai",
+    baseURL: "https://generativelanguage.googleapis.com",
+    apiKey: "test-key",
+    model: "gemini-2.5-flash",
+  };
+
+  test("function-calling-with-thinking-streaming fixture flows through runInference end-to-end", async () => {
+    // Replays the captured SSE response through the full harness
+    // pipeline and asserts the final turn carries a thinking block
+    // (with its signature) followed by a tool_call block. The
+    // ordering matters: a tool_call-before-thinking content array
+    // could not be echoed back to Gemini in a follow-up turn
+    // because Gemini's wire convention is thinking-then-functionCall.
+    const sseBytes = readFileSync(
+      join(
+        FIXTURE_ROOT,
+        "gemini-2.5-flash",
+        "function-calling-with-thinking-streaming",
+        "turn-1",
+        "response.sse",
+      ),
+    );
+
+    const fetchImpl: Dependencies["fetch"] = () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(sseBytes);
+              controller.close();
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          },
+        ),
+      );
+
+    let seq = 0;
+    const events: InferenceEvent[] = [];
+    for await (const ev of runInference({
+      turns: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Think carefully, then use the getCurrentWeather tool to look up the current weather in Boston, MA.",
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      source: SOURCE,
+      nextSeq: () => seq++,
+      deps: { fetch: fetchImpl, scheduler: inertScheduler },
+    })) {
+      events.push(ev);
+    }
+
+    const done = events.find((e) => e.type === "inference.done");
+    if (done?.type !== "inference.done") {
+      throw new Error("expected inference.done event");
+    }
+
+    const blocks = done.data.turn.content;
+    expect(blocks.length).toBe(2);
+    const thinking = blocks[0];
+    if (thinking?.type !== "thinking") {
+      throw new Error("expected first content block to be thinking");
+    }
+    expect(thinking.thinking.length).toBeGreaterThan(0);
+    expect(thinking.signature).toBeDefined();
+    expect(thinking.signature?.length).toBeGreaterThan(0);
+
+    const toolCall = blocks[1];
+    if (toolCall?.type !== "tool_call") {
+      throw new Error("expected second content block to be tool_call");
+    }
+    expect(toolCall.name).toBe("getCurrentWeather");
+    expect(toolCall.arguments).toEqual({ location: "Boston, MA" });
+
+    expect(done.data.usage).toEqual({
+      input: 85,
+      output: 15,
+      cacheRead: 0,
+      cacheWrite: 0,
+      thinking: 53,
+    });
   });
 });
