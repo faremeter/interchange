@@ -28,6 +28,7 @@ export interface ChatCompletionsRequest {
   messages: unknown[];
   stream?: boolean;
   tools?: unknown[];
+  response_format?: unknown;
 }
 
 function mimeTypeFor(ref: MediaRef): string {
@@ -195,6 +196,50 @@ function buildReasoningBody(
   return body;
 }
 
+// Translate the intent's responseFormat to OpenAI's response_format
+// wire field. Mirrors toOpenAIResponseFormat in the inference adapter
+// (packages/inference/src/providers/openai.ts); duplicated here
+// because the discovery plug-in builds wire requests directly without
+// running through the adapter. Kept in sync by the shared
+// CapabilityIntent shape.
+function toOpenAIResponseFormat(
+  format: NonNullable<CapabilityIntent["responseFormat"]>,
+): Record<string, unknown> {
+  switch (format.kind) {
+    case "text":
+      return { type: "text" };
+    case "json":
+      return { type: "json_object" };
+    case "json-schema": {
+      const jsonSchema: Record<string, unknown> = {
+        name: format.name,
+        schema: format.schema,
+      };
+      if (format.strict !== undefined) jsonSchema["strict"] = format.strict;
+      return { type: "json_schema", json_schema: jsonSchema };
+    }
+  }
+}
+
+function buildStructuredOutputBody(
+  model: string,
+  intent: CapabilityIntent,
+  stream: boolean,
+): ChatCompletionsRequest {
+  if (intent.responseFormat === undefined) {
+    throw new Error(
+      "OpenAI protocol: structured-output intent has no responseFormat",
+    );
+  }
+  const body: ChatCompletionsRequest = {
+    model,
+    messages: [{ role: "user", content: intent.prompt }],
+    response_format: toOpenAIResponseFormat(intent.responseFormat),
+  };
+  if (stream) body.stream = true;
+  return body;
+}
+
 function buildVisionBody(
   model: string,
   intent: CapabilityIntent,
@@ -245,6 +290,10 @@ export function buildRequestBody(args: BuildRequestBodyArgs): unknown {
       return buildReasoningBody(model, intent, true);
     case "vision-input":
       return buildVisionBody(model, intent);
+    case "structured-output":
+      return buildStructuredOutputBody(model, intent, false);
+    case "structured-output-streaming":
+      return buildStructuredOutputBody(model, intent, true);
     default:
       throw new Error(
         `OpenAI protocol: capability "${capability}" not implemented`,

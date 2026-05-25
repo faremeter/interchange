@@ -33,6 +33,8 @@ const TEXT_MODEL_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   "files-api-reference-streaming",
   "safety-classification",
   "safety-classification-streaming",
+  "structured-output",
+  "structured-output-streaming",
 ]);
 
 const IMAGE_MODEL_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
@@ -113,6 +115,8 @@ interface GeminiGenerationConfig {
   maxOutputTokens?: number;
   thinkingConfig?: GeminiThinkingConfig;
   responseModalities?: readonly ["TEXT", "IMAGE"];
+  responseMimeType?: string;
+  responseSchema?: unknown;
 }
 
 interface GeminiToolConfig {
@@ -332,6 +336,35 @@ function safetyClassificationBody(intent: CapabilityIntent): GeminiRequestBody {
   };
 }
 
+function structuredOutputBody(intent: CapabilityIntent): GeminiRequestBody {
+  const format = intent.responseFormat;
+  if (format === undefined) {
+    throw new Error(
+      "google-genai: structured-output intent has no responseFormat",
+    );
+  }
+  const generationConfig: GeminiGenerationConfig = {};
+  switch (format.kind) {
+    case "text":
+      // Free-form text is Gemini's default; emit no responseMimeType.
+      break;
+    case "json":
+      generationConfig.responseMimeType = "application/json";
+      break;
+    case "json-schema":
+      generationConfig.responseMimeType = "application/json";
+      generationConfig.responseSchema = format.schema;
+      break;
+  }
+  const body: GeminiRequestBody = {
+    contents: [userTextContent(intent.prompt)],
+  };
+  if (Object.keys(generationConfig).length > 0) {
+    body.generationConfig = generationConfig;
+  }
+  return body;
+}
+
 export function buildRequestBody(opts: {
   model: string;
   capability: Capability;
@@ -377,6 +410,9 @@ export function buildRequestBody(opts: {
     case "safety-classification":
     case "safety-classification-streaming":
       return safetyClassificationBody(opts.intent);
+    case "structured-output":
+    case "structured-output-streaming":
+      return structuredOutputBody(opts.intent);
     case "files-api-reference":
     case "files-api-reference-streaming":
       throw new Error(
