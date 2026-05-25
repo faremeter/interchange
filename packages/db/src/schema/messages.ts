@@ -67,6 +67,7 @@ export const turnPart = pgTable("turn_part", {
       "tool",
       "file",
       "error",
+      "refusal",
       "step-start",
       "step-finish",
       "snapshot",
