@@ -96,11 +96,19 @@ function isToolResultTurn(msg: ConversationTurn): boolean {
 }
 
 function extractTextContent(msg: ConversationTurn): string {
+  // Treat refusal blocks as text for timeline-summary purposes. A
+  // refusal-only assistant turn carries human-readable model output
+  // (the model declined a structured-output request and explained
+  // why); summarising it as the empty string would render the turn
+  // invisible on the timeline even though the model produced
+  // coherent content. The structural "this was a refusal" signal is
+  // preserved on the persisted turn-part kind for any consumer that
+  // wants to render policy declines differently.
   return msg.content
-    .filter((b) => b.type === "text")
     .map((b) => {
-      if (b.type !== "text") return "";
-      return b.text;
+      if (b.type === "text") return b.text;
+      if (b.type === "refusal") return b.reason;
+      return "";
     })
     .join("");
 }
