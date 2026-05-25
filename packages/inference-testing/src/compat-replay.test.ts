@@ -56,17 +56,18 @@ describe("runCompatReplay — single-turn streaming SSE", () => {
 
 describe("runCompatReplay — skip behavior", () => {
   test("skips with no_adapter_registered when the catalog provider has no mapped adapter", async () => {
-    // google-genai is not in CATALOG_TO_ADAPTER. The helper must skip
-    // rather than throw, so a full-corpus iteration continues past it
-    // without manual exclusion.
-    const fixtureDir = path.join(
-      FIXTURE_ROOT,
-      "google-genai/gemini-2.5-flash/plain-text-streaming",
-    );
+    // The skip path fires whenever `runCompatReplay` is invoked for
+    // a catalog provider that has no entry in `CATALOG_TO_ADAPTER`.
+    // Every provider in today's catalog has an entry, so this test
+    // uses a synthetic provider name that is guaranteed absent from
+    // the mapping; the helper short-circuits before reading the
+    // fixture (the early return runs before any I/O), so a real
+    // fixture directory is not required and any path works for the
+    // `fixtureDir` argument.
     const result = await runCompatReplay({
-      fixtureDir,
-      provider: "google-genai",
-      model: "gemini-2.5-flash",
+      fixtureDir: WORKSPACE_ROOT,
+      provider: "synthetic-unmapped-provider",
+      model: "synthetic-model",
     });
     expect(result).toEqual({
       kind: "skipped",
@@ -123,7 +124,10 @@ describe("runCompatReplayCorpus — full SUPPORT_MATRIX iteration", () => {
   // what the typed Invariant list was built for.
   //
   // Expected skip reasons:
-  //   - no_adapter_registered: google-genai rows (Gemini adapter not yet wired).
+  //   - no_adapter_registered: catalog providers absent from
+  //     `CATALOG_TO_ADAPTER`. Every provider in today's catalog has
+  //     an entry, so this reason fires only when the catalog
+  //     gains a new provider before its adapter lands.
   //   - non_streaming_capture: response.json-only captures (no SSE).
   //   - raw_bytes_upload: files-api `upload/` subdirs carrying request.bin.
   //   - non_captured_outcome: misled/refused/http-error/unsupported rows.
@@ -181,11 +185,12 @@ describe("runCompatReplayCorpus — full SUPPORT_MATRIX iteration", () => {
     }
 
     // The corpus should include both real replays (anthropic +
-    // opencode-zen captured rows) and structured skips
-    // (google-genai, misled, etc.). A complete absence of either
-    // category would mean the catalog or the adapter wiring shifted
-    // in a way this suite isn't covering — surface that loudly
-    // rather than as a green pass.
+    // opencode-zen + google-genai captured rows) and structured
+    // skips (misled outcomes, raw-bytes upload leaves, non-streaming
+    // captures). A complete absence of either category would mean
+    // the catalog or the adapter wiring shifted in a way this
+    // suite isn't covering — surface that loudly rather than as a
+    // green pass.
     const replayedCount = results.filter((r) => r.kind === "replayed").length;
     const skippedCount = results.filter((r) => r.kind === "skipped").length;
     expect(replayedCount).toBeGreaterThan(0);
