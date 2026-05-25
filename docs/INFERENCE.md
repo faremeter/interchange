@@ -80,6 +80,7 @@ All inference activity — streaming tokens, tool execution, reactor state chang
 inference.start           — Model call begins (carries model ID)
 inference.thinking.delta  — Reasoning token
 inference.text.delta      — Output token
+inference.refusal.delta   — Refusal token (OpenAI strict-mode structured outputs)
 inference.tool_call.start — Tool call detected (name, partial args)
 inference.tool_call.delta — Tool call argument fragment
 inference.tool_call.end   — Tool call complete (full args)
@@ -208,6 +209,59 @@ Transformations:
 - **Incomplete turn filtering** — Error/aborted assistant messages are filtered during replay to prevent "reasoning without output" errors on the target model.
 
 Transformation runs automatically when the target model differs from a message's originating model. The originating model is tracked per-message, not per-conversation, because model switches can happen mid-conversation.
+
+## Structured Outputs
+
+`InferenceOptions.responseFormat` constrains the model's output to text, free-form JSON, or JSON conforming to a specific schema. The field is a discriminated union shaped to map onto every provider's native surface:
+
+```
+responseFormat?:
+  | { kind: "text" }
+  | { kind: "json" }
+  | { kind: "json-schema"; name: string; schema: unknown; strict?: boolean }
+```
+
+When omitted the provider's default applies (typically free-form text). `kind: "text"` makes the default explicit and is portable across every provider. `kind: "json"` requests free-form JSON output (no schema). `kind: "json-schema"` constrains the output to a specific JSON Schema.
+
+### Per-provider translation
+
+**OpenAI** (`response_format`):
+
+- `text` → `{ type: "text" }`
+- `json` → `{ type: "json_object" }`
+- `json-schema` → `{ type: "json_schema", json_schema: { name, schema, strict? } }`
+
+OpenAI strict mode (the `strict: true` flag inside `json_schema`) requires the schema to declare `additionalProperties: false` on every object and list every property as required. With strict mode on, the model guarantees schema-conformant output and surfaces policy declines via the structured `refusal` field rather than emitting free-form prose.
+
+**Google GenAI** (`generationConfig`):
+
+- `text` → no field set (Gemini's default).
+- `json` → `{ responseMimeType: "application/json" }`.
+- `json-schema` → `{ responseMimeType: "application/json", responseSchema: <schema> }`.
+
+Gemini enforces a JSON Schema subset that is narrower than OpenAI strict mode. Constructs rejected by the Gemini endpoint as of capture:
+
+- `additionalProperties` — rejected outright with HTTP 400 `INVALID_ARGUMENT`.
+- `oneOf` — not in the subset.
+- `$ref` and `definitions` — not in the subset.
+- `patternProperties` — not in the subset.
+- Limited `pattern` regex support.
+
+The adapter forwards the caller's schema verbatim. When Gemini rejects, the HTTP error surfaces verbatim through the existing error classifier rather than failing with an adapter-side message that may lag Google's evolving subset rules. OpenAI's `name` and `strict` flags have no Gemini equivalent and are ignored when present.
+
+**Anthropic**: no native structured-outputs API. The adapter raises at the marshaling boundary for `kind: "json"` and `kind: "json-schema"` rather than synthesizing a hidden tool wrapper. `kind: "text"` is a no-op, so a cross-provider call site can pass `{ kind: "text" }` uniformly without conditional logic.
+
+### Refusal semantics
+
+OpenAI strict mode produces structured refusals when the safety classifier declines a request: the assistant message carries a `refusal` field instead of `content`, and the streaming wire surfaces refusal fragments through `delta.refusal` rather than `delta.content`. The adapter emits these as a new event variant:
+
+```
+inference.refusal.delta — Refusal fragment (token: string, index?: number)
+```
+
+The event shape mirrors `inference.text.delta` so the harness's existing per-index block accumulator routes refusal fragments without any new state. The finalized assistant turn carries a `RefusalBlock { type: "refusal", reason: string }` in its `content[]` array, so consumers can branch on the block type rather than scan event history. Refusal is semantically distinct from `inference.error`: the HTTP call succeeded and the model produced a coherent response, but that response is "I will not satisfy this schema" rather than schema-conformant content.
+
+Gemini and Anthropic have no equivalent structured refusal field; declines from those providers surface as ordinary text content (with a textual refusal message) or as HTTP errors.
 
 ## Agent Reactor
 
