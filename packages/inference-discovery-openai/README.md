@@ -19,8 +19,12 @@ for the runtime, the plug-in contract, and the `discover` CLI.
 ## OpenCode Zen
 
 OpenCode Zen is an OpenAI-compatible Chat Completions relay that
-fronts five upstream model providers (Moonshot, Z.AI, DeepSeek,
-Alibaba, Xiaomi MiMo) behind a single endpoint.
+fronts upstream model providers behind a single endpoint. The
+`/zen/v1` tier exposes hosted GPT, Claude, and Gemini alongside the
+open-weights catalog (Moonshot, Z.AI, DeepSeek, Alibaba, Xiaomi
+MiMo). Earlier captures targeted the narrower `/zen/go/v1` open-
+weights tier; the v1 endpoint is a superset and existing fixtures
+re-run unchanged against it.
 
 ```ts
 import { createOpencodeZenPlugin } from "@intx/inference-discovery-openai";
@@ -60,7 +64,7 @@ signal lives in the captured event stream itself.
 | Variable          | Purpose                                                      |
 | ----------------- | ------------------------------------------------------------ |
 | `OPENAI_API_KEY`  | Sent as `Authorization: Bearer <key>`. Redacted in fixtures. |
-| `OPENAI_BASE_URL` | Relay base URL (e.g. `https://opencode.ai/zen/go/v1`).       |
+| `OPENAI_BASE_URL` | Relay base URL (e.g. `https://opencode.ai/zen/v1`).          |
 
 ## Adding a new deployment
 
