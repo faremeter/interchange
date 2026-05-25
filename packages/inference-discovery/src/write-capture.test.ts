@@ -20,6 +20,13 @@ describe("writeCapture", () => {
   });
 
   test("writes JSON request body and response/metadata files", async () => {
+    // Use a non-default key order and trailing whitespace in the
+    // response bytes to prove writeCapture preserves the body
+    // byte-identical rather than re-formatting it via JSON.stringify.
+    const originalResponseText = `{"text":"hello","seq":1}  \n`;
+    const originalResponseBytes = new TextEncoder().encode(
+      originalResponseText,
+    );
     await writeCapture(dir, {
       request: {
         kind: "json",
@@ -30,7 +37,11 @@ describe("writeCapture", () => {
         "X-Goog-Api-Key": "secret",
       },
       redactRequestHeaders: ["x-goog-api-key"],
-      response: { kind: "json", body: { text: "hello" } },
+      response: {
+        kind: "json",
+        bytes: originalResponseBytes,
+        parsed: { text: "hello", seq: 1 },
+      },
       responseHeaders: { "Content-Type": "application/json" },
       redactResponseHeaders: [],
     });
@@ -49,10 +60,10 @@ describe("writeCapture", () => {
     expect(requestHeaders["X-Goog-Api-Key"]).toBe("<REDACTED>");
     expect(requestHeaders["Content-Type"]).toBe("application/json");
 
-    const body = JSON.parse(
-      await fs.readFile(path.join(dir, "response.json"), "utf8"),
+    const writtenResponse = await fs.readFile(path.join(dir, "response.json"));
+    expect(Array.from(writtenResponse)).toEqual(
+      Array.from(originalResponseBytes),
     );
-    expect(body).toEqual({ text: "hello" });
   });
 
   test("writes a raw request body to request.bin verbatim", async () => {
@@ -68,7 +79,11 @@ describe("writeCapture", () => {
         "X-Goog-Api-Key": "secret",
       },
       redactRequestHeaders: ["x-goog-api-key"],
-      response: { kind: "json", body: { fileId: "abc" } },
+      response: {
+        kind: "json",
+        bytes: new TextEncoder().encode('{"fileId":"abc"}'),
+        parsed: { fileId: "abc" },
+      },
       responseHeaders: { "Content-Type": "application/json" },
       redactResponseHeaders: [],
     });
@@ -113,7 +128,11 @@ describe("writeCapture", () => {
       request: { kind: "json", body: {} },
       requestHeaders: { Authorization: "Bearer xyz" },
       redactRequestHeaders: ["AUTHORIZATION"],
-      response: { kind: "json", body: {} },
+      response: {
+        kind: "json",
+        bytes: new TextEncoder().encode("{}"),
+        parsed: {},
+      },
       responseHeaders: { "Set-Cookie": "abc=1" },
       redactResponseHeaders: ["set-cookie"],
     });
@@ -135,7 +154,11 @@ describe("writeCapture", () => {
       request: { kind: "json", body: {} },
       requestHeaders: {},
       redactRequestHeaders: [],
-      response: { kind: "json", body: {} },
+      response: {
+        kind: "json",
+        bytes: new TextEncoder().encode("{}"),
+        parsed: {},
+      },
       responseHeaders: {},
       redactResponseHeaders: [],
     });

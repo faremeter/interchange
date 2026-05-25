@@ -146,16 +146,21 @@ async function captureStep(args: {
   let captured: ResponseBody;
   let parsedForGenerator: unknown | null;
   let bytesForGenerator: Uint8Array | null;
+  // Read the body as raw bytes regardless of kind so the capture
+  // can write them verbatim. For JSON responses we also parse for
+  // the generator's reasoning-trace extraction path, but the bytes
+  // we write to disk are the original network bytes (not a
+  // re-serialised pretty-print of the parsed value).
+  const buf = await response.arrayBuffer();
+  const bytes = new Uint8Array(buf);
   if (kind === "sse") {
-    const buf = await response.arrayBuffer();
-    const bytes = new Uint8Array(buf);
     captured = { kind: "sse", bytes };
     parsedForGenerator = null;
     bytesForGenerator = bytes;
   } else {
-    const text = await response.text();
+    const text = new TextDecoder().decode(bytes);
     const parsed: unknown = JSON.parse(text);
-    captured = { kind: "json", body: parsed };
+    captured = { kind: "json", bytes, parsed };
     parsedForGenerator = parsed;
     bytesForGenerator = null;
   }

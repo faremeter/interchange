@@ -263,7 +263,7 @@ async function bufferResponseBody(
   try {
     const parsed: unknown = JSON.parse(text);
     return {
-      captured: { kind: "json", body: parsed },
+      captured: { kind: "json", bytes, parsed },
       reconstructed: bytes,
     };
   } catch {
