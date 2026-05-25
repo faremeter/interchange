@@ -1,0 +1,24 @@
+{
+  "id": "chatcmpl-6cbe6c5c44b34f1eba6d33d57d1583f6",
+  "object": "chat.completion",
+  "created": 1779747304,
+  "model": "accounts/fireworks/models/glm-5p1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\n\"name\": \"Alice\",\n\"age\": 30,\n\"email\": \"alice@example.com\"\n}",
+        "reasoning_content": "1.  **Analyze the Request:**\n    *   Input sentence: \"Alice is 30 years old and her email is alice@example.com.\"\n    *   Task: Extract structured fields (name, age, email).\n    *   Constraint 1: Reply with *only* the JSON object.\n    *   Constraint 2: No markdown fences (e.g., no ```json ... ```).\n    *   Constraint 3: No prose (no introductory or concluding text).\n\n2.  **Identify the Fields:**\n    *   Name: \"Alice\"\n    *   Age: 30 (integer preferred over string, but either is generally fine; let's use integer for better structure)\n    *   Email: \"alice@example.com\"\n\n3.  **Construct the JSON Object:**\n    ```json\n    {\n      \"name\": \"Alice\",\n      \"age\": 30,\n      \"email\": \"alice@example.com\"\n    }\n    ```\n\n4.  **Format the Output:**\n    *   Must be raw JSON string, no fences.\n    *   `{\"name\": \"Alice\", \"age\": 30, \"email\": \"alice@example.com\"}` (compact or pretty-printed, usually compact or standard spaces is fine. Let's do standard pretty-print but without markdown fences, or just compact to be safe. Compact is less likely to accidentally trigger markdown rendering depending on the parser, but standard spacing is safer for readability. Let's just output standard spaced JSON without fences.)\n\n5.  **Double-Check Constraints:**\n    *   JSON object only? Yes.\n    *   No markdown fences? Yes.\n    *   No prose? Yes.\n\n6.  **Final Output Generation:**\n    ```\n    {\n      \"name\": \"Alice\",\n      \"age\": 30,\n      \"email\": \"alice@example.com\"\n    }\n    ```"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 40,
+    "total_tokens": 447,
+    "completion_tokens": 407,
+    "prompt_tokens_details": { "cached_tokens": 4 }
+  },
+  "cost": "0.00184224"
+}

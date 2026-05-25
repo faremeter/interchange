@@ -272,6 +272,47 @@ const MATRIX: SupportEntry[] = [
     "structured-output",
     "structured-output-streaming",
   ]),
+  ...opencode("kimi-k2.6", [
+    "structured-output",
+    "structured-output-streaming",
+  ]),
+  ...opencode("glm-5.1", ["structured-output", "structured-output-streaming"]),
+  ...opencode("qwen3.6-plus", [
+    "structured-output",
+    "structured-output-streaming",
+  ]),
+  {
+    provider: OPENCODE_PROVIDER,
+    model: "deepseek-v4-pro",
+    capability: "structured-output",
+    outcome: "http-error",
+    notes:
+      "Probe against /zen/v1 returned HTTP 401 ModelError 'Model deepseek-v4-pro is not supported' on the structured-output schema; deepseek-v4-pro's reasoning-content captures live on the older /zen/go/v1 tier and the v1 tier appears to gate the model out.",
+  },
+  {
+    provider: OPENCODE_PROVIDER,
+    model: "deepseek-v4-pro",
+    capability: "structured-output-streaming",
+    outcome: "http-error",
+    notes:
+      "Probe against /zen/v1 returned HTTP 401 ModelError 'Model deepseek-v4-pro is not supported' on the structured-output schema; deepseek-v4-pro's reasoning-content captures live on the older /zen/go/v1 tier and the v1 tier appears to gate the model out.",
+  },
+  {
+    provider: OPENCODE_PROVIDER,
+    model: "mimo-v2-omni",
+    capability: "structured-output",
+    outcome: "http-error",
+    notes:
+      "Probe against /zen/v1 returned HTTP 401 ModelError 'Model mimo-v2-omni is not supported' on the structured-output schema; mimo-v2-omni's other captures live on the older /zen/go/v1 tier and the v1 tier appears to gate the model out.",
+  },
+  {
+    provider: OPENCODE_PROVIDER,
+    model: "mimo-v2-omni",
+    capability: "structured-output-streaming",
+    outcome: "http-error",
+    notes:
+      "Probe against /zen/v1 returned HTTP 401 ModelError 'Model mimo-v2-omni is not supported' on the structured-output schema; mimo-v2-omni's other captures live on the older /zen/go/v1 tier and the v1 tier appears to gate the model out.",
+  },
   {
     provider: OPENCODE_PROVIDER,
     model: "glm-5.1",
