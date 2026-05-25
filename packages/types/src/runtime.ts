@@ -695,6 +695,30 @@ export const RedactedThinkingBlock = type({
   data: "string",
 });
 export type RedactedThinkingBlock = typeof RedactedThinkingBlock.infer;
+
+/**
+ * A model-emitted refusal. Produced when a provider's strict-mode
+ * structured-outputs path declines to satisfy the requested schema —
+ * OpenAI's `delta.refusal` / `message.refusal` field is the canonical
+ * wire shape. The `reason` is the accumulated human-readable text the
+ * model emitted in lieu of conformant output.
+ *
+ * Refusal is semantically distinct from `inference.error`: the HTTP
+ * call succeeded and the model produced a coherent response, but that
+ * response is "I will not satisfy this schema" rather than schema-
+ * conformant content. Callers that distinguish policy declines from
+ * transport/protocol failures should branch on the block type rather
+ * than treat the assistant turn as an error.
+ *
+ * Exported because `inference.refusal.delta` events reference it by
+ * name and adapters construct RefusalBlocks in the finalized
+ * AssistantTurn from accumulated delta fragments.
+ */
+export const RefusalBlock = type({
+  type: "'refusal'",
+  reason: "string",
+});
+export type RefusalBlock = typeof RefusalBlock.infer;
 const ToolCallBlock = type({
   type: "'tool_call'",
   id: "string",
@@ -854,6 +878,7 @@ const ToolResultBlock = type({
 
 export const ContentBlock = TextBlock.or(ThinkingBlock)
   .or(RedactedThinkingBlock)
+  .or(RefusalBlock)
   .or(ImageBlock)
   .or(AudioBlock)
   .or(VideoBlock)
@@ -1004,6 +1029,15 @@ export const InferenceEvent = type({
   })
   .or({
     type: "'inference.text.delta'",
+    seq: "number",
+    data: {
+      token: "string",
+      partial: PartialMessage,
+      "index?": "number",
+    },
+  })
+  .or({
+    type: "'inference.refusal.delta'",
     seq: "number",
     data: {
       token: "string",
@@ -1221,6 +1255,11 @@ export type InferenceEvent =
     }
   | {
       type: "inference.text.delta";
+      seq: number;
+      data: { token: string; partial: PartialMessage; index?: number };
+    }
+  | {
+      type: "inference.refusal.delta";
       seq: number;
       data: { token: string; partial: PartialMessage; index?: number };
     }
@@ -1906,6 +1945,46 @@ export type InferenceOptions = {
    * field. When omitted the provider's default modalities apply.
    */
   responseModalities?: ("text" | "image" | "audio")[];
+  /**
+   * Structured-output constraint. Asks the model to produce text, free-
+   * form JSON, or JSON conforming to a specific schema. Adapters
+   * translate to the provider-native wire shape:
+   *
+   * - **OpenAI** (`response_format`):
+   *   - `text` → `{ type: "text" }`
+   *   - `json` → `{ type: "json_object" }`
+   *   - `json-schema` → `{ type: "json_schema", json_schema: { name, schema, strict } }`
+   *   When the model declines in strict mode, the wire emits
+   *   `delta.refusal` chunks; the adapter surfaces them as
+   *   `inference.refusal.delta` events and a final `RefusalBlock` in
+   *   the assistant turn's `content[]`.
+   * - **Google GenAI** (`generationConfig`):
+   *   - `text` → no constraint (default).
+   *   - `json` → `{ responseMimeType: "application/json" }`.
+   *   - `json-schema` → `{ responseMimeType: "application/json", responseSchema: <schema> }`.
+   *   `name` and `strict` are OpenAI-specific and have no Gemini
+   *   counterpart; adapters ignore them. Gemini enforces a subset of
+   *   JSON Schema (no `oneOf`, limited `pattern`, no `$ref`, etc.) —
+   *   the adapter forwards the schema verbatim and surfaces Gemini's
+   *   HTTP error if the subset is violated.
+   * - **Anthropic**: no native structured-output API.
+   *   - `text` is a no-op (the default).
+   *   - `json` and `json-schema` throw at the adapter boundary; there
+   *     is no shim that synthesizes a tool to extract structured
+   *     output.
+   *
+   * When omitted the provider's default applies (typically free-form
+   * text).
+   */
+  responseFormat?:
+    | { kind: "text" }
+    | { kind: "json" }
+    | {
+        kind: "json-schema";
+        name: string;
+        schema: unknown;
+        strict?: boolean;
+      };
   /**
    * A bag of provider-native knobs the adapter merges into the outbound
    * request body. Primary home is `InferenceSourceDefaults.providerOptions`

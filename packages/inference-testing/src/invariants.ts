@@ -78,6 +78,7 @@ export function formatEventBrief(event: InferenceEvent): string {
   switch (event.type) {
     case "inference.text.delta":
     case "inference.thinking.delta":
+    case "inference.refusal.delta":
       return `${head} { token: ${abbreviateString(event.data.token)} }`;
     case "inference.thinking.signature":
       return `${head} { signature: ${abbreviateString(event.data.signature)} }`;
@@ -140,6 +141,8 @@ function clusterKeyFor(event: InferenceEvent): string | null {
   switch (event.type) {
     case "inference.text.delta":
       return "text";
+    case "inference.refusal.delta":
+      return "refusal";
     case "inference.thinking.delta":
     case "inference.thinking.signature":
     case "inference.thinking.redacted":
@@ -156,6 +159,7 @@ function clusterKeyFor(event: InferenceEvent): string | null {
 function eventIndex(event: InferenceEvent): number | undefined {
   switch (event.type) {
     case "inference.text.delta":
+    case "inference.refusal.delta":
     case "inference.thinking.delta":
     case "inference.thinking.signature":
     case "inference.thinking.redacted":
@@ -381,6 +385,7 @@ const recognizedContentBlocks: Invariant = {
       "text",
       "thinking",
       "redacted_thinking",
+      "refusal",
       "image",
       "audio",
       "video",

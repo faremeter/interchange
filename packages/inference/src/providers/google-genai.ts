@@ -341,6 +341,16 @@ function toGeminiPart(
       throw new Error(
         `Google GenAI adapter does not handle ${block.type} content blocks.`,
       );
+
+    case "refusal":
+      // Refusal blocks are an OpenAI strict-mode output shape and have
+      // no Gemini wire equivalent. Echoing one back into a Gemini
+      // request has no defined translation; fail loudly at the
+      // marshaling site rather than silently drop the block.
+      throw new Error(
+        "Google GenAI adapter does not handle refusal content blocks; " +
+          "they are emitted by OpenAI strict-mode structured outputs.",
+      );
   }
 }
 
