@@ -48,6 +48,13 @@ export type OpenAIChunkOpts = {
   reasoningContent?: string;
   /** Reasoning text in `delta.reasoning` (the OpenRouter shape). */
   reasoning?: string;
+  /**
+   * Refusal text in `delta.refusal` (OpenAI strict-mode structured
+   * outputs). Forwarded as `inference.refusal.delta`.
+   */
+  refusal?: string;
+  /** Force `delta.refusal` to be the wire value `null`. */
+  refusalNull?: boolean;
   /** Tool-call deltas under `choices[0].delta.tool_calls[]`. */
   toolCalls?: OpenAIToolCallDeltaOpts[];
   /** `finish_reason` placed on the choice. */
@@ -80,6 +87,11 @@ export function chunk(opts: OpenAIChunkOpts = {}): Uint8Array {
     delta["reasoning_content"] = opts.reasoningContent;
   }
   if (opts.reasoning !== undefined) delta["reasoning"] = opts.reasoning;
+  if (opts.refusalNull === true) {
+    delta["refusal"] = null;
+  } else if (opts.refusal !== undefined) {
+    delta["refusal"] = opts.refusal;
+  }
   if (opts.toolCalls !== undefined && opts.toolCalls.length > 0) {
     delta["tool_calls"] = opts.toolCalls.map((tc) => {
       const out: Record<string, unknown> = { index: tc.index };
