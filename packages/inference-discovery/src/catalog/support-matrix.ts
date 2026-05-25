@@ -177,6 +177,11 @@ const ANTHROPIC_UNSUPPORTED_OUTPUT_MODALITIES = [
   "image-output-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
 
+const ANTHROPIC_UNSUPPORTED_STRUCTURED_OUTPUTS = [
+  "structured-output",
+  "structured-output-streaming",
+] as const satisfies readonly SupportEntry["capability"][];
+
 function anthropic(
   model: string,
   capabilities: readonly SupportEntry["capability"][],
@@ -240,6 +245,13 @@ const MATRIX: SupportEntry[] = [
       model,
       ANTHROPIC_UNSUPPORTED_OUTPUT_MODALITIES,
       "Anthropic's first-party Claude models do not emit images; the Messages API surface is text-only on the output side and has no responseModalities-style toggle.",
+    ),
+  ),
+  ...ANTHROPIC_MODELS.flatMap((model) =>
+    anthropicUnsupported(
+      model,
+      ANTHROPIC_UNSUPPORTED_STRUCTURED_OUTPUTS,
+      "Anthropic's Messages API has no native structured-outputs surface. The internal adapter rejects responseFormat values of json and json-schema at the marshaling boundary rather than synthesizing a hidden tool-input wrapper; callers needing structured output route through a provider with native support.",
     ),
   ),
   ...gemini(GEMINI_TEXT_MODEL, GEMINI_TEXT_CAPABILITIES),

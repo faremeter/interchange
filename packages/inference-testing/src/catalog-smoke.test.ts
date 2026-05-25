@@ -23,8 +23,8 @@ function hasCapturedRequest(dir: string): boolean {
 }
 
 describe("inference discovery catalog contract", () => {
-  test("vocabulary has exactly 29 capabilities", () => {
-    expect(CAPABILITIES.length).toBe(29);
+  test("vocabulary has exactly 31 capabilities", () => {
+    expect(CAPABILITIES.length).toBe(31);
   });
 
   test("no duplicate capability names", () => {
