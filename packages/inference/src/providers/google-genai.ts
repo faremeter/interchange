@@ -519,7 +519,44 @@ function buildGenerationConfig(
       options.responseModalities.map(toGeminiModality);
   }
 
+  if (options.responseFormat !== undefined) {
+    applyResponseFormat(config, options.responseFormat);
+  }
+
   return Object.keys(config).length === 0 ? undefined : config;
+}
+
+// Translate the internal `responseFormat` union to Gemini's
+// generationConfig fields. Gemini exposes structured outputs through
+// the pair (`responseMimeType`, `responseSchema`) rather than a
+// dedicated union: setting the MIME type alone gives free-form JSON;
+// pairing it with a schema constrains the output to schema-conformant
+// JSON. The OpenAI-specific `name` and `strict` fields have no Gemini
+// equivalent and are ignored when present.
+//
+// The `schema` field is forwarded verbatim. Gemini enforces a JSON
+// Schema subset (no `oneOf`, limited `pattern`, no `$ref`, etc.); the
+// adapter does not pre-validate the caller's schema against that
+// subset and instead surfaces Gemini's HTTP error if the model
+// rejects it. INFERENCE.md documents the subset for callers.
+function applyResponseFormat(
+  config: Record<string, unknown>,
+  format: NonNullable<InferenceOptions["responseFormat"]>,
+): void {
+  switch (format.kind) {
+    case "text":
+      // Free-form text is Gemini's default; omitting the MIME type
+      // produces the same behavior. Set nothing to keep the request
+      // body minimal.
+      return;
+    case "json":
+      config["responseMimeType"] = "application/json";
+      return;
+    case "json-schema":
+      config["responseMimeType"] = "application/json";
+      config["responseSchema"] = format.schema;
+      return;
+  }
 }
 
 function toGeminiModality(m: "text" | "image" | "audio"): string {

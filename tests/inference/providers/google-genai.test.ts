@@ -493,6 +493,84 @@ describe("Google GenAI adapter: responseModalities translation", () => {
   });
 });
 
+describe("Google GenAI adapter: responseFormat translation", () => {
+  const GenConfigWithResponseFormat = type({
+    "+": "delete",
+    "responseMimeType?": "string",
+    "responseSchema?": "unknown",
+  });
+
+  const conversation = [
+    {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "Extract user fields." }],
+      timestamp: 1000,
+    },
+  ];
+
+  test("kind=text omits both responseMimeType and responseSchema", () => {
+    // Free-form text is Gemini's default; the adapter must not set
+    // responseMimeType (which would otherwise pin the output) when the
+    // caller asked for plain text. With no other generationConfig
+    // fields populated, the whole object is omitted from the request.
+    const req = adapter.buildRequest(conversation, "gemini-2.5-flash", {
+      responseFormat: { kind: "text" },
+    });
+    const body = parseBody(req.body);
+    expect(body.generationConfig).toBeUndefined();
+  });
+
+  test("kind=json sets responseMimeType without responseSchema", () => {
+    const req = adapter.buildRequest(conversation, "gemini-2.5-flash", {
+      responseFormat: { kind: "json" },
+    });
+    const body = parseBody(req.body);
+    const gc = GenConfigWithResponseFormat.assert(body.generationConfig);
+    expect(gc.responseMimeType).toBe("application/json");
+    expect(gc.responseSchema).toBeUndefined();
+  });
+
+  test("kind=json-schema sets responseMimeType and forwards the schema verbatim", () => {
+    const schema = {
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
+    };
+    const req = adapter.buildRequest(conversation, "gemini-2.5-flash", {
+      responseFormat: { kind: "json-schema", name: "user_info", schema },
+    });
+    const body = parseBody(req.body);
+    const gc = GenConfigWithResponseFormat.assert(body.generationConfig);
+    expect(gc.responseMimeType).toBe("application/json");
+    expect(gc.responseSchema).toEqual(schema);
+  });
+
+  test("kind=json-schema ignores OpenAI-specific name and strict fields", () => {
+    // Gemini has no responseSchema-level name or strict-mode toggle.
+    // The caller may still supply both for cross-provider portability;
+    // the adapter must not forward them and must not error on their
+    // presence.
+    const schema = { type: "object", properties: {} };
+    const req = adapter.buildRequest(conversation, "gemini-2.5-flash", {
+      responseFormat: {
+        kind: "json-schema",
+        name: "ignored_by_gemini",
+        schema,
+        strict: true,
+      },
+    });
+    const body = parseBody(req.body);
+    const gc = GenConfigWithResponseFormat.assert(body.generationConfig);
+    expect(gc.responseMimeType).toBe("application/json");
+    expect(gc.responseSchema).toEqual(schema);
+    // No name or strict leak.
+    expect(JSON.stringify(body.generationConfig)).not.toContain(
+      "ignored_by_gemini",
+    );
+    expect(JSON.stringify(body.generationConfig)).not.toContain("strict");
+  });
+});
+
 describe("Google GenAI adapter: MediaSource variants", () => {
   function firstTurnParts(body: typeof GeminiBody.infer): unknown[] {
     const contents = GeminiContents.assert(body.contents);
