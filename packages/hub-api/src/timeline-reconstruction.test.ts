@@ -122,6 +122,37 @@ describe("reconstructTimeline", () => {
     expect(turns[0]?.kind === "turn" && turns[0].status).toBe("completed");
   });
 
+  test("surfaces refusal-only assistant turns in the timeline summary", async () => {
+    // A turn whose only content is a RefusalBlock (OpenAI strict-
+    // mode policy decline) must appear on the timeline with the
+    // refusal text as the turn content. Filtering to text-only
+    // blocks would render the turn invisible even though the model
+    // produced coherent output.
+    const dir = await makeTempDir();
+    await initAgentRepo(dir);
+    const store = new IsogitStore(dir);
+
+    const t = 1700000000000;
+    const messages: ConversationTurn[] = [
+      userMessage("Tell me how to do something policy-tripping.", t),
+      {
+        role: "assistant",
+        content: [{ type: "refusal", reason: "I cannot help with that." }],
+        model: "gpt-test",
+        timestamp: t + 1000,
+      },
+    ];
+    await store.writeTurns(messages);
+
+    await store.commit({ message: "checkpoint: inference-done" });
+
+    const result = await reconstructTimeline(dir);
+    const turns = result.events.filter((e) => e.kind === "turn");
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.content).toBe("I cannot help with that.");
+    expect(turns[0]?.timestamp).toBe(t + 1000);
+  });
+
   test("reconstructs multi-turn conversations across checkpoints", async () => {
     const dir = await makeTempDir();
     await initAgentRepo(dir);

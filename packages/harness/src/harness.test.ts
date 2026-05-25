@@ -1166,6 +1166,40 @@ describe("Default director", () => {
     expect(normalized.some((a) => a.type === "reply")).toBe(false);
   });
 
+  test("inference.done with a refusal-only turn replies with the refusal reason", async () => {
+    // RefusalBlock is the OpenAI strict-mode policy-decline shape:
+    // the model produced coherent output ("I cannot help with that")
+    // in the dedicated refusal field instead of content. The
+    // director's reply path must surface the refusal text to the
+    // caller, not route the turn through the empty-response branch
+    // — otherwise the human waits indefinitely for an answer the
+    // model already declined to give.
+    const director = createDefaultDirector("You are helpful.");
+    const caps = makeCapabilities();
+    const state = makeState();
+
+    const event: ReactorInboundEvent = {
+      type: "inference.done",
+      turn: {
+        role: "assistant",
+        model: "gpt-test",
+        content: [{ type: "refusal", reason: "I cannot help with that." }],
+        timestamp: 1000,
+      },
+      usage: emptyUsage(),
+    };
+
+    const actions = await director.decide(event, state, caps);
+    const normalized = Array.isArray(actions) ? actions : [actions];
+    expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
+    expect(normalized.some((a) => a.type === "reply")).toBe(true);
+    const replyAction = normalized.find((a) => a.type === "reply");
+    if (replyAction === undefined || replyAction.type !== "reply") {
+      throw new Error("unreachable");
+    }
+    expect(replyAction.content).toBe("I cannot help with that.");
+  });
+
   test("inference.done with whitespace-only text returns checkpoint and wait", async () => {
     const director = createDefaultDirector("You are helpful.");
     const caps = makeCapabilities();
