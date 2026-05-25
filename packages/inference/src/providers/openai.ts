@@ -54,6 +54,10 @@ function buildRequest(
     ];
   }
 
+  if (options.responseFormat !== undefined) {
+    body["response_format"] = toOpenAIResponseFormat(options.responseFormat);
+  }
+
   return {
     url: "/chat/completions",
     headers: {
@@ -62,6 +66,32 @@ function buildRequest(
     },
     body: JSON.stringify(body),
   };
+}
+
+// Translate the internal `responseFormat` union to OpenAI's
+// `response_format` field. The three kinds map one-to-one to OpenAI's
+// `text` / `json_object` / `json_schema` types; in `json-schema` mode
+// the caller's `name`, `schema`, and (optional) `strict` ride through
+// verbatim. Strict mode is the path that produces structured `refusal`
+// responses when the model declines a request -- the response-side
+// parser handles those refusal chunks below.
+function toOpenAIResponseFormat(
+  format: NonNullable<InferenceOptions["responseFormat"]>,
+): Record<string, unknown> {
+  switch (format.kind) {
+    case "text":
+      return { type: "text" };
+    case "json":
+      return { type: "json_object" };
+    case "json-schema": {
+      const jsonSchema: Record<string, unknown> = {
+        name: format.name,
+        schema: format.schema,
+      };
+      if (format.strict !== undefined) jsonSchema["strict"] = format.strict;
+      return { type: "json_schema", json_schema: jsonSchema };
+    }
+  }
 }
 
 function toOpenAIMessage(msg: ConversationTurn): unknown[] {
@@ -290,6 +320,12 @@ const OpenAIChunkDelta = type({
   "content?": "string | null",
   "reasoning_content?": "string | null",
   "reasoning?": "string | null",
+  // Strict-mode structured-outputs refusal: when the model declines a
+  // JSON-schema request on policy grounds, the delta carries the
+  // refusal text in this field instead of `content`. Some
+  // OpenAI-compatible relays strip it before forwarding; the parser
+  // emits refusal events only when the field is present.
+  "refusal?": "string | null",
   "tool_calls?": OpenAIToolCallDelta.array(),
 });
 
@@ -335,6 +371,7 @@ type OpenAIBlockIndexer = {
   nextIndex: number;
   textIndex: number | null;
   thinkingIndex: number | null;
+  refusalIndex: number | null;
   toolCallBlockIndex: Map<number, number>;
 };
 
@@ -352,6 +389,14 @@ function getOrAssignThinkingIndex(state: OpenAIBlockIndexer): number {
     state.nextIndex += 1;
   }
   return state.thinkingIndex;
+}
+
+function getOrAssignRefusalIndex(state: OpenAIBlockIndexer): number {
+  if (state.refusalIndex === null) {
+    state.refusalIndex = state.nextIndex;
+    state.nextIndex += 1;
+  }
+  return state.refusalIndex;
 }
 
 function getOrAssignToolCallIndex(
@@ -459,6 +504,24 @@ function parseResponse(
         token: content,
         partial: EMPTY_PARTIAL,
         index: getOrAssignTextIndex(indexer),
+      },
+    });
+  }
+
+  // Strict-mode structured-outputs refusal. Allocate a content-block
+  // index via the same shared counter that text/thinking/tool_call use
+  // so a refusal that arrives interleaved with text (e.g. partial
+  // content emitted before the refusal kicks in) lands on its own
+  // block index rather than colliding with text.
+  const { refusal } = delta;
+  if (typeof refusal === "string" && refusal.length > 0) {
+    events.push({
+      type: "inference.refusal.delta",
+      seq,
+      data: {
+        token: refusal,
+        partial: EMPTY_PARTIAL,
+        index: getOrAssignRefusalIndex(indexer),
       },
     });
   }
@@ -623,6 +686,7 @@ export function createOpenAIAdapter(): ProviderAdapter {
     nextIndex: 0,
     textIndex: null,
     thinkingIndex: null,
+    refusalIndex: null,
     toolCallBlockIndex: new Map<number, number>(),
   };
   return {

@@ -56,6 +56,7 @@ const OpenAIRequestBody = type({
   stream: "boolean",
   "temperature?": "number",
   "tools?": "unknown[]",
+  "response_format?": "unknown",
 });
 
 // Drives a sequence of wire DSL chunks (full SSE-framed Uint8Arrays) through
@@ -832,5 +833,134 @@ describe("OpenAI adapter: parseResponse", () => {
         expect(err.raw).toEqual({ choices: [{ delta: { role: 42 } }] });
       }
     }
+  });
+
+  test("parses delta.refusal as inference.refusal.delta with a fresh block index", async () => {
+    const events = await parseWire(adapter, [
+      wire.openai.chunk({ refusal: "I can't help with that." }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe("inference.refusal.delta");
+    if (events[0]?.type === "inference.refusal.delta") {
+      expect(events[0].data.token).toBe("I can't help with that.");
+      // First content block of the stream, so index 0.
+      expect(events[0].data.index).toBe(0);
+    }
+  });
+
+  test("accumulates refusal fragments under the same block index across chunks", async () => {
+    const events = await parseWire(adapter, [
+      wire.openai.chunk({ refusal: "I can't" }),
+      wire.openai.chunk({ refusal: " help with" }),
+      wire.openai.chunk({ refusal: " that." }),
+    ]);
+    expect(events).toHaveLength(3);
+    for (const e of events) {
+      expect(e.type).toBe("inference.refusal.delta");
+      if (e.type === "inference.refusal.delta") {
+        expect(e.data.index).toBe(0);
+      }
+    }
+    const reason = events
+      .map((e) => (e.type === "inference.refusal.delta" ? e.data.token : ""))
+      .join("");
+    expect(reason).toBe("I can't help with that.");
+  });
+
+  test("refusal arriving after text gets a distinct content-block index", async () => {
+    // Text streams first and allocates content-block index 0. The
+    // refusal then allocates the next free index. Distinct kinds at
+    // distinct indices match the harness's per-index routing contract.
+    const events = await parseWire(adapter, [
+      wire.openai.chunk({ content: "I think" }),
+      wire.openai.chunk({ refusal: "Actually I can't." }),
+    ]);
+    expect(events).toHaveLength(2);
+    expect(events[0]?.type).toBe("inference.text.delta");
+    if (events[0]?.type === "inference.text.delta") {
+      expect(events[0].data.index).toBe(0);
+    }
+    expect(events[1]?.type).toBe("inference.refusal.delta");
+    if (events[1]?.type === "inference.refusal.delta") {
+      expect(events[1].data.index).toBe(1);
+    }
+  });
+
+  test("ignores null and empty-string delta.refusal", async () => {
+    const events = await parseWire(adapter, [
+      wire.openai.chunk({ refusalNull: true }),
+      wire.openai.chunk({ refusal: "" }),
+    ]);
+    expect(events).toEqual([]);
+  });
+});
+
+describe("OpenAI adapter: responseFormat translation", () => {
+  const conversation: ConversationTurn[] = [
+    {
+      role: "user",
+      content: [{ type: "text", text: "Extract user fields." }],
+      timestamp: 1000,
+    },
+  ];
+
+  test("omits response_format when responseFormat is undefined", () => {
+    const req = adapter.buildRequest(conversation, "gpt-4o", {});
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    expect(body.response_format).toBeUndefined();
+  });
+
+  test("translates responseFormat.kind=text to { type: 'text' }", () => {
+    const req = adapter.buildRequest(conversation, "gpt-4o", {
+      responseFormat: { kind: "text" },
+    });
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    expect(body.response_format).toEqual({ type: "text" });
+  });
+
+  test("translates responseFormat.kind=json to { type: 'json_object' }", () => {
+    const req = adapter.buildRequest(conversation, "gpt-4o", {
+      responseFormat: { kind: "json" },
+    });
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    expect(body.response_format).toEqual({ type: "json_object" });
+  });
+
+  test("translates responseFormat.kind=json-schema to a json_schema body and omits strict when unset", () => {
+    const schema = {
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
+      additionalProperties: false,
+    };
+    const req = adapter.buildRequest(conversation, "gpt-4o", {
+      responseFormat: { kind: "json-schema", name: "user_info", schema },
+    });
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    expect(body.response_format).toEqual({
+      type: "json_schema",
+      json_schema: { name: "user_info", schema },
+    });
+  });
+
+  test("threads strict=true through to the json_schema body when supplied", () => {
+    const schema = {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    };
+    const req = adapter.buildRequest(conversation, "gpt-4o", {
+      responseFormat: {
+        kind: "json-schema",
+        name: "empty",
+        schema,
+        strict: true,
+      },
+    });
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    expect(body.response_format).toEqual({
+      type: "json_schema",
+      json_schema: { name: "empty", schema, strict: true },
+    });
   });
 });
