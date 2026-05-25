@@ -1,0 +1,83 @@
+{
+  "model": "claude-test",
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Weather in SF and the time in UTC?"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call_w_1",
+          "name": "weather",
+          "input": {
+            "location": "SF"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "call_t_1",
+          "name": "time",
+          "input": {
+            "zone": "UTC"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_w_1",
+          "content": [
+            {
+              "type": "text",
+              "text": "68F, fog"
+            }
+          ]
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_t_1",
+          "content": [
+            {
+              "type": "text",
+              "text": "12:00 UTC"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "SF: 68F and foggy at 12:00 UTC. Anything else?"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "What about NYC?",
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        }
+      ]
+    }
+  ],
+  "stream": true
+}

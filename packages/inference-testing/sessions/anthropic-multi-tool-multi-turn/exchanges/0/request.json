@@ -1,0 +1,19 @@
+{
+  "model": "claude-test",
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Weather in SF and the time in UTC?",
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        }
+      ]
+    }
+  ],
+  "stream": true
+}

@@ -1,0 +1,9 @@
+{
+  "args": {
+    "location": "NYC"
+  },
+  "result": {
+    "temperatureF": 55,
+    "conditions": "rain"
+  }
+}
