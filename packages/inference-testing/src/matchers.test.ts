@@ -238,6 +238,14 @@ function referenceBlock(
   return { type, source: { kind: "file-reference", mimeType, reference } };
 }
 
+function urlBlock(
+  type: MediaBlock["type"],
+  mimeType: string,
+  url: string,
+): MediaBlock {
+  return { type, source: { kind: "url", mimeType, url } };
+}
+
 describe("expectMediaBlock — happy paths", () => {
   test.each(["image", "audio", "video", "document"] as const)(
     "accepts a %s base64 block matching mimeType and byte length",
@@ -257,6 +265,14 @@ describe("expectMediaBlock — happy paths", () => {
       expectMediaBlock(block, { source: "file-reference" }).toHaveMimeType(
         "image/png",
       );
+    },
+  );
+
+  test.each(["image", "audio", "video", "document"] as const)(
+    "accepts a %s url block matching mimeType",
+    (type) => {
+      const block = urlBlock(type, "image/png", "https://example.com/x.png");
+      expectMediaBlock(block, { source: "url" }).toHaveMimeType("image/png");
     },
   );
 
@@ -310,10 +326,20 @@ describe("expectMediaBlock — failure paths", () => {
   test("rejects byte-length assertions on file-reference sources", () => {
     const block = referenceBlock("image", "image/png", "file_abc");
     expect(() => expectMediaBlock(block).toHaveByteLength(100)).toThrow(
-      /not observable on file-reference sources/,
+      /not observable on non-base64 sources/,
     );
     expect(() => expectMediaBlock(block).toHaveByteLengthAtLeast(100)).toThrow(
-      /not observable on file-reference sources/,
+      /not observable on non-base64 sources/,
+    );
+  });
+
+  test("rejects byte-length assertions on url sources", () => {
+    const block = urlBlock("image", "image/png", "https://example.com/x.png");
+    expect(() => expectMediaBlock(block).toHaveByteLength(100)).toThrow(
+      /not observable on non-base64 sources/,
+    );
+    expect(() => expectMediaBlock(block).toHaveByteLengthAtLeast(100)).toThrow(
+      /not observable on non-base64 sources/,
     );
   });
 

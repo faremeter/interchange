@@ -292,6 +292,19 @@ export function createEventCollector(
               mimeType: source.mimeType,
               reference: source.reference,
             });
+          } else if (source.kind === "url") {
+            // The `url` MediaSource variant carries a self-contained
+            // dereferenceable HTTP(S) URL (Gemini accepts these in
+            // `fileData/fileUri`; other adapters route similarly).
+            // The session record carries a `reference` field for
+            // both file-reference and url sources -- the URL is the
+            // dereferencer, treated symmetrically with a stored
+            // file id.
+            await insertPart("file", null, {
+              kind: "url",
+              mimeType: source.mimeType,
+              reference: source.url,
+            });
           } else {
             source satisfies never;
             throw new Error(`unreachable: unknown MediaSource kind`);
