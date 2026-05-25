@@ -296,6 +296,16 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
         `Anthropic adapter does not yet emit ${block.type} content blocks.`,
       );
 
+    case "refusal":
+      // Refusal blocks are an OpenAI strict-mode output shape. Echoing
+      // one back into an Anthropic request has no defined wire shape;
+      // surface the mismatch at the marshaling site rather than fall
+      // through to a silent drop.
+      throw new Error(
+        "Anthropic adapter does not handle refusal content blocks; " +
+          "they are emitted by OpenAI strict-mode structured outputs.",
+      );
+
     case "tool_call":
       return {
         type: "tool_use",
