@@ -41,7 +41,7 @@
           "content": [
             {
               "type": "text",
-              "text": "68F, fog"
+              "text": "{\"temperatureF\":68,\"conditions\":\"fog\"}"
             }
           ]
         },
@@ -51,7 +51,7 @@
           "content": [
             {
               "type": "text",
-              "text": "12:00 UTC"
+              "text": "{\"iso\":\"2026-05-25T12:00:00Z\"}"
             }
           ]
         }

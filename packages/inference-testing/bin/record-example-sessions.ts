@@ -151,7 +151,15 @@ async function recordToolRoundtrip(): Promise<void> {
           {
             type: "tool_result",
             callId: "call_weather_1",
-            content: [{ type: "text", text: "68F, fog" }],
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  temperatureF: 68,
+                  conditions: "fog",
+                }),
+              },
+            ],
           },
         ],
         timestamp: 0,
@@ -293,12 +301,25 @@ async function recordMultiToolMultiTurn(): Promise<void> {
           {
             type: "tool_result",
             callId: "call_w_1",
-            content: [{ type: "text", text: "68F, fog" }],
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  temperatureF: 68,
+                  conditions: "fog",
+                }),
+              },
+            ],
           },
           {
             type: "tool_result",
             callId: "call_t_1",
-            content: [{ type: "text", text: "12:00 UTC" }],
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ iso: "2026-05-25T12:00:00Z" }),
+              },
+            ],
           },
         ],
         timestamp: 0,
@@ -322,12 +343,25 @@ async function recordMultiToolMultiTurn(): Promise<void> {
           {
             type: "tool_result",
             callId: "call_w_1",
-            content: [{ type: "text", text: "68F, fog" }],
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  temperatureF: 68,
+                  conditions: "fog",
+                }),
+              },
+            ],
           },
           {
             type: "tool_result",
             callId: "call_t_1",
-            content: [{ type: "text", text: "12:00 UTC" }],
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ iso: "2026-05-25T12:00:00Z" }),
+              },
+            ],
           },
         ],
         timestamp: 0,
@@ -352,12 +386,25 @@ async function recordMultiToolMultiTurn(): Promise<void> {
           {
             type: "tool_result",
             callId: "call_w_1",
-            content: [{ type: "text", text: "68F, fog" }],
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  temperatureF: 68,
+                  conditions: "fog",
+                }),
+              },
+            ],
           },
           {
             type: "tool_result",
             callId: "call_t_1",
-            content: [{ type: "text", text: "12:00 UTC" }],
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ iso: "2026-05-25T12:00:00Z" }),
+              },
+            ],
           },
         ],
         timestamp: 0,
@@ -371,7 +418,15 @@ async function recordMultiToolMultiTurn(): Promise<void> {
           {
             type: "tool_result",
             callId: "call_w_2",
-            content: [{ type: "text", text: "55F, rain" }],
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  temperatureF: 55,
+                  conditions: "rain",
+                }),
+              },
+            ],
           },
         ],
         timestamp: 0,

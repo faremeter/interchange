@@ -33,7 +33,7 @@
           "content": [
             {
               "type": "text",
-              "text": "68F, fog"
+              "text": "{\"temperatureF\":68,\"conditions\":\"fog\"}"
             }
           ],
           "cache_control": {
