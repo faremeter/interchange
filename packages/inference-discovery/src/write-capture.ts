@@ -1,8 +1,19 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+/**
+ * Captured response body. The on-disk file (response.json or
+ * response.sse) is written from `bytes` verbatim so the recording
+ * is byte-identical to what the server sent — pretty-printing
+ * a parsed JSON body would lose original key order, trailing
+ * whitespace, and any content-length / signature semantics. The
+ * optional `parsed` field is kept for the discovery rig's
+ * extractReasoningTrace path, which needs the JSON-decoded value
+ * to pull provider-specific metadata; writeCapture itself never
+ * reads it.
+ */
 export type ResponseBody =
-  | { kind: "json"; body: unknown }
+  | { kind: "json"; bytes: Uint8Array; parsed: unknown }
   | { kind: "sse"; bytes: Uint8Array };
 
 export type RequestBody =
@@ -65,10 +76,7 @@ export async function writeCapture(
   );
 
   if (input.response.kind === "json") {
-    await fs.writeFile(
-      path.join(dir, "response.json"),
-      `${JSON.stringify(input.response.body, null, 2)}\n`,
-    );
+    await fs.writeFile(path.join(dir, "response.json"), input.response.bytes);
   } else {
     await fs.writeFile(path.join(dir, "response.sse"), input.response.bytes);
   }

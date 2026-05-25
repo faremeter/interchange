@@ -504,14 +504,6 @@ captured session for a regression test.
   or the next-turn body will diverge from capture and
   `SessionReplayMismatchError` will surface. There is no automated
   enforcement of this rendering across the two sides.
-- **JSON response bodies are NOT byte-identical to what the server
-  sent.** `writeCapture` pretty-prints JSON responses
-  (`JSON.stringify(body, null, 2)`). Replay serves those
-  pretty-printed bytes to the adapter. Adapters that re-parse JSON
-  (the common case) do not care. Adapters that inspect raw bytes —
-  signed JSON, JSON-LD canonical form, line-delimited JSON encoded
-  inside one response — would see different bytes on replay than
-  on recording. See INTR-122 for the upstream fix.
 - **Captured response chunk boundaries are NOT preserved.** The
   recording wrapper buffers the entire response via
   `response.arrayBuffer()` and serves it back as a single chunk
