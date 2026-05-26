@@ -27,6 +27,77 @@ import type {
 
 const logger = getLogger(["interchange", "inference", "default-director"]);
 
+/**
+ * Decision returned by an `afterInferenceDone` policy hook.
+ *
+ *   continue — proceed with the director's normal post-inference logic
+ *              (tool extraction, reply, or wait per the existing flow).
+ *   abort    — terminate the agent. Routes to `[checkpoint, reply, done]`
+ *              and the reactor shuts down. Stronger than the
+ *              `inference.error` branch, which only replies and stays
+ *              alive — `abort` is for "session is over, do not accept
+ *              further inputs."
+ *   halt     — pause the current cycle without terminating. Routes to
+ *              `[checkpoint, reply, wait]`. Reactor stays alive waiting
+ *              for the next inbound event. There is no auto-resume; an
+ *              external event (mail, gate clearance, etc.) must reach
+ *              the reactor for the agent to make progress again.
+ *
+ * `reason` becomes the connector reply text verbatim — policy authors
+ * choose what is safe to surface to the user. There is no separate
+ * private-reason / user-message split today; add one if a real need
+ * appears.
+ */
+export type AfterInferenceDecision =
+  | { type: "continue" }
+  | { type: "abort"; reason: string }
+  | { type: "halt"; reason: string };
+
+/**
+ * Function shape for an after-inference-done policy hook.
+ *
+ * The hook fires only on `inference.done` (a successful cycle). Errored
+ * cycles do not invoke it. `mode: "reactive"` does not change firing —
+ * the hook gates the entire `inference.done` branch, including the
+ * reactive-wait shortcut, so a budget check applies to reactive agents
+ * the same way it does to conversational ones.
+ *
+ * The hook receives the post-cycle `ReactorState` (with `lastCycleSource`
+ * and `lastCycleUsage` populated for the just-completed call) and the
+ * assistant turn. Returns a decision (sync or async) that controls
+ * whether the director continues, terminates the agent, or pauses the
+ * cycle.
+ *
+ * Canonical use case: cost-aware gating. Read `state.lastCycleSource`
+ * + `state.lastCycleUsage`, price the call against user-supplied rate
+ * data, decide whether the budget is exhausted. Token caps, time caps,
+ * wallet checks, and governance triggers fit the same shape; the
+ * type stays policy-agnostic.
+ *
+ * "Downgrade to cheaper model" policies do NOT use this hook to return
+ * a new source. Compose them via an external observer of
+ * `lastCycleSource` / `lastCycleUsage` that calls `setSource` from
+ * outside the director.
+ *
+ * The hook blocks the reactor's inference.done branch: keep its
+ * latency low. The return type admits a Promise, but every await
+ * inside the hook is wall-clock time the agent isn't making progress.
+ * Small lookups (in-memory caches, fast DB reads) are fine; arbitrary
+ * waits are not.
+ *
+ * Tool calls and `halt`: if the model emitted tool calls and the hook
+ * returns `halt` (or `abort`), those tool calls are dropped — the
+ * director never executes them. On resume, the model's next inference
+ * sees an assistant turn with unanswered tool calls; depending on the
+ * provider this is either a validation error or a confused model.
+ * Policy authors that combine `halt` with tool-heavy agents need to
+ * understand this.
+ */
+export type AfterInferenceHook = (
+  state: ReactorState,
+  turn: AssistantTurn,
+) => AfterInferenceDecision | Promise<AfterInferenceDecision>;
+
 export type DefaultDirectorPolicy = {
   /**
    * Controls the agent's behavior after inference completes.
@@ -42,6 +113,18 @@ export type DefaultDirectorPolicy = {
    *     Use this for agents that perform a single action per message.
    */
   mode?: "conversational" | "reactive";
+
+  /**
+   * Optional policy hook fired after every successful `inference.done`.
+   * See `AfterInferenceHook` for the contract: firing boundary, return
+   * shape, composition patterns, and policy-author caveats.
+   *
+   * If the hook throws or rejects, the director catches the error,
+   * routes to `{ type: "abort", reason: "afterInferenceDone policy
+   * threw: <message>" }`, and logs at error level. The director's
+   * never-throws contract is preserved.
+   */
+  afterInferenceDone?: AfterInferenceHook;
 };
 
 function extractToolCalls(turn: AssistantTurn): ToolCall[] {
@@ -123,7 +206,7 @@ export class DefaultDirector implements ReactorDirector {
 
   async decide(
     event: ReactorInboundEvent,
-    _state: ReactorState,
+    state: ReactorState,
     capabilities: ReactorCapabilities,
   ): Promise<ReactorAction | ReactorAction[]> {
     switch (event.type) {
@@ -135,6 +218,41 @@ export class DefaultDirector implements ReactorDirector {
       }
 
       case "inference.done": {
+        // The hook gates the entire inference.done branch (including
+        // tool extraction and the reactive-mode wait shortcut). An
+        // abort/halt from the policy drops any tool calls the model
+        // emitted in this turn; see AfterInferenceHook TSDoc for the
+        // implications.
+        if (this.policy.afterInferenceDone !== undefined) {
+          let decision: AfterInferenceDecision;
+          try {
+            decision = await this.policy.afterInferenceDone(state, event.turn);
+          } catch (cause) {
+            const message =
+              cause instanceof Error ? cause.message : String(cause);
+            logger.error`afterInferenceDone policy threw: ${message}`;
+            decision = {
+              type: "abort",
+              reason: `afterInferenceDone policy threw: ${message}`,
+            };
+          }
+          if (decision.type === "abort") {
+            return [
+              capabilities.checkpoint("after-inference-abort"),
+              capabilities.reply(decision.reason),
+              capabilities.done(),
+            ];
+          }
+          if (decision.type === "halt") {
+            return [
+              capabilities.checkpoint("after-inference-halt"),
+              capabilities.reply(decision.reason),
+              capabilities.wait(),
+            ];
+          }
+          // decision.type === "continue" — fall through.
+        }
+
         const toolCalls = extractToolCalls(event.turn);
         if (toolCalls.length > 0) {
           this.pendingToolResults = toolCalls.length;
