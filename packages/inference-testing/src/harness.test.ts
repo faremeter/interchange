@@ -146,7 +146,10 @@ describe("setupHarness", () => {
   test("assertDeps throws when [HarnessId] is missing entirely", () => {
     const a = setupHarness();
     try {
-      const untagged: Dependencies = { fetch: a.deps.fetch };
+      const untagged: Dependencies = {
+        fetch: a.deps.fetch,
+        scheduler: a.deps.scheduler,
+      };
       let caught: unknown;
       try {
         a.assertDeps(untagged);
