@@ -99,10 +99,14 @@ export type Dependencies = {
  * Minimal scheduling abstraction. `setTimeout` returns a canceller; the
  * canceller is idempotent (multiple calls are safe). The harness uses
  * this for both the inactivity timer (which is re-armed on every event)
- * and the total wall-clock cap.
+ * and the total wall-clock cap. `now()` is a monotonic time source in
+ * the same `delayMs` units `setTimeout` accepts — deltas across two
+ * `now()` reads describe elapsed time the same way `setTimeout(...,
+ * delta)` would have measured it.
  */
 export type Scheduler = {
   setTimeout(callback: () => void, delayMs: number): () => void;
+  now(): number;
 };
 
 export function createDefaultScheduler(): Scheduler {
@@ -112,6 +116,14 @@ export function createDefaultScheduler(): Scheduler {
       return () => {
         clearTimeout(handle);
       };
+    },
+    // `performance.now()` is monotonic and survives wall-clock
+    // adjustments (NTP, daylight-saving) that could otherwise make a
+    // long-running interval read as negative against `Date.now()`. The
+    // epoch differs from `Date.now()`, but consumers only ever read
+    // deltas across two `now()` calls from the same Scheduler instance.
+    now() {
+      return performance.now();
     },
   };
 }

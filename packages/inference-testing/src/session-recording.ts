@@ -436,6 +436,9 @@ export function createRecordingHarness(
           clearTimeout(handle);
         };
       },
+      // Recording runs against real providers on the wall clock; the
+      // monotonic source matches the `setTimeout` domain above.
+      now: () => performance.now(),
     },
     [HarnessId]: harnessSymbol,
   };
