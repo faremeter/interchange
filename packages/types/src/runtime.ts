@@ -1131,6 +1131,15 @@ export const InferenceEvent = type({
     data: { error: InferenceError, partial: PartialMessage },
   })
   .or({
+    type: "'inference.retry'",
+    seq: "number",
+    data: {
+      attempt: "number",
+      delayMs: "number",
+      previousError: InferenceError,
+    },
+  })
+  .or({
     type: "'inference.citation'",
     seq: "number",
     // `index`, when present, names the source content block (typically
@@ -1348,6 +1357,24 @@ export type InferenceEvent =
       type: "inference.error";
       seq: number;
       data: { error: InferenceError; partial: PartialMessage };
+    }
+  | {
+      /**
+       * Emitted between attempts when the per-call retry policy decides
+       * to retry after an error. `attempt` is the 1-indexed number of
+       * the attempt that just **failed** — the same value the policy
+       * saw on its `RetrySituation.attempt` reading. `delayMs` is the
+       * delay the wrapper will apply before the next attempt starts;
+       * `previousError` carries the classified error that triggered
+       * the retry. The event is not emitted when the policy aborts.
+       */
+      type: "inference.retry";
+      seq: number;
+      data: {
+        attempt: number;
+        delayMs: number;
+        previousError: InferenceError;
+      };
     }
   | {
       type: "inference.citation";
@@ -1979,6 +2006,59 @@ export function applyInferenceSourceFields(
 }
 
 /**
+ * Outcome of a `RetryPolicy` consultation. Either abort the call
+ * (surface the most recent `inference.error` to the caller), or retry
+ * after `delayMs` milliseconds, measured against the harness Scheduler.
+ *
+ * (INFERENCE.md § Providers › Streaming Harness)
+ */
+export type RetryDecision =
+  | { kind: "abort" }
+  | { kind: "retry"; delayMs: number };
+
+/**
+ * Context supplied to a `RetryPolicy` each time an attempt produces an
+ * `inference.error`.
+ *
+ * (INFERENCE.md § Providers › Streaming Harness)
+ */
+export type RetrySituation = {
+  /** The classified error the most recent attempt produced. */
+  readonly error: InferenceError;
+  /**
+   * 1-indexed attempt counter. The first failure has `attempt: 1`;
+   * the second failure (after one retry) has `attempt: 2`; and so on.
+   */
+  readonly attempt: number;
+  /**
+   * Milliseconds since the *first* attempt of this call started,
+   * measured via the harness `Scheduler.now()`. The default Scheduler
+   * uses `performance.now()` (sub-millisecond resolution), so the
+   * value may be fractional; virtual-clock test schedulers report
+   * integer virtual time. Both are valid; policies that compare
+   * against integer thresholds should `Math.floor` if they need that.
+   */
+  readonly elapsedMs: number;
+};
+
+/**
+ * Per-call retry policy. The harness invokes the policy once per
+ * `inference.error` an attempt produces, in 1-indexed attempt order.
+ * Returning `{ kind: "abort" }` ends the call by surfacing the most
+ * recent error to the caller; returning `{ kind: "retry", delayMs }`
+ * causes the harness to discard the failed attempt's events, sleep
+ * `delayMs` milliseconds against the Scheduler, and re-issue the
+ * underlying HTTP request with the identical body. The policy may be
+ * async; the harness awaits the returned `Promise<RetryDecision>` if
+ * it is a thenable.
+ *
+ * (INFERENCE.md § Providers › Streaming Harness)
+ */
+export type RetryPolicy = (
+  situation: RetrySituation,
+) => RetryDecision | Promise<RetryDecision>;
+
+/**
  * Options for a single inference call. Override the defaults from the agent
  * configuration on a per-call basis.
  *
@@ -2066,6 +2146,12 @@ export type InferenceOptions = {
    * `0` arms the timer to fire on the next tick.
    */
   totalTimeoutMs?: number;
+  /**
+   * Per-call mechanical retry policy. Consulted once per attempt that
+   * ends in `inference.error`; see `RetryPolicy` for the contract. If
+   * omitted, a built-in default policy is applied.
+   */
+  retryPolicy?: RetryPolicy;
 };
 
 // ---------------------------------------------------------------------------
