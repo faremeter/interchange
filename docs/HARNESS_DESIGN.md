@@ -106,6 +106,33 @@ The sidecar manages agents, not user sessions. When the hub deploys an agent to 
 
 The hub maintains a sidecar-to-agent mapping in its database. This mapping determines where to route messages for a given agent address. When a sidecar disconnects, the hub knows which agents are affected and queues messages for them until the sidecar reconnects.
 
+### Connector threads and user sessions
+
+The connector is **one durable thread per agent**. Anyone who sends conversational mail to the agent — a human via a hub session, a parent agent that launched this one as a sub-agent, a peer agent that initiates a conversation — joins the thread by stamping threading headers the harness recognizes. Participants accumulate; no one is displaced. The thread persists for the lifetime of the agent.
+
+The connector router classifies each inbound message as:
+
+- **`start`** when no thread is active. The sender becomes the first participant; the message-id becomes `threadRoot`; the subject is recorded and preserved for the life of the thread.
+- **`continue`** when the message's `references` includes the active `threadRoot`, or its `inReplyTo` equals the active `lastMessageId`. The sender is added to the participant set; the previous most-recent speaker moves into `cc` (deduplicated against re-entry).
+- **`passthrough`** for everything else — non-conversational mail (structured payloads, system notifications) and conversational mail without threading headers while a thread is active. The reactor still sees it, but the harness leaves it in the INBOX and the connector state is untouched.
+
+Connector state has four parts: `threadRoot` (the first message's id), `lastMessageId` (the most recent message in either direction), `replyTo` (the most recent speaker — the primary recipient on the next outbound reply), and `cc` (every other participant who has spoken on the thread, deduplicated, in arrival order). When the reactor emits `connector.reply`, the outbound mail is addressed to `replyTo` with `cc` carrying everyone else — whoever spoke most recently gets the direct reply and the rest stay in the loop.
+
+When a hub user composes mail to an agent, the hub decides what threading headers to stamp:
+
+1. **Session history wins.** If the user already has prior mail in this session, the hub stamps `inReplyTo` and `references` from that session-history chain. The harness routes the message as `continue` against whatever thread the user's prior session message was part of.
+2. **Connector cache fallback.** With no session history, the hub looks up the agent's cached connector state. If a thread is active, the hub stamps `inReplyTo = lastMessageId` and `references = [threadRoot]` — regardless of who else is on the thread. The user joins whatever conversation is in progress.
+3. **No threading.** With no session history and no active connector, the hub sends the message threading-less. The harness routes it as `start`, establishing this user as the first participant on a new thread.
+
+The hub learns the cached connector state from a `connector.state.changed` frame the sidecar emits whenever the router's state mutates. Cache entries are dropped on sidecar disconnect.
+
+On reconnect, agents whose persisted state is non-null re-bootstrap the cache automatically: the router's `restore()` call from the reactor's `wrappedStore.load()` fires `onStateChanged` because the state transitions from the cold-start `null` to the persisted value, and the sidecar lifts that callback onto a wire frame. Agents whose persisted state is null emit no frame — the cache stays absent until the harness produces its first real state change. The route handler treats absent and null identically.
+
+Two observable windows where the cache may be empty or stale, both of which fall through to threading-less mail and self-heal on the next state change:
+
+1. **Between WebSocket connection and the reactor's first `wrappedStore.load()`.** A user message composed in this window finds an absent cache entry. After the load, a bootstrap frame populates the cache.
+2. **Between a sidecar disconnect and the same sidecar's next `wrappedStore.load()` on reconnect.** The disconnect clears the cache. A user message composed in this window also finds an absent entry. If the cache was ahead of the persisted store at disconnect (a state mutation fired between the last `writeMetadata` cycle and the drop), the bootstrap will restore the persisted snapshot rather than the prior in-memory cache value. The cache reflects the freshest source of truth available, not a continuous history.
+
 ## Registration
 
 On first connection (no restorable agents in `SIDECAR_DATA_DIR`), the sidecar sends a `register` frame to identify itself to the hub. The hub responds by sending `agent.deploy` frames for any agents assigned to this sidecar.
