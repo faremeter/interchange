@@ -18,7 +18,7 @@
 // (ARCHITECTURE.md § Agent Harness, INFERENCE.md § Relationship to Harness)
 
 import { getLogger } from "@intx/log";
-import { createReactorAssembly } from "@intx/inference";
+import { createReactorAssembly, createDefaultDirector } from "@intx/inference";
 import type { ReactorEmittedEvent } from "@intx/inference";
 import {
   InferenceSource,
@@ -39,7 +39,6 @@ import {
   buildCombinedRunner,
   getMailToolDefinitions,
 } from "./tools";
-import { createDefaultDirector } from "./director";
 import { createConnectorRouter, type RouteDecision } from "./connector-router";
 import { type } from "arktype";
 
