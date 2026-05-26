@@ -8,7 +8,7 @@ export type { BeforeToolExtension } from "@intx/types/runtime";
 export {
   createDefaultDirector,
   DefaultDirector,
-  type DirectorPolicy,
+  type DefaultDirectorPolicy,
 } from "@intx/inference";
 
 export { buildMailToolHandlers, buildCombinedRunner } from "./tools";

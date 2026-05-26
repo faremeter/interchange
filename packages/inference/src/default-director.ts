@@ -27,7 +27,7 @@ import type {
 
 const logger = getLogger(["interchange", "inference", "default-director"]);
 
-export type DirectorPolicy = {
+export type DefaultDirectorPolicy = {
   /**
    * Controls the agent's behavior after inference completes.
    *
@@ -106,7 +106,7 @@ function formatInferenceError(error: {
 export class DefaultDirector implements ReactorDirector {
   private readonly systemPrompt: string;
   private readonly toolDefinitions: ToolDefinition[];
-  private readonly policy: DirectorPolicy;
+  private readonly policy: DefaultDirectorPolicy;
 
   // Track outstanding tool results so we only re-infer once per batch.
   private pendingToolResults = 0;
@@ -114,7 +114,7 @@ export class DefaultDirector implements ReactorDirector {
   constructor(
     systemPrompt: string,
     toolDefinitions: ToolDefinition[] = [],
-    policy: DirectorPolicy = {},
+    policy: DefaultDirectorPolicy = {},
   ) {
     this.systemPrompt = systemPrompt;
     this.toolDefinitions = toolDefinitions;
@@ -220,7 +220,7 @@ export class DefaultDirector implements ReactorDirector {
 export function createDefaultDirector(
   systemPrompt: string,
   toolDefinitions: ToolDefinition[] = [],
-  policy: DirectorPolicy = {},
+  policy: DefaultDirectorPolicy = {},
 ): ReactorDirector {
   return new DefaultDirector(systemPrompt, toolDefinitions, policy);
 }

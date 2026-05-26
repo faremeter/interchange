@@ -54,7 +54,7 @@ export { createStateManager } from "./state";
 export type { ReactorStateManager } from "./state";
 export { createCapabilities } from "./director";
 export { DefaultDirector, createDefaultDirector } from "./default-director";
-export type { DirectorPolicy } from "./default-director";
+export type { DefaultDirectorPolicy } from "./default-director";
 export { createAuthzExtension } from "./authz-extension";
 export type {
   AuthzCallResult,
