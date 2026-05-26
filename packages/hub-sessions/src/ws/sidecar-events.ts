@@ -20,6 +20,7 @@
 // would silently change failure handling.
 
 import type { PackRejectReason } from "@intx/types/sidecar";
+import type { ConnectorThreadState } from "@intx/types/runtime";
 import { getLogger } from "@intx/log";
 
 const logger = getLogger(["hub", "ws", "sidecar", "events"]);
@@ -76,6 +77,17 @@ export type SidecarEventMap = {
     publicKey: string;
   };
 
+  /** Notification. Emitted when the sidecar reports a change to an
+   * agent's connector-thread state. The wire layer caches the state
+   * per agent so the host can read it via
+   * `router.getConnectorState(agentAddress)`; this event is for hosts
+   * that want to observe transitions directly. `connectorState` is
+   * `null` when the agent has no active connector thread. */
+  "connector.state.changed": {
+    agentAddress: string;
+    connectorState: ConnectorThreadState | null;
+  };
+
   /** Awaited. Emitted per address after challenge verification
    * succeeds and before the disconnect queue is flushed. Rejection
    * rolls that address back from the routing table; earlier listeners
@@ -128,6 +140,7 @@ export function createSidecarEmitter(): SidecarEventEmitter {
     "agent.deploy.ack": new Set(),
     "agent.reconnected": new Set(),
     "deploy.ref.stale": new Set(),
+    "connector.state.changed": new Set(),
   };
 
   function on<T extends SidecarEventType>(

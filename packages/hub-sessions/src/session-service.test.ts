@@ -62,6 +62,7 @@ function createMockRouter(): SidecarRouter & {
     dispatchAgentEvent: () => undefined,
     getConnectedSidecars: () => [],
     getRoutableAddresses: () => [],
+    getConnectorState: () => null,
     events: createSidecarEmitter(),
   };
   return mock;

@@ -38,6 +38,7 @@ import {
 import type { InMemoryTransport } from "@intx/mail-memory";
 import type { GrantRule } from "@intx/types/authz";
 import type {
+  ConnectorThreadState,
   InboundMessage,
   InferenceEvent,
   InferenceSource,
@@ -74,10 +75,16 @@ export type SessionEventSink = (
   event: InferenceEvent,
 ) => void;
 
+export type ConnectorStateSink = (
+  agentAddress: string,
+  state: ConnectorThreadState | null,
+) => void;
+
 export type SessionManagerConfig = {
   transport: InMemoryTransport;
   dataDir: string;
   onEvent: SessionEventSink;
+  onConnectorStateChanged: ConnectorStateSink;
 };
 
 // Sanitize an agent address into a safe directory name.
@@ -187,7 +194,7 @@ export function buildToolDispatch(
 export function createSessionManager(
   config: SessionManagerConfig,
 ): SessionManager {
-  const { transport, dataDir, onEvent } = config;
+  const { transport, dataDir, onEvent, onConnectorStateChanged } = config;
   const sessions = new Map<string, AgentSession>();
   const provisioned = new Map<string, ProvisionedAgent>();
   const pending = new Set<string>();
@@ -375,6 +382,9 @@ export function createSessionManager(
             lastCheckpointHashes.set(agentAddress, event.data.checkpointHash);
           }
           onEvent(agentAddress, sessionId, event);
+        },
+        onConnectorStateChanged(state) {
+          onConnectorStateChanged(agentAddress, state);
         },
       });
 

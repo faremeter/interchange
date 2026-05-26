@@ -119,7 +119,11 @@ export function createHarness(config: HarnessConfig): Harness {
   // Connector state: track which thread(s) this reactor owns.
   // -------------------------------------------------------------------------
 
-  const connectorRouter = createConnectorRouter();
+  const connectorRouter = createConnectorRouter(
+    config.onConnectorStateChanged !== undefined
+      ? { onStateChanged: config.onConnectorStateChanged }
+      : undefined,
+  );
 
   // Wrap the context store so load() restores connector state and the reactor's
   // per-cycle writeMetadata picks up the live connector state via the underlying

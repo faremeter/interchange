@@ -10,6 +10,7 @@
 import { type } from "arktype";
 import {
   AbortReason,
+  ConnectorThreadState,
   HarnessConfig,
   InferenceEvent,
   InferenceSource,
@@ -112,6 +113,25 @@ export const AgentEventFrame = type({
   event: InferenceEvent,
 });
 export type AgentEventFrame = typeof AgentEventFrame.infer;
+
+/**
+ * Notifies the hub that the agent's connector-thread state has changed.
+ * The sidecar emits this when the harness's connector router commits a
+ * start/continue decision, when an outbound reply advances the
+ * lastMessageId, and when load-time restore brings persisted state into
+ * memory. The hub uses the cached state to set threading headers on
+ * user-originated mail so the harness routes it as `continue` rather
+ * than `passthrough`.
+ *
+ * `connectorState` is `null` when no active thread exists.
+ */
+export const ConnectorStateChangedFrame = type({
+  type: "'connector.state.changed'",
+  agentAddress: "string",
+  connectorState: ConnectorThreadState.or("null"),
+});
+export type ConnectorStateChangedFrame =
+  typeof ConnectorStateChangedFrame.infer;
 
 /**
  * Keepalive ping sent by the sidecar. The hub responds with a pong frame.
@@ -378,6 +398,7 @@ export const SidecarFrame = RegisterFrame.or(ReconnectFrame)
   .or(AgentErrorFrame)
   .or(MailOutboundFrame)
   .or(AgentEventFrame)
+  .or(ConnectorStateChangedFrame)
   .or(PingFrame)
   .or(SessionAckFrame)
   .or(SessionErrorFrame)

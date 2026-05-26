@@ -18,6 +18,7 @@ import {
 } from "@intx/types/sidecar";
 import type {
   AbortReason,
+  ConnectorThreadState,
   HarnessConfig,
   InferenceSource,
 } from "@intx/types/runtime";
@@ -51,6 +52,16 @@ export type SidecarRouter = {
   handleClose(ws: WsHandle): void;
 
   routeMail(agentAddress: string, rawMessage: string): boolean;
+  /**
+   * Returns the current connector-thread state for the named agent, or
+   * `null` if the agent has no active connector thread (or if the
+   * sidecar has not yet reported any state — e.g. mid-reconnect, before
+   * the harness has loaded its context store). The state is cached
+   * from `connector.state.changed` frames; callers should treat `null`
+   * as "no threading info available" and fall through to whatever
+   * default the calling path uses.
+   */
+  getConnectorState(agentAddress: string): ConnectorThreadState | null;
   sendAgentDeploy(agentAddress: string, config: HarnessConfig): Promise<void>;
   sendAgentUndeploy(agentAddress: string, reason: string): Promise<void>;
   sendSessionStart(agentAddress: string): Promise<void>;
@@ -167,6 +178,12 @@ export function createSidecarRouter(
   const disconnectedAgents = new Map<string, DisconnectedAgent>();
   // agentAddress → set of subscriber callbacks for agent events
   const agentSubscribers = new Map<string, Set<(event: unknown) => void>>();
+  // agentAddress → cached connector-thread state, populated by
+  // connector.state.changed frames. Hub-side mail composition reads this
+  // to set threading headers on user-originated mail. Absent entries mean
+  // "no state reported yet" (e.g. mid-reconnect); callers must treat that
+  // identically to a null entry (no active thread).
+  const connectorStates = new Map<string, ConnectorThreadState | null>();
   // ws handle → liveness timer (reset on each ping from the sidecar)
   const livenessTimers = new Map<WsHandle, ReturnType<typeof setTimeout>>();
 
@@ -339,6 +356,20 @@ export function createSidecarRouter(
         });
         dispatchToSubscribers(frame.agentAddress, frame.event);
         break;
+      case "connector.state.changed":
+        // Gate the cache write on the sending sidecar actually owning
+        // the named agent. A misbehaving sidecar that knows another
+        // agent's address could otherwise poison the cached state.
+        if (addressIndex.get(frame.agentAddress) !== ws) {
+          logger.warn`Dropping connector.state.changed for ${frame.agentAddress}: not registered to this sidecar`;
+          break;
+        }
+        connectorStates.set(frame.agentAddress, frame.connectorState);
+        events.emit("connector.state.changed", {
+          agentAddress: frame.agentAddress,
+          connectorState: frame.connectorState,
+        });
+        break;
       case "session.ack":
         resolvePending(frame.requestId);
         break;
@@ -379,6 +410,10 @@ export function createSidecarRouter(
     if (existing !== undefined) {
       for (const addr of existing.agentAddresses) {
         addressIndex.delete(addr);
+        // The harness on this ws is restarting; the cached connector
+        // state from its previous incarnation is now stale. The new
+        // harness will bootstrap via restore-fires-callback.
+        connectorStates.delete(addr);
       }
     }
 
@@ -393,6 +428,10 @@ export function createSidecarRouter(
         if (prevConn !== undefined) {
           prevConn.agentAddresses.delete(addr);
         }
+        // The new owner is about to take over; the prior owner's
+        // cached state must not survive into the new owner's window
+        // before its bootstrap frame arrives.
+        connectorStates.delete(addr);
       }
 
       // Cancel any in-flight deploy for this address since the
@@ -610,6 +649,14 @@ export function createSidecarRouter(
     // (e.g. sendGrantsUpdate). Addresses that fail governance are
     // rolled back from the routing table afterward.
     for (const addr of verified) {
+      // If a different ws still owns this address (live takeover via
+      // verified reconnect), evict its cached connector state before
+      // routing flips. The new owner's harness will bootstrap via
+      // restore-fires-callback.
+      const prevWs = addressIndex.get(addr);
+      if (prevWs !== undefined && prevWs !== ws) {
+        connectorStates.delete(addr);
+      }
       conn.agentAddresses.add(addr);
       addressIndex.set(addr, ws);
     }
@@ -775,6 +822,12 @@ export function createSidecarRouter(
       // owns the address. A reconnected sidecar may have already claimed it.
       if (addressIndex.get(addr) === ws) {
         addressIndex.delete(addr);
+        // Drop cached connector state for the same reason: a takeover
+        // sidecar's state lives in connectorStates under the same key,
+        // and only this owner's close should evict it. The next
+        // reconnect re-bootstraps via the router's
+        // restore-fires-callback path.
+        connectorStates.delete(addr);
         const deployReq = pendingDeploys.get(addr);
         if (deployReq !== undefined && deployReq.ws === ws) {
           clearTimeout(deployReq.timer);
@@ -1410,6 +1463,12 @@ export function createSidecarRouter(
     return Array.from(addressIndex.keys());
   }
 
+  function getConnectorState(
+    agentAddress: string,
+  ): ConnectorThreadState | null {
+    return connectorStates.get(agentAddress) ?? null;
+  }
+
   async function sendGrantsUpdate(
     agentAddress: string,
     grants: GrantRule[],
@@ -1471,6 +1530,7 @@ export function createSidecarRouter(
     dispatchAgentEvent: dispatchToSubscribers,
     getConnectedSidecars,
     getRoutableAddresses,
+    getConnectorState,
     events,
   };
 }

@@ -2049,14 +2049,19 @@ export type ContextCommit = {
  * spoken on the thread, deduplicated, in arrival order — they ride as
  * `cc` on the next outbound reply so everyone stays in the loop.
  * `subject` is set when the thread starts and preserved for its life.
+ *
+ * Defined as an arktype so the wire layer (sidecar↔hub frames) and
+ * other parsing boundaries can validate snapshots without
+ * re-declaring the shape.
  */
-export type ConnectorThreadState = {
-  threadRoot: string;
-  lastMessageId: string;
-  replyTo: string;
-  cc: string[];
-  subject?: string;
-};
+export const ConnectorThreadState = type({
+  threadRoot: "string",
+  lastMessageId: "string",
+  replyTo: "string",
+  cc: "string[]",
+  "subject?": "string",
+});
+export type ConnectorThreadState = typeof ConnectorThreadState.infer;
 
 /**
  * The context store interface. Implementations back the store with git
