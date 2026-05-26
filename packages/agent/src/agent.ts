@@ -28,8 +28,8 @@
 // active source's model is the single source of truth and rotations
 // take effect on the next inference call without any wrapper.
 
-import { createDefaultDirector } from "@intx/harness";
 import {
+  createDefaultDirector,
   createReactorAssembly,
   type AuthzExtensionOptions,
   type Dependencies,

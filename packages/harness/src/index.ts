@@ -5,7 +5,11 @@ export type { HarnessConfig } from "./config";
 export { validateConfig } from "./config";
 export type { BeforeToolExtension } from "@intx/types/runtime";
 
-export { createDefaultDirector, DefaultDirector } from "./director";
+export {
+  createDefaultDirector,
+  DefaultDirector,
+  type DirectorPolicy,
+} from "@intx/inference";
 
 export { buildMailToolHandlers, buildCombinedRunner } from "./tools";
 export type { MailToolName } from "./tools";

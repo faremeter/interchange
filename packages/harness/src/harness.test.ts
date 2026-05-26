@@ -42,7 +42,7 @@ import type {
 
 import { createHarness } from "./harness";
 import { buildMailToolHandlers, buildCombinedRunner } from "./tools";
-import { createDefaultDirector } from "./director";
+import { createDefaultDirector } from "@intx/inference";
 import type { HarnessConfig } from "./config";
 
 // ---------------------------------------------------------------------------
