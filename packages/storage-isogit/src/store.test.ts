@@ -703,6 +703,7 @@ describe("connector thread state", () => {
       threadRoot: "<root@example.com>",
       lastMessageId: "<last@example.com>",
       replyTo: "user@example.com",
+      cc: ["second@example.com"],
       subject: "Re: Test thread",
     };
 
@@ -726,6 +727,7 @@ describe("connector thread state", () => {
       threadRoot: "<root@example.com>",
       lastMessageId: "<last@example.com>",
       replyTo: "user@example.com",
+      cc: [],
     };
 
     store.setConnectorState(connectorState);

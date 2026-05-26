@@ -1,6 +1,7 @@
 export {
   assembleSignedContent,
   assembleMessage,
+  extractAddrSpec,
   formatRFC2822Date,
   generateMessageId,
   parseHeaderSection,
