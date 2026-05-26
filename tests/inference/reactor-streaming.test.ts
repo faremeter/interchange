@@ -676,7 +676,13 @@ describe("createReactor — inference path [wire-driven]", () => {
         deps: harness.deps,
         source: ANTHROPIC_SOURCE,
         director: directorFromTable({
-          "message.received": (_e, _s, caps) => caps.infer(),
+          // Pin an abort-only retry policy: the test asserts error
+          // classification and partial-text capture on a single
+          // scripted stream. Default policy would retry on
+          // `retryable` and deadlock against the inert harness
+          // scheduler with no second stream registered.
+          "message.received": (_e, _s, caps) =>
+            caps.infer({ retryPolicy: () => ({ kind: "abort" }) }),
           "inference.error": (e, _s, caps) => {
             capturedError = {
               category: e.error.category,
@@ -719,7 +725,9 @@ describe("createReactor — inference path [wire-driven]", () => {
         deps: harness.deps,
         source: OPENAI_SOURCE,
         director: directorFromTable({
-          "message.received": (_e, _s, caps) => caps.infer(),
+          // See the matching test above; same rationale.
+          "message.received": (_e, _s, caps) =>
+            caps.infer({ retryPolicy: () => ({ kind: "abort" }) }),
           "inference.error": (e, _s, caps) => {
             capturedError = {
               category: e.error.category,
@@ -945,7 +953,12 @@ describe("createReactor — inference path [wire-driven]", () => {
         deps: harness.deps,
         source: ANTHROPIC_SOURCE,
         director: directorFromTable({
-          "message.received": (_e, _s, caps) => caps.infer(),
+          // Pin an abort-only retry policy: this test asserts the HTTP
+          // 5xx → category=retryable classification path. The default
+          // policy would retry on retryable and deadlock against the
+          // inert harness scheduler with no second stream registered.
+          "message.received": (_e, _s, caps) =>
+            caps.infer({ retryPolicy: () => ({ kind: "abort" }) }),
           "inference.error": (e, _s, caps) => {
             capturedError = {
               category: e.error.category,
