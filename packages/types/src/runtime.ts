@@ -2039,13 +2039,22 @@ export type ContextCommit = {
 };
 
 /**
- * The state of an active connector thread. Persisted alongside the
- * conversation context so that reply threading survives sidecar restarts.
+ * The state of an active connector thread. The connector is one durable
+ * thread per agent; participants accumulate as they speak. Persisted
+ * alongside the conversation context so the thread survives sidecar
+ * restarts.
+ *
+ * `replyTo` is the most recent speaker — the primary recipient (`to`)
+ * on the next outbound reply. `cc` is every other participant who has
+ * spoken on the thread, deduplicated, in arrival order — they ride as
+ * `cc` on the next outbound reply so everyone stays in the loop.
+ * `subject` is set when the thread starts and preserved for its life.
  */
 export type ConnectorThreadState = {
   threadRoot: string;
   lastMessageId: string;
   replyTo: string;
+  cc: string[];
   subject?: string;
 };
 

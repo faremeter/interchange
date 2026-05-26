@@ -8,6 +8,7 @@ import {
   assembleSignedContent,
   assembleMessage,
   createDetachedSignatureFromProvider,
+  extractAddrSpec,
   formatRFC2822Date,
   generateMessageId,
   parseHeaderSection,
@@ -78,6 +79,68 @@ describe("generateMessageId", () => {
 // ---------------------------------------------------------------------------
 // formatRFC2822Date
 // ---------------------------------------------------------------------------
+
+describe("extractAddrSpec", () => {
+  test("strips quoted display name and angle brackets", () => {
+    expect(extractAddrSpec('"Alice Doe" <alice@example.com>')).toBe(
+      "alice@example.com",
+    );
+  });
+
+  test("strips unquoted display name and angle brackets", () => {
+    expect(extractAddrSpec("Alice Doe <alice@example.com>")).toBe(
+      "alice@example.com",
+    );
+  });
+
+  test("strips bare angle brackets", () => {
+    expect(extractAddrSpec("<alice@example.com>")).toBe("alice@example.com");
+  });
+
+  test("passes through a bare addr-spec", () => {
+    expect(extractAddrSpec("alice@example.com")).toBe("alice@example.com");
+  });
+
+  test("lowercases local-part and domain", () => {
+    expect(extractAddrSpec("Alice@Example.COM")).toBe("alice@example.com");
+  });
+
+  test("trims surrounding whitespace", () => {
+    expect(extractAddrSpec("   Alice@Example.com   ")).toBe(
+      "alice@example.com",
+    );
+  });
+
+  test("throws on empty input", () => {
+    expect(() => extractAddrSpec("   ")).toThrow();
+  });
+
+  test("throws on input with no '@'", () => {
+    expect(() => extractAddrSpec("Alice Doe")).toThrow();
+  });
+
+  test("throws on missing local-part", () => {
+    expect(() => extractAddrSpec("<@example.com>")).toThrow();
+  });
+
+  test("throws on missing domain", () => {
+    expect(() => extractAddrSpec("<alice@>")).toThrow();
+  });
+
+  test("throws on trailing content after the closing '>'", () => {
+    expect(() =>
+      extractAddrSpec("Alice <alice@example.com> (comment)"),
+    ).toThrow();
+  });
+
+  test("throws on a quoted local-part", () => {
+    expect(() => extractAddrSpec('"a@b"@example.com')).toThrow();
+  });
+
+  test("throws on multiple '@' in an unquoted form", () => {
+    expect(() => extractAddrSpec("a@b@example.com")).toThrow();
+  });
+});
 
 describe("formatRFC2822Date", () => {
   test("formats a known date correctly", () => {

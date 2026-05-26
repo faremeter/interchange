@@ -46,6 +46,7 @@ const ConnectorThreadStateSchema = type({
   threadRoot: "string",
   lastMessageId: "string",
   replyTo: "string",
+  cc: "string[]",
   "subject?": "string",
 });
 

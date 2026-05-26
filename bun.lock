@@ -255,11 +255,9 @@
       "dependencies": {
         "@intx/inference": "workspace:*",
         "@intx/log": "workspace:*",
+        "@intx/mime": "workspace:*",
         "@intx/types": "workspace:*",
         "arktype": "catalog:",
-      },
-      "devDependencies": {
-        "@intx/mime": "workspace:*",
       },
     },
     "packages/hub-api": {

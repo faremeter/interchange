@@ -20,5 +20,6 @@ export {
 export type {
   ConnectorRouter,
   ConnectorReplyParts,
+  ConnectorRouterOptions,
   RouteDecision,
 } from "./connector-router";

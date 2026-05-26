@@ -40,7 +40,7 @@ import {
   getMailToolDefinitions,
 } from "./tools";
 import { createDefaultDirector } from "./director";
-import { createConnectorRouter } from "./connector-router";
+import { createConnectorRouter, type RouteDecision } from "./connector-router";
 import { type } from "arktype";
 
 const logger = getLogger(["interchange", "harness"]);
@@ -322,7 +322,21 @@ export function createHarness(config: HarnessConfig): Harness {
         // Only connector-thread messages are consumed from the INBOX.
         // Everything else is delivered to the reactor and stays in the
         // INBOX so message tools can access it.
-        const decision = connectorRouter.route(message);
+        //
+        // route() can throw on malformed inbound headers (e.g. a From
+        // header that is not a valid RFC 5322 address). Surface the
+        // failure via the logger and fall through to passthrough so
+        // the message still reaches the reactor for inspection, but
+        // do not advance router state or consume.
+        let decision: RouteDecision;
+        try {
+          decision = connectorRouter.route(message);
+        } catch (cause) {
+          logger.warn`Connector router rejected message uid=${message.ref.uid} for agent ${config.address}: ${cause instanceof Error ? cause.message : String(cause)}`;
+          reactor.deliver(message);
+          return;
+        }
+
         if (decision.kind === "passthrough") {
           // Non-connector mail (replies to agent sends, unsolicited
           // inter-agent mail, etc.). Deliver to reactor for notification

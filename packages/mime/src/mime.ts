@@ -121,6 +121,95 @@ export function generateMessageId(address: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Address normalization
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the bare addr-spec (local-part@domain) from a single RFC 5322
+ * address value. Strips any display name and surrounding angle brackets,
+ * then lowercases the result so case-insensitive comparison falls out
+ * naturally.
+ *
+ * Accepted inputs (single-address only — do not pass comma-separated lists):
+ *   `"Display Name" <user@host>`  → `user@host`
+ *   `Display Name <user@host>`    → `user@host`
+ *   `<user@host>`                 → `user@host`
+ *   `user@host`                   → `user@host`
+ *   `  User@Host  `               → `user@host`
+ *
+ * Rejected (throws) inputs:
+ *   - empty or whitespace-only
+ *   - input with no `@`
+ *   - input that produces an empty local-part or domain
+ *   - quoted local-parts (e.g. `"a@b"@host`) — technically valid per RFC
+ *     5321 §4.1.2 but rare in practice; the simple split below would
+ *     misinterpret the inner `@`, so we refuse rather than guess
+ *   - content after the closing `>` in an angle-bracketed form
+ *     (e.g. `Name <a@b> (comment)`) — would silently fall through to a
+ *     misparsed bare-form attempt, so we refuse instead
+ *
+ * Per RFC 5321 §2.4 the local-part is technically case-sensitive, but no
+ * production system honors that; matching case-insensitively is the
+ * correct call for routing and identity checks.
+ */
+export function extractAddrSpec(addressLine: string): string {
+  const trimmed = addressLine.trim();
+  if (trimmed === "") {
+    throw new Error("extractAddrSpec: address is empty");
+  }
+
+  let candidate: string;
+  const angleOpen = trimmed.lastIndexOf("<");
+  if (angleOpen !== -1) {
+    // Angle-bracketed form. Require the `>` to be the trailing
+    // non-whitespace character so that input like `Name <a@b> (comment)`
+    // is refused rather than re-parsed as a bare addr-spec.
+    if (!trimmed.endsWith(">")) {
+      throw new Error(
+        `extractAddrSpec: trailing content after '>' in ${JSON.stringify(addressLine)}`,
+      );
+    }
+    candidate = trimmed.slice(angleOpen + 1, -1).trim();
+  } else {
+    candidate = trimmed;
+  }
+
+  // Reject quoted local-parts: the parser below splits on the first `@`,
+  // which would corrupt a quoted form whose local-part contains `@`.
+  if (candidate.includes('"')) {
+    throw new Error(
+      `extractAddrSpec: quoted local-parts are not supported: ${JSON.stringify(addressLine)}`,
+    );
+  }
+
+  const atIndex = candidate.indexOf("@");
+  if (atIndex === -1) {
+    throw new Error(
+      `extractAddrSpec: address has no '@': ${JSON.stringify(addressLine)}`,
+    );
+  }
+
+  // Reject any further `@` in the candidate — a well-formed addr-spec
+  // has exactly one. Multiple `@` is either a quoted form (rejected
+  // above) or simply malformed.
+  if (candidate.indexOf("@", atIndex + 1) !== -1) {
+    throw new Error(
+      `extractAddrSpec: multiple '@' in ${JSON.stringify(addressLine)}`,
+    );
+  }
+
+  const local = candidate.slice(0, atIndex);
+  const domain = candidate.slice(atIndex + 1);
+  if (local === "" || domain === "") {
+    throw new Error(
+      `extractAddrSpec: empty local-part or domain in ${JSON.stringify(addressLine)}`,
+    );
+  }
+
+  return `${local.toLowerCase()}@${domain.toLowerCase()}`;
+}
+
+// ---------------------------------------------------------------------------
 // RFC 2822 date formatting
 // ---------------------------------------------------------------------------
 
