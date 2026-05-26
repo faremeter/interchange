@@ -71,6 +71,14 @@ async function drain(
 }
 
 describe("runInference — timer cancellation on non-streaming exit paths", () => {
+  // Both tests pin an abort-only retry policy: they assert that the
+  // per-attempt timers are cancelled when the attempt exits before
+  // streaming begins. The default policy retries on `retryable` (5xx)
+  // and would block the wrapper on the recording scheduler's
+  // setTimeout — which records but never fires. Abort-only keeps the
+  // per-attempt invariant assertion focused.
+  const ABORT_ONLY_POLICY = { retryPolicy: () => ({ kind: "abort" as const }) };
+
   test("non-OK HTTP response cancels the total timer", async () => {
     const { scheduler, entries } = recordingScheduler();
     const fetchStub: Dependencies["fetch"] = () =>
@@ -87,6 +95,7 @@ describe("runInference — timer cancellation on non-streaming exit paths", () =
       runInference({
         turns: makeTurns(),
         source: SOURCE,
+        inferenceOptions: ABORT_ONLY_POLICY,
         nextSeq: () => seq++,
         deps,
       }),
@@ -110,6 +119,7 @@ describe("runInference — timer cancellation on non-streaming exit paths", () =
       runInference({
         turns: makeTurns(),
         source: SOURCE,
+        inferenceOptions: ABORT_ONLY_POLICY,
         nextSeq: () => seq++,
         deps,
       }),
@@ -124,22 +134,36 @@ describe("runInference — timer cancellation on non-streaming exit paths", () =
 });
 
 describe("runInference — timer cancellation on consumer abandonment", () => {
-  test("consumer abandoning the iterator mid-stream cancels every timer", async () => {
+  test("aborting the caller signal mid-stream cancels every timer", async () => {
+    // Earlier the consumer abandoned the iterator by `break`ing on the
+    // first `inference.text.delta`. The retry wrapper buffers every
+    // attempt's events until a terminal event arrives, so deltas no
+    // longer reach the caller incrementally — there is no observable
+    // event to break on while the upstream stream is still parked.
+    // The same invariant (timer cleanup on a mid-stream exit path)
+    // still holds via the caller-supplied `signal`: aborting it after
+    // the fetch has resolved but before the stream completes flows
+    // through `runSingleAttempt`'s try/finally and cancels both
+    // timers via the recorded canceller.
     const { scheduler, entries } = recordingScheduler();
+    let firstByteResolved: () => void = () => undefined;
+    const firstByteEmitted = new Promise<void>((resolve) => {
+      firstByteResolved = resolve;
+    });
     const fetchStub: Dependencies["fetch"] = () => {
       const enc = new TextEncoder();
       return Promise.resolve(
         new Response(
           new ReadableStream({
-            start(controller) {
+            async start(controller) {
               controller.enqueue(
                 enc.encode(
                   'data: {"choices":[{"index":0,"delta":{"content":"a"}}]}\n\n',
                 ),
               );
-              // Stream never closes. The consumer is expected to `break`
-              // out below; without the generator's `finally`, the
-              // timers stay armed.
+              firstByteResolved();
+              // Stream never closes. Caller aborts after the first
+              // chunk; the generator's finally must cancel the timers.
             },
           }),
           { status: 200, headers: { "content-type": "text/event-stream" } },
@@ -148,17 +172,32 @@ describe("runInference — timer cancellation on consumer abandonment", () => {
     };
     const deps: Dependencies = { fetch: fetchStub, scheduler };
 
+    const controller = new AbortController();
     let seq = 0;
-    const iter = runInference({
-      turns: makeTurns(),
-      source: SOURCE,
-      nextSeq: () => seq++,
-      deps,
-    });
+    const collector = (async () => {
+      // Drain the iterator until it ends; with buffering the only
+      // way out is the abort flowing through to `runSingleAttempt`
+      // and yielding the terminal `inference.error` from the catch
+      // block (category `aborted`), which the abort-only retry
+      // policy then surfaces.
+      for await (const _ev of runInference({
+        turns: makeTurns(),
+        source: SOURCE,
+        signal: controller.signal,
+        inferenceOptions: {
+          retryPolicy: () => ({ kind: "abort" as const }),
+        },
+        nextSeq: () => seq++,
+        deps,
+      })) {
+        // Discard — the assertion is downstream of the iteration
+        // ending, not on any specific event.
+      }
+    })();
 
-    for await (const ev of iter) {
-      if (ev.type === "inference.text.delta") break;
-    }
+    await firstByteEmitted;
+    controller.abort();
+    await collector;
 
     const armed = entries.filter((e) => !e.cancelled).length;
     expect(armed).toBe(0);

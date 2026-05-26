@@ -62,6 +62,15 @@ async function runAgainstFetch(
     runInference({
       turns: makeTurns(),
       source: SOURCE,
+      // These tests verify how the harness extracts `error.message`
+      // from various non-OK response body shapes. Retry behaviour is
+      // tested elsewhere; pin an abort-only policy so a single fetch
+      // call still produces a single terminal `inference.error` even
+      // when the response classifies as a retry-eligible category
+      // (5xx → retryable, 429 → quota_exhausted) that the default
+      // policy would otherwise re-issue against the same single-use
+      // fetch stub and deadlock on the inert scheduler.
+      inferenceOptions: { retryPolicy: () => ({ kind: "abort" }) },
       nextSeq: () => seq++,
       deps,
     }),

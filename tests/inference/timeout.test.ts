@@ -79,12 +79,16 @@ function startConsumer(events: AsyncIterable<InferenceEvent>): {
 }
 
 describe("runInference — per-call timeouts (virtual clock)", () => {
-  test("inactivity timeout fires when SSE stream goes silent past the threshold", async () => {
+  test("inactivity timeout fires on each of the default policy's three attempts, then surfaces", async () => {
     await withHarness(async (harness) => {
-      // `scenario.stall()` routes the fetch to a stream that never
-      // emits anything. The SSE iterator's first read parks forever in
-      // real time; in virtual time we advance past the inactivity
-      // threshold and the timer aborts the fetch.
+      // Three single-use stalls — one per attempt under the default
+      // policy. Each `scenario.stall()` registers a fresh matcher that
+      // routes the next fetch to a never-emitting stream. The
+      // inactivity timer trips on each attempt; the wrapper consults
+      // the default policy, retries up to the 3-attempt cap, then
+      // surfaces the terminal `inference.error`.
+      harness.scenario.stall();
+      harness.scenario.stall();
       harness.scenario.stall();
 
       let seq = 0;
@@ -101,12 +105,27 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
         }),
       );
 
-      // Advance virtual clock past the inactivity threshold. Drains
-      // every scheduled callback (including the timeout), settles
+      // Advance virtual clock through all three attempts plus the
+      // 500ms + 1000ms backoff between them. Drains every scheduled
+      // callback (timeouts and the retry-delay setTimeouts), settles
       // microtasks, returns when the heap is empty + quiescent.
       await harness.run();
 
       const events = await consumer.done;
+
+      // The retry sequence: two `inference.retry` events between the
+      // three attempts, with the right per-attempt numbers and
+      // backoff delays. The terminal error surfaces from the third
+      // attempt with category `"timeout"`.
+      const retries = events.filter((e) => e.type === "inference.retry");
+      expect(retries).toHaveLength(2);
+      expect(
+        retries[0]?.type === "inference.retry" ? retries[0].data : null,
+      ).toMatchObject({ attempt: 1, delayMs: 500 });
+      expect(
+        retries[1]?.type === "inference.retry" ? retries[1].data : null,
+      ).toMatchObject({ attempt: 2, delayMs: 1000 });
+
       const err = findError(events);
       expect(err).toBeDefined();
       expect(err?.category).toBe("timeout");
@@ -174,6 +193,16 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
           inferenceOptions: {
             inactivityTimeoutMs: 5_000,
             totalTimeoutMs: 200,
+            // The retry behaviour under category `timeout` is exercised
+            // by the inactivity-and-stall test above. Pin an abort-only
+            // policy here so the single scripted long-trickle stream is
+            // sufficient to drive the total-timeout assertion; without
+            // it the default policy would retry into a fetch with no
+            // matcher registered, and the chunk-pre-scheduling makes
+            // adding three trickle streams behave nondeterministically
+            // (all chunks fire in virtual time before the second and
+            // third attempts even start).
+            retryPolicy: () => ({ kind: "abort" }),
           },
           nextSeq: () => seq++,
           deps: harness.deps,
@@ -213,7 +242,7 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
     });
   });
 
-  test("underlying fetch AbortController fires on timeout", async () => {
+  test("underlying fetch AbortController fires on timeout for each attempt", async () => {
     await withHarness(async (harness) => {
       // Direct assertion on abort propagation: `stall.aborted` flips
       // and `stall.awaitAbort` resolves the moment the matched fetch's
@@ -221,8 +250,17 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
       // names explicitly — the downstream `inference.error` event the
       // other tests look at is downstream of the abort, but this test
       // proves the abort actually fired at the fetch boundary.
-      const stall = harness.scenario.stall();
-      expect(stall.aborted).toBe(false);
+      //
+      // The default policy retries on timeout up to three attempts;
+      // we register one stall per attempt and assert the abort fires
+      // on each so a fix that broke the abort plumbing on retried
+      // attempts would not slip past this test.
+      const stalls = [
+        harness.scenario.stall(),
+        harness.scenario.stall(),
+        harness.scenario.stall(),
+      ];
+      for (const stall of stalls) expect(stall.aborted).toBe(false);
 
       let seq = 0;
       const consumer = startConsumer(
@@ -239,15 +277,21 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
       );
 
       await harness.run();
-      await stall.awaitAbort;
-      expect(stall.aborted).toBe(true);
+      for (const stall of stalls) {
+        await stall.awaitAbort;
+        expect(stall.aborted).toBe(true);
+      }
 
-      // Sanity: the run also surfaced a timeout error, so this is a
-      // genuine timeout-driven abort and not some other path.
+      // Sanity: the run also surfaced a timeout error after the third
+      // attempt, so this is a genuine timeout-driven abort sequence
+      // and not some other path.
       const events = await consumer.done;
       const err = findError(events);
       expect(err?.category).toBe("timeout");
       expect(err?.message).toMatch(/inactivity/i);
+      expect(events.filter((e) => e.type === "inference.retry")).toHaveLength(
+        2,
+      );
     });
   });
 
@@ -288,6 +332,14 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
             inferenceOptions: {
               inactivityTimeoutMs: 50,
               totalTimeoutMs: 10_000,
+              // The retry behaviour under category `timeout` is
+              // exercised by the inactivity-and-stall test above; this
+              // test asserts the per-call inactivity-threshold override
+              // narrowly. The scripted-gap stream is pre-scheduled in
+              // virtual time, so a default-policy retry would re-issue
+              // against a fetch with no matcher; abort-only keeps the
+              // per-override assertion narrow.
+              retryPolicy: () => ({ kind: "abort" }),
             },
             nextSeq: () => seq++,
             deps: harness.deps,

@@ -579,6 +579,14 @@ export async function createReplayHarness(
         source,
         nextSeq,
         signal: inferenceController.signal,
+        // Replay is deterministic: every captured exchange has a
+        // one-to-one matcher, and a fetch that fails to bind has no
+        // semantically-meaningful "retry the same prompt" outcome —
+        // the next attempt would just hit the same bound-or-unbound
+        // result. Pin an abort-only policy so the inert scheduler
+        // does not deadlock the wrapper on the retry-delay setTimeout
+        // when an unmatched-fetch error surfaces through the harness.
+        inferenceOptions: { retryPolicy: () => ({ kind: "abort" }) },
       })) {
         events.push(ev);
       }

@@ -21,11 +21,13 @@ import type {
   CodeExecutionResultBlock,
   ConversationTurn,
   ImageBlock,
+  InferenceError,
   InferenceEvent,
   InferenceOptions,
   InferenceSource,
   LastCycleSource,
   PartialMessage,
+  RetryDecision,
   TokenUsage,
   AssistantTurn,
   ContentBlock,
@@ -42,6 +44,7 @@ import {
   classifyTimeoutError,
   ProtocolMismatchError,
 } from "./errors";
+import { createDefaultRetryPolicy } from "./retry-policy";
 
 /**
  * Default per-call inactivity timeout (ms). Two minutes is conservative
@@ -146,7 +149,17 @@ export type InferenceHarnessOptions = {
   deps: Dependencies;
 };
 
-export async function* runInference(
+/**
+ * Run one fetch lifecycle and yield its events. Ends on the first
+ * `inference.error` or `inference.done`. The outer `runInference`
+ * consumes this generator, decides retry vs flush per the configured
+ * `RetryPolicy`, and either flushes the buffered events to the caller
+ * or discards them and re-enters this generator with the same opts.
+ *
+ * Not exported — the wrapper is the public entry point; calling this
+ * directly would bypass retry handling.
+ */
+async function* runSingleAttempt(
   opts: InferenceHarnessOptions,
 ): AsyncIterable<InferenceEvent> {
   const { turns, source, inferenceOptions, signal, nextSeq, deps } = opts;
@@ -183,17 +196,6 @@ export async function* runInference(
     provider: source.provider,
     model,
   };
-
-  // Defensive guard for callers that bypass the type system (JS, `any`,
-  // unchecked casts). Missing or malformed `deps.fetch` is a programmer
-  // bug — surface it as an unhandled throw before any `yield`, so it does
-  // not get caught by the network try/catch below and misclassified as a
-  // retryable transport failure that callers might paper over with retries.
-  if (typeof deps?.fetch !== "function") {
-    throw new Error(
-      `runInference: deps.fetch must be a function (got ${typeof deps?.fetch}); pass createDefaultDependencies() or a test harness Dependencies object`,
-    );
-  }
 
   // Emit inference.start immediately.
   yield { type: "inference.start", seq: nextSeq(), data: { model } };
@@ -1148,6 +1150,165 @@ export async function* runInference(
     // finally). Both cleanups are idempotent.
     cleanupTimers();
     cleanupSignal();
+  }
+}
+
+/**
+ * Run a single inference call with mechanical retry. Wraps
+ * `runSingleAttempt` and consults the configured `RetryPolicy` (or the
+ * default from `createDefaultRetryPolicy`) on every `inference.error`.
+ *
+ * Events from each attempt are buffered until the attempt terminates;
+ * the wrapper only flushes them to the caller once it knows whether
+ * the attempt resolved (`inference.done` or a policy-approved abort)
+ * or whether the attempt's events should be discarded in favour of a
+ * retry. The buffer-and-flush model is what guarantees the caller
+ * sees a single clean event stream — exactly one `inference.start`,
+ * no orphaned partial deltas, no leaked `inference.error`s from
+ * attempts the policy chose to retry. The cost is that no events
+ * reach the caller until the wrapper knows the attempt's terminal
+ * shape, even on a successful first attempt. That trade-off is the
+ * deliberate consequence of making "one clean stream" a hard contract
+ * rather than a best-effort one; consumers that need token-by-token
+ * partials should subscribe further down the agent layer's emission
+ * chain rather than to `runInference` directly.
+ *
+ * The buffer is per-call and bounded by the size of one attempt's
+ * event stream — no cross-call accumulation.
+ *
+ * Caller-visible seqs stay contiguous across retries. Each attempt
+ * runs against a private seq allocator; on flush the wrapper
+ * re-stamps the buffered events with seqs from the caller's
+ * `nextSeq`, so a retry that discards an attempt does not leave a
+ * gap in the consumer's seq stream.
+ *
+ * Between attempts the wrapper emits one `inference.retry` event with
+ * the failed attempt's number, the policy-chosen `delayMs`, and the
+ * classified error that triggered the retry. The `setTimeout` await
+ * is driven by `deps.scheduler`, so virtual-clock test harnesses
+ * advance retry delays without sleeping real wall-clock.
+ *
+ * Policy-failure handling: if the policy throws synchronously or its
+ * returned Promise rejects, the wrapper treats the failure as
+ * `{ kind: "abort" }` and surfaces the *original* `inference.error`
+ * to the caller. The policy's own exception is dropped — the
+ * inference error is what the caller needs to act on.
+ *
+ * `signal`-driven abort during a retry delay surfaces on the next
+ * attempt: the awaited `setTimeout` resolves, `runSingleAttempt`
+ * checks `signal.aborted` at entry, and emits an `inference.error`
+ * of category `aborted`. The default policy aborts on `aborted`, so
+ * the caller sees the abort error and the wrapper returns.
+ *
+ * Synchronous throws from `runSingleAttempt` (`ProtocolMismatchError`
+ * raised by the streaming parse or the finalization walk, etc.)
+ * propagate untouched out of `runInference`. Those represent protocol
+ * bugs the policy mechanism is not equipped to absorb — the caller's
+ * `for await` rejects so the failure surfaces rather than being
+ * silently buffered.
+ */
+export async function* runInference(
+  opts: InferenceHarnessOptions,
+): AsyncIterable<InferenceEvent> {
+  // Crash-loudly guards. The wrapper accesses both `deps.fetch`
+  // (passed into each `runSingleAttempt` invocation) and
+  // `deps.scheduler` (read here for the monotonic time source) before
+  // any event yields. A malformed `deps` from a JS caller would
+  // otherwise surface as a confusing `Cannot read properties of
+  // undefined`. The wrapper is the single public entrypoint to the
+  // harness; this is the right layer to own the `deps` shape check.
+  if (typeof opts.deps?.fetch !== "function") {
+    throw new Error(
+      `runInference: deps.fetch must be a function (got ${typeof opts.deps?.fetch}); pass createDefaultDependencies() or a test harness Dependencies object`,
+    );
+  }
+  if (typeof opts.deps.scheduler?.now !== "function") {
+    throw new Error(
+      `runInference: deps.scheduler must implement now() (got ${typeof opts.deps.scheduler}); pass createDefaultDependencies() or a test harness Dependencies object`,
+    );
+  }
+  const policy =
+    opts.inferenceOptions?.retryPolicy ?? createDefaultRetryPolicy();
+  const scheduler = opts.deps.scheduler;
+  const startedAtMs = scheduler.now();
+
+  for (let attempt = 1; ; attempt++) {
+    const buffered: InferenceEvent[] = [];
+    let terminalError: InferenceError | undefined;
+
+    // Per-attempt private allocator. `runSingleAttempt` allocates a
+    // seq for every event it yields; if the attempt is discarded on
+    // retry, any caller-visible seq it had consumed would leave a
+    // gap in the consumer's stream — indistinguishable from the
+    // "missed events during brief disconnection" the seq stream is
+    // documented to expose. Allocate from a private counter here and
+    // re-stamp the buffer with caller-visible seqs at flush time.
+    let attemptSeq = 0;
+    const attemptOpts: InferenceHarnessOptions = {
+      ...opts,
+      nextSeq: () => attemptSeq++,
+    };
+    for await (const event of runSingleAttempt(attemptOpts)) {
+      buffered.push(event);
+      if (event.type === "inference.error") {
+        terminalError = event.data.error;
+        break;
+      }
+      if (event.type === "inference.done") {
+        break;
+      }
+    }
+
+    if (terminalError === undefined) {
+      // Successful attempt. Re-stamp the buffer with caller-visible
+      // seqs (the private allocator's values are discarded) and
+      // flush in order.
+      for (const event of buffered) yield { ...event, seq: opts.nextSeq() };
+      return;
+    }
+
+    // Consult the policy. Sync throws and Promise rejections both
+    // resolve to an abort decision; the original inference.error
+    // surfaces to the caller, not the policy's exception.
+    let decision: RetryDecision;
+    try {
+      decision = await Promise.resolve(
+        policy({
+          error: terminalError,
+          attempt,
+          elapsedMs: scheduler.now() - startedAtMs,
+        }),
+      );
+    } catch {
+      decision = { kind: "abort" };
+    }
+
+    if (decision.kind === "abort") {
+      // Flush the buffer (including the terminal inference.error)
+      // with re-stamped caller-visible seqs and return. No
+      // `inference.retry` event is emitted on the abort path.
+      for (const event of buffered) yield { ...event, seq: opts.nextSeq() };
+      return;
+    }
+
+    // Retry: discard the failed attempt's events, emit a single
+    // inference.retry, await the delay, and re-enter the loop.
+    yield {
+      type: "inference.retry",
+      seq: opts.nextSeq(),
+      data: {
+        attempt,
+        delayMs: decision.delayMs,
+        previousError: terminalError,
+      },
+    };
+
+    const retryDelayMs = decision.delayMs;
+    await new Promise<void>((resolve) => {
+      scheduler.setTimeout(() => {
+        resolve();
+      }, retryDelayMs);
+    });
   }
 }
 
