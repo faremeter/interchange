@@ -12,3 +12,13 @@ export type { MailToolName } from "./tools";
 
 export { readDeployTree } from "./deploy-tree";
 export type { DeployTree, DeployToolInfo } from "./deploy-tree";
+
+export {
+  createConnectorRouter,
+  NoActiveConnectorThreadError,
+} from "./connector-router";
+export type {
+  ConnectorRouter,
+  ConnectorReplyParts,
+  RouteDecision,
+} from "./connector-router";
