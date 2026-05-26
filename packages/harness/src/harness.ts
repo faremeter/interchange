@@ -25,7 +25,6 @@ import {
   applyInferenceSourceFields,
   type BlobReader,
   type ContextStore,
-  type ConnectorThreadState,
   type InboundMessage,
   type Unsubscribe,
   type ReactorDirector,
@@ -41,6 +40,7 @@ import {
   getMailToolDefinitions,
 } from "./tools";
 import { createDefaultDirector } from "./director";
+import { createConnectorRouter } from "./connector-router";
 import { type } from "arktype";
 
 const logger = getLogger(["interchange", "harness"]);
@@ -119,40 +119,7 @@ export function createHarness(config: HarnessConfig): Harness {
   // Connector state: track which thread(s) this reactor owns.
   // -------------------------------------------------------------------------
 
-  let connectorThreadRoot: string | undefined = undefined;
-  let connectorLastMessageId: string | undefined = undefined;
-  let connectorReplyTo: string | undefined = undefined;
-  let connectorSubject: string | undefined = undefined;
-
-  function currentConnectorState(): ConnectorThreadState | null {
-    if (
-      connectorThreadRoot === undefined ||
-      connectorLastMessageId === undefined ||
-      connectorReplyTo === undefined
-    ) {
-      return null;
-    }
-    return {
-      threadRoot: connectorThreadRoot,
-      lastMessageId: connectorLastMessageId,
-      replyTo: connectorReplyTo,
-      ...(connectorSubject !== undefined ? { subject: connectorSubject } : {}),
-    };
-  }
-
-  function restoreConnectorState(state: ConnectorThreadState | null): void {
-    if (state === null) {
-      connectorThreadRoot = undefined;
-      connectorLastMessageId = undefined;
-      connectorReplyTo = undefined;
-      connectorSubject = undefined;
-    } else {
-      connectorThreadRoot = state.threadRoot;
-      connectorLastMessageId = state.lastMessageId;
-      connectorReplyTo = state.replyTo;
-      connectorSubject = state.subject;
-    }
-  }
+  const connectorRouter = createConnectorRouter();
 
   // Wrap the context store so load() restores connector state and the reactor's
   // per-cycle writeMetadata picks up the live connector state via the underlying
@@ -161,7 +128,7 @@ export function createHarness(config: HarnessConfig): Harness {
   const wrappedStore: ContextStore = {
     async load(signal) {
       const loaded = await storage.load(signal);
-      restoreConnectorState(loaded.connectorState);
+      connectorRouter.restore(loaded.connectorState);
       return loaded;
     },
     setConnectorState(state) {
@@ -202,54 +169,13 @@ export function createHarness(config: HarnessConfig): Harness {
       // buffer so writeMetadata picks it up alongside pendingOperations and
       // tokenUsage. This is the reactor's per-cycle moment to durably record
       // connector thread state.
-      storage.setConnectorState(currentConnectorState());
+      storage.setConnectorState(connectorRouter.snapshot());
       return storage.writeMetadata(metadata, signal);
     },
     async readManifestHistory(limit, signal) {
       return storage.readManifestHistory(limit, signal);
     },
   };
-
-  /**
-   * Determine whether a message belongs to the active connector thread.
-   */
-  function isConnectorMessage(message: InboundMessage): boolean {
-    if (connectorThreadRoot === undefined) return false;
-
-    const { inReplyTo, references } = message.headers;
-
-    if (references !== undefined && references.includes(connectorThreadRoot)) {
-      return true;
-    }
-
-    if (
-      inReplyTo !== undefined &&
-      connectorLastMessageId !== undefined &&
-      inReplyTo === connectorLastMessageId
-    ) {
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * Start tracking a new connector thread from an initial inbound message.
-   */
-  function initConnectorThread(message: InboundMessage): void {
-    connectorThreadRoot = message.headers.messageId;
-    connectorLastMessageId = message.headers.messageId;
-    connectorReplyTo = message.headers.from;
-    connectorSubject = message.headers.subject;
-  }
-
-  /**
-   * Update connector state when a new message arrives in the thread.
-   */
-  function advanceConnectorThread(message: InboundMessage): void {
-    connectorLastMessageId = message.headers.messageId;
-    connectorReplyTo = message.headers.from;
-  }
 
   /**
    * Delete a message from the INBOX after it has been delivered to the reactor.
@@ -269,26 +195,18 @@ export function createHarness(config: HarnessConfig): Harness {
 
   function handleEvent(event: ReactorEmittedEvent): void {
     // Handle connector.reply: send the reply via transport.
-    if (
-      event.type === "connector.reply" &&
-      connectorReplyTo !== undefined &&
-      connectorLastMessageId !== undefined
-    ) {
+    if (event.type === "connector.reply") {
       const replyContent = event.data.content;
-      const replyTo = connectorReplyTo;
-      const inReplyTo = connectorLastMessageId;
-      const subject = connectorSubject;
 
       void (async () => {
         try {
+          const parts = connectorRouter.composeReply();
           const receipt = await transport.send({
-            to: replyTo,
+            ...parts,
             content: replyContent,
             type: "conversation.message",
-            inReplyTo,
-            ...(subject !== undefined ? { subject } : {}),
           });
-          connectorLastMessageId = receipt.messageId;
+          connectorRouter.onReplySent(receipt);
         } catch (cause) {
           logger.error`Failed to send connector reply: ${cause}`;
         }
@@ -404,22 +322,21 @@ export function createHarness(config: HarnessConfig): Harness {
         // Only connector-thread messages are consumed from the INBOX.
         // Everything else is delivered to the reactor and stays in the
         // INBOX so message tools can access it.
-        if (connectorThreadRoot === undefined) {
-          // No active conversation — this message starts one.
-          initConnectorThread(message);
-          reactor.deliver(message);
-          await consumeFromInbox(message);
-        } else if (isConnectorMessage(message)) {
-          // Continues the active connector thread.
-          advanceConnectorThread(message);
-          reactor.deliver(message);
-          await consumeFromInbox(message);
-        } else {
+        const decision = connectorRouter.route(message);
+        if (decision.kind === "passthrough") {
           // Non-connector mail (replies to agent sends, unsolicited
           // inter-agent mail, etc.). Deliver to reactor for notification
           // but leave in INBOX for message tools.
           reactor.deliver(message);
+          return;
         }
+
+        // start or continue: commit router state synchronously before
+        // any await so that a concurrent watch callback fired during
+        // consumeFromInbox observes the updated state.
+        connectorRouter.commit(decision);
+        reactor.deliver(message);
+        await consumeFromInbox(message);
       })();
     });
 
