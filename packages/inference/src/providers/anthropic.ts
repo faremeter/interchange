@@ -5,6 +5,7 @@ import type {
   ContentBlock,
   InferenceEvent,
   InferenceOptions,
+  LastCycleSource,
   MediaSource,
   PartialMessage,
   TokenUsage,
@@ -509,6 +510,7 @@ const AnthropicSSEEvent = ContentBlockDelta.or(ContentBlockStart)
 function parseResponse(
   sseData: string,
   blockIndexToCallId: Map<number, string>,
+  source: LastCycleSource,
 ): InferenceEvent[] {
   // Same protocol-mismatch posture as the openai adapter: a JSON parse
   // failure or arktype rejection means the upstream emitted bytes that
@@ -724,7 +726,11 @@ function parseResponse(
         thinking: 0,
       };
       return [
-        { type: "inference.usage", seq, data: { usage: inferenceUsage } },
+        {
+          type: "inference.usage",
+          seq,
+          data: { usage: inferenceUsage, source },
+        },
       ];
     }
 
@@ -741,7 +747,11 @@ function parseResponse(
         thinking: 0,
       };
       return [
-        { type: "inference.usage", seq, data: { usage: inferenceUsage } },
+        {
+          type: "inference.usage",
+          seq,
+          data: { usage: inferenceUsage, source },
+        },
       ];
     }
 
@@ -785,12 +795,15 @@ function extractPacingDelayMs(headers: Headers): number | undefined {
   return delays.length > 0 ? Math.max(...delays) : undefined;
 }
 
-export function createAnthropicAdapter(): ProviderAdapter {
+export function createAnthropicAdapter(
+  source: LastCycleSource,
+): ProviderAdapter {
   const blockIndexToCallId = new Map<number, string>();
 
   return {
     buildRequest,
-    parseResponse: (sseData) => parseResponse(sseData, blockIndexToCallId),
+    parseResponse: (sseData) =>
+      parseResponse(sseData, blockIndexToCallId, source),
     extractRetryAfterMs,
     extractPacingDelayMs,
   };

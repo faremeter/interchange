@@ -1,7 +1,13 @@
 import { describe, test, expect } from "bun:test";
 
 import { createOpenAIAdapter, parseSSE } from "@intx/inference";
-import type { InferenceEvent } from "@intx/types/runtime";
+import type { InferenceEvent, LastCycleSource } from "@intx/types/runtime";
+
+const TEST_SOURCE: LastCycleSource = {
+  sourceId: "test-openai",
+  provider: "openai",
+  model: "test-openai-model",
+};
 
 import * as openai from "./openai";
 
@@ -12,7 +18,7 @@ async function drive(chunks: Uint8Array[]): Promise<InferenceEvent[]> {
       controller.close();
     },
   });
-  const adapter = createOpenAIAdapter();
+  const adapter = createOpenAIAdapter(TEST_SOURCE);
   const events: InferenceEvent[] = [];
   for await (const sseData of parseSSE(stream)) {
     for (const evt of adapter.parseResponse(sseData)) {

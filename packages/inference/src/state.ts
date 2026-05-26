@@ -8,6 +8,7 @@
 
 import type {
   ConversationTurn,
+  LastCycleSource,
   PendingOperation,
   TokenUsage,
   ReactorState,
@@ -32,6 +33,7 @@ export function createStateManager(
   );
   const tokenUsage: TokenUsage = { ...initialUsage };
   let lastCycleUsage: TokenUsage | null = null;
+  let lastCycleSource: LastCycleSource | null = null;
   let activeGatesSnapshot: GateSnapshot[] = [];
   const activeForks: { forkId: string; mode: "independent" | "child" }[] = [];
 
@@ -61,6 +63,10 @@ export function createStateManager(
 
   function setLastCycleUsage(usage: TokenUsage): void {
     lastCycleUsage = { ...usage };
+  }
+
+  function setLastCycleSource(source: LastCycleSource): void {
+    lastCycleSource = { ...source };
   }
 
   function setGatesSnapshot(gates: GateSnapshot[]): void {
@@ -106,6 +112,7 @@ export function createStateManager(
       activeForks: activeForks.map((f) => ({ ...f })),
       tokenUsage: { ...tokenUsage },
       lastCycleUsage: lastCycleUsage !== null ? { ...lastCycleUsage } : null,
+      lastCycleSource: lastCycleSource !== null ? { ...lastCycleSource } : null,
     };
   }
 
@@ -116,6 +123,7 @@ export function createStateManager(
     removePendingOperation,
     accumUsage,
     setLastCycleUsage,
+    setLastCycleSource,
     setGatesSnapshot,
     addFork,
     removeFork,

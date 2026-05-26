@@ -1,7 +1,13 @@
 import { describe, test, expect } from "bun:test";
 
 import { createAnthropicAdapter, parseSSE } from "@intx/inference";
-import type { InferenceEvent } from "@intx/types/runtime";
+import type { InferenceEvent, LastCycleSource } from "@intx/types/runtime";
+
+const TEST_SOURCE: LastCycleSource = {
+  sourceId: "test-anthropic",
+  provider: "anthropic",
+  model: "test-anthropic-model",
+};
 
 import * as anthropic from "./anthropic";
 
@@ -17,7 +23,7 @@ async function drive(chunks: Uint8Array[]): Promise<InferenceEvent[]> {
       controller.close();
     },
   });
-  const adapter = createAnthropicAdapter();
+  const adapter = createAnthropicAdapter(TEST_SOURCE);
   const events: InferenceEvent[] = [];
   for await (const sseData of parseSSE(stream)) {
     for (const evt of adapter.parseResponse(sseData)) {

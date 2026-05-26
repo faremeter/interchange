@@ -1,9 +1,10 @@
+import type { LastCycleSource } from "@intx/types/runtime";
 import type { ProviderAdapter } from "../adapter";
 import { createAnthropicAdapter } from "./anthropic";
 import { createGoogleGenAIAdapter } from "./google-genai";
 import { createOpenAIAdapter } from "./openai";
 
-type AdapterFactory = () => ProviderAdapter;
+type AdapterFactory = (source: LastCycleSource) => ProviderAdapter;
 
 const registry = new Map<string, AdapterFactory>();
 
@@ -20,10 +21,13 @@ export function hasProvider(id: string): boolean {
   return registry.has(id);
 }
 
-export function lookupProvider(id: string): ProviderAdapter {
+export function lookupProvider(
+  id: string,
+  source: LastCycleSource,
+): ProviderAdapter {
   const factory = registry.get(id);
   if (factory === undefined) {
     throw new Error(`Unknown inference provider: ${id}`);
   }
-  return factory();
+  return factory(source);
 }

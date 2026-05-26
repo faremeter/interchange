@@ -24,6 +24,7 @@ import type {
   InferenceEvent,
   InferenceOptions,
   InferenceSource,
+  LastCycleSource,
   PartialMessage,
   TokenUsage,
   AssistantTurn,
@@ -145,6 +146,30 @@ export async function* runInference(
     ...(inferenceOptions ?? {}),
   };
   const model = source.model;
+  // Snapshot the source identity at call start. The harness reads
+  // `source.*` lazily across the rest of this function (and the adapter
+  // closes over `source` for its parseResponse), so a `setSource`
+  // mid-call would otherwise mutate the identity stamped onto the
+  // inference.usage and inference.done events for this very call.
+  // Capturing into a local LastCycleSource here is the single point
+  // that defends against that hot-swap.
+  //
+  // Scope of the defense: this snapshot protects *identity attribution*
+  // — what the director's policy hook and external event consumers see
+  // for `lastCycleSource` and `event.data.source`. It does NOT isolate
+  // the in-flight HTTP request from the swap: `resolveURL` reads
+  // `source.baseURL` live and `injectCredentials` reads `source.apiKey`
+  // live (both below). A mid-call `setSource` will route the request to
+  // the new endpoint with the new credentials while the resulting
+  // inference.done still carries the pre-swap identity. That is
+  // consistent with `LastCycleSource` deliberately excluding
+  // baseURL/apiKey, but it is worth knowing: the snapshot is
+  // identity-only, not a transactional freeze of the entire source.
+  const lastCycleSource: LastCycleSource = {
+    sourceId: source.id,
+    provider: source.provider,
+    model,
+  };
 
   // Defensive guard for callers that bypass the type system (JS, `any`,
   // unchecked casts). Missing or malformed `deps.fetch` is a programmer
@@ -211,7 +236,7 @@ export async function* runInference(
 
   let adapter;
   try {
-    adapter = lookupProvider(source.provider);
+    adapter = lookupProvider(lastCycleSource.provider, lastCycleSource);
   } catch (cause) {
     yield {
       type: "inference.error",
@@ -222,7 +247,7 @@ export async function* runInference(
           message:
             cause instanceof Error
               ? cause.message
-              : `Unknown provider: ${source.provider}`,
+              : `Unknown provider: ${lastCycleSource.provider}`,
         },
         partial: snapshotPartial(partial),
       },
@@ -827,11 +852,25 @@ export async function* runInference(
               // observably "decrease" input from a real count back
               // to 0 between the two events even though no decrease
               // occurred in the underlying counter.
+              //
+              // The source field uses the call-start `lastCycleSource`
+              // snapshot rather than `raw.data.source`. The adapter
+              // stamps source on its own emit because the InferenceEvent
+              // type requires the field at every producer site, but the
+              // harness owns identity attribution for downstream
+              // consumers: the harness's snapshot is the single source
+              // of truth, the adapter's stamp is type-system overhead
+              // that gets replaced here. Both descriptors are equal by
+              // construction (the registry passes the same snapshot to
+              // the adapter factory), so the override is redundant for
+              // correctness; it exists so a future provider that
+              // synthesizes its own descriptor cannot drift from the
+              // call-start identity the rest of the harness commits to.
               usageSeen = mergeUsage(usageSeen, raw.data.usage);
               yield {
                 type: "inference.usage",
                 seq: nextSeq(),
-                data: { usage: usageSeen },
+                data: { usage: usageSeen, source: lastCycleSource },
               };
               break;
             }
@@ -924,7 +963,7 @@ export async function* runInference(
       yield {
         type: "inference.usage",
         seq: nextSeq(),
-        data: { usage: finalUsage },
+        data: { usage: finalUsage, source: lastCycleSource },
       };
     }
 
@@ -1082,6 +1121,7 @@ export async function* runInference(
       data: {
         turn: finalTurn,
         usage: finalUsage,
+        source: lastCycleSource,
         ...(pacingDelayMs !== undefined && pacingDelayMs > 0
           ? { pacingDelayMs }
           : {}),

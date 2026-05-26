@@ -1,6 +1,10 @@
 import { describe, test, expect } from "bun:test";
 
-import type { InferenceEvent, PartialMessage } from "@intx/types/runtime";
+import type {
+  InferenceEvent,
+  LastCycleSource,
+  PartialMessage,
+} from "@intx/types/runtime";
 
 import {
   expectEvents,
@@ -11,6 +15,11 @@ import {
 } from "./matchers";
 
 const EMPTY_PARTIAL: PartialMessage = { text: "" };
+const TEST_SOURCE: LastCycleSource = {
+  sourceId: "test-source",
+  provider: "test-provider",
+  model: "test-model",
+};
 
 function startEvent(seq: number): InferenceEvent {
   return {
@@ -59,6 +68,7 @@ function doneEvent(seq: number): InferenceEvent {
         cacheWrite: 0,
         thinking: 0,
       },
+      source: TEST_SOURCE,
     },
   };
 }

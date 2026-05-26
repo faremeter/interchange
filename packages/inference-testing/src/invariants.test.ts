@@ -3,6 +3,7 @@ import { describe, test, expect } from "bun:test";
 import type {
   ContentBlock,
   InferenceEvent,
+  LastCycleSource,
   PartialMessage,
   TokenUsage,
 } from "@intx/types/runtime";
@@ -16,6 +17,11 @@ const ZERO_USAGE: TokenUsage = {
   cacheRead: 0,
   cacheWrite: 0,
   thinking: 0,
+};
+const TEST_SOURCE: LastCycleSource = {
+  sourceId: "test-source",
+  provider: "test-provider",
+  model: "test-model",
 };
 
 function findInvariant(name: string): Invariant {
@@ -39,6 +45,7 @@ function doneEvent(
     data: {
       turn: { role: "assistant", content, model: "test", timestamp: 0 },
       usage,
+      source: TEST_SOURCE,
     },
   };
 }
@@ -55,7 +62,7 @@ function errorEvent(seq: number): InferenceEvent {
 }
 
 function usageEvent(seq: number, usage: TokenUsage): InferenceEvent {
-  return { type: "inference.usage", seq, data: { usage } };
+  return { type: "inference.usage", seq, data: { usage, source: TEST_SOURCE } };
 }
 
 function textDelta(seq: number, token: string, index?: number): InferenceEvent {
@@ -470,6 +477,7 @@ describe("recognized_content_blocks invariant", () => {
           timestamp: 0,
         },
         usage: ZERO_USAGE,
+        source: TEST_SOURCE,
       },
     } as unknown as InferenceEvent;
     const violations = inv.check([event]);

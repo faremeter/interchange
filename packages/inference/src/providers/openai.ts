@@ -5,6 +5,7 @@ import type {
   ContentBlock,
   InferenceEvent,
   InferenceOptions,
+  LastCycleSource,
   PartialMessage,
   TokenUsage,
 } from "@intx/types/runtime";
@@ -427,6 +428,7 @@ function getOrAssignToolCallIndex(
 function parseResponse(
   sseData: string,
   indexer: OpenAIBlockIndexer,
+  source: LastCycleSource,
 ): InferenceEvent[] {
   // parseSSE strips the `[DONE]` sentinel before yielding payloads, so
   // anything that reaches us here is supposed to be a JSON chunk. A
@@ -471,7 +473,9 @@ function parseResponse(
         cacheWrite: 0,
         thinking: usage.completion_tokens_details?.reasoning_tokens ?? 0,
       };
-      return [{ type: "inference.usage", seq, data: { usage: tokenUsage } }];
+      return [
+        { type: "inference.usage", seq, data: { usage: tokenUsage, source } },
+      ];
     }
     return [];
   }
@@ -631,7 +635,11 @@ function parseResponse(
       cacheWrite: 0,
       thinking: 0,
     };
-    events.push({ type: "inference.usage", seq, data: { usage: tokenUsage } });
+    events.push({
+      type: "inference.usage",
+      seq,
+      data: { usage: tokenUsage, source },
+    });
   }
 
   return events;
@@ -690,7 +698,7 @@ function parseDuration(value: string): number | undefined {
   return total > 0 ? Math.ceil(total) : undefined;
 }
 
-export function createOpenAIAdapter(): ProviderAdapter {
+export function createOpenAIAdapter(source: LastCycleSource): ProviderAdapter {
   // Per-request indexer state. Adapter instances are created per
   // request (see `adapter.ts`), so each call to `createOpenAIAdapter`
   // gets a fresh counter for assigning block indices to reasoning vs.
@@ -704,7 +712,7 @@ export function createOpenAIAdapter(): ProviderAdapter {
   };
   return {
     buildRequest,
-    parseResponse: (sseData) => parseResponse(sseData, indexer),
+    parseResponse: (sseData) => parseResponse(sseData, indexer, source),
     extractRetryAfterMs,
     extractPacingDelayMs,
   };

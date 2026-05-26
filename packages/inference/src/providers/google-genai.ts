@@ -7,6 +7,7 @@ import type {
   ContentBlock,
   InferenceEvent,
   InferenceOptions,
+  LastCycleSource,
   MediaSource,
   PartialMessage,
   TokenUsage,
@@ -1382,6 +1383,7 @@ function consumeSignature(
 function parseResponse(
   sseData: string,
   state: GeminiParserState,
+  source: LastCycleSource,
 ): InferenceEvent[] {
   let parsed: unknown;
   try {
@@ -1479,7 +1481,7 @@ function parseResponse(
     out.push({
       type: "inference.usage",
       seq,
-      data: { usage: tokenUsage },
+      data: { usage: tokenUsage, source },
     });
 
     // Terminal events seal the response. A still-pending
@@ -1502,13 +1504,15 @@ function parseResponse(
   return out;
 }
 
-export function createGoogleGenAIAdapter(): ProviderAdapter {
+export function createGoogleGenAIAdapter(
+  source: LastCycleSource,
+): ProviderAdapter {
   // Per-request state lives in the closure: block-index allocation
   // and signature-anchor pairing both need to span SSE events.
   // `buildRequest` does not touch state; only `parseResponse` does.
   const state = createParserState();
   return {
     buildRequest,
-    parseResponse: (sseData) => parseResponse(sseData, state),
+    parseResponse: (sseData) => parseResponse(sseData, state, source),
   };
 }
