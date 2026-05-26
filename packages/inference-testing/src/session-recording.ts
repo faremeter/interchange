@@ -423,9 +423,7 @@ export function createRecordingHarness(
 
   // Production scheduler — recording drives real fetch on the real
   // wall clock, so production `runInference` timers should fire
-  // normally. (The default scheduler created by `runInference` when
-  // `deps.scheduler` is omitted would work too, but providing it
-  // explicitly here keeps the dependency surface visible.)
+  // normally.
   const harnessSymbol = Symbol("RecordingHarnessInstance");
   const deps: Dependencies = {
     fetch: recordingFetch,

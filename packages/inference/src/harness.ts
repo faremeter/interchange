@@ -88,10 +88,11 @@ export type Dependencies = {
    * passes the default wrapper around `setTimeout` / `clearTimeout`; the
    * deterministic test harness injects a scheduler that wraps its virtual
    * clock so timeout tests fire at virtual-time-N without sleeping real
-   * wall-clock. Optional for backward compatibility — when omitted the
-   * harness substitutes the production default.
+   * wall-clock. Required — every caller must make an explicit choice
+   * between the production scheduler and a virtual one. Use
+   * `createDefaultScheduler()` for the production default.
    */
-  readonly scheduler?: Scheduler;
+  readonly scheduler: Scheduler;
   readonly [HarnessId]?: symbol;
 };
 
@@ -295,7 +296,7 @@ export async function* runInference(
     effectiveOptions.inactivityTimeoutMs ?? DEFAULT_INACTIVITY_TIMEOUT_MS;
   const totalTimeoutMs =
     effectiveOptions.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS;
-  const scheduler = deps.scheduler ?? createDefaultScheduler();
+  const scheduler = deps.scheduler;
   const timeoutAbort = new AbortController();
   let timeoutReason: "inactivity" | "total" | null = null;
   let cancelInactivity: (() => void) | null = null;

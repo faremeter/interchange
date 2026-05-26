@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 
 import {
   createDefaultDependencies,
+  createDefaultScheduler,
   HarnessId,
   runInference,
   type Dependencies,
@@ -69,6 +70,7 @@ describe("runInference — Dependencies parameter", () => {
           }),
         );
       },
+      scheduler: createDefaultScheduler(),
     };
 
     const originalFetch = globalThis.fetch;
@@ -110,6 +112,7 @@ describe("runInference — Dependencies parameter", () => {
   test("propagates errors from deps.fetch without falling back to globalThis.fetch", async () => {
     const deps: Dependencies = {
       fetch: () => Promise.reject(new Error("simulated network failure")),
+      scheduler: createDefaultScheduler(),
     };
 
     const originalFetch = globalThis.fetch;
@@ -304,6 +307,7 @@ describe("runInference — source.defaults merge precedence", () => {
           }),
         );
       },
+      scheduler: createDefaultScheduler(),
     };
     let seq = 0;
     await collect(
@@ -404,6 +408,7 @@ describe("runInference — providerOptions merge precedence", () => {
             headers: { "content-type": "text/event-stream" },
           }),
         ),
+      scheduler: createDefaultScheduler(),
     };
 
     let seq = 0;
@@ -459,6 +464,7 @@ describe("Dependencies — reflective exposure of HarnessId", () => {
   function stampedDeps(): Dependencies {
     return {
       fetch: () => Promise.resolve(new Response("")),
+      scheduler: createDefaultScheduler(),
       [HarnessId]: Symbol("test-harness"),
     };
   }
@@ -509,6 +515,7 @@ describe("runInference — source-identity stamping", () => {
             headers: { "content-type": "text/event-stream" },
           }),
         ),
+      scheduler: createDefaultScheduler(),
     };
     let seq = 0;
     const events = await collect(
@@ -552,6 +559,7 @@ describe("runInference — source-identity stamping", () => {
             headers: { "content-type": "text/event-stream" },
           }),
         ),
+      scheduler: createDefaultScheduler(),
     };
 
     let seq = 0;
@@ -623,6 +631,7 @@ describe("runInference — source-identity stamping", () => {
           }),
         );
       },
+      scheduler: createDefaultScheduler(),
     };
 
     let seq = 0;
