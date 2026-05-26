@@ -1,6 +1,6 @@
 import { setup, getLogger } from "@intx/log";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import type { InferenceEvent } from "@intx/types/runtime";
+import type { ConnectorThreadState, InferenceEvent } from "@intx/types/runtime";
 
 import { createSessionManager } from "./session-manager";
 import { createWsClient } from "./ws-client";
@@ -41,12 +41,21 @@ let forwardEvent: (a: string, s: string, e: InferenceEvent) => void = (
 ) => {
   // Replaced after ws-client is constructed.
 };
+let forwardConnectorState: (
+  a: string,
+  state: ConnectorThreadState | null,
+) => void = (_a, _state) => {
+  // Replaced after ws-client is constructed.
+};
 
 const sessions = createSessionManager({
   transport,
   dataDir,
   onEvent(agentAddress, sessionId, event) {
     forwardEvent(agentAddress, sessionId, event);
+  },
+  onConnectorStateChanged(agentAddress, state) {
+    forwardConnectorState(agentAddress, state);
   },
 });
 
@@ -59,6 +68,7 @@ const client = createWsClient({
 });
 
 forwardEvent = client.sendEvent;
+forwardConnectorState = client.sendConnectorState;
 client.connect();
 
 log.info("Sidecar {sidecarId} connecting to {hubUrl}", { sidecarId, hubUrl });

@@ -28,7 +28,11 @@ import {
 } from "@intx/types/sidecar";
 import type { KeyPair } from "@intx/types/runtime";
 
-import type { SessionManager, SessionEventSink } from "./session-manager";
+import type {
+  ConnectorStateSink,
+  SessionManager,
+  SessionEventSink,
+} from "./session-manager";
 import { createPackReceiver, chunkPack } from "@intx/pack-transport";
 import { hexDecode, hexEncode } from "@intx/types";
 
@@ -49,6 +53,7 @@ export type WsClient = {
   connect(): void;
   close(): void;
   sendEvent: SessionEventSink;
+  sendConnectorState: ConnectorStateSink;
 };
 
 export function createWsClient(config: WsClientConfig): WsClient {
@@ -661,7 +666,18 @@ export function createWsClient(config: WsClientConfig): WsClient {
     });
   };
 
-  return { connect, close, sendEvent };
+  const sendConnectorState: ConnectorStateSink = (
+    agentAddress,
+    connectorState,
+  ) => {
+    send({
+      type: "connector.state.changed",
+      agentAddress,
+      connectorState,
+    });
+  };
+
+  return { connect, close, sendEvent, sendConnectorState };
 }
 
 function uint8ArrayToBase64(bytes: Uint8Array): string {

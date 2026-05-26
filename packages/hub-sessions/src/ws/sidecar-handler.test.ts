@@ -944,6 +944,178 @@ describe("SidecarRouter", () => {
 
       expect(seen).toEqual([["agent@local"]]);
     });
+
+    test("connector.state.changed populates the cache and is readable via getConnectorState", () => {
+      const router = createSidecarRouter({});
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      // Before any state frame, the cache is absent → null.
+      expect(router.getConnectorState("agent@local")).toBeNull();
+
+      const state = {
+        threadRoot: "<root@example.com>",
+        lastMessageId: "<last@example.com>",
+        replyTo: "user@example.com",
+        cc: [],
+      };
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "connector.state.changed",
+          agentAddress: "agent@local",
+          connectorState: state,
+        }),
+      );
+
+      expect(router.getConnectorState("agent@local")).toEqual(state);
+
+      // An explicit-null frame clears the cached state.
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "connector.state.changed",
+          agentAddress: "agent@local",
+          connectorState: null,
+        }),
+      );
+
+      expect(router.getConnectorState("agent@local")).toBeNull();
+    });
+
+    test("connector.state.changed is emitted on router.events", () => {
+      const router = createSidecarRouter({});
+      const seen: { addr: string; state: unknown }[] = [];
+      router.events.on(
+        "connector.state.changed",
+        ({ agentAddress, connectorState }) => {
+          seen.push({ addr: agentAddress, state: connectorState });
+        },
+      );
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      const state = {
+        threadRoot: "<root@example.com>",
+        lastMessageId: "<last@example.com>",
+        replyTo: "user@example.com",
+        cc: [],
+        subject: "Hi",
+      };
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "connector.state.changed",
+          agentAddress: "agent@local",
+          connectorState: state,
+        }),
+      );
+
+      expect(seen).toEqual([{ addr: "agent@local", state }]);
+    });
+
+    test("live takeover via register evicts the prior owner's cached connector state", () => {
+      const router = createSidecarRouter({});
+
+      // First sidecar registers and reports connector state.
+      const ws1 = createMockWs();
+      router.handleOpen(ws1);
+      router.handleMessage(
+        ws1,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+      router.handleMessage(
+        ws1,
+        JSON.stringify({
+          type: "connector.state.changed",
+          agentAddress: "agent@local",
+          connectorState: {
+            threadRoot: "<root@example.com>",
+            lastMessageId: "<last@example.com>",
+            replyTo: "user@example.com",
+            cc: [],
+          },
+        }),
+      );
+      expect(router.getConnectorState("agent@local")).not.toBeNull();
+
+      // A second sidecar registers claiming the same address without
+      // the first having disconnected. The prior cache must be evicted
+      // so it cannot mis-thread mail in the window before the new
+      // owner bootstraps.
+      const ws2 = createMockWs();
+      router.handleOpen(ws2);
+      router.handleMessage(
+        ws2,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-2",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      expect(router.getConnectorState("agent@local")).toBeNull();
+    });
+
+    test("disconnect clears cached connector state for affected agents", () => {
+      const router = createSidecarRouter({});
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "connector.state.changed",
+          agentAddress: "agent@local",
+          connectorState: {
+            threadRoot: "<root@example.com>",
+            lastMessageId: "<last@example.com>",
+            replyTo: "user@example.com",
+            cc: [],
+          },
+        }),
+      );
+
+      expect(router.getConnectorState("agent@local")).not.toBeNull();
+
+      router.handleClose(ws);
+
+      expect(router.getConnectorState("agent@local")).toBeNull();
+    });
   });
 
   describe("session subscriptions", () => {

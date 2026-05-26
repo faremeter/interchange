@@ -1,6 +1,7 @@
 import type {
   MessageTransport,
   CryptoProvider,
+  ConnectorThreadState,
   ContextStore,
   AuditStore,
   ToolRunner,
@@ -43,6 +44,15 @@ export type HarnessConfig = {
 
   /** Callback invoked for every inference event emitted by the reactor. */
   onEvent: (event: InferenceEvent) => void;
+
+  /**
+   * Optional callback invoked whenever the connector router's state changes
+   * (commit of a start/continue decision, an outbound reply send advancing
+   * lastMessageId, or load-time restore from the context store). Fires only
+   * on a real state change, not on no-op operations. Used by the sidecar to
+   * lift connector-state updates onto the hub-bound event channel.
+   */
+  onConnectorStateChanged?: (state: ConnectorThreadState | null) => void;
 
   /**
    * Optional custom director. When omitted, the default conversational director
