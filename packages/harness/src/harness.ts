@@ -93,7 +93,7 @@ export function createHarness(config: HarnessConfig): Harness {
     director = createDefaultDirector(
       config.systemPrompt,
       [...getMailToolDefinitions(), ...deployToolDefs],
-      config.directorPolicy ?? {},
+      config.defaultDirectorPolicy ?? {},
     );
   }
 

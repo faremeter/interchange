@@ -349,7 +349,7 @@ for (const [i, name] of AGENT_NAMES.entries()) {
     storage,
     tools: createPosixTools({ cwd: process.cwd() }),
     onEvent: makeEventLogger(name),
-    directorPolicy: i !== 0 ? { mode: "reactive" } : {},
+    defaultDirectorPolicy: i !== 0 ? { mode: "reactive" } : {},
   });
   harnesses.push(h);
 }

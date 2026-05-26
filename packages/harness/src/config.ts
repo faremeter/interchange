@@ -11,7 +11,7 @@ import type {
   ReactorDirector,
   BeforeToolExtension,
 } from "@intx/types/runtime";
-import type { AuthzCallResult, DirectorPolicy } from "@intx/inference";
+import type { AuthzCallResult, DefaultDirectorPolicy } from "@intx/inference";
 
 /**
  * Configuration passed to `createHarness`. All required fields must be
@@ -62,10 +62,10 @@ export type HarnessConfig = {
 
   /**
    * Policy overrides for the default director. Ignored when a custom director is
-   * provided. Each field controls a specific decision point in the director's
-   * event handling loop.
+   * provided. Each field controls a specific decision point in the default
+   * director's event handling loop.
    */
-  directorPolicy?: DirectorPolicy;
+  defaultDirectorPolicy?: DefaultDirectorPolicy;
 
   /**
    * Extensions that run before each tool call. Return a string to block the
