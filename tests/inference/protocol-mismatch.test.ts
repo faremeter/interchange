@@ -28,6 +28,7 @@ const inertScheduler: Scheduler = {
   setTimeout: () => () => {
     /* tests do not exercise timer firing */
   },
+  now: () => 0,
 };
 
 function makeTurns(): ConversationTurn[] {

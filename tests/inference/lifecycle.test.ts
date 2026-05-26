@@ -55,6 +55,7 @@ function recordingScheduler(): {
         entry.cancelled = true;
       };
     },
+    now: () => 0,
   };
   return { scheduler, entries };
 }
@@ -193,6 +194,7 @@ describe("runInference — caller-signal listener accounting", () => {
       setTimeout: () => () => {
         /* no-op: tests do not exercise the timer firing */
       },
+      now: () => 0,
     };
     const successfulFetch: Dependencies["fetch"] = () => {
       const enc = new TextEncoder();

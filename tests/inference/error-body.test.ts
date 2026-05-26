@@ -40,6 +40,7 @@ const inertScheduler: Scheduler = {
   setTimeout: () => () => {
     /* tests do not exercise timer firing */
   },
+  now: () => 0,
 };
 
 async function drain(

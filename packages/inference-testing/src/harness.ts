@@ -819,8 +819,18 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
   const noopCanceller = (): void => {
     /* no scheduled work to cancel */
   };
+  // The inert scheduler intentionally exposes an asymmetric pair:
+  // `setTimeout` is a no-op (production timers are suppressed when
+  // `enableInferenceTimers` is left at its default `false`), but
+  // `now()` still reflects the virtual clock. A test that doesn't
+  // exercise inference timers may still advance the clock for other
+  // purposes; reading wall-clock or a frozen `0` here would silently
+  // diverge `now()` from the test's authoritative time source. The
+  // asymmetry is deliberate — every test gets a coherent time
+  // reading even when it has opted out of production-timer firing.
   const inertScheduler: Scheduler = {
     setTimeout: () => noopCanceller,
+    now: () => clock.now(),
   };
   const scheduler: Scheduler =
     opts.enableInferenceTimers === true
@@ -835,6 +845,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
               cancelled = true;
             };
           },
+          now: () => clock.now(),
         }
       : inertScheduler;
 

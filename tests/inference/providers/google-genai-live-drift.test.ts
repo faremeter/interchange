@@ -30,6 +30,7 @@ describe("Google GenAI adapter: live drift", () => {
     setTimeout: () => () => {
       /* tests do not exercise timer firing */
     },
+    now: () => 0,
   };
 
   test.skipIf(GEMINI_API_KEY === undefined || GEMINI_API_KEY === "")(

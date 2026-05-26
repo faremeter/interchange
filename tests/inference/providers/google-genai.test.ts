@@ -1649,6 +1649,7 @@ describe("Google GenAI adapter: harness round trip", () => {
     setTimeout: () => () => {
       /* tests do not exercise timer firing */
     },
+    now: () => 0,
   };
 
   const SOURCE: InferenceSource = {
@@ -2674,6 +2675,7 @@ describe("Google GenAI adapter: harness round trip with thinking + tool_call", (
     setTimeout: () => () => {
       /* tests do not exercise timer firing */
     },
+    now: () => 0,
   };
 
   const SOURCE: InferenceSource = {
@@ -3050,6 +3052,7 @@ describe("Google GenAI adapter: harness round trip with image output", () => {
     setTimeout: () => () => {
       /* tests do not exercise timer firing */
     },
+    now: () => 0,
   };
 
   const SOURCE: InferenceSource = {
@@ -3405,6 +3408,7 @@ describe("Google GenAI adapter: harness round trip with grounding", () => {
     setTimeout: () => () => {
       /* tests do not exercise timer firing */
     },
+    now: () => 0,
   };
 
   const SOURCE: InferenceSource = {
@@ -3837,6 +3841,7 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
     setTimeout: () => () => {
       /* tests do not exercise timer firing */
     },
+    now: () => 0,
   };
 
   const SOURCE: InferenceSource = {
