@@ -1,3 +1,6 @@
+// Install the default console sink before any caller can get a logger.
+import "./default-sink";
+
 // Re-export core LogTape functionality
 export {
   // Logger creation and usage
@@ -75,3 +78,7 @@ export {
 
 // Re-export our setup helper
 export { setup, type SetupOptions } from "./setup";
+
+// Re-export the default sink installer for tests that need to reinstall
+// after `resetSync()`.
+export { installDefaultConsoleSink } from "./default-sink";

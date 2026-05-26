@@ -38,6 +38,12 @@ type LoggerConfigEntry = {
  * - Production: JSON Lines console output, info level
  *
  * Call this once at application startup (app entry point, CLI script).
+ *
+ * `setup()` passes `reset: true` to LogTape's `configure()`, so each call
+ * unconditionally replaces the current configuration — including the
+ * module-load default console sink and any prior `setup()` call. A second
+ * invocation with different options silently wins rather than erroring;
+ * callers that need to detect double-configuration must guard externally.
  */
 export async function setup(options: SetupOptions = {}): Promise<void> {
   const isDev =
@@ -69,6 +75,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   }
 
   await configure({
+    reset: true,
     sinks: {
       console: getConsoleSink({
         formatter: isDev ? ansiColorFormatter : getJsonLinesFormatter(),
