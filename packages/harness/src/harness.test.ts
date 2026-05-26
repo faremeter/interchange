@@ -1338,6 +1338,25 @@ describe("Config validation", () => {
     ).toThrow("systemPrompt");
   });
 
+  test("throws when both director and defaultDirectorPolicy are provided", () => {
+    const transport = makeMockTransport();
+    const director: ReactorDirector = {
+      async decide(_event, _state, caps) {
+        return caps.wait();
+      },
+    };
+    expect(() =>
+      createHarness(
+        makeConfig(transport, {
+          director,
+          defaultDirectorPolicy: { mode: "reactive" },
+        }),
+      ),
+    ).toThrow(
+      "HarnessConfig.director and HarnessConfig.defaultDirectorPolicy are mutually exclusive",
+    );
+  });
+
   test("throws when auditStore is provided without authorize", () => {
     const transport = makeMockTransport();
     const auditStore: AuditStore = {

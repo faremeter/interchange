@@ -61,8 +61,8 @@ export type HarnessConfig = {
   director?: ReactorDirector;
 
   /**
-   * Policy overrides for the default director. Ignored when a custom director is
-   * provided. Each field controls a specific decision point in the default
+   * Policy overrides for the default director. Mutually exclusive with
+   * `director`. Each field controls a specific decision point in the default
    * director's event handling loop.
    */
   defaultDirectorPolicy?: DefaultDirectorPolicy;
@@ -122,6 +122,14 @@ export function validateConfig(config: HarnessConfig): void {
   }
   if (config.source.baseURL.trim() === "") {
     throw new Error("HarnessConfig.source.baseURL must not be empty");
+  }
+  if (
+    config.director !== undefined &&
+    config.defaultDirectorPolicy !== undefined
+  ) {
+    throw new Error(
+      "HarnessConfig.director and HarnessConfig.defaultDirectorPolicy are mutually exclusive",
+    );
   }
   if (config.auditStore !== undefined && config.authorize === undefined) {
     throw new Error(
