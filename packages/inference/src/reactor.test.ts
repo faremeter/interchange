@@ -26,6 +26,7 @@ import type {
   PartialMessage,
   BeforeToolExtension,
   Compactor,
+  LastCycleSource,
 } from "@intx/types/runtime";
 
 import type { ReactorConfig, Reactor, ReactorEmittedEvent } from "./reactor";
@@ -39,6 +40,12 @@ import type { CorrelationValidator } from "./correlation";
 function emptyUsage(): TokenUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
 }
+
+const TEST_SOURCE: LastCycleSource = {
+  sourceId: "test-source",
+  provider: "test-provider",
+  model: "test-model",
+};
 
 function makeContextStore(turns: ConversationTurn[] = []): ContextStore {
   async function commit(
@@ -2312,7 +2319,7 @@ function makeInferenceRunner(
       const event: InferenceEvent = {
         type: "inference.done",
         seq: opts.nextSeq(),
-        data: { turn: result.turn, usage: result.usage },
+        data: { turn: result.turn, usage: result.usage, source: TEST_SOURCE },
       };
       yield event;
     } else {
@@ -3228,7 +3235,7 @@ function mockInferenceRunner(
     yield {
       type: "inference.done",
       seq: opts.nextSeq(),
-      data: { turn, usage },
+      data: { turn, usage, source: TEST_SOURCE },
     };
   };
 }
@@ -3374,6 +3381,7 @@ describe("createReactor — transform chain ordering and compact action", () => 
         data: {
           turn,
           usage: emptyUsage(),
+          source: TEST_SOURCE,
         },
       };
     };
@@ -3508,7 +3516,7 @@ describe("createReactor — transform chain ordering and compact action", () => 
       yield {
         type: "inference.done",
         seq: opts.nextSeq(),
-        data: { turn, usage: emptyUsage() },
+        data: { turn, usage: emptyUsage(), source: TEST_SOURCE },
       };
     };
 

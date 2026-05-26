@@ -486,3 +486,161 @@ describe("Dependencies — reflective exposure of HarnessId", () => {
     expect(Reflect.ownKeys(deps)).toContain(HarnessId);
   });
 });
+
+// ---------------------------------------------------------------------------
+// runInference — source-identity stamping on inference events
+//
+// The harness snapshots `{id, provider, model}` from the active source at
+// the top of the call and stamps that descriptor onto every inference.usage
+// and inference.done event for that call. The snapshot defends against
+// `applyInferenceSourceFields` (or any other in-place mutation of the
+// shared source object) firing between call start and inference.done: the
+// identity stamped onto the events must reflect the source that *began*
+// the call, not whatever the active source happens to be at done-time.
+// ---------------------------------------------------------------------------
+
+describe("runInference — source-identity stamping", () => {
+  test("emits LastCycleSource on inference.done matching the call-start source", async () => {
+    const deps: Dependencies = {
+      fetch: () =>
+        Promise.resolve(
+          new Response("", {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        ),
+    };
+    let seq = 0;
+    const events = await collect(
+      runInference({
+        turns: [userTurn("hi")],
+        source: SOURCE,
+        nextSeq: () => ++seq,
+        deps,
+      }),
+    );
+
+    const doneEvent = events.find((e) => e.type === "inference.done");
+    if (doneEvent === undefined) throw new Error("missing inference.done");
+    expect(doneEvent.data.source).toEqual({
+      sourceId: SOURCE.id,
+      provider: SOURCE.provider,
+      model: SOURCE.model,
+    });
+  });
+
+  test("two calls with different sources stamp their own descriptor", async () => {
+    const sourceA: InferenceSource = {
+      id: "anthropic:claude-A",
+      provider: "anthropic",
+      baseURL: "https://api.anthropic.com",
+      apiKey: "test",
+      model: "claude-A",
+    };
+    const sourceB: InferenceSource = {
+      id: "openai:gpt-B",
+      provider: "openai",
+      baseURL: "https://api.openai.test/v1",
+      apiKey: "test",
+      model: "gpt-B",
+    };
+    const deps: Dependencies = {
+      fetch: () =>
+        Promise.resolve(
+          new Response("", {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        ),
+    };
+
+    let seq = 0;
+    const eventsA = await collect(
+      runInference({
+        turns: [userTurn("call-A")],
+        source: sourceA,
+        nextSeq: () => ++seq,
+        deps,
+      }),
+    );
+    const doneA = eventsA.find((e) => e.type === "inference.done");
+    if (doneA === undefined) throw new Error("missing inference.done for A");
+    expect(doneA.data.source).toEqual({
+      sourceId: "anthropic:claude-A",
+      provider: "anthropic",
+      model: "claude-A",
+    });
+
+    seq = 0;
+    const eventsB = await collect(
+      runInference({
+        turns: [userTurn("call-B")],
+        source: sourceB,
+        nextSeq: () => ++seq,
+        deps,
+      }),
+    );
+    const doneB = eventsB.find((e) => e.type === "inference.done");
+    if (doneB === undefined) throw new Error("missing inference.done for B");
+    expect(doneB.data.source).toEqual({
+      sourceId: "openai:gpt-B",
+      provider: "openai",
+      model: "gpt-B",
+    });
+  });
+
+  test("hot-swap mid-call: inference.done reflects the call-start source, not the post-mutation fields", async () => {
+    // Simulate the harness's `setSource` pattern: a single InferenceSource
+    // object is mutated in place via `applyInferenceSourceFields`. If the
+    // call captured a reference to the live object instead of snapshotting
+    // its identifying fields, the descriptor on inference.done would
+    // observe whatever id/provider/model the swap mutated in.
+    const activeSource: InferenceSource = {
+      id: "anthropic:claude-pre",
+      provider: "anthropic",
+      baseURL: "https://api.anthropic.com",
+      apiKey: "test",
+      model: "claude-pre",
+    };
+
+    // Mutate the source between fetch invocation and stream consumption.
+    // The Response body resolves synchronously here, but the harness still
+    // reads `source.*` (model in the request body) on the way out; the
+    // post-mutation values must NOT show up on the inference.done event
+    // because the snapshot at call start already captured the pre-swap
+    // identity.
+    const deps: Dependencies = {
+      fetch: () => {
+        activeSource.id = "openai:gpt-post";
+        activeSource.provider = "openai";
+        activeSource.baseURL = "https://api.openai.test/v1";
+        activeSource.apiKey = "test-post";
+        activeSource.model = "gpt-post";
+        return Promise.resolve(
+          new Response("", {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        );
+      },
+    };
+
+    let seq = 0;
+    const events = await collect(
+      runInference({
+        turns: [userTurn("hi")],
+        source: activeSource,
+        nextSeq: () => ++seq,
+        deps,
+      }),
+    );
+
+    const doneEvent = events.find((e) => e.type === "inference.done");
+    if (doneEvent === undefined) throw new Error("missing inference.done");
+    expect(doneEvent.data.source).toEqual({
+      sourceId: "anthropic:claude-pre",
+      provider: "anthropic",
+      model: "claude-pre",
+    });
+  });
+});

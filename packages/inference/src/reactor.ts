@@ -418,6 +418,7 @@ export function createReactor(config: ReactorConfig): Reactor {
             stateManager.appendTurn(lastDone.data.turn);
             stateManager.accumUsage(lastDone.data.usage);
             stateManager.setLastCycleUsage(lastDone.data.usage);
+            stateManager.setLastCycleSource(lastDone.data.source);
           }
           cycleInferred = true;
           try {
@@ -438,6 +439,7 @@ export function createReactor(config: ReactorConfig): Reactor {
             type: "inference.done",
             turn: lastDone.data.turn,
             usage: lastDone.data.usage,
+            source: lastDone.data.source,
           });
           return;
         }

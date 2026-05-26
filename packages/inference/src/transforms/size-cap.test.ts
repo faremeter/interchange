@@ -23,6 +23,7 @@ function emptyState(): ReactorState {
       thinking: 0,
     },
     lastCycleUsage: null,
+    lastCycleSource: null,
     sessionId: "test-session",
   };
 }

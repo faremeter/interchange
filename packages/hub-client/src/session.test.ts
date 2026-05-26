@@ -1391,6 +1391,11 @@ describe("activity state machine", () => {
           cacheWrite: 0,
           thinking: 0,
         },
+        source: {
+          sourceId: "test-source",
+          provider: "test-provider",
+          model: "gpt-4",
+        },
       },
     });
     expect(session.activity).toBeNull();

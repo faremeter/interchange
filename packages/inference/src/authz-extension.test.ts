@@ -21,6 +21,7 @@ function makeState(): ReactorState {
     activeGates: [],
     tokenUsage: emptyUsage(),
     lastCycleUsage: null,
+    lastCycleSource: null,
   };
 }
 

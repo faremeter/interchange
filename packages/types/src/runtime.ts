@@ -606,6 +606,32 @@ export const TokenUsage = type({
 });
 export type TokenUsage = typeof TokenUsage.infer;
 
+/**
+ * Slim source descriptor stamped onto `inference.usage` / `inference.done`
+ * events and onto `ReactorState.lastCycleSource`.
+ *
+ * Carries enough identity for state-aware policies (cost gating, budget
+ * caps, governance triggers, audit) to attribute usage to a specific
+ * inference source without re-reading the live, mutable `InferenceSource`
+ * the harness owns.
+ *
+ * Deliberately a strict subset of `InferenceSource` — `apiKey` and
+ * `baseURL` are intentionally excluded. Credentials and endpoints must
+ * not leak to director-side policy code or to external event consumers.
+ * Any code path that needs the full source obtains it through the
+ * harness's source registry, not through this descriptor.
+ *
+ * `sourceId` aliases `InferenceSource.id` to disambiguate from message
+ * ids, turn ids, and session ids in director-side code where `id` alone
+ * would be ambiguous.
+ */
+export const LastCycleSource = type({
+  sourceId: "string",
+  provider: "string",
+  model: "string",
+});
+export type LastCycleSource = typeof LastCycleSource.infer;
+
 // ---------------------------------------------------------------------------
 // Internal Turn Format (INFERENCE.md § Message Format)
 // ---------------------------------------------------------------------------
@@ -1087,7 +1113,7 @@ export const InferenceEvent = type({
   .or({
     type: "'inference.usage'",
     seq: "number",
-    data: { usage: TokenUsage },
+    data: { usage: TokenUsage, source: LastCycleSource },
   })
   .or({
     type: "'inference.done'",
@@ -1095,6 +1121,7 @@ export const InferenceEvent = type({
     data: {
       turn: AssistantTurn,
       usage: TokenUsage,
+      source: LastCycleSource,
       "pacingDelayMs?": "number",
     },
   })
@@ -1305,12 +1332,17 @@ export type InferenceEvent =
   | {
       type: "inference.usage";
       seq: number;
-      data: { usage: TokenUsage };
+      data: { usage: TokenUsage; source: LastCycleSource };
     }
   | {
       type: "inference.done";
       seq: number;
-      data: { turn: AssistantTurn; usage: TokenUsage; pacingDelayMs?: number };
+      data: {
+        turn: AssistantTurn;
+        usage: TokenUsage;
+        source: LastCycleSource;
+        pacingDelayMs?: number;
+      };
     }
   | {
       type: "inference.error";
@@ -1438,11 +1470,20 @@ export type PendingOperation = {
 /**
  * Complete reactor state visible to the director decision function.
  *
- * `tokenUsage` is the cumulative usage across the session; `lastCycleUsage`
- * is the usage reported by the most recent inference call, or null if no
- * inference call has completed yet. The per-cycle value supports
- * compaction triggers that key off recent input cost rather than session
- * totals.
+ * `tokenUsage` is the cumulative usage across the session.
+ *
+ * `lastCycleUsage` and `lastCycleSource` describe the most recent
+ * *successful* inference call. They move together: both null before the
+ * first completion; every `inference.done` sets both atomically.
+ * `inference.error` does not clear either — the pair always reflects the
+ * last cycle that produced a well-defined turn and usage. The director's
+ * `afterInferenceDone` hook fires only on `inference.done`, so policy
+ * code never observes a torn or stale-vs-fresh window.
+ *
+ * The per-cycle values support compaction triggers that key off recent
+ * input cost rather than session totals, and state-aware policies (cost
+ * gating, budget caps, governance triggers) that need to attribute
+ * usage to the source that produced it.
  *
  * (INFERENCE.md § Agent Reactor › Director Decision Function)
  */
@@ -1453,6 +1494,7 @@ export type ReactorState = {
   activeGates: { gateId: string; type: GateType; timeoutAt: number }[];
   tokenUsage: TokenUsage;
   lastCycleUsage: TokenUsage | null;
+  lastCycleSource: LastCycleSource | null;
   sessionId: string;
 };
 
@@ -1538,7 +1580,12 @@ export type ReactorCapabilities = {
  */
 export type ReactorInboundEvent =
   | { type: "message.received"; message: InboundMessage }
-  | { type: "inference.done"; turn: AssistantTurn; usage: TokenUsage }
+  | {
+      type: "inference.done";
+      turn: AssistantTurn;
+      usage: TokenUsage;
+      source: LastCycleSource;
+    }
   | { type: "inference.error"; error: InferenceError; partial: PartialMessage }
   | { type: "tool.done"; result: ToolResult }
   | {

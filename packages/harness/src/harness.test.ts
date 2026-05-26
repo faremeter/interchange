@@ -29,6 +29,7 @@ import type {
   ToolCall,
   ToolResult,
   InferenceEvent,
+  LastCycleSource,
 } from "@intx/types/runtime";
 import type { AuditRecord, ErrorRecord } from "@intx/types/audit";
 import type { AuthzCallResult } from "@intx/inference";
@@ -52,6 +53,12 @@ import type { HarnessConfig } from "./config";
 function emptyUsage(): TokenUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
 }
+
+const TEST_SOURCE: LastCycleSource = {
+  sourceId: "test-source",
+  provider: "test-provider",
+  model: "test-model",
+};
 
 function makeContextStore(
   opts: { blobs?: Map<string, Uint8Array> } = {},
@@ -1008,6 +1015,7 @@ describe("Default director", () => {
       activeGates: [],
       tokenUsage: emptyUsage(),
       lastCycleUsage: null,
+      lastCycleSource: null,
       sessionId: "test-session",
     };
   }
@@ -1049,6 +1057,7 @@ describe("Default director", () => {
         timestamp: 1000,
       },
       usage: emptyUsage(),
+      source: TEST_SOURCE,
     };
 
     const actions = await director.decide(event, state, caps);
@@ -1071,6 +1080,7 @@ describe("Default director", () => {
         timestamp: 1000,
       },
       usage: emptyUsage(),
+      source: TEST_SOURCE,
     };
 
     const actions = await director.decide(doneEvent, state, caps);
@@ -1156,6 +1166,7 @@ describe("Default director", () => {
         timestamp: 1000,
       },
       usage: emptyUsage(),
+      source: TEST_SOURCE,
     };
 
     const actions = await director.decide(event, state, caps);
@@ -1187,6 +1198,7 @@ describe("Default director", () => {
         timestamp: 1000,
       },
       usage: emptyUsage(),
+      source: TEST_SOURCE,
     };
 
     const actions = await director.decide(event, state, caps);
@@ -1214,6 +1226,7 @@ describe("Default director", () => {
         timestamp: 1000,
       },
       usage: emptyUsage(),
+      source: TEST_SOURCE,
     };
 
     const actions = await director.decide(event, state, caps);
@@ -1240,6 +1253,7 @@ describe("Default director", () => {
         timestamp: 1000,
       },
       usage: emptyUsage(),
+      source: TEST_SOURCE,
     };
 
     const actions = await director.decide(event, state, caps);
@@ -1295,6 +1309,7 @@ describe("Default director", () => {
         timestamp: 1000,
       },
       usage: emptyUsage(),
+      source: TEST_SOURCE,
     };
     await director.decide(inferDone, state, caps);
 

@@ -1,9 +1,19 @@
 import { describe, expect, test } from "bun:test";
 
-import type { ConversationTurn, InferenceEvent } from "@intx/types/runtime";
+import type {
+  ConversationTurn,
+  InferenceEvent,
+  LastCycleSource,
+} from "@intx/types/runtime";
 
 import { ProtocolMismatchError } from "../errors";
 import { createAnthropicAdapter } from "./anthropic";
+
+const TEST_SOURCE: LastCycleSource = {
+  sourceId: "test-anthropic",
+  provider: "anthropic",
+  model: "test-anthropic-model",
+};
 
 // The parser is exercised through the public adapter rather than imported
 // directly. parseResponse is intentionally not exported — the adapter
@@ -79,7 +89,7 @@ function pickFirstToolCallDelta(
 
 describe("Anthropic parser — index propagation on delta events", () => {
   test("text_delta carries the SSE block index forward as data.index", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const events = parse(adapter, {
       type: "content_block_delta",
       index: 1,
@@ -92,7 +102,7 @@ describe("Anthropic parser — index propagation on delta events", () => {
   });
 
   test("thinking_delta carries the SSE block index forward as data.index", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const events = parse(adapter, {
       type: "content_block_delta",
       index: 2,
@@ -105,7 +115,7 @@ describe("Anthropic parser — index propagation on delta events", () => {
   });
 
   test("signature_delta carries the SSE block index forward as data.index", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const events = parse(adapter, {
       type: "content_block_delta",
       index: 3,
@@ -118,7 +128,7 @@ describe("Anthropic parser — index propagation on delta events", () => {
   });
 
   test("tool_call.start carries the SSE block index forward as data.index", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const events = parse(adapter, {
       type: "content_block_start",
       index: 4,
@@ -131,7 +141,7 @@ describe("Anthropic parser — index propagation on delta events", () => {
   });
 
   test("tool_call.delta carries the SSE block index forward as data.index", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     parse(adapter, {
       type: "content_block_start",
       index: 5,
@@ -156,7 +166,7 @@ describe("Anthropic parser — multi-tool callId routing across indices", () => 
   // index. Collapsing the indices into one slot would route the second
   // tool's argument fragments to the first tool's callId.
   test("input_json_deltas at distinct indices resolve to distinct callIds", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     parse(adapter, {
       type: "content_block_start",
       index: 0,
@@ -197,7 +207,7 @@ describe("Anthropic parser — required-index schema enforcement", () => {
   // load-bearing on the index being real, not synthesized.
 
   test("content_block_delta without index throws ProtocolMismatchError", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     let thrown: unknown;
     try {
       parse(adapter, {
@@ -214,7 +224,7 @@ describe("Anthropic parser — required-index schema enforcement", () => {
   });
 
   test("content_block_start without index throws ProtocolMismatchError", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     let thrown: unknown;
     try {
       parse(adapter, {
@@ -228,7 +238,7 @@ describe("Anthropic parser — required-index schema enforcement", () => {
   });
 
   test("content_block_stop without index throws ProtocolMismatchError", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     let thrown: unknown;
     try {
       parse(adapter, { type: "content_block_stop" });
@@ -271,7 +281,7 @@ function pickFirstThinkingRedacted(
 
 describe("Anthropic parser — redacted_thinking content_block_start", () => {
   test("emits inference.thinking.redacted carrying the data and source index", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const events = parse(adapter, {
       type: "content_block_start",
       index: 0,
@@ -288,7 +298,7 @@ describe("Anthropic parser — redacted_thinking content_block_start", () => {
   });
 
   test("preserves the data verbatim — no normalization or transformation", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     // The data is an opaque blob; any mutation breaks the round-trip.
     // Use a string with characters that an over-eager normalizer would
     // touch (newlines, whitespace, base64 padding).
@@ -303,7 +313,7 @@ describe("Anthropic parser — redacted_thinking content_block_start", () => {
   });
 
   test("missing `data` field throws ProtocolMismatchError naming the field", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     let thrown: unknown;
     try {
       parse(adapter, {
@@ -331,7 +341,7 @@ describe("Anthropic adapter — redacted_thinking parser-to-builder round-trip",
   // that carries the same bytes verbatim. That round-trip is the
   // invariant Anthropic requires on every follow-up turn.
   test("data survives parse → reconstruct → buildRequest unchanged", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const events = parse(adapter, {
       type: "content_block_start",
       index: 0,
@@ -377,7 +387,7 @@ describe("Anthropic parser — citations_delta to inference.citation", () => {
     // Anthropic's web_search citations carry url + title + cited_text +
     // encrypted_index. The encrypted_index has no echo-back target in
     // CitationBlock today and is intentionally dropped at the adapter.
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const events = parse(adapter, {
       type: "content_block_delta",
       index: 3,
@@ -412,7 +422,7 @@ describe("Anthropic parser — citations_delta to inference.citation", () => {
     // Catches a regression where the parser caches the most recent
     // content_block_delta.index across subsequent citation events
     // instead of reading it fresh for each.
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const events = [
       ...parse(adapter, {
         type: "content_block_delta",
@@ -453,7 +463,7 @@ describe("Anthropic parser — citations_delta to inference.citation", () => {
   });
 
   test("page_location maps to location.kind=page with start/end page numbers", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const events = parse(adapter, {
       type: "content_block_delta",
       index: 0,
@@ -481,7 +491,7 @@ describe("Anthropic parser — citations_delta to inference.citation", () => {
   });
 
   test("char_location maps to location.kind=char with character offsets", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const events = parse(adapter, {
       type: "content_block_delta",
       index: 1,
@@ -507,7 +517,7 @@ describe("Anthropic parser — citations_delta to inference.citation", () => {
   });
 
   test("content_block_location maps to location.kind=content-block", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const events = parse(adapter, {
       type: "content_block_delta",
       index: 0,
@@ -533,7 +543,7 @@ describe("Anthropic parser — citations_delta to inference.citation", () => {
   });
 
   test("unrecognized citation variant throws ProtocolMismatchError naming the variant", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     let thrown: unknown;
     try {
       parse(adapter, {
@@ -558,7 +568,7 @@ describe("Anthropic parser — citations_delta to inference.citation", () => {
   });
 
   test("citations_delta missing citation payload throws ProtocolMismatchError", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     let thrown: unknown;
     try {
       parse(adapter, {
@@ -581,7 +591,7 @@ describe("Anthropic parser — citations_delta to inference.citation", () => {
     // — runtime.ts). Surfacing a missing wire field as a thrown error
     // is the load-bearing alternative to coalescing to an empty
     // string and silently emitting a content-free citation.
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     let thrown: unknown;
     try {
       parse(adapter, {
@@ -614,7 +624,7 @@ describe("Anthropic parser — citations_delta to inference.citation", () => {
     // the parser-emitted event stream must preserve the wire order
     // exactly. Feed a mixed sequence and assert the emitted events
     // come out in the same order they went in.
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const events: InferenceEvent[] = [];
     events.push(
       ...parse(adapter, {
@@ -685,7 +695,7 @@ describe("Anthropic parser — citations_delta to inference.citation", () => {
   });
 
   test("page_location missing start_page_number throws ProtocolMismatchError", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     let thrown: unknown;
     try {
       parse(adapter, {
@@ -721,7 +731,7 @@ describe("Anthropic adapter — responseFormat boundary", () => {
   ];
 
   test("omitted responseFormat builds a request without throwing", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const req = adapter.buildRequest(conversation, "claude-sonnet-4", {});
     expect(req.url).toBe("/v1/messages");
   });
@@ -730,7 +740,7 @@ describe("Anthropic adapter — responseFormat boundary", () => {
     // Free-form text is Anthropic's default; the option is a no-op
     // here rather than a throw so the cross-provider call site can
     // pass `{ kind: "text" }` uniformly without conditional logic.
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const req = adapter.buildRequest(conversation, "claude-sonnet-4", {
       responseFormat: { kind: "text" },
     });
@@ -738,7 +748,7 @@ describe("Anthropic adapter — responseFormat boundary", () => {
   });
 
   test("responseFormat.kind=json throws at the marshaling boundary", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     expect(() =>
       adapter.buildRequest(conversation, "claude-sonnet-4", {
         responseFormat: { kind: "json" },
@@ -747,7 +757,7 @@ describe("Anthropic adapter — responseFormat boundary", () => {
   });
 
   test("responseFormat.kind=json-schema throws and names the kind", () => {
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     expect(() =>
       adapter.buildRequest(conversation, "claude-sonnet-4", {
         responseFormat: {
