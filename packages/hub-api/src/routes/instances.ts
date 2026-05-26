@@ -1501,7 +1501,34 @@ export function createInstanceRoutes({
         .limit(100);
 
       const priorIds = priorMail.map((m) => `<${m.id}@${tenant.domain}>`);
-      const lastId = priorIds[priorIds.length - 1];
+      const lastIdFromSession = priorIds[priorIds.length - 1];
+
+      // Threading-header policy:
+      //   1. Session history (the user's prior mail to this instance)
+      //      wins whenever it exists. inReplyTo points at the user's
+      //      most recent message, references lists the chain.
+      //   2. With no session history, fall back to the agent's active
+      //      connector thread. The connector is one durable shared
+      //      thread per agent — anyone with a session joins whatever
+      //      thread is active. Stamp inReplyTo and references from the
+      //      cached state so the harness routes the message as
+      //      `continue` and adds the user to the participant set.
+      //   3. With no session history and no active connector, send
+      //      threading-less mail. The harness routes it as `start`,
+      //      establishing this user as the first participant on a new
+      //      thread.
+      let inReplyTo: string | undefined;
+      let references: string[] | undefined;
+      if (lastIdFromSession !== undefined) {
+        inReplyTo = lastIdFromSession;
+        references = priorIds;
+      } else {
+        const connectorState = sidecarRouter.getConnectorState(row.address);
+        if (connectorState !== null) {
+          inReplyTo = connectorState.lastMessageId;
+          references = [connectorState.threadRoot];
+        }
+      }
 
       const cryptoProvider = await getInstanceCryptoProvider(instanceId);
 
@@ -1513,8 +1540,10 @@ export function createInstanceRoutes({
           messageId: mimeMessageId,
           date: now,
           content: body.content,
-          ...(lastId !== undefined ? { inReplyTo: lastId } : {}),
-          ...(priorIds.length > 0 ? { references: priorIds } : {}),
+          ...(inReplyTo !== undefined ? { inReplyTo } : {}),
+          ...(references !== undefined && references.length > 0
+            ? { references }
+            : {}),
           sessionId: row.sessionId,
           tenantId: tenant.id,
           cryptoProvider,

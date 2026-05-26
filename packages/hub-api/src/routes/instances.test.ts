@@ -3,6 +3,7 @@ import { describe, test, expect } from "bun:test";
 import { createInMemoryGrantStore } from "@intx/authz";
 import type { GrantRule } from "@intx/types/authz";
 import type { SessionStatus } from "@intx/types";
+import type { ConnectorThreadState } from "@intx/types/runtime";
 
 import { createApp } from "../app";
 import {
@@ -98,6 +99,11 @@ type MockDBOpts = {
   instance?: TestInstance | undefined;
   agent?: typeof testAgent | undefined;
   offerings?: Record<string, unknown>[] | undefined;
+  /** Rows returned for the priorMail query used by POST /mail.
+   * Defaults to `[]` (no prior session mail). */
+  sessionMail?: { id: string }[];
+  /** Captured rows passed to db.insert(sessionMail).values(...). */
+  inserts?: Record<string, unknown>[];
 };
 
 function notImplemented(path: string) {
@@ -107,8 +113,14 @@ function notImplemented(path: string) {
 }
 
 function createMockDB(opts: MockDBOpts) {
-  // Builder chain for db.select().from().innerJoin().where().limit()
-  // Simulates the instance+agent join used by the offerings handler.
+  const sessionMailRows = opts.sessionMail ?? [];
+
+  // Builder chain that handles two shapes:
+  //   1. .from().innerJoin().where().{limit | orderBy().limit()} — the
+  //      instance+agent join used by the offerings handler.
+  //   2. .from().where().orderBy().limit() — the priorMail query used by
+  //      POST /:instanceId/mail.
+  // The mock distinguishes them by whether innerJoin is on the path.
   function selectChain() {
     const joinedRows =
       opts.instance && opts.agent
@@ -117,6 +129,7 @@ function createMockDB(opts: MockDBOpts) {
 
     return {
       from: () => ({
+        // join-shaped chain
         innerJoin: () => ({
           where: () => ({
             limit: () => Promise.resolve(joinedRows),
@@ -125,9 +138,18 @@ function createMockDB(opts: MockDBOpts) {
             }),
           }),
         }),
+        // non-join chain (priorMail)
+        where: () => ({
+          orderBy: (..._args: unknown[]) => ({
+            limit: () => Promise.resolve(sessionMailRows),
+          }),
+          limit: () => Promise.resolve(sessionMailRows),
+        }),
       }),
     };
   }
+
+  const insertCapture = opts.inserts;
 
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
   return {
@@ -150,6 +172,14 @@ function createMockDB(opts: MockDBOpts) {
       },
     },
     select: selectChain,
+    insert: () => ({
+      values: (row: Record<string, unknown>) => {
+        if (insertCapture !== undefined) {
+          insertCapture.push(row);
+        }
+        return Promise.resolve();
+      },
+    }),
   } as unknown as Parameters<typeof createApp>[0]["db"];
 }
 
@@ -177,6 +207,7 @@ function createMockGetSession(userId: string): GetSession {
 
 function createMockSidecarRouter(
   routableAddresses: string[] = [],
+  connectorStates = new Map<string, ConnectorThreadState | null>(),
 ): SidecarRouter {
   function notImpl(name: string): never {
     throw new Error(`mock: sidecarRouter.${name} not implemented`);
@@ -222,10 +253,13 @@ function createMockSidecarRouter(
       return notImpl("subscribeAgent");
     },
     dispatchAgentEvent(_addr, _event) {
-      notImpl("dispatchAgentEvent");
+      // No-op default: many routes dispatch events but the tests don't
+      // assert on them. Override at the test boundary if assertion is
+      // needed.
     },
     getConnectedSidecars: () => [],
     getRoutableAddresses: () => routableAddresses,
+    getConnectorState: (addr) => connectorStates.get(addr) ?? null,
     events: createSidecarEmitter(),
   };
 }
@@ -266,6 +300,8 @@ type TestAppOpts = {
   db?: MockDBOpts;
   grants?: GrantRule[];
   routableAddresses?: string[];
+  connectorStates?: Map<string, ConnectorThreadState | null>;
+  sessionService?: SessionService;
   collectorStatuses?: Map<string, SessionStatus>;
 };
 
@@ -284,8 +320,11 @@ function createTestApp(opts: TestAppOpts = {}) {
     authHandler: () => new Response("", { status: 404 }),
     db,
     grantStore: createInMemoryGrantStore(opts.grants ?? [makeGrant()]),
-    sidecarRouter: createMockSidecarRouter(opts.routableAddresses),
-    sessionService: createMockSessionService(),
+    sidecarRouter: createMockSidecarRouter(
+      opts.routableAddresses,
+      opts.connectorStates,
+    ),
+    sessionService: opts.sessionService ?? createMockSessionService(),
     eventCollectors: createMockEventCollectors(opts.collectorStatuses),
   });
 }
@@ -568,5 +607,155 @@ describe("GET /agents/instances/blobs/:blobId", () => {
     expect(res.status).toBe(400);
     const body: unknown = await res.json();
     expect(body).toMatchObject({ error: { code: "bad_request" } });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /:instanceId/mail — threading-header policy
+// ---------------------------------------------------------------------------
+
+describe("POST /agents/instances/:instanceId/mail", () => {
+  // The user's bare addr-spec is `${principal.refId}@${tenant.domain}`.
+  const USER_ADDR = `${USER_ID}@${testTenant.domain}`;
+
+  function makeMailGrant(): GrantRule {
+    return makeGrant({ resource: "instance:*", action: "write" });
+  }
+
+  type CapturedSendArgs = {
+    inReplyTo?: string;
+    references?: string[];
+  };
+
+  function captureSendUserMessage(): {
+    service: SessionService;
+    captured: CapturedSendArgs[];
+  } {
+    const captured: CapturedSendArgs[] = [];
+    const service: SessionService = {
+      launchSession() {
+        throw new Error("not implemented");
+      },
+      endSession() {
+        throw new Error("not implemented");
+      },
+      sendUserMessage(params) {
+        captured.push({
+          ...(params.inReplyTo !== undefined
+            ? { inReplyTo: params.inReplyTo }
+            : {}),
+          ...(params.references !== undefined
+            ? { references: params.references }
+            : {}),
+        });
+        return Promise.resolve(new Uint8Array([1, 2, 3]));
+      },
+    };
+    return { service, captured };
+  }
+
+  async function postMail(app: ReturnType<typeof createTestApp>) {
+    return app.request(`${instanceURL()}/mail`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "hello agent" }),
+    });
+  }
+
+  test("no active connector → no threading headers", async () => {
+    const { service, captured } = captureSendUserMessage();
+    const app = createTestApp({
+      grants: [makeMailGrant()],
+      sessionService: service,
+      // connectorStates default empty → getConnectorState returns null
+    });
+
+    const res = await postMail(app);
+    expect(res.status).toBe(201);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.inReplyTo).toBeUndefined();
+    expect(captured[0]?.references).toBeUndefined();
+  });
+
+  test("active connector started by the same user → user continues the thread", async () => {
+    const { service, captured } = captureSendUserMessage();
+    const connectorStates = new Map<string, ConnectorThreadState | null>();
+    connectorStates.set(ADDRESS, {
+      threadRoot: "<root@example.com>",
+      lastMessageId: "<last@example.com>",
+      replyTo: USER_ADDR,
+      cc: [],
+    });
+
+    const app = createTestApp({
+      grants: [makeMailGrant()],
+      sessionService: service,
+      connectorStates,
+    });
+
+    const res = await postMail(app);
+    expect(res.status).toBe(201);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.inReplyTo).toBe("<last@example.com>");
+    expect(captured[0]?.references).toEqual(["<root@example.com>"]);
+  });
+
+  test("active connector started by another peer → user joins the same thread", async () => {
+    // The connector is one durable shared thread per agent. A user
+    // opening a session against an agent whose active thread was
+    // started by another peer (a parent agent that launched this one,
+    // a peer agent, a prior session by anyone else) joins that thread
+    // — the agent's next connector.reply will then CC the prior
+    // speaker alongside the user.
+    const { service, captured } = captureSendUserMessage();
+    const connectorStates = new Map<string, ConnectorThreadState | null>();
+    connectorStates.set(ADDRESS, {
+      threadRoot: "<root@example.com>",
+      lastMessageId: "<last@example.com>",
+      replyTo: "someone-else@example.com",
+      cc: [],
+    });
+
+    const app = createTestApp({
+      grants: [makeMailGrant()],
+      sessionService: service,
+      connectorStates,
+    });
+
+    const res = await postMail(app);
+    expect(res.status).toBe(201);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.inReplyTo).toBe("<last@example.com>");
+    expect(captured[0]?.references).toEqual(["<root@example.com>"]);
+  });
+
+  test("session history takes precedence over the connector cache", async () => {
+    const { service, captured } = captureSendUserMessage();
+    const connectorStates = new Map<string, ConnectorThreadState | null>();
+    connectorStates.set(ADDRESS, {
+      threadRoot: "<root@example.com>",
+      lastMessageId: "<connector-last@example.com>",
+      replyTo: USER_ADDR,
+      cc: [],
+    });
+
+    const app = createTestApp({
+      grants: [makeMailGrant()],
+      sessionService: service,
+      connectorStates,
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        instance: testInstance,
+        agent: testAgent,
+        sessionMail: [{ id: "prior-1" }],
+      },
+    });
+
+    const res = await postMail(app);
+    expect(res.status).toBe(201);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.inReplyTo).toBe(`<prior-1@${testTenant.domain}>`);
+    expect(captured[0]?.references).toEqual([`<prior-1@${testTenant.domain}>`]);
   });
 });
