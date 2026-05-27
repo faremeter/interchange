@@ -33,6 +33,11 @@ export {
 export { transformMessages, createIDNormalizer } from "./transform";
 export type { TransformOptions, IDNormalizer } from "./transform";
 export { createDefaultRetryPolicy } from "./retry-policy";
+export type {
+  RetryPolicy,
+  RetrySituation,
+  RetryDecision,
+} from "@intx/types/runtime";
 export { createAnthropicAdapter } from "./providers/anthropic";
 export { createOpenAIAdapter } from "./providers/openai";
 export { createGoogleGenAIAdapter } from "./providers/google-genai";
