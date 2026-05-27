@@ -70,6 +70,10 @@ The harness is the shared infrastructure that all provider adapters build on:
 
 Provider adapters never touch SSE parsing, connection lifecycle, abort handling, or event emission. They translate request/response shapes. The harness does everything else.
 
+`runInference` wraps each call in a retry layer that buffers an attempt's events until the attempt terminates with `inference.done` or `inference.error`. On `inference.error` the wrapper consults a `RetryPolicy` (see §Retry Behavior); on a retry decision the wrapper discards the failed attempt's buffered events, emits one `inference.retry` event between attempts, and re-issues the underlying HTTP request after the policy-chosen delay. On `inference.done` or an abort decision the buffered events flush to the caller in order. The buffer is per-call and bounded by the size of one attempt's event stream.
+
+The buffer-and-flush model guarantees the caller sees a single clean event stream — exactly one `inference.start`, no orphaned partial deltas, no leaked `inference.error`s from attempts the policy chose to retry. The cost is that no events reach the caller until the wrapper knows the attempt's terminal shape: a consumer that uses `for await ... break` to abandon a call mid-stream will not observe partial deltas because the wrapper holds them in the buffer until commit. Consumers that need token-by-token partials must pin a custom non-buffering wrapper at the inference layer — no streaming-partials emission API exists today.
+
 ## Event Protocol
 
 All inference activity — streaming tokens, tool execution, reactor state changes — emits events on a single protocol. This protocol is what session channel subscribers receive. There is no internal event format.
@@ -87,6 +91,7 @@ inference.tool_call.end   — Tool call complete (full args)
 inference.usage           — Token accounting for this call (fires before inference.done)
 inference.done            — Model call completed normally (carries final message and usage summary)
 inference.error           — Model call failed (carries error classification and partial message)
+inference.retry           — Retry-policy decision between attempts (carries failed attempt #, chosen delayMs, previous error)
 
 tool.start                — Tool execution begins
 tool.update               — Partial tool output (streaming tools)
@@ -780,7 +785,21 @@ The classifier inspects HTTP status codes, error response bodies, and provider-s
 
 ### Retry Behavior
 
-Retryable errors use exponential backoff: `baseDelay * 2^attempt`. The director controls maximum attempts and total budget. Failed attempts are removed from the message history before retrying — the model should not see its own error responses.
+Mechanical retry of a transient failure (the same HTTP call re-issued with the identical body) lives in the inference layer's `runInference` wrapper, not in the director. The wrapper consults a per-call `RetryPolicy` on every `inference.error`; the director sees an error only after the policy has decided the call is not worth re-issuing. This keeps the boundary clear: the inference layer handles transport flakes (TCP resets, 5xx, rate-limit jitter, half-streamed connection drops); the agent layer handles semantic recovery (continuation prompts, role-specific escalation, model swaps).
+
+`InferenceOptions.retryPolicy?: RetryPolicy` overrides the default; when omitted the harness applies `createDefaultRetryPolicy()`. The policy receives a `RetrySituation` carrying the classified `InferenceError`, a 1-indexed attempt counter (the first failure has `attempt: 1`), and `elapsedMs` measured from the first attempt against the harness `Scheduler`. The policy returns `{ kind: "abort" }` to surface the error or `{ kind: "retry", delayMs }` to re-issue after waiting `delayMs`. Async policies are supported.
+
+The default policy's per-category behaviour:
+
+- **`credential_failure`, `context_overflow`, `fatal`, `aborted`, `protocol_mismatch`** — always abort. These categories describe a deterministic per-call failure that re-issuing the identical request cannot resolve.
+- **`retryable`, `timeout`** — up to 3 attempts total. 500 ms before attempt 2, then 1000 ms before attempt 3, then abort.
+- **`quota_exhausted`** — up to 3 attempts total. The delay is taken from the error's `retryAfterMs` when the provider returned one (the server told us when it would be ready); otherwise a flat 1000 ms baseline that does not grow across retries.
+
+The retry delay is awaited against `Dependencies.scheduler.setTimeout`; the caller-supplied `signal` short-circuits the delay so an abort during the wait wakes the wrapper immediately and the next attempt surfaces `inference.error` of category `"aborted"` from its entry-time signal check. Virtual-clock test harnesses advance the delay without sleeping real wall-clock.
+
+Between attempts the wrapper emits one `inference.retry` event carrying the failed attempt's number, the policy-chosen `delayMs`, and the classified error. Consumers that want telemetry on retry frequency or tuning data subscribe to this event; consumers that do not care can ignore it.
+
+If a custom policy throws synchronously or its returned Promise rejects, the wrapper treats the failure as `{ kind: "abort" }` and surfaces the original `inference.error` to the caller. The policy's own exception is logged at `warn` (so a misbehaving custom policy is not invisible) and dropped — the inference error is what the caller needs to act on, not the bug in the policy callback.
 
 ## Per-Call Timeouts
 
