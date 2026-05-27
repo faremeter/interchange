@@ -68,12 +68,6 @@ async function collect(
   return out;
 }
 
-function startConsumer(events: AsyncIterable<InferenceEvent>): {
-  done: Promise<InferenceEvent[]>;
-} {
-  return { done: collect(events) };
-}
-
 function findError(events: InferenceEvent[]): InferenceError | undefined {
   const errorEvent = events.find((e) => e.type === "inference.error");
   if (errorEvent?.type !== "inference.error") return undefined;
@@ -117,7 +111,7 @@ describe("runInference — default retry policy", () => {
       registerRetryable5xx(harness, 3);
 
       let seq = 0;
-      const consumer = startConsumer(
+      const eventsP = collect(
         runInference({
           turns: makeTurns(),
           source: SOURCE,
@@ -130,7 +124,7 @@ describe("runInference — default retry policy", () => {
       await harness.run();
       const after = harness.clock.now();
 
-      const events = await consumer.done;
+      const events = await eventsP;
       const retries = retryEvents(events);
       expect(retries).toHaveLength(2);
       expect(retries[0]?.attempt).toBe(1);
@@ -166,7 +160,7 @@ describe("runInference — default retry policy", () => {
         stream.closeAt(2);
 
         let seq = 0;
-        const consumer = startConsumer(
+        const eventsP = collect(
           runInference({
             turns: makeTurns(),
             source: SOURCE,
@@ -175,7 +169,7 @@ describe("runInference — default retry policy", () => {
           }),
         );
         await harness.run();
-        const events = await consumer.done;
+        const events = await eventsP;
 
         expect(retryEvents(events)).toHaveLength(0);
         expect(findError(events)?.category).toBe(expectedCategory);
@@ -197,7 +191,7 @@ describe("runInference — default retry policy", () => {
       stream.closeAt(2);
 
       let seq = 0;
-      const consumer = startConsumer(
+      const eventsP = collect(
         runInference({
           turns: makeTurns(),
           source: SOURCE,
@@ -206,7 +200,7 @@ describe("runInference — default retry policy", () => {
         }),
       );
       await harness.run();
-      const events = await consumer.done;
+      const events = await eventsP;
       expect(retryEvents(events)).toHaveLength(0);
       expect(findError(events)?.category).toBe("context_overflow");
     });
@@ -218,7 +212,7 @@ describe("runInference — default retry policy", () => {
       controller.abort();
 
       let seq = 0;
-      const consumer = startConsumer(
+      const eventsP = collect(
         runInference({
           turns: makeTurns(),
           source: SOURCE,
@@ -228,7 +222,7 @@ describe("runInference — default retry policy", () => {
         }),
       );
       await harness.run();
-      const events = await consumer.done;
+      const events = await eventsP;
       expect(retryEvents(events)).toHaveLength(0);
       expect(findError(events)?.category).toBe("aborted");
     });
@@ -247,7 +241,7 @@ describe("runInference — custom retry policy", () => {
       };
 
       let seq = 0;
-      const consumer = startConsumer(
+      const eventsP = collect(
         runInference({
           turns: makeTurns(),
           source: SOURCE,
@@ -257,7 +251,7 @@ describe("runInference — custom retry policy", () => {
         }),
       );
       await harness.run();
-      const events = await consumer.done;
+      const events = await eventsP;
 
       expect(policyCalls).toBe(1);
       expect(retryEvents(events)).toHaveLength(0);
@@ -292,7 +286,7 @@ describe("runInference — custom retry policy", () => {
       const policy: RetryPolicy = () => ({ kind: "retry", delayMs: 0 });
 
       let seq = 0;
-      const consumer = startConsumer(
+      const eventsP = collect(
         runInference({
           turns: makeTurns(),
           source: SOURCE,
@@ -302,7 +296,7 @@ describe("runInference — custom retry policy", () => {
         }),
       );
       await harness.run();
-      const events = await consumer.done;
+      const events = await eventsP;
 
       // Single inference.start, exactly two inference.retry events,
       // a successful tail (no inference.error visible to caller).
@@ -334,7 +328,7 @@ describe("runInference — custom retry policy", () => {
       };
 
       let seq = 0;
-      const consumer = startConsumer(
+      const eventsP = collect(
         runInference({
           turns: makeTurns(),
           source: SOURCE,
@@ -344,7 +338,7 @@ describe("runInference — custom retry policy", () => {
         }),
       );
       await harness.run();
-      const events = await consumer.done;
+      const events = await eventsP;
 
       expect(seen).toEqual([1, 2]);
       expect(retryEvents(events)).toHaveLength(1);
@@ -391,7 +385,7 @@ describe("runInference — quota_exhausted handling", () => {
 
       const before = harness.clock.now();
       let seq = 0;
-      const consumer = startConsumer(
+      const eventsP = collect(
         runInference({
           turns: makeTurns(),
           source: SOURCE,
@@ -401,7 +395,7 @@ describe("runInference — quota_exhausted handling", () => {
       );
       await harness.run();
       const after = harness.clock.now();
-      const events = await consumer.done;
+      const events = await eventsP;
 
       const retries = retryEvents(events);
       expect(retries).toHaveLength(2);
@@ -431,7 +425,7 @@ describe("runInference — quota_exhausted handling", () => {
       }
 
       let seq = 0;
-      const consumer = startConsumer(
+      const eventsP = collect(
         runInference({
           turns: makeTurns(),
           source: SOURCE,
@@ -440,7 +434,7 @@ describe("runInference — quota_exhausted handling", () => {
         }),
       );
       await harness.run();
-      const events = await consumer.done;
+      const events = await eventsP;
       const retries = retryEvents(events);
       expect(retries).toHaveLength(2);
       expect(retries[0]?.delayMs).toBe(1000);
@@ -455,7 +449,7 @@ describe("runInference — inference.retry event payload", () => {
       registerRetryable5xx(harness, 3);
 
       let seq = 0;
-      const consumer = startConsumer(
+      const eventsP = collect(
         runInference({
           turns: makeTurns(),
           source: SOURCE,
@@ -464,7 +458,7 @@ describe("runInference — inference.retry event payload", () => {
         }),
       );
       await harness.run();
-      const events = await consumer.done;
+      const events = await eventsP;
       const retries = retryEvents(events);
       expect(retries).toHaveLength(2);
       for (const r of retries) {
@@ -486,7 +480,7 @@ describe("runInference — policy failure handling", () => {
       };
 
       let seq = 0;
-      const consumer = startConsumer(
+      const eventsP = collect(
         runInference({
           turns: makeTurns(),
           source: SOURCE,
@@ -496,7 +490,7 @@ describe("runInference — policy failure handling", () => {
         }),
       );
       await harness.run();
-      const events = await consumer.done;
+      const events = await eventsP;
 
       // No retry was emitted, the original retryable error surfaces,
       // and no `policy boom` text leaks through.
@@ -514,7 +508,7 @@ describe("runInference — policy failure handling", () => {
         Promise.reject(new Error("policy rejected"));
 
       let seq = 0;
-      const consumer = startConsumer(
+      const eventsP = collect(
         runInference({
           turns: makeTurns(),
           source: SOURCE,
@@ -524,7 +518,7 @@ describe("runInference — policy failure handling", () => {
         }),
       );
       await harness.run();
-      const events = await consumer.done;
+      const events = await eventsP;
 
       expect(retryEvents(events)).toHaveLength(0);
       const err = findError(events);
@@ -543,7 +537,7 @@ describe("runInference — policy failure handling", () => {
       return await withHarness(async (harness) => {
         registerRetryable5xx(harness, 1);
         let seq = 0;
-        const consumer = startConsumer(
+        const eventsP = collect(
           runInference({
             turns: makeTurns(),
             source: SOURCE,
@@ -553,7 +547,7 @@ describe("runInference — policy failure handling", () => {
           }),
         );
         await harness.run();
-        await consumer.done;
+        await eventsP;
         return seq;
       });
     }
@@ -635,7 +629,7 @@ describe("runInference — retry delay scheduling", () => {
 
       const before = harness.clock.now();
       let seq = 0;
-      const consumer = startConsumer(
+      const eventsP = collect(
         runInference({
           turns: makeTurns(),
           source: SOURCE,
@@ -646,7 +640,7 @@ describe("runInference — retry delay scheduling", () => {
       );
       await harness.run();
       const after = harness.clock.now();
-      const events = await consumer.done;
+      const events = await eventsP;
 
       // Two retries → virtual clock advanced at least 2 * 250 ms.
       // We assert greater-than-or-equal because the fetch chunks
@@ -688,7 +682,7 @@ describe("runInference — retry delay scheduling", () => {
       };
 
       let seq = 0;
-      const consumer = startConsumer(
+      const eventsP = collect(
         runInference({
           turns: makeTurns(),
           source: SOURCE,
@@ -699,7 +693,7 @@ describe("runInference — retry delay scheduling", () => {
         }),
       );
       await harness.run();
-      const events = await consumer.done;
+      const events = await eventsP;
 
       // One retry emitted before the signal-aborted error surfaces.
       expect(retryEvents(events)).toHaveLength(1);
@@ -738,7 +732,7 @@ describe("runInference — retry delay scheduling", () => {
       };
 
       let seq = 0;
-      const consumer = startConsumer(
+      const eventsP = collect(
         runInference({
           turns: makeTurns(),
           source: SOURCE,
@@ -749,7 +743,7 @@ describe("runInference — retry delay scheduling", () => {
         }),
       );
       await harness.run();
-      const events = await consumer.done;
+      const events = await eventsP;
 
       expect(policyCalls).toBe(2);
       // The second policy call (the aborted error from the next
@@ -774,7 +768,7 @@ describe("runInference — retry delay scheduling", () => {
       };
 
       let seq = 0;
-      const consumer = startConsumer(
+      const eventsP = collect(
         runInference({
           turns: makeTurns(),
           source: SOURCE,
@@ -784,7 +778,7 @@ describe("runInference — retry delay scheduling", () => {
         }),
       );
       await harness.run();
-      const events = await consumer.done;
+      const events = await eventsP;
 
       // Exactly one policy invocation (the throw → abort path does
       // not loop), no retry event leaks out, original retryable

@@ -78,6 +78,15 @@ function startConsumer(events: AsyncIterable<InferenceEvent>): {
   return { done: collect(events) };
 }
 
+// Pin a one-attempt policy in the tests below whose intent is per-
+// attempt timeout-firing rather than retry behaviour. The retry path
+// is exercised by the inactivity-and-stall test that registers three
+// stalls. Defined once so the rationale and the literal stay in one
+// place.
+const ABORT_ONLY_RETRY_POLICY = {
+  retryPolicy: () => ({ kind: "abort" as const }),
+};
+
 describe("runInference — per-call timeouts (virtual clock)", () => {
   test("inactivity timeout fires on each of the default policy's three attempts, then surfaces", async () => {
     await withHarness(async (harness) => {
@@ -193,16 +202,14 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
           inferenceOptions: {
             inactivityTimeoutMs: 5_000,
             totalTimeoutMs: 200,
-            // The retry behaviour under category `timeout` is exercised
-            // by the inactivity-and-stall test above. Pin an abort-only
-            // policy here so the single scripted long-trickle stream is
-            // sufficient to drive the total-timeout assertion; without
-            // it the default policy would retry into a fetch with no
-            // matcher registered, and the chunk-pre-scheduling makes
-            // adding three trickle streams behave nondeterministically
-            // (all chunks fire in virtual time before the second and
-            // third attempts even start).
-            retryPolicy: () => ({ kind: "abort" }),
+            // The chunk-pre-scheduling pattern (chunks scheduled at
+            // setup time, not at fetch time) would make multi-attempt
+            // trickle streams behave nondeterministically — all
+            // chunks fire in virtual time before the second and third
+            // attempts even start. Pinning the abort-only policy
+            // keeps the total-timeout assertion focused on the single
+            // first-attempt fire.
+            ...ABORT_ONLY_RETRY_POLICY,
           },
           nextSeq: () => seq++,
           deps: harness.deps,
@@ -332,14 +339,10 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
             inferenceOptions: {
               inactivityTimeoutMs: 50,
               totalTimeoutMs: 10_000,
-              // The retry behaviour under category `timeout` is
-              // exercised by the inactivity-and-stall test above; this
-              // test asserts the per-call inactivity-threshold override
-              // narrowly. The scripted-gap stream is pre-scheduled in
-              // virtual time, so a default-policy retry would re-issue
-              // against a fetch with no matcher; abort-only keeps the
-              // per-override assertion narrow.
-              retryPolicy: () => ({ kind: "abort" }),
+              // Per-call inactivity-threshold override assertion only;
+              // see the ABORT_ONLY_RETRY_POLICY rationale above for why
+              // we pin a single-attempt policy on these tests.
+              ...ABORT_ONLY_RETRY_POLICY,
             },
             nextSeq: () => seq++,
             deps: harness.deps,
