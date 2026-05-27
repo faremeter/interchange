@@ -15,8 +15,11 @@ import type {
 } from "@intx/types/runtime";
 
 const MAX_ATTEMPTS = 3;
-const RETRYABLE_BACKOFF_BEFORE_ATTEMPT_2_MS = 500;
-const RETRYABLE_BACKOFF_BEFORE_ATTEMPT_3_MS = 1000;
+// Indexed by the failed attempt number (1-indexed): the delay BEFORE
+// the attempt-after-this-one starts. Length must be `MAX_ATTEMPTS - 1`
+// because after the final attempt fails the policy aborts. Drives the
+// `retryable` and `timeout` schedules.
+const RETRYABLE_BACKOFF_BY_FAILED_ATTEMPT_MS: readonly number[] = [500, 1000];
 const QUOTA_DEFAULT_DELAY_MS = 1000;
 
 /**
@@ -61,15 +64,18 @@ export function createDefaultRetryPolicy(): RetryPolicy {
         return { kind: "abort" };
 
       case "retryable":
-      case "timeout":
+      case "timeout": {
         if (attempt >= MAX_ATTEMPTS) return { kind: "abort" };
-        return {
-          kind: "retry",
-          delayMs:
-            attempt === 1
-              ? RETRYABLE_BACKOFF_BEFORE_ATTEMPT_2_MS
-              : RETRYABLE_BACKOFF_BEFORE_ATTEMPT_3_MS,
-        };
+        const delayMs = RETRYABLE_BACKOFF_BY_FAILED_ATTEMPT_MS[attempt - 1];
+        if (delayMs === undefined) {
+          // Unreachable in practice given the `attempt >= MAX_ATTEMPTS`
+          // guard above, but the explicit narrowing keeps the schedule
+          // table and the cap from drifting silently if anyone bumps
+          // `MAX_ATTEMPTS` without extending the table.
+          return { kind: "abort" };
+        }
+        return { kind: "retry", delayMs };
+      }
 
       case "quota_exhausted":
         if (attempt >= MAX_ATTEMPTS) return { kind: "abort" };
@@ -77,6 +83,17 @@ export function createDefaultRetryPolicy(): RetryPolicy {
           kind: "retry",
           delayMs: error.retryAfterMs ?? QUOTA_DEFAULT_DELAY_MS,
         };
+
+      default: {
+        // Exhaustiveness: if a new InferenceError.category lands
+        // without a clause here, the never-assignment fails at
+        // compile time rather than silently returning undefined
+        // from the policy callback.
+        const exhaustive: never = error.category;
+        throw new Error(
+          `createDefaultRetryPolicy: unhandled error category ${String(exhaustive)}`,
+        );
+      }
     }
   };
 }

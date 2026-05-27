@@ -8,24 +8,12 @@
 import { describe, test, expect } from "bun:test";
 
 import { setupHarness } from "@intx/inference-testing";
-import type { Scheduler } from "@intx/inference";
-
-// `Dependencies.scheduler` is structurally optional, but `setupHarness`
-// always populates it; pulling it out through a tiny helper keeps the
-// tests focused on the behaviour, not the optional-chain ceremony.
-function getScheduler(harness: { deps: { scheduler?: Scheduler } }): Scheduler {
-  const scheduler = harness.deps.scheduler;
-  if (scheduler === undefined) {
-    throw new Error("setupHarness did not populate deps.scheduler");
-  }
-  return scheduler;
-}
 
 describe("inference-testing Scheduler.now() (inert mode)", () => {
   test("starts at the virtual clock's current value", () => {
     const harness = setupHarness();
     try {
-      expect(getScheduler(harness).now()).toBe(harness.clock.now());
+      expect(harness.deps.scheduler.now()).toBe(harness.clock.now());
     } finally {
       harness.dispose();
     }
@@ -34,10 +22,9 @@ describe("inference-testing Scheduler.now() (inert mode)", () => {
   test("tracks virtual time advanced by harness.advanceTo()", async () => {
     const harness = setupHarness();
     try {
-      const scheduler = getScheduler(harness);
-      const before = scheduler.now();
+      const before = harness.deps.scheduler.now();
       await harness.advanceTo(250);
-      const after = scheduler.now();
+      const after = harness.deps.scheduler.now();
       expect(after - before).toBe(250);
       expect(after).toBe(harness.clock.now());
     } finally {
@@ -52,9 +39,8 @@ describe("inference-testing Scheduler.now() (inert mode)", () => {
     // not fire even after the clock advances well past `delayMs`.
     const harness = setupHarness();
     try {
-      const scheduler = getScheduler(harness);
       let fired = false;
-      scheduler.setTimeout(() => {
+      harness.deps.scheduler.setTimeout(() => {
         fired = true;
       }, 10);
       await harness.advanceTo(1000);
@@ -69,15 +55,14 @@ describe("inference-testing Scheduler.now() (enableInferenceTimers)", () => {
   test("tracks virtual time and fires setTimeout at virtualMs delayMs later", async () => {
     const harness = setupHarness({ enableInferenceTimers: true });
     try {
-      const scheduler = getScheduler(harness);
-      expect(scheduler.now()).toBe(harness.clock.now());
+      expect(harness.deps.scheduler.now()).toBe(harness.clock.now());
       const firings: number[] = [];
-      scheduler.setTimeout(() => {
+      harness.deps.scheduler.setTimeout(() => {
         firings.push(harness.clock.now());
       }, 100);
       await harness.advanceTo(100);
       expect(firings).toEqual([100]);
-      expect(scheduler.now()).toBe(100);
+      expect(harness.deps.scheduler.now()).toBe(100);
     } finally {
       harness.dispose();
     }
