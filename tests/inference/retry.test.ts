@@ -1,4 +1,4 @@
-// Pluggable mechanical retry policy for the inference harness — INTR-88.
+// Pluggable mechanical retry policy for the inference harness.
 //
 // The wrapper exposed as `runInference` buffers each attempt's events
 // until the attempt terminates with `inference.done` or
@@ -704,6 +704,94 @@ describe("runInference — retry delay scheduling", () => {
       // One retry emitted before the signal-aborted error surfaces.
       expect(retryEvents(events)).toHaveLength(1);
       expect(findError(events)?.category).toBe("aborted");
+    });
+  });
+
+  test("aborting during the retry delay short-circuits the await within the delay window", async () => {
+    await withHarness(async (harness) => {
+      registerRetryable5xx(harness, 1);
+      // The retry policy asks for a long delay; the abort fires
+      // early in that window. If the wrapper honours `signal`
+      // during the delay, the policy's second invocation — which
+      // sees the aborted-category error from the next attempt —
+      // reads an `elapsedMs` shortly after `ABORT_AT_MS`, not
+      // after the full delay. Reading from the policy callback
+      // is the precise signal: virtual time elsewhere may still
+      // advance to drain the cancelled-but-still-heap retry
+      // setTimeout entry, which has no bearing on whether the
+      // wrapper resumed promptly.
+      const controller = new AbortController();
+      const RETRY_DELAY_MS = 5_000;
+      const ABORT_AT_MS = 100;
+      let policyCalls = 0;
+      let secondCallElapsedMs: number | undefined;
+      const policy: RetryPolicy = (situation) => {
+        policyCalls += 1;
+        if (policyCalls === 1) {
+          harness.clock.schedule(harness.clock.now() + ABORT_AT_MS, () => {
+            controller.abort();
+          });
+          return { kind: "retry", delayMs: RETRY_DELAY_MS };
+        }
+        secondCallElapsedMs = situation.elapsedMs;
+        return { kind: "abort" };
+      };
+
+      let seq = 0;
+      const consumer = startConsumer(
+        runInference({
+          turns: makeTurns(),
+          source: SOURCE,
+          signal: controller.signal,
+          inferenceOptions: { retryPolicy: policy },
+          nextSeq: () => seq++,
+          deps: harness.deps,
+        }),
+      );
+      await harness.run();
+      const events = await consumer.done;
+
+      expect(policyCalls).toBe(2);
+      // The second policy call (the aborted error from the next
+      // attempt) happens shortly after the abort fired, not after
+      // the configured retry delay. Bound the assertion well
+      // below the retry delay — the order-of-magnitude separation
+      // makes this robust without pinning exact timing.
+      expect(secondCallElapsedMs).toBeDefined();
+      expect(secondCallElapsedMs).toBeLessThan(RETRY_DELAY_MS / 5);
+      expect(retryEvents(events)).toHaveLength(1);
+      expect(findError(events)?.category).toBe("aborted");
+    });
+  });
+
+  test("policy that throws is invoked once, logs warn, and aborts cleanly", async () => {
+    await withHarness(async (harness) => {
+      registerRetryable5xx(harness, 1);
+      let policyCalls = 0;
+      const policy: RetryPolicy = () => {
+        policyCalls += 1;
+        throw new Error("policy boom");
+      };
+
+      let seq = 0;
+      const consumer = startConsumer(
+        runInference({
+          turns: makeTurns(),
+          source: SOURCE,
+          inferenceOptions: { retryPolicy: policy },
+          nextSeq: () => seq++,
+          deps: harness.deps,
+        }),
+      );
+      await harness.run();
+      const events = await consumer.done;
+
+      // Exactly one policy invocation (the throw → abort path does
+      // not loop), no retry event leaks out, original retryable
+      // error surfaces.
+      expect(policyCalls).toBe(1);
+      expect(retryEvents(events)).toHaveLength(0);
+      expect(findError(events)?.category).toBe("retryable");
     });
   });
 });

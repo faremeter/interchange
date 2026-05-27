@@ -33,6 +33,8 @@ import type {
   ContentBlock,
 } from "@intx/types/runtime";
 
+import { getLogger } from "@intx/log";
+
 import { parseSSE } from "./sse";
 import { lookupProvider } from "./providers/registry";
 import { injectCredentials } from "./auth";
@@ -45,6 +47,8 @@ import {
   ProtocolMismatchError,
 } from "./errors";
 import { createDefaultRetryPolicy } from "./retry-policy";
+
+const logger = getLogger(["interchange", "inference", "harness"]);
 
 /**
  * Default per-call inactivity timeout (ms). Two minutes is conservative
@@ -1169,9 +1173,9 @@ async function* runSingleAttempt(
  * reach the caller until the wrapper knows the attempt's terminal
  * shape, even on a successful first attempt. That trade-off is the
  * deliberate consequence of making "one clean stream" a hard contract
- * rather than a best-effort one; consumers that need token-by-token
- * partials should subscribe further down the agent layer's emission
- * chain rather than to `runInference` directly.
+ * rather than a best-effort one. Consumers that need token-by-token
+ * partials must pin a custom non-buffering wrapper — no streaming-
+ * partials emission API exists today.
  *
  * The buffer is per-call and bounded by the size of one attempt's
  * event stream — no cross-call accumulation.
@@ -1186,26 +1190,28 @@ async function* runSingleAttempt(
  * the failed attempt's number, the policy-chosen `delayMs`, and the
  * classified error that triggered the retry. The `setTimeout` await
  * is driven by `deps.scheduler`, so virtual-clock test harnesses
- * advance retry delays without sleeping real wall-clock.
+ * advance retry delays without sleeping real wall-clock. The
+ * caller-supplied `signal` short-circuits the retry delay: aborting
+ * the signal mid-delay wakes the await immediately and the next
+ * `runSingleAttempt` invocation surfaces `inference.error` of
+ * category `aborted` from its entry-time signal check, which the
+ * default policy aborts on.
  *
  * Policy-failure handling: if the policy throws synchronously or its
  * returned Promise rejects, the wrapper treats the failure as
  * `{ kind: "abort" }` and surfaces the *original* `inference.error`
- * to the caller. The policy's own exception is dropped — the
- * inference error is what the caller needs to act on.
- *
- * `signal`-driven abort during a retry delay surfaces on the next
- * attempt: the awaited `setTimeout` resolves, `runSingleAttempt`
- * checks `signal.aborted` at entry, and emits an `inference.error`
- * of category `aborted`. The default policy aborts on `aborted`, so
- * the caller sees the abort error and the wrapper returns.
+ * to the caller. The policy's own exception is logged at `warn` so
+ * operators can see when a custom policy is failing under load, and
+ * dropped — the inference error is what the caller needs to act on,
+ * not the bug in the policy callback.
  *
  * Synchronous throws from `runSingleAttempt` (`ProtocolMismatchError`
  * raised by the streaming parse or the finalization walk, etc.)
- * propagate untouched out of `runInference`. Those represent protocol
- * bugs the policy mechanism is not equipped to absorb — the caller's
- * `for await` rejects so the failure surfaces rather than being
- * silently buffered.
+ * propagate out of `runInference`. The current attempt's buffered
+ * events are discarded along with the throw — those represent
+ * protocol bugs the policy mechanism is not equipped to absorb, and
+ * the caller's `for await` rejects so the failure surfaces rather
+ * than being silently buffered.
  */
 export async function* runInference(
   opts: InferenceHarnessOptions,
@@ -1223,14 +1229,22 @@ export async function* runInference(
     );
   }
   if (typeof opts.deps.scheduler?.now !== "function") {
+    const schedulerType = typeof opts.deps.scheduler;
+    const detail =
+      schedulerType === "object"
+        ? "scheduler is missing the now() method"
+        : `got ${schedulerType}`;
     throw new Error(
-      `runInference: deps.scheduler must implement now() (got ${typeof opts.deps.scheduler}); pass createDefaultDependencies() or a test harness Dependencies object`,
+      `runInference: deps.scheduler must implement now() (${detail}); pass createDefaultDependencies() or a test harness Dependencies object`,
     );
   }
   const policy =
     opts.inferenceOptions?.retryPolicy ?? createDefaultRetryPolicy();
+  // The guards above proved `opts.deps.scheduler` is well-formed; the
+  // rest of the wrapper reads it directly without the `?.` ceremony.
   const scheduler = opts.deps.scheduler;
   const startedAtMs = scheduler.now();
+  const signal = opts.signal;
 
   for (let attempt = 1; ; attempt++) {
     const buffered: InferenceEvent[] = [];
@@ -1269,7 +1283,10 @@ export async function* runInference(
 
     // Consult the policy. Sync throws and Promise rejections both
     // resolve to an abort decision; the original inference.error
-    // surfaces to the caller, not the policy's exception.
+    // surfaces to the caller, not the policy's exception. The
+    // exception is logged at warn so a custom policy that
+    // misbehaves under load is not invisible — swallowing the
+    // failure silently would hide the bug from operators.
     let decision: RetryDecision;
     try {
       decision = await Promise.resolve(
@@ -1279,7 +1296,8 @@ export async function* runInference(
           elapsedMs: scheduler.now() - startedAtMs,
         }),
       );
-    } catch {
+    } catch (cause) {
+      logger.warn`Retry policy threw at attempt ${String(attempt)}; treating as abort. error=${cause instanceof Error ? cause.message : String(cause)}`;
       decision = { kind: "abort" };
     }
 
@@ -1304,10 +1322,40 @@ export async function* runInference(
     };
 
     const retryDelayMs = decision.delayMs;
+    // Wire the caller-supplied signal into the delay so an abort
+    // during the wait short-circuits to the next attempt within a
+    // single virtual tick rather than blocking until the full
+    // `retryDelayMs` elapses. A 60-second `retryAfterMs` on a quota
+    // error would otherwise pin the wrapper for the full minute
+    // before honouring cancellation. The shape is the standard one
+    // for racing a scheduled timeout against an abort listener: a
+    // single `settled` flag plus a `settle()` helper that cancels
+    // whichever side did not fire and removes the listener so the
+    // caller signal does not accumulate one stale entry per call.
     await new Promise<void>((resolve) => {
-      scheduler.setTimeout(() => {
+      let settled = false;
+      const settle = (): void => {
+        if (settled) return;
+        settled = true;
+        cancelTimer();
+        if (signal !== undefined) {
+          signal.removeEventListener("abort", onAbort);
+        }
         resolve();
+      };
+      const onAbort = (): void => {
+        settle();
+      };
+      const cancelTimer = scheduler.setTimeout(() => {
+        settle();
       }, retryDelayMs);
+      if (signal !== undefined) {
+        if (signal.aborted) {
+          settle();
+        } else {
+          signal.addEventListener("abort", onAbort, { once: true });
+        }
+      }
     });
   }
 }
