@@ -8,7 +8,7 @@ import {
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { hexEncode } from "@intx/types";
+import { base64Encode, hexEncode } from "@intx/types";
 import type {
   HarnessConfig,
   InboundMessage,
@@ -168,14 +168,6 @@ const VALID_MESSAGE = new TextEncoder().encode(
     "Test body",
   ].join("\r\n"),
 );
-
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary);
-}
 
 // ---------------------------------------------------------------------------
 // Test server
@@ -487,7 +479,7 @@ describe("sidecar↔hub integration", () => {
         env.router.getRoutableAddresses().includes("agent-1@test.interchange"),
       );
 
-      const encoded = uint8ArrayToBase64(VALID_MESSAGE);
+      const encoded = base64Encode(VALID_MESSAGE);
       const routed = env.router.routeMail("agent-1@test.interchange", encoded);
       expect(routed).toBe(true);
 

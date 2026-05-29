@@ -34,7 +34,7 @@ import type {
   SessionEventSink,
 } from "./session-manager";
 import { createPackReceiver, chunkPack } from "@intx/pack-transport";
-import { hexDecode, hexEncode } from "@intx/types";
+import { base64Decode, base64Encode, hexDecode, hexEncode } from "@intx/types";
 
 const logger = getLogger(["interchange", "sidecar", "ws"]);
 
@@ -114,7 +114,7 @@ export function createWsClient(config: WsClientConfig): WsClient {
   // for routing. These carry only the raw message and recipients — the hub
   // routes them to the destination sidecar.
   transport.setRemoteSendHandler(async (rawMessage, recipients) => {
-    const encoded = uint8ArrayToBase64(rawMessage);
+    const encoded = base64Encode(rawMessage);
     send({
       type: "mail.outbound",
       rawMessage: encoded,
@@ -127,7 +127,7 @@ export function createWsClient(config: WsClientConfig): WsClient {
   // Remote sends are marked delivered: true as well — routing was already
   // handled by the RemoteSendHandler above.
   transport.addMessageSentHandler(async (ctx) => {
-    const encoded = uint8ArrayToBase64(ctx.rawMessage);
+    const encoded = base64Encode(ctx.rawMessage);
     const sessionId = sessions.getSessionId(ctx.senderAddress);
     send({
       type: "mail.outbound",
@@ -487,7 +487,7 @@ export function createWsClient(config: WsClientConfig): WsClient {
 
     switch (frame.type) {
       case "mail.inbound": {
-        const rawBytes = base64ToUint8Array(frame.rawMessage);
+        const rawBytes = base64Decode(frame.rawMessage);
         deliverLocalMail(frame.agentAddress, rawBytes);
         void sessions.commitInboundMail(frame.agentAddress, rawBytes);
         break;
@@ -678,21 +678,4 @@ export function createWsClient(config: WsClientConfig): WsClient {
   };
 
   return { connect, close, sendEvent, sendConnectorState };
-}
-
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary);
-}
-
-function base64ToUint8Array(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
 }
