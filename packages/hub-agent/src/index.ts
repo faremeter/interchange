@@ -30,6 +30,11 @@ export {
   createHubLink,
   type HubLink,
   type HubLinkConfig,
-  type HubLinkLookups,
   type ReconnectScheduler,
 } from "./ws/hub-link";
+export {
+  createSidecarOrchestrator,
+  type SidecarOrchestrator,
+  type SidecarOrchestratorConfig,
+  type SidecarCryptoOps,
+} from "./sidecar-orchestrator";

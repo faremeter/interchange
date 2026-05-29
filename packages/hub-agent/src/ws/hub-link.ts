@@ -2,13 +2,10 @@
 //
 // Connects to the hub, sends the register or reconnect frame, forwards
 // outbound mail and inference events, and handles inbound agent
-// lifecycle commands. Per-agent key material lives in the maps below
-// for the lifetime of the connection; the cryptographic primitives the
-// link needs (Ed25519 detached signing for challenge frames, SSH
-// signature verification for deploy commits) come in through the
-// HubLinkLookups seam so the package never imports a specific crypto
-// backend. Future work moves the maps themselves onto AgentKeyStore;
-// this commit only severs the crypto dependency.
+// lifecycle commands. Per-agent key material lives on AgentKeyStore;
+// the link calls into the store for challenge signing, deploy-commit
+// verification, and hub-key bookkeeping. The wire layer itself never
+// touches raw key bytes.
 
 import { getLogger } from "@intx/log";
 import type { InMemoryTransport } from "@intx/mail-memory";
@@ -30,11 +27,10 @@ import {
   type PackRejectFrame,
   type SyncRequestFrame,
 } from "@intx/types/sidecar";
-import type { KeyPair } from "@intx/types/runtime";
-
 import { createPackReceiver, chunkPack } from "@intx/pack-transport";
 import { base64Decode, base64Encode, hexDecode, hexEncode } from "@intx/types";
 
+import type { AgentKeyStore } from "../agent-key-store";
 import type {
   ConnectorStateSink,
   SessionEventSink,
@@ -64,35 +60,19 @@ const defaultScheduleReconnect: ReconnectScheduler = (callback, delayMs) => {
   };
 };
 
-/**
- * Crypto primitives the link needs to execute the wire protocol. The
- * host supplies these from its own crypto backend so the package never
- * imports `@intx/crypto-node` (or any other specific implementation).
- */
-export type HubLinkLookups = {
-  /**
-   * Sign the challenge payload (nonce + address bytes) with the agent's
-   * Ed25519 private key. Returns the raw 64-byte detached signature.
-   */
-  signEd25519(privateKey: Uint8Array, payload: Uint8Array): Uint8Array;
-  /**
-   * Verify an SSH signature block against a public key. Returns true on
-   * a valid signature, false otherwise.
-   */
-  verifySshSig(
-    payload: string,
-    signature: string,
-    publicKey: Uint8Array,
-  ): boolean;
-};
-
 export type HubLinkConfig = {
   hubURL: string;
   sidecarId: string;
   token: string;
   transport: InMemoryTransport;
   sessions: SessionManager;
-  lookups: HubLinkLookups;
+  /**
+   * Key custody and per-frame crypto. HubLink calls into the store for
+   * challenge signing, deploy-commit verification, hub-key recording,
+   * and per-agent forgetting; it does not maintain its own copy of
+   * those tables.
+   */
+  keyStore: AgentKeyStore;
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
   scheduleReconnect?: ReconnectScheduler;
@@ -116,7 +96,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     token,
     transport,
     sessions,
-    lookups,
+    keyStore,
     pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
     reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
     scheduleReconnect = defaultScheduleReconnect,
@@ -127,13 +107,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   let pingTimer: ReturnType<typeof setInterval> | null = null;
   let cancelReconnect: (() => void) | null = null;
   let lastPongAt = 0;
-
-  // Per-agent key pairs for challenge signing.
-  // Populated by restoreSessions on connect, augmented on agent.deploy.
-  const agentKeys = new Map<string, KeyPair>();
-
-  // Hub's signing public key per agent, for deploy commit verification.
-  const hubKeys = new Map<string, Uint8Array>();
 
   const packReceiver = createPackReceiver();
 
@@ -202,8 +175,11 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   async function handleAgentDeploy(frame: AgentDeployFrame): Promise<void> {
     try {
       const result = await sessions.provisionAgent(frame.config);
-      agentKeys.set(frame.agentAddress, result.keyPair);
-      hubKeys.set(frame.agentAddress, hexDecode(frame.hubPublicKey));
+      // SessionManager.provisionAgent already populated AgentKeyStore's
+      // in-memory keypair cache via keyStore.loadOrGenerateKey. We
+      // record the hub-side pairing key here so subsequent deploy
+      // pack frames have a verifier ready.
+      keyStore.recordHubKey(frame.agentAddress, frame.hubPublicKey);
       await sessions.persistHubPublicKey(
         frame.agentAddress,
         frame.hubPublicKey,
@@ -294,8 +270,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       logger.warn`Failed to delete agent directory for ${frame.agentAddress}: ${msg}`;
     }
 
-    agentKeys.delete(frame.agentAddress);
-    hubKeys.delete(frame.agentAddress);
+    keyStore.forgetAgent(frame.agentAddress);
 
     send({
       type: "agent.undeploy.ack",
@@ -309,19 +284,17 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     const responses: { address: string; signature: string }[] = [];
 
     for (const { address, nonce } of frame.challenges) {
-      const keys = agentKeys.get(address);
-      if (keys === undefined) {
-        logger.warn`No key pair for challenged address ${address}`;
-        continue;
-      }
-
       const nonceBytes = hexDecode(nonce);
       const addressBytes = new TextEncoder().encode(address);
       const payload = new Uint8Array(nonceBytes.length + addressBytes.length);
       payload.set(nonceBytes);
       payload.set(addressBytes, nonceBytes.length);
 
-      const sig = lookups.signEd25519(keys.privateKey, payload);
+      const sig = keyStore.signChallenge(address, payload);
+      if (sig === null) {
+        logger.warn`No key pair for challenged address ${address}`;
+        continue;
+      }
 
       responses.push({
         address,
@@ -335,8 +308,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   async function handleChallengeFailed(
     frame: ChallengeFailedFrame,
   ): Promise<void> {
-    agentKeys.delete(frame.address);
-    hubKeys.delete(frame.address);
+    keyStore.forgetAgent(frame.address);
 
     // The hub rejected this agent during reconnect — tear it down so
     // the address is freed for future deploys.
@@ -420,12 +392,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
 
     try {
-      const hubKey = hubKeys.get(frame.agentAddress);
-      if (hubKey === undefined) {
-        throw new Error("signature_invalid: no hub public key for agent");
-      }
       const verifyCommit = (payload: string, signature: string) =>
-        lookups.verifySshSig(payload, signature, hubKey);
+        keyStore.verifyDeployCommit(frame.agentAddress, payload, signature);
 
       await sessions.applyDeployPack(
         frame.agentAddress,
@@ -644,9 +612,12 @@ export function createHubLink(config: HubLinkConfig): HubLink {
           if (restored.length > 0) {
             const deployRefs: Record<string, string> = {};
             for (const entry of restored) {
-              agentKeys.set(entry.address, entry.keyPair);
+              // SessionManager.restoreSessions populated AgentKeyStore's
+              // in-memory keypair cache via scanKeys. Replay the
+              // hub-side pairing record here so verifyDeployCommit can
+              // accept incoming packs without re-running an agent.deploy.
               if (entry.hubPublicKey !== undefined) {
-                hubKeys.set(entry.address, hexDecode(entry.hubPublicKey));
+                keyStore.recordHubKey(entry.address, entry.hubPublicKey);
               }
               const ref = await sessions.getDeployRef(entry.address);
               if (ref !== null) {

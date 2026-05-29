@@ -18,22 +18,61 @@ import type {
 } from "@intx/types/runtime";
 import type { GrantRule } from "@intx/types/authz";
 
-import {
-  createHubLink,
-  type HubLinkLookups,
-  type ReconnectScheduler,
-} from "./hub-link";
+import { createHubLink, type ReconnectScheduler } from "./hub-link";
+import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
+import type { KeyPair } from "@intx/types/runtime";
+import { hexDecode } from "@intx/types";
 
-const testLookups: HubLinkLookups = {
-  signEd25519(privateKey, payload) {
-    const key = importPrivateKeyBytes(privateKey);
-    return new Uint8Array(nodeSign(null, payload, key));
-  },
-  verifySshSig(payload, signature, publicKey) {
-    return verifySshSignature(payload, signature, publicKey);
-  },
-};
+// In-memory AgentKeyStore for tests. Tests that exercise challenge
+// response or deploy-commit verification register keys via the public
+// AgentKeyStore methods (loadOrGenerateKey, recordHubKey); the stub
+// satisfies the interface and uses real crypto-node primitives so
+// signatures round-trip through the production verify path.
+function createTestKeyStore(): AgentKeyStore & {
+  registerKey(address: string, kp: KeyPair): void;
+} {
+  const agentKeys = new Map<string, KeyPair>();
+  const hubKeys = new Map<string, Uint8Array>();
+  return {
+    registerKey(address, kp) {
+      agentKeys.set(address, kp);
+    },
+    async loadOrGenerateKey(address) {
+      const existing = agentKeys.get(address);
+      if (existing !== undefined) return { keyPair: existing, isNew: false };
+      throw new Error(`No key registered for ${address} in test store`);
+    },
+    async scanKeys() {
+      return [...agentKeys.entries()].map(([address, keyPair]) => ({
+        address,
+        keyPair,
+      }));
+    },
+    signChallenge(address, payload) {
+      const kp = agentKeys.get(address);
+      if (kp === undefined) return null;
+      const key = importPrivateKeyBytes(kp.privateKey);
+      return new Uint8Array(nodeSign(null, payload, key));
+    },
+    recordHubKey(address, hexHubPublicKey) {
+      hubKeys.set(address, hexDecode(hexHubPublicKey));
+    },
+    verifyDeployCommit(address, payload, signature) {
+      const hubKey = hubKeys.get(address);
+      if (hubKey === undefined) {
+        throw new Error(
+          `signature_invalid: no hub public key for "${address}"`,
+        );
+      }
+      return verifySshSignature(payload, signature, hubKey);
+    },
+    forgetAgent(address) {
+      agentKeys.delete(address);
+      hubKeys.delete(address);
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -273,7 +312,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
     });
 
     client.connect();
@@ -300,7 +339,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
     });
 
     client.connect();
@@ -334,7 +373,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
     });
 
     client.connect();
@@ -363,7 +402,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport,
       sessions,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
     });
 
     client.connect();
@@ -398,7 +437,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport,
       sessions,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
     });
 
     client.connect();
@@ -442,7 +481,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
     });
 
     client.connect();
@@ -493,7 +532,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
     });
 
     client.connect();
@@ -544,7 +583,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
     });
 
     client.connect();
@@ -598,7 +637,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport: transportA,
       sessions: sessionsA,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
     });
     const clientB = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
@@ -606,7 +645,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport: transportB,
       sessions: sessionsB,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
     });
 
     clientA.connect();
@@ -664,7 +703,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
     });
 
     client.connect();
@@ -693,7 +732,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport,
       sessions,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
     });
 
     client.connect();
@@ -736,7 +775,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport,
       sessions,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
     });
 
     client.connect();
@@ -821,7 +860,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport,
       sessions,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
     });
 
     client.connect();
@@ -918,13 +957,20 @@ describe("sidecar↔hub integration", () => {
     });
     sessions.getDeployRef = async () => "a".repeat(40);
 
+    // In production, SessionManager.restoreSessions populates
+    // AgentKeyStore's in-memory cache via scanKeys before HubLink
+    // iterates the restored agents. The mock SessionManager here does
+    // not exercise that path, so we seed the keyStore directly.
+    const keyStore = createTestKeyStore();
+    keyStore.registerKey(fakeAddress, agentKp);
+
     const client = createHubLink({
       hubURL: `ws://localhost:${reconnectServer.port}/ws`,
       sidecarId: "sc-restore-key",
       token: "test-token",
       transport,
       sessions,
-      lookups: testLookups,
+      keyStore,
     });
 
     client.connect();
@@ -995,7 +1041,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
       pingIntervalMs: 100,
     });
 
@@ -1040,7 +1086,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      lookups: testLookups,
+      keyStore: createTestKeyStore(),
       scheduleReconnect: fakeScheduleReconnect,
     });
 

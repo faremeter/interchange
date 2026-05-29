@@ -177,6 +177,8 @@ function makeManagerHarness(
   const keyStore = createAgentKeyStore({
     dataDir,
     generateKeyPair: async () => makeKeyPair(11),
+    signEd25519: () => new Uint8Array(64),
+    verifySshSig: () => true,
   });
   const builder = makeRecordingBuilder(opts);
   const transport = createInMemoryTransport();

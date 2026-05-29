@@ -1,105 +1,42 @@
 import { sign as nodeSign } from "node:crypto";
-import { setup, getLogger } from "@intx/log";
+import { setup } from "@intx/log";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import type { ConnectorThreadState, InferenceEvent } from "@intx/types/runtime";
 import {
   createNodeCrypto,
   generateKeyPair,
   importPrivateKeyBytes,
   verifySshSignature,
 } from "@intx/crypto-node";
-import {
-  createAgentKeyStore,
-  createAgentRepoStore,
-  createHubLink,
-  createSessionManager,
-  type HubLinkLookups,
-} from "@intx/hub-agent";
+import { createSidecarOrchestrator } from "@intx/hub-agent";
 
 import { createDefaultHarnessBuilder } from "./default-harness";
 
 await setup();
 
-const log = getLogger(["sidecar"]);
-
-const hubURL = process.env["HUB_WS_URL"];
-if (hubURL === undefined) {
-  throw new Error("HUB_WS_URL environment variable is required");
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (value === undefined) {
+    throw new Error(`${name} environment variable is required`);
+  }
+  return value;
 }
 
-const sidecarId = process.env["SIDECAR_ID"];
-if (sidecarId === undefined) {
-  throw new Error("SIDECAR_ID environment variable is required");
-}
-
-const token = process.env["SIDECAR_TOKEN"];
-if (token === undefined) {
-  throw new Error("SIDECAR_TOKEN environment variable is required");
-}
-
-const dataDir = process.env["SIDECAR_DATA_DIR"];
-if (dataDir === undefined) {
-  throw new Error("SIDECAR_DATA_DIR environment variable is required");
-}
-
-const transport = createInMemoryTransport();
-
-// Break the circular dependency between SessionManager and HubLink:
-// the session manager fires events through this mutable reference,
-// which gets pointed at the real link after both are constructed.
-let forwardEvent: (a: string, s: string, e: InferenceEvent) => void = (
-  _a,
-  _s,
-  _e,
-) => {
-  // Replaced after HubLink is constructed.
-};
-let forwardConnectorState: (
-  a: string,
-  state: ConnectorThreadState | null,
-) => void = (_a, _state) => {
-  // Replaced after HubLink is constructed.
-};
-
-const lookups: HubLinkLookups = {
-  signEd25519(privateKey, payload) {
-    const key = importPrivateKeyBytes(privateKey);
-    return new Uint8Array(nodeSign(null, payload, key));
-  },
-  verifySshSig(payload, signature, publicKey) {
-    return verifySshSignature(payload, signature, publicKey);
-  },
-};
-
-const repoStore = createAgentRepoStore({ dataDir });
-const keyStore = createAgentKeyStore({ dataDir, generateKeyPair });
-const buildHarness = createDefaultHarnessBuilder();
-
-const sessions = createSessionManager({
-  transport,
-  repoStore,
-  keyStore,
-  buildHarness,
+const orchestrator = createSidecarOrchestrator({
+  hubURL: requireEnv("HUB_WS_URL"),
+  sidecarId: requireEnv("SIDECAR_ID"),
+  token: requireEnv("SIDECAR_TOKEN"),
+  dataDir: requireEnv("SIDECAR_DATA_DIR"),
+  transport: createInMemoryTransport(),
+  buildHarness: createDefaultHarnessBuilder(),
   createAgentCrypto: createNodeCrypto,
-  onEvent(agentAddress, sessionId, event) {
-    forwardEvent(agentAddress, sessionId, event);
-  },
-  onConnectorStateChanged(agentAddress, state) {
-    forwardConnectorState(agentAddress, state);
+  cryptoOps: {
+    generateKeyPair,
+    signEd25519(privateKey, payload) {
+      const key = importPrivateKeyBytes(privateKey);
+      return new Uint8Array(nodeSign(null, payload, key));
+    },
+    verifySshSig: verifySshSignature,
   },
 });
 
-const hubLink = createHubLink({
-  hubURL,
-  sidecarId,
-  token,
-  transport,
-  sessions,
-  lookups,
-});
-
-forwardEvent = hubLink.sendEvent;
-forwardConnectorState = hubLink.sendConnectorState;
-hubLink.connect();
-
-log.info("Sidecar {sidecarId} connecting to {hubURL}", { sidecarId, hubURL });
+orchestrator.start();
