@@ -31,6 +31,16 @@ function makeKeyPair(seed: number): KeyPair {
   return { privateKey, publicKey };
 }
 
+const stubCrypto = {
+  signEd25519: (_privateKey: Uint8Array, _payload: Uint8Array) =>
+    new Uint8Array(64),
+  verifySshSig: (
+    _payload: string,
+    _signature: string,
+    _publicKey: Uint8Array,
+  ) => true,
+};
+
 describe("AgentKeyStore — load-or-generate", () => {
   test("first call mints and persists a new keypair", async () => {
     const dataDir = await tempDir();
@@ -41,6 +51,7 @@ describe("AgentKeyStore — load-or-generate", () => {
         calls++;
         return makeKeyPair(7);
       },
+      ...stubCrypto,
     });
 
     const result = await store.loadOrGenerateKey("agent@local");
@@ -62,6 +73,7 @@ describe("AgentKeyStore — load-or-generate", () => {
         calls++;
         return makeKeyPair(42);
       },
+      ...stubCrypto,
     });
 
     const first = await store.loadOrGenerateKey("agent@local");
@@ -79,6 +91,7 @@ describe("AgentKeyStore — load-or-generate", () => {
     const store = createAgentKeyStore({
       dataDir,
       generateKeyPair: async () => makeKeyPair(1),
+      ...stubCrypto,
     });
     await store.loadOrGenerateKey("agent@local");
 
@@ -102,6 +115,7 @@ describe("AgentKeyStore — scanKeys", () => {
     const store = createAgentKeyStore({
       dataDir,
       generateKeyPair: async () => makeKeyPair(3),
+      ...stubCrypto,
     });
     await store.loadOrGenerateKey("agent@local");
     await fs.writeFile(
@@ -119,6 +133,7 @@ describe("AgentKeyStore — scanKeys", () => {
     const store = createAgentKeyStore({
       dataDir,
       generateKeyPair: async () => makeKeyPair(5),
+      ...stubCrypto,
     });
     await store.loadOrGenerateKey("agent@local");
 
