@@ -303,7 +303,7 @@ if (!skipSidecar) {
   const sidecarProc = spawnLabeled(
     "sidecar",
     "\x1b[33m", // yellow
-    ["bun", "run", "apps/sidecar/src/main.ts"],
+    ["bun", "run", "apps/sidecar/src/index.ts"],
     sidecarEnv,
   );
   watchProcess("sidecar", sidecarProc);

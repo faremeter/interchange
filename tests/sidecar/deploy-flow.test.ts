@@ -306,7 +306,7 @@ beforeAll(async () => {
 
   const hubPort = hub.server.port;
 
-  sidecarProc = Bun.spawn(["bun", "run", "apps/sidecar/src/main.ts"], {
+  sidecarProc = Bun.spawn(["bun", "run", "apps/sidecar/src/index.ts"], {
     cwd: path.resolve(import.meta.dir, "../.."),
     env: {
       PATH: process.env["PATH"],
