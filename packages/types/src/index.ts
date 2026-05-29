@@ -17,5 +17,6 @@ export * from "./observability";
 export * from "./agent-address";
 export * from "./agent-data";
 export * from "./hex";
+export * from "./base64";
 export * from "./audit";
 export * from "./sidecars";
