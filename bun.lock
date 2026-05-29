@@ -216,7 +216,6 @@
       "name": "@intx/agent",
       "version": "0.0.0",
       "dependencies": {
-        "@intx/harness": "workspace:*",
         "@intx/inference": "workspace:*",
         "@intx/mime": "workspace:*",
         "@intx/storage-isogit": "workspace:*",
