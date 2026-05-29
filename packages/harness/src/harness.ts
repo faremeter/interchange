@@ -90,10 +90,11 @@ export function createHarness(config: HarnessConfig): Harness {
   if (config.director !== undefined) {
     director = config.director;
   } else {
-    // Director tool list order — mail tools, then caller-declared tools,
-    // then deploy-declared tools — matches the order the sidecar
-    // produced before this routing was moved into the harness, so the
-    // prompt the model sees is unchanged across the API migration.
+    // Director tool list order: mail tools, then caller-declared tools,
+    // then deploy-declared tools. The order is observable by the model
+    // through the prompt the director assembles, so anything that
+    // assembles a tool list against the same director must keep this
+    // ordering for behavior to remain consistent.
     director = createDefaultDirector(
       config.systemPrompt,
       [

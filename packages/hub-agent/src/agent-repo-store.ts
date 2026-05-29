@@ -7,6 +7,7 @@
 
 import fs from "node:fs";
 import fsp from "node:fs/promises";
+import path from "node:path";
 import git from "isomorphic-git";
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
@@ -20,7 +21,7 @@ import {
   type CommitVerifier,
 } from "@intx/storage-isogit";
 
-import { agentDir, metaPath } from "./agent-paths";
+import { META_FILE, agentDir, metaPath } from "./agent-paths";
 
 const logger = getLogger(["interchange", "hub-agent", "repo-store"]);
 
@@ -203,7 +204,7 @@ export function createAgentRepoStore(config: {
       // Read agent.json directly by directory name — we cannot reverse
       // sanitizeAddress, so the address comes from the file's `address`
       // field, not the directory name.
-      const metaFile = `${dataDir}/${entry.name}/agent.json`;
+      const metaFile = path.join(dataDir, entry.name, META_FILE);
       let raw: string;
       try {
         raw = await fsp.readFile(metaFile, "utf-8");

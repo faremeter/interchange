@@ -26,7 +26,7 @@
 
 import { getLogger } from "@intx/log";
 import { hexEncode } from "@intx/types";
-import type { InMemoryTransport } from "@intx/mail-memory";
+import type { HubTransport } from "@intx/mail-memory";
 import type { GrantRule } from "@intx/types/authz";
 import type {
   ConnectorThreadState,
@@ -67,7 +67,7 @@ export type ConnectorStateSink = (
 ) => void;
 
 export type SessionManagerConfig = {
-  transport: InMemoryTransport;
+  transport: HubTransport;
   repoStore: AgentRepoStore;
   keyStore: AgentKeyStore;
   buildHarness: HarnessBuilder;
@@ -346,12 +346,25 @@ export function createSessionManager(
   async function runDisposers(
     session: LiveSession,
     agentAddress: string,
-  ): Promise<void> {
+  ): Promise<Error[]> {
+    // Run every disposer even if some fail; an exception from one must
+    // not leak the others. Errors are collected and returned so the
+    // caller (destroy / abort) can decide whether to surface a
+    // partial-teardown condition; today the caller logs the summary
+    // and continues, since session teardown is also invoked from
+    // recovery paths where a thrown aggregate would obscure the
+    // original failure.
+    const errors: Error[] = [];
     for (const disposer of session.bundle.disposers) {
-      await disposer().catch((err: unknown) => {
-        logger.error`Disposer failed for ${agentAddress}: ${String(err)}`;
-      });
+      try {
+        await disposer();
+      } catch (err: unknown) {
+        const e = err instanceof Error ? err : new Error(String(err));
+        logger.error`Disposer failed for ${agentAddress}: ${e.message}`;
+        errors.push(e);
+      }
     }
+    return errors;
   }
 
   async function destroySession(agentAddress: string): Promise<void> {
@@ -365,11 +378,15 @@ export function createSessionManager(
       throw new Error(`No session exists for agent "${agentAddress}"`);
     }
     session.harness.stop();
-    await runDisposers(session, agentAddress);
+    const disposerErrors = await runDisposers(session, agentAddress);
     await drainMailQueue(agentAddress);
     sessions.delete(agentAddress);
     transport.unregister(agentAddress);
-    logger.info`Stopped session for ${agentAddress}`;
+    if (disposerErrors.length > 0) {
+      logger.warn`Stopped session for ${agentAddress} with ${String(disposerErrors.length)} disposer failure(s)`;
+    } else {
+      logger.info`Stopped session for ${agentAddress}`;
+    }
   }
 
   async function abortSession(
@@ -386,11 +403,15 @@ export function createSessionManager(
       throw new Error(`No session exists for agent "${agentAddress}"`);
     }
     session.harness.stop();
-    await runDisposers(session, agentAddress);
+    const disposerErrors = await runDisposers(session, agentAddress);
     await drainMailQueue(agentAddress);
     sessions.delete(agentAddress);
     transport.unregister(agentAddress);
-    logger.info`Aborted agent ${agentAddress}: ${reason}`;
+    if (disposerErrors.length > 0) {
+      logger.warn`Aborted agent ${agentAddress} (${reason}) with ${String(disposerErrors.length)} disposer failure(s)`;
+    } else {
+      logger.info`Aborted agent ${agentAddress}: ${reason}`;
+    }
   }
 
   function deliverMessage(agentAddress: string, message: InboundMessage): void {

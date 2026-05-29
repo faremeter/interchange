@@ -42,6 +42,27 @@ import {
 } from "./fetch";
 
 /**
+ * The hub-side surface a transport must expose to coordinate per-agent
+ * registration, mail routing, and outbound-audit hooks. SessionManager
+ * and HubLink in `@intx/hub-agent` depend on this interface rather
+ * than on `InMemoryTransport` directly so custom hosts can supply
+ * their own backend (e.g. an SMTP/IMAP relay) without touching the
+ * package's seams.
+ */
+export interface HubTransport {
+  register(address: string, crypto: CryptoProvider): void;
+  unregister(address: string): void;
+  getTransportFor(address: string): MessageTransport;
+  setRemoteSendHandler(handler: RemoteSendHandler): void;
+  addMessageSentHandler(handler: MessageSentHandler): void;
+  /**
+   * Drop a hub-routed RFC 2822 message directly into an address's
+   * inbox. Used by the wire layer (HubLink) for inbound mail frames.
+   */
+  deliver(address: string, message: Uint8Array): void;
+}
+
+/**
  * In-memory MessageTransport implementing full IMAP semantics within a
  * single process. Messages are stored as real RFC 2822 MIME byte buffers.
  *
@@ -50,7 +71,7 @@ import {
  *
  * Addresses must be registered before sending or receiving messages.
  */
-export class InMemoryTransport implements MessageTransport {
+export class InMemoryTransport implements MessageTransport, HubTransport {
   readonly #entries = new Map<string, AddressEntry>();
   #remoteSendHandler: RemoteSendHandler | undefined;
   readonly #messageSentHandlers = new Set<MessageSentHandler>();
