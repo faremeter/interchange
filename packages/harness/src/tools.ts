@@ -17,6 +17,7 @@ import type {
   SearchQuery,
 } from "@intx/types/runtime";
 import { InterchangeType } from "@intx/types/runtime";
+import type { DeployToolInfo } from "./deploy-tree";
 
 type ToolHandler = (call: ToolCall, signal: AbortSignal) => Promise<ToolResult>;
 
@@ -592,34 +593,90 @@ export function buildMailToolHandlers(
 }
 
 /**
- * Combine mail tool handlers with a caller-supplied ToolRunner into a
- * single unified ToolRunner. Throws at call time if a name collision exists
- * between mail tools and the caller-supplied tools.
+ * Combine mail tool handlers with the caller-supplied ToolRunner and the
+ * deploy tree's tool entries into a single unified ToolRunner. Each name
+ * may appear in at most one of the three sources; collisions throw at
+ * construction time (startup) so they fail loudly before any inference
+ * happens.
  *
- * The collision check runs at construction time (startup), not at invocation
- * time, so it fails loudly before any inference happens.
+ * Because names are disjoint, every call routes to exactly one arm. The
+ * runtime check order is:
+ *   mail handler
+ *     → deploy tool with handler  (error: handler.ts not yet implemented)
+ *     → caller tool                (caller's runner)
+ *     → deploy tool without handler (error: declared, no built-in match)
+ *     → unknown
  */
 export function buildCombinedRunner(
   mailHandlers: Map<string, ToolHandler>,
   callerTools: ToolRunner,
   callerToolDefs: ToolDefinition[],
+  deployTools: DeployToolInfo[],
 ): ToolRunner {
-  // Check for collisions at startup.
+  const callerNames = new Set(callerToolDefs.map((d) => d.name));
+  const deployHandlerNames = new Set(
+    deployTools.filter((t) => t.hasHandler).map((t) => t.definition.name),
+  );
+  const deployNames = new Set(deployTools.map((t) => t.definition.name));
+
+  // Collision checks across the three sources. Each pair is checked
+  // independently so the error names both the colliding tool and the
+  // two sources involved.
   for (const def of callerToolDefs) {
     if (mailHandlers.has(def.name)) {
       throw new Error(
-        `Tool name collision: "${def.name}" is registered by both the mail tools and the caller-provided ToolRunner`,
+        `Tool name collision on "${def.name}": registered by both the mail tools and the caller-supplied ToolRunner`,
+      );
+    }
+  }
+  for (const t of deployTools) {
+    const name = t.definition.name;
+    if (mailHandlers.has(name)) {
+      throw new Error(
+        `Tool name collision on "${name}": registered by both the mail tools and the deploy tree`,
+      );
+    }
+    if (callerNames.has(name)) {
+      throw new Error(
+        `Tool name collision on "${name}": registered by both the caller-supplied ToolRunner and the deploy tree`,
       );
     }
   }
 
   return {
     async run(call: ToolCall, signal: AbortSignal): Promise<ToolResult> {
-      const handler = mailHandlers.get(call.name);
-      if (handler !== undefined) {
-        return handler(call, signal);
+      // Names are disjoint by the startup collision checks above, so
+      // the order of arms here only determines which arm handles a
+      // name unique to one source — never which arm wins a tie. The
+      // deploy-with-handler arm sits ahead of the caller arm so that a
+      // pure-deploy name with hasHandler reaches the not-implemented
+      // error rather than falling through to the unknown-tool default.
+      const mailHandler = mailHandlers.get(call.name);
+      if (mailHandler !== undefined) {
+        return mailHandler(call, signal);
       }
-      return callerTools.run(call, signal);
+      if (deployHandlerNames.has(call.name)) {
+        return {
+          callId: call.id,
+          content: `Tool "${call.name}" has a handler.ts but custom handler execution is not yet implemented`,
+          isError: true,
+        };
+      }
+      if (callerNames.has(call.name)) {
+        return callerTools.run(call, signal);
+      }
+      if (deployNames.has(call.name)) {
+        return {
+          callId: call.id,
+          content: `Tool "${call.name}" is declared in the deploy tree but has no handler and does not match a built-in tool`,
+          isError: true,
+        };
+      }
+      return {
+        callId: call.id,
+        content: `Unknown tool: "${call.name}"`,
+        isError: true,
+      };
     },
   };
 }

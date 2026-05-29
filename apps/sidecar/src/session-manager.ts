@@ -15,12 +15,7 @@ import path from "node:path";
 import git from "isomorphic-git";
 import { getLogger } from "@intx/log";
 import { evaluateGrants } from "@intx/authz";
-import {
-  createHarness,
-  readDeployTree,
-  type Harness,
-  type DeployToolInfo,
-} from "@intx/harness";
+import { createHarness, readDeployTree, type Harness } from "@intx/harness";
 import { createPosixTools } from "@intx/tools-posix";
 import { createLSPPlugin } from "@intx/tools-lsp";
 import { hasProvider } from "@intx/inference";
@@ -43,7 +38,6 @@ import type {
   InferenceEvent,
   InferenceSource,
   KeyPair,
-  ToolRunner,
   HarnessConfig as AgentConfig,
 } from "@intx/types/runtime";
 import { createBlobReader } from "@intx/types/runtime";
@@ -148,47 +142,6 @@ type ProvisionedAgent = {
   config: AgentConfig;
   keyPair: KeyPair;
 };
-
-export function buildToolDispatch(
-  posixTools: ToolRunner & { definitions: { name: string }[] },
-  deployTools: DeployToolInfo[],
-): ToolRunner {
-  const posixNames = new Set(posixTools.definitions.map((d) => d.name));
-  const handlerIndex = new Set(
-    deployTools.filter((t) => t.hasHandler).map((t) => t.definition.name),
-  );
-  const deployNames = new Set(deployTools.map((t) => t.definition.name));
-
-  return {
-    async run(call, signal) {
-      if (handlerIndex.has(call.name)) {
-        return {
-          callId: call.id,
-          content: `Tool "${call.name}" has a handler.ts but custom handler execution is not yet implemented`,
-          isError: true,
-        };
-      }
-
-      if (posixNames.has(call.name)) {
-        return posixTools.run(call, signal);
-      }
-
-      if (deployNames.has(call.name)) {
-        return {
-          callId: call.id,
-          content: `Tool "${call.name}" is declared in the deploy tree but has no handler and does not match a built-in tool`,
-          isError: true,
-        };
-      }
-
-      return {
-        callId: call.id,
-        content: `Unknown tool: "${call.name}"`,
-        isError: true,
-      };
-    },
-  };
-}
 
 export function createSessionManager(
   config: SessionManagerConfig,
@@ -352,15 +305,12 @@ export function createSessionManager(
       const workDir = path.join(storeDir, "workspace");
       await fs.promises.mkdir(workDir, { recursive: true });
 
-      const deployToolDefs = deployTree.tools.map((t) => t.definition);
       const blobReader = createBlobReader(storage);
       const posixTools = createPosixTools({
         cwd: workDir,
         plugins: [createLSPPlugin({ cwd: workDir })],
         blobReader,
       });
-      const toolDispatch = buildToolDispatch(posixTools, deployTree.tools);
-      const allToolDefs = [...posixTools.definitions, ...deployToolDefs];
 
       const harness = createHarness({
         address: agentAddress,
@@ -371,8 +321,8 @@ export function createSessionManager(
         storage,
         authorize,
         auditStore: storage,
-        deployTools: allToolDefs,
-        tools: toolDispatch,
+        deployTools: deployTree.tools,
+        tools: posixTools,
         onEvent(event: InferenceEvent) {
           if (
             event.type === "connector.reply" &&

@@ -27,6 +27,7 @@ import type {
   TokenUsage,
   ContextCommit,
   ToolCall,
+  ToolDefinition,
   ToolResult,
   InferenceEvent,
   LastCycleSource,
@@ -166,8 +167,15 @@ function makeCrypto(): CryptoProvider {
   };
 }
 
-function makeToolRunner(): ToolRunner {
+function makeToolRunner(): ToolRunner & { definitions: ToolDefinition[] } {
   return {
+    definitions: [
+      {
+        name: "test_tool",
+        description: "Generic mock tool used by harness tests",
+        inputSchema: { type: "object", properties: {} },
+      },
+    ],
     async run(call: ToolCall): Promise<ToolResult> {
       return { callId: call.id, content: "mock-result" };
     },
@@ -591,10 +599,13 @@ describe("Tool name collision detection", () => {
     };
 
     expect(() =>
-      buildCombinedRunner(mailHandlers, callerTools, [
-        { name: "mail_send", description: "test", inputSchema: {} },
-      ]),
-    ).toThrow('Tool name collision: "mail_send"');
+      buildCombinedRunner(
+        mailHandlers,
+        callerTools,
+        [{ name: "mail_send", description: "test", inputSchema: {} }],
+        [],
+      ),
+    ).toThrow('Tool name collision on "mail_send"');
   });
 
   test("buildCombinedRunner succeeds when no name collisions", () => {
@@ -607,10 +618,15 @@ describe("Tool name collision detection", () => {
     };
 
     expect(() =>
-      buildCombinedRunner(mailHandlers, callerTools, [
-        { name: "read_file", description: "test", inputSchema: {} },
-        { name: "write_file", description: "test", inputSchema: {} },
-      ]),
+      buildCombinedRunner(
+        mailHandlers,
+        callerTools,
+        [
+          { name: "read_file", description: "test", inputSchema: {} },
+          { name: "write_file", description: "test", inputSchema: {} },
+        ],
+        [],
+      ),
     ).not.toThrow();
   });
 
@@ -623,7 +639,7 @@ describe("Tool name collision detection", () => {
       },
     };
 
-    const runner = buildCombinedRunner(mailHandlers, callerTools, []);
+    const runner = buildCombinedRunner(mailHandlers, callerTools, [], []);
 
     const call: ToolCall = {
       id: "c1",
@@ -652,7 +668,12 @@ describe("Tool name collision detection", () => {
       },
     };
 
-    const runner = buildCombinedRunner(mailHandlers, callerTools, []);
+    const runner = buildCombinedRunner(
+      mailHandlers,
+      callerTools,
+      [{ name: "read_file", description: "test", inputSchema: {} }],
+      [],
+    );
 
     const call: ToolCall = {
       id: "c2",
