@@ -13,11 +13,20 @@
 // for incoming deploy packs.
 
 import fsp from "node:fs/promises";
+import path from "node:path";
 import { getLogger } from "@intx/log";
 import { hasCode, hexDecode } from "@intx/types";
 import type { KeyPair } from "@intx/types/runtime";
 
-import { keysDir, privateKeyPath, publicKeyPath } from "./agent-paths";
+import {
+  KEYS_DIR_NAME,
+  META_FILE,
+  PRIVATE_KEY_FILE,
+  PUBLIC_KEY_FILE,
+  keysDir,
+  privateKeyPath,
+  publicKeyPath,
+} from "./agent-paths";
 
 const logger = getLogger(["interchange", "hub-agent", "key-store"]);
 
@@ -151,9 +160,9 @@ export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
     const results: AgentKeyEntry[] = [];
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const dir = `${dataDir}/${entry.name}`;
-      const privPath = `${dir}/keys/id_ed25519`;
-      const pubPath = `${dir}/keys/id_ed25519.pub`;
+      const dir = path.join(dataDir, entry.name);
+      const privPath = path.join(dir, KEYS_DIR_NAME, PRIVATE_KEY_FILE);
+      const pubPath = path.join(dir, KEYS_DIR_NAME, PUBLIC_KEY_FILE);
       const [privOk, pubOk] = await Promise.all([
         fileExists(privPath),
         fileExists(pubPath),
@@ -163,8 +172,7 @@ export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
         logger.warn`Skipping ${entry.name}: incomplete key pair (private=${String(privOk)}, public=${String(pubOk)})`;
         continue;
       }
-      const metaPath = `${dir}/agent.json`;
-      const metaRaw = await readOptional(metaPath);
+      const metaRaw = await readOptional(path.join(dir, META_FILE));
       if (metaRaw === null) {
         // A key pair without a metadata file means the agent was
         // half-provisioned and crashed. The restore composer logs
@@ -242,8 +250,12 @@ async function fileExists(filePath: string): Promise<boolean> {
   try {
     await fsp.access(filePath);
     return true;
-  } catch {
-    return false;
+  } catch (err: unknown) {
+    if (hasCode(err) && err.code === "ENOENT") return false;
+    // Any other failure mode (EACCES, EBUSY, EIO, …) must surface so a
+    // restart does not silently mint a fresh key over an existing one
+    // when the existence check is denied or transiently failing.
+    throw err;
   }
 }
 

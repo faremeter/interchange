@@ -5,14 +5,16 @@
 // The host supplies policy (the data directory, the harness builder
 // implementation, the per-agent crypto factory, the low-level crypto
 // primitives, the hub credentials); the orchestrator does the
-// composition. The forwardEvent / forwardConnectorState callback shim
-// that lived in the host entry point before this commit is now
-// encapsulated here: SessionManager's event sinks dispatch to a
-// closure the orchestrator points at hubLink.sendEvent and
-// hubLink.sendConnectorState immediately after both components exist.
+// composition. SessionManager and HubLink reference each other through
+// SessionEventSink / ConnectorStateSink callbacks, but SessionManager
+// is constructed first so the sinks initially point at no-op closures
+// the orchestrator owns. After HubLink is constructed those closures
+// are rewired to hubLink.sendEvent and hubLink.sendConnectorState, so
+// the cross-reference is contained inside this module rather than
+// leaking up to the host entry point.
 
 import { getLogger } from "@intx/log";
-import type { InMemoryTransport } from "@intx/mail-memory";
+import type { HubTransport } from "@intx/mail-memory";
 import type {
   ConnectorThreadState,
   CryptoProvider,
@@ -47,7 +49,7 @@ export type SidecarOrchestratorConfig = {
   sidecarId: string;
   token: string;
   dataDir: string;
-  transport: InMemoryTransport;
+  transport: HubTransport;
   buildHarness: HarnessBuilder;
   createAgentCrypto: (keyPair: KeyPair) => CryptoProvider;
   cryptoOps: SidecarCryptoOps;
@@ -95,7 +97,7 @@ export function createSidecarOrchestrator(
 
   // Pre-declare the sinks. SessionManager dispatches events into them
   // synchronously; the closures point at no-ops until HubLink is
-  // constructed, at which point they're swapped to the link's
+  // constructed below, at which point they are swapped to the link's
   // sendEvent / sendConnectorState methods.
   let dispatchEvent: (
     agentAddress: string,

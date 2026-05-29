@@ -1,4 +1,4 @@
-export { InMemoryTransport } from "./transport";
+export { InMemoryTransport, type HubTransport } from "./transport";
 export type {
   RemoteSendHandler,
   MessageSentHandler,

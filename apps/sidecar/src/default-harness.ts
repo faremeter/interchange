@@ -12,12 +12,15 @@ import path from "node:path";
 import { evaluateGrants } from "@intx/authz";
 import { createHarness, readDeployTree } from "@intx/harness";
 import { hasProvider } from "@intx/inference";
+import { getLogger } from "@intx/log";
 import { createIsogitStore, createMailAuditStore } from "@intx/storage-isogit";
 import { createPosixTools } from "@intx/tools-posix";
 import { createLSPPlugin } from "@intx/tools-lsp";
 import { createBlobReader } from "@intx/types/runtime";
 import type { InferenceSource } from "@intx/types/runtime";
 import type { HarnessBuilder, HarnessBundle } from "@intx/hub-agent";
+
+const logger = getLogger(["sidecar", "harness-builder"]);
 
 export function createDefaultHarnessBuilder(): HarnessBuilder {
   return {
@@ -97,12 +100,17 @@ export function createDefaultHarnessBuilder(): HarnessBuilder {
         // tool runner allocated to back its dispose method — child
         // processes, file handles, sockets, nothing — is its concern
         // to release, and the builder's job is to make sure dispose
-        // runs whether construction succeeds or fails.
+        // runs whether construction succeeds or fails. A failure in
+        // dispose is logged but does not mask the original
+        // construction failure that is about to propagate.
         try {
           await posixTools.dispose();
         } catch (disposeErr) {
-          // Best-effort: do not mask the original failure.
-          void disposeErr;
+          const msg =
+            disposeErr instanceof Error
+              ? disposeErr.message
+              : String(disposeErr);
+          logger.warn`posixTools.dispose failed during harness rollback: ${msg}`;
         }
         throw err;
       }

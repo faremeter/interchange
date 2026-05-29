@@ -102,8 +102,9 @@ export type HarnessConfig = {
    * handler. The harness checks for name collisions across mail tools,
    * caller-supplied tools, and deploy tools at startup; at dispatch time it
    * routes handler-bearing deploy tools to a not-yet-implemented error,
-   * handlerless deploy tools to the caller's runner, and undeclared names
-   * to an unknown-tool error.
+   * handlerless deploy tools that match no other source to a
+   * declared-but-no-handler error, and undeclared names to an unknown-tool
+   * error.
    */
   deployTools?: DeployToolInfo[];
 };

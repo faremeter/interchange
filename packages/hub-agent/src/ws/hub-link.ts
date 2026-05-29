@@ -8,7 +8,7 @@
 // touches raw key bytes.
 
 import { getLogger } from "@intx/log";
-import type { InMemoryTransport } from "@intx/mail-memory";
+import type { HubTransport } from "@intx/mail-memory";
 import { type } from "arktype";
 import {
   HubFrame,
@@ -64,7 +64,7 @@ export type HubLinkConfig = {
   hubURL: string;
   sidecarId: string;
   token: string;
-  transport: InMemoryTransport;
+  transport: HubTransport;
   sessions: SessionManager;
   /**
    * Key custody and per-frame crypto. HubLink calls into the store for
@@ -308,15 +308,21 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   async function handleChallengeFailed(
     frame: ChallengeFailedFrame,
   ): Promise<void> {
-    keyStore.forgetAgent(frame.address);
-
     // The hub rejected this agent during reconnect — tear it down so
-    // the address is freed for future deploys.
+    // the address is freed for future deploys. The agent may not have
+    // an active session (provisioned but never started, or already
+    // destroyed by a concurrent path), so any error from destroySession
+    // is logged but does not abort the wire layer. Destroy first so any
+    // disposer or mail-commit code still has the agent's crypto handle;
+    // forget the key material only once the session lifecycle methods
+    // have returned.
     try {
       await sessions.destroySession(frame.address);
-    } catch {
-      // Ignore — the agent may not have a running session.
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn`destroySession during challenge.failed for ${frame.address}: ${msg}`;
     }
+    keyStore.forgetAgent(frame.address);
 
     logger.warn`Challenge failed for ${frame.address}, agent torn down: ${frame.reason}`;
   }
@@ -670,6 +676,12 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       if (!closed) {
         cancelReconnect = scheduleReconnect(() => {
           cancelReconnect = null;
+          // Defense in depth for fake or misbehaving schedulers whose
+          // cancel function is a no-op: re-check `closed` before
+          // re-entering connect() so a fired-but-not-yet-executed
+          // callback after close() does not propagate the
+          // "called after close" throw out of the scheduler.
+          if (closed) return;
           connect();
         }, reconnectDelayMs);
       }
