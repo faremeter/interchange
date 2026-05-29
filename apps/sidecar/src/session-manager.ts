@@ -12,7 +12,6 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import git from "isomorphic-git";
 import { getLogger } from "@intx/log";
 import { evaluateGrants } from "@intx/authz";
 import { createHarness, readDeployTree, type Harness } from "@intx/harness";
@@ -23,10 +22,6 @@ import { createNodeCrypto, createSshSignature } from "@intx/crypto-node";
 import {
   createIsogitStore,
   createMailAuditStore,
-  initAgentRepo,
-  applyPack,
-  createDeployPack,
-  currentBranch,
   type CommitVerifier,
   type MailAuditStore,
 } from "@intx/storage-isogit";
@@ -42,14 +37,8 @@ import type {
 } from "@intx/types/runtime";
 import { createBlobReader } from "@intx/types/runtime";
 
-import { hasCode, hexEncode } from "@intx/types";
-
-import {
-  loadOrGenerateKeyPair,
-  persistAgentConfig,
-  scanExistingAgents,
-  type AgentKeyEntry,
-} from "./key-store";
+import { hexEncode } from "@intx/types";
+import type { AgentKeyStore, AgentRepoStore } from "@intx/hub-agent";
 
 const logger = getLogger(["interchange", "sidecar", "agents"]);
 
@@ -75,24 +64,25 @@ export type ConnectorStateSink = (
 
 export type SessionManagerConfig = {
   transport: InMemoryTransport;
-  dataDir: string;
+  repoStore: AgentRepoStore;
+  keyStore: AgentKeyStore;
   onEvent: SessionEventSink;
   onConnectorStateChanged: ConnectorStateSink;
 };
-
-// Sanitize an agent address into a safe directory name.
-// Replaces `@` with `_at_` and any character outside [a-zA-Z0-9_-] with `_`.
-export function sanitizeAddress(address: string): string {
-  return address.replace(/@/g, "_at_").replace(/[^a-zA-Z0-9_-]/g, "_");
-}
 
 export type ProvisionResult = {
   publicKey: string;
   keyPair: KeyPair;
 };
 
+export type RestoredAgent = {
+  address: string;
+  keyPair: KeyPair;
+  hubPublicKey?: string;
+};
+
 export type RestoreResult = {
-  restored: AgentKeyEntry[];
+  restored: RestoredAgent[];
   failed: string[];
 };
 
@@ -146,7 +136,8 @@ type ProvisionedAgent = {
 export function createSessionManager(
   config: SessionManagerConfig,
 ): SessionManager {
-  const { transport, dataDir, onEvent, onConnectorStateChanged } = config;
+  const { transport, repoStore, keyStore, onEvent, onConnectorStateChanged } =
+    config;
   const sessions = new Map<string, AgentSession>();
   const provisioned = new Map<string, ProvisionedAgent>();
   const pending = new Set<string>();
@@ -226,18 +217,14 @@ export function createSessionManager(
     pending.add(agentAddress);
 
     try {
-      const { keyPair, isNew } = await loadOrGenerateKeyPair(
-        dataDir,
-        agentAddress,
-      );
+      const { keyPair, isNew } = await keyStore.loadOrGenerateKey(agentAddress);
 
       if (isNew) {
         logger.info`Generated new key pair for ${agentAddress}`;
       }
 
-      const storeDir = path.join(dataDir, sanitizeAddress(agentAddress));
-      await initAgentRepo(storeDir);
-      await persistAgentConfig(dataDir, agentAddress, agentConfig);
+      await repoStore.initRepo(agentAddress);
+      await repoStore.persistConfig(agentAddress, agentConfig);
 
       provisioned.set(agentAddress, { config: agentConfig, keyPair });
 
@@ -284,7 +271,7 @@ export function createSessionManager(
 
       const sessionId = agentConfig.sessionId;
 
-      const storeDir = path.join(dataDir, sanitizeAddress(agentAddress));
+      const storeDir = repoStore.getAgentDir(agentAddress);
       const signer = async (payload: string) =>
         createSshSignature(payload, keyPair.privateKey, keyPair.publicKey);
       const storage = await createIsogitStore(storeDir, signer);
@@ -436,25 +423,66 @@ export function createSessionManager(
   }
 
   async function restoreSessions(): Promise<RestoreResult> {
-    const existing = await scanExistingAgents(dataDir);
-    const restored: AgentKeyEntry[] = [];
-    const failed: string[] = [];
+    // Restore policy: an agent is restorable only when the on-disk
+    // state from both stores is consistent. We scan keys and configs
+    // independently and join on address.
+    //
+    //   - config + key both present  → restorable
+    //   - key without config         → log warn, skip (operator can
+    //                                   re-pair or remove the dir)
+    //   - config without key         → log error, skip (the agent
+    //                                   identity is unrecoverable)
+    //
+    // Mismatches today surface only via the logger. A structured event
+    // surface is planned alongside the orchestrator extraction.
+    const [keysByAddress, configEntries] = await Promise.all([
+      keyStore.scanKeys().then((k) => new Map(k.map((e) => [e.address, e]))),
+      repoStore.scanConfigs(),
+    ]);
 
-    for (const entry of existing) {
+    const restored: RestoredAgent[] = [];
+    const failed: string[] = [];
+    const matched = new Set<string>();
+
+    for (const entry of configEntries) {
+      const keyEntry = keysByAddress.get(entry.address);
+      if (keyEntry === undefined) {
+        logger.error`Cannot restore "${entry.address}": agent.json exists but key pair is missing`;
+        failed.push(entry.address);
+        continue;
+      }
+      matched.add(entry.address);
+
+      const agent: RestoredAgent = {
+        address: entry.address,
+        keyPair: keyEntry.keyPair,
+      };
+      if (entry.hubPublicKey !== undefined) {
+        agent.hubPublicKey = entry.hubPublicKey;
+      }
+
       if (sessions.has(entry.address)) {
-        restored.push(entry);
+        restored.push(agent);
         continue;
       }
       try {
         await provisionAgent(entry.config);
+        if (entry.hubPublicKey !== undefined) {
+          await repoStore.persistPairing(entry.address, entry.hubPublicKey);
+        }
         await startSession(entry.address);
-        restored.push(entry);
+        restored.push(agent);
         logger.info`Restored session for ${entry.address}`;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        logger.error`Failed to restore session for ${entry.address}: ${msg}`;
         failed.push(entry.address);
+        logger.error`Failed to restore session for ${entry.address}: ${msg}`;
       }
+    }
+
+    for (const [address] of keysByAddress) {
+      if (matched.has(address)) continue;
+      logger.warn`Skipping "${address}": key pair on disk but no agent.json to restore from`;
     }
 
     return { restored, failed };
@@ -470,7 +498,7 @@ export function createSessionManager(
     }
     session.grants.current = grants;
     session.config = { ...session.config, grants };
-    await persistAgentConfig(dataDir, agentAddress, session.config);
+    await repoStore.persistConfig(agentAddress, session.config);
     logger.info`Updated grants for ${agentAddress} (${String(grants.length)} rules)`;
   }
 
@@ -496,7 +524,7 @@ export function createSessionManager(
     }
     session.harness.setSource(source);
     session.config = { ...session.config, sources, defaultSource };
-    await persistAgentConfig(dataDir, agentAddress, session.config);
+    await repoStore.persistConfig(agentAddress, session.config);
     logger.info`Updated sources for ${agentAddress}`;
   }
 
@@ -508,40 +536,35 @@ export function createSessionManager(
     transferId: string,
     verifyCommit?: CommitVerifier,
   ): Promise<void> {
-    const dir = path.join(dataDir, sanitizeAddress(agentAddress));
-    await applyPack(dir, pack, ref, commitSha, transferId, verifyCommit);
-    logger.info`Applied deploy pack for ${agentAddress} at ${commitSha.slice(0, 8)}`;
+    const args =
+      verifyCommit !== undefined
+        ? {
+            address: agentAddress,
+            pack,
+            ref,
+            commitSha,
+            transferId,
+            verifyCommit,
+          }
+        : { address: agentAddress, pack, ref, commitSha, transferId };
+    await repoStore.applyDeployPack(args);
   }
 
   async function createStatePack(
     agentAddress: string,
   ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }> {
-    const dir = path.join(dataDir, sanitizeAddress(agentAddress));
-    const branch = await currentBranch(dir);
-    const ref = `refs/heads/${branch}`;
-    const { pack, commitSha } = await createDeployPack(dir, ref);
-    return { pack, commitSha, ref };
+    return repoStore.createStatePack(agentAddress);
   }
 
   async function deleteAgentDir(agentAddress: string): Promise<void> {
-    const agentDir = path.join(dataDir, sanitizeAddress(agentAddress));
-    await fs.promises.rm(agentDir, { recursive: true });
-    logger.info`Deleted agent directory for ${agentAddress}`;
+    await repoStore.remove(agentAddress);
   }
 
   async function persistHubPublicKey(
     agentAddress: string,
     hubPublicKey: string,
   ): Promise<void> {
-    const session = sessions.get(agentAddress);
-    const prov = provisioned.get(agentAddress);
-    const config = session?.config ?? prov?.config;
-    if (config === undefined) {
-      throw new Error(
-        `Cannot persist hub key: no config for "${agentAddress}"`,
-      );
-    }
-    await persistAgentConfig(dataDir, agentAddress, config, hubPublicKey);
+    await repoStore.persistPairing(agentAddress, hubPublicKey);
   }
 
   async function commitInboundMail(
@@ -568,15 +591,7 @@ export function createSessionManager(
   }
 
   async function getDeployRef(agentAddress: string): Promise<string | null> {
-    const dir = path.join(dataDir, sanitizeAddress(agentAddress));
-    try {
-      return await git.resolveRef({ fs, dir, ref: "refs/heads/deploy" });
-    } catch (err: unknown) {
-      if (hasCode(err) && err.code === "NotFoundError") {
-        return null;
-      }
-      throw err;
-    }
+    return repoStore.getDeployRef(agentAddress);
   }
 
   return {

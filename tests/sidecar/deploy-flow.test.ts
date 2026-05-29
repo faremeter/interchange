@@ -30,7 +30,7 @@ import {
 } from "@intx/hub-sessions";
 import type { HarnessConfig } from "@intx/types/runtime";
 import { hexEncode } from "@intx/types";
-import { sanitizeAddress } from "../../apps/sidecar/src/session-manager";
+import { createAgentRepoStore as createSidecarRepoStore } from "@intx/hub-agent";
 import {
   assembleSignedContent,
   assembleMessage,
@@ -401,7 +401,9 @@ describe("deploy flow integration", () => {
     expect(hub.router.getRoutableAddresses()).toContain(AGENT_ADDRESS);
 
     // The deploy tree should have landed on the sidecar's disk.
-    const agentDir = path.join(sidecarDataDir, sanitizeAddress(AGENT_ADDRESS));
+    const agentDir = createSidecarRepoStore({
+      dataDir: sidecarDataDir,
+    }).getAgentDir(AGENT_ADDRESS);
 
     await waitFor(
       async () => {
@@ -576,7 +578,9 @@ describe("deploy flow integration", () => {
 
     // The ack is sent after deleteAgentDir completes, so the directory
     // is already gone by the time the promise resolves.
-    const agentDir = path.join(sidecarDataDir, sanitizeAddress(AGENT_ADDRESS));
+    const agentDir = createSidecarRepoStore({
+      dataDir: sidecarDataDir,
+    }).getAgentDir(AGENT_ADDRESS);
     const dirExists = await fs.promises
       .access(agentDir)
       .then(() => true)
