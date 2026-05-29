@@ -10,7 +10,6 @@
     "@intx/hub-agent": "workspace:*",
     "@intx/log": "workspace:*",
     "@intx/mail-memory": "workspace:*",
-    "@intx/pack-transport": "workspace:*",
     "@intx/storage-isogit": "workspace:*",
     "@intx/tools-lsp": "workspace:*",
     "@intx/tools-posix": "workspace:*",

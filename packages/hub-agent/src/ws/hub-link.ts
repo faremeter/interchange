@@ -1,12 +1,16 @@
-// Websocket client connecting the sidecar to the hub.
+// HubLink: the sidecar-side WebSocket protocol.
 //
-// Sends a register or reconnect frame on connect, forwards outbound mail
-// and inference events, and handles inbound agent lifecycle commands from
-// the hub. Owns per-agent key material for challenge/response signing.
+// Connects to the hub, sends the register or reconnect frame, forwards
+// outbound mail and inference events, and handles inbound agent
+// lifecycle commands. Per-agent key material lives in the maps below
+// for the lifetime of the connection; the cryptographic primitives the
+// link needs (Ed25519 detached signing for challenge frames, SSH
+// signature verification for deploy commits) come in through the
+// HubLinkLookups seam so the package never imports a specific crypto
+// backend. Future work moves the maps themselves onto AgentKeyStore;
+// this commit only severs the crypto dependency.
 
-import { sign as nodeSign } from "node:crypto";
 import { getLogger } from "@intx/log";
-import { importPrivateKeyBytes, verifySshSignature } from "@intx/crypto-node";
 import type { InMemoryTransport } from "@intx/mail-memory";
 import { type } from "arktype";
 import {
@@ -28,15 +32,16 @@ import {
 } from "@intx/types/sidecar";
 import type { KeyPair } from "@intx/types/runtime";
 
-import type {
-  ConnectorStateSink,
-  SessionManager,
-  SessionEventSink,
-} from "@intx/hub-agent";
 import { createPackReceiver, chunkPack } from "@intx/pack-transport";
 import { base64Decode, base64Encode, hexDecode, hexEncode } from "@intx/types";
 
-const logger = getLogger(["interchange", "sidecar", "ws"]);
+import type {
+  ConnectorStateSink,
+  SessionEventSink,
+  SessionManager,
+} from "../session-manager";
+
+const logger = getLogger(["interchange", "hub-agent", "ws"]);
 
 const DEFAULT_PING_INTERVAL_MS = 30_000;
 const DEFAULT_RECONNECT_DELAY_MS = 3_000;
@@ -59,18 +64,41 @@ const defaultScheduleReconnect: ReconnectScheduler = (callback, delayMs) => {
   };
 };
 
-export type WsClientConfig = {
-  hubUrl: string;
+/**
+ * Crypto primitives the link needs to execute the wire protocol. The
+ * host supplies these from its own crypto backend so the package never
+ * imports `@intx/crypto-node` (or any other specific implementation).
+ */
+export type HubLinkLookups = {
+  /**
+   * Sign the challenge payload (nonce + address bytes) with the agent's
+   * Ed25519 private key. Returns the raw 64-byte detached signature.
+   */
+  signEd25519(privateKey: Uint8Array, payload: Uint8Array): Uint8Array;
+  /**
+   * Verify an SSH signature block against a public key. Returns true on
+   * a valid signature, false otherwise.
+   */
+  verifySshSig(
+    payload: string,
+    signature: string,
+    publicKey: Uint8Array,
+  ): boolean;
+};
+
+export type HubLinkConfig = {
+  hubURL: string;
   sidecarId: string;
   token: string;
   transport: InMemoryTransport;
   sessions: SessionManager;
+  lookups: HubLinkLookups;
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
   scheduleReconnect?: ReconnectScheduler;
 };
 
-export type WsClient = {
+export type HubLink = {
   /**
    * Open the connection. Must not be called after `close()`; calling it
    * on a closed client throws.
@@ -81,13 +109,14 @@ export type WsClient = {
   sendConnectorState: ConnectorStateSink;
 };
 
-export function createWsClient(config: WsClientConfig): WsClient {
+export function createHubLink(config: HubLinkConfig): HubLink {
   const {
-    hubUrl,
+    hubURL,
     sidecarId,
     token,
     transport,
     sessions,
+    lookups,
     pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
     reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
     scheduleReconnect = defaultScheduleReconnect,
@@ -292,12 +321,11 @@ export function createWsClient(config: WsClientConfig): WsClient {
       payload.set(nonceBytes);
       payload.set(addressBytes, nonceBytes.length);
 
-      const privateKey = importPrivateKeyBytes(keys.privateKey);
-      const sig = nodeSign(null, payload, privateKey);
+      const sig = lookups.signEd25519(keys.privateKey, payload);
 
       responses.push({
         address,
-        signature: hexEncode(new Uint8Array(sig)),
+        signature: hexEncode(sig),
       });
     }
 
@@ -397,7 +425,7 @@ export function createWsClient(config: WsClientConfig): WsClient {
         throw new Error("signature_invalid: no hub public key for agent");
       }
       const verifyCommit = (payload: string, signature: string) =>
-        verifySshSignature(payload, signature, hubKey);
+        lookups.verifySshSig(payload, signature, hubKey);
 
       await sessions.applyDeployPack(
         frame.agentAddress,
@@ -581,13 +609,13 @@ export function createWsClient(config: WsClientConfig): WsClient {
     // against post-close reconnect attempts. A caller invoking connect()
     // after close() is a misuse, not a recoverable state — fail loudly.
     if (closed) {
-      throw new Error("WsClient.connect called after close");
+      throw new Error("HubLink.connect called after close");
     }
 
-    ws = new WebSocket(hubUrl);
+    ws = new WebSocket(hubURL);
 
     ws.addEventListener("open", () => {
-      logger.info`Connected to hub at ${hubUrl}`;
+      logger.info`Connected to hub at ${hubURL}`;
 
       lastPongAt = Date.now();
       pingTimer = setInterval(() => {

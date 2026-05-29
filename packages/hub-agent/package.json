@@ -13,9 +13,15 @@
     "@intx/harness": "workspace:*",
     "@intx/log": "workspace:*",
     "@intx/mail-memory": "workspace:*",
+    "@intx/pack-transport": "workspace:*",
     "@intx/storage-isogit": "workspace:*",
     "@intx/types": "workspace:*",
     "arktype": "catalog:",
     "isomorphic-git": "^1.27.2"
+  },
+  "devDependencies": {
+    "@intx/crypto-node": "workspace:*",
+    "@intx/hub-sessions": "workspace:*",
+    "hono": "^4.11.9"
   }
 }

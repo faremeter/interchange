@@ -26,3 +26,10 @@ export {
   type RestoreResult,
   type RestoredAgent,
 } from "./session-manager";
+export {
+  createHubLink,
+  type HubLink,
+  type HubLinkConfig,
+  type HubLinkLookups,
+  type ReconnectScheduler,
+} from "./ws/hub-link";

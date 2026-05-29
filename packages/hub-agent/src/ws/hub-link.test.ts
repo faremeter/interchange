@@ -7,7 +7,9 @@ import {
   type SidecarRouter,
   type WsHandle,
 } from "@intx/hub-sessions";
+import { sign as nodeSign } from "node:crypto";
 import { createInMemoryTransport } from "@intx/mail-memory";
+import { importPrivateKeyBytes, verifySshSignature } from "@intx/crypto-node";
 import { base64Encode, hexEncode } from "@intx/types";
 import type {
   HarnessConfig,
@@ -16,8 +18,22 @@ import type {
 } from "@intx/types/runtime";
 import type { GrantRule } from "@intx/types/authz";
 
-import { createWsClient, type ReconnectScheduler } from "./ws-client";
-import type { SessionManager } from "@intx/hub-agent";
+import {
+  createHubLink,
+  type HubLinkLookups,
+  type ReconnectScheduler,
+} from "./hub-link";
+import type { SessionManager } from "../session-manager";
+
+const testLookups: HubLinkLookups = {
+  signEd25519(privateKey, payload) {
+    const key = importPrivateKeyBytes(privateKey);
+    return new Uint8Array(nodeSign(null, payload, key));
+  },
+  verifySshSig(payload, signature, publicKey) {
+    return verifySshSignature(payload, signature, publicKey);
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -250,13 +266,14 @@ describe("sidecar↔hub integration", () => {
   test("sidecar registers with hub on connect", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${env.server.port}/ws`,
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "test-sidecar",
       token: "test-token",
 
       transport,
       sessions,
+      lookups: testLookups,
     });
 
     client.connect();
@@ -276,13 +293,14 @@ describe("sidecar↔hub integration", () => {
   test("hub sends session.create and sidecar acks", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${env.server.port}/ws`,
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-create",
       token: "test-token",
 
       transport,
       sessions,
+      lookups: testLookups,
     });
 
     client.connect();
@@ -309,13 +327,14 @@ describe("sidecar↔hub integration", () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
     sessions.shouldThrow = "provider not configured";
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${env.server.port}/ws`,
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-fail",
       token: "test-token",
 
       transport,
       sessions,
+      lookups: testLookups,
     });
 
     client.connect();
@@ -338,12 +357,13 @@ describe("sidecar↔hub integration", () => {
   test("session.start starts the harness", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${env.server.port}/ws`,
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-start",
       token: "test-token",
       transport,
       sessions,
+      lookups: testLookups,
     });
 
     client.connect();
@@ -372,12 +392,13 @@ describe("sidecar↔hub integration", () => {
   test("session.start failure removes agent from routing table", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${env.server.port}/ws`,
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-start-fail",
       token: "test-token",
       transport,
       sessions,
+      lookups: testLookups,
     });
 
     client.connect();
@@ -414,13 +435,14 @@ describe("sidecar↔hub integration", () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
     const startLength = env.agentEvents.length;
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${env.server.port}/ws`,
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-events",
       token: "test-token",
 
       transport,
       sessions,
+      lookups: testLookups,
     });
 
     client.connect();
@@ -464,13 +486,14 @@ describe("sidecar↔hub integration", () => {
     const kp = await generateKeyPair();
     transport.register("agent-1@test.interchange", createNodeCrypto(kp));
 
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${env.server.port}/ws`,
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-mail-in",
       token: "test-token",
 
       transport,
       sessions,
+      lookups: testLookups,
     });
 
     client.connect();
@@ -514,13 +537,14 @@ describe("sidecar↔hub integration", () => {
     transport.register("sender@test.interchange", createNodeCrypto(kp));
 
     const startLength = env.outboundMail.length;
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${env.server.port}/ws`,
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-mail-out",
       token: "test-token",
 
       transport,
       sessions,
+      lookups: testLookups,
     });
 
     client.connect();
@@ -568,19 +592,21 @@ describe("sidecar↔hub integration", () => {
     const kpB = await generateKeyPair();
     transportB.register("bob@test.interchange", createNodeCrypto(kpB));
 
-    const clientA = createWsClient({
-      hubUrl: `ws://localhost:${env.server.port}/ws`,
+    const clientA = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-alice",
       token: "test-token",
       transport: transportA,
       sessions: sessionsA,
+      lookups: testLookups,
     });
-    const clientB = createWsClient({
-      hubUrl: `ws://localhost:${env.server.port}/ws`,
+    const clientB = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-bob",
       token: "test-token",
       transport: transportB,
       sessions: sessionsB,
+      lookups: testLookups,
     });
 
     clientA.connect();
@@ -631,13 +657,14 @@ describe("sidecar↔hub integration", () => {
     const sessions = createMockSessionManager();
     sessions.addresses.push("tracked@test.interchange");
 
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${env.server.port}/ws`,
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-disconnect",
       token: "test-token",
 
       transport,
       sessions,
+      lookups: testLookups,
     });
 
     client.connect();
@@ -660,12 +687,13 @@ describe("sidecar↔hub integration", () => {
   test("pack.reject sent when applyDeployPack throws signature_invalid", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${env.server.port}/ws`,
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-pack-reject",
       token: "test-token",
       transport,
       sessions,
+      lookups: testLookups,
     });
 
     client.connect();
@@ -702,12 +730,13 @@ describe("sidecar↔hub integration", () => {
   test("signature_unsigned errors also map to pack.reject signature_invalid", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${env.server.port}/ws`,
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-pack-unsigned",
       token: "test-token",
       transport,
       sessions,
+      lookups: testLookups,
     });
 
     client.connect();
@@ -786,12 +815,13 @@ describe("sidecar↔hub integration", () => {
       port: 0,
     });
 
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${badServer.port}/ws`,
+    const client = createHubLink({
+      hubURL: `ws://localhost:${badServer.port}/ws`,
       sidecarId: "sc-bad-hex",
       token: "test-token",
       transport,
       sessions,
+      lookups: testLookups,
     });
 
     client.connect();
@@ -888,12 +918,13 @@ describe("sidecar↔hub integration", () => {
     });
     sessions.getDeployRef = async () => "a".repeat(40);
 
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${reconnectServer.port}/ws`,
+    const client = createHubLink({
+      hubURL: `ws://localhost:${reconnectServer.port}/ws`,
       sidecarId: "sc-restore-key",
       token: "test-token",
       transport,
       sessions,
+      lookups: testLookups,
     });
 
     client.connect();
@@ -957,13 +988,14 @@ describe("sidecar↔hub integration", () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
 
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${pingEnv.server.port}/ws`,
+    const client = createHubLink({
+      hubURL: `ws://localhost:${pingEnv.server.port}/ws`,
       sidecarId: "sc-ping",
       token: "test-token",
 
       transport,
       sessions,
+      lookups: testLookups,
       pingIntervalMs: 100,
     });
 
@@ -1001,13 +1033,14 @@ describe("sidecar↔hub integration", () => {
 
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const client = createWsClient({
-      hubUrl: `ws://localhost:${reconnectEnv.server.port}/ws`,
+    const client = createHubLink({
+      hubURL: `ws://localhost:${reconnectEnv.server.port}/ws`,
       sidecarId: "sc-reconnect-race",
       token: "test-token",
 
       transport,
       sessions,
+      lookups: testLookups,
       scheduleReconnect: fakeScheduleReconnect,
     });
 
