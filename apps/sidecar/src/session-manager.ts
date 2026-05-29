@@ -48,7 +48,7 @@ import type {
 } from "@intx/types/runtime";
 import { createBlobReader } from "@intx/types/runtime";
 
-import { hexEncode } from "@intx/types";
+import { hasCode, hexEncode } from "@intx/types";
 
 import {
   loadOrGenerateKeyPair,
@@ -56,7 +56,6 @@ import {
   scanExistingAgents,
   type AgentKeyEntry,
 } from "./key-store";
-import { hasCode } from "./errors";
 
 const logger = getLogger(["interchange", "sidecar", "agents"]);
 

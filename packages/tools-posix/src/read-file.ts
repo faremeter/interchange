@@ -1,8 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import type { BlobReader } from "@intx/types/runtime";
-
-import { hasCode } from "./errors";
+import { hasCode } from "@intx/types";
 
 export type ReadFileArgs = {
   path: string;

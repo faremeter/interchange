@@ -11,8 +11,8 @@ import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import { generateKeyPair } from "@intx/crypto-node";
 import { type KeyPair, HarnessConfig } from "@intx/types/runtime";
+import { hasCode } from "@intx/types";
 import { sanitizeAddress } from "./session-manager";
-import { hasCode } from "./errors";
 
 const logger = getLogger(["interchange", "sidecar", "keystore"]);
 

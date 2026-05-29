@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 
-import { hasCode } from "./errors";
+import { hasCode } from "@intx/types";
 
 export type EditFileArgs = {
   path: string;

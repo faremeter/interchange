@@ -1,4 +1,6 @@
-/** Type predicate for errors with a string `code` property (Node.js POSIX errors). */
+// Type guard for errors with a Node-style `{ code: string }` shape,
+// as thrown by Node.js (POSIX errno), isomorphic-git, and similar.
+
 export function hasCode(err: unknown): err is { code: string } {
   return (
     typeof err === "object" &&

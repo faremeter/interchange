@@ -1,7 +1,7 @@
 import { writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { hasCode } from "./errors";
+import { hasCode } from "@intx/types";
 
 export type WriteFileArgs = {
   path: string;
