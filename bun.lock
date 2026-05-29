@@ -259,6 +259,10 @@
         "arktype": "catalog:",
       },
     },
+    "packages/hub-agent": {
+      "name": "@intx/hub-agent",
+      "version": "0.0.0",
+    },
     "packages/hub-api": {
       "name": "@intx/hub-api",
       "version": "0.0.0",
@@ -675,6 +679,8 @@
     "@intx/example-ring-demo": ["@intx/example-ring-demo@workspace:examples/ring-demo"],
 
     "@intx/harness": ["@intx/harness@workspace:packages/harness"],
+
+    "@intx/hub-agent": ["@intx/hub-agent@workspace:packages/hub-agent"],
 
     "@intx/hub-api": ["@intx/hub-api@workspace:packages/hub-api"],
 

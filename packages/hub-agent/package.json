@@ -1,0 +1,12 @@
+{
+  "name": "@intx/hub-agent",
+  "version": "0.0.0",
+  "license": "LGPL-2.1-only",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  }
+}
