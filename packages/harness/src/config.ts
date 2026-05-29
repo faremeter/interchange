@@ -12,6 +12,7 @@ import type {
   BeforeToolExtension,
 } from "@intx/types/runtime";
 import type { AuthzCallResult, DefaultDirectorPolicy } from "@intx/inference";
+import type { DeployToolInfo } from "./deploy-tree";
 
 /**
  * Configuration passed to `createHarness`. All required fields must be
@@ -37,10 +38,12 @@ export type HarnessConfig = {
   storage: ContextStore;
 
   /**
-   * Caller-supplied tool runner (e.g. POSIX tools). The harness adds message
-   * tools on top. Name collisions with message.* tools throw at startup.
+   * Caller-supplied tool runner (e.g. POSIX tools), plus the definitions
+   * of the tool names it implements. The harness adds mail tools on top and
+   * layers deploy tools underneath. Name collisions across mail, caller, and
+   * deploy tools throw at startup.
    */
-  tools: ToolRunner;
+  tools: ToolRunner & { definitions: ToolDefinition[] };
 
   /** Callback invoked for every inference event emitted by the reactor. */
   onEvent: (event: InferenceEvent) => void;
@@ -94,11 +97,15 @@ export type HarnessConfig = {
   authorize?: (resource: string, action: string) => Promise<AuthzCallResult>;
 
   /**
-   * Tool definitions from the deploy tree. These are checked for name
-   * collisions with the harness's built-in message tools and included
-   * in the director's tool list for inference calls.
+   * Tool entries from the deploy tree. Each carries the tool definition and
+   * a `hasHandler` flag indicating whether the deploy tree provides a custom
+   * handler. The harness checks for name collisions across mail tools,
+   * caller-supplied tools, and deploy tools at startup; at dispatch time it
+   * routes handler-bearing deploy tools to a not-yet-implemented error,
+   * handlerless deploy tools to the caller's runner, and undeclared names
+   * to an unknown-tool error.
    */
-  deployTools?: ToolDefinition[];
+  deployTools?: DeployToolInfo[];
 };
 
 export function validateConfig(config: HarnessConfig): void {

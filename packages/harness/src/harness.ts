@@ -84,15 +84,23 @@ export function createHarness(config: HarnessConfig): Harness {
 
   const { transport, storage, source, tools, onEvent } = config;
 
-  const deployToolDefs = config.deployTools ?? [];
+  const deployTools = config.deployTools ?? [];
 
   let director: ReactorDirector;
   if (config.director !== undefined) {
     director = config.director;
   } else {
+    // Director tool list order — mail tools, then caller-declared tools,
+    // then deploy-declared tools — matches the order the sidecar
+    // produced before this routing was moved into the harness, so the
+    // prompt the model sees is unchanged across the API migration.
     director = createDefaultDirector(
       config.systemPrompt,
-      [...getMailToolDefinitions(), ...deployToolDefs],
+      [
+        ...getMailToolDefinitions(),
+        ...tools.definitions,
+        ...deployTools.map((t) => t.definition),
+      ],
       config.defaultDirectorPolicy ?? {},
     );
   }
@@ -104,7 +112,8 @@ export function createHarness(config: HarnessConfig): Harness {
   const combinedRunner = buildCombinedRunner(
     mailHandlers,
     tools,
-    deployToolDefs,
+    tools.definitions,
+    deployTools,
   );
 
   const sessionId = crypto.randomUUID();
