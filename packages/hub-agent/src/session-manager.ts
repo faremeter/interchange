@@ -1,54 +1,58 @@
-// Agent manager: creates and manages harness instances per agent.
+// Per-agent harness lifecycle.
 //
-// Each agent gets its own harness backed by a scoped view of the shared
-// InMemoryTransport. The manager handles agent lifecycle (deploy, undeploy,
-// abort) in response to control frames from the hub.
+// SessionManager owns the cross-agent state (provisioned/sessions maps,
+// the per-agent mail-commit queue, the last-checkpoint-hash buffer used
+// to thread connector reply hashes into outbound mail commits) and the
+// global transport handlers (addMessageSentHandler). Per-agent harness
+// construction lives behind the HarnessBuilder seam, supplied by the
+// host. The package itself depends only on the lifecycle infrastructure
+// (transport interface, mail-audit store type, crypto provider type)
+// and the stores from this same package — it does not pin the concrete
+// tool, storage, authz, or inference packages the harness is wired up
+// against. The host owns those.
 //
-// Deploy is a two-phase operation: provisionAgent sets up disk state (keys,
-// repo, config) without starting inference, and startSession reads the
-// deploy tree and launches the harness. This separation lets the hub push
-// a deploy pack between the two phases so tools are available at session
-// start.
+// Construction split between this module and the builder:
+//   - SessionManager handles: provisioned/sessions bookkeeping,
+//     transport.register/unregister/getTransportFor, AgentCrypto
+//     instantiation, the mail-commit queue, the addMessageSentHandler
+//     subscription, the rollback path on builder failure.
+//   - HarnessBuilder handles: storage + mailStore construction (from
+//     the per-agent signer), authz wiring (grantsRef + authorize
+//     closure), tool composition, harness construction.
+// The boundary keeps the cross-agent state owned by SessionManager and
+// the per-agent construction owned by the host. Pushing transport
+// registration into the builder would break the invariant; pushing
+// authz out of the builder would re-couple the package to authz.
 
-import fs from "node:fs";
-import path from "node:path";
 import { getLogger } from "@intx/log";
-import { evaluateGrants } from "@intx/authz";
-import { createHarness, readDeployTree, type Harness } from "@intx/harness";
-import { createPosixTools } from "@intx/tools-posix";
-import { createLSPPlugin } from "@intx/tools-lsp";
-import { hasProvider } from "@intx/inference";
-import { createNodeCrypto, createSshSignature } from "@intx/crypto-node";
-import {
-  createIsogitStore,
-  createMailAuditStore,
-  type CommitVerifier,
-  type MailAuditStore,
-} from "@intx/storage-isogit";
+import { hexEncode } from "@intx/types";
 import type { InMemoryTransport } from "@intx/mail-memory";
 import type { GrantRule } from "@intx/types/authz";
 import type {
   ConnectorThreadState,
+  CryptoProvider,
+  HarnessConfig as AgentConfig,
   InboundMessage,
   InferenceEvent,
   InferenceSource,
   KeyPair,
-  HarnessConfig as AgentConfig,
 } from "@intx/types/runtime";
-import { createBlobReader } from "@intx/types/runtime";
+import type { Harness } from "@intx/harness";
 
-import { hexEncode } from "@intx/types";
-import type { AgentKeyStore, AgentRepoStore } from "@intx/hub-agent";
+import type { AgentKeyEntry, AgentKeyStore } from "./agent-key-store";
+import type { AgentRepoStore } from "./agent-repo-store";
+import type { HarnessBuilder, HarnessBundle } from "./harness-builder";
 
-const logger = getLogger(["interchange", "sidecar", "agents"]);
+const logger = getLogger(["interchange", "hub-agent", "session"]);
 
+/**
+ * Public session record. The grants ref and disposers live inside the
+ * HarnessBundle the builder produced — they are not part of this type.
+ */
 export type AgentSession = {
-  harness: Harness;
   agentAddress: string;
   agentId: string;
-  grants: { current: GrantRule[] };
   config: AgentConfig;
-  disposers: (() => Promise<void>)[];
 };
 
 export type SessionEventSink = (
@@ -66,6 +70,13 @@ export type SessionManagerConfig = {
   transport: InMemoryTransport;
   repoStore: AgentRepoStore;
   keyStore: AgentKeyStore;
+  buildHarness: HarnessBuilder;
+  /**
+   * Per-agent crypto factory. Receives the agent's raw key pair and
+   * returns a CryptoProvider bound to it. Keeps the package free of
+   * `@intx/crypto-node`.
+   */
+  createAgentCrypto: (keyPair: KeyPair) => CryptoProvider;
   onEvent: SessionEventSink;
   onConnectorStateChanged: ConnectorStateSink;
 };
@@ -102,13 +113,17 @@ export type SessionManager = {
   isProvisioned(agentAddress: string): boolean;
   getAddresses(): string[];
   restoreSessions(): Promise<RestoreResult>;
+  /**
+   * Apply a deploy pack to the agent's repo. Thin wrapper around
+   * AgentRepoStore for callers that already have a SessionManager handle.
+   */
   applyDeployPack(
     agentAddress: string,
     pack: Uint8Array,
     ref: string,
     commitSha: string,
     transferId: string,
-    verifyCommit?: CommitVerifier,
+    verifyCommit?: (payload: string, signature: string) => boolean,
   ): Promise<void>;
   createStatePack(
     agentAddress: string,
@@ -126,22 +141,32 @@ export type SessionManager = {
   getSessionId(agentAddress: string): string | undefined;
 };
 
-// Agents that have been provisioned but not yet started. Holds the config
-// needed to create the harness once startSession is called.
 type ProvisionedAgent = {
   config: AgentConfig;
   keyPair: KeyPair;
 };
 
+type LiveSession = AgentSession & {
+  harness: Harness;
+  bundle: HarnessBundle;
+};
+
 export function createSessionManager(
   config: SessionManagerConfig,
 ): SessionManager {
-  const { transport, repoStore, keyStore, onEvent, onConnectorStateChanged } =
-    config;
-  const sessions = new Map<string, AgentSession>();
+  const {
+    transport,
+    repoStore,
+    keyStore,
+    buildHarness,
+    createAgentCrypto,
+    onEvent,
+    onConnectorStateChanged,
+  } = config;
+
+  const sessions = new Map<string, LiveSession>();
   const provisioned = new Map<string, ProvisionedAgent>();
   const pending = new Set<string>();
-  const mailStores = new Map<string, MailAuditStore>();
 
   // Checkpoint hash captured from the most recent connector.reply event for
   // each agent. Consumed (deleted) by the MessageSentHandler so that only
@@ -175,22 +200,28 @@ export function createSessionManager(
   }
 
   async function drainMailQueue(agentAddress: string): Promise<void> {
-    const pending = mailCommitQueues.get(agentAddress);
+    const inflight = mailCommitQueues.get(agentAddress);
     mailCommitQueues.delete(agentAddress);
-    if (pending !== undefined) await pending;
+    if (inflight !== undefined) await inflight;
   }
 
   transport.addMessageSentHandler(
     async ({ senderAddress, rawMessage, messageId }) => {
-      const store = mailStores.get(senderAddress);
-      if (store === undefined) {
-        logger.warn`No mail store for sender ${senderAddress}, skipping outbound audit for ${messageId}`;
-        return;
+      const session = sessions.get(senderAddress);
+      if (session === undefined) {
+        // Outbound mail for an address with no active session is a
+        // protocol violation — the transport should not have accepted
+        // the send. Surfacing this loudly catches the contract break
+        // before it propagates as silently-dropped audit records.
+        throw new Error(
+          `No active session for sender "${senderAddress}" — cannot audit outbound mail ${messageId}`,
+        );
       }
+      const mailStore = session.bundle.mailStore;
       const checkpointHash = lastCheckpointHashes.get(senderAddress);
       lastCheckpointHashes.delete(senderAddress);
       enqueueMailCommit(senderAddress, async () => {
-        const result = await store.commitMail(rawMessage, "out", {
+        const result = await mailStore.commitMail(rawMessage, "out", {
           ignoreDuplicate: true,
           ...(checkpointHash !== undefined ? { checkpointHash } : {}),
         });
@@ -255,61 +286,25 @@ export function createSessionManager(
         `No source matches defaultSource "${agentConfig.defaultSource}" for agent "${agentAddress}"`,
       );
     }
-    if (!hasProvider(source.provider)) {
-      throw new Error(
-        `Source provider "${source.provider}" is not registered for agent "${agentAddress}"`,
-      );
-    }
+    buildHarness.canBuildSource(source);
 
     provisioned.delete(agentAddress);
 
     try {
-      const crypto = createNodeCrypto(keyPair);
-
+      const crypto = createAgentCrypto(keyPair);
       transport.register(agentAddress, crypto);
       const agentTransport = transport.getTransportFor(agentAddress);
 
       const sessionId = agentConfig.sessionId;
-
       const storeDir = repoStore.getAgentDir(agentAddress);
-      const signer = async (payload: string) =>
-        createSshSignature(payload, keyPair.privateKey, keyPair.publicKey);
-      const storage = await createIsogitStore(storeDir, signer);
-      const mailStore = await createMailAuditStore(storeDir, signer);
-      mailStores.set(agentAddress, mailStore);
 
-      const deployTree = await readDeployTree(storeDir);
-      const systemPrompt = deployTree.systemPrompt ?? agentConfig.systemPrompt;
-
-      const { principalId, tenantId } = agentConfig;
-      const grantsRef = { current: agentConfig.grants };
-      const authorize = async (resource: string, action: string) =>
-        evaluateGrants(grantsRef.current, resource, action, {
-          principalId,
-          tenantId,
-        });
-
-      const workDir = path.join(storeDir, "workspace");
-      await fs.promises.mkdir(workDir, { recursive: true });
-
-      const blobReader = createBlobReader(storage);
-      const posixTools = createPosixTools({
-        cwd: workDir,
-        plugins: [createLSPPlugin({ cwd: workDir })],
-        blobReader,
-      });
-
-      const harness = createHarness({
-        address: agentAddress,
-        systemPrompt,
+      const bundle = await buildHarness.build({
+        agentAddress,
+        agentConfig,
         source,
-        transport: agentTransport,
+        storeDir,
+        agentTransport,
         crypto,
-        storage,
-        authorize,
-        auditStore: storage,
-        deployTools: deployTree.tools,
-        tools: posixTools,
         onEvent(event: InferenceEvent) {
           if (
             event.type === "connector.reply" &&
@@ -325,19 +320,17 @@ export function createSessionManager(
       });
 
       sessions.set(agentAddress, {
-        harness,
         agentAddress,
         agentId: agentConfig.agentId,
-        grants: grantsRef,
         config: agentConfig,
-        disposers: [() => posixTools.dispose()],
+        harness: bundle.harness,
+        bundle,
       });
 
-      harness.start();
+      bundle.harness.start();
       logger.info`Started session for ${agentAddress} (session ${sessionId})`;
     } catch (err) {
       sessions.delete(agentAddress);
-      mailStores.delete(agentAddress);
       mailCommitQueues.delete(agentAddress);
       try {
         transport.unregister(agentAddress);
@@ -347,6 +340,17 @@ export function createSessionManager(
       }
       provisioned.set(agentAddress, entry);
       throw err;
+    }
+  }
+
+  async function runDisposers(
+    session: LiveSession,
+    agentAddress: string,
+  ): Promise<void> {
+    for (const disposer of session.bundle.disposers) {
+      await disposer().catch((err: unknown) => {
+        logger.error`Disposer failed for ${agentAddress}: ${String(err)}`;
+      });
     }
   }
 
@@ -364,7 +368,6 @@ export function createSessionManager(
     await runDisposers(session, agentAddress);
     await drainMailQueue(agentAddress);
     sessions.delete(agentAddress);
-    mailStores.delete(agentAddress);
     transport.unregister(agentAddress);
     logger.info`Stopped session for ${agentAddress}`;
   }
@@ -386,20 +389,8 @@ export function createSessionManager(
     await runDisposers(session, agentAddress);
     await drainMailQueue(agentAddress);
     sessions.delete(agentAddress);
-    mailStores.delete(agentAddress);
     transport.unregister(agentAddress);
     logger.info`Aborted agent ${agentAddress}: ${reason}`;
-  }
-
-  async function runDisposers(
-    session: AgentSession,
-    agentAddress: string,
-  ): Promise<void> {
-    for (const disposer of session.disposers) {
-      await disposer().catch((err: unknown) => {
-        logger.error`Disposer failed for ${agentAddress}: ${String(err)}`;
-      });
-    }
   }
 
   function deliverMessage(agentAddress: string, message: InboundMessage): void {
@@ -424,17 +415,15 @@ export function createSessionManager(
 
   async function restoreSessions(): Promise<RestoreResult> {
     // Restore policy: an agent is restorable only when the on-disk
-    // state from both stores is consistent. We scan keys and configs
-    // independently and join on address.
+    // state from both stores is consistent. Scan keys and configs
+    // independently, then join on address. A config without a key is
+    // surfaced as a hard failure — the agent's identity cannot be
+    // recovered without the key pair on disk.
     //
-    //   - config + key both present  → restorable
-    //   - key without config         → log warn, skip (operator can
-    //                                   re-pair or remove the dir)
-    //   - config without key         → log error, skip (the agent
-    //                                   identity is unrecoverable)
-    //
-    // Mismatches today surface only via the logger. A structured event
-    // surface is planned alongside the orchestrator extraction.
+    // Key-without-config does not appear here because AgentKeyStore's
+    // scanKeys already requires a parseable agent.json before
+    // surfacing the directory, so the orphan-key case is filtered at
+    // the store boundary and never reaches this join.
     const [keysByAddress, configEntries] = await Promise.all([
       keyStore.scanKeys().then((k) => new Map(k.map((e) => [e.address, e]))),
       repoStore.scanConfigs(),
@@ -442,16 +431,16 @@ export function createSessionManager(
 
     const restored: RestoredAgent[] = [];
     const failed: string[] = [];
-    const matched = new Set<string>();
 
     for (const entry of configEntries) {
-      const keyEntry = keysByAddress.get(entry.address);
+      const keyEntry: AgentKeyEntry | undefined = keysByAddress.get(
+        entry.address,
+      );
       if (keyEntry === undefined) {
         logger.error`Cannot restore "${entry.address}": agent.json exists but key pair is missing`;
         failed.push(entry.address);
         continue;
       }
-      matched.add(entry.address);
 
       const agent: RestoredAgent = {
         address: entry.address,
@@ -480,11 +469,6 @@ export function createSessionManager(
       }
     }
 
-    for (const [address] of keysByAddress) {
-      if (matched.has(address)) continue;
-      logger.warn`Skipping "${address}": key pair on disk but no agent.json to restore from`;
-    }
-
     return { restored, failed };
   }
 
@@ -496,7 +480,7 @@ export function createSessionManager(
     if (session === undefined) {
       throw new Error(`No session exists for agent "${agentAddress}"`);
     }
-    session.grants.current = grants;
+    session.bundle.updateGrants(grants);
     session.config = { ...session.config, grants };
     await repoStore.persistConfig(agentAddress, session.config);
     logger.info`Updated grants for ${agentAddress} (${String(grants.length)} rules)`;
@@ -517,11 +501,7 @@ export function createSessionManager(
         `No source matches defaultSource "${defaultSource}" in update for agent "${agentAddress}"`,
       );
     }
-    if (!hasProvider(source.provider)) {
-      throw new Error(
-        `Source provider "${source.provider}" is not registered for agent "${agentAddress}"`,
-      );
-    }
+    buildHarness.canBuildSource(source);
     session.harness.setSource(source);
     session.config = { ...session.config, sources, defaultSource };
     await repoStore.persistConfig(agentAddress, session.config);
@@ -534,7 +514,7 @@ export function createSessionManager(
     ref: string,
     commitSha: string,
     transferId: string,
-    verifyCommit?: CommitVerifier,
+    verifyCommit?: (payload: string, signature: string) => boolean,
   ): Promise<void> {
     const args =
       verifyCommit !== undefined
@@ -571,13 +551,15 @@ export function createSessionManager(
     agentAddress: string,
     rawMessage: Uint8Array,
   ): Promise<void> {
-    const store = mailStores.get(agentAddress);
-    if (store === undefined) {
-      logger.warn`No mail store for ${agentAddress}, skipping inbound audit`;
-      return;
+    const session = sessions.get(agentAddress);
+    if (session === undefined) {
+      throw new Error(
+        `No active session for "${agentAddress}" — cannot audit inbound mail`,
+      );
     }
+    const mailStore = session.bundle.mailStore;
     enqueueMailCommit(agentAddress, async () => {
-      const result = await store.commitMail(rawMessage, "in", {
+      const result = await mailStore.commitMail(rawMessage, "in", {
         ignoreDuplicate: true,
       });
       if (result !== null) {

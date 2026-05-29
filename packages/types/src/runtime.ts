@@ -55,6 +55,16 @@ export interface CryptoProvider {
   sign(content: Uint8Array): Promise<Uint8Array>;
 
   /**
+   * Sign `payload` with the instance's private key using the SSH signature
+   * envelope (sshsig). Returns an ASCII-armored SSH SIGNATURE block suitable
+   * for the `gpgsig` header of a git commit or any other site that consumes
+   * `git verify-commit`-compatible signatures. The framing differs from
+   * `sign`'s raw output; callers that need either format should pick the
+   * matching method rather than reframing the result themselves.
+   */
+  signSsh(payload: string): Promise<string>;
+
+  /**
    * Verify that `signature` over `content` was produced by `publicKey`.
    * Returns true if the signature is valid; false otherwise.
    */

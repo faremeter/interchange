@@ -17,7 +17,7 @@ import type {
 import type { GrantRule } from "@intx/types/authz";
 
 import { createWsClient, type ReconnectScheduler } from "./ws-client";
-import type { SessionManager } from "./session-manager";
+import type { SessionManager } from "@intx/hub-agent";
 
 // ---------------------------------------------------------------------------
 // Helpers
