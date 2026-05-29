@@ -35,7 +35,7 @@ const log = getLogger(["interchange", "hub-agent", "orchestrator"]);
 export type SidecarCryptoOps = {
   generateKeyPair(): Promise<KeyPair>;
   signEd25519(privateKey: Uint8Array, payload: Uint8Array): Uint8Array;
-  verifySshSig(
+  verifySSHSig(
     payload: string,
     signature: string,
     publicKey: Uint8Array,
@@ -90,7 +90,7 @@ export function createSidecarOrchestrator(
     dataDir,
     generateKeyPair: cryptoOps.generateKeyPair,
     signEd25519: cryptoOps.signEd25519,
-    verifySshSig: cryptoOps.verifySshSig,
+    verifySSHSig: cryptoOps.verifySSHSig,
   });
 
   // Pre-declare the sinks. SessionManager dispatches events into them

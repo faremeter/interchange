@@ -5,7 +5,7 @@ import {
   createNodeCrypto,
   generateKeyPair,
   importPrivateKeyBytes,
-  verifySshSignature,
+  verifySSHSignature,
 } from "@intx/crypto-node";
 import { createSidecarOrchestrator } from "@intx/hub-agent";
 
@@ -35,7 +35,7 @@ const orchestrator = createSidecarOrchestrator({
       const key = importPrivateKeyBytes(privateKey);
       return new Uint8Array(nodeSign(null, payload, key));
     },
-    verifySshSig: verifySshSignature,
+    verifySSHSig: verifySSHSignature,
   },
 });
 

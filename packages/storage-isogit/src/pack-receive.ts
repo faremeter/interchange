@@ -7,7 +7,7 @@ import { readRawObject } from "./isogit-helpers";
  * Verifies the signature embedded in a git commit object.
  *
  * Callers bind this to their verification implementation (e.g.
- * verifySshSignature with the hub's public key). The storage layer does
+ * verifySSHSignature with the hub's public key). The storage layer does
  * not own key material.
  *
  * Returns true when the signature is valid. Should throw on malformed

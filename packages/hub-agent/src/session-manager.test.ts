@@ -73,7 +73,7 @@ function makeCrypto(kp: KeyPair): CryptoProvider {
     async sign() {
       return new Uint8Array(64);
     },
-    async signSsh() {
+    async signSSH() {
       return "unused";
     },
     async verify() {
@@ -178,7 +178,7 @@ function makeManagerHarness(
     dataDir,
     generateKeyPair: async () => makeKeyPair(11),
     signEd25519: () => new Uint8Array(64),
-    verifySshSig: () => true,
+    verifySSHSig: () => true,
   });
   const builder = makeRecordingBuilder(opts);
   const transport = createInMemoryTransport();

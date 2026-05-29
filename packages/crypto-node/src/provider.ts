@@ -1,7 +1,7 @@
 import { sign as nodeSign, verify as nodeVerify } from "node:crypto";
 import type { CryptoProvider, KeyPair } from "@intx/types/runtime";
 import { importPrivateKeyBytes, importPublicKeyBytes } from "./keys";
-import { createSshSignature } from "./sshsig";
+import { createSSHSignature } from "./sshsig";
 
 /**
  * Node.js implementation of CryptoProvider backed by Ed25519.
@@ -56,8 +56,8 @@ export class NodeCrypto implements CryptoProvider {
    * `gpgsig` header when the allowed_signers file lists this instance's
    * public key.
    */
-  async signSsh(payload: string): Promise<string> {
-    return createSshSignature(
+  async signSSH(payload: string): Promise<string> {
+    return createSSHSignature(
       payload,
       this.#privateKeyBytes,
       this.#publicKeyBytes,

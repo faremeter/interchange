@@ -62,7 +62,7 @@ export interface CryptoProvider {
    * `sign`'s raw output; callers that need either format should pick the
    * matching method rather than reframing the result themselves.
    */
-  signSsh(payload: string): Promise<string>;
+  signSSH(payload: string): Promise<string>;
 
   /**
    * Verify that `signature` over `content` was produced by `publicKey`.

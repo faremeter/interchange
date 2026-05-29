@@ -83,7 +83,7 @@ function buildSignedData(messageHash: Uint8Array): Uint8Array {
   return result;
 }
 
-function armorSshSig(binaryBlob: Uint8Array): string {
+function armorSSHSig(binaryBlob: Uint8Array): string {
   const b64 = Buffer.from(binaryBlob).toString("base64");
   const lines: string[] = ["-----BEGIN SSH SIGNATURE-----"];
   for (let i = 0; i < b64.length; i += 70) {
@@ -93,7 +93,7 @@ function armorSshSig(binaryBlob: Uint8Array): string {
   return lines.join("\n");
 }
 
-function dearmorSshSig(armored: string): Uint8Array {
+function dearmorSSHSig(armored: string): Uint8Array {
   const beginMarker = "-----BEGIN SSH SIGNATURE-----";
   const endMarker = "-----END SSH SIGNATURE-----";
   const beginIdx = armored.indexOf(beginMarker);
@@ -113,7 +113,7 @@ function dearmorSshSig(armored: string): Uint8Array {
  * in a git commit's gpgsig header. Compatible with `git verify-commit`
  * when the allowed_signers file lists the corresponding public key.
  */
-export function createSshSignature(
+export function createSSHSignature(
   payload: string,
   privateKeyBytes: Uint8Array,
   publicKeyBytes: Uint8Array,
@@ -146,7 +146,7 @@ export function createSshSignature(
     offset += part.length;
   }
 
-  return armorSshSig(output);
+  return armorSSHSig(output);
 }
 
 /**
@@ -157,12 +157,12 @@ export function createSshSignature(
  * version or algorithm). Returns false only when the signature is
  * structurally valid but cryptographically incorrect.
  */
-export function verifySshSignature(
+export function verifySSHSignature(
   payload: string,
   signature: string,
   publicKeyBytes: Uint8Array,
 ): boolean {
-  const blob = dearmorSshSig(signature);
+  const blob = dearmorSSHSig(signature);
 
   let offset = 0;
 

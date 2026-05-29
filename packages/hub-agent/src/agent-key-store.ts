@@ -38,7 +38,7 @@ export type AgentKeyStoreDeps = {
    * Verify an SSH signature block against the supplied public key.
    * Used by verifyDeployCommit.
    */
-  verifySshSig: (
+  verifySSHSig: (
     payload: string,
     signature: string,
     publicKey: Uint8Array,
@@ -93,7 +93,7 @@ export type AgentKeyStore = {
 };
 
 export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
-  const { dataDir, generateKeyPair, signEd25519, verifySshSig } = deps;
+  const { dataDir, generateKeyPair, signEd25519, verifySSHSig } = deps;
 
   const agentKeys = new Map<string, KeyPair>();
   const hubKeys = new Map<string, Uint8Array>();
@@ -220,7 +220,7 @@ export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
         `signature_invalid: no hub public key recorded for "${address}"`,
       );
     }
-    return verifySshSig(payload, signature, hubKey);
+    return verifySSHSig(payload, signature, hubKey);
   }
 
   function forgetAgent(address: string): void {
