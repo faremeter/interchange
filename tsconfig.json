@@ -40,6 +40,7 @@
     { "path": "examples/agent-structured-payload" },
     { "path": "examples/agent-gemini-image" },
     { "path": "examples/posix-demo" },
-    { "path": "examples/ring-demo" }
+    { "path": "examples/ring-demo" },
+    { "path": "tests/hub-agent" }
   ]
 }

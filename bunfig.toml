@@ -5,6 +5,6 @@
 # run as a separate pass after the main suite via package.json's `test`
 # script.
 exclude = [
-  "tests/sidecar/deploy-flow.test.ts",
+  "tests/hub-agent/deploy-flow.test.ts",
   "tests/inference/transform-cutover.test.ts",
 ]

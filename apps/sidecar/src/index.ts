@@ -1,22 +1,29 @@
+import { sign as nodeSign } from "node:crypto";
 import { setup, getLogger } from "@intx/log";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { ConnectorThreadState, InferenceEvent } from "@intx/types/runtime";
-import { createNodeCrypto, generateKeyPair } from "@intx/crypto-node";
+import {
+  createNodeCrypto,
+  generateKeyPair,
+  importPrivateKeyBytes,
+  verifySshSignature,
+} from "@intx/crypto-node";
 import {
   createAgentKeyStore,
   createAgentRepoStore,
+  createHubLink,
   createSessionManager,
+  type HubLinkLookups,
 } from "@intx/hub-agent";
 
 import { createDefaultHarnessBuilder } from "./default-harness";
-import { createWsClient } from "./ws-client";
 
 await setup();
 
 const log = getLogger(["sidecar"]);
 
-const hubUrl = process.env["HUB_WS_URL"];
-if (hubUrl === undefined) {
+const hubURL = process.env["HUB_WS_URL"];
+if (hubURL === undefined) {
   throw new Error("HUB_WS_URL environment variable is required");
 }
 
@@ -37,21 +44,31 @@ if (dataDir === undefined) {
 
 const transport = createInMemoryTransport();
 
-// Break the circular dependency between session manager and ws-client:
+// Break the circular dependency between SessionManager and HubLink:
 // the session manager fires events through this mutable reference,
-// which gets pointed at the real client after both are constructed.
+// which gets pointed at the real link after both are constructed.
 let forwardEvent: (a: string, s: string, e: InferenceEvent) => void = (
   _a,
   _s,
   _e,
 ) => {
-  // Replaced after ws-client is constructed.
+  // Replaced after HubLink is constructed.
 };
 let forwardConnectorState: (
   a: string,
   state: ConnectorThreadState | null,
 ) => void = (_a, _state) => {
-  // Replaced after ws-client is constructed.
+  // Replaced after HubLink is constructed.
+};
+
+const lookups: HubLinkLookups = {
+  signEd25519(privateKey, payload) {
+    const key = importPrivateKeyBytes(privateKey);
+    return new Uint8Array(nodeSign(null, payload, key));
+  },
+  verifySshSig(payload, signature, publicKey) {
+    return verifySshSignature(payload, signature, publicKey);
+  },
 };
 
 const repoStore = createAgentRepoStore({ dataDir });
@@ -72,16 +89,17 @@ const sessions = createSessionManager({
   },
 });
 
-const client = createWsClient({
-  hubUrl,
+const hubLink = createHubLink({
+  hubURL,
   sidecarId,
   token,
   transport,
   sessions,
+  lookups,
 });
 
-forwardEvent = client.sendEvent;
-forwardConnectorState = client.sendConnectorState;
-client.connect();
+forwardEvent = hubLink.sendEvent;
+forwardConnectorState = hubLink.sendConnectorState;
+hubLink.connect();
 
-log.info("Sidecar {sidecarId} connecting to {hubUrl}", { sidecarId, hubUrl });
+log.info("Sidecar {sidecarId} connecting to {hubURL}", { sidecarId, hubURL });

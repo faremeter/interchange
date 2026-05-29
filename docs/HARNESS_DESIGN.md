@@ -29,14 +29,16 @@ The sidecar manages agent harnesses on behalf of the hub. Each agent gets its ow
 
 ## Sidecar Package Structure
 
+The sidecar app is a thin wiring file that composes building blocks
+out of `@intx/hub-agent`. The per-agent disk layout, harness
+lifecycle, and the hub WebSocket protocol live in the package; the
+app supplies the concrete crypto / tool / storage / authz plugins.
+
 ```
 apps/sidecar/
 ├── src/
-│   ├── main.ts              # Entry point, wires session manager + ws client
-│   ├── ws-client.ts         # WebSocket client to hub (frame protocol)
-│   ├── session-manager.ts   # Creates/destroys harness instances per agent
-│   ├── key-store.ts         # Per-agent Ed25519 key pairs and config persistence
-│   └── ws-client.test.ts    # Tests
+│   ├── index.ts             # Entry point, wires the stores, SessionManager, and HubLink
+│   └── default-harness.ts   # HarnessBuilder implementation using posix/LSP/storage-isogit/authz
 ├── package.json
 └── tsconfig.json
 ```
