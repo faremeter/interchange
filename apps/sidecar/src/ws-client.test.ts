@@ -16,7 +16,7 @@ import type {
 } from "@intx/types/runtime";
 import type { GrantRule } from "@intx/types/authz";
 
-import { createWsClient } from "./ws-client";
+import { createWsClient, type ReconnectScheduler } from "./ws-client";
 import type { SessionManager } from "./session-manager";
 
 // ---------------------------------------------------------------------------
@@ -981,6 +981,58 @@ describe("sidecar↔hub integration", () => {
     } finally {
       client.close();
       pingEnv.server.stop(true);
+    }
+  });
+
+  test("close cancels a pending reconnect scheduled by the previous disconnect", async () => {
+    const reconnectEnv = startTestServer();
+
+    // Inject a fake scheduler so we can observe the reconnect callback
+    // directly rather than waiting for a real timer. The cancel
+    // function nils the captured callback; after close() the callback
+    // must be gone, otherwise the bug is present.
+    let pendingReconnect: (() => void) | null = null;
+    const fakeScheduleReconnect: ReconnectScheduler = (cb) => {
+      pendingReconnect = cb;
+      return () => {
+        pendingReconnect = null;
+      };
+    };
+
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const client = createWsClient({
+      hubUrl: `ws://localhost:${reconnectEnv.server.port}/ws`,
+      sidecarId: "sc-reconnect-race",
+      token: "test-token",
+
+      transport,
+      sessions,
+      scheduleReconnect: fakeScheduleReconnect,
+    });
+
+    try {
+      client.connect();
+      await waitFor(() =>
+        reconnectEnv.router
+          .getConnectedSidecars()
+          .includes("sc-reconnect-race"),
+      );
+
+      // Force a disconnect by stopping the server. The WebSocket fires
+      // its close event on the client, which schedules a reconnect
+      // through the fake scheduler.
+      reconnectEnv.server.stop(true);
+      await waitFor(() => pendingReconnect !== null);
+
+      // close() must cancel the scheduled reconnect. Without the fix
+      // the cancel function never runs and pendingReconnect stays
+      // non-null.
+      client.close();
+      expect(pendingReconnect).toBeNull();
+    } finally {
+      client.close();
+      reconnectEnv.server.stop(true);
     }
   });
 });
