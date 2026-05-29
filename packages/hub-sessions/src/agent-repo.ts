@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import git from "isomorphic-git";
-import { createSshSignature } from "@intx/crypto-node";
+import { createSSHSignature } from "@intx/crypto-node";
 import {
   initRepo,
   createDeployPack,
@@ -151,7 +151,7 @@ export function createAgentRepoStore(config: {
       ref: DEPLOY_REF,
       signingKey: "sshsig",
       onSign: async ({ payload }) => ({
-        signature: createSshSignature(
+        signature: createSSHSignature(
           payload,
           signingKey.privateKey,
           signingKey.publicKey,

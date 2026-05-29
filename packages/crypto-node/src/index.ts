@@ -9,4 +9,4 @@ export { canonicalizeText, canonicalizeBytes } from "./canonicalize";
 export { createDetachedSignature } from "./sign";
 export { verifyDetachedSignature } from "./verify";
 export { armorEncode, armorDecode } from "./pgp";
-export { createSshSignature, verifySshSignature } from "./sshsig";
+export { createSSHSignature, verifySSHSignature } from "./sshsig";

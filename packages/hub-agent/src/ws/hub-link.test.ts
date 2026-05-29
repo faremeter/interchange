@@ -9,7 +9,7 @@ import {
 } from "@intx/hub-sessions";
 import { sign as nodeSign } from "node:crypto";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { importPrivateKeyBytes, verifySshSignature } from "@intx/crypto-node";
+import { importPrivateKeyBytes, verifySSHSignature } from "@intx/crypto-node";
 import { base64Encode, hexEncode } from "@intx/types";
 import type {
   HarnessConfig,
@@ -65,7 +65,7 @@ function createTestKeyStore(): AgentKeyStore & {
           `signature_invalid: no hub public key for "${address}"`,
         );
       }
-      return verifySshSignature(payload, signature, hubKey);
+      return verifySSHSignature(payload, signature, hubKey);
     },
     forgetAgent(address) {
       agentKeys.delete(address);
@@ -880,7 +880,7 @@ describe("sidecar↔hub integration", () => {
   });
 
   test("reconnect restores hubPublicKey into hubKeys map", async () => {
-    const { generateKeyPair, createSshSignature } = await import(
+    const { generateKeyPair, createSSHSignature } = await import(
       "@intx/crypto-node"
     );
 
@@ -1006,7 +1006,7 @@ describe("sidecar↔hub integration", () => {
       // Create a real signature with the hub's private key and verify
       // it round-trips through the restored verifyCommit callback.
       const payload = "tree abc\nauthor t <t@t> 0 +0000\n\ntest\n";
-      const sig = createSshSignature(
+      const sig = createSSHSignature(
         payload,
         hubKp.privateKey,
         hubKp.publicKey,
@@ -1016,7 +1016,7 @@ describe("sidecar↔hub integration", () => {
       // A signature from a different key must fail, proving the callback
       // is bound to the specific hub key that was restored.
       const wrongKp = await generateKeyPair();
-      const wrongSig = createSshSignature(
+      const wrongSig = createSSHSignature(
         payload,
         wrongKp.privateKey,
         wrongKp.publicKey,

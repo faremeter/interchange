@@ -6,7 +6,7 @@ import { canonicalizeText, canonicalizeBytes } from "./canonicalize";
 import { createDetachedSignature } from "./sign";
 import { verifyDetachedSignature } from "./verify";
 import { armorEncode, armorDecode, encodeMPI, decodeMPI } from "./pgp";
-import { createSshSignature, verifySshSignature } from "./sshsig";
+import { createSSHSignature, verifySSHSignature } from "./sshsig";
 
 // ---------------------------------------------------------------------------
 // Key generation
@@ -362,13 +362,13 @@ describe("createDetachedSignature / verifyDetachedSignature", () => {
 // SSH Signature (SSHSIG) format
 // ---------------------------------------------------------------------------
 
-describe("createSshSignature / verifySshSignature", () => {
+describe("createSSHSignature / verifySSHSignature", () => {
   test("round-trips a signature", async () => {
     const kp = await generateKeyPair();
     const payload =
       "tree abc123\nauthor Test <t@t> 1700000000 +0000\n\ncommit msg\n";
-    const sig = createSshSignature(payload, kp.privateKey, kp.publicKey);
-    const ok = verifySshSignature(payload, sig, kp.publicKey);
+    const sig = createSSHSignature(payload, kp.privateKey, kp.publicKey);
+    const ok = verifySSHSignature(payload, sig, kp.publicKey);
     expect(ok).toBe(true);
   });
 
@@ -376,15 +376,15 @@ describe("createSshSignature / verifySshSignature", () => {
     const kp1 = await generateKeyPair();
     const kp2 = await generateKeyPair();
     const payload = "test payload";
-    const sig = createSshSignature(payload, kp1.privateKey, kp1.publicKey);
-    const ok = verifySshSignature(payload, sig, kp2.publicKey);
+    const sig = createSSHSignature(payload, kp1.privateKey, kp1.publicKey);
+    const ok = verifySSHSignature(payload, sig, kp2.publicKey);
     expect(ok).toBe(false);
   });
 
   test("returns false for tampered payload", async () => {
     const kp = await generateKeyPair();
-    const sig = createSshSignature("original", kp.privateKey, kp.publicKey);
-    const ok = verifySshSignature("tampered", sig, kp.publicKey);
+    const sig = createSSHSignature("original", kp.privateKey, kp.publicKey);
+    const ok = verifySSHSignature("tampered", sig, kp.publicKey);
     expect(ok).toBe(false);
   });
 
@@ -392,7 +392,7 @@ describe("createSshSignature / verifySshSignature", () => {
     const bad =
       "-----BEGIN SSH SIGNATURE-----\nYQ==\n-----END SSH SIGNATURE-----";
     expect(() =>
-      verifySshSignature("payload", bad, new Uint8Array(32)),
+      verifySSHSignature("payload", bad, new Uint8Array(32)),
     ).toThrow();
   });
 
@@ -402,13 +402,13 @@ describe("createSshSignature / verifySshSignature", () => {
       Buffer.from("BADMAG").toString("base64") +
       "\n-----END SSH SIGNATURE-----";
     expect(() =>
-      verifySshSignature("payload", garbage, new Uint8Array(32)),
+      verifySSHSignature("payload", garbage, new Uint8Array(32)),
     ).toThrow(/magic/);
   });
 
   test("armor format has correct markers", async () => {
     const kp = await generateKeyPair();
-    const sig = createSshSignature("test", kp.privateKey, kp.publicKey);
+    const sig = createSSHSignature("test", kp.privateKey, kp.publicKey);
     expect(sig).toStartWith("-----BEGIN SSH SIGNATURE-----\n");
     expect(sig).toEndWith("\n-----END SSH SIGNATURE-----");
   });
@@ -416,7 +416,7 @@ describe("createSshSignature / verifySshSignature", () => {
   test("binary structure matches SSHSIG wire format", async () => {
     const kp = await generateKeyPair();
     const payload = "tree abc\nauthor T <t@t> 1700000000 +0000\n\nmsg\n";
-    const sig = createSshSignature(payload, kp.privateKey, kp.publicKey);
+    const sig = createSSHSignature(payload, kp.privateKey, kp.publicKey);
 
     // Decode the armored signature
     const lines = sig.split("\n");

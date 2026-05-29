@@ -5,8 +5,8 @@ import path from "node:path";
 import git from "isomorphic-git";
 import {
   generateKeyPair,
-  createSshSignature,
-  verifySshSignature,
+  createSSHSignature,
+  verifySSHSignature,
 } from "@intx/crypto-node";
 import { initAgentRepo } from "./init";
 import {
@@ -431,7 +431,7 @@ async function makeSignedSourceRepo(keyPair: {
     author: { name: "Test", email: "test@test.dev" },
     signingKey: "sshsig",
     onSign: async ({ payload }) => ({
-      signature: createSshSignature(
+      signature: createSSHSignature(
         payload,
         keyPair.privateKey,
         keyPair.publicKey,
@@ -450,7 +450,7 @@ describe("applyPack signature verification", () => {
     const pack = await createPackFromRepo(source.dir, source.oids);
 
     const verifier: CommitVerifier = (payload, signature) =>
-      verifySshSignature(payload, signature, keyPair.publicKey);
+      verifySSHSignature(payload, signature, keyPair.publicKey);
 
     const targetDir = await tempDir();
     await initAgentRepo(targetDir);
@@ -479,7 +479,7 @@ describe("applyPack signature verification", () => {
     const pack = await createPackFromRepo(source.dir, source.oids);
 
     const verifier: CommitVerifier = (payload, signature) =>
-      verifySshSignature(payload, signature, verifierKey.publicKey);
+      verifySSHSignature(payload, signature, verifierKey.publicKey);
 
     const targetDir = await tempDir();
     await initAgentRepo(targetDir);
@@ -502,7 +502,7 @@ describe("applyPack signature verification", () => {
 
     const keyPair = await generateKeyPair();
     const verifier: CommitVerifier = (payload, signature) =>
-      verifySshSignature(payload, signature, keyPair.publicKey);
+      verifySSHSignature(payload, signature, keyPair.publicKey);
 
     const targetDir = await tempDir();
     await initAgentRepo(targetDir);

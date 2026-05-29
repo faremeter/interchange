@@ -154,7 +154,7 @@ function makeCrypto(): CryptoProvider {
     async sign(_content: Uint8Array): Promise<Uint8Array> {
       return new Uint8Array(64);
     },
-    async signSsh(_payload: string): Promise<string> {
+    async signSSH(_payload: string): Promise<string> {
       return "unused-in-this-test";
     },
     async verify(

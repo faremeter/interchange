@@ -39,7 +39,7 @@ export function createDefaultHarnessBuilder(): HarnessBuilder {
       onEvent,
       onConnectorStateChanged,
     }): Promise<HarnessBundle> {
-      const signer = (payload: string) => crypto.signSsh(payload);
+      const signer = (payload: string) => crypto.signSSH(payload);
 
       // Construct disk-backed siblings up front. If a later step throws
       // their handles are still safe to drop on the floor — the stores
