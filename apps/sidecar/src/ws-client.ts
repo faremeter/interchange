@@ -39,6 +39,25 @@ import { base64Decode, base64Encode, hexDecode, hexEncode } from "@intx/types";
 const logger = getLogger(["interchange", "sidecar", "ws"]);
 
 const DEFAULT_PING_INTERVAL_MS = 30_000;
+const DEFAULT_RECONNECT_DELAY_MS = 3_000;
+
+/**
+ * Schedules a deferred callback and returns a cancel function. Injection
+ * point for tests: a fake scheduler records the callback so the test
+ * can observe whether cancellation actually happened, without relying
+ * on wall-clock waits.
+ */
+export type ReconnectScheduler = (
+  callback: () => void,
+  delayMs: number,
+) => () => void;
+
+const defaultScheduleReconnect: ReconnectScheduler = (callback, delayMs) => {
+  const handle = setTimeout(callback, delayMs);
+  return () => {
+    clearTimeout(handle);
+  };
+};
 
 export type WsClientConfig = {
   hubUrl: string;
@@ -47,9 +66,15 @@ export type WsClientConfig = {
   transport: InMemoryTransport;
   sessions: SessionManager;
   pingIntervalMs?: number;
+  reconnectDelayMs?: number;
+  scheduleReconnect?: ReconnectScheduler;
 };
 
 export type WsClient = {
+  /**
+   * Open the connection. Must not be called after `close()`; calling it
+   * on a closed client throws.
+   */
   connect(): void;
   close(): void;
   sendEvent: SessionEventSink;
@@ -64,11 +89,14 @@ export function createWsClient(config: WsClientConfig): WsClient {
     transport,
     sessions,
     pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
+    reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
+    scheduleReconnect = defaultScheduleReconnect,
   } = config;
 
   let ws: WebSocket | null = null;
   let closed = false;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
+  let cancelReconnect: (() => void) | null = null;
   let lastPongAt = 0;
 
   // Per-agent key pairs for challenge signing.
@@ -549,7 +577,12 @@ export function createWsClient(config: WsClientConfig): WsClient {
   }
 
   function connect(): void {
-    if (closed) return;
+    // Reconnect cancellation in close() is the load-bearing protection
+    // against post-close reconnect attempts. A caller invoking connect()
+    // after close() is a misuse, not a recoverable state — fail loudly.
+    if (closed) {
+      throw new Error("WsClient.connect called after close");
+    }
 
     ws = new WebSocket(hubUrl);
 
@@ -636,7 +669,10 @@ export function createWsClient(config: WsClientConfig): WsClient {
         pingTimer = null;
       }
       if (!closed) {
-        setTimeout(() => connect(), 3000);
+        cancelReconnect = scheduleReconnect(() => {
+          cancelReconnect = null;
+          connect();
+        }, reconnectDelayMs);
       }
     });
 
@@ -647,6 +683,10 @@ export function createWsClient(config: WsClientConfig): WsClient {
 
   function close(): void {
     closed = true;
+    if (cancelReconnect !== null) {
+      cancelReconnect();
+      cancelReconnect = null;
+    }
     if (pingTimer !== null) {
       clearInterval(pingTimer);
       pingTimer = null;
