@@ -65,6 +65,7 @@
         "@intx/authz": "workspace:*",
         "@intx/crypto-node": "workspace:*",
         "@intx/harness": "workspace:*",
+        "@intx/hub-agent": "workspace:*",
         "@intx/log": "workspace:*",
         "@intx/mail-memory": "workspace:*",
         "@intx/pack-transport": "workspace:*",
@@ -262,6 +263,13 @@
     "packages/hub-agent": {
       "name": "@intx/hub-agent",
       "version": "0.0.0",
+      "dependencies": {
+        "@intx/log": "workspace:*",
+        "@intx/storage-isogit": "workspace:*",
+        "@intx/types": "workspace:*",
+        "arktype": "catalog:",
+        "isomorphic-git": "^1.27.2",
+      },
     },
     "packages/hub-api": {
       "name": "@intx/hub-api",
