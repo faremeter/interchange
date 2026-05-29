@@ -1,10 +1,14 @@
 import { setup, getLogger } from "@intx/log";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { ConnectorThreadState, InferenceEvent } from "@intx/types/runtime";
-import { generateKeyPair } from "@intx/crypto-node";
-import { createAgentKeyStore, createAgentRepoStore } from "@intx/hub-agent";
+import { createNodeCrypto, generateKeyPair } from "@intx/crypto-node";
+import {
+  createAgentKeyStore,
+  createAgentRepoStore,
+  createSessionManager,
+} from "@intx/hub-agent";
 
-import { createSessionManager } from "./session-manager";
+import { createDefaultHarnessBuilder } from "./default-harness";
 import { createWsClient } from "./ws-client";
 
 await setup();
@@ -52,11 +56,14 @@ let forwardConnectorState: (
 
 const repoStore = createAgentRepoStore({ dataDir });
 const keyStore = createAgentKeyStore({ dataDir, generateKeyPair });
+const buildHarness = createDefaultHarnessBuilder();
 
 const sessions = createSessionManager({
   transport,
   repoStore,
   keyStore,
+  buildHarness,
+  createAgentCrypto: createNodeCrypto,
   onEvent(agentAddress, sessionId, event) {
     forwardEvent(agentAddress, sessionId, event);
   },

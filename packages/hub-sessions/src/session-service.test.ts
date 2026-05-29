@@ -313,6 +313,7 @@ describe("SessionService", () => {
     fakeSig.fill(0xab);
     return {
       sign: async (_data: Uint8Array) => fakeSig,
+      signSsh: async () => "unused-in-this-test",
       verify: async () => true,
       getPublicKey: () => new Uint8Array(32),
     };
@@ -405,6 +406,9 @@ describe("SessionService", () => {
     const badProvider: CryptoProvider = {
       sign: async () => {
         throw new Error("signing failed");
+      },
+      signSsh: async () => {
+        throw new Error("unreachable in this test");
       },
       verify: async () => true,
       getPublicKey: () => new Uint8Array(32),

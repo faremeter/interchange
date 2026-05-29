@@ -1,6 +1,7 @@
 import { sign as nodeSign, verify as nodeVerify } from "node:crypto";
 import type { CryptoProvider, KeyPair } from "@intx/types/runtime";
 import { importPrivateKeyBytes, importPublicKeyBytes } from "./keys";
+import { createSshSignature } from "./sshsig";
 
 /**
  * Node.js implementation of CryptoProvider backed by Ed25519.
@@ -47,6 +48,20 @@ export class NodeCrypto implements CryptoProvider {
     const privateKey = importPrivateKeyBytes(this.#privateKeyBytes);
     const sig = nodeSign(null, content, privateKey);
     return new Uint8Array(sig);
+  }
+
+  /**
+   * Sign `payload` with the SSH signature envelope (sshsig). The returned
+   * ASCII-armored block is what `git verify-commit` expects in the commit's
+   * `gpgsig` header when the allowed_signers file lists this instance's
+   * public key.
+   */
+  async signSsh(payload: string): Promise<string> {
+    return createSshSignature(
+      payload,
+      this.#privateKeyBytes,
+      this.#publicKeyBytes,
+    );
   }
 
   /**

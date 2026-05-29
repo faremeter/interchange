@@ -32,7 +32,7 @@ import type {
   ConnectorStateSink,
   SessionManager,
   SessionEventSink,
-} from "./session-manager";
+} from "@intx/hub-agent";
 import { createPackReceiver, chunkPack } from "@intx/pack-transport";
 import { base64Decode, base64Encode, hexDecode, hexEncode } from "@intx/types";
 
