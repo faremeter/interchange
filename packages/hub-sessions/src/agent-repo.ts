@@ -7,6 +7,7 @@ import {
   createDeployPack,
   receivePackObjects,
 } from "@intx/storage-isogit";
+import { hasCode } from "@intx/types";
 
 const AUTHOR = {
   name: "interchange-hub",
@@ -58,15 +59,6 @@ export type AgentRepoStore = {
   /** Raw 32-byte Ed25519 public key used to sign deploy commits. */
   getSigningPublicKey(): Uint8Array;
 };
-
-function hasCode(err: unknown): err is { code: string } {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "code" in err &&
-    typeof (err as { code: unknown }).code === "string"
-  );
-}
 
 export function createAgentRepoStore(config: {
   dataDir: string;

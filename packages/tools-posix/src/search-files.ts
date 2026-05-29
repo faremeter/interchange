@@ -2,7 +2,8 @@ import type { Dirent } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { resolve, join } from "node:path";
 
-import { hasCode } from "./errors";
+import { hasCode } from "@intx/types";
+
 import { globToRegex, shouldSkip } from "./glob-match";
 
 export type SearchFilesArgs = {
