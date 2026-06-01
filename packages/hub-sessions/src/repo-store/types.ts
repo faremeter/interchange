@@ -65,20 +65,26 @@ export interface KindHandler {
    */
   directoryPrefix: string;
   /**
-   * Inspect the top-level entries of the expected commit's tree
-   * before the ref is advanced. Return `{ ok: false, reason }` to
-   * reject the pack. The substrate translates rejection into a
-   * thrown Error whose message begins with `"path_violation: "`.
+   * Inspect the prospective commit's tree before the ref is
+   * advanced. Return `{ ok: false, reason }` to reject the write.
+   * The substrate translates rejection into a thrown Error whose
+   * message begins with `"path_violation: "`.
    *
-   * Runs on every `receivePack` independently of the authorize
-   * verdict: authorize gates access, validatePush enforces content
-   * rules.
+   * Runs on every `receivePack` and every `writeTree` independently
+   * of the authorize verdict: authorize gates access, validatePush
+   * enforces content rules.
+   *
+   * `topLevelTreePaths` lists the names directly under the tree
+   * root. `readBlob` reads any blob in the tree by repo-root-relative
+   * POSIX path (e.g. `greet/SKILL.md`). Handlers that only need
+   * path-level checks can ignore `readBlob`.
    */
   validatePush: (args: {
     repoId: RepoId;
     ref: string;
     topLevelTreePaths: string[];
-  }) => ValidatePushResult;
+    readBlob: (path: string) => Promise<Uint8Array>;
+  }) => Promise<ValidatePushResult> | ValidatePushResult;
   /**
    * Fired after a successful ref update from any operation. `oldSha`
    * is `null` when the ref did not exist before the update.

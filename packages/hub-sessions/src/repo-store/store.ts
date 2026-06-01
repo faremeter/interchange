@@ -33,7 +33,13 @@ type SigningKey = { privateKey: Uint8Array; publicKey: Uint8Array };
 export type CreateRepoStoreConfig = {
   dataDir: string;
   signingKey: SigningKey;
-  handlers: Record<RepoKind, KindHandler>;
+  /**
+   * Handler map keyed by repo kind. The substrate throws at request
+   * time when a kind has no registered handler, so callers may omit
+   * kinds they do not service (e.g. a per-asset-kind store that only
+   * registers `skill`).
+   */
+  handlers: Partial<Record<RepoKind, KindHandler>>;
   authorize: AuthorizeFn;
 };
 
@@ -144,6 +150,36 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       await writeFileEntry(dir, relPath, contents);
     }
 
+    const topLevelTreePaths = Array.from(
+      new Set(
+        Object.keys(content.files).map((p) => {
+          const slash = p.indexOf("/");
+          return slash === -1 ? p : p.substring(0, slash);
+        }),
+      ),
+    );
+    const readBlob = async (relPath: string): Promise<Uint8Array> => {
+      const entry = content.files[relPath];
+      if (entry === undefined) {
+        throw new Error(
+          `readBlob: path ${relPath} not present in tree content`,
+        );
+      }
+      if (typeof entry === "string") {
+        return new TextEncoder().encode(entry);
+      }
+      return entry;
+    };
+    const validation = await handler.validatePush({
+      repoId,
+      ref,
+      topLevelTreePaths,
+      readBlob,
+    });
+    if (!validation.ok) {
+      throw new Error(`path_violation: ${validation.reason}`);
+    }
+
     // Resolve the previous ref value for the post-update hook (precise:
     // null only when the ref truly doesn't exist) and the parent SHA for
     // the new commit (best-effort: any error falls back to HEAD, so a
@@ -195,18 +231,26 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     const oldSha = await resolveRefSha(dir, ref);
     const transferId = crypto.randomUUID().replace(/-/g, "");
 
-    await receivePackObjects(dir, pack, ref, commitSha, transferId, (paths) => {
-      const result = handler.validatePush({
-        repoId,
-        ref,
-        topLevelTreePaths: paths,
-      });
-      if (!result.ok) {
-        logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${result.reason}`;
-        return false;
-      }
-      return true;
-    });
+    await receivePackObjects(
+      dir,
+      pack,
+      ref,
+      commitSha,
+      transferId,
+      async (paths, readBlob) => {
+        const result = await handler.validatePush({
+          repoId,
+          ref,
+          topLevelTreePaths: paths,
+          readBlob,
+        });
+        if (!result.ok) {
+          logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${result.reason}`;
+          return false;
+        }
+        return true;
+      },
+    );
 
     await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
   }

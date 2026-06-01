@@ -35,13 +35,20 @@ const ALLOWED_STATE_TOP_LEVEL = new Set([
   "tool-output",
 ]);
 
+const ALLOWED_DEPLOY_TOP_LEVEL = new Set(["deploy", ".gitignore"]);
+
 export const agentStateKindHandler: KindHandler = {
   kind: "agent-state",
   directoryPrefix: "agents",
-  validatePush: ({ topLevelTreePaths }): ValidatePushResult => {
-    const offender = topLevelTreePaths.find(
-      (p) => !ALLOWED_STATE_TOP_LEVEL.has(p),
-    );
+  validatePush: ({ ref, topLevelTreePaths }): ValidatePushResult => {
+    // The deploy ref carries hub-authored prompt content under
+    // `deploy/`; every other ref carries sidecar-pushed agent state
+    // and must stay confined to the state-bearing allowlist.
+    const allowed =
+      ref === AGENT_STATE_DEPLOY_REF
+        ? ALLOWED_DEPLOY_TOP_LEVEL
+        : ALLOWED_STATE_TOP_LEVEL;
+    const offender = topLevelTreePaths.find((p) => !allowed.has(p));
     if (offender !== undefined) {
       return {
         ok: false,

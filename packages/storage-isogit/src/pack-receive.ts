@@ -16,12 +16,20 @@ import { readRawObject } from "./isogit-helpers";
 export type CommitVerifier = (payload: string, signature: string) => boolean;
 
 /**
- * Validates the top-level directory names in a commit's tree.
+ * Validates the contents of a commit's tree.
  *
  * Callers bind this to their policy (e.g. state packs must only contain
- * entries named "state"). Returns true when the tree is acceptable.
+ * entries named "state", asset packs must have a SKILL.md with valid
+ * frontmatter). Returns true when the tree is acceptable.
+ *
+ * `topLevelPaths` lists the names directly under the tree root.
+ * `readBlob` reads any blob in the tree by its repo-root-relative POSIX
+ * path. Validators that only need path-level checks can ignore `readBlob`.
  */
-export type TreeValidator = (topLevelPaths: string[]) => boolean;
+export type TreeValidator = (
+  topLevelPaths: string[],
+  readBlob: (path: string) => Promise<Uint8Array>,
+) => boolean | Promise<boolean>;
 
 /**
  * Strip the gpgsig header from a raw git commit object, producing the
@@ -187,7 +195,31 @@ export async function receivePackObjects(
         oid: commit.tree,
       });
       const topLevelPaths = tree.map((e) => e.path);
-      if (!validateTree(topLevelPaths)) {
+      const readBlob = async (relPath: string): Promise<Uint8Array> => {
+        const segments = relPath.split("/");
+        let currentTree = tree;
+        for (let i = 0; i < segments.length - 1; i += 1) {
+          const segment = segments[i];
+          const entry = currentTree.find((e) => e.path === segment);
+          if (entry === undefined || entry.type !== "tree") {
+            throw new Error(
+              `readBlob: path ${relPath} not found in commit ${expectedSha} tree`,
+            );
+          }
+          const next = await git.readTree({ fs, dir, oid: entry.oid });
+          currentTree = next.tree;
+        }
+        const last = segments[segments.length - 1];
+        const blobEntry = currentTree.find((e) => e.path === last);
+        if (blobEntry === undefined || blobEntry.type !== "blob") {
+          throw new Error(
+            `readBlob: path ${relPath} not found in commit ${expectedSha} tree`,
+          );
+        }
+        const { blob } = await git.readBlob({ fs, dir, oid: blobEntry.oid });
+        return blob;
+      };
+      if (!(await validateTree(topLevelPaths, readBlob))) {
         throw new Error(
           `path_violation: commit ${expectedSha} tree contains disallowed paths: ${topLevelPaths.join(", ")}`,
         );

@@ -37,3 +37,14 @@ export {
   type HubSessionRouterFacade,
 } from "./hub-session-orchestrator";
 export { pushSourceUpdates } from "./credential-push";
+export {
+  skillKindHandler,
+  skillAuthorize,
+  skillFrontmatterSchema,
+  getSkillIndex,
+  type SkillIndexEntry,
+  type SkillFrontmatter,
+  type SkillPrincipal,
+  type SkillHubPrincipal,
+  type SkillSidecarPrincipal,
+} from "./skill-kind";
