@@ -57,6 +57,9 @@ function createTestHandler(opts?: {
     kind: "agent-state",
     directoryPrefix: "repos-under-test",
     validatePush({ topLevelTreePaths }): ValidatePushResult {
+      // Ignore the readBlob argument: this fixture only ever needs path-level
+      // checks. Real handlers that need blob contents (e.g. skillKindHandler)
+      // exercise readBlob in their own dedicated tests.
       if (allowFn === undefined) {
         return { ok: true };
       }
@@ -499,6 +502,68 @@ describe("RepoStore", () => {
     expect(targetHandler.onRefUpdatedCalls).toHaveLength(0);
     const resolved = await targetStore.resolveRef(principal, repoId, REF);
     expect(resolved).toBeNull();
+  });
+
+  test("writeTree rejects when the handler's validatePush rejects", async () => {
+    const dataDir = await makeTempDir("repo-store-writetree-reject-");
+    const handler = createTestHandler({
+      allowTopLevelPaths: () => false,
+    });
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    await expect(
+      store.writeTree(principal, repoId, REF, {
+        files: { "deploy/a.md": "rejected" },
+        message: "should be rejected",
+      }),
+    ).rejects.toThrow(/^path_violation/);
+
+    expect(handler.onRefUpdatedCalls).toHaveLength(0);
+    const resolved = await store.resolveRef(principal, repoId, REF);
+    expect(resolved).toBeNull();
+  });
+
+  test("writeTree passes the readBlob callback that resolves declared file contents", async () => {
+    const dataDir = await makeTempDir("repo-store-writetree-readblob-");
+    const captured: { paths: string[] | null; blob: Uint8Array | null } = {
+      paths: null,
+      blob: null,
+    };
+    const handler: TestHandler = {
+      kind: "agent-state",
+      directoryPrefix: "repos-under-test",
+      async validatePush({ topLevelTreePaths, readBlob }) {
+        captured.paths = topLevelTreePaths;
+        captured.blob = await readBlob("deploy/a.md");
+        return { ok: true };
+      },
+      onRefUpdated() {
+        /* no-op */
+      },
+      onRefUpdatedCalls: [],
+    };
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    await store.writeTree(principal, repoId, REF, {
+      files: { "deploy/a.md": "blob-body", "top.txt": "top" },
+      message: "with readBlob",
+    });
+
+    expect(captured.paths?.sort()).toEqual(["deploy", "top.txt"]);
+    expect(captured.blob).not.toBeNull();
+    expect(new TextDecoder().decode(captured.blob ?? new Uint8Array())).toBe(
+      "blob-body",
+    );
   });
 
   test("validatePush runs on receivePack regardless of authorize verdict", async () => {

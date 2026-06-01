@@ -1,5 +1,5 @@
 import { createRepoStore, SAFE_REPO_ID } from "./repo-store";
-import type { RepoId } from "./repo-store";
+import type { AuthorizeFn, RepoId } from "./repo-store";
 import {
   agentStateKindHandler,
   agentStateAuthorize,
@@ -7,6 +7,7 @@ import {
   type AgentStateHubPrincipal,
   type AgentStateSidecarPrincipal,
 } from "./agent-state-kind";
+import { skillKindHandler, skillAuthorize } from "./skill-kind";
 
 export type DeployContent = {
   systemPrompt: string;
@@ -59,11 +60,30 @@ export function createAgentRepoStore(config: {
 }): AgentRepoStore {
   const { dataDir, signingKey } = config;
 
+  const authorize: AuthorizeFn = (principal, incomingRepoId, ref, action) => {
+    switch (incomingRepoId.kind) {
+      case "agent-state":
+        return agentStateAuthorize(principal, incomingRepoId, ref, action);
+      case "skill":
+        return skillAuthorize(principal, incomingRepoId, ref, action);
+      default: {
+        const _exhaustive: never = incomingRepoId.kind;
+        return {
+          allowed: false,
+          reason: `no authorize registered for kind: ${String(_exhaustive)}`,
+        };
+      }
+    }
+  };
+
   const store = createRepoStore({
     dataDir,
     signingKey,
-    handlers: { "agent-state": agentStateKindHandler },
-    authorize: agentStateAuthorize,
+    handlers: {
+      "agent-state": agentStateKindHandler,
+      skill: skillKindHandler,
+    },
+    authorize,
   });
 
   const hub: AgentStateHubPrincipal = { kind: "hub" };
