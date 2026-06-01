@@ -323,6 +323,36 @@ describe("AssetService", () => {
       expect(dbFixture.assets).toHaveLength(0);
     });
 
+    test("accepts a valid lowercase-kebab name", async () => {
+      const asset = await service.createAsset({
+        tenantId: "tnt_1",
+        kind: "skill",
+        name: "my-skills",
+      });
+      expect(asset.name).toBe("my-skills");
+      expect(dbFixture.assets).toHaveLength(1);
+    });
+
+    test.each([
+      [".", "single dot"],
+      ["..", "double dot"],
+      ["my skill", "embedded space"],
+      ["skills/greet", "embedded slash"],
+    ])("rejects name %p (%s) as invalid_name", async (badName) => {
+      const err = await service
+        .createAsset({
+          tenantId: "tnt_1",
+          kind: "skill",
+          name: badName,
+        })
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(AssetServiceError);
+      if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
+      expect(err.reason).toBe("invalid_name");
+      expect(dbFixture.assets).toHaveLength(0);
+    });
+
     test("surfaces duplicate (tenantId, kind, name) as duplicate_asset", async () => {
       await service.createAsset({
         tenantId: "tnt_1",

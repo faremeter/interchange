@@ -131,14 +131,20 @@ export async function applyAssetPack(args: ApplyAssetPackArgs): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // Best-effort cleanup so a partial materialization doesn't linger.
-    await fsp
-      .rm(destDir, { recursive: true, force: true })
-      .catch(() => undefined);
+    // Log any secondary failure so it does not silently mask state — the
+    // primary materialization error is still thrown to the caller.
+    await fsp.rm(destDir, { recursive: true, force: true }).catch((rmErr) => {
+      const rmMsg = rmErr instanceof Error ? rmErr.message : String(rmErr);
+      logger.warn`asset pack destDir cleanup failed at ${destDir}: ${rmMsg}`;
+    });
     throw new Error(`asset_materialization_failed: ${msg}`, { cause: err });
   } finally {
     await fsp
       .rm(scratchDir, { recursive: true, force: true })
-      .catch(() => undefined);
+      .catch((rmErr) => {
+        const rmMsg = rmErr instanceof Error ? rmErr.message : String(rmErr);
+        logger.warn`asset pack scratchDir cleanup failed at ${scratchDir}: ${rmMsg}`;
+      });
   }
 }
 

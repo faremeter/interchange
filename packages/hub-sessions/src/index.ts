@@ -61,3 +61,7 @@ export {
   type AttachAssetParams,
   type AssetServiceErrorReason,
 } from "./asset-service";
+export {
+  buildAvailableSkillsStanza,
+  type AvailableSkillEntry,
+} from "./available-skills-stanza";
