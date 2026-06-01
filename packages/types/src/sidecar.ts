@@ -370,6 +370,11 @@ export type PackPushFrame = typeof PackPushFrame.infer;
  * Signals the end of a pack transfer. The receiver applies the pack and
  * updates `ref` to point at `commitSha`. If the post-apply HEAD does not
  * match `commitSha`, the receiver must reject with reason "sha_mismatch".
+ *
+ * When `mountPath` is set, the receiver materializes the pack at
+ * `workspace/<mountPath>/` instead of the hardcoded agent deploy tree.
+ * Absent for the agent-state deploy/state flows, which continue to apply
+ * the pack to the agent's repo as before.
  */
 export const PackDoneFrame = type({
   type: "'repo.pack.done'",
@@ -378,6 +383,7 @@ export const PackDoneFrame = type({
   transferId: "string",
   ref: "string",
   commitSha: "string",
+  "mountPath?": "string",
 });
 export type PackDoneFrame = typeof PackDoneFrame.infer;
 

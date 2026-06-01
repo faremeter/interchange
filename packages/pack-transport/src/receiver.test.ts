@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test";
+import { createHash } from "node:crypto";
 import { createPackReceiver } from "./receiver";
 import type { PackPushFrame, PackDoneFrame } from "@intx/types/sidecar";
 
@@ -59,6 +60,11 @@ describe("PackReceiver", () => {
     expect(text).toBe("hello world");
     expect(result.ref).toBe("refs/heads/deploy");
     expect(result.commitSha).toBe("abc123");
+
+    const expectedSha = createHash("sha256")
+      .update(new TextEncoder().encode("hello world"))
+      .digest("hex");
+    expect(result.assetPackSha).toBe(expectedSha);
   });
 
   test("handleDone returns null for unknown transferId", () => {

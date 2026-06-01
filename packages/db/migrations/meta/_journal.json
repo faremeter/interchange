@@ -183,6 +183,13 @@
       "when": 1780357614241,
       "tag": "0025_curvy_firestar",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1780358149943,
+      "tag": "0026_keen_ultimo",
+      "breakpoints": true
     }
   ]
 }

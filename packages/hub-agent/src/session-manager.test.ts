@@ -254,6 +254,73 @@ describe("SessionManager.restoreSessions mismatch handling", () => {
   });
 });
 
+describe("SessionManager.applyAssetPack materializes under the workspace dir", () => {
+  test("writes pack contents under <agentDir>/workspace/<mountPath>/", async () => {
+    const dataDir = await tempDir();
+    const { manager, repoStore } = makeManagerHarness(dataDir);
+
+    const address = "agent@local";
+    await manager.provisionAgent(makeConfig(address));
+
+    // Build a real pack from a tiny source repo so applyAssetPack
+    // can index it. Reuses isomorphic-git directly to avoid pulling
+    // in the asset-service surface for this test.
+    const sourceDir = path.join(dataDir, "asset-source");
+    await fsp.mkdir(sourceDir, { recursive: true });
+    const git = await import("isomorphic-git");
+    const fs = await import("node:fs");
+    await git.default.init({ fs, dir: sourceDir, defaultBranch: "main" });
+    await fsp.writeFile(path.join(sourceDir, "hello.txt"), "hello from asset");
+    await git.default.add({ fs, dir: sourceDir, filepath: "hello.txt" });
+    const commitSha = await git.default.commit({
+      fs,
+      dir: sourceDir,
+      message: "asset",
+      author: { name: "t", email: "t@t" },
+    });
+    const oids = new Set<string>([commitSha]);
+    const { commit } = await git.default.readCommit({
+      fs,
+      dir: sourceDir,
+      oid: commitSha,
+    });
+    oids.add(commit.tree);
+    const { tree } = await git.default.readTree({
+      fs,
+      dir: sourceDir,
+      oid: commit.tree,
+    });
+    for (const entry of tree) oids.add(entry.oid);
+    const packResult = await git.default.packObjects({
+      fs,
+      dir: sourceDir,
+      oids: [...oids],
+      write: false,
+    });
+    if (packResult.packfile === undefined) {
+      throw new Error("packObjects produced no pack");
+    }
+
+    await manager.applyAssetPack(
+      address,
+      "skills/greet/",
+      packResult.packfile,
+      "refs/heads/main",
+      commitSha,
+    );
+
+    const expected = path.join(
+      repoStore.getAgentDir(address),
+      "workspace",
+      "skills",
+      "greet",
+      "hello.txt",
+    );
+    const contents = await fsp.readFile(expected, "utf-8");
+    expect(contents).toBe("hello from asset");
+  });
+});
+
 describe("SessionManager.updateGrants routes through the bundle", () => {
   test("calls bundle.updateGrants with the new grants and persists config", async () => {
     const dataDir = await tempDir();
