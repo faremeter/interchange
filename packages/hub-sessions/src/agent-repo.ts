@@ -1,5 +1,5 @@
 import { createRepoStore, SAFE_REPO_ID } from "./repo-store";
-import type { AuthorizeFn, RepoId } from "./repo-store";
+import type { AuthorizeFn, RepoId, RepoStore } from "./repo-store";
 import {
   agentStateKindHandler,
   agentStateAuthorize,
@@ -52,6 +52,14 @@ export type AgentRepoStore = {
 
   /** Raw 32-byte Ed25519 public key used to sign deploy commits. */
   getSigningPublicKey(): Uint8Array;
+
+  /**
+   * Underlying kind-keyed substrate. Exposed so callers that need to
+   * operate on non-agent-state kinds (e.g. the asset service writing
+   * skill repos) can share the same on-disk root and signing key
+   * without spinning up a parallel RepoStore.
+   */
+  readonly repoStore: RepoStore;
 };
 
 export function createAgentRepoStore(config: {
@@ -139,5 +147,7 @@ export function createAgentRepoStore(config: {
     getSigningPublicKey() {
       return signingKey.publicKey;
     },
+
+    repoStore: store,
   };
 }

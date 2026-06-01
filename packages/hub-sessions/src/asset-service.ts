@@ -1,0 +1,322 @@
+// In-process service for creating and attaching skill-asset repos.
+//
+// Three responsibilities are layered here, mirroring the substrate's
+// own layering (DB row, repo bookkeeping, content validation):
+//
+//   createAsset    inserts the asset row and initializes an empty
+//                  skill-kind repo via RepoStore.initRepo.
+//   populateAsset  drives RepoStore.writeTree, which runs the kind
+//                  handler's validatePush before advancing the ref.
+//                  Content rejections surface as AssetValidationError.
+//   attachAsset    inserts an agent_asset row, surfacing the
+//                  (agentId, assetId) uniqueness violation (which
+//                  prevents the same asset being attached to one
+//                  agent twice) as AssetAttachError.
+//
+// The factory is closure-based to match createAgentRepoStore and
+// createRepoStore. There is no class because there is no per-instance
+// mutable state — every method is a pure function over the deps.
+
+import { eq } from "drizzle-orm";
+import { type DB } from "@intx/db";
+import {
+  agentAsset as agentAssetTable,
+  asset as assetTable,
+} from "@intx/db/schema";
+import { generateId } from "@intx/hub-common";
+import { getLogger } from "@intx/log";
+import { hasCode } from "@intx/types";
+import type { RepoKind } from "@intx/types/sidecar";
+
+import type { Principal, RepoStore, TreeContent } from "./repo-store";
+
+const logger = getLogger(["hub-sessions", "asset-service"]);
+
+// Postgres unique-violation SQLSTATE. drizzle / postgres-js surfaces
+// the original error with `code` set; `hasCode` narrows safely.
+const PG_UNIQUE_VIOLATION = "23505";
+
+export type Asset = {
+  id: string;
+  tenantId: string;
+  kind: RepoKind;
+  name: string;
+  displayName: string | null;
+  creatorPrincipalId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type AccessMode = "read-only" | "read-write";
+
+export type AgentAsset = {
+  id: string;
+  agentId: string;
+  assetId: string;
+  ref: string;
+  accessMode: AccessMode;
+  createdAt: Date;
+};
+
+export type AgentAssetWithAsset = AgentAsset & {
+  asset: Pick<Asset, "id" | "tenantId" | "kind" | "name" | "displayName">;
+};
+
+export type CreateAssetParams = {
+  tenantId: string;
+  /** Only "skill" is supported. "agent-state" is rejected because those
+   * repos are managed by the agent lifecycle, not the asset service. */
+  kind: RepoKind;
+  name: string;
+  displayName?: string;
+  creatorPrincipalId?: string;
+};
+
+export type PopulateAssetParams = {
+  assetId: string;
+  ref: string;
+  tree: TreeContent;
+  /** The principal authorized to write the kind. The substrate's
+   * authorize gate uses this; the kind handler also relies on it
+   * (e.g. skillAuthorize only permits `kind: "hub"` writes). */
+  principal: Principal;
+};
+
+export type AttachAssetParams = {
+  agentId: string;
+  assetId: string;
+  ref: string;
+  accessMode?: AccessMode;
+};
+
+export interface AssetService {
+  createAsset(params: CreateAssetParams): Promise<Asset>;
+  populateAsset(params: PopulateAssetParams): Promise<{ commitSha: string }>;
+  attachAsset(params: AttachAssetParams): Promise<AgentAsset>;
+  listAgentAssets(agentId: string): Promise<AgentAssetWithAsset[]>;
+}
+
+/** Discriminator for AssetServiceError variants. Lets callers branch
+ * without instanceof gymnastics across the different error subclasses. */
+export type AssetServiceErrorReason =
+  | "unsupported_kind"
+  | "duplicate_asset"
+  | "duplicate_attachment"
+  | "path_violation";
+
+export class AssetServiceError extends Error {
+  readonly reason: AssetServiceErrorReason;
+
+  constructor(
+    reason: AssetServiceErrorReason,
+    message: string,
+    cause?: unknown,
+  ) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "AssetServiceError";
+    this.reason = reason;
+  }
+}
+
+function isAccessMode(value: string): value is AccessMode {
+  return value === "read-only" || value === "read-write";
+}
+
+function rowToAsset(row: typeof assetTable.$inferSelect): Asset {
+  // The schema stores `kind` as plain text. RepoKind is an arktype
+  // enum of ("agent-state" | "skill"); narrow by exhaustive check so
+  // an out-of-band kind value loudly fails rather than silently
+  // mistypes the returned shape.
+  let narrowed: RepoKind;
+  switch (row.kind) {
+    case "agent-state":
+      narrowed = "agent-state";
+      break;
+    case "skill":
+      narrowed = "skill";
+      break;
+    default:
+      throw new Error(
+        `asset row ${row.id} has unknown kind ${JSON.stringify(row.kind)}`,
+      );
+  }
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    kind: narrowed,
+    name: row.name,
+    displayName: row.displayName,
+    creatorPrincipalId: row.creatorPrincipalId,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function rowToAgentAsset(row: typeof agentAssetTable.$inferSelect): AgentAsset {
+  if (!isAccessMode(row.accessMode)) {
+    throw new Error(
+      `agent_asset row ${row.id} has unknown accessMode ${JSON.stringify(row.accessMode)}`,
+    );
+  }
+  return {
+    id: row.id,
+    agentId: row.agentId,
+    assetId: row.assetId,
+    ref: row.ref,
+    accessMode: row.accessMode,
+    createdAt: row.createdAt,
+  };
+}
+
+export function createAssetService(deps: {
+  db: DB["db"];
+  repoStore: RepoStore;
+}): AssetService {
+  const { db, repoStore } = deps;
+
+  async function createAsset(params: CreateAssetParams): Promise<Asset> {
+    if (params.kind === "agent-state") {
+      throw new AssetServiceError(
+        "unsupported_kind",
+        `createAsset rejects kind "agent-state": agent-state repos are managed by the agent lifecycle, not the asset service`,
+      );
+    }
+
+    const id = generateId("asset");
+    const now = new Date();
+    const insertRow = {
+      id,
+      tenantId: params.tenantId,
+      kind: params.kind,
+      name: params.name,
+      displayName: params.displayName ?? null,
+      creatorPrincipalId: params.creatorPrincipalId ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    let inserted: typeof assetTable.$inferSelect;
+    try {
+      const rows = await db.insert(assetTable).values(insertRow).returning();
+      const row = rows[0];
+      if (row === undefined) {
+        throw new Error("insert into asset returned no rows");
+      }
+      inserted = row;
+    } catch (err) {
+      if (hasCode(err) && err.code === PG_UNIQUE_VIOLATION) {
+        throw new AssetServiceError(
+          "duplicate_asset",
+          `asset (tenantId=${params.tenantId}, kind=${params.kind}, name=${params.name}) already exists`,
+          err,
+        );
+      }
+      throw err;
+    }
+
+    await repoStore.initRepo({ kind: params.kind, id });
+    logger.debug`created asset ${id} (kind=${params.kind}, tenant=${params.tenantId}, name=${params.name})`;
+
+    return rowToAsset(inserted);
+  }
+
+  async function populateAsset(
+    params: PopulateAssetParams,
+  ): Promise<{ commitSha: string }> {
+    // The asset row carries `kind`. We must read it before writing so
+    // the RepoId is shaped correctly; without it, callers could write
+    // against the wrong kind handler.
+    const row = await db.query.asset.findFirst({
+      where: eq(assetTable.id, params.assetId),
+    });
+    if (row === undefined) {
+      throw new AssetServiceError(
+        "duplicate_asset",
+        `populateAsset: asset ${params.assetId} not found`,
+      );
+    }
+    const assetRow = rowToAsset(row);
+
+    try {
+      return await repoStore.writeTree(
+        params.principal,
+        { kind: assetRow.kind, id: assetRow.id },
+        params.ref,
+        params.tree,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.startsWith("path_violation:")) {
+        throw new AssetServiceError("path_violation", msg, err);
+      }
+      throw err;
+    }
+  }
+
+  async function attachAsset(params: AttachAssetParams): Promise<AgentAsset> {
+    const id = generateId("agentAsset");
+    const accessMode = params.accessMode ?? "read-only";
+    const insertRow = {
+      id,
+      agentId: params.agentId,
+      assetId: params.assetId,
+      ref: params.ref,
+      accessMode,
+      createdAt: new Date(),
+    };
+
+    let inserted: typeof agentAssetTable.$inferSelect;
+    try {
+      const rows = await db
+        .insert(agentAssetTable)
+        .values(insertRow)
+        .returning();
+      const row = rows[0];
+      if (row === undefined) {
+        throw new Error("insert into agent_asset returned no rows");
+      }
+      inserted = row;
+    } catch (err) {
+      if (hasCode(err) && err.code === PG_UNIQUE_VIOLATION) {
+        throw new AssetServiceError(
+          "duplicate_attachment",
+          `agent_asset (agentId=${params.agentId}, assetId=${params.assetId}) already attached`,
+          err,
+        );
+      }
+      throw err;
+    }
+
+    return rowToAgentAsset(inserted);
+  }
+
+  async function listAgentAssets(
+    agentId: string,
+  ): Promise<AgentAssetWithAsset[]> {
+    const rows = await db
+      .select({
+        agentAsset: agentAssetTable,
+        asset: assetTable,
+      })
+      .from(agentAssetTable)
+      .innerJoin(assetTable, eq(agentAssetTable.assetId, assetTable.id))
+      .where(eq(agentAssetTable.agentId, agentId));
+
+    return rows.map((row) => {
+      const aa = rowToAgentAsset(row.agentAsset);
+      const a = rowToAsset(row.asset);
+      return {
+        ...aa,
+        asset: {
+          id: a.id,
+          tenantId: a.tenantId,
+          kind: a.kind,
+          name: a.name,
+          displayName: a.displayName,
+        },
+      };
+    });
+  }
+
+  return { createAsset, populateAsset, attachAsset, listAgentAssets };
+}

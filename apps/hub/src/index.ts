@@ -2,6 +2,7 @@ import { createDB, createGrantStore } from "@intx/db";
 import { createApp, createAuth } from "@intx/hub-api";
 import {
   createAgentRepoStore,
+  createAssetService,
   createEventCollectorRegistry,
   createHubSessionLookups,
   createHubSessionOrchestrator,
@@ -80,6 +81,17 @@ createHubSessionOrchestrator({
 const sessionService = createSessionService({
   sidecarRouter,
   agentRepoStore,
+});
+
+// The asset service shares the agent-repo store's substrate so skill
+// assets land under the same on-disk root and reuse the same signing
+// key for commit signatures. It is constructed here even though no
+// route consumes it yet; the smart-HTTP authoring path lands in a
+// later commit and the E2E test seeds fixtures directly through this
+// service object.
+const _assetService = createAssetService({
+  db,
+  repoStore: agentRepoStore.repoStore,
 });
 
 const app = createApp({

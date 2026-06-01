@@ -19,6 +19,8 @@ const PREFIXES = {
   sessionMail: "sml_",
   inferenceTurn: "itn_",
   turnPart: "tp_",
+  asset: "ast_",
+  agentAsset: "aas_",
 } as const;
 
 type IDKind = keyof typeof PREFIXES;
