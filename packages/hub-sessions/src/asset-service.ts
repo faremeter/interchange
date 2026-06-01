@@ -103,9 +103,19 @@ export type AssetServiceErrorReason =
   | "unsupported_kind"
   | "duplicate_asset"
   | "duplicate_attachment"
+  | "invalid_name"
   | "invalid_reference"
   | "not_found"
   | "path_violation";
+
+// Asset names become the default workspace mountpath segment at
+// session start (`skills/<asset.name>/`). The mountpath segment
+// validator in applyAssetPack rejects anything outside a safe
+// character set; validate at the createAsset boundary so a bad name
+// fails at creation time rather than at materialization time. Names
+// must be lowercase-kebab: lowercase letters, digits, hyphens, with
+// no leading or trailing hyphen.
+const ASSET_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export class AssetServiceError extends Error {
   readonly reason: AssetServiceErrorReason;
@@ -184,6 +194,15 @@ export function createAssetService(deps: {
       throw new AssetServiceError(
         "unsupported_kind",
         `createAsset rejects kind "agent-state": agent-state repos are managed by the agent lifecycle, not the asset service`,
+      );
+    }
+
+    if (!ASSET_NAME_PATTERN.test(params.name)) {
+      throw new AssetServiceError(
+        "invalid_name",
+        `createAsset rejects name ${JSON.stringify(
+          params.name,
+        )}: must be lowercase-kebab (letters, digits, hyphens; no leading or trailing hyphen)`,
       );
     }
 

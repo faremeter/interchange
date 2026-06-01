@@ -43,11 +43,13 @@ import { applyAssetPack } from "@intx/hub-agent";
 import { generateKeyPair } from "@intx/crypto-node";
 import { generateId } from "@intx/hub-common";
 import {
+  buildAvailableSkillsStanza,
   createAgentRepoStore,
   createAssetService,
   getSkillIndex,
   type AgentRepoStore,
   type AssetService,
+  type AvailableSkillEntry,
   type SkillIndexEntry,
 } from "@intx/hub-sessions";
 import { setupHarness, wire } from "@intx/inference-testing";
@@ -338,44 +340,11 @@ async function setupAssetService(): Promise<{
 }
 
 // ---------------------------------------------------------------------------
-// Stanza rendering. The format mirrors `buildAvailableSkillsStanza`
-// in @intx/hub-sessions; it is duplicated here because the package's
-// public exports do not include the function and this task is
-// constrained from extending the production surface. The match string
-// the path (a) assertion looks for ("<name>my-skills/greet</name>")
-// is shared verbatim with the production renderer, so an output-shape
-// regression in production would surface as path (a) failing here
-// the same way it surfaces in the production stanza unit tests.
+// Stanza rendering uses the production `buildAvailableSkillsStanza`
+// exported by @intx/hub-sessions. Sharing the renderer with production
+// means a drift in either side surfaces as a test failure here, not as
+// a divergent reimplementation that hides it.
 // ---------------------------------------------------------------------------
-
-type AvailableSkillEntry = {
-  qualifiedName: string;
-  description: string;
-  workspacePath: string;
-};
-
-function escapeXml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
-function renderStanza(entries: AvailableSkillEntry[]): string {
-  if (entries.length === 0) return "";
-  const lines = ["<available_skills>"];
-  for (const entry of entries) {
-    lines.push("  <skill>");
-    lines.push(`    <name>${escapeXml(entry.qualifiedName)}</name>`);
-    lines.push(
-      `    <description>${escapeXml(entry.description)}</description>`,
-    );
-    lines.push(`    <path>${escapeXml(entry.workspacePath)}</path>`);
-    lines.push("  </skill>");
-  }
-  lines.push("</available_skills>");
-  return lines.join("\n");
-}
 
 function collectSkillEntries(
   assetName: string,
@@ -600,7 +569,7 @@ describe("skill attachment flow (end-to-end)", () => {
     expect(skillEntry.name).toBe(SKILL_NAME);
     expect(skillEntry.description).toBe(SKILL_FRONTMATTER_DESCRIPTION);
 
-    const stanza = renderStanza(
+    const stanza = buildAvailableSkillsStanza(
       collectSkillEntries(ASSET_NAME, MOUNT_PATH, skillIndex),
     );
 

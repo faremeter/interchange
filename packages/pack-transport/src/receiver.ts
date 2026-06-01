@@ -5,7 +5,6 @@
 // frames followed by a repo.pack.done. The receiver validates seq continuity
 // and rejects concurrent transfers for the same agent.
 
-import { createHash } from "node:crypto";
 import type {
   PackPushFrame,
   PackDoneFrame,
@@ -24,13 +23,6 @@ export type PackReceiver = {
     pack: Uint8Array;
     ref: string;
     commitSha: string;
-    /**
-     * Hex-encoded sha256 of the assembled pack bytes. Computed
-     * symmetrically on both producer (hub) and consumer (sidecar)
-     * sides so the manifest row's `asset_pack_sha` reflects the bytes
-     * that actually crossed the wire.
-     */
-    assetPackSha: string;
   } | null;
   hasTransfer(transferId: string): boolean;
   cancel(transferId: string): void;
@@ -77,7 +69,6 @@ export function createPackReceiver(): PackReceiver {
     pack: Uint8Array;
     ref: string;
     commitSha: string;
-    assetPackSha: string;
   } | null {
     const transfer = transfers.get(frame.transferId);
     if (transfer === undefined) {
@@ -95,14 +86,11 @@ export function createPackReceiver(): PackReceiver {
       offset += chunk.length;
     }
 
-    const assetPackSha = createHash("sha256").update(pack).digest("hex");
-
     cleanup(frame.transferId, transfer.agentAddress);
     return {
       pack,
       ref: frame.ref,
       commitSha: frame.commitSha,
-      assetPackSha,
     };
   }
 
