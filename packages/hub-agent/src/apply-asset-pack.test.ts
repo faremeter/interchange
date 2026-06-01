@@ -191,4 +191,40 @@ describe("applyAssetPack", () => {
       }),
     ).rejects.toThrow(/^asset_materialization_failed:/);
   });
+
+  // Guarding against the data-loss case where mountPath resolves to the
+  // workspace root itself: the function clears `destDir` before writing,
+  // so any path that normalizes to "." would wipe the entire workspace.
+  test("rejects mountPath that resolves to workspace root", async () => {
+    const { pack, commitSha } = await buildAssetPack({
+      "a/SKILL.md": "---\nname: a\ndescription: a\n---\n",
+    });
+
+    const workspaceRoot = await tempDir();
+    const sentinelDir = path.join(workspaceRoot, "skills", "keep");
+    await fsp.mkdir(sentinelDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(sentinelDir, "do-not-delete.txt"),
+      "sentinel",
+    );
+
+    for (const offending of [".", "./", "./skills/foo", "skills/./foo"]) {
+      await expect(
+        applyAssetPack({
+          workspaceRoot,
+          mountPath: offending,
+          pack,
+          ref: "refs/heads/main",
+          commitSha,
+        }),
+      ).rejects.toThrow(/^asset_materialization_failed:/);
+    }
+
+    // Sentinel survives every rejected call.
+    const sentinel = await fsp.readFile(
+      path.join(sentinelDir, "do-not-delete.txt"),
+      "utf-8",
+    );
+    expect(sentinel).toBe("sentinel");
+  });
 });

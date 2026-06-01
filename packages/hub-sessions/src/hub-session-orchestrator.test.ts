@@ -155,7 +155,6 @@ function createRouterFacade(): {
       },
       async sendPack(addr, pack, ref, sha) {
         calls.push({ kind: "sendPack", addr, pack, ref, sha });
-        return { assetPackSha: "stub-sha" };
       },
       dispatchAgentEvent(addr, event) {
         calls.push({ kind: "dispatchAgentEvent", addr, event });

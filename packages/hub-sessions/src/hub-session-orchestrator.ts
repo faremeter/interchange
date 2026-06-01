@@ -43,7 +43,7 @@ export type HubSessionRouterFacade = {
     pack: Uint8Array,
     ref: string,
     commitSha: string,
-  ): Promise<{ assetPackSha: string }>;
+  ): Promise<void>;
   dispatchAgentEvent(agentAddress: string, event: unknown): void;
 };
 

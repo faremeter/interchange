@@ -63,6 +63,13 @@ class UniqueViolation extends Error {
   }
 }
 
+class ForeignKeyViolation extends Error {
+  readonly code = "23503";
+  constructor(constraint: string) {
+    super(`insert violates foreign key constraint "${constraint}"`);
+  }
+}
+
 type DBStub = {
   db: DB["db"];
   assets: AssetRow[];
@@ -106,6 +113,11 @@ function makeDB(): DBStub {
     if (table === agentAssetTable) {
       if (isAssetRow(row)) {
         throw new Error("insert into agent_asset received asset row shape");
+      }
+      if (!assets.some((a) => a.id === row.assetId)) {
+        return Promise.reject(
+          new ForeignKeyViolation("agent_asset_asset_id_asset_id_fk"),
+        );
       }
       if (
         agentAssets.some(
@@ -172,7 +184,9 @@ function makeDB(): DBStub {
       return {
         from: (_t: unknown) => ({
           innerJoin: (_t2: unknown, _on: unknown) => ({
-            where: (_w: unknown) => joinAgentAssets(),
+            where: (_w: unknown) => ({
+              orderBy: (..._order: unknown[]) => joinAgentAssets(),
+            }),
           }),
         }),
       };
@@ -349,6 +363,22 @@ describe("AssetService", () => {
       expect(out.commitSha).toMatch(/^[0-9a-f]{40}$/);
     });
 
+    test("surfaces an unknown assetId as not_found", async () => {
+      dbFixture.nextFindFirstAssetId("ast_missing");
+      const err = await service
+        .populateAsset({
+          assetId: "ast_missing",
+          ref: "refs/heads/main",
+          tree: VALID_SKILL_TREE,
+          principal: HUB,
+        })
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(AssetServiceError);
+      if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
+      expect(err.reason).toBe("not_found");
+    });
+
     test("translates path_violation: error from validatePush", async () => {
       const asset = await service.createAsset({
         tenantId: "tnt_1",
@@ -408,6 +438,21 @@ describe("AssetService", () => {
         ref: "refs/heads/main",
       });
       expect(aa.accessMode).toBe("read-only");
+    });
+
+    test("surfaces a missing assetId reference as invalid_reference", async () => {
+      const err = await service
+        .attachAsset({
+          agentId: "agt_1",
+          assetId: "ast_missing",
+          ref: "refs/heads/main",
+        })
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(AssetServiceError);
+      if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
+      expect(err.reason).toBe("invalid_reference");
+      expect(dbFixture.agentAssets).toHaveLength(0);
     });
 
     test("surfaces duplicate (agentId, assetId) as duplicate_attachment", async () => {

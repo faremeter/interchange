@@ -51,15 +51,31 @@ export async function applyAssetPack(args: ApplyAssetPackArgs): Promise<void> {
       `asset_materialization_failed: invalid mountPath ${JSON.stringify(mountPath)}`,
     );
   }
+  // Reject any all-dots segment (".", "..", "...") before per-segment
+  // SAFE_PATH_SEGMENT screening. The base regex permits "." since it
+  // allows the character; without this guard a mountPath of "." would
+  // resolve destDir to workspaceRoot itself and the subsequent
+  // recursive rm would wipe the entire workspace.
   for (const segment of mountPath.split("/")) {
-    if (
-      segment === ".." ||
-      (segment !== "" && !SAFE_PATH_SEGMENT.test(segment))
-    ) {
+    if (segment === "") continue;
+    if (/^\.+$/.test(segment) || !SAFE_PATH_SEGMENT.test(segment)) {
       throw new Error(
         `asset_materialization_failed: invalid mountPath segment in ${JSON.stringify(mountPath)}`,
       );
     }
+  }
+  // Defense-in-depth: after segment-level checks, normalize the path
+  // and reject anything that still resolves to "." or contains ".."
+  // (e.g. a permutation the per-segment loop missed).
+  const normalized = path.posix.normalize(mountPath);
+  if (
+    normalized === "." ||
+    normalized === "./" ||
+    normalized.split("/").includes("..")
+  ) {
+    throw new Error(
+      `asset_materialization_failed: mountPath ${JSON.stringify(mountPath)} normalizes to a workspace-root or escaping path`,
+    );
   }
 
   const normalizedMount = mountPath.endsWith("/")

@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { and, eq } from "drizzle-orm";
+
 import { getLogger } from "@intx/log";
 import {
   assembleMessage,
@@ -282,18 +284,37 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       materializedAt: new Date(),
     });
 
-    const result = await sidecarRouter.sendPack(
-      agentAddress,
-      pack,
-      ref,
-      sourceCommitSha,
-      { mountPath, repoId },
-    );
-
-    if (result.assetPackSha !== assetPackSha) {
-      throw new Error(
-        `attachment_pack_sha_mismatch: producer hash ${assetPackSha} != router hash ${result.assetPackSha}`,
-      );
+    try {
+      await sidecarRouter.sendPack(agentAddress, pack, ref, sourceCommitSha, {
+        mountPath,
+        repoId,
+      });
+    } catch (err) {
+      // Roll back the manifest row when the send fails so the manifest
+      // and the materialized state on the sidecar can never disagree.
+      // The forensic value of a manifest-without-materialization row is
+      // negligible because no agent will read against it. Wrap the
+      // rollback in its own try/catch so a rollback failure (DB gone,
+      // connection killed mid-launch) is logged rather than masking the
+      // primary sendPack error — the caller needs to see the original
+      // failure, not the secondary one.
+      try {
+        await db
+          .delete(sessionAssetTable)
+          .where(
+            and(
+              eq(sessionAssetTable.instanceId, instanceId),
+              eq(sessionAssetTable.agentAssetId, agentAssetId),
+            ),
+          );
+      } catch (rollbackErr) {
+        const msg =
+          rollbackErr instanceof Error
+            ? rollbackErr.message
+            : String(rollbackErr);
+        logger.warn`session_asset rollback failed for instance=${instanceId} agentAsset=${agentAssetId}: ${msg}`;
+      }
+      throw err;
     }
   }
 
