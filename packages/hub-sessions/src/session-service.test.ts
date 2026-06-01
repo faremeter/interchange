@@ -9,6 +9,7 @@ import {
   SessionLaunchError,
   type UserMessageParams,
 } from "./session-service";
+import { skillKindHandler } from "./skill-kind";
 import type { SendPackOptions, SidecarRouter } from "./ws/sidecar-handler";
 import { createSidecarEmitter } from "./ws/sidecar-events";
 
@@ -94,8 +95,8 @@ function createMockRepoStore(): AgentRepoStore & { calls: Call[] } {
   const calls: Call[] = [];
   return {
     calls,
-    async writeDeployTree(agentId: string, _content: DeployContent) {
-      calls.push({ method: "writeDeployTree", args: [agentId] });
+    async writeDeployTree(agentId: string, content: DeployContent) {
+      calls.push({ method: "writeDeployTree", args: [agentId, content] });
       return { commitSha: "abc123" + "0".repeat(34) };
     },
     async createDeployPack(agentId: string) {
@@ -669,6 +670,180 @@ describe("SessionService", () => {
       mountPath: "skills/search/",
       repoId: { kind: "skill", id: "ast_search" },
     });
+  });
+
+  test("launchSession appends the available_skills stanza to deploy prompt before writeDeployTree", async () => {
+    const assetGreet = "ast_skill_greet_" + Math.random().toString(36).slice(2);
+    const assetSearch =
+      "ast_skill_search_" + Math.random().toString(36).slice(2);
+
+    // Seed the skill index for both assets by driving the kind
+    // handler's push lifecycle directly. The substrate runs
+    // validatePush then onRefUpdated in the same write; we mirror
+    // that ordering here.
+    async function seedSkillIndex(
+      assetId: string,
+      skills: { name: string; description: string }[],
+    ): Promise<void> {
+      const ref = "refs/heads/main";
+      const repoId: RepoId = { kind: "skill", id: assetId };
+      const files: Record<string, string> = {};
+      for (const s of skills) {
+        files[`${s.name}/SKILL.md`] =
+          `---\nname: ${s.name}\ndescription: ${s.description}\n---\nbody\n`;
+      }
+      const readBlob = async (p: string): Promise<Uint8Array> => {
+        const body = files[p];
+        if (body === undefined) throw new Error(`missing ${p}`);
+        return new TextEncoder().encode(body);
+      };
+      const result = await skillKindHandler.validatePush({
+        repoId,
+        ref,
+        topLevelTreePaths: skills.map((s) => s.name),
+        readBlob,
+      });
+      if (!result.ok) {
+        throw new Error(`validatePush failed: ${result.reason}`);
+      }
+      await skillKindHandler.onRefUpdated({
+        repoId,
+        ref,
+        oldSha: null,
+        newSha: "a".repeat(40),
+      });
+    }
+
+    await seedSkillIndex(assetGreet, [
+      { name: "wave", description: "Waves at the user." },
+      { name: "bow", description: "Bows formally with A & B." },
+    ]);
+    await seedSkillIndex(assetSearch, [
+      { name: "wave", description: "Searches for waves." },
+    ]);
+
+    const packsByAssetId = new Map<string, FakeAssetPackEntry>([
+      [
+        assetGreet,
+        {
+          pack: new Uint8Array([10, 11, 12]),
+          commitSha: "c".repeat(40),
+          ref: "refs/heads/main",
+        },
+      ],
+      [
+        assetSearch,
+        {
+          pack: new Uint8Array([20, 21, 22]),
+          commitSha: "d".repeat(40),
+          ref: "refs/heads/main",
+        },
+      ],
+    ]);
+    const fakeRepoStore = createFakeRepoStore(packsByAssetId);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- replace the empty unusedRepoStore with the resolving fake for this test
+    (repoStore as unknown as { repoStore: RepoStore }).repoStore =
+      fakeRepoStore;
+
+    const attachments = [
+      makeAttachment({
+        id: "aas_greet",
+        assetId: assetGreet,
+        name: "greeter",
+      }),
+      makeAttachment({
+        id: "aas_search",
+        assetId: assetSearch,
+        name: "searcher",
+        mountPath: "tools/search/",
+      }),
+    ];
+
+    const captured: CapturedSessionAssetRow[] = [];
+    const service = createSessionService({
+      sidecarRouter: router,
+      agentRepoStore: repoStore,
+      assetService: createFakeAssetService(attachments),
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- DB stub satisfies the narrow surface session-service actually calls (insert().values())
+      db: createFakeDb(captured) as unknown as NonNullable<
+        Parameters<typeof createSessionService>[0]["db"]
+      >,
+    });
+
+    await service.launchSession({
+      agentAddress: AGENT_ADDRESS,
+      agentId: AGENT_ID,
+      instanceId: INSTANCE_ID,
+      config: MOCK_CONFIG,
+      deployContent: { systemPrompt: "Base prompt" },
+    });
+
+    const writeCall = repoStore.calls.find(
+      (c) => c.method === "writeDeployTree",
+    );
+    if (writeCall === undefined) throw new Error("writeDeployTree not called");
+    const content = writeCall.args[1];
+    if (
+      content === null ||
+      typeof content !== "object" ||
+      !("systemPrompt" in content) ||
+      typeof content.systemPrompt !== "string"
+    ) {
+      throw new Error("writeDeployTree content shape unexpected");
+    }
+    const prompt = content.systemPrompt;
+
+    expect(prompt.startsWith("Base prompt")).toBe(true);
+    expect(prompt).toContain("<available_skills>");
+    expect(prompt).toContain("</available_skills>");
+
+    // Skill order: assets in listAgentAssets order; within an asset,
+    // skills in index order (which the handler sorts).
+    const greetWaveIdx = prompt.indexOf("<name>greeter/wave</name>");
+    const greetBowIdx = prompt.indexOf("<name>greeter/bow</name>");
+    const searchWaveIdx = prompt.indexOf("<name>searcher/wave</name>");
+    expect(greetWaveIdx).toBeGreaterThan(-1);
+    expect(greetBowIdx).toBeGreaterThan(-1);
+    expect(searchWaveIdx).toBeGreaterThan(-1);
+    expect(greetBowIdx).toBeLessThan(greetWaveIdx);
+    expect(greetWaveIdx).toBeLessThan(searchWaveIdx);
+
+    expect(prompt).toContain(
+      "<description>Bows formally with A &amp; B.</description>",
+    );
+    expect(prompt).toContain("<path>workspace/skills/greeter/wave/</path>");
+    expect(prompt).toContain("<path>workspace/tools/search/wave/</path>");
+  });
+
+  test("launchSession omits the available_skills stanza when no skill assets are attached", async () => {
+    const service = createSessionService({
+      sidecarRouter: router,
+      agentRepoStore: repoStore,
+    });
+
+    await service.launchSession({
+      agentAddress: AGENT_ADDRESS,
+      agentId: AGENT_ID,
+      instanceId: INSTANCE_ID,
+      config: MOCK_CONFIG,
+      deployContent: { systemPrompt: "Only the base prompt" },
+    });
+
+    const writeCall = repoStore.calls.find(
+      (c) => c.method === "writeDeployTree",
+    );
+    if (writeCall === undefined) throw new Error("writeDeployTree not called");
+    const content = writeCall.args[1];
+    if (
+      content === null ||
+      typeof content !== "object" ||
+      !("systemPrompt" in content) ||
+      typeof content.systemPrompt !== "string"
+    ) {
+      throw new Error("writeDeployTree content shape unexpected");
+    }
+    expect(content.systemPrompt).toBe("Only the base prompt");
+    expect(content.systemPrompt).not.toContain("<available_skills>");
   });
 
   test("launchSession without assetService leaves the deploy-only flow unchanged", async () => {
