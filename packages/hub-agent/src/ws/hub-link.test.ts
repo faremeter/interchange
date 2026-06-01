@@ -173,6 +173,7 @@ function createMockSessionManager(): SessionManager & {
       return { restored: [], failed: [] };
     },
     applyDeployPack: () => Promise.resolve(),
+    applyAssetPack: () => Promise.resolve(),
     createStatePack: () =>
       Promise.resolve({
         pack: new Uint8Array([1, 2, 3]),
@@ -1059,6 +1060,116 @@ describe("sidecar↔hub integration", () => {
     } finally {
       client.close();
       pingEnv.server.stop(true);
+    }
+  });
+
+  test("repo.pack.done with mountPath routes through applyAssetPack", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const deployCalls: string[] = [];
+    const assetCalls: { address: string; mountPath: string }[] = [];
+    sessions.applyDeployPack = (addr: string) => {
+      deployCalls.push(addr);
+      return Promise.resolve();
+    };
+    sessions.applyAssetPack = (addr: string, mountPath: string) => {
+      assetCalls.push({ address: addr, mountPath });
+      return Promise.resolve();
+    };
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-asset-route",
+      token: "test-token",
+      transport,
+      sessions,
+      keyStore: createTestKeyStore(),
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getConnectedSidecars().includes("sc-asset-route"),
+      );
+
+      await env.router.sendAgentDeploy(
+        "route-agent@test.interchange",
+        TEST_CONFIG,
+      );
+
+      // Deploy pack (no mountPath) → applyDeployPack.
+      await env.router.sendPack(
+        "route-agent@test.interchange",
+        new Uint8Array([1, 2, 3]),
+        "refs/heads/deploy",
+        "a".repeat(40),
+      );
+      expect(deployCalls).toEqual(["route-agent@test.interchange"]);
+      expect(assetCalls).toEqual([]);
+
+      // Asset pack (mountPath set) → applyAssetPack.
+      await env.router.sendPack(
+        "route-agent@test.interchange",
+        new Uint8Array([4, 5, 6]),
+        "refs/heads/main",
+        "b".repeat(40),
+        { mountPath: "skills/example/" },
+      );
+      expect(deployCalls).toEqual(["route-agent@test.interchange"]);
+      expect(assetCalls).toEqual([
+        {
+          address: "route-agent@test.interchange",
+          mountPath: "skills/example/",
+        },
+      ]);
+    } finally {
+      client.close();
+      await waitFor(
+        () => !env.router.getConnectedSidecars().includes("sc-asset-route"),
+      );
+    }
+  });
+
+  test("asset_materialization_failed reports as pack.reject corrupt", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    sessions.applyAssetPack = () => {
+      throw new Error("asset_materialization_failed: pack index error");
+    };
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-asset-fail",
+      token: "test-token",
+      transport,
+      sessions,
+      keyStore: createTestKeyStore(),
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getConnectedSidecars().includes("sc-asset-fail"),
+      );
+      await env.router.sendAgentDeploy(
+        "fail-asset@test.interchange",
+        TEST_CONFIG,
+      );
+
+      await expect(
+        env.router.sendPack(
+          "fail-asset@test.interchange",
+          new Uint8Array([1, 2, 3]),
+          "refs/heads/main",
+          "a".repeat(40),
+          { mountPath: "skills/example/" },
+        ),
+      ).rejects.toThrow("Pack rejected: corrupt");
+    } finally {
+      client.close();
+      await waitFor(
+        () => !env.router.getConnectedSidecars().includes("sc-asset-fail"),
+      );
     }
   });
 

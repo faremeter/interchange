@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { getLogger } from "@intx/log";
 import {
   assembleMessage,
@@ -5,9 +7,13 @@ import {
   createDetachedSignatureFromProvider,
   type MessageHeaders,
 } from "@intx/mime";
+import type { DB } from "@intx/db";
+import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
 import type { CryptoProvider, HarnessConfig } from "@intx/types/runtime";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
+import type { AgentAssetWithAsset, AssetService } from "./asset-service";
 import type { SidecarRouter } from "./ws/sidecar-handler";
+import type { Principal, RepoId } from "./repo-store";
 
 const logger = getLogger(["interchange", "hub", "session-service"]);
 
@@ -32,8 +38,14 @@ export type SessionService = {
    * Orchestrate the full deploy lifecycle:
    *   1. Write deploy tree to hub repo and produce packfile
    *   2. Provision agent on sidecar (sendAgentDeploy)
-   *   3. Deliver packfile (sendPack)
-   *   4. Start session (sendSessionStart)
+   *   3. Deliver deploy packfile (sendPack)
+   *   4. Fan-out attached asset packs: for each row returned by
+   *      `assetService.listAgentAssets(agentId)`, resolve the
+   *      mountPath, resolve the ref to a source commit SHA, build a
+   *      pack, insert a `session_asset` row, and send the pack to the
+   *      sidecar with `mountPath` set on the `repo.pack.done` frame.
+   *      The manifest insert MUST precede the pack send.
+   *   5. Start session (sendSessionStart)
    *
    * On partial failure after provision, attempts cleanup via
    * sendAgentUndeploy before re-throwing.
@@ -41,6 +53,7 @@ export type SessionService = {
   launchSession(params: {
     agentAddress: string;
     agentId: string;
+    instanceId: string;
     config: HarnessConfig;
     deployContent: DeployContent;
   }): Promise<void>;
@@ -71,19 +84,86 @@ export type UserMessageParams = {
   cryptoProvider: CryptoProvider;
 };
 
-export function createSessionService(deps: {
+export type SessionServiceDeps = {
   sidecarRouter: SidecarRouter;
   agentRepoStore: AgentRepoStore;
-}): SessionService {
-  const { sidecarRouter, agentRepoStore } = deps;
+  /**
+   * Optional asset attachment integration. When set, `launchSession`
+   * fans out per-attachment packs after the deploy pack lands and
+   * inserts a `session_asset` row per attachment. When unset, only
+   * the deploy pack is sent — the legacy single-pack path is
+   * preserved bit-for-bit.
+   */
+  assetService?: AssetService;
+  /** DB handle used for `session_asset` manifest inserts. Required
+   * iff `assetService` is set. */
+  db?: DB["db"];
+};
+
+// Hub-side principal for reading skill repos. Skills are signed by the
+// hub itself, and listAgentAssets is being called on the hub to assemble
+// packs for delivery to a sidecar — so the hub principal is correct.
+const HUB_PRINCIPAL: Principal = { kind: "hub" };
+
+type ResolvedAttachment = {
+  agentAssetId: string;
+  mountPath: string;
+  sourceCommitSha: string;
+  repoId: RepoId;
+  pack: Uint8Array;
+  ref: string;
+};
+
+function createPackSha(pack: Uint8Array): string {
+  return createHash("sha256").update(pack).digest("hex");
+}
+
+/**
+ * Compute the materialization path for an attachment from the asset's
+ * kind and name. v1 does not let users override the path — the path is
+ * a function of the asset, full stop. Today only `skill` has a defined
+ * mapping (`skills/<asset.name>/`); other kinds reach this code path
+ * via the `never` branch and throw, per the defensive-coding rule that
+ * we never silently invent a default for an unhandled kind.
+ *
+ * Asset names are validated lowercase-kebab at `createAsset`, which is
+ * the only entry path into this function, so the resulting path is
+ * safe under `applyAssetPack`'s per-segment validator.
+ */
+function resolveMountPath(row: AgentAssetWithAsset): string {
+  switch (row.asset.kind) {
+    case "skill":
+      return `skills/${row.asset.name}/`;
+    case "agent-state":
+      throw new Error(
+        `mount_path_required: agent_asset row ${row.id} references agent-state asset ${row.asset.id}; agent-state attachments are not supported`,
+      );
+    default: {
+      const exhaustive: never = row.asset.kind;
+      throw new Error(
+        `mount_path_required: no default mountPath for asset kind ${String(exhaustive)} on row ${row.id}`,
+      );
+    }
+  }
+}
+
+export function createSessionService(deps: SessionServiceDeps): SessionService {
+  const { sidecarRouter, agentRepoStore, assetService, db } = deps;
+
+  if (assetService !== undefined && db === undefined) {
+    throw new Error(
+      "createSessionService: db is required when assetService is set",
+    );
+  }
 
   async function launchSession(params: {
     agentAddress: string;
     agentId: string;
+    instanceId: string;
     config: HarnessConfig;
     deployContent: DeployContent;
   }): Promise<void> {
-    const { agentAddress, agentId, config, deployContent } = params;
+    const { agentAddress, agentId, instanceId, config, deployContent } = params;
 
     // Phase 0: Write deploy tree and produce packfile (hub-local, no
     // sidecar state to clean up if this fails).
@@ -96,6 +176,17 @@ export function createSessionService(deps: {
         await agentRepoStore.createDeployPack(agentId));
     } catch (err) {
       throw new SessionLaunchError("write", err, false);
+    }
+
+    // Phase 0b: Resolve attached assets before contacting the sidecar.
+    // Failures at this stage are hub-local — no sidecar state to clean up.
+    let attachments: ResolvedAttachment[] = [];
+    if (assetService !== undefined) {
+      try {
+        attachments = await resolveAttachments(assetService, agentId);
+      } catch (err) {
+        throw new SessionLaunchError("write", err, false);
+      }
     }
 
     // Phase 1: Provision on sidecar.
@@ -114,12 +205,114 @@ export function createSessionService(deps: {
       throw new SessionLaunchError("pack", err, false);
     }
 
+    // Phase 2b: Asset-pack fan-out. For each attached asset, build a
+    // pack, insert the manifest row, then send the pack. The manifest
+    // insert MUST happen before the pack send: if the sidecar acks
+    // but the row is missing, the session has materialization without
+    // a recorded manifest. If the row insert fails, the pack send
+    // must not happen.
+    if (assetService !== undefined && attachments.length > 0) {
+      for (const att of attachments) {
+        try {
+          await sendAttachmentPack(instanceId, agentAddress, att);
+        } catch (err) {
+          await attemptCleanup(agentAddress, "pack", err);
+          throw new SessionLaunchError("pack", err, false);
+        }
+      }
+    }
+
     try {
       await sidecarRouter.sendSessionStart(agentAddress);
     } catch (err) {
       await attemptCleanup(agentAddress, "start", err);
       throw new SessionLaunchError("start", err, false);
     }
+  }
+
+  async function sendAttachmentPack(
+    instanceId: string,
+    agentAddress: string,
+    attachment: ResolvedAttachment,
+  ): Promise<void> {
+    if (db === undefined) {
+      // Guarded at construction; reassert defensively so the
+      // narrowing is visible to readers and a future refactor cannot
+      // accidentally invoke this without a db.
+      throw new Error("sendAttachmentPack invoked without a db handle");
+    }
+
+    const { agentAssetId, mountPath, sourceCommitSha, repoId, pack, ref } =
+      attachment;
+
+    const assetPackSha = createPackSha(pack);
+
+    // Insert manifest row before the pack send so we never end up in
+    // the materialized-without-manifest state.
+    await db.insert(sessionAssetTable).values({
+      instanceId,
+      agentAssetId,
+      mountPath,
+      assetPackSha,
+      sourceCommitSha,
+      materializedAt: new Date(),
+    });
+
+    const result = await sidecarRouter.sendPack(
+      agentAddress,
+      pack,
+      ref,
+      sourceCommitSha,
+      { mountPath, repoId },
+    );
+
+    if (result.assetPackSha !== assetPackSha) {
+      throw new Error(
+        `attachment_pack_sha_mismatch: producer hash ${assetPackSha} != router hash ${result.assetPackSha}`,
+      );
+    }
+  }
+
+  async function resolveAttachments(
+    service: AssetService,
+    agentId: string,
+  ): Promise<ResolvedAttachment[]> {
+    const rows = await service.listAgentAssets(agentId);
+    const resolved: ResolvedAttachment[] = [];
+    for (const row of rows) {
+      resolved.push(await resolveAttachment(row));
+    }
+    return resolved;
+  }
+
+  async function resolveAttachment(
+    row: AgentAssetWithAsset,
+  ): Promise<ResolvedAttachment> {
+    const mountPath = resolveMountPath(row);
+    const repoId: RepoId = { kind: row.asset.kind, id: row.asset.id };
+
+    const sourceCommitSha = await agentRepoStore.repoStore.resolveRef(
+      HUB_PRINCIPAL,
+      repoId,
+      row.ref,
+    );
+    if (sourceCommitSha === null) {
+      throw new Error(
+        `attachment_ref_unresolved: ${row.asset.kind}/${row.asset.id} has no commit on ${row.ref}`,
+      );
+    }
+
+    const { pack, ref: returnedRef } =
+      await agentRepoStore.repoStore.createPack(HUB_PRINCIPAL, repoId, row.ref);
+
+    return {
+      agentAssetId: row.id,
+      mountPath,
+      sourceCommitSha,
+      repoId,
+      pack,
+      ref: returnedRef,
+    };
   }
 
   async function attemptCleanup(

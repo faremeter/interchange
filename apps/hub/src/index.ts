@@ -78,11 +78,6 @@ createHubSessionOrchestrator({
   agentRepoStore,
 });
 
-const sessionService = createSessionService({
-  sidecarRouter,
-  agentRepoStore,
-});
-
 // The asset service shares the agent-repo store's substrate so skill
 // assets land under the same on-disk root and reuse the same signing
 // key for commit signatures. It is constructed here even though no
@@ -92,6 +87,13 @@ const sessionService = createSessionService({
 const _assetService = createAssetService({
   db,
   repoStore: agentRepoStore.repoStore,
+});
+
+const sessionService = createSessionService({
+  sidecarRouter,
+  agentRepoStore,
+  assetService: _assetService,
+  db,
 });
 
 const app = createApp({

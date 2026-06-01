@@ -581,6 +581,7 @@ export function createInstanceRoutes({
         await sessionService.launchSession({
           agentAddress,
           agentId: row.id,
+          instanceId,
           config: {
             sessionId,
             agentId: row.id,

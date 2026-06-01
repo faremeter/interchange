@@ -1,13 +1,15 @@
 import { describe, test, expect, beforeEach } from "bun:test";
+import { createHash } from "node:crypto";
 import type { CryptoProvider, HarnessConfig } from "@intx/types/runtime";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
-import type { RepoStore } from "./repo-store";
+import type { AgentAssetWithAsset, AssetService } from "./asset-service";
+import type { Principal, RepoId, RepoStore } from "./repo-store";
 import {
   createSessionService,
   SessionLaunchError,
   type UserMessageParams,
 } from "./session-service";
-import type { SidecarRouter } from "./ws/sidecar-handler";
+import type { SendPackOptions, SidecarRouter } from "./ws/sidecar-handler";
 import { createSidecarEmitter } from "./ws/sidecar-events";
 
 type Call = { method: string; args: unknown[] };
@@ -15,6 +17,7 @@ type Call = { method: string; args: unknown[] };
 function createMockRouter(): SidecarRouter & {
   calls: Call[];
   routeMailResult: boolean;
+  sendPackResult: { assetPackSha: string };
 } {
   const calls: Call[] = [];
   const track =
@@ -27,9 +30,14 @@ function createMockRouter(): SidecarRouter & {
   // track() returns a generic variadic function; each SidecarRouter method has
   // a specific typed signature. The casts below are unavoidable given the
   // generic tracker design — each method's parameter types cannot be inferred.
-  const mock: SidecarRouter & { calls: Call[]; routeMailResult: boolean } = {
+  const mock: SidecarRouter & {
+    calls: Call[];
+    routeMailResult: boolean;
+    sendPackResult: { assetPackSha: string };
+  } = {
     calls,
     routeMailResult: true,
+    sendPackResult: { assetPackSha: "" },
     handleOpen: track("handleOpen") as SidecarRouter["handleOpen"],
     handleMessage: track("handleMessage") as SidecarRouter["handleMessage"],
     handleClose: track("handleClose") as SidecarRouter["handleClose"],
@@ -55,7 +63,20 @@ function createMockRouter(): SidecarRouter & {
     sendSourcesUpdate: track(
       "sendSourcesUpdate",
     ) as SidecarRouter["sendSourcesUpdate"],
-    sendPack: track("sendPack") as SidecarRouter["sendPack"],
+    sendPack: ((
+      agentAddress: string,
+      pack: Uint8Array,
+      ref: string,
+      commitSha: string,
+      options?: SendPackOptions,
+    ) => {
+      calls.push({
+        method: "sendPack",
+        args: [agentAddress, pack, ref, commitSha, options],
+      });
+      const assetPackSha = createHash("sha256").update(pack).digest("hex");
+      return Promise.resolve({ assetPackSha });
+    }) as SidecarRouter["sendPack"],
     sendSyncRequest: track(
       "sendSyncRequest",
     ) as SidecarRouter["sendSyncRequest"],
@@ -117,8 +138,93 @@ function unusedRepoStore(): RepoStore {
   };
 }
 
+type FakeAssetPackEntry = {
+  pack: Uint8Array;
+  commitSha: string;
+  ref: string;
+};
+
+function createFakeRepoStore(
+  packsByAssetId: Map<string, FakeAssetPackEntry>,
+): RepoStore & {
+  resolveRefCalls: { repoId: RepoId; ref: string }[];
+  createPackCalls: { repoId: RepoId; ref: string }[];
+} {
+  const resolveRefCalls: { repoId: RepoId; ref: string }[] = [];
+  const createPackCalls: { repoId: RepoId; ref: string }[] = [];
+  const unused = () =>
+    Promise.reject(new Error("repoStore method not wired in fake"));
+  return {
+    initRepo: unused,
+    writeTree: unused,
+    receivePack: unused,
+    async resolveRef(_principal: Principal, repoId: RepoId, ref: string) {
+      resolveRefCalls.push({ repoId, ref });
+      const entry = packsByAssetId.get(repoId.id);
+      if (entry === undefined) return null;
+      return entry.commitSha;
+    },
+    async createPack(_principal: Principal, repoId: RepoId, ref: string) {
+      createPackCalls.push({ repoId, ref });
+      const entry = packsByAssetId.get(repoId.id);
+      if (entry === undefined) {
+        throw new Error(`no fake pack registered for ${repoId.id}`);
+      }
+      return {
+        pack: entry.pack,
+        commitSha: entry.commitSha,
+        ref: entry.ref,
+      };
+    },
+    resolveRefCalls,
+    createPackCalls,
+  };
+}
+
+function createFakeAssetService(
+  attachments: AgentAssetWithAsset[],
+): AssetService {
+  return {
+    createAsset: () => {
+      throw new Error("not used");
+    },
+    populateAsset: () => {
+      throw new Error("not used");
+    },
+    attachAsset: () => {
+      throw new Error("not used");
+    },
+    listAgentAssets: async (_agentId: string) => attachments,
+  };
+}
+
+type CapturedSessionAssetRow = {
+  instanceId: string;
+  agentAssetId: string;
+  mountPath: string;
+  assetPackSha: string;
+  sourceCommitSha: string;
+};
+
+function createFakeDb(captured: CapturedSessionAssetRow[]) {
+  // The session-service only calls `db.insert(sessionAssetTable).values(row)`.
+  // A minimal builder stub records the row and ignores the table identity.
+  const builder = {
+    values(row: CapturedSessionAssetRow) {
+      captured.push(row);
+      return Promise.resolve();
+    },
+  };
+  return {
+    insert(_table: unknown) {
+      return builder;
+    },
+  };
+}
+
 const AGENT_ADDRESS = "agent-1@test.local";
 const AGENT_ID = "agent-1";
+const INSTANCE_ID = "instance-1";
 
 const MOCK_CONFIG: HarnessConfig = {
   sessionId: "ses-1",
@@ -155,6 +261,7 @@ describe("SessionService", () => {
     await service.launchSession({
       agentAddress: AGENT_ADDRESS,
       agentId: AGENT_ID,
+      instanceId: INSTANCE_ID,
       config: MOCK_CONFIG,
       deployContent: MOCK_CONTENT,
     });
@@ -185,6 +292,7 @@ describe("SessionService", () => {
       .launchSession({
         agentAddress: AGENT_ADDRESS,
         agentId: AGENT_ID,
+        instanceId: INSTANCE_ID,
         config: MOCK_CONFIG,
         deployContent: MOCK_CONTENT,
       })
@@ -211,6 +319,7 @@ describe("SessionService", () => {
       .launchSession({
         agentAddress: AGENT_ADDRESS,
         agentId: AGENT_ID,
+        instanceId: INSTANCE_ID,
         config: MOCK_CONFIG,
         deployContent: MOCK_CONTENT,
       })
@@ -239,6 +348,7 @@ describe("SessionService", () => {
       .launchSession({
         agentAddress: AGENT_ADDRESS,
         agentId: AGENT_ID,
+        instanceId: INSTANCE_ID,
         config: MOCK_CONFIG,
         deployContent: MOCK_CONTENT,
       })
@@ -268,6 +378,7 @@ describe("SessionService", () => {
       .launchSession({
         agentAddress: AGENT_ADDRESS,
         agentId: AGENT_ID,
+        instanceId: INSTANCE_ID,
         config: MOCK_CONFIG,
         deployContent: MOCK_CONTENT,
       })
@@ -293,6 +404,7 @@ describe("SessionService", () => {
       .launchSession({
         agentAddress: AGENT_ADDRESS,
         agentId: AGENT_ID,
+        instanceId: INSTANCE_ID,
         config: MOCK_CONFIG,
         deployContent: MOCK_CONTENT,
       })
@@ -444,5 +556,150 @@ describe("SessionService", () => {
     if (!(err instanceof Error)) throw new Error("unreachable");
     expect(err.message).toBe("signing failed");
     expect(router.calls.filter((c) => c.method === "routeMail").length).toBe(0);
+  });
+
+  // ---------------------------------------------------------------------
+  // Attachment fan-out
+  // ---------------------------------------------------------------------
+
+  function makeAttachment(overrides: {
+    id: string;
+    assetId: string;
+    name: string;
+    ref?: string;
+  }): AgentAssetWithAsset {
+    return {
+      id: overrides.id,
+      agentId: AGENT_ID,
+      assetId: overrides.assetId,
+      ref: overrides.ref ?? "refs/heads/main",
+      accessMode: "read-only",
+      createdAt: new Date(),
+      asset: {
+        id: overrides.assetId,
+        tenantId: "tenant-1",
+        kind: "skill",
+        name: overrides.name,
+        displayName: null,
+      },
+    };
+  }
+
+  test("launchSession fans out attachment packs and inserts manifest rows", async () => {
+    const packsByAssetId = new Map<string, FakeAssetPackEntry>([
+      [
+        "ast_greet",
+        {
+          pack: new Uint8Array([10, 11, 12]),
+          commitSha: "c".repeat(40),
+          ref: "refs/heads/main",
+        },
+      ],
+      [
+        "ast_search",
+        {
+          pack: new Uint8Array([20, 21, 22, 23]),
+          commitSha: "d".repeat(40),
+          ref: "refs/heads/main",
+        },
+      ],
+    ]);
+    const fakeRepoStore = createFakeRepoStore(packsByAssetId);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- replace the empty unusedRepoStore with the resolving fake for this test
+    (repoStore as unknown as { repoStore: RepoStore }).repoStore =
+      fakeRepoStore;
+
+    const attachments = [
+      makeAttachment({ id: "aas_greet", assetId: "ast_greet", name: "greet" }),
+      makeAttachment({
+        id: "aas_search",
+        assetId: "ast_search",
+        name: "search",
+      }),
+    ];
+
+    const captured: CapturedSessionAssetRow[] = [];
+    const service = createSessionService({
+      sidecarRouter: router,
+      agentRepoStore: repoStore,
+      assetService: createFakeAssetService(attachments),
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- DB stub satisfies the narrow surface session-service actually calls (insert().values())
+      db: createFakeDb(captured) as unknown as NonNullable<
+        Parameters<typeof createSessionService>[0]["db"]
+      >,
+    });
+
+    await service.launchSession({
+      agentAddress: AGENT_ADDRESS,
+      agentId: AGENT_ID,
+      instanceId: INSTANCE_ID,
+      config: MOCK_CONFIG,
+      deployContent: MOCK_CONTENT,
+    });
+
+    expect(captured).toHaveLength(2);
+
+    const greetRow = captured.find((r) => r.agentAssetId === "aas_greet");
+    if (greetRow === undefined) throw new Error("greet row missing");
+    expect(greetRow.mountPath).toBe("skills/greet/");
+    expect(greetRow.sourceCommitSha).toBe("c".repeat(40));
+    expect(greetRow.instanceId).toBe(INSTANCE_ID);
+    expect(greetRow.assetPackSha).toBe(
+      createHash("sha256")
+        .update(new Uint8Array([10, 11, 12]))
+        .digest("hex"),
+    );
+
+    const searchRow = captured.find((r) => r.agentAssetId === "aas_search");
+    if (searchRow === undefined) throw new Error("search row missing");
+    expect(searchRow.mountPath).toBe("skills/search/");
+    expect(searchRow.sourceCommitSha).toBe("d".repeat(40));
+
+    const packCalls = router.calls.filter((c) => c.method === "sendPack");
+    // 1 deploy pack + 2 attachment packs
+    expect(packCalls).toHaveLength(3);
+    const attachmentPackCalls = packCalls.slice(1);
+    const opts0 = attachmentPackCalls[0]?.args[4];
+    const opts1 = attachmentPackCalls[1]?.args[4];
+    expect(opts0).toEqual({
+      mountPath: "skills/greet/",
+      repoId: { kind: "skill", id: "ast_greet" },
+    });
+    expect(opts1).toEqual({
+      mountPath: "skills/search/",
+      repoId: { kind: "skill", id: "ast_search" },
+    });
+  });
+
+  test("launchSession without assetService leaves the deploy-only flow unchanged", async () => {
+    const service = createSessionService({
+      sidecarRouter: router,
+      agentRepoStore: repoStore,
+    });
+
+    await service.launchSession({
+      agentAddress: AGENT_ADDRESS,
+      agentId: AGENT_ID,
+      instanceId: INSTANCE_ID,
+      config: MOCK_CONFIG,
+      deployContent: MOCK_CONTENT,
+    });
+
+    const methods = [
+      ...repoStore.calls.map((c) => c.method),
+      ...router.calls.map((c) => c.method),
+    ];
+    expect(methods).toEqual([
+      "writeDeployTree",
+      "createDeployPack",
+      "sendAgentDeploy",
+      "sendPack",
+      "sendSessionStart",
+    ]);
+
+    // No mountPath options on the single sendPack call.
+    const packCall = router.calls.find((c) => c.method === "sendPack");
+    if (packCall === undefined) throw new Error("sendPack not called");
+    expect(packCall.args[4]).toBeUndefined();
   });
 });

@@ -24,6 +24,8 @@
 // registration into the builder would break the invariant; pushing
 // authz out of the builder would re-couple the package to authz.
 
+import path from "node:path";
+
 import { getLogger } from "@intx/log";
 import { hexEncode } from "@intx/types";
 import type { HubTransport } from "@intx/mail-memory";
@@ -42,6 +44,7 @@ import type { Harness } from "@intx/harness";
 import type { AgentKeyEntry, AgentKeyStore } from "./agent-key-store";
 import type { AgentRepoStore } from "./agent-repo-store";
 import type { HarnessBuilder, HarnessBundle } from "./harness-builder";
+import { applyAssetPack as applyAssetPackFn } from "./apply-asset-pack";
 
 const logger = getLogger(["interchange", "hub-agent", "session"]);
 
@@ -124,6 +127,19 @@ export type SessionManager = {
     commitSha: string,
     transferId: string,
     verifyCommit?: (payload: string, signature: string) => boolean,
+  ): Promise<void>;
+  /**
+   * Materialize an asset pack at `<workspaceRoot>/<mountPath>/` for the
+   * agent. The workspace root is per-agent; this is distinct from the
+   * agent's deploy git tree. Asset packs are unsigned in v1 — no
+   * `verifyCommit` parameter.
+   */
+  applyAssetPack(
+    agentAddress: string,
+    mountPath: string,
+    pack: Uint8Array,
+    ref: string,
+    commitSha: string,
   ): Promise<void>;
   createStatePack(
     agentAddress: string,
@@ -551,6 +567,26 @@ export function createSessionManager(
     await repoStore.applyDeployPack(args);
   }
 
+  async function applyAssetPack(
+    agentAddress: string,
+    mountPath: string,
+    pack: Uint8Array,
+    ref: string,
+    commitSha: string,
+  ): Promise<void> {
+    const workspaceRoot = path.join(
+      repoStore.getAgentDir(agentAddress),
+      "workspace",
+    );
+    await applyAssetPackFn({
+      workspaceRoot,
+      mountPath,
+      pack,
+      ref,
+      commitSha,
+    });
+  }
+
   async function createStatePack(
     agentAddress: string,
   ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }> {
@@ -610,6 +646,7 @@ export function createSessionManager(
     getAddresses,
     restoreSessions,
     applyDeployPack,
+    applyAssetPack,
     createStatePack,
     deleteAgentDir,
     getDeployRef,

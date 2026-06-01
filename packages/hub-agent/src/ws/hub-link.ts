@@ -407,17 +407,31 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
 
     try {
-      const verifyCommit = (payload: string, signature: string) =>
-        keyStore.verifyDeployCommit(frame.agentAddress, payload, signature);
+      if (frame.mountPath !== undefined) {
+        // Asset pack: route to the workspace materializer. Use
+        // frame.agentAddress for destination routing — frame.repoId.id
+        // names the source asset at the hub, which is a different
+        // entity than the destination agent.
+        await sessions.applyAssetPack(
+          frame.agentAddress,
+          frame.mountPath,
+          result.pack,
+          result.ref,
+          result.commitSha,
+        );
+      } else {
+        const verifyCommit = (payload: string, signature: string) =>
+          keyStore.verifyDeployCommit(frame.agentAddress, payload, signature);
 
-      await sessions.applyDeployPack(
-        frame.agentAddress,
-        result.pack,
-        result.ref,
-        result.commitSha,
-        frame.transferId,
-        verifyCommit,
-      );
+        await sessions.applyDeployPack(
+          frame.agentAddress,
+          result.pack,
+          result.ref,
+          result.commitSha,
+          frame.transferId,
+          verifyCommit,
+        );
+      }
       send({
         type: "repo.pack.ack",
         agentAddress: frame.agentAddress,
@@ -426,6 +440,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // asset_materialization_failed errors mirror deploy materialization
+      // errors into the same `corrupt` bucket — finer-grained
+      // classification is out of scope for v1 asset packs.
       const reason = msg.startsWith("sha_mismatch")
         ? "sha_mismatch"
         : msg.startsWith("signature_invalid") ||

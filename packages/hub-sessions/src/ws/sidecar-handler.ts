@@ -4,7 +4,7 @@
 // table of agentAddress → sidecar connection, and dispatches frames between
 // sidecars and the hub's internal systems.
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { getLogger } from "@intx/log";
 import { verifyEd25519 } from "@intx/crypto-node";
 import { chunkPack, createPackReceiver } from "@intx/pack-transport";
@@ -47,6 +47,29 @@ type PendingRequest = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+export type SendPackOptions = {
+  /**
+   * Repo-relative mount path under the sidecar's per-agent workspace.
+   * When set, the receiving sidecar materializes the pack as plain
+   * files at `<workspaceRoot>/<mountPath>/` and does NOT apply it to
+   * the agent's deploy git tree. Absent for agent-state deploy/state
+   * packs, which continue to apply to the deploy tree.
+   */
+  mountPath?: string;
+  /**
+   * Override the `repoId` emitted on the wire. The agent-state flow
+   * defaults to `{ kind: "agent-state", id: agentAddress }`; asset
+   * packs must pass the SOURCE asset's id so audit can correlate the
+   * pack back to its hub-side origin.
+   */
+  repoId?: RepoId;
+};
+
+export type SendPackResult = {
+  /** Hex-encoded sha256 of the pack bytes that were sent. */
+  assetPackSha: string;
+};
+
 export type SidecarRouter = {
   handleOpen(ws: WsHandle): void;
   handleMessage(ws: WsHandle, data: string): void;
@@ -78,7 +101,8 @@ export type SidecarRouter = {
     pack: Uint8Array,
     ref: string,
     commitSha: string,
-  ): Promise<void>;
+    options?: SendPackOptions,
+  ): Promise<SendPackResult>;
   sendSyncRequest(agentAddress: string): void;
 
   subscribeAgent(
@@ -1120,7 +1144,8 @@ export function createSidecarRouter(
     pack: Uint8Array,
     ref: string,
     commitSha: string,
-  ): Promise<void> {
+    options?: SendPackOptions,
+  ): Promise<SendPackResult> {
     const ws = addressIndex.get(agentAddress);
     if (ws === undefined) {
       return Promise.reject(
@@ -1136,14 +1161,20 @@ export function createSidecarRouter(
 
     const transferId = `pack-${++packCounter}`;
     // For the agent-state flow the destination agent and the source repo
-    // are the same entity, so `repoId.id === agentAddress`. The two fields
-    // on the wire still carry distinct purposes (destination routing vs.
-    // source identification at the hub) — see the frame docstring.
-    const repoId: RepoId = { kind: "agent-state", id: agentAddress };
+    // are the same entity, so `repoId.id === agentAddress`. Asset packs
+    // override this with the SOURCE asset's id so audit can correlate
+    // the pack back to its hub-side origin.
+    const repoId: RepoId = options?.repoId ?? {
+      kind: "agent-state",
+      id: agentAddress,
+    };
+    const mountPath = options?.mountPath;
+
+    const assetPackSha = createHash("sha256").update(pack).digest("hex");
 
     // Register pending entry before sending frames so that a synchronous
     // repo.pack.ack (e.g. in tests or loopback transports) resolves correctly.
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<SendPackResult>((resolve, reject) => {
       const timer = setTimeout(() => {
         pendingPacks.delete(transferId);
         reject(
@@ -1156,7 +1187,9 @@ export function createSidecarRouter(
       pendingPacks.set(transferId, {
         transferId,
         ws,
-        resolve,
+        resolve() {
+          resolve({ assetPackSha });
+        },
         reject(error: string) {
           reject(new Error(`Pack rejected: ${error}`));
         },
@@ -1183,6 +1216,7 @@ export function createSidecarRouter(
         transferId,
         ref,
         commitSha,
+        ...(mountPath !== undefined ? { mountPath } : {}),
       });
     });
   }

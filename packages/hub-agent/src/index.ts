@@ -38,3 +38,4 @@ export {
   type SidecarOrchestratorConfig,
   type SidecarCryptoOps,
 } from "./sidecar-orchestrator";
+export { applyAssetPack, type ApplyAssetPackArgs } from "./apply-asset-pack";

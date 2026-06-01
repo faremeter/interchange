@@ -379,6 +379,7 @@ describe("deploy flow integration", () => {
     await hub.sessionService.launchSession({
       agentAddress: AGENT_ADDRESS,
       agentId: AGENT_ID,
+      instanceId: AGENT_ID,
       config,
       deployContent: {
         systemPrompt: "You are an integration test agent.",

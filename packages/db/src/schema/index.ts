@@ -14,4 +14,5 @@ export * from "./offerings";
 export * from "./sidecar";
 export * from "./sessions";
 export * from "./instances";
+export * from "./session-assets";
 export * from "./messages";
