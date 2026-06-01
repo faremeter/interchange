@@ -12,6 +12,11 @@ import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
 import type { CryptoProvider, HarnessConfig } from "@intx/types/runtime";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { AgentAssetWithAsset, AssetService } from "./asset-service";
+import {
+  buildAvailableSkillsStanza,
+  type AvailableSkillEntry,
+} from "./available-skills-stanza";
+import { getSkillIndex } from "./skill-kind";
 import type { SidecarRouter } from "./ws/sidecar-handler";
 import type { Principal, RepoId } from "./repo-store";
 
@@ -107,6 +112,11 @@ const HUB_PRINCIPAL: Principal = { kind: "hub" };
 
 type ResolvedAttachment = {
   agentAssetId: string;
+  /** Asset `name` column. Used to build the qualified `<asset.name>/<skill-name>`
+   * prefix in the `<available_skills>` stanza. */
+  assetName: string;
+  /** Asset `kind` column, used to gate skill-index lookups. */
+  assetKind: AgentAssetWithAsset["asset"]["kind"];
   mountPath: string;
   sourceCommitSha: string;
   repoId: RepoId;
@@ -165,28 +175,42 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   }): Promise<void> {
     const { agentAddress, agentId, instanceId, config, deployContent } = params;
 
-    // Phase 0: Write deploy tree and produce packfile (hub-local, no
+    // Phase 0: Resolve attached assets first so the skill index is in
+    // hand before the deploy tree is written. The `<available_skills>`
+    // stanza describing every attached skill must land in
+    // `deploy/prompt.md`, so it has to be composed before
+    // `writeDeployTree` produces the on-disk tree.
+    let attachments: ResolvedAttachment[] = [];
+    let availableSkills: AvailableSkillEntry[] = [];
+    if (assetService !== undefined) {
+      try {
+        attachments = await resolveAttachments(assetService, agentId);
+        availableSkills = collectAvailableSkills(attachments);
+      } catch (err) {
+        throw new SessionLaunchError("write", err, false);
+      }
+    }
+
+    const stanza = buildAvailableSkillsStanza(availableSkills);
+    const effectiveDeployContent: DeployContent =
+      stanza.length === 0
+        ? deployContent
+        : {
+            ...deployContent,
+            systemPrompt: `${deployContent.systemPrompt}\n\n${stanza}\n`,
+          };
+
+    // Phase 0b: Write deploy tree and produce packfile (hub-local, no
     // sidecar state to clean up if this fails).
     let pack: Uint8Array;
     let commitSha: string;
     let ref: string;
     try {
-      await agentRepoStore.writeDeployTree(agentId, deployContent);
+      await agentRepoStore.writeDeployTree(agentId, effectiveDeployContent);
       ({ pack, commitSha, ref } =
         await agentRepoStore.createDeployPack(agentId));
     } catch (err) {
       throw new SessionLaunchError("write", err, false);
-    }
-
-    // Phase 0b: Resolve attached assets before contacting the sidecar.
-    // Failures at this stage are hub-local — no sidecar state to clean up.
-    let attachments: ResolvedAttachment[] = [];
-    if (assetService !== undefined) {
-      try {
-        attachments = await resolveAttachments(assetService, agentId);
-      } catch (err) {
-        throw new SessionLaunchError("write", err, false);
-      }
     }
 
     // Phase 1: Provision on sidecar.
@@ -307,12 +331,32 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     return {
       agentAssetId: row.id,
+      assetName: row.asset.name,
+      assetKind: row.asset.kind,
       mountPath,
       sourceCommitSha,
       repoId,
       pack,
       ref: returnedRef,
     };
+  }
+
+  function collectAvailableSkills(
+    resolved: ResolvedAttachment[],
+  ): AvailableSkillEntry[] {
+    const entries: AvailableSkillEntry[] = [];
+    for (const att of resolved) {
+      if (att.assetKind !== "skill") continue;
+      const index = getSkillIndex(att.repoId.id, att.ref);
+      for (const entry of index) {
+        entries.push({
+          qualifiedName: `${att.assetName}/${entry.name}`,
+          description: entry.description,
+          workspacePath: `workspace/${att.mountPath}${entry.workspaceSubpath}`,
+        });
+      }
+    }
+    return entries;
   }
 
   async function attemptCleanup(
