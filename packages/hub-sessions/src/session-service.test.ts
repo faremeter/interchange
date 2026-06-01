@@ -85,12 +85,12 @@ function createMockRepoStore(): AgentRepoStore & { calls: Call[] } {
       };
     },
     async receiveStatePack(
-      agentId: string,
+      repoId: { kind: "agent-state"; id: string },
       _pack: Uint8Array,
       _ref: string,
       _commitSha: string,
     ) {
-      calls.push({ method: "receiveStatePack", args: [agentId] });
+      calls.push({ method: "receiveStatePack", args: [repoId.id] });
     },
     getSigningPublicKey() {
       return new Uint8Array(32);

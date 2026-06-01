@@ -19,7 +19,7 @@
 // wire layer already has both behaviors, and pretending otherwise
 // would silently change failure handling.
 
-import type { PackRejectReason } from "@intx/types/sidecar";
+import type { PackRejectReason, RepoId } from "@intx/types/sidecar";
 import type { ConnectorThreadState } from "@intx/types/runtime";
 import { getLogger } from "@intx/log";
 
@@ -217,9 +217,11 @@ export type SidecarLookups = {
   }) => Promise<SidecarMailPersistedRow[]>;
 
   /** Ingests a received state pack and returns whether the wire layer
-   * should ack or reject the pack to the sidecar. */
+   * should ack or reject the pack to the sidecar. `repoId` identifies the
+   * source repo at the hub (e.g. `{ kind: "agent-state", id: agentAddress }`
+   * for the agent-state flow). */
   receiveStatePack?: (
-    agentAddress: string,
+    repoId: RepoId,
     pack: Uint8Array,
     ref: string,
     commitSha: string,

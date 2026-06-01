@@ -307,12 +307,47 @@ export type SourcesUpdateFrame = typeof SourcesUpdateFrame.infer;
 //
 // Git pack data is streamed between hub and sidecar over the existing JSON
 // WebSocket. Chunks are base64-encoded (matching the mail convention above).
-// A transfer is a sequence of pack.push frames followed by a pack.done,
-// correlated by transferId. The receiver responds with pack.ack or pack.reject.
+// A transfer is a sequence of repo.pack.push frames followed by a
+// repo.pack.done, correlated by transferId. The receiver responds with
+// repo.pack.ack or repo.pack.reject.
+//
+// Each pack frame carries two complementary addressing fields:
+//
+//   - `agentAddress` identifies the destination agent on the receiving
+//     sidecar. The sidecar manages per-agent state and uses this field to
+//     route the pack to the correct workspace. For agent-state packs the
+//     sidecar applies the pack onto the agent's deploy/state tree.
+//
+//   - `repoId` identifies the source repo at the hub. The hub maps `repoId`
+//     to the originating entry in its kind-keyed RepoStore. For
+//     `repoId.kind === "agent-state"`, `repoId.id` is the agent address
+//     (the deploy/state repo and the destination agent are the same), so
+//     the two fields carry the same value. Future kinds (e.g. assets) use
+//     `repoId` to name a non-agent source while `agentAddress` continues
+//     to address the destination agent.
 //
 // Flow control: deferred. Agent deploy trees are small enough that the sender
 // can push all chunks without windowing. If this becomes a problem, a credit-
 // based mechanism can be added later.
+
+/**
+ * Tag identifying a kind of repository in the hub's kind-keyed RepoStore.
+ * Lives in `@intx/types` because the wire-level pack frames reference it;
+ * the substrate package re-exports it for handler authors.
+ */
+export const RepoKind = type.enumerated("agent-state");
+export type RepoKind = typeof RepoKind.infer;
+
+/**
+ * Hub-side identity of a repository in the RepoStore. Pack frames carry
+ * this alongside `agentAddress` so the hub can map a pack back to the
+ * originating repo independently of which sidecar/agent it is destined for.
+ */
+export const RepoId = type({
+  kind: RepoKind,
+  id: "string",
+});
+export type RepoId = typeof RepoId.infer;
 
 /**
  * A chunk of git pack data. The sender splits the packfile into chunks of at
@@ -322,8 +357,9 @@ export type SourcesUpdateFrame = typeof SourcesUpdateFrame.infer;
  * receiver must reject the transfer if a gap is detected.
  */
 export const PackPushFrame = type({
-  type: "'pack.push'",
+  type: "'repo.pack.push'",
   agentAddress: "string",
+  repoId: RepoId,
   transferId: "string",
   seq: "number",
   data: "string",
@@ -336,8 +372,9 @@ export type PackPushFrame = typeof PackPushFrame.infer;
  * match `commitSha`, the receiver must reject with reason "sha_mismatch".
  */
 export const PackDoneFrame = type({
-  type: "'pack.done'",
+  type: "'repo.pack.done'",
   agentAddress: "string",
+  repoId: RepoId,
   transferId: "string",
   ref: "string",
   commitSha: "string",
@@ -348,8 +385,9 @@ export type PackDoneFrame = typeof PackDoneFrame.infer;
  * Receiver acknowledges successful application of a pack transfer.
  */
 export const PackAckFrame = type({
-  type: "'pack.ack'",
+  type: "'repo.pack.ack'",
   agentAddress: "string",
+  repoId: RepoId,
   transferId: "string",
 });
 export type PackAckFrame = typeof PackAckFrame.infer;
@@ -368,8 +406,9 @@ export type PackRejectReason = typeof PackRejectReason.infer;
  * Receiver rejects a pack transfer.
  */
 export const PackRejectFrame = type({
-  type: "'pack.reject'",
+  type: "'repo.pack.reject'",
   agentAddress: "string",
+  repoId: RepoId,
   transferId: "string",
   reason: PackRejectReason,
 });

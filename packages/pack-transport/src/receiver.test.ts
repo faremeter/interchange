@@ -3,9 +3,11 @@ import { createPackReceiver } from "./receiver";
 import type { PackPushFrame, PackDoneFrame } from "@intx/types/sidecar";
 
 function makePush(overrides: Partial<PackPushFrame> = {}): PackPushFrame {
+  const agentAddress = overrides.agentAddress ?? "agent@test";
   return {
-    type: "pack.push",
-    agentAddress: "agent@test",
+    type: "repo.pack.push",
+    agentAddress,
+    repoId: { kind: "agent-state", id: agentAddress },
     transferId: "t1",
     seq: 0,
     data: Buffer.from("chunk-data").toString("base64"),
@@ -14,9 +16,11 @@ function makePush(overrides: Partial<PackPushFrame> = {}): PackPushFrame {
 }
 
 function makeDone(overrides: Partial<PackDoneFrame> = {}): PackDoneFrame {
+  const agentAddress = overrides.agentAddress ?? "agent@test";
   return {
-    type: "pack.done",
-    agentAddress: "agent@test",
+    type: "repo.pack.done",
+    agentAddress,
+    repoId: { kind: "agent-state", id: agentAddress },
     transferId: "t1",
     ref: "refs/heads/deploy",
     commitSha: "abc123",

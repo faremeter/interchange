@@ -35,9 +35,13 @@ export type AgentRepoStore = {
   /**
    * Receive and store a state pack from a sidecar. Indexes the pack
    * objects and updates the ref without materializing a working tree.
+   *
+   * `repoId.kind` must be `"agent-state"` — this store is per-agent and
+   * does not generalize across kinds. The `repoId.id` is used as the
+   * agent address internally.
    */
   receiveStatePack(
-    agentId: string,
+    repoId: RepoId,
     pack: Uint8Array,
     ref: string,
     commitSha: string,
@@ -101,7 +105,13 @@ export function createAgentRepoStore(config: {
       return store.createPack(hub, repoId(agentId), AGENT_STATE_DEPLOY_REF);
     },
 
-    async receiveStatePack(agentId, pack, ref, commitSha) {
+    async receiveStatePack(incomingRepoId, pack, ref, commitSha) {
+      if (incomingRepoId.kind !== "agent-state") {
+        throw new Error(
+          `AgentRepoStore.receiveStatePack requires repoId.kind === "agent-state", got ${JSON.stringify(incomingRepoId.kind)}`,
+        );
+      }
+      const agentId = incomingRepoId.id;
       const id = repoId(agentId);
       const principal: AgentStateSidecarPrincipal = {
         kind: "sidecar",

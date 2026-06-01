@@ -1,9 +1,9 @@
 // Pack transfer chunk accumulator.
 //
 // Manages in-flight pack transfers arriving over the WebSocket. Each transfer
-// is identified by a transferId and consists of ordered pack.push frames
-// followed by a pack.done. The receiver validates seq continuity and rejects
-// concurrent transfers for the same agent.
+// is identified by a transferId and consists of ordered repo.pack.push
+// frames followed by a repo.pack.done. The receiver validates seq continuity
+// and rejects concurrent transfers for the same agent.
 
 import type {
   PackPushFrame,
