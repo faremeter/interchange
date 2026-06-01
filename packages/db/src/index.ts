@@ -16,7 +16,6 @@ export {
 export {
   parseAgentRow,
   parseAgentVersionRow,
-  parseAgentSkills,
   parseGrantRow,
   parseOfferingRow,
   parseCredentialRow,

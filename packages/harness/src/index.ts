@@ -15,7 +15,7 @@ export { buildMailToolHandlers, buildCombinedRunner } from "./tools";
 export type { MailToolName } from "./tools";
 
 export { readDeployTree } from "./deploy-tree";
-export type { DeployTree, DeployToolInfo } from "./deploy-tree";
+export type { DeployTree } from "./deploy-tree";
 
 export {
   createConnectorRouter,

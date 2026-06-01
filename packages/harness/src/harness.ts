@@ -84,24 +84,18 @@ export function createHarness(config: HarnessConfig): Harness {
 
   const { transport, storage, source, tools, onEvent } = config;
 
-  const deployTools = config.deployTools ?? [];
-
   let director: ReactorDirector;
   if (config.director !== undefined) {
     director = config.director;
   } else {
-    // Director tool list order: mail tools, then caller-declared tools,
-    // then deploy-declared tools. The order is observable by the model
-    // through the prompt the director assembles, so anything that
-    // assembles a tool list against the same director must keep this
-    // ordering for behavior to remain consistent.
+    // Director tool list order: mail tools, then caller-declared tools.
+    // The order is observable by the model through the prompt the
+    // director assembles, so anything that assembles a tool list against
+    // the same director must keep this ordering for behavior to remain
+    // consistent.
     director = createDefaultDirector(
       config.systemPrompt,
-      [
-        ...getMailToolDefinitions(),
-        ...tools.definitions,
-        ...deployTools.map((t) => t.definition),
-      ],
+      [...getMailToolDefinitions(), ...tools.definitions],
       config.defaultDirectorPolicy ?? {},
     );
   }
@@ -114,7 +108,6 @@ export function createHarness(config: HarnessConfig): Harness {
     mailHandlers,
     tools,
     tools.definitions,
-    deployTools,
   );
 
   const sessionId = crypto.randomUUID();

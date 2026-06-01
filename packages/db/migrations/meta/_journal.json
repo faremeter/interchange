@@ -169,6 +169,13 @@
       "when": 1777235039207,
       "tag": "0023_flawless_scarlet_witch",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1780344351218,
+      "tag": "0024_bumpy_sharon_ventura",
+      "breakpoints": true
     }
   ]
 }

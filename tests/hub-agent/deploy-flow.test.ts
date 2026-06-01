@@ -295,21 +295,6 @@ const SESSION_ID = "ses_integration-1";
 const SIDECAR_ID = "sc-integration-1";
 const TOKEN = "test-token";
 
-const GREET_SKILL = {
-  name: "greet",
-  definition: {
-    name: "greet",
-    description: "Greet someone by name",
-    inputSchema: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Name to greet" },
-      },
-      required: ["name"],
-    },
-  },
-};
-
 beforeAll(async () => {
   hub = await startHub();
   inference = startMockInference();
@@ -396,9 +381,7 @@ describe("deploy flow integration", () => {
       agentId: AGENT_ID,
       config,
       deployContent: {
-        systemPrompt:
-          "You are an integration test agent. Use the greet tool when asked.",
-        skills: [GREET_SKILL],
+        systemPrompt: "You are an integration test agent.",
       },
     });
 
@@ -433,24 +416,9 @@ describe("deploy flow integration", () => {
       "utf-8",
     );
     expect(prompt).toContain("integration test agent");
-
-    const toolJson = await fs.promises.readFile(
-      path.join(agentDir, "deploy", "skills", "greet", "tool.json"),
-      "utf-8",
-    );
-    const toolParsed = JSON.parse(toolJson);
-    if (
-      toolParsed === null ||
-      typeof toolParsed !== "object" ||
-      !("name" in toolParsed) ||
-      typeof toolParsed.name !== "string"
-    ) {
-      throw new Error("tool.json missing expected name field");
-    }
-    expect(toolParsed.name).toBe("greet");
   });
 
-  test("send message and verify inference receives deploy tools", async () => {
+  test("send message and verify inference receives the built-in mail tools", async () => {
     const requestsBefore = inference.requests.length;
     const eventsBefore = hub.agentEvents.length;
 
@@ -478,7 +446,7 @@ describe("deploy flow integration", () => {
     };
     const signedContent = assembleSignedContent({
       kind: "conversation",
-      text: "Hello, please greet Alice.",
+      text: "Hello.",
     });
     const signature = await createDetachedSignatureFromProvider(
       signedContent,
@@ -497,20 +465,7 @@ describe("deploy flow integration", () => {
     const tools = req.tools ?? [];
     const toolNames = tools.map((t) => t.name);
 
-    expect(toolNames).toContain("greet");
     expect(toolNames).toContain("mail_send");
-
-    const greetTool = tools.find((t) => t.name === "greet");
-    expect(greetTool).toBeDefined();
-    if (greetTool === undefined) throw new Error("unreachable");
-    expect(greetTool.description).toBe("Greet someone by name");
-    expect(greetTool.input_schema).toEqual({
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Name to greet" },
-      },
-      required: ["name"],
-    });
 
     // reactor.start may or may not have arrived before eventsBefore was
     // captured (it depends on how fast contextStore.load() resolves), so

@@ -10,7 +10,6 @@ import {
 
 export type DeployContent = {
   systemPrompt: string;
-  skills: { name: string; definition: Record<string, unknown> }[];
 };
 
 export type AgentRepoStore = {
@@ -87,13 +86,6 @@ export function createAgentRepoStore(config: {
       const files: Record<string, string> = {
         "deploy/prompt.md": content.systemPrompt,
       };
-      for (const skill of content.skills) {
-        files[`deploy/skills/${skill.name}/tool.json`] = JSON.stringify(
-          skill.definition,
-          null,
-          2,
-        );
-      }
       return store.writeTree(hub, id, AGENT_STATE_DEPLOY_REF, {
         files,
         clearPrefix: "deploy/",

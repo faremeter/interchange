@@ -31,22 +31,12 @@ afterAll(async () => {
 });
 
 describe("AgentRepoStore", () => {
-  test("writeDeployTree creates a commit with prompt and skills", async () => {
+  test("writeDeployTree creates a commit with the system prompt", async () => {
     const dataDir = await makeTempDir("agent-repo-");
     const store = createAgentRepoStore({ dataDir, signingKey });
 
     const { commitSha } = await store.writeDeployTree("agent-1", {
       systemPrompt: "You are a test agent.",
-      skills: [
-        {
-          name: "greet",
-          definition: {
-            name: "greet",
-            description: "Greet someone",
-            inputSchema: { type: "object", properties: {} },
-          },
-        },
-      ],
     });
 
     expect(commitSha).toMatch(/^[0-9a-f]{40}$/);
@@ -58,21 +48,6 @@ describe("AgentRepoStore", () => {
     );
     expect(prompt).toBe("You are a test agent.");
 
-    const toolJson = await fs.promises.readFile(
-      path.join(repoDir, "deploy", "skills", "greet", "tool.json"),
-      "utf-8",
-    );
-    const toolParsed = JSON.parse(toolJson);
-    if (
-      toolParsed === null ||
-      typeof toolParsed !== "object" ||
-      !("name" in toolParsed) ||
-      typeof toolParsed.name !== "string"
-    ) {
-      throw new Error("tool.json missing expected name field");
-    }
-    expect(toolParsed.name).toBe("greet");
-
     const ref = await git.resolveRef({
       fs,
       dir: repoDir,
@@ -81,61 +56,12 @@ describe("AgentRepoStore", () => {
     expect(ref).toBe(commitSha);
   });
 
-  test("writeDeployTree removes stale skills from the index", async () => {
-    const dataDir = await makeTempDir("agent-repo-stale-");
-    const store = createAgentRepoStore({ dataDir, signingKey });
-
-    await store.writeDeployTree("agent-stale", {
-      systemPrompt: "V1",
-      skills: [
-        { name: "old-skill", definition: { name: "old-skill" } },
-        { name: "keep-skill", definition: { name: "keep-skill" } },
-      ],
-    });
-
-    const { commitSha } = await store.writeDeployTree("agent-stale", {
-      systemPrompt: "V2",
-      skills: [{ name: "keep-skill", definition: { name: "keep-skill" } }],
-    });
-
-    const repoDir = path.join(dataDir, "agents", "agent-stale");
-    const { commit } = await git.readCommit({
-      fs,
-      dir: repoDir,
-      oid: commitSha,
-    });
-    const { tree } = await git.readTree({ fs, dir: repoDir, oid: commit.tree });
-
-    const deployEntry = tree.find((e) => e.path === "deploy");
-    expect(deployEntry).toBeDefined();
-    if (!deployEntry) throw new Error("unreachable");
-
-    const { tree: deployTree } = await git.readTree({
-      fs,
-      dir: repoDir,
-      oid: deployEntry.oid,
-    });
-    const skillsEntry = deployTree.find((e) => e.path === "skills");
-    expect(skillsEntry).toBeDefined();
-    if (!skillsEntry) throw new Error("unreachable");
-
-    const { tree: skillsTree } = await git.readTree({
-      fs,
-      dir: repoDir,
-      oid: skillsEntry.oid,
-    });
-    const skillNames = skillsTree.map((e) => e.path);
-    expect(skillNames).toContain("keep-skill");
-    expect(skillNames).not.toContain("old-skill");
-  });
-
   test("writeDeployTree does not advance refs/heads/main", async () => {
     const dataDir = await makeTempDir("agent-repo-ref-");
     const store = createAgentRepoStore({ dataDir, signingKey });
 
     await store.writeDeployTree("agent-ref", {
       systemPrompt: "Ref test.",
-      skills: [],
     });
 
     const repoDir = path.join(dataDir, "agents", "agent-ref");
@@ -158,7 +84,6 @@ describe("AgentRepoStore", () => {
 
     await store.writeDeployTree("agent-2", {
       systemPrompt: "Pack test.",
-      skills: [],
     });
 
     const { pack, commitSha, ref } = await store.createDeployPack("agent-2");
@@ -175,7 +100,6 @@ describe("AgentRepoStore", () => {
 
     await store.writeDeployTree("agent-3", {
       systemPrompt: "State test.",
-      skills: [],
     });
 
     const sourceDir = await makeTempDir("state-source-");
@@ -218,7 +142,6 @@ describe("AgentRepoStore", () => {
 
     await store.writeDeployTree("agent-gi", {
       systemPrompt: "Gitignore test.",
-      skills: [],
     });
 
     const sourceDir = await makeTempDir("gitignore-source-");
@@ -262,7 +185,6 @@ describe("AgentRepoStore", () => {
 
     await store.writeDeployTree("agent-gio", {
       systemPrompt: "Gitignore-only test.",
-      skills: [],
     });
 
     const sourceDir = await makeTempDir("gitignore-only-source-");
@@ -294,7 +216,6 @@ describe("AgentRepoStore", () => {
 
     await store.writeDeployTree("agent-confined", {
       systemPrompt: "Confinement test.",
-      skills: [],
     });
 
     const sourceDir = await makeTempDir("confined-source-");
@@ -332,23 +253,16 @@ describe("AgentRepoStore", () => {
     ).rejects.toThrow("path_violation");
   });
 
-  test("writeDeployTree is idempotent on the repo", async () => {
+  test("writeDeployTree produces a fresh commit when content changes", async () => {
     const dataDir = await makeTempDir("agent-repo-idem-");
     const store = createAgentRepoStore({ dataDir, signingKey });
 
     const first = await store.writeDeployTree("agent-4", {
       systemPrompt: "Version 1",
-      skills: [],
     });
 
     const second = await store.writeDeployTree("agent-4", {
       systemPrompt: "Version 2",
-      skills: [
-        {
-          name: "search",
-          definition: { name: "search", description: "Search" },
-        },
-      ],
     });
 
     expect(second.commitSha).not.toBe(first.commitSha);
@@ -367,7 +281,6 @@ describe("AgentRepoStore", () => {
 
     await store.writeDeployTree("agent-5", {
       systemPrompt: "No state test.",
-      skills: [],
     });
 
     const repoDir = path.join(dataDir, "agents", "agent-5");
@@ -385,14 +298,12 @@ describe("AgentRepoStore", () => {
     expect(() =>
       store.writeDeployTree("../../evil", {
         systemPrompt: "x",
-        skills: [],
       }),
     ).toThrow("agentId contains unsafe characters");
 
     expect(() =>
       store.writeDeployTree("agent@domain", {
         systemPrompt: "x",
-        skills: [],
       }),
     ).toThrow("agentId contains unsafe characters");
   });
