@@ -80,11 +80,11 @@ createHubSessionOrchestrator({
 
 // The asset service shares the agent-repo store's substrate so skill
 // assets land under the same on-disk root and reuse the same signing
-// key for commit signatures. It is constructed here even though no
-// route consumes it yet; the smart-HTTP authoring path lands in a
-// later commit and the E2E test seeds fixtures directly through this
+// key for commit signatures. It is consumed by the session service for
+// per-attachment pack fan-out; the smart-HTTP authoring path lands in
+// a later commit and the E2E test seeds fixtures directly through this
 // service object.
-const _assetService = createAssetService({
+const assetService = createAssetService({
   db,
   repoStore: agentRepoStore.repoStore,
 });
@@ -92,7 +92,7 @@ const _assetService = createAssetService({
 const sessionService = createSessionService({
   sidecarRouter,
   agentRepoStore,
-  assetService: _assetService,
+  assetService,
   db,
 });
 

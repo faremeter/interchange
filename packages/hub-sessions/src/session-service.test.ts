@@ -18,7 +18,6 @@ type Call = { method: string; args: unknown[] };
 function createMockRouter(): SidecarRouter & {
   calls: Call[];
   routeMailResult: boolean;
-  sendPackResult: { assetPackSha: string };
 } {
   const calls: Call[] = [];
   const track =
@@ -34,11 +33,9 @@ function createMockRouter(): SidecarRouter & {
   const mock: SidecarRouter & {
     calls: Call[];
     routeMailResult: boolean;
-    sendPackResult: { assetPackSha: string };
   } = {
     calls,
     routeMailResult: true,
-    sendPackResult: { assetPackSha: "" },
     handleOpen: track("handleOpen") as SidecarRouter["handleOpen"],
     handleMessage: track("handleMessage") as SidecarRouter["handleMessage"],
     handleClose: track("handleClose") as SidecarRouter["handleClose"],
@@ -75,8 +72,7 @@ function createMockRouter(): SidecarRouter & {
         method: "sendPack",
         args: [agentAddress, pack, ref, commitSha, options],
       });
-      const assetPackSha = createHash("sha256").update(pack).digest("hex");
-      return Promise.resolve({ assetPackSha });
+      return Promise.resolve();
     }) as SidecarRouter["sendPack"],
     sendSyncRequest: track(
       "sendSyncRequest",
@@ -208,8 +204,11 @@ type CapturedSessionAssetRow = {
 };
 
 function createFakeDb(captured: CapturedSessionAssetRow[]) {
-  // The session-service only calls `db.insert(sessionAssetTable).values(row)`.
-  // A minimal builder stub records the row and ignores the table identity.
+  // The session-service calls `db.insert(sessionAssetTable).values(row)` on
+  // the happy path and `db.delete(sessionAssetTable).where(...)` on the
+  // rollback path when sendPack fails. Both are no-ops here aside from
+  // recording the inserts; the delete just resolves so the catch handler
+  // can rethrow without secondary errors.
   const builder = {
     values(row: CapturedSessionAssetRow) {
       captured.push(row);
@@ -219,6 +218,13 @@ function createFakeDb(captured: CapturedSessionAssetRow[]) {
   return {
     insert(_table: unknown) {
       return builder;
+    },
+    delete(_table: unknown) {
+      return {
+        where(_predicate: unknown) {
+          return Promise.resolve();
+        },
+      };
     },
   };
 }
@@ -755,7 +761,6 @@ describe("SessionService", () => {
         id: "aas_search",
         assetId: assetSearch,
         name: "searcher",
-        mountPath: "tools/search/",
       }),
     ];
 
@@ -812,7 +817,7 @@ describe("SessionService", () => {
       "<description>Bows formally with A &amp; B.</description>",
     );
     expect(prompt).toContain("<path>workspace/skills/greeter/wave/</path>");
-    expect(prompt).toContain("<path>workspace/tools/search/wave/</path>");
+    expect(prompt).toContain("<path>workspace/skills/searcher/wave/</path>");
   });
 
   test("launchSession omits the available_skills stanza when no skill assets are attached", async () => {

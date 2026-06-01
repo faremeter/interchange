@@ -15,12 +15,19 @@ import { readRawObject } from "./isogit-helpers";
  */
 export type CommitVerifier = (payload: string, signature: string) => boolean;
 
+export type TreeValidatorResult = true | { ok: false; reason: string };
+
 /**
  * Validates the contents of a commit's tree.
  *
  * Callers bind this to their policy (e.g. state packs must only contain
  * entries named "state", asset packs must have a SKILL.md with valid
- * frontmatter). Returns true when the tree is acceptable.
+ * frontmatter). Return `true` when the tree is acceptable; return
+ * `{ ok: false, reason }` to reject with a caller-supplied reason that
+ * the substrate splices into its thrown `path_violation:` message.
+ *
+ * Returning `false` is also accepted for back-compatibility and is
+ * treated as an opaque rejection without a reason.
  *
  * `topLevelPaths` lists the names directly under the tree root.
  * `readBlob` reads any blob in the tree by its repo-root-relative POSIX
@@ -29,7 +36,7 @@ export type CommitVerifier = (payload: string, signature: string) => boolean;
 export type TreeValidator = (
   topLevelPaths: string[],
   readBlob: (path: string) => Promise<Uint8Array>,
-) => boolean | Promise<boolean>;
+) => boolean | TreeValidatorResult | Promise<boolean | TreeValidatorResult>;
 
 /**
  * Strip the gpgsig header from a raw git commit object, producing the
@@ -219,10 +226,13 @@ export async function receivePackObjects(
         const { blob } = await git.readBlob({ fs, dir, oid: blobEntry.oid });
         return blob;
       };
-      if (!(await validateTree(topLevelPaths, readBlob))) {
-        throw new Error(
-          `path_violation: commit ${expectedSha} tree contains disallowed paths: ${topLevelPaths.join(", ")}`,
-        );
+      const verdict = await validateTree(topLevelPaths, readBlob);
+      if (verdict !== true) {
+        const reason =
+          typeof verdict === "object"
+            ? verdict.reason
+            : `commit ${expectedSha} tree contains disallowed paths: ${topLevelPaths.join(", ")}`;
+        throw new Error(`path_violation: ${reason}`);
       }
     }
 

@@ -4,7 +4,7 @@
 // table of agentAddress → sidecar connection, and dispatches frames between
 // sidecars and the hub's internal systems.
 
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { getLogger } from "@intx/log";
 import { verifyEd25519 } from "@intx/crypto-node";
 import { chunkPack, createPackReceiver } from "@intx/pack-transport";
@@ -65,11 +65,6 @@ export type SendPackOptions = {
   repoId?: RepoId;
 };
 
-export type SendPackResult = {
-  /** Hex-encoded sha256 of the pack bytes that were sent. */
-  assetPackSha: string;
-};
-
 export type SidecarRouter = {
   handleOpen(ws: WsHandle): void;
   handleMessage(ws: WsHandle, data: string): void;
@@ -102,7 +97,7 @@ export type SidecarRouter = {
     ref: string,
     commitSha: string,
     options?: SendPackOptions,
-  ): Promise<SendPackResult>;
+  ): Promise<void>;
   sendSyncRequest(agentAddress: string): void;
 
   subscribeAgent(
@@ -1145,7 +1140,7 @@ export function createSidecarRouter(
     ref: string,
     commitSha: string,
     options?: SendPackOptions,
-  ): Promise<SendPackResult> {
+  ): Promise<void> {
     const ws = addressIndex.get(agentAddress);
     if (ws === undefined) {
       return Promise.reject(
@@ -1170,11 +1165,9 @@ export function createSidecarRouter(
     };
     const mountPath = options?.mountPath;
 
-    const assetPackSha = createHash("sha256").update(pack).digest("hex");
-
     // Register pending entry before sending frames so that a synchronous
     // repo.pack.ack (e.g. in tests or loopback transports) resolves correctly.
-    return new Promise<SendPackResult>((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         pendingPacks.delete(transferId);
         reject(
@@ -1187,9 +1180,7 @@ export function createSidecarRouter(
       pendingPacks.set(transferId, {
         transferId,
         ws,
-        resolve() {
-          resolve({ assetPackSha });
-        },
+        resolve,
         reject(error: string) {
           reject(new Error(`Pack rejected: ${error}`));
         },

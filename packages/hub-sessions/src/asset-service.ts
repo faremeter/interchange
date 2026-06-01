@@ -17,7 +17,7 @@
 // createRepoStore. There is no class because there is no per-instance
 // mutable state — every method is a pure function over the deps.
 
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { type DB } from "@intx/db";
 import {
   agentAsset as agentAssetTable,
@@ -32,9 +32,10 @@ import type { Principal, RepoStore, TreeContent } from "./repo-store";
 
 const logger = getLogger(["hub-sessions", "asset-service"]);
 
-// Postgres unique-violation SQLSTATE. drizzle / postgres-js surfaces
-// the original error with `code` set; `hasCode` narrows safely.
+// Postgres SQLSTATE codes. drizzle / postgres-js surfaces the original
+// error with `code` set; `hasCode` narrows safely.
 const PG_UNIQUE_VIOLATION = "23505";
+const PG_FOREIGN_KEY_VIOLATION = "23503";
 
 export type Asset = {
   id: string;
@@ -102,6 +103,8 @@ export type AssetServiceErrorReason =
   | "unsupported_kind"
   | "duplicate_asset"
   | "duplicate_attachment"
+  | "invalid_reference"
+  | "not_found"
   | "path_violation";
 
 export class AssetServiceError extends Error {
@@ -169,6 +172,8 @@ function rowToAgentAsset(row: typeof agentAssetTable.$inferSelect): AgentAsset {
 }
 
 export function createAssetService(deps: {
+  // only the drizzle handle is needed, not the connection pool — symmetric
+  // with createHubSessionLookups and its sibling services.
   db: DB["db"];
   repoStore: RepoStore;
 }): AssetService {
@@ -195,6 +200,16 @@ export function createAssetService(deps: {
       updatedAt: now,
     };
 
+    // Init the repo before the row insert so a repo-init failure leaves
+    // no orphan row in the database. initRepo is idempotent and the
+    // generated id is locally unique, so a follow-up failure of the row
+    // insert (duplicate, FK violation, etc.) leaves at worst an empty
+    // unreferenced repo directory — harmless and reused on retry of a
+    // logically identical asset. The asset-service db handle does not
+    // expose transactions in the current narrowing, so this ordering is
+    // the safest cross-cutting fix without widening the dep surface.
+    await repoStore.initRepo({ kind: params.kind, id });
+
     let inserted: typeof assetTable.$inferSelect;
     try {
       const rows = await db.insert(assetTable).values(insertRow).returning();
@@ -214,7 +229,6 @@ export function createAssetService(deps: {
       throw err;
     }
 
-    await repoStore.initRepo({ kind: params.kind, id });
     logger.debug`created asset ${id} (kind=${params.kind}, tenant=${params.tenantId}, name=${params.name})`;
 
     return rowToAsset(inserted);
@@ -231,7 +245,7 @@ export function createAssetService(deps: {
     });
     if (row === undefined) {
       throw new AssetServiceError(
-        "duplicate_asset",
+        "not_found",
         `populateAsset: asset ${params.assetId} not found`,
       );
     }
@@ -284,6 +298,13 @@ export function createAssetService(deps: {
           err,
         );
       }
+      if (hasCode(err) && err.code === PG_FOREIGN_KEY_VIOLATION) {
+        throw new AssetServiceError(
+          "invalid_reference",
+          `agent_asset (agentId=${params.agentId}, assetId=${params.assetId}) references a missing agent or asset`,
+          err,
+        );
+      }
       throw err;
     }
 
@@ -293,6 +314,10 @@ export function createAssetService(deps: {
   async function listAgentAssets(
     agentId: string,
   ): Promise<AgentAssetWithAsset[]> {
+    // Order by (createdAt, id) so the row sequence is stable across reads
+    // — the available_skills stanza and pack fan-out both depend on a
+    // deterministic order, and Postgres does not guarantee one without
+    // an explicit orderBy.
     const rows = await db
       .select({
         agentAsset: agentAssetTable,
@@ -300,7 +325,8 @@ export function createAssetService(deps: {
       })
       .from(agentAssetTable)
       .innerJoin(assetTable, eq(agentAssetTable.assetId, assetTable.id))
-      .where(eq(agentAssetTable.agentId, agentId));
+      .where(eq(agentAssetTable.agentId, agentId))
+      .orderBy(asc(agentAssetTable.createdAt), asc(agentAssetTable.id));
 
     return rows.map((row) => {
       const aa = rowToAgentAsset(row.agentAsset);

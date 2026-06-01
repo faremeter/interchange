@@ -194,6 +194,15 @@ export const skillKindHandler: KindHandler = {
     topLevelTreePaths,
     readBlob,
   }): Promise<ValidatePushResult> {
+    // Drop any staged entry from a previous attempt first. The
+    // substrate calls validatePush before advancing the ref, so a prior
+    // validation that was accepted but never followed by onRefUpdated
+    // (e.g. the commit step threw after validation succeeded) would
+    // otherwise leave a stale entry that a later rejected attempt
+    // would silently inherit.
+    const key = cacheKey(repoId.id, ref);
+    pendingIndex.delete(key);
+
     const result = await buildSkillIndex(topLevelTreePaths, readBlob);
     if (!result.ok) {
       logger.debug`skill validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${result.reason}`;
@@ -201,10 +210,8 @@ export const skillKindHandler: KindHandler = {
     }
     // Stage the parsed index against (repoId.id, ref). The substrate
     // calls onRefUpdated immediately after the ref is advanced and we
-    // promote the staged entry into the live cache there. Pending is
-    // discarded on rejection because no write path runs onRefUpdated
-    // after a rejected validatePush.
-    pendingIndex.set(cacheKey(repoId.id, ref), result.entries);
+    // promote the staged entry into the live cache there.
+    pendingIndex.set(key, result.entries);
     return { ok: true };
   },
   onRefUpdated({ repoId, ref }) {

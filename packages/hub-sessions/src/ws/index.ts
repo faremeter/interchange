@@ -4,7 +4,6 @@ export {
   type SidecarRouterConfig,
   type SidecarConnection,
   type SendPackOptions,
-  type SendPackResult,
   type WsHandle,
 } from "./sidecar-handler";
 export {

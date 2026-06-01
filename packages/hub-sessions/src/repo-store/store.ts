@@ -246,7 +246,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
         });
         if (!result.ok) {
           logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${result.reason}`;
-          return false;
+          return { ok: false, reason: result.reason };
         }
         return true;
       },
