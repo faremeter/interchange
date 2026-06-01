@@ -176,6 +176,13 @@
       "when": 1780344351218,
       "tag": "0024_bumpy_sharon_ventura",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1780357614241,
+      "tag": "0025_curvy_firestar",
+      "breakpoints": true
     }
   ]
 }
