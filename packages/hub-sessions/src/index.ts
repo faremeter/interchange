@@ -48,3 +48,16 @@ export {
   type SkillHubPrincipal,
   type SkillSidecarPrincipal,
 } from "./skill-kind";
+export {
+  createAssetService,
+  AssetServiceError,
+  type AssetService,
+  type Asset,
+  type AgentAsset,
+  type AgentAssetWithAsset,
+  type AccessMode,
+  type CreateAssetParams,
+  type PopulateAssetParams,
+  type AttachAssetParams,
+  type AssetServiceErrorReason,
+} from "./asset-service";

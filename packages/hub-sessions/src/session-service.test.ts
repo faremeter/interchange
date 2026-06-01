@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import type { CryptoProvider, HarnessConfig } from "@intx/types/runtime";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
+import type { RepoStore } from "./repo-store";
 import {
   createSessionService,
   SessionLaunchError,
@@ -96,6 +97,23 @@ function createMockRepoStore(): AgentRepoStore & { calls: Call[] } {
       return new Uint8Array(32);
     },
     getDeployRef: (_agentId: string) => Promise.resolve(null),
+    repoStore: unusedRepoStore(),
+  };
+}
+
+function unusedRepoStore(): RepoStore {
+  // SessionService tests never exercise the substrate; the inner
+  // store is only present because AgentRepoStore exposes it. A typed
+  // throwing stub keeps the surface honest without dragging in a
+  // tmpdir-backed real store.
+  const unused = () =>
+    Promise.reject(new Error("mock AgentRepoStore.repoStore is not wired"));
+  return {
+    initRepo: unused,
+    writeTree: unused,
+    receivePack: unused,
+    createPack: unused,
+    resolveRef: unused,
   };
 }
 

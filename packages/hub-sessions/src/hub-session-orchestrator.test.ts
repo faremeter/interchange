@@ -5,6 +5,7 @@ import type { GrantRule, GrantStore } from "@intx/types/authz";
 import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
+import type { RepoStore } from "./repo-store";
 import type { EventCollectorRegistry } from "./event-collector-registry";
 import { createHubSessionOrchestrator } from "./hub-session-orchestrator";
 import {
@@ -236,7 +237,23 @@ function createRepoStoreStub(): {
       async getDeployRef() {
         return null;
       },
+      repoStore: unusedRepoStore(),
     },
+  };
+}
+
+function unusedRepoStore(): RepoStore {
+  // The orchestrator tests do not touch the substrate; a throwing
+  // stub keeps the AgentRepoStore surface fully populated without
+  // pulling a real on-disk store into orchestrator-level unit tests.
+  const unused = () =>
+    Promise.reject(new Error("mock AgentRepoStore.repoStore is not wired"));
+  return {
+    initRepo: unused,
+    writeTree: unused,
+    receivePack: unused,
+    createPack: unused,
+    resolveRef: unused,
   };
 }
 
