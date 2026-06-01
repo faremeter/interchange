@@ -122,7 +122,7 @@ describe("RepoStore", () => {
     const { commitSha } = await store.writeTree(principal, repoId, REF, {
       files: {
         "deploy/prompt.md": "hello",
-        "deploy/skills/greet/tool.json": '{"name":"greet"}',
+        "workspace/example.txt": "example",
       },
       message: "initial",
     });

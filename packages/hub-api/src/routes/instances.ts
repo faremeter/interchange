@@ -17,7 +17,7 @@ import {
   sessionMail,
   turnPart,
 } from "@intx/db/schema";
-import { resolveOneCredential, parseAgentSkills } from "@intx/db";
+import { resolveOneCredential } from "@intx/db";
 import type { DB } from "@intx/db";
 import { evaluateGrants, authorize } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
@@ -577,8 +577,6 @@ export function createInstanceRoutes({
 
       eventCollectors.create(agentAddress, tenant.id, sessionId, instanceId);
 
-      const skills = parseAgentSkills(row.skills);
-
       try {
         await sessionService.launchSession({
           agentAddress,
@@ -597,7 +595,6 @@ export function createInstanceRoutes({
           },
           deployContent: {
             systemPrompt: row.systemPrompt,
-            skills,
           },
         });
       } catch (err) {

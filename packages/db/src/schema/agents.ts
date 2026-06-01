@@ -16,7 +16,6 @@ export const agent = pgTable("agent", {
   name: text("name").notNull(),
   description: text("description"),
   systemPrompt: text("system_prompt"),
-  skills: jsonb("skills"),
   contextConfig: jsonb("context_config"),
   initialState: jsonb("initial_state"),
   modelConfig: jsonb("model_config"),

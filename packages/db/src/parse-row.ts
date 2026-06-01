@@ -69,7 +69,6 @@ const TurnPartTypeValidator = type.enumerated(...turnPartTypes);
 export function parseAgentRow(row: typeof agent.$inferSelect) {
   return {
     ...row,
-    skills: row.skills !== null ? JSONObject.assert(row.skills) : null,
     contextConfig:
       row.contextConfig !== null ? JSONObject.assert(row.contextConfig) : null,
     initialState:
@@ -158,18 +157,6 @@ export function parseOAuthClientRow(row: typeof oauthClient.$inferSelect) {
     ...row,
     metadata: row.metadata !== null ? JSONObject.assert(row.metadata) : null,
   };
-}
-
-const AgentSkillsValidator = type({
-  name: "string",
-  definition: "Record<string, unknown>",
-}).array();
-
-export function parseAgentSkills(
-  value: unknown,
-): { name: string; definition: Record<string, unknown> }[] {
-  if (value === null || value === undefined) return [];
-  return AgentSkillsValidator.assert(value);
 }
 
 export function parseSidecarStatus(

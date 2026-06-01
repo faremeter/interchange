@@ -34,11 +34,11 @@ async function makeDeployRepo(): Promise<string> {
     "You are a helpful agent.",
   );
   await fs.promises.writeFile(
-    path.join(dir, "deploy", "skills.json"),
-    JSON.stringify(["search", "code"]),
+    path.join(dir, "deploy", "metadata.json"),
+    JSON.stringify({ version: "1" }),
   );
   await git.add({ fs, dir, filepath: "deploy/prompt.txt" });
-  await git.add({ fs, dir, filepath: "deploy/skills.json" });
+  await git.add({ fs, dir, filepath: "deploy/metadata.json" });
   await git.commit({
     fs,
     dir,

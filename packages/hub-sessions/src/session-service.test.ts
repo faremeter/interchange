@@ -117,7 +117,6 @@ const MOCK_CONFIG: HarnessConfig = {
 
 const MOCK_CONTENT: DeployContent = {
   systemPrompt: "Test",
-  skills: [],
 };
 
 describe("SessionService", () => {

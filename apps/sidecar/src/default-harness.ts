@@ -81,7 +81,6 @@ export function createDefaultHarnessBuilder(): HarnessBuilder {
           storage,
           authorize,
           auditStore: storage,
-          deployTools: deployTree.tools,
           tools: posixTools,
           onEvent,
           onConnectorStateChanged,

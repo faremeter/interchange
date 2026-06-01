@@ -969,7 +969,7 @@ Source: packages/types/src/agents.ts
 Source: packages/types/src/agents.ts
 
 ### AgentResponse
-`{ createdAt: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, updatedAt: string, capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, creatorPrincipalId?: string | null, credentialRequirements?: { providerName: string, source: "creator" | "invoker" | "tenant", name?: string, scopes?: string[] }[], description?: string | null, grantRequirements?: { action: string, resource: string, source: "creator" | "invoker", conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, roles?: { id: string, name: string }[], skills?: { [string]: unknown }, systemPrompt?: string | null }`
+`{ createdAt: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, updatedAt: string, capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, creatorPrincipalId?: string | null, credentialRequirements?: { providerName: string, source: "creator" | "invoker" | "tenant", name?: string, scopes?: string[] }[], description?: string | null, grantRequirements?: { action: string, resource: string, source: "creator" | "invoker", conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, roles?: { id: string, name: string }[], systemPrompt?: string | null }`
 Source: packages/types/src/agents.ts
 
 **creatorPrincipalId**: Identifies the definition author's principal (definitions have no principalId of their own). Used for resolving creator-sourced grant and credential requirements.
@@ -999,7 +999,7 @@ Source: packages/types/src/agent-data.ts
 Source: packages/types/src/agent-data.ts
 
 ### CreateAgent
-`{ name: string, capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, credentialRequirements?: { providerName: string, source: "creator" | "invoker" | "tenant", name?: string, scopes?: string[] }[], description?: string, grantRequirements?: { action: string, resource: string, source: "creator" | "invoker", conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, roleIds?: string[], skills?: { [string]: unknown }, systemPrompt?: string }`
+`{ name: string, capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, credentialRequirements?: { providerName: string, source: "creator" | "invoker" | "tenant", name?: string, scopes?: string[] }[], description?: string, grantRequirements?: { action: string, resource: string, source: "creator" | "invoker", conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, roleIds?: string[], systemPrompt?: string }`
 Source: packages/types/src/agents.ts
 
 **grantRequirements**: A grant requirements manifest, not live grants. Each entry declares a resource, action, and source (creator or invoker). The control plane resolves these requirements at each agent launch against the current authority of the creator and invoker.
@@ -1163,7 +1163,7 @@ Source: packages/types/src/tenants.ts
 Source: packages/types/src/observability.ts
 
 ### UpdateAgent
-`{ capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, credentialRequirements?: { providerName: string, source: "creator" | "invoker" | "tenant", name?: string, scopes?: string[] }[], description?: string, grantRequirements?: { action: string, resource: string, source: "creator" | "invoker", conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, name?: string, roleIds?: string[], skills?: { [string]: unknown }, systemPrompt?: string }`
+`{ capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, credentialRequirements?: { providerName: string, source: "creator" | "invoker" | "tenant", name?: string, scopes?: string[] }[], description?: string, grantRequirements?: { action: string, resource: string, source: "creator" | "invoker", conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, name?: string, roleIds?: string[], systemPrompt?: string }`
 Source: packages/types/src/agents.ts
 
 ### UpdateCredential

@@ -12,7 +12,6 @@ import type {
   BeforeToolExtension,
 } from "@intx/types/runtime";
 import type { AuthzCallResult, DefaultDirectorPolicy } from "@intx/inference";
-import type { DeployToolInfo } from "./deploy-tree";
 
 /**
  * Configuration passed to `createHarness`. All required fields must be
@@ -95,18 +94,6 @@ export type HarnessConfig = {
    * constructed authz extension via `beforeToolExtensions`.
    */
   authorize?: (resource: string, action: string) => Promise<AuthzCallResult>;
-
-  /**
-   * Tool entries from the deploy tree. Each carries the tool definition and
-   * a `hasHandler` flag indicating whether the deploy tree provides a custom
-   * handler. The harness checks for name collisions across mail tools,
-   * caller-supplied tools, and deploy tools at startup; at dispatch time it
-   * routes handler-bearing deploy tools to a not-yet-implemented error,
-   * handlerless deploy tools that match no other source to a
-   * declared-but-no-handler error, and undeclared names to an unknown-tool
-   * error.
-   */
-  deployTools?: DeployToolInfo[];
 };
 
 export function validateConfig(config: HarnessConfig): void {

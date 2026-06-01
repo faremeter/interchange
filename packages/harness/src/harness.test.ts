@@ -602,12 +602,9 @@ describe("Tool name collision detection", () => {
     };
 
     expect(() =>
-      buildCombinedRunner(
-        mailHandlers,
-        callerTools,
-        [{ name: "mail_send", description: "test", inputSchema: {} }],
-        [],
-      ),
+      buildCombinedRunner(mailHandlers, callerTools, [
+        { name: "mail_send", description: "test", inputSchema: {} },
+      ]),
     ).toThrow('Tool name collision on "mail_send"');
   });
 
@@ -621,15 +618,10 @@ describe("Tool name collision detection", () => {
     };
 
     expect(() =>
-      buildCombinedRunner(
-        mailHandlers,
-        callerTools,
-        [
-          { name: "read_file", description: "test", inputSchema: {} },
-          { name: "write_file", description: "test", inputSchema: {} },
-        ],
-        [],
-      ),
+      buildCombinedRunner(mailHandlers, callerTools, [
+        { name: "read_file", description: "test", inputSchema: {} },
+        { name: "write_file", description: "test", inputSchema: {} },
+      ]),
     ).not.toThrow();
   });
 
@@ -642,7 +634,7 @@ describe("Tool name collision detection", () => {
       },
     };
 
-    const runner = buildCombinedRunner(mailHandlers, callerTools, [], []);
+    const runner = buildCombinedRunner(mailHandlers, callerTools, []);
 
     const call: ToolCall = {
       id: "c1",
@@ -671,12 +663,9 @@ describe("Tool name collision detection", () => {
       },
     };
 
-    const runner = buildCombinedRunner(
-      mailHandlers,
-      callerTools,
-      [{ name: "read_file", description: "test", inputSchema: {} }],
-      [],
-    );
+    const runner = buildCombinedRunner(mailHandlers, callerTools, [
+      { name: "read_file", description: "test", inputSchema: {} },
+    ]);
 
     const call: ToolCall = {
       id: "c2",

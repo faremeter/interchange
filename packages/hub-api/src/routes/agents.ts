@@ -40,7 +40,6 @@ function formatAgent(
     name: parsed.name,
     description: parsed.description ?? null,
     systemPrompt: parsed.systemPrompt ?? null,
-    skills: parsed.skills ?? undefined,
     contextConfig: parsed.contextConfig ?? undefined,
     initialState: parsed.initialState ?? undefined,
     modelConfig: parsed.modelConfig ?? undefined,
@@ -242,7 +241,6 @@ export function createAgentRoutes({
               name: body.name,
               description: body.description ?? null,
               systemPrompt: body.systemPrompt ?? null,
-              skills: body.skills ?? null,
               contextConfig: body.contextConfig ?? null,
               initialState: body.initialState ?? null,
               modelConfig: body.modelConfig ?? null,
@@ -405,7 +403,6 @@ export function createAgentRoutes({
         updates["description"] = body.description;
       if (body.systemPrompt !== undefined)
         updates["systemPrompt"] = body.systemPrompt;
-      if (body.skills !== undefined) updates["skills"] = body.skills;
       if (body.contextConfig !== undefined)
         updates["contextConfig"] = body.contextConfig;
       if (body.initialState !== undefined)

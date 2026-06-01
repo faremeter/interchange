@@ -201,36 +201,36 @@ describe("applyPack", () => {
   });
 
   test("removes stale files when a second deploy drops content", async () => {
-    // First commit: two skills (greet + farewell).
+    // First commit: two state subtrees (turns + responses).
     const sourceDir = await tempDir();
     await git.init({ fs, dir: sourceDir, defaultBranch: "main" });
 
-    const greetDir = path.join(sourceDir, "deploy", "skills", "greet");
-    const farewellDir = path.join(sourceDir, "deploy", "skills", "farewell");
-    await fs.promises.mkdir(greetDir, { recursive: true });
-    await fs.promises.mkdir(farewellDir, { recursive: true });
+    const turnsDir = path.join(sourceDir, "state", "turns");
+    const responsesDir = path.join(sourceDir, "state", "responses");
+    await fs.promises.mkdir(turnsDir, { recursive: true });
+    await fs.promises.mkdir(responsesDir, { recursive: true });
     await fs.promises.writeFile(
-      path.join(greetDir, "tool.json"),
-      '{"name":"greet"}',
+      path.join(turnsDir, "turn-1.json"),
+      '{"id":"turn-1"}',
     );
     await fs.promises.writeFile(
-      path.join(farewellDir, "tool.json"),
-      '{"name":"farewell"}',
+      path.join(responsesDir, "response-1.json"),
+      '{"id":"response-1"}',
     );
     await git.add({
       fs,
       dir: sourceDir,
-      filepath: "deploy/skills/greet/tool.json",
+      filepath: "state/turns/turn-1.json",
     });
     await git.add({
       fs,
       dir: sourceDir,
-      filepath: "deploy/skills/farewell/tool.json",
+      filepath: "state/responses/response-1.json",
     });
     const sha1 = await git.commit({
       fs,
       dir: sourceDir,
-      message: "Two skills",
+      message: "Two state subtrees",
       author: { name: "Test", email: "test@test.dev" },
     });
 
@@ -242,22 +242,22 @@ describe("applyPack", () => {
 
     await applyPack(targetDir, pack1, "refs/heads/deploy", sha1, "deploy-v1");
 
-    // Verify both skills exist after first deploy.
+    // Verify both subtrees exist after first deploy.
     await fs.promises.access(
-      path.join(targetDir, "deploy", "skills", "farewell", "tool.json"),
+      path.join(targetDir, "state", "responses", "response-1.json"),
     );
 
-    // Second commit: remove farewell, keep greet.
-    await fs.promises.rm(farewellDir, { recursive: true });
+    // Second commit: remove responses, keep turns.
+    await fs.promises.rm(responsesDir, { recursive: true });
     await git.remove({
       fs,
       dir: sourceDir,
-      filepath: "deploy/skills/farewell/tool.json",
+      filepath: "state/responses/response-1.json",
     });
     const sha2 = await git.commit({
       fs,
       dir: sourceDir,
-      message: "Remove farewell",
+      message: "Remove responses",
       author: { name: "Test", email: "test@test.dev" },
     });
 
@@ -266,19 +266,19 @@ describe("applyPack", () => {
 
     await applyPack(targetDir, pack2, "refs/heads/deploy", sha2, "deploy-v2");
 
-    // Greet should still exist.
-    const greetContent = await fs.promises.readFile(
-      path.join(targetDir, "deploy", "skills", "greet", "tool.json"),
+    // Turns should still exist.
+    const turnContent = await fs.promises.readFile(
+      path.join(targetDir, "state", "turns", "turn-1.json"),
       "utf-8",
     );
-    expect(greetContent).toBe('{"name":"greet"}');
+    expect(turnContent).toBe('{"id":"turn-1"}');
 
-    // Farewell should be gone — stale files must not linger.
-    const farewellExists = await fs.promises
-      .access(path.join(targetDir, "deploy", "skills", "farewell", "tool.json"))
+    // Responses should be gone — stale files must not linger.
+    const responsesExist = await fs.promises
+      .access(path.join(targetDir, "state", "responses", "response-1.json"))
       .then(() => true)
       .catch(() => false);
-    expect(farewellExists).toBe(false);
+    expect(responsesExist).toBe(false);
   });
 
   test("removes stale top-level directories absent from new tree", async () => {
