@@ -7,6 +7,8 @@ export * from "./agents";
 export * from "./providers";
 export * from "./oauth-clients";
 export * from "./credentials";
+export * from "./assets";
+export * from "./agent-assets";
 export * from "./wallets";
 export * from "./offerings";
 export * from "./sidecar";
