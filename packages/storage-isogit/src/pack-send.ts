@@ -6,7 +6,7 @@ import { collectReachableObjects } from "./object-walk";
  * Create a git packfile containing all objects reachable from a ref.
  *
  * Used by the hub to produce deploy packs for transfer to sidecars.
- * The caller sends the resulting bytes as chunked pack.push frames.
+ * The caller sends the resulting bytes as chunked repo.pack.push frames.
  */
 export async function createDeployPack(
   dir: string,

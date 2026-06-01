@@ -723,7 +723,7 @@ describe("sidecar↔hub integration", () => {
     );
   });
 
-  test("pack.reject sent when applyDeployPack throws signature_invalid", async () => {
+  test("repo.pack.reject sent when applyDeployPack throws signature_invalid", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
     const client = createHubLink({
@@ -766,7 +766,7 @@ describe("sidecar↔hub integration", () => {
     }
   });
 
-  test("signature_unsigned errors also map to pack.reject signature_invalid", async () => {
+  test("signature_unsigned errors also map to repo.pack.reject signature_invalid", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
     const client = createHubLink({

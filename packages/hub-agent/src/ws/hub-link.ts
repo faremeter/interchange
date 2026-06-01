@@ -25,6 +25,7 @@ import {
   type PackDoneFrame,
   type PackAckFrame,
   type PackRejectFrame,
+  type RepoId,
   type SyncRequestFrame,
 } from "@intx/types/sidecar";
 import { createPackReceiver, chunkPack } from "@intx/pack-transport";
@@ -232,25 +233,31 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     // Best-effort state push to the hub before deleting the directory.
     // statePushed reflects whether we sent the pack frames, not whether
     // the hub acknowledged them. We intentionally skip waiting for
-    // pack.ack here to avoid blocking the undeploy on a round-trip that
-    // may never complete if the hub is shutting down.
+    // repo.pack.ack here to avoid blocking the undeploy on a round-trip
+    // that may never complete if the hub is shutting down.
     try {
       const { pack, commitSha, ref } = await sessions.createStatePack(
         frame.agentAddress,
       );
+      const repoId: RepoId = {
+        kind: "agent-state",
+        id: frame.agentAddress,
+      };
 
       for (const chunk of chunkPack(pack)) {
         send({
-          type: "pack.push",
+          type: "repo.pack.push",
           agentAddress: frame.agentAddress,
+          repoId,
           transferId: `undeploy-${frame.agentAddress}`,
           seq: chunk.seq,
           data: chunk.data,
         });
       }
       send({
-        type: "pack.done",
+        type: "repo.pack.done",
         agentAddress: frame.agentAddress,
+        repoId,
         transferId: `undeploy-${frame.agentAddress}`,
         ref,
         commitSha,
@@ -377,8 +384,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     const reason = packReceiver.handlePush(frame);
     if (reason !== null) {
       send({
-        type: "pack.reject",
+        type: "repo.pack.reject",
         agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
         transferId: frame.transferId,
         reason,
       });
@@ -389,8 +397,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     const result = packReceiver.handleDone(frame);
     if (result === null) {
       send({
-        type: "pack.reject",
+        type: "repo.pack.reject",
         agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
         transferId: frame.transferId,
         reason: "corrupt",
       });
@@ -410,8 +419,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         verifyCommit,
       );
       send({
-        type: "pack.ack",
+        type: "repo.pack.ack",
         agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
         transferId: frame.transferId,
       });
     } catch (err) {
@@ -424,8 +434,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
           : "corrupt";
       logger.warn`Pack apply failed for ${frame.agentAddress}: ${msg}`;
       send({
-        type: "pack.reject",
+        type: "repo.pack.reject",
         agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
         transferId: frame.transferId,
         reason,
       });
@@ -443,6 +454,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     try {
       const { pack, commitSha, ref } =
         await sessions.createStatePack(agentAddress);
+      const repoId: RepoId = { kind: "agent-state", id: agentAddress };
 
       const ackPromise = new Promise<void>((resolve, reject) => {
         pendingStatePacks.set(transferId, {
@@ -455,8 +467,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
 
       for (const chunk of chunkPack(pack)) {
         send({
-          type: "pack.push",
+          type: "repo.pack.push",
           agentAddress,
+          repoId,
           transferId,
           seq: chunk.seq,
           data: chunk.data,
@@ -464,8 +477,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       }
 
       send({
-        type: "pack.done",
+        type: "repo.pack.done",
         agentAddress,
+        repoId,
         transferId,
         ref,
         commitSha,
@@ -483,7 +497,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   function handlePackAck(frame: PackAckFrame): void {
     const entry = pendingStatePacks.get(frame.transferId);
     if (entry === undefined) {
-      logger.warn`Received pack.ack for unknown transferId ${frame.transferId}`;
+      logger.warn`Received repo.pack.ack for unknown transferId ${frame.transferId}`;
       return;
     }
     pendingStatePacks.delete(frame.transferId);
@@ -493,7 +507,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   function handlePackReject(frame: PackRejectFrame): void {
     const entry = pendingStatePacks.get(frame.transferId);
     if (entry === undefined) {
-      logger.warn`Received pack.reject for unknown transferId ${frame.transferId}`;
+      logger.warn`Received repo.pack.reject for unknown transferId ${frame.transferId}`;
       return;
     }
     pendingStatePacks.delete(frame.transferId);
@@ -549,19 +563,19 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       case "sources.update":
         await handleSourcesUpdate(frame);
         break;
-      case "pack.push":
+      case "repo.pack.push":
         handlePackPush(frame);
         break;
-      case "pack.done":
+      case "repo.pack.done":
         await handlePackDone(frame);
         break;
       case "sync.request":
         void handleSyncRequest(frame);
         break;
-      case "pack.ack":
+      case "repo.pack.ack":
         handlePackAck(frame);
         break;
-      case "pack.reject":
+      case "repo.pack.reject":
         handlePackReject(frame);
         break;
       default:

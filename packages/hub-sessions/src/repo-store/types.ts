@@ -1,6 +1,6 @@
-export type RepoKind = "agent-state";
+import type { RepoKind, RepoId } from "@intx/types/sidecar";
 
-export type RepoId = { kind: RepoKind; id: string };
+export type { RepoKind, RepoId };
 
 /**
  * Regex defining the shape of a valid `RepoId.id`. The substrate

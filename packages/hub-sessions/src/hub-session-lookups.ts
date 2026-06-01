@@ -139,10 +139,21 @@ export function createHubSessionLookups(
       ];
     },
 
-    async receiveStatePack(agentAddress, pack, ref, commitSha) {
+    async receiveStatePack(repoId, pack, ref, commitSha) {
+      if (repoId.kind !== "agent-state") {
+        throw new Error(
+          `hub-session lookups received unsupported repo kind ${JSON.stringify(repoId.kind)}`,
+        );
+      }
+      const agentAddress = repoId.id;
       const agentId = parseAgentId(agentAddress);
       try {
-        await agentRepoStore.receiveStatePack(agentId, pack, ref, commitSha);
+        await agentRepoStore.receiveStatePack(
+          { kind: "agent-state", id: agentId },
+          pack,
+          ref,
+          commitSha,
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.startsWith("path_violation")) {

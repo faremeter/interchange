@@ -197,9 +197,20 @@ async function startHub(): Promise<HubEnv> {
     requestTimeoutMs: 10_000,
     hubPublicKey: hexEncode(hubSigningKey.publicKey),
     lookups: {
-      async receiveStatePack(agentAddress, pack, ref, commitSha) {
+      async receiveStatePack(repoId, pack, ref, commitSha) {
+        if (repoId.kind !== "agent-state") {
+          throw new Error(
+            `deploy-flow test mock received unsupported repo kind ${JSON.stringify(repoId.kind)}`,
+          );
+        }
+        const agentAddress = repoId.id;
         const agentId = parseAgentId(agentAddress);
-        await agentRepoStore.receiveStatePack(agentId, pack, ref, commitSha);
+        await agentRepoStore.receiveStatePack(
+          { kind: "agent-state", id: agentId },
+          pack,
+          ref,
+          commitSha,
+        );
         statePacks.push({ agentAddress, ref, commitSha });
         return { accepted: true };
       },

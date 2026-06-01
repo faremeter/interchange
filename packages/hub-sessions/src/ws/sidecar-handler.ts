@@ -15,6 +15,7 @@ import {
   type HubFrame,
   type PackPushFrame,
   type PackDoneFrame,
+  type RepoId,
 } from "@intx/types/sidecar";
 import type {
   AbortReason,
@@ -187,7 +188,7 @@ export function createSidecarRouter(
   // ws handle → liveness timer (reset on each ping from the sidecar)
   const livenessTimers = new Map<WsHandle, ReturnType<typeof setTimeout>>();
 
-  // transferId → pending pack transfer (resolved by pack.ack, rejected by pack.reject)
+  // transferId → pending pack transfer (resolved by repo.pack.ack, rejected by repo.pack.reject)
   type PendingPack = {
     transferId: string;
     ws: WsHandle;
@@ -376,16 +377,16 @@ export function createSidecarRouter(
       case "session.error":
         rejectPending(frame.requestId, frame.error);
         break;
-      case "pack.ack":
+      case "repo.pack.ack":
         resolvePackPending(frame.transferId);
         break;
-      case "pack.reject":
+      case "repo.pack.reject":
         rejectPackPending(frame.transferId, frame.reason);
         break;
-      case "pack.push":
+      case "repo.pack.push":
         handleStatePackPush(ws, frame);
         break;
-      case "pack.done":
+      case "repo.pack.done":
         void handleStatePackDone(ws, frame);
         break;
       default:
@@ -1032,15 +1033,16 @@ export function createSidecarRouter(
     const conn = connections.get(ws);
     if (conn === undefined) return;
     if (!conn.agentAddresses.has(frame.agentAddress)) {
-      logger.warn`Received pack.push for unrouted agent ${frame.agentAddress}`;
+      logger.warn`Received repo.pack.push for unrouted agent ${frame.agentAddress}`;
       return;
     }
 
     const reason = statePackReceiver.handlePush(frame);
     if (reason !== null) {
       conn.send({
-        type: "pack.reject",
+        type: "repo.pack.reject",
         agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
         transferId: frame.transferId,
         reason,
       });
@@ -1054,15 +1056,16 @@ export function createSidecarRouter(
     const conn = connections.get(ws);
     if (conn === undefined) return;
     if (!conn.agentAddresses.has(frame.agentAddress)) {
-      logger.warn`Received pack.done for unrouted agent ${frame.agentAddress}`;
+      logger.warn`Received repo.pack.done for unrouted agent ${frame.agentAddress}`;
       return;
     }
 
     const result = statePackReceiver.handleDone(frame);
     if (result === null) {
       conn.send({
-        type: "pack.reject",
+        type: "repo.pack.reject",
         agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
         transferId: frame.transferId,
         reason: "corrupt",
       });
@@ -1072,15 +1075,16 @@ export function createSidecarRouter(
     const receiveStatePack = lookups.receiveStatePack;
     if (receiveStatePack === undefined) {
       conn.send({
-        type: "pack.ack",
+        type: "repo.pack.ack",
         agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
         transferId: frame.transferId,
       });
       return;
     }
 
     const verdict = await receiveStatePack(
-      frame.agentAddress,
+      frame.repoId,
       result.pack,
       result.ref,
       result.commitSha,
@@ -1092,14 +1096,16 @@ export function createSidecarRouter(
 
     if (verdict.accepted) {
       currentConn.send({
-        type: "pack.ack",
+        type: "repo.pack.ack",
         agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
         transferId: frame.transferId,
       });
     } else {
       currentConn.send({
-        type: "pack.reject",
+        type: "repo.pack.reject",
         agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
         transferId: frame.transferId,
         reason: verdict.reason,
       });
@@ -1129,9 +1135,14 @@ export function createSidecarRouter(
     }
 
     const transferId = `pack-${++packCounter}`;
+    // For the agent-state flow the destination agent and the source repo
+    // are the same entity, so `repoId.id === agentAddress`. The two fields
+    // on the wire still carry distinct purposes (destination routing vs.
+    // source identification at the hub) — see the frame docstring.
+    const repoId: RepoId = { kind: "agent-state", id: agentAddress };
 
     // Register pending entry before sending frames so that a synchronous
-    // pack.ack (e.g. in tests or loopback transports) resolves correctly.
+    // repo.pack.ack (e.g. in tests or loopback transports) resolves correctly.
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         pendingPacks.delete(transferId);
@@ -1155,8 +1166,9 @@ export function createSidecarRouter(
       // Send chunks
       for (const chunk of chunkPack(pack)) {
         conn.send({
-          type: "pack.push",
+          type: "repo.pack.push",
           agentAddress,
+          repoId,
           transferId,
           seq: chunk.seq,
           data: chunk.data,
@@ -1165,8 +1177,9 @@ export function createSidecarRouter(
 
       // Send done
       conn.send({
-        type: "pack.done",
+        type: "repo.pack.done",
         agentAddress,
+        repoId,
         transferId,
         ref,
         commitSha,

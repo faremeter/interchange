@@ -196,7 +196,12 @@ describe("AgentRepoStore", () => {
     const { pack } = await createDeployPack(sourceDir, "refs/heads/main");
 
     const stateRef = "refs/instances/test-instance";
-    await store.receiveStatePack("agent-3", pack, stateRef, stateCommit);
+    await store.receiveStatePack(
+      { kind: "agent-state", id: "agent-3" },
+      pack,
+      stateRef,
+      stateCommit,
+    );
 
     const repoDir = path.join(dataDir, "agents", "agent-3");
     const resolved = await git.resolveRef({
@@ -235,7 +240,12 @@ describe("AgentRepoStore", () => {
 
     const { pack } = await createDeployPack(sourceDir, "refs/heads/main");
     const stateRef = "refs/instances/gi-test";
-    await store.receiveStatePack("agent-gi", pack, stateRef, stateCommit);
+    await store.receiveStatePack(
+      { kind: "agent-state", id: "agent-gi" },
+      pack,
+      stateRef,
+      stateCommit,
+    );
 
     const repoDir = path.join(dataDir, "agents", "agent-gi");
     const resolved = await git.resolveRef({
@@ -270,7 +280,7 @@ describe("AgentRepoStore", () => {
 
     await expect(
       store.receiveStatePack(
-        "agent-gio",
+        { kind: "agent-state", id: "agent-gio" },
         pack,
         "refs/instances/test",
         badCommit,
@@ -314,7 +324,7 @@ describe("AgentRepoStore", () => {
 
     await expect(
       store.receiveStatePack(
-        "agent-confined",
+        { kind: "agent-state", id: "agent-confined" },
         pack,
         "refs/instances/test",
         badCommit,
