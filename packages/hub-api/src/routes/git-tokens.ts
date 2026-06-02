@@ -66,8 +66,10 @@ const MintableRepoActionType = type.enumerated(
 
 const RepoActionAliasName = type.enumerated("can_read", "can_push");
 
-// Compile-time guarantee that the alias literals above stay in sync
-// with `RepoActionAliases`: any drift surfaces as a type error here.
+// Compile-time check that every alias literal accepted by
+// `RepoActionAliasName` is a real key of `RepoActionAliases`. Does
+// NOT enforce the reverse direction; do not rely on this guard
+// alone if `RepoActionAliases` grows new entries.
 const _aliasNameCoverage: Record<keyof typeof RepoActionAliases, true> = {
   can_read: true,
   can_push: true,

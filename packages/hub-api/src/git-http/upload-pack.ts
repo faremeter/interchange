@@ -265,30 +265,20 @@ function successResponse(pack: Uint8Array | null): Response {
 /**
  * Translate substrate-thrown errors that escape the listRefs /
  * getRepoDir / pack-build call chain into the upload-pack pkt-line
- * ERR vocabulary. The receive-pack side does the equivalent for its
- * own `ng <ref> <reason>` lines; upload-pack has no per-ref status
+ * ERR vocabulary. Only `authorize_denied:` is reachable from the
+ * upload-pack call chain; the receive-pack prefixes belong to
+ * `receive-pack.ts`'s translator. Upload-pack has no per-ref status
  * channel, so the substrate's authorize denial collapses into the
  * same `ERR forbidden ref` shape used for refPattern denial.
  *
- * Returns `null` when the error message does not carry a known
+ * Returns `null` when the error message does not carry the known
  * substrate prefix; the caller rethrows in that case so a genuine
  * crash still bubbles to the HTTP layer as a 500.
  */
 function translateSubstrateError(err: unknown): Response | null {
   if (!(err instanceof Error)) return null;
-  const message = err.message;
-  if (message.startsWith("authorize_denied:")) {
+  if (err.message.startsWith("authorize_denied:")) {
     return errorResponse("forbidden ref");
-  }
-  for (const prefix of [
-    "non_fast_forward:",
-    "path_violation:",
-    "sha_mismatch:",
-  ] as const) {
-    if (message.startsWith(prefix)) {
-      const detail = message.substring(prefix.length).trimStart();
-      return errorResponse(`upload-pack: ${prefix.slice(0, -1)}: ${detail}`);
-    }
   }
   return null;
 }
