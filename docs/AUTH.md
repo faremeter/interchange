@@ -211,6 +211,64 @@ Grant revocation is policy-driven with a default of fail-secure.
 
 This parallels the credential revocation model described in CREDENTIALS.md — both follow the same fail-secure default with configurable tenant policies.
 
+## Smart-HTTP Git Tokens
+
+The hub exposes asset and agent-state repositories over the smart-HTTP wire (`info/refs`, `git-upload-pack`, `git-receive-pack`). Stock `git` clients authenticate to those endpoints with an opaque bearer token rather than a better-auth session cookie. See `docs/GIT_ACCESS.md` for the operator walkthrough — credential-helper setup, URL grammar, `refPattern` grammar, and worked clone/push examples.
+
+### Token model
+
+Tokens are minted as plaintext strings of the form `itx_pat_<base64>` (personal access) or `itx_svc_<base64>` (tenant-bound service token). The hub stores only the token's SHA-256 digest in `git_token.token_hash_sha256`; the plaintext is returned exactly once in the mint response and never persisted. There is no recovery flow — a lost token is revoked and replaced.
+
+Every token row is owned by a user (`user_id`). `kind: "pat"` is user-scoped and may optionally restrict to a single tenant (`tenant_id` non-null) or remain cross-tenant (`tenant_id` null). `kind: "svc"` is always tenant-bound and additionally carries a `principal_id` so the token speaks as a specific tenant member.
+
+```
+git_token
+  id                    text PK        -- gtk_...
+  tenant_id             text FK -> tenant (nullable; non-null for kind = 'svc')
+  user_id               text FK -> user  NOT NULL
+  principal_id          text FK -> principal (nullable; set for kind = 'svc')
+  name                  text NOT NULL
+  kind                  text NOT NULL   -- 'pat' | 'svc'
+  token_hash_sha256     bytea NOT NULL UNIQUE
+  resource              text NOT NULL   -- 'asset:*', 'asset:def_xxx', 'agent-state:ins_xxx', ...
+  ref_pattern           text NOT NULL   -- simple-glob
+  actions               text[] NOT NULL -- RepoActions
+  expires_at            timestamptz NOT NULL
+  revoked_at            timestamptz     -- soft revocation
+  created_at            timestamptz
+  UNIQUE(user_id, name) WHERE revoked_at IS NULL
+```
+
+The partial unique on `(user_id, name)` filtered by `revoked_at IS NULL` lets a user reuse a friendly name (e.g. `"laptop"`) after revoking the old token bearing that name.
+
+### Scoping claims
+
+Three columns bound a token's authority:
+
+- `resource` — a single substrate authz resource string, e.g. `asset:*`, `asset:def_xxx`, `agent-state:ins_xxx`. Glob patterns are honored by the substrate; a token with `resource: "asset:*"` reaches every asset row in the tenant the token is bound to.
+- `ref_pattern` — a glob restricting which refs within the resource the token may read or write. Grammar: `*` matches within a `/`-segment, `**` crosses segments. Worked examples appear in `docs/GIT_ACCESS.md`.
+- `actions` — the `RepoAction` vocabulary the token is allowed to invoke (`receivePack`, `createPack`, `resolveRef`, ...). The mint API accepts the user-facing aliases `can_read` (expands to `["createPack", "resolveRef"]`) and `can_push` (expands to `["receivePack"]`), and stores the canonical names so the lookup path never re-runs the alias table.
+- `expires_at` — required, server-enforced floor of one minute. The bearer middleware checks `expires_at > now()` on every request.
+
+### Composition with the grant model
+
+Tokens and grants are independent authorization layers — **both must allow** the operation.
+
+| Layer       | Vocabulary                                                     | Scope                   | Resolved at                            |
+| ----------- | -------------------------------------------------------------- | ----------------------- | -------------------------------------- |
+| Grant       | grant verbs (`read`, `write`, `create`, ...)                   | Tenant-scoped principal | Request time, by substrate `authorize` |
+| Token claim | `RepoAction`s (`createPack`, `receivePack`, `resolveRef`, ...) | Token row               | Mint time, checked at request time     |
+
+The bearer middleware translates the inbound smart-HTTP request to a `RepoAction` via `httpToRepoAction`, then to a grant verb via `repoActionToGrantVerb` (e.g. `createPack` → `read`, `receivePack` → `write`). The verb is what `authorize` evaluates against the resolved principal's grants. The `RepoAction` is what gets checked against the token's `actions` claim. A request passes only when both layers agree.
+
+This composition is deliberate. A token cannot grant authority the underlying principal does not have — narrowing only. And a principal with broad grants cannot accidentally exercise them through a token whose `actions` claim does not cover the operation. The narrower of the two layers always wins.
+
+### Revocation
+
+`DELETE /api/me/git-tokens/:tokenId` (for personal tokens) and `DELETE /api/tenants/:tenantId/git-tokens/:tokenId` (for service tokens) set `revoked_at`. The bearer middleware returns `403` with `code: "token_revoked"` on the next request bearing that secret. The row is preserved for audit.
+
+Token revocation is independent of grant revocation. Revoking the underlying principal's grant denies the operation through the grant layer; revoking the token denies it through the token layer. Either is sufficient; operators choose the layer that matches the intent (revoke the principal's authority entirely, or just this token).
+
 ## Mapping to Interchange Concepts
 
 This table shows how Interchange authorization concepts map to materialized grant forms in `grant`. Definitions carry requirements (see Grant Requirements on Definitions above); this is what those requirements produce after resolution at launch.

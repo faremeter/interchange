@@ -1,6 +1,16 @@
 // Integration-test harness for hub-API tests that need a real hub
 // subprocess plus per-test postgres-schema isolation.
 //
+// Purpose
+// -------
+// Hub-API integration tests exercise the running hub end-to-end
+// against the real database, the real route layer, and (for git
+// tests) the real system git binary. This module provides every
+// piece of scaffolding those tests share, so individual test files
+// stay focused on the behaviour they are asserting on rather than
+// on subprocess management, port allocation, env hygiene, and
+// schema teardown.
+//
 // What this module provides
 // -------------------------
 // - `startHub`: spawn the real hub server bound to a random port,
@@ -8,7 +18,11 @@
 //   return a stop handle that drops the schema after the process
 //   exits.
 // - `discoverGitBinary`: locate `git` on PATH, parse its version,
-//   and enforce the `>= 2.34` floor.
+//   and enforce the `>= 2.34` floor. The version parser tolerates
+//   the vendor suffix `(Apple Git-NNN)` that ships with macOS git.
+//   `bin/check-env` enforces the same floor at repo bootstrap and
+//   reimplements the parsing in bash; both layers stay in sync by
+//   convention rather than by import.
 // - `runGit`: invoke the system git with every config-related env
 //   var redirected away from the developer's home so a user-local
 //   `.gitconfig` cannot leak into a test run.
@@ -23,6 +37,44 @@
 //   directly. The harness never falls back to invented values
 //   deep in the call graph; if a required var is missing, the
 //   loader raises.
+//
+// Lifecycle contract
+// ------------------
+// Tests follow the same shape:
+//
+//   1. `const hub = await startHub();` (or `startHubTracked()` from
+//      the test-level fixture wrapper, which auto-stops on teardown)
+//   2. Issue HTTP requests against `hub.url`, mint tokens, run git
+//      against the smart-HTTP routes, etc.
+//   3. `await hub.stop();` — stops the spawned hub, drops the
+//      per-test schema, and removes the hub-data tempdir.
+//
+// Tests MUST call `stop` on every `HubHandle` they obtain. The
+// schema row, the postgres connections, the hub-data tempdir, and
+// the spawned bun process are all owned by the handle; leaking any
+// of them leaks resources between test files.
+//
+// Per-schema isolation model
+// --------------------------
+// Each call to `startHub` provisions its own postgres schema named
+// `t_<timestamp>_<random>` (or a caller-supplied name) and runs
+// migrations against it under the migration role. The spawned hub
+// connects as the hub-app role with `PG_SCHEMA` set so its DB
+// client routes every query into that schema. Schemas are dropped
+// in `stop` and are not reused. Two concurrent tests cannot
+// collide on table state because they live in different schemas;
+// the underlying database is shared, but the schema namespace
+// keeps the rows separate.
+//
+// Env-redirection guarantees
+// --------------------------
+// `runGit` builds an env block that redirects every config-related
+// variable git consults — `HOME`, `XDG_CONFIG_HOME`,
+// `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM`,
+// `GIT_TERMINAL_PROMPT` — to a discardable tempdir or a guard
+// sentinel. A developer's `~/.gitconfig` cannot leak into a test
+// invocation; nor can git prompt for credentials on a TTY. The
+// tempdir is removed after the invocation returns.
 //
 // Constraint discipline
 // ---------------------

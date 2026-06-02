@@ -17,9 +17,31 @@ opsh::version::require v0.9.0
 lib::import step-runner
 
 REQUIRED_BUN_VERSION=1.2.0
+REQUIRED_GIT_VERSION=2.34.0
 
 explain-githooks() {
 	log::fatal "Please configure your git hooks: git config core.hooksPath .githooks"
+}
+
+step::05::check_git_binary() {
+	command -v git >/dev/null 2>&1 \
+		|| log::fatal "git not found on PATH (git >=$REQUIRED_GIT_VERSION required: the smart-HTTP wire and integration harness rely on gpg.ssh.allowedSignersFile, which landed in git 2.34)"
+	local raw
+	raw=$(git --version) \
+		|| log::fatal "failed to invoke 'git --version'"
+	# `git --version` may emit a vendor suffix, e.g.
+	#   git version 2.39.5 (Apple Git-154)
+	# Extract just the leading `MAJOR.MINOR.PATCH` triple so the
+	# semver comparator does not choke on the parenthesised tail.
+	# The parser mirrors discoverGitBinary() in
+	# tests/hub-api/lib/git-harness.ts.
+	local trimmed=${raw#"git version "}
+	if [[ ! $trimmed =~ ^([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+		log::fatal "could not parse git version from: $raw"
+	fi
+	local version=${BASH_REMATCH[1]}
+	semver::test "$version" -ge "$REQUIRED_GIT_VERSION" \
+		|| log::fatal "git >=$REQUIRED_GIT_VERSION required (have $version); the floor is the gpg.ssh.allowedSignersFile config that landed in git 2.34 and is exercised by the integration harness"
 }
 
 step::10::check_git_repo() {

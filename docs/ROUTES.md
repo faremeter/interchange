@@ -108,6 +108,46 @@ Instead, all authorization flows through capability grants. The grant endpoints 
 
 Agent definitions declare grant requirements with source annotations (tenant, creator, invoker). These requirements are resolved at launch time by the control plane, which materializes grants on the agent's new principal. Creator-sourced and invoker-sourced grants are resolved against the respective principal's authority at launch time. Tenant-sourced grants are resolved from tenant role and system policies. The grant API endpoints manage the tenant-level policy layer; the launch flow handles per-agent materialization.
 
+## Smart-HTTP Git Endpoints
+
+A subset of routes serve the git smart-HTTP wire protocol rather than JSON. These are the only routes in the control plane API that are not REST. They accept and emit pkt-line-framed binary bodies (`application/x-git-upload-pack-request`, `application/x-git-receive-pack-result`, `application/x-git-upload-pack-advertisement`, ...), and they authenticate with hub-issued bearer tokens rather than better-auth session cookies.
+
+Three route groups expose the wire:
+
+- **Asset REST + smart-HTTP** under `/api/tenants/:tenantId/assets/`.
+  - `POST /api/tenants/:tenantId/assets` creates an asset row and initializes its backing repository with a hub-signed genesis commit. Session-authenticated; gated by `requireGrant("asset:*", "create")`.
+  - `GET /api/tenants/:tenantId/assets/:kind/:name.git/info/refs` (with `?service=git-upload-pack` or `?service=git-receive-pack`) is the smart-HTTP advertise endpoint.
+  - `POST /api/tenants/:tenantId/assets/:kind/:name.git/git-upload-pack` serves clone and fetch.
+  - `POST /api/tenants/:tenantId/assets/:kind/:name.git/git-receive-pack` serves push.
+  - `:kind` is `skill` or `agent-state`; `:name` is the kebab-case asset name. The `.git` suffix on the trailing segment is required — it is how the URL grammar disambiguates the asset namespace from arbitrary tenant sub-paths.
+
+- **Agent-state per-instance smart-HTTP** under `/api/tenants/:tenantId/agents/instances/:instanceId/state.git/...`.
+  - Read-only. `info/refs` and `git-upload-pack` are served; `git-receive-pack` returns a pkt-line-framed protocol-level rejection so `git push -v` surfaces a readable error even when no `Authorization` header is present.
+  - The repo is lazily materialized: a never-pushed instance advertises an empty repository (the `capabilities^{}` empty-repo record) so a stock `git clone` succeeds against an empty tree rather than 404'ing.
+
+- **Agent-state per-definition smart-HTTP** under `/api/tenants/:tenantId/agents/definitions/:agentId/state.git/...`.
+  - Read-only, same handler shape as the per-instance grammar. The `deploy/` prefix is populated by the hub at instance launch.
+
+- **Git-tokens REST** under two scopes:
+  - `/api/tenants/:tenantId/git-tokens` mints, lists, and revokes tenant-bound service tokens (`kind: "svc"`). The token speaks as a specific tenant member; the route group is gated by `requireGrant("git-token:*", ...)`.
+  - `/api/me/git-tokens` mints, lists, and revokes personal access tokens (`kind: "pat"`). Cross-tenant by default; the mint payload may include `tenantId` to bind a single PAT to one tenant.
+  - Both groups return the plaintext secret exactly once at mint time. Only the SHA-256 digest is persisted.
+
+### `.git` suffix on URL grammars
+
+Every smart-HTTP URL the hub exposes terminates the repo segment with `.git`. The suffix is what distinguishes a smart-HTTP request from an arbitrary tenant or instance sub-path:
+
+- `/api/tenants/tnt_abc/agents/instances/ins_xyz/state.git/info/refs` — smart-HTTP.
+- `/api/tenants/tnt_abc/agents/instances/ins_xyz/events` — SSE, not git.
+
+This matches stock git's convention: `git clone` URLs end in `.git`, and the URL is the primary key by which it lives in `.git/config`.
+
+### OpenAPI exclusion
+
+The smart-HTTP routes are intentionally absent from the OpenAPI spec. Their bodies are pkt-line binary streams, not JSON; their responses depend on inbound state in ways OpenAPI cannot describe. The git-tokens REST endpoints, the asset `POST`, and the standard tenant routes appear in the spec normally. The wire-protocol routes are documented in prose in `docs/GIT_ACCESS.md` and in this file.
+
+For the bearer-token model — how `git_token` rows compose with the principal-and-grants model — see `docs/AUTH.md`.
+
 ## Approvals as First-Class Resources
 
 When an agent encounters a capability grant with `effect: "ask"`, execution blocks and an approval request is created. These approvals are not buried inside instance state. They are top-level resources under `/api/tenants/:tenantId/approvals` with their own cross-tenant view at `/api/me/approvals`.
