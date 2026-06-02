@@ -326,6 +326,8 @@ function createTestApp(opts: TestAppOpts = {}) {
     ),
     sessionService: opts.sessionService ?? createMockSessionService(),
     eventCollectors: createMockEventCollectors(opts.collectorStatuses),
+    assetService: null,
+    repoStore: null,
   });
 }
 
@@ -991,6 +993,8 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       sidecarRouter: createMockSidecarRouter(),
       sessionService: createCapturingSessionService(),
       eventCollectors: createCapturingEventCollectors(),
+      assetService: null,
+      repoStore: null,
     });
 
     const res = await app.request(
@@ -1054,6 +1058,8 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       sidecarRouter: createMockSidecarRouter(),
       sessionService: createCapturingSessionService(),
       eventCollectors: createCapturingEventCollectors(),
+      assetService: null,
+      repoStore: null,
     });
 
     const res = await app.request(
