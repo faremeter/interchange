@@ -49,7 +49,6 @@ export default defineConfig(
           allowDefaultProject: [
             "eslint.config.ts",
             "apps/admin-ui/vite.config.ts",
-            "bin/*.ts",
             "packages/db/drizzle.config.ts",
             "tests/inference/transform-cutover.test.ts",
             "tests/agent/*.ts",
@@ -64,7 +63,7 @@ export default defineConfig(
             "tests/agent-rich-tool/*.ts",
             "tests/agent-structured-payload/*.ts",
           ],
-          maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 25,
+          maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 18,
         },
         tsconfigRootDir: import.meta.dirname,
       },
