@@ -14,7 +14,7 @@ exclude = [
   "tests/hub-api/git-asset-roundtrip.test.ts",
   "tests/hub-api/git-asset-negotiation.test.ts",
   "tests/hub-api/git-asset-concurrent-push.test.ts",
-  "tests/hub-api/git-asset-thin-pack.test.ts",
+  "tests/hub-api/git-asset-multi-commit-push.test.ts",
   "tests/hub-api/git-asset-create-roundtrip.test.ts",
   "tests/hub-api/git-protocol-compat.test.ts",
   "tests/hub-api/git-bearer-failure-modes.test.ts",
