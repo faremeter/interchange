@@ -1,10 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import git from "isomorphic-git";
+import type { CommitSigner } from "./signer";
+import { buildSigningArgs } from "./commit-helpers";
 
 const AUTHOR = {
   name: "interchange-harness",
   email: "harness@interchange.local",
+};
+
+const HUB_AUTHOR = {
+  name: "interchange-hub",
+  email: "hub@interchange.local",
 };
 
 async function isGitRepo(dir: string): Promise<boolean> {
@@ -21,8 +28,16 @@ async function isGitRepo(dir: string): Promise<boolean> {
  * Used by the hub for repos that don't need sidecar-specific scaffolding.
  * isomorphic-git requires at least one commit before branching operations
  * work, so the initial commit is always created.
+ *
+ * When `signer` is supplied, the genesis commit is authored as
+ * `interchange-hub` and signed via the callback (an SSH signature in the
+ * gpgsig header). When `signer` is omitted, the harness-authored unsigned
+ * genesis is produced — byte-for-byte identical to the historical behavior.
  */
-export async function initRepo(dir: string): Promise<void> {
+export async function initRepo(
+  dir: string,
+  signer?: CommitSigner,
+): Promise<void> {
   await fs.promises.mkdir(dir, { recursive: true });
 
   if (await isGitRepo(dir)) return;
@@ -31,11 +46,14 @@ export async function initRepo(dir: string): Promise<void> {
 
   await fs.promises.writeFile(path.join(dir, ".gitignore"), "keys/\n");
   await git.add({ fs, dir, filepath: ".gitignore" });
+
+  const author = signer === undefined ? AUTHOR : HUB_AUTHOR;
   await git.commit({
     fs,
     dir,
     message: "Initialize repository",
-    author: AUTHOR,
+    author,
+    ...buildSigningArgs(signer),
   });
 }
 
@@ -67,4 +85,4 @@ export async function initAgentRepo(dir: string): Promise<void> {
   });
 }
 
-export { AUTHOR };
+export { AUTHOR, HUB_AUTHOR };

@@ -19,7 +19,11 @@ export {
 } from "./history";
 export { initRepo, initAgentRepo } from "./init";
 export { applyPack, receivePackObjects } from "./pack-receive";
-export { createDeployPack } from "./pack-send";
+export {
+  createDeployPack,
+  createNegotiatedPack,
+  type IncludeShaPredicate,
+} from "./pack-send";
 export { collectReachableObjects } from "./object-walk";
 export {
   createMailAuditStore,
