@@ -37,10 +37,11 @@ export type HarnessConfig = {
   storage: ContextStore;
 
   /**
-   * Caller-supplied tool runner (e.g. POSIX tools), plus the definitions
-   * of the tool names it implements. The harness adds mail tools on top and
-   * layers deploy tools underneath. Name collisions across mail, caller, and
-   * deploy tools throw at startup.
+   * Caller-supplied tool runner with the full set of tool definitions
+   * the model should see. The harness forwards this runner directly to
+   * the reactor; it does not layer additional tools on top. Callers
+   * composing multiple tool packages (e.g. mail + posix) should merge
+   * them with `mergeToolRunners` before passing the result here.
    */
   tools: ToolRunner & { definitions: ToolDefinition[] };
 

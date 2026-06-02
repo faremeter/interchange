@@ -2,18 +2,24 @@
 //
 // Implements the HarnessBuilder seam declared by @intx/hub-agent using
 // the concrete plugins the sidecar app ships with: posix + LSP tools,
-// the isogit-backed context and mail audit stores, the authz engine,
-// and the inference runtime. Any host that wants a different mix of
-// plugins ships its own builder; the package never sees these
-// concrete dependencies.
+// the mail tools package, the isogit-backed context and mail audit
+// stores, the authz engine, and the inference runtime. Any host that
+// wants a different mix of plugins ships its own builder; the package
+// never sees these concrete dependencies.
 
 import fs from "node:fs";
 import path from "node:path";
 import { evaluateGrants } from "@intx/authz";
-import { createHarness, readDeployTree } from "@intx/harness";
+import {
+  createHarness,
+  createHarnessRuntimeCapabilities,
+  mergeToolRunners,
+  readDeployTree,
+} from "@intx/harness";
 import { hasProvider } from "@intx/inference";
 import { getLogger } from "@intx/log";
 import { createIsogitStore, createMailAuditStore } from "@intx/storage-isogit";
+import { createMailTools } from "@intx/tools-mail";
 import { createPosixTools } from "@intx/tools-posix";
 import { createLSPPlugin } from "@intx/tools-lsp";
 import { createBlobReader } from "@intx/types/runtime";
@@ -71,47 +77,69 @@ export function createDefaultHarnessBuilder(): HarnessBuilder {
         blobReader,
       });
 
-      try {
-        const harness = createHarness({
-          address: agentAddress,
-          systemPrompt,
-          source,
-          transport: agentTransport,
-          crypto,
-          storage,
-          authorize,
-          auditStore: storage,
-          tools: posixTools,
-          onEvent,
-          onConnectorStateChanged,
-        });
+      // Nested try blocks isolate cleanup responsibility per
+      // construction step. The outer catch always disposes
+      // posixTools; the inner catch disposes mailTools only when it
+      // was successfully constructed. Each dispose is itself
+      // try-wrapped so a dispose failure does not mask the original
+      // construction error.
+      const reportDisposeFailure = (runner: string, error: unknown): void => {
+        logger.warn`${runner}.dispose failed during harness rollback: ${error}`;
+      };
 
-        return {
-          harness,
-          mailStore,
-          updateGrants(grants) {
-            grantsRef.current = grants;
-          },
-          disposers: [() => posixTools.dispose()],
-        };
-      } catch (err) {
-        // Honor the dispose contract on the failure path. Whatever the
-        // tool runner allocated to back its dispose method — child
-        // processes, file handles, sockets, nothing — is its concern
-        // to release, and the builder's job is to make sure dispose
-        // runs whether construction succeeds or fails. A failure in
-        // dispose is logged but does not mask the original
-        // construction failure that is about to propagate.
+      try {
+        // Same transport reference: mail tools send via it, the harness
+        // watches INBOX and sends connector replies on it.
+        const capabilities = createHarnessRuntimeCapabilities({
+          transport: agentTransport,
+        });
+        const mailTools = createMailTools({ capabilities });
+
+        try {
+          const tools = mergeToolRunners([mailTools, posixTools]);
+
+          const harness = createHarness({
+            address: agentAddress,
+            systemPrompt,
+            source,
+            transport: agentTransport,
+            crypto,
+            storage,
+            authorize,
+            auditStore: storage,
+            tools,
+            onEvent,
+            onConnectorStateChanged,
+          });
+
+          return {
+            harness,
+            mailStore,
+            updateGrants(grants) {
+              grantsRef.current = grants;
+            },
+            // LIFO of physical construction order: mail was created
+            // after posix, so mail is disposed first. Both disposers
+            // are currently independent and idempotent; LIFO is the
+            // safe default for any future addition that introduces a
+            // dependency between them.
+            disposers: [() => mailTools.dispose(), () => posixTools.dispose()],
+          };
+        } catch (innerErr) {
+          try {
+            await mailTools.dispose();
+          } catch (disposeErr) {
+            reportDisposeFailure("mailTools", disposeErr);
+          }
+          throw innerErr;
+        }
+      } catch (outerErr) {
         try {
           await posixTools.dispose();
         } catch (disposeErr) {
-          const msg =
-            disposeErr instanceof Error
-              ? disposeErr.message
-              : String(disposeErr);
-          logger.warn`posixTools.dispose failed during harness rollback: ${msg}`;
+          reportDisposeFailure("posixTools", disposeErr);
         }
-        throw err;
+        throw outerErr;
       }
     },
   };

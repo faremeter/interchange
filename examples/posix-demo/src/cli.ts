@@ -7,7 +7,12 @@ import { createInMemoryTransport } from "@intx/mail-memory";
 import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
 import { createIsogitStore } from "@intx/storage-isogit";
 import { createPosixTools } from "@intx/tools-posix";
-import { createHarness } from "@intx/harness";
+import { createMailTools } from "@intx/tools-mail";
+import {
+  createHarness,
+  createHarnessRuntimeCapabilities,
+  mergeToolRunners,
+} from "@intx/harness";
 import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 await setup({ dev: true });
@@ -150,8 +155,23 @@ const [storageAlpha, storageBeta] = await Promise.all([
 // Tools
 // ---------------------------------------------------------------------------
 
-const toolsAlpha = createPosixTools({ cwd: process.cwd() });
-const toolsBeta = createPosixTools({ cwd: process.cwd() });
+// Keep per-package references so the shutdown path can dispose each
+// runner. mergeToolRunners only aggregates the dispatch surface.
+const toolsAlphaMail = createMailTools({
+  capabilities: createHarnessRuntimeCapabilities({
+    transport: transportAlpha,
+  }),
+});
+const toolsAlphaPosix = createPosixTools({ cwd: process.cwd() });
+const toolsAlpha = mergeToolRunners([toolsAlphaMail, toolsAlphaPosix]);
+
+const toolsBetaMail = createMailTools({
+  capabilities: createHarnessRuntimeCapabilities({
+    transport: transportBeta,
+  }),
+});
+const toolsBetaPosix = createPosixTools({ cwd: process.cwd() });
+const toolsBeta = mergeToolRunners([toolsBetaMail, toolsBetaPosix]);
 
 // ---------------------------------------------------------------------------
 // Shutdown coordination
@@ -173,12 +193,7 @@ transportUser.watch("INBOX", (event) => {
     log.info("================================");
 
     if (!shutdownInitiated) {
-      shutdownInitiated = true;
-      setImmediate(() => {
-        harnessAlpha.stop();
-        harnessBeta.stop();
-        clearTimeout(safetyTimer);
-      });
+      setImmediate(() => shutdown("alpha-reply"));
     }
   })();
 });
@@ -302,6 +317,18 @@ function shutdown(signal: string): void {
   harnessAlpha.stop();
   harnessBeta.stop();
   clearTimeout(safetyTimer);
+  // Each per-agent tool runner owns its own resources (LSP child
+  // processes via the posix tool runner's plugins, future per-package
+  // teardown via the mail tool runner). Dispose them so the demo exits
+  // cleanly. mergeToolRunners does not aggregate dispose — the demo
+  // built the per-package runners and is responsible for disposing
+  // them.
+  void Promise.all([
+    toolsAlphaMail.dispose(),
+    toolsAlphaPosix.dispose(),
+    toolsBetaMail.dispose(),
+    toolsBetaPosix.dispose(),
+  ]);
 }
 
 process.once("SIGINT", () => shutdown("SIGINT"));

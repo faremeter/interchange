@@ -34,11 +34,6 @@ import type { ErrorRecord } from "@intx/types/audit";
 
 import type { HarnessConfig } from "./config";
 import { validateConfig } from "./config";
-import {
-  buildMailToolHandlers,
-  buildCombinedRunner,
-  getMailToolDefinitions,
-} from "./tools";
 import { createConnectorRouter, type RouteDecision } from "./connector-router";
 import { type } from "arktype";
 
@@ -88,27 +83,15 @@ export function createHarness(config: HarnessConfig): Harness {
   if (config.director !== undefined) {
     director = config.director;
   } else {
-    // Director tool list order: mail tools, then caller-declared tools.
-    // The order is observable by the model through the prompt the
-    // director assembles, so anything that assembles a tool list against
-    // the same director must keep this ordering for behavior to remain
-    // consistent.
+    // The caller-supplied tools runner carries the full set of tool
+    // definitions the model should see; pass them through to the
+    // director as-is.
     director = createDefaultDirector(
       config.systemPrompt,
-      [...getMailToolDefinitions(), ...tools.definitions],
+      tools.definitions,
       config.defaultDirectorPolicy ?? {},
     );
   }
-
-  // Build mail tool handlers and the combined runner. Name collision
-  // detection happens here at construction time — startup fails loudly.
-  const mailHandlers = buildMailToolHandlers(transport);
-
-  const combinedRunner = buildCombinedRunner(
-    mailHandlers,
-    tools,
-    tools.definitions,
-  );
 
   const sessionId = crypto.randomUUID();
 
@@ -275,7 +258,7 @@ export function createHarness(config: HarnessConfig): Harness {
     sessionId,
     director,
     source: activeSource,
-    toolRunner: combinedRunner,
+    toolRunner: tools,
     contextStore: wrappedStore,
     onEvent: handleEvent,
     ...(config.authorize !== undefined ? { authorize: config.authorize } : {}),

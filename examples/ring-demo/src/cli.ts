@@ -7,7 +7,12 @@ import { createInMemoryTransport } from "@intx/mail-memory";
 import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
 import { createIsogitStore } from "@intx/storage-isogit";
 import { createPosixTools } from "@intx/tools-posix";
-import { createHarness } from "@intx/harness";
+import { createMailTools } from "@intx/tools-mail";
+import {
+  createHarness,
+  createHarnessRuntimeCapabilities,
+  mergeToolRunners,
+} from "@intx/harness";
 import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 await setup({ dev: true });
@@ -148,6 +153,10 @@ const stores = await Promise.all(
 
 let shutdownInitiated = false;
 const harnesses: ReturnType<typeof createHarness>[] = [];
+const toolRunners: {
+  mail: ReturnType<typeof createMailTools>;
+  posix: ReturnType<typeof createPosixTools>;
+}[] = [];
 
 transportUser.watch("INBOX", (event) => {
   if (event.type !== "exists") return;
@@ -162,11 +171,7 @@ transportUser.watch("INBOX", (event) => {
     log.info("=================================");
 
     if (!shutdownInitiated) {
-      shutdownInitiated = true;
-      setImmediate(() => {
-        for (const h of harnesses) h.stop();
-        clearTimeout(safetyTimer);
-      });
+      setImmediate(() => shutdown("braintrust-reply"));
     }
   })();
 });
@@ -340,6 +345,13 @@ for (const [i, name] of AGENT_NAMES.entries()) {
   ) {
     throw new Error(`Missing per-agent dependency for index ${String(i)}`);
   }
+  // Keep per-package references so shutdown can dispose each runner.
+  const mail = createMailTools({
+    capabilities: createHarnessRuntimeCapabilities({ transport }),
+  });
+  const posix = createPosixTools({ cwd: process.cwd() });
+  const tools = mergeToolRunners([mail, posix]);
+  toolRunners.push({ mail, posix });
   const h = createHarness({
     address: agentAddress(name),
     systemPrompt: buildRingPrompt(name, i),
@@ -347,7 +359,7 @@ for (const [i, name] of AGENT_NAMES.entries()) {
     transport,
     crypto,
     storage,
-    tools: createPosixTools({ cwd: process.cwd() }),
+    tools,
     onEvent: makeEventLogger(name),
     defaultDirectorPolicy: i !== 0 ? { mode: "reactive" } : {},
   });
@@ -364,6 +376,12 @@ function shutdown(signal: string): void {
   log.info("Received {signal}, shutting down", { signal });
   for (const h of harnesses) h.stop();
   clearTimeout(safetyTimer);
+  // Each per-agent tool runner owns its own resources. mergeToolRunners
+  // does not aggregate dispose — the demo built the per-package runners
+  // and is responsible for disposing them.
+  void Promise.all(
+    toolRunners.flatMap(({ mail, posix }) => [mail.dispose(), posix.dispose()]),
+  );
 }
 
 process.once("SIGINT", () => shutdown("SIGINT"));
