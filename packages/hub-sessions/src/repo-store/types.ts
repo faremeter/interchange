@@ -209,6 +209,23 @@ export interface RepoStore {
    */
   listRefs(principal: Principal, repoId: RepoId): Promise<RefEntry[]>;
   /**
+   * Resolve HEAD into the ref it symbolically points at plus the SHA
+   * that ref currently resolves to. The principal is gated under the
+   * same `resolveRef` action that `resolveRef` and `listRefs`
+   * enforce. Returns `null` when:
+   *   - The on-disk repo does not yet exist (mirrors `listRefs`'s
+   *     empty-list contract for uninitialised repos).
+   *   - HEAD is detached (no symbolic target).
+   *   - HEAD's symbolic target does not resolve (unborn ref).
+   * The smart-HTTP advertise layer uses the result to emit
+   * `symref=HEAD:<target>` so stock `git clone` lands on a real
+   * branch instead of leaving the working tree unborn.
+   */
+  resolveHead(
+    principal: Principal,
+    repoId: RepoId,
+  ): Promise<{ symbolicTarget: string; sha: string } | null>;
+  /**
    * Synchronously return the on-disk directory backing the repo.
    * The path is the result of composing the substrate's `dataDir`,
    * the kind handler's `directoryPrefix`, and the validated

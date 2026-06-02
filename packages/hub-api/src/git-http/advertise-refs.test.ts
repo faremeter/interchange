@@ -23,6 +23,17 @@ function principalWith(refPattern: string): AdvertisePrincipal {
 function refSourceOf(refs: RefEntry[]): RefSource {
   return {
     listRefs: async () => refs.slice(),
+    resolveHead: async () => null,
+  };
+}
+
+function refSourceWithHead(
+  refs: RefEntry[],
+  head: { symbolicTarget: string; sha: string } | null,
+): RefSource {
+  return {
+    listRefs: async () => refs.slice(),
+    resolveHead: async () => head,
   };
 }
 
@@ -284,6 +295,152 @@ describe("advertiseReceivePack stream shape", () => {
   });
 });
 
+describe("advertiseUploadPack HEAD symref", () => {
+  test("prepends HEAD with symref capability when target ref is visible", async () => {
+    const sha = "a".repeat(40);
+    const refs: RefEntry[] = [{ name: "refs/heads/main", sha }];
+    const out = await collect(
+      await advertiseUploadPack(
+        refSourceWithHead(refs, { symbolicTarget: "refs/heads/main", sha }),
+        principalWith("**"),
+        REPO_ID,
+      ),
+    );
+    const expected =
+      pkt("# service=git-upload-pack\n") +
+      FLUSH +
+      pkt(
+        `${sha} HEAD\0${UPLOAD_PACK_CAPABILITIES} symref=HEAD:refs/heads/main\n`,
+      ) +
+      pkt(`${sha} refs/heads/main\n`) +
+      FLUSH;
+    expect(new TextDecoder().decode(out)).toBe(expected);
+  });
+
+  test("HEAD is canonical first ref ahead of every visible ref", async () => {
+    const shaMain = "a".repeat(40);
+    const shaFeature = "b".repeat(40);
+    const shaTag = "c".repeat(40);
+    const refs: RefEntry[] = [
+      { name: "refs/heads/feature/x", sha: shaFeature },
+      { name: "refs/heads/main", sha: shaMain },
+      { name: "refs/tags/v1", sha: shaTag },
+    ];
+    const out = await collect(
+      await advertiseUploadPack(
+        refSourceWithHead(refs, {
+          symbolicTarget: "refs/heads/main",
+          sha: shaMain,
+        }),
+        principalWith("**"),
+        REPO_ID,
+      ),
+    );
+    const expected =
+      pkt("# service=git-upload-pack\n") +
+      FLUSH +
+      pkt(
+        `${shaMain} HEAD\0${UPLOAD_PACK_CAPABILITIES} symref=HEAD:refs/heads/main\n`,
+      ) +
+      pkt(`${shaFeature} refs/heads/feature/x\n`) +
+      pkt(`${shaMain} refs/heads/main\n`) +
+      pkt(`${shaTag} refs/tags/v1\n`) +
+      FLUSH;
+    expect(new TextDecoder().decode(out)).toBe(expected);
+  });
+
+  test("HEAD null leaves the advertisement unchanged from prior behavior", async () => {
+    const sha = "d".repeat(40);
+    const refs: RefEntry[] = [{ name: "refs/heads/main", sha }];
+    const out = await collect(
+      await advertiseUploadPack(
+        refSourceWithHead(refs, null),
+        principalWith("**"),
+        REPO_ID,
+      ),
+    );
+    const expected =
+      pkt("# service=git-upload-pack\n") +
+      FLUSH +
+      pkt(`${sha} refs/heads/main\0${UPLOAD_PACK_CAPABILITIES}\n`) +
+      FLUSH;
+    expect(new TextDecoder().decode(out)).toBe(expected);
+  });
+
+  test("HEAD is not advertised when its target ref is filtered out by refPattern", async () => {
+    // refPattern hides refs/heads/main, so HEAD's symbolic target is
+    // not visible to this principal. The filtered ref list is empty
+    // and the empty-repo capabilities^{} path is taken.
+    const sha = "e".repeat(40);
+    const refs: RefEntry[] = [{ name: "refs/heads/main", sha }];
+    const out = await collect(
+      await advertiseUploadPack(
+        refSourceWithHead(refs, { symbolicTarget: "refs/heads/main", sha }),
+        principalWith("refs/heads/release/*"),
+        REPO_ID,
+      ),
+    );
+    const expected =
+      pkt("# service=git-upload-pack\n") +
+      FLUSH +
+      pkt(`${EMPTY_REPO_OID} capabilities^{}\0${UPLOAD_PACK_CAPABILITIES}\n`) +
+      FLUSH;
+    const decoded = new TextDecoder().decode(out);
+    expect(decoded).toBe(expected);
+    expect(decoded.includes("HEAD")).toBe(false);
+    expect(decoded.includes("refs/heads/main")).toBe(false);
+  });
+
+  test("HEAD with target not in refs list falls back to non-HEAD layout", async () => {
+    // resolveHead returned a target that is not present in the ref
+    // list (e.g. the repo's HEAD was reset between listRefs and
+    // resolveHead, or HEAD points at a ref hidden by some other
+    // future filter). The advertiser does not synthesize HEAD against
+    // a ref it has not advertised.
+    const sha = "f".repeat(40);
+    const refs: RefEntry[] = [{ name: "refs/heads/main", sha }];
+    const out = await collect(
+      await advertiseUploadPack(
+        refSourceWithHead(refs, {
+          symbolicTarget: "refs/heads/gone",
+          sha: "1".repeat(40),
+        }),
+        principalWith("**"),
+        REPO_ID,
+      ),
+    );
+    const expected =
+      pkt("# service=git-upload-pack\n") +
+      FLUSH +
+      pkt(`${sha} refs/heads/main\0${UPLOAD_PACK_CAPABILITIES}\n`) +
+      FLUSH;
+    expect(new TextDecoder().decode(out)).toBe(expected);
+  });
+});
+
+describe("advertiseReceivePack HEAD symref", () => {
+  test("receive-pack also projects HEAD as a symref when the target is visible", async () => {
+    const sha = "9".repeat(40);
+    const refs: RefEntry[] = [{ name: "refs/heads/main", sha }];
+    const out = await collect(
+      await advertiseReceivePack(
+        refSourceWithHead(refs, { symbolicTarget: "refs/heads/main", sha }),
+        principalWith("**"),
+        REPO_ID,
+      ),
+    );
+    const expected =
+      pkt("# service=git-receive-pack\n") +
+      FLUSH +
+      pkt(
+        `${sha} HEAD\0${RECEIVE_PACK_CAPABILITIES} symref=HEAD:refs/heads/main\n`,
+      ) +
+      pkt(`${sha} refs/heads/main\n`) +
+      FLUSH;
+    expect(new TextDecoder().decode(out)).toBe(expected);
+  });
+});
+
 describe("advertise functions pass principal and repoId through to RefSource", () => {
   test("listRefs receives principal and repoId untouched", async () => {
     const sha = "2".repeat(40);
@@ -293,6 +450,7 @@ describe("advertise functions pass principal and repoId through to RefSource", (
         seen.push({ principal, repoId });
         return [{ name: "refs/heads/main", sha }];
       },
+      resolveHead: async () => null,
     };
     const principal = principalWith("**");
     await collect(await advertiseUploadPack(refSource, principal, REPO_ID));

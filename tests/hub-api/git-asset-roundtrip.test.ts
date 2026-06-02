@@ -78,6 +78,27 @@ describe("clone → push → re-clone roundtrip", () => {
     })) {
       await runGit(["config", k, v], { cwd: c1 });
     }
+    // HEAD is advertised as a symref pointing at refs/heads/main, so
+    // stock `git clone` already left a born HEAD checked out on the
+    // local main branch. The explicit checkout below is a no-op on the
+    // happy path and would diverge if the symref ever regresses; assert
+    // HEAD's pre-checkout state matches refs/remotes/origin/main first.
+    {
+      const headRev = await runGit(["rev-parse", "HEAD"], { cwd: c1 });
+      if (headRev.status !== 0) {
+        throw new Error(`rev-parse HEAD failed in c1: ${headRev.stderr}`);
+      }
+      const originRev = await runGit(
+        ["rev-parse", "refs/remotes/origin/main"],
+        { cwd: c1 },
+      );
+      if (originRev.status !== 0) {
+        throw new Error(
+          `rev-parse origin/main failed in c1: ${originRev.stderr}`,
+        );
+      }
+      expect(headRev.stdout.trim()).toBe(originRev.stdout.trim());
+    }
     await runGit(["checkout", "-B", "main", "refs/remotes/origin/main"], {
       cwd: c1,
     });
@@ -120,9 +141,16 @@ describe("clone → push → re-clone roundtrip", () => {
     if (head2.status !== 0) throw new Error(`rev-parse2: ${head2.stderr}`);
     expect(head2.stdout.trim()).toBe(head1Sha);
 
-    // Verify the skill body matches via cat-file (the clone has no
-    // local checkout because HEAD is unborn without symref-HEAD; reach
-    // the blob through the tree directly).
+    // The advertise layer projects HEAD as a symref, so the fresh
+    // clone also has a born HEAD that resolves to the same SHA.
+    const head2Head = await runGit(["rev-parse", "HEAD"], { cwd: c2 });
+    if (head2Head.status !== 0) {
+      throw new Error(`rev-parse HEAD failed in c2: ${head2Head.stderr}`);
+    }
+    expect(head2Head.stdout.trim()).toBe(head1Sha);
+
+    // Verify the skill body matches via ls-tree against the remote-
+    // tracking ref; both this path and HEAD resolve to the same tree.
     const lsTree = await runGit(
       ["ls-tree", "-r", "refs/remotes/origin/main", "greet/SKILL.md"],
       { cwd: c2 },

@@ -16,8 +16,6 @@
 // the inserts are visible to the running hub immediately.
 //
 // Note on the wire-format gaps documented at the dispatch level:
-//   - HEAD is not advertised as a symref; on a non-empty clone the
-//     tree has an unborn HEAD. Not exercised here (empty repo only).
 //   - Shallow clone is not advertised; `git clone --depth=1` returns
 //     empty. Not exercised here.
 
