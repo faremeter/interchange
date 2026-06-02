@@ -339,6 +339,21 @@ export const RepoKind = type.enumerated("agent-state", "skill");
 export type RepoKind = typeof RepoKind.infer;
 
 /**
+ * Operations a principal may invoke against a repo in the RepoStore.
+ * Lives in `@intx/types` so storage layers (e.g. `@intx/db`) can validate
+ * persisted action vocabularies without depending on the substrate
+ * package. The substrate re-exports it for handler authors.
+ */
+export const RepoAction = type.enumerated(
+  "init",
+  "writeTree",
+  "receivePack",
+  "createPack",
+  "resolveRef",
+);
+export type RepoAction = typeof RepoAction.infer;
+
+/**
  * Hub-side identity of a repository in the RepoStore. Pack frames carry
  * this alongside `agentAddress` so the hub can map a pack back to the
  * originating repo independently of which sidecar/agent it is destined for.

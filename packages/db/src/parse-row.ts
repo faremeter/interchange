@@ -7,11 +7,13 @@ import {
   grantOrigins,
   sidecarStatuses,
 } from "@intx/types";
+import { RepoAction } from "@intx/types/sidecar";
 
 import type {
   agent,
   agentVersion,
   credential,
+  gitToken,
   grant,
   oauthClient,
   offering,
@@ -51,6 +53,9 @@ const transactionStatuses = ["pending", "completed", "failed"] as const;
 const TransactionStatusValidator = type.enumerated(...transactionStatuses);
 
 const SidecarStatusValidator = type.enumerated(...sidecarStatuses);
+
+const gitTokenKinds = ["pat", "svc"] as const;
+export const GitTokenKindValidator = type.enumerated(...gitTokenKinds);
 
 const turnPartTypes = [
   "text",
@@ -156,6 +161,14 @@ export function parseOAuthClientRow(row: typeof oauthClient.$inferSelect) {
   return {
     ...row,
     metadata: row.metadata !== null ? JSONObject.assert(row.metadata) : null,
+  };
+}
+
+export function parseGitTokenRow(row: typeof gitToken.$inferSelect) {
+  return {
+    ...row,
+    kind: GitTokenKindValidator.assert(row.kind),
+    actions: RepoAction.array().assert(row.actions),
   };
 }
 

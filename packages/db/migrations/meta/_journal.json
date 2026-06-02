@@ -190,6 +190,13 @@
       "when": 1780358149943,
       "tag": "0026_keen_ultimo",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1780377246076,
+      "tag": "0027_git_tokens",
+      "breakpoints": true
     }
   ]
 }

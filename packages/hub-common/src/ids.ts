@@ -21,6 +21,7 @@ const PREFIXES = {
   turnPart: "tp_",
   asset: "ast_",
   agentAsset: "aas_",
+  gitToken: "gtk_",
 } as const;
 
 type IDKind = keyof typeof PREFIXES;
