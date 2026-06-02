@@ -158,6 +158,16 @@ function requireKey(
   return v;
 }
 
+// DB_PASSWORD is auth material whose required-ness depends on the
+// server's pg_hba.conf. Under `trust` or `peer` the server never asks
+// for a password and an empty value is correct; under `md5`/`scram`
+// the empty value will surface as a real libpq authentication error
+// at connect time, which is more informative than a synthetic env-var
+// check here.
+function optionalKey(source: Record<string, string>, key: string): string {
+  return source[key] ?? "";
+}
+
 /**
  * Read the repo's `.env` + `.env.migrate` and surface the migration
  * user's credentials. The migration user is what the harness uses
@@ -180,7 +190,7 @@ export function loadHarnessDbConfig(): DBConfig {
     host: requireKey(merged, "DB_HOST", ".env"),
     port: Number(requireKey(merged, "DB_PORT", ".env")),
     user: requireKey(merged, "DB_USER", ".env.migrate"),
-    password: requireKey(merged, "DB_PASSWORD", ".env.migrate"),
+    password: optionalKey(merged, "DB_PASSWORD"),
     database: requireKey(merged, "DB_NAME", ".env"),
   };
 }
@@ -197,7 +207,7 @@ async function loadHubEnv(): Promise<HarnessEnv> {
       // The hub itself uses the hub-app role at runtime; migration
       // creds are loaded separately by loadHarnessDbConfig.
       user: requireKey(sharedAndHub, "DB_USER", ".env.hub"),
-      password: requireKey(sharedAndHub, "DB_PASSWORD", ".env.hub"),
+      password: optionalKey(sharedAndHub, "DB_PASSWORD"),
       database: requireKey(sharedAndHub, "DB_NAME", ".env"),
     },
     betterAuthSecret: requireKey(
