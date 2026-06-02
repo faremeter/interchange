@@ -158,7 +158,11 @@ export const agentStateAuthorize: AuthorizeFn = (
         reason: `token does not grant action ${action}`,
       };
     }
-    if (!glob.match(parsed.tokenClaims.refPattern, ref)) {
+    // `ref === "*"` is the substrate's sentinel for the bulk read
+    // performed by `listRefs`. Per-ref filtering is the advertise-refs
+    // layer's responsibility, so the bulk read is gated on action and
+    // expiry alone.
+    if (ref !== "*" && !glob.match(parsed.tokenClaims.refPattern, ref)) {
       return {
         allowed: false,
         reason: `token refPattern ${parsed.tokenClaims.refPattern} does not match ${ref}`,

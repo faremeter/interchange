@@ -227,7 +227,14 @@ export async function receivePackObjects(
         dir,
         oid: commit.tree,
       });
-      const topLevelPaths = tree.map((e) => e.path);
+      // Only top-level *directories* are surfaced to the kind handler;
+      // top-level files (e.g. a `.gitignore` written by the genesis
+      // commit) are not asset subtrees and would otherwise be passed to
+      // handlers that expect every entry to be a directory containing
+      // a manifest (skill's `<dir>/SKILL.md`, agent-state's deploy/).
+      const topLevelPaths = tree
+        .filter((e) => e.type === "tree")
+        .map((e) => e.path);
       const readBlob = async (relPath: string): Promise<Uint8Array> => {
         const segments = relPath.split("/");
         let currentTree = tree;

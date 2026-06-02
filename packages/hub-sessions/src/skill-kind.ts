@@ -301,7 +301,14 @@ export const skillAuthorize: AuthorizeFn = (
         reason: `token does not grant action ${action}`,
       };
     }
-    if (!glob.match(parsed.tokenClaims.refPattern, ref)) {
+    // `ref === "*"` is the substrate's sentinel for a bulk read used
+    // by `listRefs`. The advertise-refs layer applies the per-ref
+    // refPattern filter on the listing it returns, so gating the bulk
+    // read on refPattern here would prevent any token with a
+    // narrow-pattern (e.g. `refs/heads/main`) from listing refs at
+    // all. Only the action and expiry are enforced for the bulk read;
+    // every other call site passes a concrete ref and is gated below.
+    if (ref !== "*" && !glob.match(parsed.tokenClaims.refPattern, ref)) {
       return {
         allowed: false,
         reason: `token refPattern ${parsed.tokenClaims.refPattern} does not match ${ref}`,

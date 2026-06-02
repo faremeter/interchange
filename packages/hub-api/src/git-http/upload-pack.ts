@@ -22,7 +22,7 @@ import {
   createNegotiatedPack,
   collectReachableObjects,
 } from "@intx/storage-isogit";
-import { readPktLine, writePktLine, writeErr } from "./pkt-line";
+import { readPktLine, writePktLine, writeFlush, writeErr } from "./pkt-line";
 import { chunkPackToSideBand } from "./side-band-64k";
 import type { RefEntry } from "./advertise-refs";
 
@@ -209,26 +209,36 @@ function successResponse(pack: Uint8Array | null): Response {
       const writer = sink.getWriter();
       try {
         await writePktLine(writer, "NAK\n");
-        await writer.close();
       } catch (cause) {
         await writer.abort(cause).catch(() => undefined);
         controller.error(cause);
         return;
       }
-      if (pack === null || pack.length === 0) {
-        controller.close();
-        return;
-      }
-      const sideBand = chunkPackToSideBand(packToReadable(pack));
-      const reader = sideBand.getReader();
-      try {
-        for (;;) {
-          const r = await reader.read();
-          if (r.done) break;
-          if (r.value) controller.enqueue(r.value);
+      if (pack !== null && pack.length > 0) {
+        const sideBand = chunkPackToSideBand(packToReadable(pack));
+        const reader = sideBand.getReader();
+        try {
+          for (;;) {
+            const r = await reader.read();
+            if (r.done) break;
+            if (r.value) controller.enqueue(r.value);
+          }
+        } catch (cause) {
+          await writer.abort(cause).catch(() => undefined);
+          controller.error(cause);
+          return;
         }
+      }
+      // Per the smart-HTTP transfer spec, the upload-pack response
+      // terminates with a flush pkt-line after the side-band stream.
+      // Without this stock git aborts with `unexpected disconnect
+      // while reading sideband packet`.
+      try {
+        await writeFlush(writer);
+        await writer.close();
         controller.close();
       } catch (cause) {
+        await writer.abort(cause).catch(() => undefined);
         controller.error(cause);
       }
     },
