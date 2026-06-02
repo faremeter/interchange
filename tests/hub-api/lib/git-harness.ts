@@ -425,6 +425,14 @@ export type StartHubOptions = {
 export type HubHandle = {
   url: string;
   schema: string;
+  /**
+   * On-disk root the hub was spawned with. Tests that need to
+   * pre-stage repo content under `<dataDir>/<directoryPrefix>/<id>`
+   * (e.g. seeding agent-state deploy artifacts ahead of a clone test)
+   * read this path. The directory is cleaned up by `stop`; tests must
+   * not delete it themselves.
+   */
+  dataDir: string;
   stop: () => Promise<void>;
 };
 
@@ -564,5 +572,5 @@ export async function startHub(
     await rm(hubDataDir, { recursive: true, force: true });
   };
 
-  return { url, schema, stop };
+  return { url, schema, dataDir: hubDataDir, stop };
 }

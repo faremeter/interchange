@@ -18,4 +18,7 @@ exclude = [
   "tests/hub-api/git-asset-create-roundtrip.test.ts",
   "tests/hub-api/git-protocol-compat.test.ts",
   "tests/hub-api/git-bearer-failure-modes.test.ts",
+  "tests/hub-api/git-agent-state-clone-instance.test.ts",
+  "tests/hub-api/git-agent-state-clone-definition.test.ts",
+  "tests/hub-api/git-agent-state-push-denied.test.ts",
 ]
