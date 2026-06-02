@@ -112,6 +112,8 @@ const app = createApp({
   sidecarRouter,
   sessionService,
   eventCollectors,
+  assetService,
+  repoStore: agentRepoStore.repoStore,
   sidecarWsHandler: upgradeWebSocket((_c) => {
     let handle: WsHandle;
     return {

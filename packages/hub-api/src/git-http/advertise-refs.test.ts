@@ -74,14 +74,21 @@ describe("advertiseUploadPack capability set", () => {
 });
 
 describe("advertiseReceivePack capability set", () => {
-  test("adds report-status to the upload-pack baseline", () => {
+  test("advertises report-status alongside the shared baseline", () => {
     expect(RECEIVE_PACK_CAPABILITIES).toContain("report-status");
-    expect(RECEIVE_PACK_CAPABILITIES).toContain("side-band-64k");
     expect(RECEIVE_PACK_CAPABILITIES).toContain("ofs-delta");
     expect(RECEIVE_PACK_CAPABILITIES).toContain("object-format=sha1");
     expect(RECEIVE_PACK_CAPABILITIES).toMatch(
       /\bagent=interchange-hub\/[^\s]+/,
     );
+  });
+
+  test("does not advertise side-band-64k on receive-pack", () => {
+    // The receive-pack handler returns the report-status payload as
+    // raw pkt-lines. Advertising side-band-64k would make stock git
+    // expect a channel-framed response and abort with
+    // `protocol error: bad band`.
+    expect(RECEIVE_PACK_CAPABILITIES).not.toContain("side-band-64k");
   });
 
   test("does not include thin-pack on receive-pack", () => {

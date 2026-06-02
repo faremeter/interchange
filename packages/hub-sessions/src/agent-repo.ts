@@ -1,3 +1,5 @@
+import { createSSHSignature } from "@intx/crypto-node";
+
 import { createRepoStore, SAFE_REPO_ID } from "./repo-store";
 import type { AuthorizeFn, RepoId, RepoStore } from "./repo-store";
 import {
@@ -84,6 +86,15 @@ export function createAgentRepoStore(config: {
     }
   };
 
+  // The substrate's signingCallback bridges the agent-repo store's
+  // raw Ed25519 keypair to the storage layer's per-payload SSHSIG
+  // signer. Skill asset genesis commits and agent-state deploy
+  // commits both flow through this signer so that signed commits
+  // round-trip through the smart-HTTP layer and verify under
+  // `git log --show-signature` and `git verify-commit`.
+  const signer = async (payload: string) =>
+    createSSHSignature(payload, signingKey.privateKey, signingKey.publicKey);
+
   const store = createRepoStore({
     dataDir,
     signingKey,
@@ -92,6 +103,7 @@ export function createAgentRepoStore(config: {
       skill: skillKindHandler,
     },
     authorize,
+    signingCallback: () => signer,
   });
 
   const hub: AgentStateHubPrincipal = { kind: "hub" };

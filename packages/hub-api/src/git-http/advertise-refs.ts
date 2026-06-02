@@ -52,14 +52,20 @@ export interface RefSource {
 const INTERCHANGE_HUB_AGENT = "interchange-hub/0.0.0";
 
 const BASELINE_CAPABILITIES = [
-  "side-band-64k",
   "ofs-delta",
   "object-format=sha1",
   `agent=${INTERCHANGE_HUB_AGENT}`,
 ];
 
-export const UPLOAD_PACK_CAPABILITIES = BASELINE_CAPABILITIES.join(" ");
+export const UPLOAD_PACK_CAPABILITIES = [
+  "side-band-64k",
+  ...BASELINE_CAPABILITIES,
+].join(" ");
 
+// receive-pack does not advertise `side-band-64k`: the handler returns
+// the `report-status` payload as raw pkt-lines, not channel-wrapped.
+// Advertising side-band-64k would invite the client to expect a
+// channel-framed response, which `handleReceivePack` does not emit.
 export const RECEIVE_PACK_CAPABILITIES = [
   ...BASELINE_CAPABILITIES,
   "report-status",
