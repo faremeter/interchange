@@ -445,6 +445,16 @@ export function createAssetRoutes({
     const tenantRow = c.get("tenant");
     const principalRow = c.get("principal");
     const claims: GitTokenClaims = c.get("git-token-claims");
+    // The typed env makes this unreachable today, but if the route
+    // module is ever mounted without the bearer middleware ahead of
+    // it, surface a misconfiguration rather than a downstream
+    // TypeError. A 401 would imply the client was unauthenticated;
+    // a missing claims object means the server is misconfigured.
+    if (claims === undefined) {
+      throw new Error(
+        "smart-HTTP route handler invoked without bearer middleware; check the mount order in app.ts",
+      );
+    }
     if (!claims.actions.includes(action)) {
       return {
         ok: false,
