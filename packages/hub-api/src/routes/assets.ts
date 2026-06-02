@@ -32,7 +32,7 @@ import { type } from "arktype";
 import { authorize } from "@intx/authz";
 import { asset as assetTable } from "@intx/db/schema";
 import type { DB } from "@intx/db";
-import { httpToRepoAction, repoActionToGrantVerb } from "@intx/hub-common";
+import { repoActionToGrantVerb } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
 import {
   AssetServiceError,
@@ -48,7 +48,10 @@ import { ErrorResponse } from "@intx/types";
 
 import type { TenantEnv } from "../context";
 import { ts } from "../format";
-import type { GitTokenClaims } from "../middleware/git-token-auth";
+import type {
+  GitTokenClaims,
+  TenantGitTokenEnv,
+} from "../middleware/git-token-auth";
 import type { RequireGrant } from "../middleware/grant";
 import {
   advertiseReceivePack,
@@ -428,31 +431,20 @@ export function createAssetRoutes({
   };
 
   async function resolveSmartHttp(
-    c: Context<TenantEnv>,
+    c: Context<TenantGitTokenEnv>,
     action: RepoAction,
   ): Promise<
     | { ok: true; resolved: SmartHttpResolved }
     | {
         ok: false;
-        status: 400 | 401 | 403 | 404;
+        status: 400 | 403 | 404;
         code: string;
         message: string;
       }
   > {
     const tenantRow = c.get("tenant");
     const principalRow = c.get("principal");
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the bearer middleware sets git-token-claims on the variable map; the typed env shape is not visible at this nested layer
-    const claims = c.get("git-token-claims" as never) as
-      | GitTokenClaims
-      | undefined;
-    if (claims === undefined) {
-      return {
-        ok: false,
-        status: 401,
-        code: "unauthorized",
-        message: "bearer middleware did not populate git-token-claims",
-      };
-    }
+    const claims: GitTokenClaims = c.get("git-token-claims");
     if (!claims.actions.includes(action)) {
       return {
         ok: false,
@@ -497,7 +489,13 @@ export function createAssetRoutes({
     return { ok: true, resolved: { principal, repoId } };
   }
 
-  app.get("/:kind/:nameDotGit/info/refs", async (c) => {
+  // The smart-HTTP sub-app is typed against `TenantGitTokenEnv` so the
+  // bearer middleware's `git-token-claims` variable narrows naturally
+  // at the handler site. The bearer middleware is mounted in `app.ts`
+  // ahead of this route surface, so the variable is statically present.
+  const smartHttp = new Hono<TenantGitTokenEnv>();
+
+  smartHttp.get("/:kind/:nameDotGit/info/refs", async (c) => {
     const service = c.req.query("service");
     if (service !== "git-upload-pack" && service !== "git-receive-pack") {
       return c.json(
@@ -540,7 +538,7 @@ export function createAssetRoutes({
     });
   });
 
-  app.post("/:kind/:nameDotGit/git-upload-pack", async (c) => {
+  smartHttp.post("/:kind/:nameDotGit/git-upload-pack", async (c) => {
     const r = await resolveSmartHttp(c, "createPack");
     if (!r.ok) {
       return c.json({ error: { code: r.code, message: r.message } }, r.status);
@@ -553,7 +551,7 @@ export function createAssetRoutes({
     );
   });
 
-  app.post("/:kind/:nameDotGit/git-receive-pack", async (c) => {
+  smartHttp.post("/:kind/:nameDotGit/git-receive-pack", async (c) => {
     const r = await resolveSmartHttp(c, "receivePack");
     if (!r.ok) {
       return c.json({ error: { code: r.code, message: r.message } }, r.status);
@@ -566,11 +564,7 @@ export function createAssetRoutes({
     );
   });
 
-  // Suppress an unused-import lint on httpToRepoAction; the smart-HTTP
-  // dispatch above is hand-rolled per-route (each handler hardcodes
-  // its RepoAction). httpToRepoAction is still re-exported below for
-  // downstream callers that prefer the table-driven shape.
-  void httpToRepoAction;
+  app.route("/", smartHttp);
 
   return app;
 }

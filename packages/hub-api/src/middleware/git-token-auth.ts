@@ -7,18 +7,16 @@ import type { Context, Env, MiddlewareHandler } from "hono";
 import type { DB } from "@intx/db";
 import { parseGitTokenRow } from "@intx/db";
 import { gitToken, principal, tenant } from "@intx/db/schema";
+import { PAT_PREFIX, SVC_PREFIX } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
 import type { RepoAction } from "@intx/hub-sessions";
 
-import type { PrincipalRow, TenantRow } from "../context";
+import type { AppEnv, PrincipalRow, TenantRow } from "../context";
 
 const log = getLogger(["hub", "git-token"]);
 
 const WWW_AUTHENTICATE_HEADER = "WWW-Authenticate";
 const WWW_AUTHENTICATE_VALUE = 'Basic realm="Interchange"';
-
-const PAT_PREFIX = "itx_pat_";
-const SVC_PREFIX = "itx_svc_";
 
 /**
  * Claims carried on a successfully authenticated git token. These
@@ -37,6 +35,20 @@ export type GitTokenAuthEnv = Env & {
   Variables: {
     principal: PrincipalRow;
     tenant: TenantRow;
+    "git-token-claims": GitTokenClaims;
+  };
+};
+
+/**
+ * Hono environment for routes mounted under the bearer middleware.
+ * Combines the tenant-resolution variables with the bearer auth
+ * variables so the smart-HTTP route handlers can read
+ * `git-token-claims` straight from `c.get(...)` without an `as` cast.
+ */
+export type TenantGitTokenEnv = Env & {
+  Variables: AppEnv["Variables"] & {
+    tenant: TenantRow;
+    principal: PrincipalRow;
     "git-token-claims": GitTokenClaims;
   };
 };

@@ -54,8 +54,10 @@ import type {
 import type { RepoAction } from "@intx/types/sidecar";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 
-import type { TenantEnv } from "../context";
-import type { GitTokenClaims } from "../middleware/git-token-auth";
+import type {
+  GitTokenClaims,
+  TenantGitTokenEnv,
+} from "../middleware/git-token-auth";
 import {
   advertiseUploadPack,
   type RefSource,
@@ -346,7 +348,7 @@ type ResolveResult =
   | { ok: true; resolved: SmartHttpResolved }
   | {
       ok: false;
-      status: 400 | 401 | 403 | 404;
+      status: 400 | 403 | 404;
       code: string;
       message: string;
     };
@@ -386,24 +388,13 @@ type ResolveSmartHttpDeps = {
 
 async function resolveSmartHttp(
   deps: ResolveSmartHttpDeps,
-  c: Context<TenantEnv>,
+  c: Context<TenantGitTokenEnv>,
   mode: AgentStateRouteMode,
   action: RepoAction,
 ): Promise<ResolveResult> {
   const tenantRow = c.get("tenant");
   const principalRow = c.get("principal");
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- bearer middleware populates git-token-claims as a variable; the typed env shape is not visible at this nested layer
-  const claims = c.get("git-token-claims" as never) as
-    | GitTokenClaims
-    | undefined;
-  if (claims === undefined) {
-    return {
-      ok: false,
-      status: 401,
-      code: "unauthorized",
-      message: "bearer middleware did not populate git-token-claims",
-    };
-  }
+  const claims: GitTokenClaims = c.get("git-token-claims");
   if (!claims.actions.includes(action)) {
     return {
       ok: false,
@@ -479,8 +470,8 @@ export type CreateAgentStateGitRoutesDeps = {
 function createAgentStateGitRoutes(
   deps: CreateAgentStateGitRoutesDeps,
   mode: AgentStateRouteMode,
-): Hono<TenantEnv> {
-  const app = new Hono<TenantEnv>();
+): Hono<TenantGitTokenEnv> {
+  const app = new Hono<TenantGitTokenEnv>();
   const paramSeg = mode === "instance" ? ":instanceId" : ":agentId";
 
   app.get(`/${paramSeg}/state.git/info/refs`, async (c) => {
@@ -535,13 +526,13 @@ function createAgentStateGitRoutes(
 
 export function createAgentStateInstanceGitRoutes(
   deps: CreateAgentStateGitRoutesDeps,
-): Hono<TenantEnv> {
+): Hono<TenantGitTokenEnv> {
   return createAgentStateGitRoutes(deps, "instance");
 }
 
 export function createAgentStateDefinitionGitRoutes(
   deps: CreateAgentStateGitRoutesDeps,
-): Hono<TenantEnv> {
+): Hono<TenantGitTokenEnv> {
   return createAgentStateGitRoutes(deps, "definition");
 }
 

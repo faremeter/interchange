@@ -87,8 +87,8 @@ createHubSessionOrchestrator({
 // The asset service shares the agent-repo store's substrate so skill
 // assets land under the same on-disk root and reuse the same signing
 // key for commit signatures. It is consumed by the session service for
-// per-attachment pack fan-out; the smart-HTTP authoring path lands in
-// a later commit and the E2E test seeds fixtures directly through this
+// per-attachment pack fan-out and by the smart-HTTP asset routes for
+// clone and push. The E2E test seeds fixtures directly through this
 // service object.
 const assetService = createAssetService({
   db,

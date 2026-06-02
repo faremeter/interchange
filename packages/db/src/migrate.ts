@@ -23,6 +23,34 @@ function quoteIdentifier(name: string): string {
 }
 
 /**
+ * Construct the single-connection postgres client used by the
+ * migration and teardown entry points. Both paths share the same SSL
+ * passthrough and suppress NOTICE-level diagnostics (cascade reports,
+ * "schema already exists") that postgres.js logs by default but are
+ * informational only in this harness context. The optional `searchPath`
+ * pins `search_path` on connection-open so unqualified `CREATE TABLE`
+ * statements land in the caller's schema.
+ */
+function createMigrationClient(
+  config: DBConfig,
+  searchPath?: string,
+): ReturnType<typeof postgres> {
+  return postgres({
+    host: config.host,
+    port: config.port,
+    user: config.user,
+    password: config.password,
+    database: config.database,
+    max: 1,
+    onnotice: () => undefined,
+    ...(config.ssl !== undefined && { ssl: config.ssl }),
+    ...(searchPath !== undefined && {
+      connection: { search_path: searchPath },
+    }),
+  });
+}
+
+/**
  * Apply the drizzle-generated migration SQL into the given postgres
  * schema. The schema is created if absent; nothing else is dropped.
  *
@@ -62,20 +90,7 @@ export async function runMigrations(
   // (`"public"."user"`); we rewrite those to the target schema
   // below. Together these two mechanisms route every object the
   // migration touches into the caller's schema.
-  const sql = postgres({
-    host: config.host,
-    port: config.port,
-    user: config.user,
-    password: config.password,
-    database: config.database,
-    max: 1,
-    // Suppress NOTICE-level diagnostics (cascade reports, schema
-    // already exists). They are informational and the harness's
-    // teardown path is fine; postgres.js logs them by default.
-    onnotice: () => undefined,
-    ...(config.ssl !== undefined && { ssl: config.ssl }),
-    connection: { search_path: schemaIdent },
-  });
+  const sql = createMigrationClient(config, schemaIdent);
 
   try {
     // The CREATE SCHEMA must run on a connection that does not
@@ -97,11 +112,15 @@ export async function runMigrations(
 
     for (const file of files) {
       const raw = await readFile(path.join(MIGRATIONS_DIR, file), "utf-8");
-      // Substitute the literal `"public"` schema reference with the
-      // target schema. The drizzle-generated SQL only uses `"public"`
-      // as a quoted schema identifier in FK references; no string
-      // literals contain it.
-      const rendered = raw.replace(/"public"/g, schemaIdent);
+      // Rewrite the schema prefix on quoted schema-qualified
+      // references so FKs that drizzle emits as
+      // `REFERENCES "public"."<table>"` resolve inside the test
+      // schema. The pattern matches the literal `"public".` only when
+      // it is immediately followed by another quoted identifier (the
+      // canonical schema-qualified shape), which leaves bare
+      // occurrences of `"public"` inside string literals alone in the
+      // unlikely event drizzle ever emits one.
+      const rendered = raw.replace(/"public"\.(?=")/g, `${schemaIdent}.`);
       // drizzle emits multi-statement files separated by its own
       // statement-breakpoint marker. Split on it and execute each
       // statement individually so a syntax error in one statement
@@ -132,19 +151,7 @@ export async function dropSchema(
     throw new Error(`Invalid database config: ${config.summary}`);
   }
 
-  const sql = postgres({
-    host: config.host,
-    port: config.port,
-    user: config.user,
-    password: config.password,
-    database: config.database,
-    max: 1,
-    // Suppress NOTICE-level diagnostics (cascade reports, schema
-    // already exists). They are informational and the harness's
-    // teardown path is fine; postgres.js logs them by default.
-    onnotice: () => undefined,
-    ...(config.ssl !== undefined && { ssl: config.ssl }),
-  });
+  const sql = createMigrationClient(config);
 
   try {
     const schemaIdent = quoteIdentifier(options.schema);

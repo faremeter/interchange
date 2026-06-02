@@ -415,6 +415,48 @@ describe("POST /api/me/git-tokens", () => {
     expect(state.gitTokens).toHaveLength(0);
   });
 
+  test("rejects the hub-internal `init` action at the mint surface", async () => {
+    const state: MockDBState = { gitTokens: [] };
+    const { app } = createTestApp({ state });
+
+    const res = await app.request(meTokensURL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "init-attempt",
+        resource: "asset:def_xyz",
+        refPattern: "**",
+        actions: ["init"],
+        expiresAt: futureISOString(),
+      }),
+    });
+
+    // Arktype's validator middleware rejects with 400 when the input
+    // doesn't satisfy the narrowed enum; no row is inserted.
+    expect(res.status).toBe(400);
+    expect(state.gitTokens).toHaveLength(0);
+  });
+
+  test("rejects the hub-internal `writeTree` action at the mint surface", async () => {
+    const state: MockDBState = { gitTokens: [] };
+    const { app } = createTestApp({ state });
+
+    const res = await app.request(meTokensURL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "writetree-attempt",
+        resource: "asset:def_xyz",
+        refPattern: "**",
+        actions: ["writeTree"],
+        expiresAt: futureISOString(),
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(state.gitTokens).toHaveLength(0);
+  });
+
   test("rejects an expiresAt that is not at least 60s in the future", async () => {
     const state: MockDBState = { gitTokens: [] };
     const { app } = createTestApp({ state });
