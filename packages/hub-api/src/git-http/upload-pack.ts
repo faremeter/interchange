@@ -107,11 +107,25 @@ async function parseUploadRequest(body: Uint8Array): Promise<ParsedRequest> {
   return { wants, haves };
 }
 
-async function walkAllowedObjects(
+/**
+ * Per-commit cache entry built during the allowed-tip walk: the
+ * objects reachable from a given commit (tree + blobs + the commit
+ * itself) and the commit's parent SHAs. The cache lets the downstream
+ * want walk compute reachable-from-wants without re-reading commits
+ * or re-walking their trees.
+ */
+type CommitIndexEntry = {
+  readonly objects: ReadonlySet<string>;
+  readonly parents: readonly string[];
+};
+type CommitIndex = ReadonlyMap<string, CommitIndexEntry>;
+
+async function walkAllowedAndIndex(
   dir: string,
   allowedTipShas: readonly string[],
-): Promise<Set<string>> {
+): Promise<{ allowed: Set<string>; perCommit: CommitIndex }> {
   const allowed = new Set<string>();
+  const perCommit = new Map<string, CommitIndexEntry>();
   const seenCommits = new Set<string>();
   const queue: string[] = [...allowedTipShas];
   while (queue.length > 0) {
@@ -128,12 +142,46 @@ async function walkAllowedObjects(
       continue;
     }
     const objects = await collectReachableObjects(dir, oid);
+    const objectSet = new Set(objects);
+    perCommit.set(oid, { objects: objectSet, parents: commit.commit.parent });
     for (const o of objects) allowed.add(o);
     for (const p of commit.commit.parent) {
       if (!seenCommits.has(p)) queue.push(p);
     }
   }
-  return allowed;
+  return { allowed, perCommit };
+}
+
+/**
+ * Compute reachable-from-`starts` in pure memory using the commit
+ * index built by `walkAllowedAndIndex`. Every commit reachable from
+ * an allowed tip is in the index; ancestors of a valid want are
+ * therefore present without any further `git.readCommit` calls.
+ *
+ * A start SHA missing from the index is silently skipped: that
+ * indicates the want was not in the allowed-tip set, which is the
+ * caller's responsibility to classify and reject upstream.
+ */
+function reachableFromIndex(
+  starts: readonly string[],
+  perCommit: CommitIndex,
+): Set<string> {
+  const reachable = new Set<string>();
+  const seen = new Set<string>();
+  const queue: string[] = [...starts];
+  while (queue.length > 0) {
+    const oid = queue.shift();
+    if (oid === undefined) break;
+    if (seen.has(oid)) continue;
+    seen.add(oid);
+    const entry = perCommit.get(oid);
+    if (entry === undefined) continue;
+    for (const o of entry.objects) reachable.add(o);
+    for (const p of entry.parents) {
+      if (!seen.has(p)) queue.push(p);
+    }
+  }
+  return reachable;
 }
 
 async function shaExistsAsCommit(dir: string, sha: string): Promise<boolean> {
@@ -303,7 +351,10 @@ export async function handleUploadPack(
       .filter((r) => glob.match(refPattern, r.name))
       .map((r) => r.sha);
 
-    const allowedObjects = await walkAllowedObjects(dir, allowedTips);
+    const { allowed: allowedObjects, perCommit } = await walkAllowedAndIndex(
+      dir,
+      allowedTips,
+    );
 
     const classification = await classifyWants(dir, wants, allowedObjects);
     if (classification.kind === "forbidden") {
@@ -313,8 +364,13 @@ export async function handleUploadPack(
       return errorResponse("upload-pack: not our ref");
     }
 
-    const result = await createNegotiatedPack(dir, wants, haves, (oid) =>
-      allowedObjects.has(oid),
+    const wantedObjects = reachableFromIndex(wants, perCommit);
+    const result = await createNegotiatedPack(
+      dir,
+      wants,
+      haves,
+      (oid) => allowedObjects.has(oid),
+      { wantedObjects },
     );
     return successResponse(result === null ? null : result.pack);
   } catch (err) {

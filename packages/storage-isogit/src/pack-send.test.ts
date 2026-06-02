@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 import { createDeployPack, createNegotiatedPack } from "./pack-send";
+import { collectReachableObjects } from "./object-walk";
 import { applyPack } from "./pack-receive";
 import { initAgentRepo } from "./init";
 
@@ -264,5 +265,48 @@ describe("createNegotiatedPack", () => {
     if (result === null) throw new Error("expected pack");
 
     expect(result.oids).toContain(c3);
+  });
+
+  test("precomputed wantedObjects matches the from-scratch path byte-for-byte", async () => {
+    // Callers that pre-walk reachable-from-wants for their own
+    // purposes can hand the set in via `options.wantedObjects`. The
+    // result must be identical to letting `createNegotiatedPack`
+    // recompute the set internally — same OIDs in the same order,
+    // same pack bytes — so the optimization is invisible to
+    // downstream consumers.
+    const { dir, c1, c3 } = await makeLinearRepo();
+
+    const fromScratch = await createNegotiatedPack(dir, [c3], [c1]);
+    if (fromScratch === null) throw new Error("expected pack");
+
+    // Walk reachable-from-wants ourselves to construct the
+    // precomputed set the caller would hand in. We use the same
+    // helper `createNegotiatedPack` uses internally to keep the
+    // contract obvious: precomputed must equal what the function
+    // would have computed.
+    const wantedObjects = new Set<string>();
+    const chainHead = await git.readCommit({ fs, dir, oid: c3 });
+    const queue: string[] = [c3];
+    const seen = new Set<string>();
+    while (queue.length > 0) {
+      const oid = queue.shift();
+      if (oid === undefined) break;
+      if (seen.has(oid)) continue;
+      seen.add(oid);
+      const objs = await collectReachableObjects(dir, oid);
+      for (const o of objs) wantedObjects.add(o);
+      const c = oid === c3 ? chainHead : await git.readCommit({ fs, dir, oid });
+      for (const p of c.commit.parent) {
+        if (!seen.has(p)) queue.push(p);
+      }
+    }
+
+    const precomputed = await createNegotiatedPack(dir, [c3], [c1], undefined, {
+      wantedObjects,
+    });
+    if (precomputed === null) throw new Error("expected pack");
+
+    expect(precomputed.oids).toEqual(fromScratch.oids);
+    expect(precomputed.pack).toEqual(fromScratch.pack);
   });
 });

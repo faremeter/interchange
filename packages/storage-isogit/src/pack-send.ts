@@ -99,17 +99,38 @@ async function reachableFromCommits(
  * send) — callers should treat this as "everything you asked for, you
  * already have."
  */
+export type CreateNegotiatedPackOptions = {
+  /**
+   * Precomputed set of object OIDs reachable from `wants`. Supplied by
+   * callers that already walked this set for their own purposes — the
+   * upload-pack route layer pre-walks the allowed-ref tree to enforce
+   * the bearer token's refPattern, then folds the want walk into the
+   * same pass so the work is not duplicated here.
+   *
+   * Contract: when set, this MUST equal
+   * `reachableFromCommits(dir, wants)`. A superset over-packs (sending
+   * objects the client did not ask for); a subset under-packs
+   * (omitting objects the client needs). Callers that omit this option
+   * pay one walk inside `createNegotiatedPack`; either way the byte
+   * output is identical for the same `(wants, haves, includeSha)`
+   * triple.
+   */
+  wantedObjects?: ReadonlySet<string>;
+};
+
 export async function createNegotiatedPack(
   dir: string,
   wants: readonly string[],
   haves: readonly string[],
   includeSha?: IncludeShaPredicate,
+  options?: CreateNegotiatedPackOptions,
 ): Promise<{ pack: Uint8Array; oids: string[] } | null> {
   if (wants.length === 0) {
     throw new Error("createNegotiatedPack: wants must be non-empty");
   }
 
-  const wantedObjects = await reachableFromCommits(dir, wants);
+  const wantedObjects =
+    options?.wantedObjects ?? (await reachableFromCommits(dir, wants));
 
   const knownHaves: string[] = [];
   for (const have of haves) {
