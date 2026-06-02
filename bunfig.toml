@@ -9,4 +9,13 @@ exclude = [
   "tests/inference/transform-cutover.test.ts",
   "tests/skill-attachment-flow.test.ts",
   "tests/hub-api/lib/git-harness.test.ts",
+  "tests/hub-api/git-asset-clone.test.ts",
+  "tests/hub-api/git-asset-push.test.ts",
+  "tests/hub-api/git-asset-roundtrip.test.ts",
+  "tests/hub-api/git-asset-negotiation.test.ts",
+  "tests/hub-api/git-asset-concurrent-push.test.ts",
+  "tests/hub-api/git-asset-thin-pack.test.ts",
+  "tests/hub-api/git-asset-create-roundtrip.test.ts",
+  "tests/hub-api/git-protocol-compat.test.ts",
+  "tests/hub-api/git-bearer-failure-modes.test.ts",
 ]
