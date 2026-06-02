@@ -28,6 +28,8 @@ export function createResolveTenant({
   db,
 }: CreateResolveTenantDeps): MiddlewareHandler<TenantEnv> {
   return async (c, next) => {
+    if (c.get("principal") && c.get("tenant")) return await next();
+
     const user = c.get("user");
     if (!user) {
       return c.json(
