@@ -45,6 +45,12 @@ import {
   ASSET_OPENAPI_EXCLUDE_GLOBS,
   createAssetRoutes,
 } from "./routes/assets";
+import {
+  AGENT_STATE_OPENAPI_EXCLUDE_GLOBS,
+  createAgentStateDefinitionGitRoutes,
+  createAgentStateInstanceGitRoutes,
+  createAgentStateReceivePackDeny,
+} from "./routes/agent-state-git";
 import { createGitTokenAuth } from "./middleware/git-token-auth";
 
 export type CreateHubContextMiddlewareDeps = {
@@ -129,6 +135,30 @@ export function mountHubRoutes(
   if (assetService !== undefined && repoStore !== undefined) {
     app.use(
       "/api/tenants/:tenantId/assets/:kind/:nameDotGit/*",
+      createGitTokenAuth({ db }),
+    );
+  }
+
+  // Agent-state smart-HTTP read routes also use bearer auth. The
+  // receive-pack denial middleware mounts BEFORE bearer auth so an
+  // unauthenticated `git push -v` parses the pkt-line ERR record
+  // rather than a generic 401. The bearer middleware then gates the
+  // upload-pack half (advertise + POST) on a valid token.
+  if (repoStore !== undefined) {
+    app.use(
+      "/api/tenants/:tenantId/agents/instances/:instanceId/state.git/*",
+      createAgentStateReceivePackDeny(),
+    );
+    app.use(
+      "/api/tenants/:tenantId/agents/definitions/:agentId/state.git/*",
+      createAgentStateReceivePackDeny(),
+    );
+    app.use(
+      "/api/tenants/:tenantId/agents/instances/:instanceId/state.git/*",
+      createGitTokenAuth({ db }),
+    );
+    app.use(
+      "/api/tenants/:tenantId/agents/definitions/:agentId/state.git/*",
       createGitTokenAuth({ db }),
     );
   }
@@ -230,6 +260,27 @@ export function mountHubRoutes(
     );
   }
 
+  if (repoStore !== undefined) {
+    app.route(
+      "/api/tenants/:tenantId/agents/instances",
+      createAgentStateInstanceGitRoutes({
+        db,
+        repoStore,
+        grantStore,
+        conditionRegistry,
+      }),
+    );
+    app.route(
+      "/api/tenants/:tenantId/agents/definitions",
+      createAgentStateDefinitionGitRoutes({
+        db,
+        repoStore,
+        grantStore,
+        conditionRegistry,
+      }),
+    );
+  }
+
   app.route(
     "/api/sidecars",
     createSidecarRoutes(
@@ -301,6 +352,7 @@ export function createApp({
         "/status",
         "/api/auth/**",
         ...ASSET_OPENAPI_EXCLUDE_GLOBS,
+        ...AGENT_STATE_OPENAPI_EXCLUDE_GLOBS,
       ],
     }),
   );
