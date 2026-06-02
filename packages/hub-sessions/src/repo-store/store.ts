@@ -194,6 +194,27 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return entries;
   }
 
+  async function resolveHead(
+    principal: Principal,
+    repoId: RepoId,
+  ): Promise<{ symbolicTarget: string; sha: string } | null> {
+    gateAccess(principal, repoId, "*", "resolveRef");
+    const dir = repoDir(repoId);
+    const repoExists = await fs.promises
+      .stat(path.join(dir, ".git"))
+      .then(() => true)
+      .catch(() => false);
+    if (!repoExists) return null;
+
+    const symbolicTarget = await git.currentBranch({ fs, dir, fullname: true });
+    if (symbolicTarget === undefined) return null;
+
+    const sha = await resolveRefSha(dir, symbolicTarget);
+    if (sha === null) return null;
+
+    return { symbolicTarget, sha };
+  }
+
   async function resolveRefSha(
     dir: string,
     ref: string,
@@ -401,6 +422,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     createPack,
     resolveRef,
     listRefs,
+    resolveHead,
     getRepoDir,
   };
 }

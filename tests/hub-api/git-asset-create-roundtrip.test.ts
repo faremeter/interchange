@@ -77,12 +77,24 @@ describe("REST create → immediate clone", () => {
       throw new Error(`fsck: ${fsck.stderr}\nstdout: ${fsck.stdout}`);
     }
 
-    // Verify refs/heads/main resolves and the genesis commit carries a
-    // gpgsig (signed by the hub).
-    const catFile = await runGit(
-      ["cat-file", "commit", "refs/remotes/origin/main"],
-      { cwd: target },
-    );
+    // HEAD is advertised as a symref pointing at refs/heads/main, so
+    // the clone has a born HEAD. Assert it matches the remote tracking
+    // ref before reading the genesis commit via HEAD.
+    const headRev = await runGit(["rev-parse", "HEAD"], { cwd: target });
+    if (headRev.status !== 0) {
+      throw new Error(`rev-parse HEAD: ${headRev.stderr}`);
+    }
+    const originRev = await runGit(["rev-parse", "refs/remotes/origin/main"], {
+      cwd: target,
+    });
+    if (originRev.status !== 0) {
+      throw new Error(`rev-parse origin/main: ${originRev.stderr}`);
+    }
+    expect(headRev.stdout.trim()).toBe(originRev.stdout.trim());
+
+    const catFile = await runGit(["cat-file", "commit", "HEAD"], {
+      cwd: target,
+    });
     if (catFile.status !== 0) {
       throw new Error(`cat-file: ${catFile.stderr}`);
     }

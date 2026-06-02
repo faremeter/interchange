@@ -226,22 +226,28 @@ describe("authorized clone", () => {
       throw new Error(`git clone failed: ${clone.stderr}`);
     }
 
-    // Pull the gpgsig out of the raw commit object so we can derive an
-    // allowed-signers entry that matches the embedded key. The
-    // advertise-refs layer does not currently project HEAD as a
-    // separate ref (no `symref=HEAD:refs/heads/main` capability), so
-    // the cloned tree has an unborn HEAD; resolve refs/heads/main
-    // directly to reach the genesis commit.
-    // The advertise-refs layer does not project HEAD as a
-    // symref, so the local clone has no `refs/heads/main` checkout;
-    // the remote tip lives under `refs/remotes/origin/main`.
-    const catFile = await runGit(
-      ["cat-file", "commit", "refs/remotes/origin/main"],
-      { cwd: cloneTarget },
-    );
+    // The advertise-refs layer projects HEAD as a symref so stock
+    // `git clone` lands on a real branch. Assert HEAD is born and
+    // resolves to the same SHA as refs/remotes/origin/main, then read
+    // the genesis commit from HEAD to derive the allowed-signers key.
+    const headRev = await runGit(["rev-parse", "HEAD"], { cwd: cloneTarget });
+    if (headRev.status !== 0) {
+      throw new Error(`rev-parse HEAD failed: ${headRev.stderr}`);
+    }
+    const originRev = await runGit(["rev-parse", "refs/remotes/origin/main"], {
+      cwd: cloneTarget,
+    });
+    if (originRev.status !== 0) {
+      throw new Error(`rev-parse origin/main failed: ${originRev.stderr}`);
+    }
+    expect(headRev.stdout.trim()).toBe(originRev.stdout.trim());
+
+    const catFile = await runGit(["cat-file", "commit", "HEAD"], {
+      cwd: cloneTarget,
+    });
     if (catFile.status !== 0) {
       throw new Error(
-        `cat-file refs/remotes/origin/main failed: ${catFile.stderr}\nclone stderr:\n${clone.stderr}`,
+        `cat-file HEAD failed: ${catFile.stderr}\nclone stderr:\n${clone.stderr}`,
       );
     }
     const sigStart = catFile.stdout.indexOf("gpgsig ");
@@ -266,7 +272,7 @@ describe("authorized clone", () => {
     await installSshAllowedSigner(cloneTarget, openSshKey, "interchange-hub");
 
     const showSig = await runGit(
-      ["log", "--show-signature", "-n", "1", "refs/remotes/origin/main"],
+      ["log", "--show-signature", "-n", "1", "HEAD"],
       { cwd: cloneTarget },
     );
     if (showSig.status !== 0) {

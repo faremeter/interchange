@@ -313,6 +313,9 @@ function makeRefSource(
     async listRefs(_p, repoId): Promise<RefEntry[]> {
       return repoStore.listRefs(principal, repoId);
     },
+    async resolveHead(_p, repoId) {
+      return repoStore.resolveHead(principal, repoId);
+    },
   };
 }
 

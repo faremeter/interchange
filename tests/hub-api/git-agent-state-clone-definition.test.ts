@@ -14,10 +14,9 @@
 //   3. A token bound to a separate tenant is denied at advertise
 //      with `http 403`.
 //
-// Note: the advertise layer does not currently project HEAD as a
-// symref, so the cloned working tree has an unborn HEAD. Content
-// must be inspected via `refs/remotes/origin/<branch>` rather than
-// the default HEAD.
+// The advertise layer projects HEAD as a symref via the
+// `symref=HEAD:<target>` capability, so stock `git clone` lands on a
+// real branch and HEAD is born against refs/heads/deploy.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
@@ -177,14 +176,25 @@ describe("agent-state per-definition clone", () => {
       );
     }
 
-    // The advertise layer does not project HEAD as a symref, so the
-    // local clone leaves HEAD unborn; the remote tip lives at
-    // `refs/remotes/origin/deploy`. Read deploy/prompt.md from that
-    // ref tree to confirm content arrived intact.
-    const showBlob = await runGit(
-      ["show", "refs/remotes/origin/deploy:deploy/prompt.md"],
+    // HEAD is advertised as a symref pointing at refs/heads/deploy,
+    // so the clone has a born HEAD. Assert it matches the remote
+    // tracking ref before reading deploy/prompt.md from HEAD.
+    const headRev = await runGit(["rev-parse", "HEAD"], { cwd: cloneTarget });
+    if (headRev.status !== 0) {
+      throw new Error(`rev-parse HEAD failed: ${headRev.stderr}`);
+    }
+    const originRev = await runGit(
+      ["rev-parse", "refs/remotes/origin/deploy"],
       { cwd: cloneTarget },
     );
+    if (originRev.status !== 0) {
+      throw new Error(`rev-parse origin/deploy failed: ${originRev.stderr}`);
+    }
+    expect(headRev.stdout.trim()).toBe(originRev.stdout.trim());
+
+    const showBlob = await runGit(["show", "HEAD:deploy/prompt.md"], {
+      cwd: cloneTarget,
+    });
     if (showBlob.status !== 0) {
       throw new Error(
         `show blob failed: status=${showBlob.status} stderr=${showBlob.stderr}`,

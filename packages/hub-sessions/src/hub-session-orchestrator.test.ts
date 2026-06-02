@@ -255,6 +255,7 @@ function unusedRepoStore(): RepoStore {
     createPack: unused,
     resolveRef: unused,
     listRefs: unused,
+    resolveHead: unused,
     getRepoDir: () => {
       throw new Error("mock AgentRepoStore.repoStore is not wired");
     },
