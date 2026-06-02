@@ -158,9 +158,12 @@ async function walkAllowedAndIndex(
  * an allowed tip is in the index; ancestors of a valid want are
  * therefore present without any further `git.readCommit` calls.
  *
- * A start SHA missing from the index is silently skipped: that
- * indicates the want was not in the allowed-tip set, which is the
- * caller's responsibility to classify and reject upstream.
+ * The caller is responsible for ensuring every start OID is a commit
+ * present in the index — `classifyWants` enforces both. A start OID
+ * missing from the index is silently skipped; if it slips past the
+ * classifier (a non-commit OID reachable from an allowed ref's tree,
+ * or any other contract violation upstream) the result will be the
+ * empty set rather than a thrown error.
  */
 function reachableFromIndex(
   starts: readonly string[],
@@ -209,10 +212,22 @@ async function classifyWants(
   // that exists but is reachable only from refs the token cannot see
   // is more useful diagnostic information than a SHA we cannot find
   // at all, and incident triage benefits from determinism.
+  //
+  // Membership in `allowedObjects` is necessary but not sufficient:
+  // the substrate's reachable-objects walk includes commits, trees,
+  // and blobs alike, so a hand-crafted client could otherwise want a
+  // blob OID that appears in some allowed ref's tree. This handler
+  // expects `want` lines to name commits — annotated-tag wants are
+  // not supported here today; a non-commit want is classified the
+  // same as a SHA that does not exist at all.
   let sawForbidden = false;
   let sawUnknown = false;
   for (const want of wants) {
-    if (allowedObjects.has(want)) continue;
+    if (allowedObjects.has(want)) {
+      if (await shaExistsAsCommit(dir, want)) continue;
+      sawUnknown = true;
+      continue;
+    }
     const exists = await shaExistsAsCommit(dir, want);
     if (exists) {
       sawForbidden = true;

@@ -423,6 +423,38 @@ describe("handleUploadPack refPattern filter", () => {
     );
   });
 
+  test("want of a non-commit OID reachable from an allowed ref produces ERR upload-pack: not our ref", async () => {
+    // A hand-crafted client could want a blob or tree OID that
+    // appears in some allowed ref's tree. Such an OID passes the
+    // bare `allowedObjects.has(want)` membership check but is not a
+    // commit, so it cannot be a valid `want` per the smart-HTTP
+    // protocol. The classifier must reject it explicitly rather than
+    // letting it fall through to an empty NAK response.
+    const { dir, c3 } = await makeLinearRepo();
+    const commit = await git.readCommit({ fs, dir, oid: c3 });
+    const treeOid = commit.commit.tree;
+    const store = repoStoreFor(dir, [{ name: "refs/heads/main", sha: c3 }]);
+    const body = concat(pkt(`want ${treeOid}\n`), flush(), pkt("done\n"));
+    const response = await handleUploadPack(
+      store,
+      principalWith("**"),
+      REPO_ID,
+      uploadPackRequest(body),
+    );
+    expect(response.status).toBe(200);
+    const buf = await readAll(response);
+    const pkts = parsePktStream(buf);
+    const data = pkts.filter(
+      (p): p is { kind: "data"; payload: Uint8Array } => p.kind === "data",
+    );
+    expect(data.length).toBe(1);
+    const first = data[0];
+    if (!first) throw new Error("expected one data pkt-line");
+    expect(new TextDecoder().decode(first.payload)).toBe(
+      "ERR upload-pack: not our ref\n",
+    );
+  });
+
   test("want of an allowed ref tip succeeds when refPattern includes it", async () => {
     const { dir, branchA, branchB } = await makeTwoBranchRepo();
     const store = repoStoreFor(dir, [
