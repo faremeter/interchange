@@ -2,10 +2,11 @@ import { describe, test, expect } from "bun:test";
 import {
   skillKindHandler,
   skillFrontmatterSchema,
+  skillAuthorize,
   getSkillIndex,
   type SkillIndexEntry,
 } from "./skill-kind";
-import type { RepoId } from "./repo-store";
+import type { Principal, RepoId } from "./repo-store";
 import { type } from "arktype";
 
 const REF = "refs/heads/main";
@@ -393,5 +394,206 @@ describe("skillKindHandler metadata", () => {
   test("declares the skill kind and assets/skill directory prefix", () => {
     expect(skillKindHandler.kind).toBe("skill");
     expect(skillKindHandler.directoryPrefix).toBe("assets/skill");
+  });
+});
+
+describe("skillAuthorize", () => {
+  const SKILL_REPO: RepoId = { kind: "skill", id: "asset-123" };
+  const AGENT_STATE_REPO: RepoId = { kind: "agent-state", id: "asset-123" };
+  const REF = "refs/heads/main";
+
+  function farFuture(): number {
+    return Date.now() + 60_000;
+  }
+
+  function userPrincipal(
+    overrides: {
+      effect?: "allow" | "deny";
+      resource?: string;
+      grantVerb?: string;
+      refPattern?: string;
+      actions?: string[];
+      expiresAt?: number;
+    } = {},
+  ): Principal {
+    return {
+      kind: "user",
+      principalId: "user-1",
+      tenantId: "tenant-1",
+      authz: {
+        effect: overrides.effect ?? "allow",
+        resource: overrides.resource ?? "asset:asset-123",
+        grantVerb: overrides.grantVerb ?? "read",
+      },
+      tokenClaims: {
+        refPattern: overrides.refPattern ?? "refs/heads/**",
+        actions: overrides.actions ?? ["createPack", "resolveRef"],
+        expiresAt: overrides.expiresAt ?? farFuture(),
+      },
+    } as Principal;
+  }
+
+  test("rejects calls when repoId.kind is not skill", () => {
+    const r = skillAuthorize(
+      { kind: "hub" } as Principal,
+      AGENT_STATE_REPO,
+      REF,
+      "createPack",
+    );
+    expect(r.allowed).toBe(false);
+    if (r.allowed) throw new Error("unreachable");
+    expect(r.reason).toMatch(/non-skill repo/);
+  });
+
+  test("hub principal: allowed for any action (regression)", () => {
+    for (const action of [
+      "init",
+      "writeTree",
+      "receivePack",
+      "createPack",
+      "resolveRef",
+    ] as const) {
+      const r = skillAuthorize(
+        { kind: "hub" } as Principal,
+        SKILL_REPO,
+        REF,
+        action,
+      );
+      expect(r.allowed).toBe(true);
+    }
+  });
+
+  test("sidecar principal: createPack / resolveRef allowed (regression)", () => {
+    const sidecar = { kind: "sidecar", agentId: "agent-1" } as Principal;
+    expect(skillAuthorize(sidecar, SKILL_REPO, REF, "createPack").allowed).toBe(
+      true,
+    );
+    expect(skillAuthorize(sidecar, SKILL_REPO, REF, "resolveRef").allowed).toBe(
+      true,
+    );
+  });
+
+  test("sidecar principal: writeTree / receivePack / init denied (regression)", () => {
+    const sidecar = { kind: "sidecar", agentId: "agent-1" } as Principal;
+    for (const action of ["init", "writeTree", "receivePack"] as const) {
+      const r = skillAuthorize(sidecar, SKILL_REPO, REF, action);
+      expect(r.allowed).toBe(false);
+      if (r.allowed) throw new Error("unreachable");
+      expect(r.reason).toMatch(/sidecars may only read/);
+    }
+  });
+
+  test("user principal: allowed when claims and verdict agree", () => {
+    const r = skillAuthorize(userPrincipal(), SKILL_REPO, REF, "createPack");
+    expect(r.allowed).toBe(true);
+  });
+
+  test("user principal: malformed principal is denied with structural reason", () => {
+    const badPrincipal = {
+      kind: "user",
+      principalId: "user-1",
+      // missing tenantId, authz, tokenClaims
+    } as Principal;
+    const r = skillAuthorize(badPrincipal, SKILL_REPO, REF, "createPack");
+    expect(r.allowed).toBe(false);
+    if (r.allowed) throw new Error("unreachable");
+    expect(r.reason).toMatch(/user principal is malformed/);
+  });
+
+  test("user principal: denied when tokenClaims.actions does not include the requested action", () => {
+    const r = skillAuthorize(
+      userPrincipal({ actions: ["resolveRef"] }),
+      SKILL_REPO,
+      REF,
+      "createPack",
+    );
+    expect(r.allowed).toBe(false);
+    if (r.allowed) throw new Error("unreachable");
+    expect(r.reason).toMatch(/token does not grant action createPack/);
+  });
+
+  test("user principal: denied when refPattern does not match the requested ref", () => {
+    const r = skillAuthorize(
+      userPrincipal({ refPattern: "refs/heads/release-*" }),
+      SKILL_REPO,
+      REF,
+      "createPack",
+    );
+    expect(r.allowed).toBe(false);
+    if (r.allowed) throw new Error("unreachable");
+    expect(r.reason).toMatch(/refPattern .* does not match/);
+  });
+
+  test("user principal: denied when the token is expired", () => {
+    const r = skillAuthorize(
+      userPrincipal({ expiresAt: Date.now() - 1 }),
+      SKILL_REPO,
+      REF,
+      "createPack",
+    );
+    expect(r.allowed).toBe(false);
+    if (r.allowed) throw new Error("unreachable");
+    expect(r.reason).toMatch(/token expired/);
+  });
+
+  test("user principal: denied when verdict.resource does not target this asset (sanity drift)", () => {
+    const r = skillAuthorize(
+      userPrincipal({ resource: "asset:other-asset" }),
+      SKILL_REPO,
+      REF,
+      "createPack",
+    );
+    expect(r.allowed).toBe(false);
+    if (r.allowed) throw new Error("unreachable");
+    expect(r.reason).toMatch(/authz verdict resource .* does not match/);
+  });
+
+  test("user principal: denied when verdict.resource has the wrong kind prefix (sanity drift)", () => {
+    const r = skillAuthorize(
+      userPrincipal({ resource: "agent-state:asset-123" }),
+      SKILL_REPO,
+      REF,
+      "createPack",
+    );
+    expect(r.allowed).toBe(false);
+    if (r.allowed) throw new Error("unreachable");
+    expect(r.reason).toMatch(/authz verdict resource .* does not match/);
+  });
+
+  test("user principal: denied when verdict.grantVerb does not match the action's verb (sanity drift)", () => {
+    const r = skillAuthorize(
+      userPrincipal({ grantVerb: "write" }),
+      SKILL_REPO,
+      REF,
+      "createPack",
+    );
+    expect(r.allowed).toBe(false);
+    if (r.allowed) throw new Error("unreachable");
+    expect(r.reason).toMatch(/authz verdict grantVerb .* does not match/);
+  });
+
+  test("user principal: denied when verdict effect is deny even though all sanity checks pass", () => {
+    const r = skillAuthorize(
+      userPrincipal({ effect: "deny" }),
+      SKILL_REPO,
+      REF,
+      "createPack",
+    );
+    expect(r.allowed).toBe(false);
+    if (r.allowed) throw new Error("unreachable");
+    expect(r.reason).toMatch(/authz verdict denied/);
+  });
+
+  test("user principal: write action requires write grantVerb and matching claims", () => {
+    const r = skillAuthorize(
+      userPrincipal({
+        actions: ["receivePack"],
+        grantVerb: "write",
+      }),
+      SKILL_REPO,
+      REF,
+      "receivePack",
+    );
+    expect(r.allowed).toBe(true);
   });
 });

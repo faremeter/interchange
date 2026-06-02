@@ -1,4 +1,4 @@
-import type { RepoAction } from "@intx/hub-sessions";
+import type { RepoAction } from "@intx/types/sidecar";
 
 /**
  * Translations between the HTTP request shape, the `RepoAction`

@@ -293,7 +293,14 @@ describe("RepoStore", () => {
       handlers: { "agent-state": acceptHandler },
       authorize: allowAll,
     });
-    await acceptStore.receivePack(principal, repoId, REF, pack, commitSha);
+    await acceptStore.receivePack(
+      principal,
+      repoId,
+      REF,
+      pack,
+      commitSha,
+      null,
+    );
     expect(await acceptStore.resolveRef(principal, repoId, REF)).toBe(
       commitSha,
     );
@@ -310,7 +317,7 @@ describe("RepoStore", () => {
       authorize: allowAll,
     });
     await expect(
-      rejectStore.receivePack(principal, repoId, REF, pack, commitSha),
+      rejectStore.receivePack(principal, repoId, REF, pack, commitSha, null),
     ).rejects.toThrow(/^path_violation/);
     expect(await rejectStore.resolveRef(principal, repoId, REF)).toBeNull();
   });
@@ -341,7 +348,14 @@ describe("RepoStore", () => {
       authorize: allowAll,
     });
 
-    await targetStore.receivePack(principal, repoId, REF, pack, commitSha);
+    await targetStore.receivePack(
+      principal,
+      repoId,
+      REF,
+      pack,
+      commitSha,
+      null,
+    );
     const resolved = await targetStore.resolveRef(principal, repoId, REF);
     expect(resolved).toBe(commitSha);
   });
@@ -413,7 +427,14 @@ describe("RepoStore", () => {
       }),
     ).rejects.toThrow(/^authorize_denied:.*denied/);
     await expect(
-      denyStore.receivePack(principal, repoId, REF, validPack, existingSha),
+      denyStore.receivePack(
+        principal,
+        repoId,
+        REF,
+        validPack,
+        existingSha,
+        null,
+      ),
     ).rejects.toThrow(/^authorize_denied:.*denied/);
     await expect(denyStore.createPack(principal, repoId, REF)).rejects.toThrow(
       /^authorize_denied:.*denied/,
@@ -462,7 +483,14 @@ describe("RepoStore", () => {
       }),
     ).rejects.toThrow(/^authorize_denied/);
     await expect(
-      partialStore.receivePack(principal, repoId, REF, validPack, existingSha),
+      partialStore.receivePack(
+        principal,
+        repoId,
+        REF,
+        validPack,
+        existingSha,
+        null,
+      ),
     ).rejects.toThrow(/^authorize_denied/);
     await expect(
       partialStore.createPack(principal, repoId, REF),
@@ -496,7 +524,7 @@ describe("RepoStore", () => {
     });
 
     await expect(
-      targetStore.receivePack(principal, repoId, REF, pack, commitSha),
+      targetStore.receivePack(principal, repoId, REF, pack, commitSha, null),
     ).rejects.toThrow(/^path_violation/);
 
     expect(targetHandler.onRefUpdatedCalls).toHaveLength(0);
@@ -593,7 +621,395 @@ describe("RepoStore", () => {
     });
 
     await expect(
-      targetStore.receivePack(principal, repoId, REF, pack, commitSha),
+      targetStore.receivePack(principal, repoId, REF, pack, commitSha, null),
     ).rejects.toThrow(/^path_violation/);
+  });
+
+  test("receivePack accepts a fresh ref when expectedOldSha is null", async () => {
+    const sourceDir = await makeTempDir("repo-store-cas-fresh-source-");
+    const sourceHandler = createTestHandler();
+    const sourceStore = createRepoStore({
+      dataDir: sourceDir,
+      signingKey,
+      handlers: { "agent-state": sourceHandler },
+      authorize: allowAll,
+    });
+    const { commitSha } = await sourceStore.writeTree(principal, repoId, REF, {
+      files: { "deploy/a.md": "v1" },
+      message: "v1",
+    });
+    const { pack } = await sourceStore.createPack(principal, repoId, REF);
+
+    const targetDir = await makeTempDir("repo-store-cas-fresh-target-");
+    const targetHandler = createTestHandler({
+      allowTopLevelPaths: () => true,
+    });
+    const targetStore = createRepoStore({
+      dataDir: targetDir,
+      signingKey,
+      handlers: { "agent-state": targetHandler },
+      authorize: allowAll,
+    });
+
+    await targetStore.receivePack(
+      principal,
+      repoId,
+      REF,
+      pack,
+      commitSha,
+      null,
+    );
+
+    expect(await targetStore.resolveRef(principal, repoId, REF)).toBe(
+      commitSha,
+    );
+    expect(targetHandler.onRefUpdatedCalls).toHaveLength(1);
+    const call = targetHandler.onRefUpdatedCalls[0];
+    if (!call) throw new Error("unreachable");
+    expect(call.oldSha).toBeNull();
+    expect(call.newSha).toBe(commitSha);
+  });
+
+  test("receivePack rejects when expectedOldSha is stale", async () => {
+    const sourceDir = await makeTempDir("repo-store-cas-stale-source-");
+    const sourceHandler = createTestHandler();
+    const sourceStore = createRepoStore({
+      dataDir: sourceDir,
+      signingKey,
+      handlers: { "agent-state": sourceHandler },
+      authorize: allowAll,
+    });
+    const { commitSha: firstSha } = await sourceStore.writeTree(
+      principal,
+      repoId,
+      REF,
+      { files: { "deploy/a.md": "v1" }, message: "v1" },
+    );
+    const { pack: firstPack } = await sourceStore.createPack(
+      principal,
+      repoId,
+      REF,
+    );
+    const { commitSha: secondSha } = await sourceStore.writeTree(
+      principal,
+      repoId,
+      REF,
+      { files: { "deploy/a.md": "v2" }, message: "v2" },
+    );
+    const { pack: secondPack } = await sourceStore.createPack(
+      principal,
+      repoId,
+      REF,
+    );
+
+    const targetDir = await makeTempDir("repo-store-cas-stale-target-");
+    const targetHandler = createTestHandler({
+      allowTopLevelPaths: () => true,
+    });
+    const targetStore = createRepoStore({
+      dataDir: targetDir,
+      signingKey,
+      handlers: { "agent-state": targetHandler },
+      authorize: allowAll,
+    });
+    await targetStore.receivePack(
+      principal,
+      repoId,
+      REF,
+      firstPack,
+      firstSha,
+      null,
+    );
+
+    await expect(
+      targetStore.receivePack(
+        principal,
+        repoId,
+        REF,
+        secondPack,
+        secondSha,
+        null,
+      ),
+    ).rejects.toThrow(/^non_fast_forward:/);
+
+    expect(await targetStore.resolveRef(principal, repoId, REF)).toBe(firstSha);
+    expect(targetHandler.onRefUpdatedCalls).toHaveLength(1);
+  });
+
+  test("receivePack feeds the substrate-returned oldSha into onRefUpdated", async () => {
+    const sourceDir = await makeTempDir("repo-store-oldsha-source-");
+    const sourceHandler = createTestHandler();
+    const sourceStore = createRepoStore({
+      dataDir: sourceDir,
+      signingKey,
+      handlers: { "agent-state": sourceHandler },
+      authorize: allowAll,
+    });
+    const { commitSha: firstSha } = await sourceStore.writeTree(
+      principal,
+      repoId,
+      REF,
+      { files: { "deploy/a.md": "v1" }, message: "v1" },
+    );
+    const { pack: firstPack } = await sourceStore.createPack(
+      principal,
+      repoId,
+      REF,
+    );
+    const { commitSha: secondSha } = await sourceStore.writeTree(
+      principal,
+      repoId,
+      REF,
+      { files: { "deploy/a.md": "v2" }, message: "v2" },
+    );
+    const { pack: secondPack } = await sourceStore.createPack(
+      principal,
+      repoId,
+      REF,
+    );
+
+    const targetDir = await makeTempDir("repo-store-oldsha-target-");
+    const targetHandler = createTestHandler({
+      allowTopLevelPaths: () => true,
+    });
+    const targetStore = createRepoStore({
+      dataDir: targetDir,
+      signingKey,
+      handlers: { "agent-state": targetHandler },
+      authorize: allowAll,
+    });
+    await targetStore.receivePack(
+      principal,
+      repoId,
+      REF,
+      firstPack,
+      firstSha,
+      null,
+    );
+    await targetStore.receivePack(
+      principal,
+      repoId,
+      REF,
+      secondPack,
+      secondSha,
+      firstSha,
+    );
+
+    expect(targetHandler.onRefUpdatedCalls).toHaveLength(2);
+    const second = targetHandler.onRefUpdatedCalls[1];
+    if (!second) throw new Error("unreachable");
+    expect(second.oldSha).toBe(firstSha);
+    expect(second.newSha).toBe(secondSha);
+  });
+
+  test("concurrent receivePack against the same repo serializes", async () => {
+    const sourceDir = await makeTempDir("repo-store-serial-source-");
+    const sourceHandler = createTestHandler();
+    const sourceStore = createRepoStore({
+      dataDir: sourceDir,
+      signingKey,
+      handlers: { "agent-state": sourceHandler },
+      authorize: allowAll,
+    });
+    const { commitSha: firstSha } = await sourceStore.writeTree(
+      principal,
+      repoId,
+      REF,
+      { files: { "deploy/a.md": "v1" }, message: "v1" },
+    );
+    const { pack: firstPack } = await sourceStore.createPack(
+      principal,
+      repoId,
+      REF,
+    );
+    const { commitSha: secondSha } = await sourceStore.writeTree(
+      principal,
+      repoId,
+      REF,
+      { files: { "deploy/a.md": "v2" }, message: "v2" },
+    );
+    const { pack: secondPack } = await sourceStore.createPack(
+      principal,
+      repoId,
+      REF,
+    );
+
+    const targetDir = await makeTempDir("repo-store-serial-target-");
+    const events: string[] = [];
+    const slowHandler: TestHandler = {
+      kind: "agent-state",
+      directoryPrefix: "repos-under-test",
+      async validatePush() {
+        events.push("validate");
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return { ok: true };
+      },
+      onRefUpdated({ newSha }) {
+        events.push(`update:${newSha.substring(0, 7)}`);
+      },
+      onRefUpdatedCalls: [],
+    };
+    const targetStore = createRepoStore({
+      dataDir: targetDir,
+      signingKey,
+      handlers: { "agent-state": slowHandler },
+      authorize: allowAll,
+    });
+
+    const firstP = targetStore.receivePack(
+      principal,
+      repoId,
+      REF,
+      firstPack,
+      firstSha,
+      null,
+    );
+    const secondP = targetStore.receivePack(
+      principal,
+      repoId,
+      REF,
+      secondPack,
+      secondSha,
+      firstSha,
+    );
+
+    await Promise.all([firstP, secondP]);
+
+    expect(events).toEqual([
+      "validate",
+      `update:${firstSha.substring(0, 7)}`,
+      "validate",
+      `update:${secondSha.substring(0, 7)}`,
+    ]);
+    expect(await targetStore.resolveRef(principal, repoId, REF)).toBe(
+      secondSha,
+    );
+  });
+
+  test("concurrent receivePack against distinct repos runs in parallel", async () => {
+    const sourceDir = await makeTempDir("repo-store-parallel-source-");
+    const sourceHandler = createTestHandler();
+    const sourceStore = createRepoStore({
+      dataDir: sourceDir,
+      signingKey,
+      handlers: { "agent-state": sourceHandler },
+      authorize: allowAll,
+    });
+    const repoA: RepoId = { kind: "agent-state", id: "alpha" };
+    const repoB: RepoId = { kind: "agent-state", id: "beta" };
+    const { commitSha: shaA } = await sourceStore.writeTree(
+      principal,
+      repoA,
+      REF,
+      { files: { "deploy/a.md": "a" }, message: "a" },
+    );
+    const { pack: packA } = await sourceStore.createPack(principal, repoA, REF);
+    const { commitSha: shaB } = await sourceStore.writeTree(
+      principal,
+      repoB,
+      REF,
+      { files: { "deploy/b.md": "b" }, message: "b" },
+    );
+    const { pack: packB } = await sourceStore.createPack(principal, repoB, REF);
+
+    const targetDir = await makeTempDir("repo-store-parallel-target-");
+    const enters: number[] = [];
+    let activeConcurrent = 0;
+    let observedMaxConcurrent = 0;
+    const trackingHandler: TestHandler = {
+      kind: "agent-state",
+      directoryPrefix: "repos-under-test",
+      async validatePush() {
+        activeConcurrent += 1;
+        observedMaxConcurrent = Math.max(
+          observedMaxConcurrent,
+          activeConcurrent,
+        );
+        enters.push(Date.now());
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        activeConcurrent -= 1;
+        return { ok: true };
+      },
+      onRefUpdated() {
+        /* no-op */
+      },
+      onRefUpdatedCalls: [],
+    };
+    const targetStore = createRepoStore({
+      dataDir: targetDir,
+      signingKey,
+      handlers: { "agent-state": trackingHandler },
+      authorize: allowAll,
+    });
+
+    const start = Date.now();
+    await Promise.all([
+      targetStore.receivePack(principal, repoA, REF, packA, shaA, null),
+      targetStore.receivePack(principal, repoB, REF, packB, shaB, null),
+    ]);
+    const elapsed = Date.now() - start;
+
+    expect(observedMaxConcurrent).toBe(2);
+    // Serialized work would take ~200ms; parallel work completes well
+    // under 180ms. The bound is generous to absorb scheduler jitter on
+    // contended CI runners.
+    expect(elapsed).toBeLessThan(180);
+  });
+
+  test("withRepoLock releases on substrate exception and the map drains", async () => {
+    const sourceDir = await makeTempDir("repo-store-release-source-");
+    const sourceHandler = createTestHandler();
+    const sourceStore = createRepoStore({
+      dataDir: sourceDir,
+      signingKey,
+      handlers: { "agent-state": sourceHandler },
+      authorize: allowAll,
+    });
+    const { commitSha } = await sourceStore.writeTree(principal, repoId, REF, {
+      files: { "deploy/a.md": "v1" },
+      message: "v1",
+    });
+    const { pack } = await sourceStore.createPack(principal, repoId, REF);
+
+    const targetDir = await makeTempDir("repo-store-release-target-");
+    let rejectOnce = true;
+    const flakyHandler: TestHandler = {
+      kind: "agent-state",
+      directoryPrefix: "repos-under-test",
+      validatePush() {
+        if (rejectOnce) {
+          rejectOnce = false;
+          return { ok: false, reason: "first attempt rejected" };
+        }
+        return { ok: true };
+      },
+      onRefUpdated() {
+        /* no-op */
+      },
+      onRefUpdatedCalls: [],
+    };
+    const targetStore = createRepoStore({
+      dataDir: targetDir,
+      signingKey,
+      handlers: { "agent-state": flakyHandler },
+      authorize: allowAll,
+    });
+
+    await expect(
+      targetStore.receivePack(principal, repoId, REF, pack, commitSha, null),
+    ).rejects.toThrow(/^path_violation/);
+
+    // The second call would deadlock if the lock were never released.
+    await targetStore.receivePack(
+      principal,
+      repoId,
+      REF,
+      pack,
+      commitSha,
+      null,
+    );
+    expect(await targetStore.resolveRef(principal, repoId, REF)).toBe(
+      commitSha,
+    );
   });
 });

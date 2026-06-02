@@ -5,7 +5,7 @@ import {
   RepoActionAliases,
   expandRepoActionAlias,
 } from "./action-mapping";
-import type { RepoAction } from "@intx/hub-sessions";
+import type { RepoAction } from "@intx/types/sidecar";
 
 describe("httpToRepoAction", () => {
   test("GET /info/refs?service=git-upload-pack maps to resolveRef", () => {
