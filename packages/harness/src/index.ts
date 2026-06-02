@@ -16,6 +16,9 @@ export type { MailToolName } from "./tools";
 
 export { mergeToolRunners } from "./merge-tool-runners";
 
+export { createHarnessRuntimeCapabilities } from "./runtime-capabilities";
+export type { HarnessRuntimeCapabilitiesOptions } from "./runtime-capabilities";
+
 export { readDeployTree } from "./deploy-tree";
 export type { DeployTree } from "./deploy-tree";
 
