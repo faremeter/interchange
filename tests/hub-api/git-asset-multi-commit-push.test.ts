@@ -3,12 +3,6 @@
 // path with realistic delta references. The receive-pack pipeline
 // must accept whatever pack stock git produces; the test confirms
 // the resulting refs are reachable and `git fsck` is clean.
-//
-// Note: the asset wire layer does not currently advertise the
-// `shallow` capability, so a `git clone --depth=1` against an asset
-// repo lands as an empty clone. This test therefore exercises the
-// thin-pack path via stock-git's default pack generation against a
-// non-shallow clone instead.
 
 import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
