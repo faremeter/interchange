@@ -276,6 +276,8 @@ function createTestApp(opts: TestAppOpts) {
       sidecarRouter: createMockSidecarRouter(),
       sessionService: createMockSessionService(),
       eventCollectors: createMockEventCollectors(),
+      assetService: null,
+      repoStore: null,
     }),
     db,
   };

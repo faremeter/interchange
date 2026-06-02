@@ -77,14 +77,14 @@ export type MountHubRoutesDeps = {
   conditionRegistry?: ConditionRegistry;
   sidecarWsHandler?: Handler<AppEnv>;
   /**
-   * When supplied, the asset REST endpoint and smart-HTTP route
-   * group are mounted under `/api/tenants/:tenantId/assets`. When
-   * omitted, neither surface is reachable — call sites that don't
-   * own a repo store / asset service (e.g. tests that exercise
-   * unrelated routes) can skip wiring both deps.
+   * The asset REST endpoint and smart-HTTP route group mount under
+   * `/api/tenants/:tenantId/assets` when both are supplied. Tests
+   * that have no reason to exercise the asset surface MUST pass
+   * `null` for both to opt out explicitly; passing only one is a
+   * wiring bug and throws at construction.
    */
-  assetService?: AssetService;
-  repoStore?: RepoStore;
+  assetService: AssetService | null;
+  repoStore: RepoStore | null;
 };
 
 /**
@@ -125,14 +125,26 @@ export function mountHubRoutes(
   // User-scoped (cross-tenant) -- requires auth but not tenant membership
   app.use("/api/me/*", requireAuth);
   app.route("/api/me", createMeRoutes({ db }));
-  app.route("/api/me/git-tokens", createMeGitTokenRoutes({ db }));
+
+  // The git-tokens mint surface mounts under the same gate as the
+  // smart-HTTP route groups: tokens are only useful when at least one
+  // smart-HTTP route consumes them. Both deps null = no smart-HTTP
+  // anywhere = no token-mint endpoints.
+  if (repoStore !== null) {
+    app.route("/api/me/git-tokens", createMeGitTokenRoutes({ db }));
+  }
 
   // Smart-HTTP asset routes use bearer authentication instead of
   // session+tenant resolution. The bearer middleware mounts ahead of
   // resolveTenant so it populates `principal` + `tenant` first; the
   // tenant resolver short-circuits when both are already set, which
   // lets bearer-only requests bypass the session-required path.
-  if (assetService !== undefined && repoStore !== undefined) {
+  //
+  // The gate is `repoStore !== null` rather than the two-dep check;
+  // the XOR throw above already guarantees the deps move as a unit,
+  // so checking either one is equivalent. Keeping a single shape
+  // across every gate site makes the contract obvious to a reader.
+  if (repoStore !== null) {
     app.use(
       "/api/tenants/:tenantId/assets/:kind/:nameDotGit/*",
       createGitTokenAuth({ db }),
@@ -144,7 +156,7 @@ export function mountHubRoutes(
   // unauthenticated `git push -v` parses the pkt-line ERR record
   // rather than a generic 401. The bearer middleware then gates the
   // upload-pack half (advertise + POST) on a valid token.
-  if (repoStore !== undefined) {
+  if (repoStore !== null) {
     app.use(
       "/api/tenants/:tenantId/agents/instances/:instanceId/state.git/*",
       createAgentStateReceivePackDeny(),
@@ -235,10 +247,12 @@ export function mountHubRoutes(
     "/api/tenants/:tenantId/offerings",
     createOfferingRoutes({ db, requireGrant }),
   );
-  app.route(
-    "/api/tenants/:tenantId/git-tokens",
-    createTenantGitTokenRoutes({ db, requireGrant }),
-  );
+  if (repoStore !== null) {
+    app.route(
+      "/api/tenants/:tenantId/git-tokens",
+      createTenantGitTokenRoutes({ db, requireGrant }),
+    );
+  }
   app.route("/api/tenants/:tenantId", createObservabilityRoutes());
   app.route(
     "/api/tenants/:tenantId/federation",
@@ -246,7 +260,7 @@ export function mountHubRoutes(
   );
   app.route("/api/tenants/:tenantId/agents/:agentId", createAgentDataRoutes());
 
-  if (assetService !== undefined && repoStore !== undefined) {
+  if (assetService !== null && repoStore !== null) {
     app.route(
       "/api/tenants/:tenantId/assets",
       createAssetRoutes({
@@ -260,7 +274,7 @@ export function mountHubRoutes(
     );
   }
 
-  if (repoStore !== undefined) {
+  if (repoStore !== null) {
     app.route(
       "/api/tenants/:tenantId/agents/instances",
       createAgentStateInstanceGitRoutes({
@@ -298,8 +312,8 @@ export type CreateAppOpts = {
   eventCollectors: EventCollectorRegistry;
   grantStore?: GrantStore;
   sidecarWsHandler?: Handler<AppEnv>;
-  assetService?: AssetService;
-  repoStore?: RepoStore;
+  assetService: AssetService | null;
+  repoStore: RepoStore | null;
 };
 
 export function createApp({
@@ -332,10 +346,10 @@ export function createApp({
     sidecarRouter,
     sessionService,
     eventCollectors,
+    assetService,
+    repoStore,
     ...(grantStore ? { grantStore } : {}),
     ...(sidecarWsHandler ? { sidecarWsHandler } : {}),
-    ...(assetService ? { assetService } : {}),
-    ...(repoStore ? { repoStore } : {}),
   });
 
   app.get(

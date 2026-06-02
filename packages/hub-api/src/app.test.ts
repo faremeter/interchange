@@ -39,6 +39,8 @@ const app = createApp({
   sidecarRouter,
   sessionService,
   eventCollectors,
+  assetService: null,
+  repoStore: null,
 });
 
 describe("app", () => {
@@ -117,6 +119,37 @@ describe("app", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  test("opting out of asset+repo-store hides the git-tokens mint surface", async () => {
+    // Token minting is only useful when at least one smart-HTTP route
+    // consumes the tokens. With `assetService: null` and
+    // `repoStore: null` there is no consumer, so the OpenAPI spec
+    // must not advertise the `Git Tokens` tag and the mint paths
+    // must not appear. The HTTP-request shape would test the same
+    // invariant but is noisier — the auth middleware fronts the
+    // `/api/me/*` tree and short-circuits with 401 before the router
+    // matches, masking whether the route exists.
+    const res = await app.request("/openapi.json");
+    const spec = OpenAPISpec.assert(await res.json());
+
+    const tags = new Set<string>();
+    for (const methods of Object.values(spec.paths)) {
+      for (const op of Object.values(methods)) {
+        if (typeof op !== "object" || op === null) continue;
+        if (!("tags" in op)) continue;
+        const { tags: opTags } = op;
+        if (!Array.isArray(opTags)) continue;
+        for (const tag of opTags) {
+          if (typeof tag === "string") tags.add(tag);
+        }
+      }
+    }
+    expect(tags.has("Git Tokens")).toBe(false);
+
+    const paths = Object.keys(spec.paths);
+    const gitTokenPaths = paths.filter((p) => p.includes("git-tokens"));
+    expect(gitTokenPaths).toEqual([]);
+  });
 });
 
 describe("mountHubRoutes composition", () => {
@@ -158,6 +191,8 @@ describe("mountHubRoutes composition", () => {
       sidecarRouter,
       sessionService,
       eventCollectors,
+      assetService: null,
+      repoStore: null,
     });
 
     const siblingRes = await thirdParty.request("/sibling/whoami");
@@ -178,6 +213,8 @@ describe("mountHubRoutes composition", () => {
       sidecarRouter,
       sessionService,
       eventCollectors,
+      assetService: null,
+      repoStore: null,
     });
 
     // Without an auth handler mounted by the caller, /api/auth/* is

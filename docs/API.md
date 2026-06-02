@@ -103,6 +103,7 @@
 | GET | /api/tenants/:tenantId/agents/:agentId/history/:ref | Show changes in a commit |
 | GET | /api/tenants/:tenantId/agents/:agentId/branches | List branches |
 | POST | /api/tenants/:tenantId/agents/:agentId/history/:ref/restore | Restore agent data to a previous state |
+| POST | /api/tenants/:tenantId/assets | Create an asset |
 | POST | /api/sidecars | Register or update a sidecar |
 | GET | /api/sidecars | List all sidecars |
 | GET | /api/sidecars/:id | Get a sidecar by ID |
@@ -987,6 +988,19 @@ Restores the agent's working directory to the state at the specified commit.
 
 204: (no content) -- Data restored
 404: ErrorResponse -- Commit not found
+
+## Assets
+
+### POST /api/tenants/:tenantId/assets
+Create an asset
+
+Inserts an asset row and initializes the backing git repository with a hub-signed genesis commit and the asset-route .gitignore body.
+
+Body: unknown
+
+201: unknown -- Asset created
+400: ErrorResponse -- Validation error
+409: ErrorResponse -- Asset already exists
 
 ## Sidecars
 
