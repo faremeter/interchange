@@ -15,7 +15,11 @@ import {
 
 const AuthResponse = type({ "user?": { id: "string" } });
 
-function parse<T>(schema: Type<T>, data: unknown, label: string): T {
+function parse<T extends Type>(
+  schema: T,
+  data: unknown,
+  label: string,
+): T["infer"] {
   const result = schema(data);
   if (result instanceof type.errors) {
     console.error(`Seed validation failed for ${label}: ${result.summary}`);
