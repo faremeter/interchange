@@ -65,4 +65,4 @@ export {
   buildAvailableSkillsStanza,
   type AvailableSkillEntry,
 } from "./available-skills-stanza";
-export type { RepoAction } from "./repo-store";
+export type { Principal, RepoAction, RepoId, RepoStore } from "./repo-store";
