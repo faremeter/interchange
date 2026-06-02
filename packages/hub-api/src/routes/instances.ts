@@ -567,6 +567,22 @@ export function createInstanceRoutes({
           createdAt: now,
           updatedAt: now,
         });
+
+        // Seed a creator-level read grant on the per-instance
+        // agent-state repo so the definition creator can read runtime
+        // state out of the box. The definition seed point covers the
+        // deploy-artifact repo; this covers the runtime repo.
+        await tx.insert(grantTable).values({
+          id: generateId("grant"),
+          tenantId: tenant.id,
+          principalId: creatorPrincipalId,
+          resource: `agent-state:${instanceId}`,
+          action: "read",
+          effect: "allow",
+          origin: "creator",
+          createdAt: now,
+          updatedAt: now,
+        });
       });
 
       // Collect the materialized grants for the deploy frame

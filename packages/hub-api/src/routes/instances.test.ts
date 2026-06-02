@@ -759,3 +759,339 @@ describe("POST /agents/instances/:instanceId/mail", () => {
     expect(captured[0]?.references).toEqual([`<prior-1@${testTenant.domain}>`]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /agents/instances — creator-grant seed on launch
+//
+// These tests exercise the launch transaction directly. The mock DB below is
+// independent of the smaller mock used by the other suites in this file: it
+// supports db.transaction, captures insert calls per table, and stubs the
+// surface area of credential resolution (providers, credentials, ancestor
+// chain) that the launch path traverses before reaching the transaction
+// block. The single instance launched per test is the canonical fixture; we
+// assert on the grant row written for resource `agent-state:<instanceId>`.
+// ---------------------------------------------------------------------------
+
+describe("POST /agents/instances seeds creator agent-state grant", () => {
+  const CREATOR_ID = "prn_creator";
+  const PROVIDER_ID = "prv_test";
+  const CREDENTIAL_ID = "cred_test";
+  const AGENT_DEF_ID = "agt_def";
+
+  type TableInsert = { table: string; rows: Record<string, unknown>[] };
+
+  function drizzleTableName(table: unknown): string {
+    if (table && typeof table === "object") {
+      const sym = Object.getOwnPropertySymbols(table).find(
+        (s) => s.description === "drizzle:Name",
+      );
+      if (sym) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle stores the table name keyed by a documented symbol
+        const value = (table as Record<symbol, unknown>)[sym];
+        if (typeof value === "string") return value;
+      }
+    }
+    return "unknown";
+  }
+
+  type LaunchMockOpts = {
+    agent: Record<string, unknown> | undefined;
+    inserts: TableInsert[];
+    provider?: Record<string, unknown> | undefined;
+    credential?: Record<string, unknown> | undefined;
+  };
+
+  function createLaunchMockDB(opts: LaunchMockOpts) {
+    function insertChain(table: unknown) {
+      const name = drizzleTableName(table);
+      return {
+        values: (
+          rowsOrRow: Record<string, unknown> | Record<string, unknown>[],
+        ) => {
+          const rows = Array.isArray(rowsOrRow) ? rowsOrRow : [rowsOrRow];
+          opts.inserts.push({ table: name, rows });
+          return {
+            returning: () => Promise.resolve(rows),
+            then: (resolve: (v: undefined) => unknown) => resolve(undefined),
+          };
+        },
+      };
+    }
+
+    const txLike = { insert: insertChain };
+
+    function updateChain() {
+      return {
+        set: () => ({
+          where: () => {
+            const result = Promise.resolve();
+            return Object.assign(result, {
+              returning: () =>
+                Promise.resolve([
+                  {
+                    id: "ins_new",
+                    agentId: AGENT_DEF_ID,
+                    tenantId: TENANT_ID,
+                    address: "ins_new@test.example.com",
+                    status: "running",
+                    principalId: "prn_instance",
+                    kernelId: null,
+                    sidecarId: null,
+                    sessionId: "ses_new",
+                    publicKey: null,
+                    createdAt: new Date("2025-01-01"),
+                    updatedAt: new Date("2025-01-01"),
+                    endedAt: null,
+                  },
+                ]),
+            });
+          },
+        }),
+      };
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
+    return {
+      query: {
+        tenant: {
+          findFirst: async () => testTenant,
+          findMany: notImplemented("db.query.tenant.findMany"),
+        },
+        principal: {
+          findFirst: async () => testPrincipal,
+          findMany: notImplemented("db.query.principal.findMany"),
+        },
+        agent: {
+          findFirst: async () => opts.agent,
+          findMany: notImplemented("db.query.agent.findMany"),
+        },
+        agentRole: {
+          findFirst: notImplemented("db.query.agentRole.findFirst"),
+          findMany: async () => [],
+        },
+        role: {
+          findFirst: notImplemented("db.query.role.findFirst"),
+          findMany: async () => [],
+        },
+        provider: {
+          findFirst: async () => opts.provider,
+          findMany: async () => (opts.provider ? [opts.provider] : []),
+        },
+        credential: {
+          findFirst: async () => opts.credential,
+          findMany: async () => (opts.credential ? [opts.credential] : []),
+        },
+      },
+      transaction: async (fn: (tx: typeof txLike) => Promise<unknown>) =>
+        fn(txLike),
+      insert: insertChain,
+      update: updateChain,
+    } as unknown as Parameters<typeof createApp>[0]["db"];
+  }
+
+  function createLaunchGrantStore(): ReturnType<
+    typeof createInMemoryGrantStore
+  > {
+    return createInMemoryGrantStore([
+      // The invoking user holds an instance:* create grant.
+      makeGrant({
+        id: "g-instance-create",
+        resource: "instance:*",
+        action: "create",
+      }),
+    ]);
+  }
+
+  function makeAgentDef(): Record<string, unknown> {
+    return {
+      id: AGENT_DEF_ID,
+      tenantId: TENANT_ID,
+      creatorPrincipalId: CREATOR_ID,
+      name: "Test Agent",
+      description: null,
+      systemPrompt: "You are a test agent.",
+      contextConfig: null,
+      initialState: null,
+      modelConfig: { defaultModel: "test-model" },
+      capabilities: null,
+      credentialRequirements: [
+        { source: "tenant", providerName: "test-provider" },
+      ],
+      grantRequirements: null,
+      currentVersion: "1",
+      status: "deployed",
+      createdAt: new Date("2025-01-01"),
+      updatedAt: new Date("2025-01-01"),
+    };
+  }
+
+  function makeProvider(): Record<string, unknown> {
+    return {
+      id: PROVIDER_ID,
+      tenantId: TENANT_ID,
+      name: "test-provider",
+      plugin: "openai",
+      metadata: { baseURL: "https://api.test.example.com" },
+    };
+  }
+
+  function makeCredential(): Record<string, unknown> {
+    return {
+      id: CREDENTIAL_ID,
+      tenantId: TENANT_ID,
+      providerId: PROVIDER_ID,
+      principalId: null,
+      name: "test-cred",
+      status: "active",
+      scopes: null,
+      secret: "sk-test",
+    };
+  }
+
+  function createCapturingSessionService(): SessionService {
+    return {
+      launchSession: async () => undefined,
+      sendUserMessage: () => {
+        throw new Error("mock: sendUserMessage not implemented");
+      },
+      endSession: () => {
+        throw new Error("mock: endSession not implemented");
+      },
+    };
+  }
+
+  function createCapturingEventCollectors(): EventCollectorRegistry {
+    return {
+      create: () => undefined,
+      dispatch: notImplemented("eventCollectors.dispatch"),
+      abandon: () => undefined,
+      has: () => false,
+      getStatus: () => undefined,
+      getAccumulatedText: () => undefined,
+      getCurrentTurnId: () => undefined,
+      getLastTurnId: () => undefined,
+    };
+  }
+
+  test("launch transaction inserts agent-state read grant on creator", async () => {
+    const inserts: TableInsert[] = [];
+
+    const db = createLaunchMockDB({
+      agent: makeAgentDef(),
+      provider: makeProvider(),
+      credential: makeCredential(),
+      inserts,
+    });
+
+    const app = createApp({
+      getSession: createMockGetSession(USER_ID),
+      authHandler: () => new Response("", { status: 404 }),
+      db,
+      grantStore: createLaunchGrantStore(),
+      sidecarRouter: createMockSidecarRouter(),
+      sessionService: createCapturingSessionService(),
+      eventCollectors: createCapturingEventCollectors(),
+    });
+
+    const res = await app.request(
+      `/api/tenants/${TENANT_ID}/agents/instances`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agentId: AGENT_DEF_ID }),
+      },
+    );
+
+    expect(res.status).toBe(201);
+
+    const grantInserts = inserts.filter((i) => i.table === "grant");
+    expect(grantInserts.length).toBeGreaterThan(0);
+
+    const allGrantRows = grantInserts.flatMap((g) => g.rows);
+    const stateGrant = allGrantRows.find(
+      (g) =>
+        typeof g["resource"] === "string" &&
+        (g["resource"] as string).startsWith("agent-state:"),
+    );
+
+    expect(stateGrant).toBeDefined();
+    expect(stateGrant).toMatchObject({
+      tenantId: TENANT_ID,
+      principalId: CREATOR_ID,
+      action: "read",
+      effect: "allow",
+      origin: "creator",
+    });
+
+    const instanceInserts = inserts.filter((i) => i.table === "agent_instance");
+    expect(instanceInserts).toHaveLength(1);
+    const instanceRow = instanceInserts[0]?.rows[0];
+    expect(instanceRow).toBeDefined();
+    const instanceId = instanceRow?.["id"];
+    if (typeof instanceId !== "string") {
+      throw new Error(
+        "expected captured agent_instance insert to carry a string id",
+      );
+    }
+    expect(stateGrant?.["resource"]).toBe(`agent-state:${instanceId}`);
+  });
+
+  test("agent-state grant insert is ordered after the agent_instance insert", async () => {
+    const inserts: TableInsert[] = [];
+
+    const db = createLaunchMockDB({
+      agent: makeAgentDef(),
+      provider: makeProvider(),
+      credential: makeCredential(),
+      inserts,
+    });
+
+    const app = createApp({
+      getSession: createMockGetSession(USER_ID),
+      authHandler: () => new Response("", { status: 404 }),
+      db,
+      grantStore: createLaunchGrantStore(),
+      sidecarRouter: createMockSidecarRouter(),
+      sessionService: createCapturingSessionService(),
+      eventCollectors: createCapturingEventCollectors(),
+    });
+
+    const res = await app.request(
+      `/api/tenants/${TENANT_ID}/agents/instances`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agentId: AGENT_DEF_ID }),
+      },
+    );
+
+    expect(res.status).toBe(201);
+
+    // Walk the insert log: find the agent_instance row first, then the
+    // first agent-state grant after it.
+    let sawInstance = false;
+    let sawStateGrantAfterInstance = false;
+    for (const ins of inserts) {
+      if (ins.table === "agent_instance") {
+        sawInstance = true;
+        continue;
+      }
+      if (!sawInstance) continue;
+      if (ins.table === "grant") {
+        for (const row of ins.rows) {
+          if (
+            typeof row["resource"] === "string" &&
+            (row["resource"] as string).startsWith("agent-state:")
+          ) {
+            sawStateGrantAfterInstance = true;
+            break;
+          }
+        }
+      }
+      if (sawStateGrantAfterInstance) break;
+    }
+
+    expect(sawInstance).toBe(true);
+    expect(sawStateGrantAfterInstance).toBe(true);
+  });
+});
