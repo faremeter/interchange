@@ -12,6 +12,7 @@
     "@intx/mail-memory": "workspace:*",
     "@intx/storage-isogit": "workspace:*",
     "@intx/tools-lsp": "workspace:*",
+    "@intx/tools-mail": "workspace:*",
     "@intx/tools-posix": "workspace:*",
     "@intx/types": "workspace:*"
   }
