@@ -124,9 +124,7 @@ function makeDB(): DBStub {
           (a) => a.agentId === row.agentId && a.assetId === row.assetId,
         )
       ) {
-        return Promise.reject(
-          new UniqueViolation("agent_asset_agent_asset"),
-        );
+        return Promise.reject(new UniqueViolation("agent_asset_agent_asset"));
       }
       agentAssets.push(row);
       return Promise.resolve([row]);

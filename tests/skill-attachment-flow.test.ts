@@ -500,14 +500,15 @@ describe("skill attachment flow (end-to-end)", () => {
     });
     expect(populate.commitSha).toMatch(/^[0-9a-f]{40}$/);
 
-    // mountPath omitted → null → resolves to `skills/${name}/` at
-    // session start (the production resolveMountPath rule).
+    // mountPath is not a user-supplied column on agent_asset in v1;
+    // session start resolves it as `skills/${asset.name}/` via the
+    // production resolveMountPath rule.
     const attachment = await service.attachAsset({
       agentId,
       assetId: asset.id,
       ref: ASSET_REF,
     });
-    expect(attachment.mountPath).toBeNull();
+    expect(attachment.assetId).toBe(asset.id);
 
     // -----------------------------------------------------------------------
     // Step 3: Manually replay materialization. Production
