@@ -1,0 +1,16 @@
+{
+  "name": "@intx/tools-mail",
+  "version": "0.0.0",
+  "license": "LGPL-2.1-only",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "@intx/types": "workspace:*",
+    "arktype": "catalog:"
+  }
+}
