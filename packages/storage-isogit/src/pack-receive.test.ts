@@ -857,3 +857,184 @@ describe("receivePackObjects CAS", () => {
     ).rejects.toThrow("non_fast_forward");
   });
 });
+
+// Helpers used by the unpublish-on-rejection tests below. The pack
+// filename layout is derived from `transferId` per
+// `publishedPackPaths` in pack-receive.ts; replicate the derivation
+// here so the assertions stay decoupled from that helper's accessors
+// (no internals exported).
+function publishedPackFile(targetDir: string, transferId: string): string {
+  return path.join(
+    targetDir,
+    ".git",
+    "objects",
+    "pack",
+    `pack-recv-${transferId}.pack`,
+  );
+}
+
+function publishedIdxFile(targetDir: string, transferId: string): string {
+  return path.join(
+    targetDir,
+    ".git",
+    "objects",
+    "pack",
+    `pack-recv-${transferId}.idx`,
+  );
+}
+
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    await fs.promises.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// These tests assert that post-publish validation rejections in
+// receivePackObjects and applyPack remove the published .pack + .idx
+// pair from objects/pack/. Without this, rejected packs would
+// accumulate as orphan files in objects/pack/ — iso-git does not run
+// periodic GC, and the hub does not invoke git gc on agent repos. The
+// CAS/sha/path_violation tests above verify the throw and ref state
+// but do not verify file cleanup; this section closes that gap.
+describe("receivePackObjects unpublishes on post-publish rejection", () => {
+  test("non_fast_forward removes .pack and .idx; the accepted earlier pack stays", async () => {
+    const sourceA = await makeRepoWithPaths([
+      { filepath: "state/v1.jsonl", content: "v1" },
+    ]);
+    const packA = await createPackFromRepo(sourceA.dir, sourceA.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    await receivePackObjects(
+      targetDir,
+      packA,
+      "refs/heads/state",
+      sourceA.commitSha,
+      "first-ok",
+      null,
+    );
+
+    const sourceB = await makeRepoWithPaths([
+      { filepath: "state/v2.jsonl", content: "v2" },
+    ]);
+    const packB = await createPackFromRepo(sourceB.dir, sourceB.oids);
+
+    const bogus = "0".repeat(40);
+    await expect(
+      receivePackObjects(
+        targetDir,
+        packB,
+        "refs/heads/state",
+        sourceB.commitSha,
+        "rejected-nff",
+        bogus,
+      ),
+    ).rejects.toThrow("non_fast_forward");
+
+    expect(await fileExists(publishedPackFile(targetDir, "rejected-nff"))).toBe(
+      false,
+    );
+    expect(await fileExists(publishedIdxFile(targetDir, "rejected-nff"))).toBe(
+      false,
+    );
+    expect(await fileExists(publishedPackFile(targetDir, "first-ok"))).toBe(
+      true,
+    );
+    expect(await fileExists(publishedIdxFile(targetDir, "first-ok"))).toBe(
+      true,
+    );
+  });
+
+  test("sha_mismatch removes .pack and .idx", async () => {
+    const source = await makeRepoWithPaths([
+      { filepath: "state/v1.jsonl", content: "v1" },
+    ]);
+    const pack = await createPackFromRepo(source.dir, source.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const bogusExpected = "0".repeat(40);
+    await expect(
+      receivePackObjects(
+        targetDir,
+        pack,
+        "refs/heads/state",
+        bogusExpected,
+        "rejected-sha",
+        null,
+      ),
+    ).rejects.toThrow("sha_mismatch");
+
+    expect(await fileExists(publishedPackFile(targetDir, "rejected-sha"))).toBe(
+      false,
+    );
+    expect(await fileExists(publishedIdxFile(targetDir, "rejected-sha"))).toBe(
+      false,
+    );
+  });
+
+  test("path_violation removes .pack and .idx", async () => {
+    const source = await makeRepoWithPaths([
+      { filepath: "deploy/prompt.md", content: "evil" },
+    ]);
+    const pack = await createPackFromRepo(source.dir, source.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const stateOnly: TreeValidator = (paths) =>
+      paths.every((p) => p === "state");
+
+    await expect(
+      receivePackObjects(
+        targetDir,
+        pack,
+        "refs/heads/state",
+        source.commitSha,
+        "rejected-pv",
+        null,
+        stateOnly,
+      ),
+    ).rejects.toThrow("path_violation");
+
+    expect(await fileExists(publishedPackFile(targetDir, "rejected-pv"))).toBe(
+      false,
+    );
+    expect(await fileExists(publishedIdxFile(targetDir, "rejected-pv"))).toBe(
+      false,
+    );
+  });
+});
+
+describe("applyPack unpublishes on post-publish rejection", () => {
+  test("sha_mismatch removes .pack and .idx", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const bogusExpected = "0".repeat(40);
+    await expect(
+      applyPack(
+        targetDir,
+        pack,
+        "refs/heads/deploy",
+        bogusExpected,
+        "apply-rejected-sha",
+      ),
+    ).rejects.toThrow("sha_mismatch");
+
+    expect(
+      await fileExists(publishedPackFile(targetDir, "apply-rejected-sha")),
+    ).toBe(false);
+    expect(
+      await fileExists(publishedIdxFile(targetDir, "apply-rejected-sha")),
+    ).toBe(false);
+  });
+});
