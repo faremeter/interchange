@@ -20,6 +20,10 @@
       "types": "./src/runtime.ts",
       "default": "./src/runtime.ts"
     },
+    "./runtime-capabilities": {
+      "types": "./src/runtime-capabilities.ts",
+      "default": "./src/runtime-capabilities.ts"
+    },
     "./sidecar": {
       "types": "./src/sidecar.ts",
       "default": "./src/sidecar.ts"
