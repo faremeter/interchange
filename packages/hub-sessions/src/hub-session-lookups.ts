@@ -160,7 +160,19 @@ export function createHubSessionLookups(
           logger.warn`State pack rejected for ${agentAddress}: ${msg}`;
           return { accepted: false, reason: "path_violation" as const };
         }
-        throw err;
+        // Any other failure from the repo subsystem reaches the
+        // WebSocket handler as an unhandled rejection unless we catch
+        // it here. Transient failures during receivePack (the agent
+        // directory being torn down concurrently with an in-flight
+        // pack write, filesystem errors mid-rename, etc.) are
+        // recoverable from the sender's perspective — the sender can
+        // re-push. Surface every such failure as a structured pack
+        // rejection (`corrupt` is the closest existing reason — from
+        // the sender's perspective the pack failed to index) and log
+        // the underlying error so the cause stays traceable on the
+        // hub side.
+        logger.error`State pack receive failed for ${agentAddress}: ${msg}`;
+        return { accepted: false, reason: "corrupt" as const };
       }
       return { accepted: true };
     },
