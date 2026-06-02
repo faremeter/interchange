@@ -2,7 +2,13 @@ import { eq, and, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import { agent, agentInstance, agentRole, agentVersion } from "@intx/db/schema";
+import {
+  agent,
+  agentInstance,
+  agentRole,
+  agentVersion,
+  grant as grantTable,
+} from "@intx/db/schema";
 import { parseAgentRow, parseAgentVersionRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
@@ -261,6 +267,22 @@ export function createAgentRoutes({
           version: "1",
           status: "active",
           createdAt: now,
+        });
+
+        // Seed a creator-level read grant on the agent-state repo for
+        // this definition so the creator can read deploy-artifact state
+        // out of the box. Admins are already covered by their existing
+        // *:read system grants; this fills the creator half.
+        await tx.insert(grantTable).values({
+          id: generateId("grant"),
+          tenantId: tenantCtx.id,
+          principalId: creatorPrincipal.id,
+          resource: `agent-state:${agentId}`,
+          action: "read",
+          effect: "allow",
+          origin: "creator",
+          createdAt: now,
+          updatedAt: now,
         });
 
         if (uniqueRoleIds.length > 0) {
