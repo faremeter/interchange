@@ -12,6 +12,9 @@
 | GET | /api/me/instances | List running agent instances across all tenants |
 | GET | /api/me/sessions | List sessions across all tenants |
 | GET | /api/me/approvals | List pending approvals across all tenants |
+| GET | /api/me/git-tokens | List personal git tokens |
+| POST | /api/me/git-tokens | Mint a personal access git token |
+| DELETE | /api/me/git-tokens/:tokenId | Revoke a personal git token |
 | POST | /api/tenants | Create a tenant |
 | GET | /api/tenants/:tenantId | Get tenant details |
 | PATCH | /api/tenants/:tenantId | Update tenant config |
@@ -84,6 +87,9 @@
 | GET | /api/tenants/:tenantId/offerings/:offeringId | Get offering details |
 | PATCH | /api/tenants/:tenantId/offerings/:offeringId | Update an offering |
 | DELETE | /api/tenants/:tenantId/offerings/:offeringId | Remove an offering |
+| GET | /api/tenants/:tenantId/git-tokens | List tenant git tokens |
+| POST | /api/tenants/:tenantId/git-tokens | Mint a tenant-bound service git token |
+| DELETE | /api/tenants/:tenantId/git-tokens/:tokenId | Revoke a tenant git token |
 | GET | /api/tenants/:tenantId/agents/:agentId/logs | Get agent logs |
 | GET | /api/tenants/:tenantId/agents/:agentId/metrics | Get agent metrics |
 | GET | /api/tenants/:tenantId/traces | Query distributed traces |
@@ -152,6 +158,66 @@ List pending approvals across all tenants
 Aggregates pending approval requests from all tenants the user belongs to. Each result is tagged with tenantId.
 
 200: ApprovalSummary[] -- Approvals across tenants
+
+## Git Tokens
+
+### GET /api/me/git-tokens
+List personal git tokens
+
+Lists the authenticated user's personal access tokens (`kind: "pat"`). Secrets are never returned; the plaintext is shown only at mint time.
+
+Query: cursor?, limit?
+
+200: unknown -- List of git tokens
+401: ErrorResponse -- Not authenticated
+
+### POST /api/me/git-tokens
+Mint a personal access git token
+
+Mints a personal access token (`kind: "pat"`) for the authenticated user. The plaintext secret is returned exactly once in the response. An optional `tenantId` restricts the token to a single tenant.
+
+Body: unknown
+
+201: unknown -- Token minted
+400: ErrorResponse -- Validation error
+401: ErrorResponse -- Not authenticated
+
+### DELETE /api/me/git-tokens/:tokenId
+Revoke a personal git token
+
+Soft-revokes a personal access token by setting `revokedAt`. Only the owning user may revoke their own tokens.
+
+204: (no content) -- Token revoked
+401: ErrorResponse -- Not authenticated
+403: ErrorResponse -- Token not owned by the authenticated user
+404: ErrorResponse -- Token not found
+
+### GET /api/tenants/:tenantId/git-tokens
+List tenant git tokens
+
+Lists service tokens (`kind: "svc"`) bound to this tenant. Secrets are never returned; the plaintext is shown only at mint time.
+
+Query: cursor?, limit?
+
+200: unknown -- List of git tokens
+
+### POST /api/tenants/:tenantId/git-tokens
+Mint a tenant-bound service git token
+
+Mints a service token (`kind: "svc"`) bound to the requesting tenant. The plaintext secret is returned exactly once in the response and is never persisted in plaintext.
+
+Body: unknown
+
+201: unknown -- Token minted
+400: ErrorResponse -- Validation error
+
+### DELETE /api/tenants/:tenantId/git-tokens/:tokenId
+Revoke a tenant git token
+
+Soft-revokes a tenant-bound git token by setting `revokedAt`. The row is retained for audit.
+
+204: (no content) -- Token revoked
+404: ErrorResponse -- Token not found
 
 ## Tenants
 

@@ -35,6 +35,10 @@ import { createOfferingRoutes, createModelRoutes } from "./routes/offerings";
 import { createObservabilityRoutes } from "./routes/observability";
 import { createAgentDataRoutes } from "./routes/agent-data";
 import { createSidecarRoutes } from "./routes/sidecars";
+import {
+  createMeGitTokenRoutes,
+  createTenantGitTokenRoutes,
+} from "./routes/git-tokens";
 
 export type CreateHubContextMiddlewareDeps = {
   getSession: GetSession;
@@ -97,6 +101,7 @@ export function mountHubRoutes(
   // User-scoped (cross-tenant) -- requires auth but not tenant membership
   app.use("/api/me/*", requireAuth);
   app.route("/api/me", createMeRoutes({ db }));
+  app.route("/api/me/git-tokens", createMeGitTokenRoutes({ db }));
 
   // Tenant-scoped middleware -- require auth + tenant membership for any
   // path under /api/tenants/:tenantId/*. Must be registered before routes
@@ -169,6 +174,10 @@ export function mountHubRoutes(
   app.route(
     "/api/tenants/:tenantId/offerings",
     createOfferingRoutes({ db, requireGrant }),
+  );
+  app.route(
+    "/api/tenants/:tenantId/git-tokens",
+    createTenantGitTokenRoutes({ db, requireGrant }),
   );
   app.route("/api/tenants/:tenantId", createObservabilityRoutes());
   app.route(
