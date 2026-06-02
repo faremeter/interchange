@@ -157,6 +157,18 @@ async function writeTreeEntries(
  * When `validateTree` is provided, the commit's top-level tree entries
  * are checked after indexing but before the ref is promoted. Throws with
  * a `"path_violation"` prefix if the validator rejects the tree.
+ *
+ * Returns the SHA the ref pointed at before this call (or `null` if the
+ * ref did not previously exist). Callers that drive `onRefUpdated`-style
+ * hooks should feed this value to the hook rather than performing a
+ * separate `resolveRef` read.
+ *
+ * When `expectedOldSha` is supplied, the call performs a compare-and-set:
+ * the current ref value is read after the pack is indexed, compared to
+ * `expectedOldSha` (passing `null` asserts the ref does not yet exist),
+ * and the update aborts with `non_fast_forward:` on mismatch. The caller
+ * is responsible for serializing concurrent updates to the same ref;
+ * this primitive enforces the CAS check but does not own the lock.
  */
 export async function receivePackObjects(
   dir: string,
@@ -165,7 +177,8 @@ export async function receivePackObjects(
   expectedSha: string,
   transferId: string,
   validateTree?: TreeValidator,
-): Promise<void> {
+  expectedOldSha?: string | null,
+): Promise<string | null> {
   if (!SAFE_PATH_SEGMENT.test(transferId)) {
     throw new Error(
       `transferId contains unsafe characters: ${JSON.stringify(transferId)}`,
@@ -188,6 +201,20 @@ export async function receivePackObjects(
       throw new Error(
         `sha_mismatch: expected commit ${expectedSha} not found in pack`,
       );
+    }
+
+    const currentOldSha = await git
+      .resolveRef({ fs, dir, ref })
+      .catch(() => null);
+
+    if (expectedOldSha !== undefined) {
+      if (currentOldSha !== expectedOldSha) {
+        const observed = currentOldSha === null ? "null" : currentOldSha;
+        const expected = expectedOldSha === null ? "null" : expectedOldSha;
+        throw new Error(
+          `non_fast_forward: ref ${ref} expected ${expected} but found ${observed}`,
+        );
+      }
     }
 
     if (validateTree !== undefined) {
@@ -237,6 +264,7 @@ export async function receivePackObjects(
     }
 
     await git.writeRef({ fs, dir, ref, value: expectedSha, force: true });
+    return currentOldSha;
   } catch (err) {
     await fs.promises.rm(fullPath, { force: true });
     const idxPath = fullPath.replace(/\.pack$/, ".idx");

@@ -652,3 +652,242 @@ describe("receivePackObjects tree validation", () => {
     expect(resolved).toBe(source.commitSha);
   });
 });
+
+describe("receivePackObjects CAS", () => {
+  test("returns null when the ref did not previously exist", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const oldSha = await receivePackObjects(
+      targetDir,
+      pack,
+      "refs/heads/state",
+      source.commitSha,
+      "cas-fresh",
+    );
+
+    expect(oldSha).toBeNull();
+    const resolved = await git.resolveRef({
+      fs,
+      dir: targetDir,
+      ref: "refs/heads/state",
+    });
+    expect(resolved).toBe(source.commitSha);
+  });
+
+  test("returns the previous sha after a second update", async () => {
+    const sourceA = await makeRepoWithPaths([
+      { filepath: "state/v1.jsonl", content: "v1" },
+    ]);
+    const packA = await createPackFromRepo(sourceA.dir, sourceA.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const firstOld = await receivePackObjects(
+      targetDir,
+      packA,
+      "refs/heads/state",
+      sourceA.commitSha,
+      "cas-first",
+    );
+    expect(firstOld).toBeNull();
+
+    const sourceB = await makeRepoWithPaths([
+      { filepath: "state/v2.jsonl", content: "v2" },
+    ]);
+    const packB = await createPackFromRepo(sourceB.dir, sourceB.oids);
+
+    const secondOld = await receivePackObjects(
+      targetDir,
+      packB,
+      "refs/heads/state",
+      sourceB.commitSha,
+      "cas-second",
+    );
+
+    expect(secondOld).toBe(sourceA.commitSha);
+  });
+
+  test("happy path: matching expectedOldSha advances the ref", async () => {
+    const sourceA = await makeRepoWithPaths([
+      { filepath: "state/v1.jsonl", content: "v1" },
+    ]);
+    const packA = await createPackFromRepo(sourceA.dir, sourceA.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    await receivePackObjects(
+      targetDir,
+      packA,
+      "refs/heads/state",
+      sourceA.commitSha,
+      "cas-happy-first",
+    );
+
+    const sourceB = await makeRepoWithPaths([
+      { filepath: "state/v2.jsonl", content: "v2" },
+    ]);
+    const packB = await createPackFromRepo(sourceB.dir, sourceB.oids);
+
+    const oldSha = await receivePackObjects(
+      targetDir,
+      packB,
+      "refs/heads/state",
+      sourceB.commitSha,
+      "cas-happy-second",
+      undefined,
+      sourceA.commitSha,
+    );
+
+    expect(oldSha).toBe(sourceA.commitSha);
+
+    const resolved = await git.resolveRef({
+      fs,
+      dir: targetDir,
+      ref: "refs/heads/state",
+    });
+    expect(resolved).toBe(sourceB.commitSha);
+  });
+
+  test("stale expectedOldSha throws non_fast_forward and leaves ref untouched", async () => {
+    const sourceA = await makeRepoWithPaths([
+      { filepath: "state/v1.jsonl", content: "v1" },
+    ]);
+    const packA = await createPackFromRepo(sourceA.dir, sourceA.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    await receivePackObjects(
+      targetDir,
+      packA,
+      "refs/heads/state",
+      sourceA.commitSha,
+      "cas-stale-first",
+    );
+
+    const sourceB = await makeRepoWithPaths([
+      { filepath: "state/v2.jsonl", content: "v2" },
+    ]);
+    const packB = await createPackFromRepo(sourceB.dir, sourceB.oids);
+
+    const bogus = "0".repeat(40);
+    await expect(
+      receivePackObjects(
+        targetDir,
+        packB,
+        "refs/heads/state",
+        sourceB.commitSha,
+        "cas-stale-second",
+        undefined,
+        bogus,
+      ),
+    ).rejects.toThrow("non_fast_forward");
+
+    const resolved = await git.resolveRef({
+      fs,
+      dir: targetDir,
+      ref: "refs/heads/state",
+    });
+    expect(resolved).toBe(sourceA.commitSha);
+  });
+
+  test("expectedOldSha null asserts ref absence and accepts a first write", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const oldSha = await receivePackObjects(
+      targetDir,
+      pack,
+      "refs/heads/state",
+      source.commitSha,
+      "cas-null-ok",
+      undefined,
+      null,
+    );
+
+    expect(oldSha).toBeNull();
+  });
+
+  test("expectedOldSha null rejects when the ref already exists", async () => {
+    const sourceA = await makeRepoWithPaths([
+      { filepath: "state/v1.jsonl", content: "v1" },
+    ]);
+    const packA = await createPackFromRepo(sourceA.dir, sourceA.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    await receivePackObjects(
+      targetDir,
+      packA,
+      "refs/heads/state",
+      sourceA.commitSha,
+      "cas-null-first",
+    );
+
+    const sourceB = await makeRepoWithPaths([
+      { filepath: "state/v2.jsonl", content: "v2" },
+    ]);
+    const packB = await createPackFromRepo(sourceB.dir, sourceB.oids);
+
+    await expect(
+      receivePackObjects(
+        targetDir,
+        packB,
+        "refs/heads/state",
+        sourceB.commitSha,
+        "cas-null-stale",
+        undefined,
+        null,
+      ),
+    ).rejects.toThrow("non_fast_forward");
+  });
+
+  test("omitting expectedOldSha preserves the pre-existing force-update behavior", async () => {
+    const sourceA = await makeRepoWithPaths([
+      { filepath: "state/v1.jsonl", content: "v1" },
+    ]);
+    const packA = await createPackFromRepo(sourceA.dir, sourceA.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    await receivePackObjects(
+      targetDir,
+      packA,
+      "refs/heads/state",
+      sourceA.commitSha,
+      "regress-first",
+    );
+
+    const sourceB = await makeRepoWithPaths([
+      { filepath: "state/v2.jsonl", content: "v2" },
+    ]);
+    const packB = await createPackFromRepo(sourceB.dir, sourceB.oids);
+
+    // No expectedOldSha: must succeed unconditionally (back-compat).
+    await receivePackObjects(
+      targetDir,
+      packB,
+      "refs/heads/state",
+      sourceB.commitSha,
+      "regress-second",
+    );
+
+    const resolved = await git.resolveRef({
+      fs,
+      dir: targetDir,
+      ref: "refs/heads/state",
+    });
+    expect(resolved).toBe(sourceB.commitSha);
+  });
+});
