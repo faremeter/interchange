@@ -442,6 +442,14 @@
         "@types/which": "^3.0.0",
       },
     },
+    "packages/tools-mail": {
+      "name": "@intx/tools-mail",
+      "version": "0.0.0",
+      "dependencies": {
+        "@intx/types": "workspace:*",
+        "arktype": "catalog:",
+      },
+    },
     "packages/tools-posix": {
       "name": "@intx/tools-posix",
       "version": "0.0.0",
@@ -732,6 +740,8 @@
     "@intx/storage-isogit": ["@intx/storage-isogit@workspace:packages/storage-isogit"],
 
     "@intx/tools-lsp": ["@intx/tools-lsp@workspace:packages/tools-lsp"],
+
+    "@intx/tools-mail": ["@intx/tools-mail@workspace:packages/tools-mail"],
 
     "@intx/tools-posix": ["@intx/tools-posix@workspace:packages/tools-posix"],
 
