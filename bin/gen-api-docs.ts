@@ -156,6 +156,10 @@ const app = createApp({
   sessionService: {} as never,
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- stub; only /openapi.json is called
   eventCollectors: {} as never,
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- stub; only /openapi.json is called
+  assetService: {} as never,
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- stub; only /openapi.json is called
+  repoStore: {} as never,
 });
 const res = await app.request("/openapi.json");
 
