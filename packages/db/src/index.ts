@@ -1,5 +1,6 @@
 export { createDB, type DB } from "./client";
 export type { DBConfig } from "./config";
+export { runMigrations, dropSchema } from "./migrate";
 export { createGrantStore } from "./grant-store";
 export { getAncestorChain } from "./tenant-hierarchy";
 export {

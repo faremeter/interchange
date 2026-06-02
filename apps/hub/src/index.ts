@@ -19,12 +19,18 @@ await setup();
 
 const log = getLogger(["hub"]);
 
+// PG_SCHEMA pins the hub to a specific postgres schema. The
+// integration-test harness sets this so each spawned hub gets a
+// dedicated, droppable schema. Production deployments leave it
+// unset and run against postgres' default search_path.
+const pgSchema = process.env["PG_SCHEMA"];
 const { db } = createDB({
   host: process.env["DB_HOST"] ?? "localhost",
   port: Number(process.env["DB_PORT"] ?? 5432),
   user: process.env["DB_USER"] ?? "postgres",
   password: process.env["DB_PASSWORD"] ?? "postgres",
   database: process.env["DB_NAME"] ?? "interchange",
+  ...(pgSchema !== undefined && { schema: pgSchema }),
 });
 
 const auth = createAuth(db);
