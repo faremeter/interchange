@@ -110,6 +110,11 @@ export function mountHubRoutes(
     assetService,
     repoStore,
   } = opts;
+  if ((assetService === null) !== (repoStore === null)) {
+    throw new Error(
+      "mountHubRoutes: assetService and repoStore must be provided together or both omitted",
+    );
+  }
   const grantStore = opts.grantStore ?? createGrantStore(db);
   const conditionRegistry: ConditionRegistry = opts.conditionRegistry ?? {
     time_window: timeWindowEvaluator,

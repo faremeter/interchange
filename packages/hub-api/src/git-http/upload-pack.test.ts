@@ -445,6 +445,54 @@ describe("handleUploadPack refPattern filter", () => {
   });
 });
 
+describe("handleUploadPack substrate error translation", () => {
+  test("authorize_denied thrown by listRefs surfaces as ERR forbidden ref", async () => {
+    const { dir, c3 } = await makeLinearRepo();
+    const store: UploadPackRepoStore = {
+      listRefs: async () => {
+        throw new Error("authorize_denied: token expired");
+      },
+      getRepoDir: async () => dir,
+    };
+    const body = concat(pkt(`want ${c3}\n`), flush(), pkt("done\n"));
+    const response = await handleUploadPack(
+      store,
+      principalWith("**"),
+      REPO_ID,
+      uploadPackRequest(body),
+    );
+    expect(response.status).toBe(200);
+    const buf = await readAll(response);
+    const pkts = parsePktStream(buf);
+    const data = pkts.filter(
+      (p): p is { kind: "data"; payload: Uint8Array } => p.kind === "data",
+    );
+    expect(data.length).toBe(1);
+    const first = data[0];
+    if (!first) throw new Error("expected one data pkt-line");
+    expect(new TextDecoder().decode(first.payload)).toBe("ERR forbidden ref\n");
+  });
+
+  test("non-substrate errors propagate so the HTTP layer sees a 500", async () => {
+    const { dir, c3 } = await makeLinearRepo();
+    const store: UploadPackRepoStore = {
+      listRefs: async () => {
+        throw new Error("disk on fire");
+      },
+      getRepoDir: async () => dir,
+    };
+    const body = concat(pkt(`want ${c3}\n`), flush(), pkt("done\n"));
+    await expect(
+      handleUploadPack(
+        store,
+        principalWith("**"),
+        REPO_ID,
+        uploadPackRequest(body),
+      ),
+    ).rejects.toThrow("disk on fire");
+  });
+});
+
 describe("handleUploadPack channel routing", () => {
   test("emits no progress frames on channel 2 by default", async () => {
     const { dir, c3 } = await makeLinearRepo();

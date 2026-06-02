@@ -60,6 +60,23 @@ export const SAFE_REPO_ID = /^[a-zA-Z0-9_-]+$/;
  */
 export type Principal = { readonly kind: string };
 
+/**
+ * Authorization callback supplied to the repo-store. Called once per
+ * substrate operation that requires gating (`writeTree`, `receivePack`,
+ * `createPack`, `resolveRef`, plus the bulk-read variants below). The
+ * substrate translates an `allowed: false` verdict into a thrown Error
+ * prefixed with `"authorize_denied: "` carrying the supplied reason.
+ *
+ * The substrate passes the literal string `"*"` as `ref` when it calls
+ * the authorize hook on behalf of the bulk-read methods `listRefs` and
+ * `resolveHead`. Both methods enumerate refs across the whole repo and
+ * have no single ref to feed into a per-ref claim check; the sentinel
+ * lets kind handlers recognise the call and skip the per-ref
+ * `refPattern` match while still gating on `action` (always
+ * `"resolveRef"` for the bulk case) and expiry. Per-ref refPattern
+ * filtering for the response payload is the responsibility of the
+ * caller (the advertise-refs layer), not the authorize hook.
+ */
 export type AuthorizeFn = (
   principal: Principal,
   repoId: RepoId,

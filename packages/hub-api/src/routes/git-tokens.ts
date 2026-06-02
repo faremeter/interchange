@@ -12,7 +12,9 @@ import {
   expandRepoActionAlias,
   generateId,
   glob,
+  PAT_PREFIX,
   RepoActionAliases,
+  SVC_PREFIX,
 } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
 import type { RepoAction } from "@intx/types/sidecar";
@@ -31,9 +33,6 @@ import {
 
 const log = getLogger(["hub", "git-token"]);
 
-const PAT_PREFIX = "itx_pat_";
-const SVC_PREFIX = "itx_svc_";
-
 const SECRET_BYTES = 32;
 
 /**
@@ -44,9 +43,22 @@ const SECRET_BYTES = 32;
  */
 const MIN_LIFETIME_MS = 60_000;
 
+/**
+ * Full `RepoAction` vocabulary as used by the substrate. Returned to
+ * callers in the mint response and list payloads. The mint INPUT
+ * surface is narrower (see `MintableRepoActionType` below); `init`
+ * and `writeTree` are hub-internal actions and cannot be minted by
+ * user-facing API.
+ */
 const RepoActionType = type.enumerated(
   "init",
   "writeTree",
+  "receivePack",
+  "createPack",
+  "resolveRef",
+);
+
+const MintableRepoActionType = type.enumerated(
   "receivePack",
   "createPack",
   "resolveRef",
@@ -62,7 +74,7 @@ const _aliasNameCoverage: Record<keyof typeof RepoActionAliases, true> = {
 };
 void _aliasNameCoverage;
 
-const ActionInput = RepoActionType.or(RepoActionAliasName);
+const ActionInput = MintableRepoActionType.or(RepoActionAliasName);
 
 const CreateTenantGitToken = type({
   name: "string",

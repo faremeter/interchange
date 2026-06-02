@@ -1,4 +1,4 @@
-export { generateId } from "./ids";
+export { generateId, PAT_PREFIX, SVC_PREFIX } from "./ids";
 export { glob } from "./glob";
 export {
   httpToRepoAction,
