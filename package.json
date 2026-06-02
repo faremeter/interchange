@@ -15,7 +15,7 @@
     "check": "tsc -b --noEmit",
     "lint": "prettier -c . && eslint --cache . && bun run check:docs",
     "format": "prettier -w .",
-    "test": "bun test && bun test tests/hub-agent/deploy-flow.test.ts tests/inference/transform-cutover.test.ts tests/skill-attachment-flow.test.ts",
+    "test": "bun test && bun test tests/hub-agent/deploy-flow.test.ts tests/inference/transform-cutover.test.ts tests/skill-attachment-flow.test.ts tests/hub-api/lib/git-harness.test.ts",
     "docs": "bun bin/gen-api-docs.ts",
     "check:docs": "bun bin/gen-api-docs.ts --check"
   },

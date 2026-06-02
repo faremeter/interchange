@@ -42,6 +42,7 @@
     { "path": "examples/posix-demo" },
     { "path": "examples/ring-demo" },
     { "path": "tests/hub-agent" },
+    { "path": "tests/hub-api" },
     { "path": "bin" }
   ]
 }
