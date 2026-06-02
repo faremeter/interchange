@@ -276,8 +276,10 @@ function createTestApp(opts: TestAppOpts) {
       sidecarRouter: createMockSidecarRouter(),
       sessionService: createMockSessionService(),
       eventCollectors: createMockEventCollectors(),
-      assetService: null,
-      repoStore: null,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- stub; these tests exercise the token mint/revoke surface, which never calls into assetService or repoStore. Passing non-null gates the git-token routes on (see app.ts mountHubRoutes).
+      assetService: {} as never,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- stub; see assetService above.
+      repoStore: {} as never,
     }),
     db,
   };
