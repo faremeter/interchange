@@ -100,6 +100,12 @@ function createStubStore(stub: ReceivePackStub): {
     resolveRef: async () => {
       throw new Error("resolveRef: not used in this test");
     },
+    listRefs: async () => {
+      throw new Error("listRefs: not used in this test");
+    },
+    getRepoDir: () => {
+      throw new Error("getRepoDir: not used in this test");
+    },
     receivePack: async (
       _principal: Principal,
       _repoId: RepoId,

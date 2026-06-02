@@ -69,6 +69,27 @@ export type AuthorizeFn = (
 
 export type ValidatePushResult = { ok: true } | { ok: false; reason: string };
 
+/**
+ * Per-call options for `initRepo`. Currently a single override —
+ * `gitignore` — that overrides the body written to `.gitignore` in
+ * the genesis tree. When omitted, the substrate's default body is
+ * used. The asset REST handler supplies a richer body that includes
+ * OS/editor cruft, common build output, and `keys/`.
+ */
+export type InitRepoOpts = {
+  gitignore?: string;
+};
+
+/**
+ * A single ref entry returned by `RepoStore.listRefs`. `name` is the
+ * fully-qualified ref name (`refs/heads/main`, `refs/tags/v1`, ...);
+ * `sha` is the SHA-1 the ref currently resolves to.
+ */
+export type RefEntry = {
+  readonly name: string;
+  readonly sha: string;
+};
+
 export type TreeContent = {
   /**
    * Map of repo-relative path to file contents. Each entry is written
@@ -139,7 +160,7 @@ export interface RepoStore {
    * internally from `writeTree` and `receivePack`, so first-touch
    * operations succeed without an explicit init call.
    */
-  initRepo(repoId: RepoId): Promise<void>;
+  initRepo(repoId: RepoId, opts?: InitRepoOpts): Promise<void>;
   writeTree(
     principal: Principal,
     repoId: RepoId,
@@ -178,4 +199,23 @@ export interface RepoStore {
     repoId: RepoId,
     ref: string,
   ): Promise<string | null>;
+  /**
+   * Enumerate the repo's refs (branches and tags), lexicographically
+   * sorted by name. The principal is gated under the same
+   * `resolveRef` action that `resolveRef` itself enforces — the
+   * substrate does not duplicate the check on a per-ref basis. When
+   * the on-disk repo does not yet exist (the bookkeeping primitive
+   * `initRepo` has never been called), the result is the empty list.
+   */
+  listRefs(principal: Principal, repoId: RepoId): Promise<RefEntry[]>;
+  /**
+   * Synchronously return the on-disk directory backing the repo.
+   * The path is the result of composing the substrate's `dataDir`,
+   * the kind handler's `directoryPrefix`, and the validated
+   * `repoId.id`. This carries no authorize gate: it is a pure path
+   * computation. Consumers of the path (the smart-HTTP wire
+   * handlers) remain authorize-gated through the substrate methods
+   * they reach into for ref-listing and pack negotiation.
+   */
+  getRepoDir(repoId: RepoId): string;
 }

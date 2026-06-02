@@ -28,7 +28,12 @@ import { getLogger } from "@intx/log";
 import { hasCode } from "@intx/types";
 import type { RepoKind } from "@intx/types/sidecar";
 
-import type { Principal, RepoStore, TreeContent } from "./repo-store";
+import type {
+  InitRepoOpts,
+  Principal,
+  RepoStore,
+  TreeContent,
+} from "./repo-store";
 
 const logger = getLogger(["hub-sessions", "asset-service"]);
 
@@ -71,6 +76,12 @@ export type CreateAssetParams = {
   name: string;
   displayName?: string;
   creatorPrincipalId?: string;
+  /** Forwarded verbatim to `repoStore.initRepo`. Lets the REST route
+   * layer ship a per-asset `.gitignore` body (OS/editor cruft + build
+   * artefacts + `keys/`) in the genesis tree without the service
+   * encoding policy for any one consumer. When omitted, the substrate
+   * default body applies. */
+  initOpts?: InitRepoOpts;
 };
 
 export type PopulateAssetParams = {
@@ -227,7 +238,7 @@ export function createAssetService(deps: {
     // logically identical asset. The asset-service db handle does not
     // expose transactions in the current narrowing, so this ordering is
     // the safest cross-cutting fix without widening the dep surface.
-    await repoStore.initRepo({ kind: params.kind, id });
+    await repoStore.initRepo({ kind: params.kind, id }, params.initOpts);
 
     let inserted: typeof assetTable.$inferSelect;
     try {

@@ -1,7 +1,9 @@
 export type {
   AuthorizeFn,
+  InitRepoOpts,
   KindHandler,
   Principal,
+  RefEntry,
   RepoAction,
   RepoId,
   RepoKind,

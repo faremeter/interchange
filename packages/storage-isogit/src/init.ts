@@ -14,6 +14,8 @@ const HUB_AUTHOR = {
   email: "hub@interchange.local",
 };
 
+const DEFAULT_GITIGNORE = "keys/\n";
+
 async function isGitRepo(dir: string): Promise<boolean> {
   return fs.promises
     .stat(path.join(dir, ".git"))
@@ -22,21 +24,33 @@ async function isGitRepo(dir: string): Promise<boolean> {
 }
 
 /**
+ * Per-call options for `initRepo`.
+ *
+ *   - `signer`: enables a hub-authored signed genesis (gpgsig header
+ *     populated via the callback). When omitted, the genesis is
+ *     authored as the harness identity and unsigned.
+ *   - `gitignore`: overrides the body written to `.gitignore` in the
+ *     genesis tree. When omitted, the default `keys/\n` body is used,
+ *     keeping the historical behaviour for every existing caller.
+ *     The asset-route REST handler ships a richer body that includes
+ *     OS/editor cruft, common build output, and `keys/`.
+ */
+export type InitRepoOpts = {
+  signer?: CommitSigner;
+  gitignore?: string;
+};
+
+/**
  * Initialize a git repository with a .gitignore and an empty initial commit.
  * Idempotent: safe to call on a directory that already contains a git repo.
  *
  * Used by the hub for repos that don't need sidecar-specific scaffolding.
  * isomorphic-git requires at least one commit before branching operations
  * work, so the initial commit is always created.
- *
- * When `signer` is supplied, the genesis commit is authored as
- * `interchange-hub` and signed via the callback (an SSH signature in the
- * gpgsig header). When `signer` is omitted, the harness-authored unsigned
- * genesis is produced — byte-for-byte identical to the historical behavior.
  */
 export async function initRepo(
   dir: string,
-  signer?: CommitSigner,
+  opts: InitRepoOpts = {},
 ): Promise<void> {
   await fs.promises.mkdir(dir, { recursive: true });
 
@@ -44,16 +58,17 @@ export async function initRepo(
 
   await git.init({ fs, dir, defaultBranch: "main" });
 
-  await fs.promises.writeFile(path.join(dir, ".gitignore"), "keys/\n");
+  const gitignoreBody = opts.gitignore ?? DEFAULT_GITIGNORE;
+  await fs.promises.writeFile(path.join(dir, ".gitignore"), gitignoreBody);
   await git.add({ fs, dir, filepath: ".gitignore" });
 
-  const author = signer === undefined ? AUTHOR : HUB_AUTHOR;
+  const author = opts.signer === undefined ? AUTHOR : HUB_AUTHOR;
   await git.commit({
     fs,
     dir,
     message: "Initialize repository",
     author,
-    ...buildSigningArgs(signer),
+    ...buildSigningArgs(opts.signer),
   });
 }
 

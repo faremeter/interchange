@@ -13,7 +13,9 @@ import { createRequireGrant, type RequireGrant } from "./middleware/grant";
 import { createResolveTenant, requireAuth } from "./middleware/tenant";
 import type { GetSession } from "./session";
 import type {
+  AssetService,
   EventCollectorRegistry,
+  RepoStore,
   SessionService,
   SidecarRouter,
 } from "@intx/hub-sessions";
@@ -39,6 +41,11 @@ import {
   createMeGitTokenRoutes,
   createTenantGitTokenRoutes,
 } from "./routes/git-tokens";
+import {
+  ASSET_OPENAPI_EXCLUDE_GLOBS,
+  createAssetRoutes,
+} from "./routes/assets";
+import { createGitTokenAuth } from "./middleware/git-token-auth";
 
 export type CreateHubContextMiddlewareDeps = {
   getSession: GetSession;
@@ -63,6 +70,15 @@ export type MountHubRoutesDeps = {
   grantStore?: GrantStore;
   conditionRegistry?: ConditionRegistry;
   sidecarWsHandler?: Handler<AppEnv>;
+  /**
+   * When supplied, the asset REST endpoint and smart-HTTP route
+   * group are mounted under `/api/tenants/:tenantId/assets`. When
+   * omitted, neither surface is reachable — call sites that don't
+   * own a repo store / asset service (e.g. tests that exercise
+   * unrelated routes) can skip wiring both deps.
+   */
+  assetService?: AssetService;
+  repoStore?: RepoStore;
 };
 
 /**
@@ -85,6 +101,8 @@ export function mountHubRoutes(
     sessionService,
     eventCollectors,
     sidecarWsHandler,
+    assetService,
+    repoStore,
   } = opts;
   const grantStore = opts.grantStore ?? createGrantStore(db);
   const conditionRegistry: ConditionRegistry = opts.conditionRegistry ?? {
@@ -102,6 +120,18 @@ export function mountHubRoutes(
   app.use("/api/me/*", requireAuth);
   app.route("/api/me", createMeRoutes({ db }));
   app.route("/api/me/git-tokens", createMeGitTokenRoutes({ db }));
+
+  // Smart-HTTP asset routes use bearer authentication instead of
+  // session+tenant resolution. The bearer middleware mounts ahead of
+  // resolveTenant so it populates `principal` + `tenant` first; the
+  // tenant resolver short-circuits when both are already set, which
+  // lets bearer-only requests bypass the session-required path.
+  if (assetService !== undefined && repoStore !== undefined) {
+    app.use(
+      "/api/tenants/:tenantId/assets/:kind/:nameDotGit/*",
+      createGitTokenAuth({ db }),
+    );
+  }
 
   // Tenant-scoped middleware -- require auth + tenant membership for any
   // path under /api/tenants/:tenantId/*. Must be registered before routes
@@ -186,6 +216,20 @@ export function mountHubRoutes(
   );
   app.route("/api/tenants/:tenantId/agents/:agentId", createAgentDataRoutes());
 
+  if (assetService !== undefined && repoStore !== undefined) {
+    app.route(
+      "/api/tenants/:tenantId/assets",
+      createAssetRoutes({
+        db,
+        assetService,
+        repoStore,
+        grantStore,
+        conditionRegistry,
+        requireGrant,
+      }),
+    );
+  }
+
   app.route(
     "/api/sidecars",
     createSidecarRoutes(
@@ -203,6 +247,8 @@ export type CreateAppOpts = {
   eventCollectors: EventCollectorRegistry;
   grantStore?: GrantStore;
   sidecarWsHandler?: Handler<AppEnv>;
+  assetService?: AssetService;
+  repoStore?: RepoStore;
 };
 
 export function createApp({
@@ -214,6 +260,8 @@ export function createApp({
   eventCollectors,
   grantStore,
   sidecarWsHandler,
+  assetService,
+  repoStore,
 }: CreateAppOpts) {
   const app = new Hono<AppEnv>();
 
@@ -235,6 +283,8 @@ export function createApp({
     eventCollectors,
     ...(grantStore ? { grantStore } : {}),
     ...(sidecarWsHandler ? { sidecarWsHandler } : {}),
+    ...(assetService ? { assetService } : {}),
+    ...(repoStore ? { repoStore } : {}),
   });
 
   app.get(
@@ -246,7 +296,12 @@ export function createApp({
           version: "0.0.0",
         },
       },
-      exclude: ["/openapi.json", "/status", "/api/auth/**"],
+      exclude: [
+        "/openapi.json",
+        "/status",
+        "/api/auth/**",
+        ...ASSET_OPENAPI_EXCLUDE_GLOBS,
+      ],
     }),
   );
 

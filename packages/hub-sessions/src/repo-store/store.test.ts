@@ -956,6 +956,160 @@ describe("RepoStore", () => {
     expect(elapsed).toBeLessThan(180);
   });
 
+  test("getRepoDir returns dataDir/<directoryPrefix>/<id>", async () => {
+    const dataDir = await makeTempDir("repo-store-dir-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    const expected = path.join(dataDir, handler.directoryPrefix, repoId.id);
+    expect(store.getRepoDir(repoId)).toBe(expected);
+  });
+
+  test("getRepoDir rejects an unsafe repo id without touching the filesystem", () => {
+    const dataDir = path.join(os.tmpdir(), "repo-store-dir-unsafe-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    expect(() =>
+      store.getRepoDir({ kind: "agent-state", id: "../escape" }),
+    ).toThrow(/^repo_id_invalid/);
+  });
+
+  test("listRefs returns the genesis branch on a freshly-initialised repo", async () => {
+    const dataDir = await makeTempDir("repo-store-list-genesis-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    await store.initRepo(repoId);
+    const refs = await store.listRefs(principal, repoId);
+    expect(refs.length).toBeGreaterThanOrEqual(1);
+
+    const main = refs.find((r) => r.name === "refs/heads/main");
+    expect(main).toBeDefined();
+    expect(main?.sha).toMatch(/^[0-9a-f]{40}$/);
+
+    const dir = store.getRepoDir(repoId);
+    const tipFromGit = await git.resolveRef({
+      fs,
+      dir,
+      ref: "refs/heads/main",
+    });
+    expect(main?.sha).toBe(tipFromGit);
+  });
+
+  test("listRefs returns names sorted lexicographically including tags", async () => {
+    const dataDir = await makeTempDir("repo-store-list-sort-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: { "a.md": "one" },
+      message: "first",
+    });
+    await store.writeTree(principal, repoId, "refs/heads/zzz-branch", {
+      files: { "b.md": "two" },
+      message: "second",
+    });
+
+    const dir = store.getRepoDir(repoId);
+    const mainSha = await git.resolveRef({
+      fs,
+      dir,
+      ref: "refs/heads/main",
+    });
+    await git.writeRef({
+      fs,
+      dir,
+      ref: "refs/tags/v1",
+      value: mainSha,
+      force: true,
+    });
+
+    const refs = await store.listRefs(principal, repoId);
+    const names = refs.map((r) => r.name);
+    const sorted = [...names].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    expect(names).toEqual(sorted);
+    expect(names).toContain("refs/heads/main");
+    expect(names).toContain("refs/heads/zzz-branch");
+    expect(names).toContain("refs/tags/v1");
+  });
+
+  test("listRefs returns the empty list before initRepo is called", async () => {
+    const dataDir = await makeTempDir("repo-store-list-empty-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    const refs = await store.listRefs(principal, repoId);
+    expect(refs).toEqual([]);
+  });
+
+  test("listRefs is gated under the resolveRef authorize action", async () => {
+    const dataDir = await makeTempDir("repo-store-list-deny-");
+    const seenActions: RepoAction[] = [];
+    const denyAuthorize: AuthorizeFn = (_p, _r, _ref, action) => {
+      seenActions.push(action);
+      return { allowed: false, reason: "denied" };
+    };
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: denyAuthorize,
+    });
+
+    await expect(store.listRefs(principal, repoId)).rejects.toThrow(
+      /^authorize_denied/,
+    );
+    expect(seenActions).toEqual(["resolveRef"]);
+  });
+
+  test("initRepo forwards a per-call gitignore override into the genesis tree", async () => {
+    const dataDir = await makeTempDir("repo-store-init-gitignore-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    const customBody = ".DS_Store\nnode_modules/\nkeys/\n";
+    await store.initRepo(repoId, { gitignore: customBody });
+
+    const dir = store.getRepoDir(repoId);
+    const onDisk = await fs.promises.readFile(
+      path.join(dir, ".gitignore"),
+      "utf-8",
+    );
+    expect(onDisk).toBe(customBody);
+  });
+
   test("withRepoLock releases on substrate exception and the map drains", async () => {
     const sourceDir = await makeTempDir("repo-store-release-source-");
     const sourceHandler = createTestHandler();

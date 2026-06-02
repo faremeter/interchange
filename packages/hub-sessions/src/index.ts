@@ -65,4 +65,14 @@ export {
   buildAvailableSkillsStanza,
   type AvailableSkillEntry,
 } from "./available-skills-stanza";
-export type { Principal, RepoAction, RepoId, RepoStore } from "./repo-store";
+export type {
+  CreateRepoStoreConfig,
+  InitRepoOpts,
+  KindHandler,
+  Principal,
+  RefEntry,
+  RepoAction,
+  RepoId,
+  RepoStore,
+} from "./repo-store";
+export { createRepoStore, UserPrincipal } from "./repo-store";

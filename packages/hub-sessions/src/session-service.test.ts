@@ -132,6 +132,10 @@ function unusedRepoStore(): RepoStore {
     receivePack: unused,
     createPack: unused,
     resolveRef: unused,
+    listRefs: unused,
+    getRepoDir: () => {
+      throw new Error("mock AgentRepoStore.repoStore is not wired");
+    },
   };
 }
 
@@ -155,6 +159,10 @@ function createFakeRepoStore(
     initRepo: unused,
     writeTree: unused,
     receivePack: unused,
+    listRefs: unused,
+    getRepoDir: () => {
+      throw new Error("repoStore method not wired in fake");
+    },
     async resolveRef(_principal: Principal, repoId: RepoId, ref: string) {
       resolveRefCalls.push({ repoId, ref });
       const entry = packsByAssetId.get(repoId.id);
