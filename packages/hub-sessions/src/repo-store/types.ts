@@ -1,6 +1,6 @@
-import type { RepoKind, RepoId } from "@intx/types/sidecar";
+import type { RepoKind, RepoId, RepoAction } from "@intx/types/sidecar";
 
-export type { RepoKind, RepoId };
+export type { RepoKind, RepoId, RepoAction };
 
 /**
  * Regex defining the shape of a valid `RepoId.id`. The substrate
@@ -10,13 +10,6 @@ export type { RepoKind, RepoId };
  * that throw their own legacy error messages) can use the same rule.
  */
 export const SAFE_REPO_ID = /^[a-zA-Z0-9_-]+$/;
-
-export type RepoAction =
-  | "init"
-  | "writeTree"
-  | "receivePack"
-  | "createPack"
-  | "resolveRef";
 
 /**
  * Principal is a discriminated-union extension point. The substrate

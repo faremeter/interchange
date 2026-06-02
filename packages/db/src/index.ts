@@ -24,6 +24,7 @@ export {
   parseWalletRow,
   parseTransactionRow,
   parseOAuthClientRow,
+  parseGitTokenRow,
   parseSidecarStatus,
   parseTurnPartType,
 } from "./parse-row";
