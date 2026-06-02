@@ -21,7 +21,7 @@ export const PaginatedList = type({
  * Creates a typed paginated response schema for use with OpenAPI.
  * Wraps an item array schema in `{ data: T[], nextCursor: string | null }`.
  */
-export function paginatedSchema(itemSchema: Type) {
+export function paginatedSchema<T>(itemSchema: Type<T>) {
   return type({
     data: itemSchema.array(),
     nextCursor: "string | null",
