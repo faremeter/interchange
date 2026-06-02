@@ -620,7 +620,7 @@ If UIDVALIDITY has changed (mailbox was recreated), the transport signals a full
 
 ## Mail Tools
 
-The agent interacts with the message transport through tools exposed by the harness. These tools are what the inference layer presents to the model. They map to the transport interface operations.
+The agent interacts with the message transport through tools provided by the `@intx/tools-mail` package, composed into the runtime by the sidecar alongside other tool packages. These tools are what the inference layer presents to the model. They map to the transport interface operations.
 
 ### Tool Definitions
 

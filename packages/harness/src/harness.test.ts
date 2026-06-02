@@ -43,7 +43,6 @@ import type {
 } from "@intx/types/runtime";
 
 import { createHarness } from "./harness";
-import { buildMailToolHandlers, buildCombinedRunner } from "./tools";
 import { createDefaultDirector } from "@intx/inference";
 import type { HarnessConfig } from "./config";
 
@@ -588,377 +587,7 @@ describe("Message delivery pipeline", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. Tool name collision detection
-// ---------------------------------------------------------------------------
-
-describe("Tool name collision detection", () => {
-  test("buildCombinedRunner throws when caller provides a mail_* tool", () => {
-    const transport = makeMockTransport();
-    const mailHandlers = buildMailToolHandlers(transport);
-    const callerTools: ToolRunner = {
-      async run(call) {
-        return { callId: call.id, content: "ok" };
-      },
-    };
-
-    expect(() =>
-      buildCombinedRunner(mailHandlers, callerTools, [
-        { name: "mail_send", description: "test", inputSchema: {} },
-      ]),
-    ).toThrow('Tool name collision on "mail_send"');
-  });
-
-  test("buildCombinedRunner succeeds when no name collisions", () => {
-    const transport = makeMockTransport();
-    const mailHandlers = buildMailToolHandlers(transport);
-    const callerTools: ToolRunner = {
-      async run(call) {
-        return { callId: call.id, content: "ok" };
-      },
-    };
-
-    expect(() =>
-      buildCombinedRunner(mailHandlers, callerTools, [
-        { name: "read_file", description: "test", inputSchema: {} },
-        { name: "write_file", description: "test", inputSchema: {} },
-      ]),
-    ).not.toThrow();
-  });
-
-  test("combined runner dispatches mail tools to mail handlers", async () => {
-    const transport = makeMockTransport();
-    const mailHandlers = buildMailToolHandlers(transport);
-    const callerTools: ToolRunner = {
-      async run(call) {
-        return { callId: call.id, content: "caller-result" };
-      },
-    };
-
-    const runner = buildCombinedRunner(mailHandlers, callerTools, []);
-
-    const call: ToolCall = {
-      id: "c1",
-      name: "mail_send",
-      arguments: {
-        to: "user@test",
-        content: "hello",
-        type: "conversation.message",
-      },
-    };
-
-    const result = await runner.run(call, new AbortController().signal);
-    expect(result.callId).toBe("c1");
-    expect(result.isError).toBeUndefined();
-
-    // Transport should have received the message.
-    expect(transport.getSentMessages().length).toBe(1);
-  });
-
-  test("combined runner dispatches non-mail tools to caller runner", async () => {
-    const transport = makeMockTransport();
-    const mailHandlers = buildMailToolHandlers(transport);
-    const callerTools: ToolRunner = {
-      async run(call) {
-        return { callId: call.id, content: "caller-handled" };
-      },
-    };
-
-    const runner = buildCombinedRunner(mailHandlers, callerTools, [
-      { name: "read_file", description: "test", inputSchema: {} },
-    ]);
-
-    const call: ToolCall = {
-      id: "c2",
-      name: "read_file",
-      arguments: { path: "/tmp/test.txt" },
-    };
-
-    const result = await runner.run(call, new AbortController().signal);
-    expect(result.content).toBe("caller-handled");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 4. Mail tool: mail_send
-// ---------------------------------------------------------------------------
-
-describe("mail_send tool", () => {
-  test("sends a conversation message and returns messageId", async () => {
-    const transport = makeMockTransport();
-    const handlers = buildMailToolHandlers(transport);
-    const sendHandler = handlers.get("mail_send");
-    if (sendHandler === undefined) throw new Error("handler not found");
-
-    const call: ToolCall = {
-      id: "s1",
-      name: "mail_send",
-      arguments: {
-        to: "user@test",
-        content: "Hello from agent",
-        type: "conversation.message",
-      },
-    };
-
-    const result = await sendHandler(call, new AbortController().signal);
-
-    expect(result.isError).toBeUndefined();
-    if (typeof result.content === "string")
-      throw new Error("expected object content");
-    const content = result.content;
-    expect(typeof content["messageId"]).toBe("string");
-
-    expect(transport.getSentMessages().length).toBe(1);
-    const sent = transport.getSentMessages()[0];
-    if (sent === undefined) throw new Error("no sent message");
-    expect(sent.to).toBe("user@test");
-    expect(sent.content).toBe("Hello from agent");
-    expect(sent.type).toBe("conversation.message");
-  });
-
-  test("returns error when 'to' is missing", async () => {
-    const transport = makeMockTransport();
-    const handlers = buildMailToolHandlers(transport);
-    const sendHandler = handlers.get("mail_send");
-    if (sendHandler === undefined) throw new Error("handler not found");
-
-    const call: ToolCall = {
-      id: "s2",
-      name: "mail_send",
-      arguments: { content: "No recipient" },
-    };
-
-    const result = await sendHandler(call, new AbortController().signal);
-    expect(result.isError).toBe(true);
-  });
-
-  test("returns error when both content and payload are provided", async () => {
-    const transport = makeMockTransport();
-    const handlers = buildMailToolHandlers(transport);
-    const sendHandler = handlers.get("mail_send");
-    if (sendHandler === undefined) throw new Error("handler not found");
-
-    const call: ToolCall = {
-      id: "s3",
-      name: "mail_send",
-      arguments: {
-        to: "user@test",
-        content: "text",
-        payload: { type: "offering.response", version: "1", body: {} },
-      },
-    };
-
-    const result = await sendHandler(call, new AbortController().signal);
-    expect(result.isError).toBe(true);
-  });
-
-  test("returns result without pending marker when no correlationId", async () => {
-    const transport = makeMockTransport();
-    const handlers = buildMailToolHandlers(transport);
-    const sendHandler = handlers.get("mail_send");
-    if (sendHandler === undefined) throw new Error("handler not found");
-
-    const call: ToolCall = {
-      id: "s4",
-      name: "mail_send",
-      arguments: {
-        to: "peer@test",
-        content: "invoke request",
-        type: "offering.request",
-      },
-    };
-
-    const result = await sendHandler(call, new AbortController().signal);
-    expect(result.pendingMarker).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 5. Mail tool: mail_reply
-// ---------------------------------------------------------------------------
-
-describe("mail_reply tool", () => {
-  test("fetches parent headers and sends reply with inReplyTo", async () => {
-    const transport = makeMockTransport();
-
-    const parentRef: MessageRef = { uid: 10, mailbox: "INBOX" };
-    const parentMsg: InboundMessage = {
-      ref: parentRef,
-      headers: {
-        from: "user@test",
-        to: ["agent@local"],
-        date: new Date().toISOString(),
-        messageId: "<parent@test>",
-        subject: "Original subject",
-      },
-      flags: [],
-      content: "original message",
-      signatureStatus: "missing",
-    };
-    transport.enqueueMessage(parentRef, parentMsg);
-
-    const handlers = buildMailToolHandlers(transport);
-    const replyHandler = handlers.get("mail_reply");
-    if (replyHandler === undefined) throw new Error("handler not found");
-
-    const call: ToolCall = {
-      id: "r1",
-      name: "mail_reply",
-      arguments: {
-        ref: parentRef,
-        content: "This is the reply",
-      },
-    };
-
-    const result = await replyHandler(call, new AbortController().signal);
-
-    expect(result.isError).toBeUndefined();
-    expect(transport.getSentMessages().length).toBe(1);
-
-    const sent = transport.getSentMessages()[0];
-    if (sent === undefined) throw new Error("no sent message");
-    expect(sent.to).toBe("user@test");
-    expect(sent.inReplyTo).toBe("<parent@test>");
-    expect(sent.subject).toBe("Original subject");
-    expect(sent.content).toBe("This is the reply");
-  });
-
-  test("returns error when ref is missing", async () => {
-    const transport = makeMockTransport();
-    const handlers = buildMailToolHandlers(transport);
-    const replyHandler = handlers.get("mail_reply");
-    if (replyHandler === undefined) throw new Error("handler not found");
-
-    const call: ToolCall = {
-      id: "r2",
-      name: "mail_reply",
-      arguments: { content: "no ref" },
-    };
-
-    const result = await replyHandler(call, new AbortController().signal);
-    expect(result.isError).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 6. Mail tool: mail_search
-// ---------------------------------------------------------------------------
-
-describe("mail_search tool", () => {
-  test("calls transport.search and returns summaries", async () => {
-    const transport = makeMockTransport();
-    const handlers = buildMailToolHandlers(transport);
-    const searchHandler = handlers.get("mail_search");
-    if (searchHandler === undefined) throw new Error("handler not found");
-
-    const call: ToolCall = {
-      id: "q1",
-      name: "mail_search",
-      arguments: {
-        mailbox: "INBOX",
-        query: { from: "user@test" },
-        limit: 5,
-      },
-    };
-
-    const result = await searchHandler(call, new AbortController().signal);
-    expect(result.isError).toBeUndefined();
-    if (typeof result.content === "string")
-      throw new Error("expected object content");
-    const content = result.content;
-    expect(Array.isArray(content["results"])).toBe(true);
-  });
-
-  test("defaults mailbox to INBOX when not specified", async () => {
-    const transport = makeMockTransport();
-    const handlers = buildMailToolHandlers(transport);
-    const searchHandler = handlers.get("mail_search");
-    if (searchHandler === undefined) throw new Error("handler not found");
-
-    const call: ToolCall = {
-      id: "q2",
-      name: "mail_search",
-      arguments: { query: {} },
-    };
-
-    const result = await searchHandler(call, new AbortController().signal);
-    expect(result.isError).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 7. Mail tool: mail_read
-// ---------------------------------------------------------------------------
-
-describe("mail_read tool", () => {
-  test("fetches full message when parts='full'", async () => {
-    const transport = makeMockTransport();
-    const ref: MessageRef = { uid: 5, mailbox: "INBOX" };
-    const msg = makeInboundMessage();
-    const storedMsg = { ...msg, ref };
-    transport.enqueueMessage(ref, storedMsg);
-
-    const handlers = buildMailToolHandlers(transport);
-    const readHandler = handlers.get("mail_read");
-    if (readHandler === undefined) throw new Error("handler not found");
-
-    const call: ToolCall = {
-      id: "rd1",
-      name: "mail_read",
-      arguments: { ref, parts: "full" },
-    };
-
-    const result = await readHandler(call, new AbortController().signal);
-    expect(result.isError).toBeUndefined();
-    if (typeof result.content === "string")
-      throw new Error("expected object content");
-    const content = result.content;
-    expect(content["headers"]).toBeDefined();
-    expect(content["signatureStatus"]).toBe("missing");
-  });
-
-  test("fetches only headers when parts='headers'", async () => {
-    const transport = makeMockTransport();
-    const ref: MessageRef = { uid: 6, mailbox: "INBOX" };
-    const msg = makeInboundMessage();
-    transport.enqueueMessage(ref, { ...msg, ref });
-
-    const handlers = buildMailToolHandlers(transport);
-    const readHandler = handlers.get("mail_read");
-    if (readHandler === undefined) throw new Error("handler not found");
-
-    const call: ToolCall = {
-      id: "rd2",
-      name: "mail_read",
-      arguments: { ref, parts: "headers" },
-    };
-
-    const result = await readHandler(call, new AbortController().signal);
-    expect(result.isError).toBeUndefined();
-    if (typeof result.content === "string")
-      throw new Error("expected object content");
-    const content = result.content;
-    expect(content["headers"]).toBeDefined();
-  });
-
-  test("returns error when ref is missing", async () => {
-    const transport = makeMockTransport();
-    const handlers = buildMailToolHandlers(transport);
-    const readHandler = handlers.get("mail_read");
-    if (readHandler === undefined) throw new Error("handler not found");
-
-    const call: ToolCall = {
-      id: "rd3",
-      name: "mail_read",
-      arguments: { parts: "full" },
-    };
-
-    const result = await readHandler(call, new AbortController().signal);
-    expect(result.isError).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 8. Default director decision logic
+// 3. Default director decision logic
 // ---------------------------------------------------------------------------
 
 describe("Default director", () => {
@@ -1348,7 +977,7 @@ describe("Default director", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 9. Config validation
+// 4. Config validation
 // ---------------------------------------------------------------------------
 
 describe("Config validation", () => {
@@ -1440,7 +1069,7 @@ describe("Config validation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 10. Audit integration
+// 5. Audit integration
 // ---------------------------------------------------------------------------
 
 describe("Audit integration", () => {
@@ -1714,7 +1343,7 @@ describe("Audit integration", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 11. Error flushing
+// 6. Error flushing
 // ---------------------------------------------------------------------------
 
 describe("Error flushing", () => {
@@ -2056,7 +1685,7 @@ describe("Error flushing", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 8. BlobReader
+// 7. BlobReader
 // ---------------------------------------------------------------------------
 
 describe("Harness blobReader", () => {

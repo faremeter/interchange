@@ -11,9 +11,6 @@ export {
   type DefaultDirectorPolicy,
 } from "@intx/inference";
 
-export { buildMailToolHandlers, buildCombinedRunner } from "./tools";
-export type { MailToolName } from "./tools";
-
 export { mergeToolRunners } from "./merge-tool-runners";
 
 export { createHarnessRuntimeCapabilities } from "./runtime-capabilities";
