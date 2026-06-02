@@ -163,12 +163,13 @@ async function writeTreeEntries(
  * hooks should feed this value to the hook rather than performing a
  * separate `resolveRef` read.
  *
- * When `expectedOldSha` is supplied, the call performs a compare-and-set:
- * the current ref value is read after the pack is indexed, compared to
- * `expectedOldSha` (passing `null` asserts the ref does not yet exist),
- * and the update aborts with `non_fast_forward:` on mismatch. The caller
- * is responsible for serializing concurrent updates to the same ref;
- * this primitive enforces the CAS check but does not own the lock.
+ * `expectedOldSha` enforces a compare-and-set: the current ref value is
+ * read after the pack is indexed, compared to `expectedOldSha`, and the
+ * update aborts with `non_fast_forward:` on mismatch. Pass a SHA string
+ * to require the ref currently points there; pass `null` to require
+ * the ref does not yet exist. The caller is responsible for serializing
+ * concurrent updates to the same ref; this primitive enforces the CAS
+ * check but does not own the lock.
  */
 export async function receivePackObjects(
   dir: string,
@@ -176,8 +177,8 @@ export async function receivePackObjects(
   ref: string,
   expectedSha: string,
   transferId: string,
+  expectedOldSha: string | null,
   validateTree?: TreeValidator,
-  expectedOldSha?: string | null,
 ): Promise<string | null> {
   if (!SAFE_PATH_SEGMENT.test(transferId)) {
     throw new Error(
@@ -207,14 +208,12 @@ export async function receivePackObjects(
       .resolveRef({ fs, dir, ref })
       .catch(() => null);
 
-    if (expectedOldSha !== undefined) {
-      if (currentOldSha !== expectedOldSha) {
-        const observed = currentOldSha === null ? "null" : currentOldSha;
-        const expected = expectedOldSha === null ? "null" : expectedOldSha;
-        throw new Error(
-          `non_fast_forward: ref ${ref} expected ${expected} but found ${observed}`,
-        );
-      }
+    if (currentOldSha !== expectedOldSha) {
+      const observed = currentOldSha === null ? "null" : currentOldSha;
+      const expected = expectedOldSha === null ? "null" : expectedOldSha;
+      throw new Error(
+        `non_fast_forward: ref ${ref} expected ${expected} but found ${observed}`,
+      );
     }
 
     if (validateTree !== undefined) {

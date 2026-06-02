@@ -137,7 +137,15 @@ export function createAgentRepoStore(config: {
         kind: "sidecar",
         agentId,
       };
-      await store.receivePack(principal, id, ref, pack, commitSha);
+      const expectedOldSha = await store.resolveRef(principal, id, ref);
+      await store.receivePack(
+        principal,
+        id,
+        ref,
+        pack,
+        commitSha,
+        expectedOldSha,
+      );
     },
 
     async getDeployRef(agentId) {

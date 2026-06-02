@@ -6,6 +6,7 @@ import {
   initRepo as storageInitRepo,
   createDeployPack,
   receivePackObjects,
+  type CommitSigner,
 } from "@intx/storage-isogit";
 import { hasCode } from "@intx/types";
 import { getLogger } from "@intx/log";
@@ -30,6 +31,45 @@ const logger = getLogger(["hub", "repo-store"]);
 
 type SigningKey = { privateKey: Uint8Array; publicKey: Uint8Array };
 
+/**
+ * In-process push-serialization lock. Keyed by `${kind}/${id}`. Each
+ * entry holds the tail of the chain of in-flight critical sections for
+ * that repo; the next acquirer awaits the current tail and replaces it
+ * with its own pending completion. On release the tail-check
+ * (`if (locks.get(key) === myTail) locks.delete(key)`) prevents the map
+ * from leaking entries once the chain drains.
+ *
+ * Single-process assumption: this protects against concurrent operations
+ * inside a single hub instance. Cross-process serialization (e.g. a
+ * second hub replica or an external git client touching the same
+ * on-disk repo) would need a filesystem-backed lock; the migration path
+ * is to swap the body of `withRepoLock` for an FS-lock acquire/release
+ * around the same critical section.
+ */
+const locks = new Map<string, Promise<void>>();
+
+async function withRepoLock<T>(
+  repoId: RepoId,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const key = `${repoId.kind}/${repoId.id}`;
+  const previous = locks.get(key) ?? Promise.resolve();
+  let releaseFn: () => void = () => undefined;
+  const tail = new Promise<void>((resolve) => {
+    releaseFn = resolve;
+  });
+  locks.set(key, tail);
+  try {
+    await previous;
+    return await fn();
+  } finally {
+    if (locks.get(key) === tail) {
+      locks.delete(key);
+    }
+    releaseFn();
+  }
+}
+
 export type CreateRepoStoreConfig = {
   dataDir: string;
   signingKey: SigningKey;
@@ -41,10 +81,19 @@ export type CreateRepoStoreConfig = {
    */
   handlers: Partial<Record<RepoKind, KindHandler>>;
   authorize: AuthorizeFn;
+  /**
+   * Optional per-repo signing callback. When supplied and the callback
+   * returns a `CommitSigner` for the given `repoId`, the substrate
+   * passes that signer to `initRepo` so the genesis commit is authored
+   * as `interchange-hub` and signed. When the callback returns
+   * `undefined`, or the field is omitted entirely, the substrate falls
+   * back to the unsigned harness-authored genesis.
+   */
+  signingCallback?: (repoId: RepoId) => CommitSigner | undefined;
 };
 
 export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
-  const { dataDir, signingKey, handlers, authorize } = config;
+  const { dataDir, signingKey, handlers, authorize, signingCallback } = config;
 
   function handlerFor(repoId: RepoId): KindHandler {
     const handler = handlers[repoId.kind];
@@ -52,6 +101,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       throw new Error(`no handler registered for kind: ${repoId.kind}`);
     }
     return handler;
+  }
+
+  function signerFor(repoId: RepoId): CommitSigner | undefined {
+    return signingCallback === undefined ? undefined : signingCallback(repoId);
   }
 
   function repoDir(repoId: RepoId): string {
@@ -86,7 +139,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   }
 
   async function initRepo(repoId: RepoId): Promise<void> {
-    await storageInitRepo(repoDir(repoId));
+    await storageInitRepo(repoDir(repoId), signerFor(repoId));
   }
 
   async function resolveRefSha(
@@ -132,87 +185,93 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   ): Promise<{ commitSha: string }> {
     gateAccess(principal, repoId, ref, "writeTree");
 
-    const dir = repoDir(repoId);
-    await storageInitRepo(dir);
+    // The lock spans the entire substrate body of writeTree: index
+    // mutation, validatePush, commit, and the onRefUpdated hook. Holding
+    // the lock through onRefUpdated keeps post-update consumers
+    // serialized against the same ref's next writer.
+    return withRepoLock(repoId, async () => {
+      const dir = repoDir(repoId);
+      await storageInitRepo(dir, signerFor(repoId));
 
-    const handler = handlerFor(repoId);
+      const handler = handlerFor(repoId);
 
-    if (content.clearPrefix !== undefined) {
-      validateClearPrefix(content.clearPrefix);
-      await clearIndexPrefix(dir, content.clearPrefix);
-      await fs.promises.rm(path.join(dir, content.clearPrefix), {
-        recursive: true,
-        force: true,
-      });
-    }
-
-    for (const [relPath, contents] of Object.entries(content.files)) {
-      await writeFileEntry(dir, relPath, contents);
-    }
-
-    const topLevelTreePaths = Array.from(
-      new Set(
-        Object.keys(content.files).map((p) => {
-          const slash = p.indexOf("/");
-          return slash === -1 ? p : p.substring(0, slash);
-        }),
-      ),
-    );
-    const readBlob = async (relPath: string): Promise<Uint8Array> => {
-      const entry = content.files[relPath];
-      if (entry === undefined) {
-        throw new Error(
-          `readBlob: path ${relPath} not present in tree content`,
-        );
+      if (content.clearPrefix !== undefined) {
+        validateClearPrefix(content.clearPrefix);
+        await clearIndexPrefix(dir, content.clearPrefix);
+        await fs.promises.rm(path.join(dir, content.clearPrefix), {
+          recursive: true,
+          force: true,
+        });
       }
-      if (typeof entry === "string") {
-        return new TextEncoder().encode(entry);
+
+      for (const [relPath, contents] of Object.entries(content.files)) {
+        await writeFileEntry(dir, relPath, contents);
       }
-      return entry;
-    };
-    const validation = await handler.validatePush({
-      repoId,
-      ref,
-      topLevelTreePaths,
-      readBlob,
-    });
-    if (!validation.ok) {
-      throw new Error(`path_violation: ${validation.reason}`);
-    }
 
-    // Resolve the previous ref value for the post-update hook (precise:
-    // null only when the ref truly doesn't exist) and the parent SHA for
-    // the new commit (best-effort: any error falls back to HEAD, so a
-    // first write on a never-touched ref produces a commit parented on
-    // the repo's initial commit instead of failing).
-    const oldSha = await resolveRefSha(dir, ref);
-    let parentSha: string;
-    try {
-      parentSha = await git.resolveRef({ fs, dir, ref });
-    } catch {
-      parentSha = await git.resolveRef({ fs, dir, ref: "HEAD" });
-    }
-
-    const commitSha = await git.commit({
-      fs,
-      dir,
-      message: content.message,
-      author: AUTHOR,
-      parent: [parentSha],
-      ref,
-      signingKey: "sshsig",
-      onSign: async ({ payload }) => ({
-        signature: createSSHSignature(
-          payload,
-          signingKey.privateKey,
-          signingKey.publicKey,
+      const topLevelTreePaths = Array.from(
+        new Set(
+          Object.keys(content.files).map((p) => {
+            const slash = p.indexOf("/");
+            return slash === -1 ? p : p.substring(0, slash);
+          }),
         ),
-      }),
+      );
+      const readBlob = async (relPath: string): Promise<Uint8Array> => {
+        const entry = content.files[relPath];
+        if (entry === undefined) {
+          throw new Error(
+            `readBlob: path ${relPath} not present in tree content`,
+          );
+        }
+        if (typeof entry === "string") {
+          return new TextEncoder().encode(entry);
+        }
+        return entry;
+      };
+      const validation = await handler.validatePush({
+        repoId,
+        ref,
+        topLevelTreePaths,
+        readBlob,
+      });
+      if (!validation.ok) {
+        throw new Error(`path_violation: ${validation.reason}`);
+      }
+
+      // Resolve the previous ref value for the post-update hook (precise:
+      // null only when the ref truly doesn't exist) and the parent SHA for
+      // the new commit (best-effort: any error falls back to HEAD, so a
+      // first write on a never-touched ref produces a commit parented on
+      // the repo's initial commit instead of failing).
+      const oldSha = await resolveRefSha(dir, ref);
+      let parentSha: string;
+      try {
+        parentSha = await git.resolveRef({ fs, dir, ref });
+      } catch {
+        parentSha = await git.resolveRef({ fs, dir, ref: "HEAD" });
+      }
+
+      const commitSha = await git.commit({
+        fs,
+        dir,
+        message: content.message,
+        author: AUTHOR,
+        parent: [parentSha],
+        ref,
+        signingKey: "sshsig",
+        onSign: async ({ payload }) => ({
+          signature: createSSHSignature(
+            payload,
+            signingKey.privateKey,
+            signingKey.publicKey,
+          ),
+        }),
+      });
+
+      await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
+
+      return { commitSha };
     });
-
-    await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
-
-    return { commitSha };
   }
 
   async function receivePack(
@@ -221,38 +280,47 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     ref: string,
     pack: Uint8Array,
     commitSha: string,
+    expectedOldSha: string | null,
   ): Promise<void> {
     gateAccess(principal, repoId, ref, "receivePack");
 
-    const dir = repoDir(repoId);
-    await storageInitRepo(dir);
+    // The lock spans the entire substrate body of receivePack: the
+    // packfile index, the CAS check against `expectedOldSha`, the
+    // validateTree hook, the ref write, and the onRefUpdated hook.
+    // `oldSha` for onRefUpdated is taken from the receivePackObjects
+    // return value so the post-update hook sees the same pre-image the
+    // CAS read observed, without a second resolveRef.
+    return withRepoLock(repoId, async () => {
+      const dir = repoDir(repoId);
+      await storageInitRepo(dir, signerFor(repoId));
 
-    const handler = handlerFor(repoId);
-    const oldSha = await resolveRefSha(dir, ref);
-    const transferId = crypto.randomUUID().replace(/-/g, "");
+      const handler = handlerFor(repoId);
+      const transferId = crypto.randomUUID().replace(/-/g, "");
 
-    await receivePackObjects(
-      dir,
-      pack,
-      ref,
-      commitSha,
-      transferId,
-      async (paths, readBlob) => {
-        const result = await handler.validatePush({
-          repoId,
-          ref,
-          topLevelTreePaths: paths,
-          readBlob,
-        });
-        if (!result.ok) {
-          logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${result.reason}`;
-          return { ok: false, reason: result.reason };
-        }
-        return true;
-      },
-    );
+      const oldSha = await receivePackObjects(
+        dir,
+        pack,
+        ref,
+        commitSha,
+        transferId,
+        expectedOldSha,
+        async (paths, readBlob) => {
+          const result = await handler.validatePush({
+            repoId,
+            ref,
+            topLevelTreePaths: paths,
+            readBlob,
+          });
+          if (!result.ok) {
+            logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${result.reason}`;
+            return { ok: false, reason: result.reason };
+          }
+          return true;
+        },
+      );
 
-    await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
+      await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
+    });
   }
 
   async function createPack(

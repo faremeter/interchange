@@ -1,6 +1,45 @@
+import { type } from "arktype";
+import { RepoAction as RepoActionSchema } from "@intx/types/sidecar";
 import type { RepoKind, RepoId, RepoAction } from "@intx/types/sidecar";
 
 export type { RepoKind, RepoId, RepoAction };
+
+/**
+ * arktype validator for the `user` principal variant. The substrate
+ * only requires the `kind` discriminant; kind handlers that accept
+ * user-token-authenticated requests rely on this shape to
+ * cross-check the pre-resolved authz verdict against the bearer
+ * token's claims. The validator is exported alongside the type so
+ * handlers can call it for a structural narrow without re-declaring
+ * the shape.
+ *
+ * Field semantics:
+ *   - `authz`: the pre-resolved grant verdict from the route layer.
+ *     The kind handler does NOT re-query the grant store; it only
+ *     sanity-checks that the verdict targets the right resource and
+ *     grant verb, then defers to `effect`.
+ *   - `tokenClaims`: the bearer-token's scope. The kind handler
+ *     verifies the requested `(ref, action)` falls inside this scope
+ *     synchronously (`actions.includes(action)`,
+ *     `glob.match(refPattern, ref)`, `Date.now() < expiresAt`).
+ */
+export const UserPrincipal = type({
+  kind: "'user'",
+  principalId: "string",
+  tenantId: "string",
+  authz: {
+    effect: "'allow' | 'deny'",
+    resource: "string",
+    grantVerb: "string",
+  },
+  tokenClaims: {
+    refPattern: "string",
+    actions: RepoActionSchema.array(),
+    expiresAt: "number",
+  },
+});
+
+export type UserPrincipal = typeof UserPrincipal.infer;
 
 /**
  * Regex defining the shape of a valid `RepoId.id`. The substrate
@@ -107,12 +146,27 @@ export interface RepoStore {
     ref: string,
     content: TreeContent,
   ): Promise<{ commitSha: string }>;
+  /**
+   * Receive a packfile and advance `ref` to `commitSha`.
+   *
+   * `expectedOldSha` is a compare-and-set guard the substrate runs
+   * under the per-repo lock. Pass a SHA string to require the ref
+   * currently points there; pass `null` to require the ref does not
+   * yet exist. On mismatch the call throws with a `non_fast_forward:`
+   * prefix and leaves the ref untouched.
+   *
+   * Callers that do not have the old SHA in hand should resolve it
+   * via `resolveRef` first; the substrate exposes no force-write
+   * mode because silently overwriting a losing concurrent update is
+   * never the right behavior.
+   */
   receivePack(
     principal: Principal,
     repoId: RepoId,
     ref: string,
     pack: Uint8Array,
     commitSha: string,
+    expectedOldSha: string | null,
   ): Promise<void>;
   createPack(
     principal: Principal,

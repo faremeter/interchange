@@ -1,9 +1,11 @@
 import { type } from "arktype";
-import type {
-  AuthorizeFn,
-  KindHandler,
-  Principal,
-  ValidatePushResult,
+import { glob, repoActionToGrantVerb } from "@intx/hub-common";
+import {
+  UserPrincipal,
+  type AuthorizeFn,
+  type KindHandler,
+  type Principal,
+  type ValidatePushResult,
 } from "./repo-store";
 
 export type AgentStateHubPrincipal = { readonly kind: "hub" };
@@ -99,13 +101,13 @@ export const agentStateAuthorize: AuthorizeFn = (
     }
     switch (action) {
       case "receivePack":
+      case "resolveRef":
         return { allowed: true };
       case "createPack":
-      case "resolveRef":
         if (ref !== AGENT_STATE_DEPLOY_REF) {
           return {
             allowed: false,
-            reason: `sidecar may only read ${AGENT_STATE_DEPLOY_REF}, not ${ref}`,
+            reason: `sidecar may only fetch ${AGENT_STATE_DEPLOY_REF}, not ${ref}`,
           };
         }
         return { allowed: true };
@@ -127,6 +129,68 @@ export const agentStateAuthorize: AuthorizeFn = (
         };
       }
     }
+  }
+
+  if (principal.kind === "user") {
+    // The route layer has already pre-resolved the grant verdict and
+    // attached it as `authz`. The substrate does NOT re-query the
+    // grant store here; it (a) checks the bearer-token's claims
+    // bound the requested (ref, action) and have not expired, and
+    // (b) sanity-checks that the pre-resolved verdict targets this
+    // exact resource and grant verb. Both gates must pass before the
+    // verdict's `effect` is honoured.
+    const parsed = UserPrincipal(principal);
+    if (parsed instanceof type.errors) {
+      return {
+        allowed: false,
+        reason: `user principal is malformed: ${parsed.summary}`,
+      };
+    }
+    if (repoId.kind !== "agent-state") {
+      return {
+        allowed: false,
+        reason: `user authorize received non-agent-state repo ${repoId.kind}/${repoId.id}`,
+      };
+    }
+    if (!parsed.tokenClaims.actions.includes(action)) {
+      return {
+        allowed: false,
+        reason: `token does not grant action ${action}`,
+      };
+    }
+    if (!glob.match(parsed.tokenClaims.refPattern, ref)) {
+      return {
+        allowed: false,
+        reason: `token refPattern ${parsed.tokenClaims.refPattern} does not match ${ref}`,
+      };
+    }
+    if (Date.now() >= parsed.tokenClaims.expiresAt) {
+      return {
+        allowed: false,
+        reason: `token expired at ${parsed.tokenClaims.expiresAt}`,
+      };
+    }
+    const expectedResource = `agent-state:${repoId.id}`;
+    if (parsed.authz.resource !== expectedResource) {
+      return {
+        allowed: false,
+        reason: `authz verdict resource ${parsed.authz.resource} does not match ${expectedResource}`,
+      };
+    }
+    const expectedGrantVerb = repoActionToGrantVerb(action);
+    if (parsed.authz.grantVerb !== expectedGrantVerb) {
+      return {
+        allowed: false,
+        reason: `authz verdict grantVerb ${parsed.authz.grantVerb} does not match ${expectedGrantVerb}`,
+      };
+    }
+    if (parsed.authz.effect === "allow") {
+      return { allowed: true };
+    }
+    return {
+      allowed: false,
+      reason: `authz verdict denied for ${expectedResource} ${expectedGrantVerb}`,
+    };
   }
 
   return {

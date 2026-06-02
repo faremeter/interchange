@@ -590,6 +590,7 @@ describe("receivePackObjects tree validation", () => {
       "refs/heads/state",
       source.commitSha,
       "state-ok",
+      null,
       validator,
     );
 
@@ -621,6 +622,7 @@ describe("receivePackObjects tree validation", () => {
         "refs/heads/state",
         source.commitSha,
         "state-bad",
+        null,
         validator,
       ),
     ).rejects.toThrow("path_violation");
@@ -642,6 +644,7 @@ describe("receivePackObjects tree validation", () => {
       "refs/heads/mixed",
       source.commitSha,
       "no-validate",
+      null,
     );
 
     const resolved = await git.resolveRef({
@@ -667,6 +670,7 @@ describe("receivePackObjects CAS", () => {
       "refs/heads/state",
       source.commitSha,
       "cas-fresh",
+      null,
     );
 
     expect(oldSha).toBeNull();
@@ -693,6 +697,7 @@ describe("receivePackObjects CAS", () => {
       "refs/heads/state",
       sourceA.commitSha,
       "cas-first",
+      null,
     );
     expect(firstOld).toBeNull();
 
@@ -707,6 +712,7 @@ describe("receivePackObjects CAS", () => {
       "refs/heads/state",
       sourceB.commitSha,
       "cas-second",
+      sourceA.commitSha,
     );
 
     expect(secondOld).toBe(sourceA.commitSha);
@@ -727,6 +733,7 @@ describe("receivePackObjects CAS", () => {
       "refs/heads/state",
       sourceA.commitSha,
       "cas-happy-first",
+      null,
     );
 
     const sourceB = await makeRepoWithPaths([
@@ -740,7 +747,6 @@ describe("receivePackObjects CAS", () => {
       "refs/heads/state",
       sourceB.commitSha,
       "cas-happy-second",
-      undefined,
       sourceA.commitSha,
     );
 
@@ -769,6 +775,7 @@ describe("receivePackObjects CAS", () => {
       "refs/heads/state",
       sourceA.commitSha,
       "cas-stale-first",
+      null,
     );
 
     const sourceB = await makeRepoWithPaths([
@@ -784,7 +791,6 @@ describe("receivePackObjects CAS", () => {
         "refs/heads/state",
         sourceB.commitSha,
         "cas-stale-second",
-        undefined,
         bogus,
       ),
     ).rejects.toThrow("non_fast_forward");
@@ -810,7 +816,6 @@ describe("receivePackObjects CAS", () => {
       "refs/heads/state",
       source.commitSha,
       "cas-null-ok",
-      undefined,
       null,
     );
 
@@ -832,6 +837,7 @@ describe("receivePackObjects CAS", () => {
       "refs/heads/state",
       sourceA.commitSha,
       "cas-null-first",
+      null,
     );
 
     const sourceB = await makeRepoWithPaths([
@@ -846,48 +852,8 @@ describe("receivePackObjects CAS", () => {
         "refs/heads/state",
         sourceB.commitSha,
         "cas-null-stale",
-        undefined,
         null,
       ),
     ).rejects.toThrow("non_fast_forward");
-  });
-
-  test("omitting expectedOldSha preserves the pre-existing force-update behavior", async () => {
-    const sourceA = await makeRepoWithPaths([
-      { filepath: "state/v1.jsonl", content: "v1" },
-    ]);
-    const packA = await createPackFromRepo(sourceA.dir, sourceA.oids);
-
-    const targetDir = await tempDir();
-    await initAgentRepo(targetDir);
-
-    await receivePackObjects(
-      targetDir,
-      packA,
-      "refs/heads/state",
-      sourceA.commitSha,
-      "regress-first",
-    );
-
-    const sourceB = await makeRepoWithPaths([
-      { filepath: "state/v2.jsonl", content: "v2" },
-    ]);
-    const packB = await createPackFromRepo(sourceB.dir, sourceB.oids);
-
-    // No expectedOldSha: must succeed unconditionally (back-compat).
-    await receivePackObjects(
-      targetDir,
-      packB,
-      "refs/heads/state",
-      sourceB.commitSha,
-      "regress-second",
-    );
-
-    const resolved = await git.resolveRef({
-      fs,
-      dir: targetDir,
-      ref: "refs/heads/state",
-    });
-    expect(resolved).toBe(sourceB.commitSha);
   });
 });
