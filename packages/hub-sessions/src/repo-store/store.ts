@@ -12,8 +12,10 @@ import { hasCode } from "@intx/types";
 import { getLogger } from "@intx/log";
 import type {
   AuthorizeFn,
+  InitRepoOpts,
   KindHandler,
   Principal,
+  RefEntry,
   RepoAction,
   RepoId,
   RepoKind,
@@ -138,8 +140,58 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     }
   }
 
-  async function initRepo(repoId: RepoId): Promise<void> {
-    await storageInitRepo(repoDir(repoId), signerFor(repoId));
+  function storageOptsFor(
+    repoId: RepoId,
+    opts: InitRepoOpts | undefined,
+  ): { signer?: CommitSigner; gitignore?: string } {
+    const out: { signer?: CommitSigner; gitignore?: string } = {};
+    const signer = signerFor(repoId);
+    if (signer !== undefined) out.signer = signer;
+    if (opts?.gitignore !== undefined) out.gitignore = opts.gitignore;
+    return out;
+  }
+
+  async function initRepo(repoId: RepoId, opts?: InitRepoOpts): Promise<void> {
+    await storageInitRepo(repoDir(repoId), storageOptsFor(repoId, opts));
+  }
+
+  function getRepoDir(repoId: RepoId): string {
+    return repoDir(repoId);
+  }
+
+  async function listRefs(
+    principal: Principal,
+    repoId: RepoId,
+  ): Promise<RefEntry[]> {
+    gateAccess(principal, repoId, "*", "resolveRef");
+    const dir = repoDir(repoId);
+    const repoExists = await fs.promises
+      .stat(path.join(dir, ".git"))
+      .then(() => true)
+      .catch(() => false);
+    if (!repoExists) return [];
+
+    const [branches, tags] = await Promise.all([
+      git.listBranches({ fs, dir }),
+      git.listTags({ fs, dir }),
+    ]);
+
+    const names: string[] = [];
+    for (const b of branches) names.push(`refs/heads/${b}`);
+    for (const t of tags) names.push(`refs/tags/${t}`);
+    names.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+
+    const entries: RefEntry[] = [];
+    for (const name of names) {
+      try {
+        const sha = await git.resolveRef({ fs, dir, ref: name });
+        entries.push({ name, sha });
+      } catch (err: unknown) {
+        if (hasCode(err) && err.code === "NotFoundError") continue;
+        throw err;
+      }
+    }
+    return entries;
   }
 
   async function resolveRefSha(
@@ -191,7 +243,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     // serialized against the same ref's next writer.
     return withRepoLock(repoId, async () => {
       const dir = repoDir(repoId);
-      await storageInitRepo(dir, signerFor(repoId));
+      await storageInitRepo(dir, storageOptsFor(repoId, undefined));
 
       const handler = handlerFor(repoId);
 
@@ -292,7 +344,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     // CAS read observed, without a second resolveRef.
     return withRepoLock(repoId, async () => {
       const dir = repoDir(repoId);
-      await storageInitRepo(dir, signerFor(repoId));
+      await storageInitRepo(dir, storageOptsFor(repoId, undefined));
 
       const handler = handlerFor(repoId);
       const transferId = crypto.randomUUID().replace(/-/g, "");
@@ -348,5 +400,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     receivePack,
     createPack,
     resolveRef,
+    listRefs,
+    getRepoDir,
   };
 }

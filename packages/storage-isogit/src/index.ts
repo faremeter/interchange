@@ -17,7 +17,7 @@ export {
   listBranches,
   logHistory,
 } from "./history";
-export { initRepo, initAgentRepo } from "./init";
+export { initRepo, initAgentRepo, type InitRepoOpts } from "./init";
 export { applyPack, receivePackObjects } from "./pack-receive";
 export {
   createDeployPack,

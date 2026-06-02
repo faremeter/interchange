@@ -67,6 +67,49 @@ describe("initRepo unsigned default", () => {
     expect(after.length).toBe(before.length);
     expect(after[0]?.oid).toBe(before[0]?.oid);
   });
+
+  test("writes the default gitignore body when no override is supplied", async () => {
+    const dir = await tempDir();
+    await initRepo(dir);
+    const body = await fs.promises.readFile(
+      path.join(dir, ".gitignore"),
+      "utf-8",
+    );
+    expect(body).toBe("keys/\n");
+  });
+});
+
+describe("initRepo gitignore override", () => {
+  test("writes the supplied gitignore body into the genesis tree", async () => {
+    const dir = await tempDir();
+    const customBody =
+      ".DS_Store\n.idea/\nnode_modules/\nkeys/\ndist/\nbuild/\n";
+    await initRepo(dir, { gitignore: customBody });
+
+    const onDisk = await fs.promises.readFile(
+      path.join(dir, ".gitignore"),
+      "utf-8",
+    );
+    expect(onDisk).toBe(customBody);
+
+    const [entry] = await git.log({ fs, dir, depth: 1 });
+    if (entry === undefined) throw new Error("no commit in log");
+    const { tree } = await git.readTree({
+      fs,
+      dir,
+      oid: entry.commit.tree,
+    });
+    const gitignoreEntry = tree.find((e) => e.path === ".gitignore");
+    if (gitignoreEntry === undefined) {
+      throw new Error(".gitignore not staged in genesis tree");
+    }
+    const { blob } = await git.readBlob({
+      fs,
+      dir,
+      oid: gitignoreEntry.oid,
+    });
+    expect(new TextDecoder().decode(blob)).toBe(customBody);
+  });
 });
 
 describe("initRepo with signing callback", () => {
@@ -76,7 +119,7 @@ describe("initRepo with signing callback", () => {
       createSSHSignature(payload, keyPair.privateKey, keyPair.publicKey);
 
     const dir = await tempDir();
-    await initRepo(dir, signer);
+    await initRepo(dir, { signer });
 
     const [entry] = await git.log({ fs, dir, depth: 1 });
     if (entry === undefined) throw new Error("no commit in log");
@@ -92,7 +135,7 @@ describe("initRepo with signing callback", () => {
       createSSHSignature(payload, keyPair.privateKey, keyPair.publicKey);
 
     const dir = await tempDir();
-    await initRepo(dir, signer);
+    await initRepo(dir, { signer });
 
     const [entry] = await git.log({ fs, dir, depth: 1 });
     if (entry === undefined) throw new Error("no commit in log");
@@ -133,7 +176,7 @@ describe("initRepo with signing callback", () => {
       createSSHSignature(payload, keyPair.privateKey, keyPair.publicKey);
 
     const dir = await tempDir();
-    await initRepo(dir, signer);
+    await initRepo(dir, { signer });
 
     const head = await fs.promises.readFile(
       path.join(dir, ".git", "HEAD"),
@@ -148,10 +191,10 @@ describe("initRepo with signing callback", () => {
       createSSHSignature(payload, keyPair.privateKey, keyPair.publicKey);
 
     const dir = await tempDir();
-    await initRepo(dir, signer);
+    await initRepo(dir, { signer });
     const before = await git.log({ fs, dir, depth: 10 });
 
-    await initRepo(dir, signer);
+    await initRepo(dir, { signer });
     const after = await git.log({ fs, dir, depth: 10 });
 
     expect(after.length).toBe(before.length);
