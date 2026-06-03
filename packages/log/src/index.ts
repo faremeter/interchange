@@ -1,84 +1,16 @@
 // Install the default console sink before any caller can get a logger.
 import "./default-sink";
 
-// Re-export core LogTape functionality
+// `@intx/log` is a narrow re-export over `@logtape/logtape`. It carries
+// only the symbols other `@intx/*` packages actually use today, plus the
+// project's `setup()` helper. Consumers that need a piece of LogTape not
+// re-exported here should import it from `@logtape/logtape` directly
+// rather than widening this surface speculatively — widen it only when
+// at least one consumer needs the symbol.
 export {
-  // Logger creation and usage
   getLogger,
-  type Logger,
-  type LogMethod,
-
-  // Configuration
-  configure,
   configureSync,
-  dispose,
-  disposeSync,
-  reset,
   resetSync,
   getConfig,
-  type Config,
-  type ConfigError,
-  type LoggerConfig,
-
-  // Log levels
-  type LogLevel,
-  isLogLevel,
-  parseLogLevel,
-  compareLogLevel,
-  getLogLevels,
-
-  // Log records
-  type LogRecord,
-
-  // Sinks
-  getConsoleSink,
-  getStreamSink,
-  withFilter,
-  fingersCrossed,
-  fromAsyncSink,
-  type Sink,
-  type AsyncSink,
-  type ConsoleSinkOptions,
-  type StreamSinkOptions,
-  type FingersCrossedOptions,
-
-  // Filters
-  getLevelFilter,
-  toFilter,
-  type Filter,
-  type FilterLike,
-
-  // Formatters
-  ansiColorFormatter,
-  jsonLinesFormatter,
-  defaultTextFormatter,
-  defaultConsoleFormatter,
-  getAnsiColorFormatter,
-  getJsonLinesFormatter,
-  getTextFormatter,
-  type TextFormatter,
-  type ConsoleFormatter,
-  type TextFormatterOptions,
-  type AnsiColorFormatterOptions,
-  type JsonLinesFormatterOptions,
-  type AnsiColor,
-  type AnsiStyle,
-  type FormattedValues,
-
-  // Context
-  withContext,
-  withCategoryPrefix,
-  type ContextLocalStorage,
-
-  // Lazy evaluation
-  lazy,
-  isLazy,
-  type Lazy,
 } from "@logtape/logtape";
-
-// Re-export our setup helper
 export { setup, type SetupOptions } from "./setup";
-
-// Re-export the default sink installer for tests that need to reinstall
-// after `resetSync()`.
-export { installDefaultConsoleSink } from "./default-sink";

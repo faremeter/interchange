@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { getLogger, resetSync, installDefaultConsoleSink } from "./index";
+import { getLogger, resetSync } from "./index";
+import { installDefaultConsoleSink } from "./default-sink";
 
 // Locks down two design contracts of the module-load default sink that
 // default-sink.test.ts does not currently exercise:

@@ -1,11 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import {
-  getConfig,
-  getLogger,
-  resetSync,
-  installDefaultConsoleSink,
-  setup,
-} from "./index";
+import { getConfig, getLogger, resetSync, setup } from "./index";
+import { installDefaultConsoleSink } from "./default-sink";
 
 // Snapshot taken at test-file load, before any beforeEach hooks run. This is
 // the only point at which we can observe the side effect at the bottom of
