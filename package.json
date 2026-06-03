@@ -1,5 +1,5 @@
 {
-  "name": "asg-interchange-prototype",
+  "name": "interchange",
   "license": "LGPL-2.1-only",
   "private": true,
   "type": "module",
