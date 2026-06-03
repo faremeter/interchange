@@ -417,7 +417,7 @@ export function TenantAgentDetailPage() {
             </Row>
             <Row label="Creator Principal">
               <span className="font-mono text-xs">
-                {agent.creatorPrincipalId ?? "\u2014"}
+                {agent.creatorPrincipalId}
               </span>
             </Row>
             {agent.systemPrompt && (

@@ -55,7 +55,7 @@ type GrantRequirement = {
 export type AgentResponse = {
   id: string;
   tenantId: string;
-  creatorPrincipalId?: string | null;
+  creatorPrincipalId: string;
   name: string;
   description: string | null;
   systemPrompt: string | null;

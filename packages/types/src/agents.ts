@@ -76,8 +76,7 @@ export const UpdateAgent = type({
 export const AgentResponse = type({
   id: "string",
   tenantId: "string",
-  // TODO: remove null once all definitions have been backfilled
-  "creatorPrincipalId?": type("string | null").describe(
+  creatorPrincipalId: type("string").describe(
     "Identifies the definition author's principal (definitions have no principalId of their own). Used for resolving creator-sourced grant and credential requirements.",
   ),
   name: "string",

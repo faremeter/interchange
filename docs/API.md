@@ -1049,7 +1049,7 @@ Source: packages/types/src/agents.ts
 Source: packages/types/src/agents.ts
 
 ### AgentResponse
-`{ createdAt: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, updatedAt: string, capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, creatorPrincipalId?: string | null, credentialRequirements?: { providerName: string, source: "creator" | "invoker" | "tenant", name?: string, scopes?: string[] }[], description?: string | null, grantRequirements?: { action: string, resource: string, source: "creator" | "invoker", conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, roles?: { id: string, name: string }[], systemPrompt?: string | null }`
+`{ createdAt: string, creatorPrincipalId: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, updatedAt: string, capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, credentialRequirements?: { providerName: string, source: "creator" | "invoker" | "tenant", name?: string, scopes?: string[] }[], description?: string | null, grantRequirements?: { action: string, resource: string, source: "creator" | "invoker", conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, roles?: { id: string, name: string }[], systemPrompt?: string | null }`
 Source: packages/types/src/agents.ts
 
 **creatorPrincipalId**: Identifies the definition author's principal (definitions have no principalId of their own). Used for resolving creator-sourced grant and credential requirements.

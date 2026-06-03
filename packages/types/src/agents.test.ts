@@ -238,6 +238,7 @@ describe("AgentResponse", () => {
   const validResponse = {
     id: "agt_1",
     tenantId: "tnt_1",
+    creatorPrincipalId: "prn_1",
     name: "Agent",
     currentVersion: "1",
     status: "deployed" as const,
@@ -246,24 +247,22 @@ describe("AgentResponse", () => {
   };
 
   test("accepts a valid response with creatorPrincipalId as a string", () => {
-    const result = AgentResponse({
-      ...validResponse,
-      creatorPrincipalId: "prn_1",
-    });
+    const result = AgentResponse(validResponse);
     expect(result instanceof type.errors).toBe(false);
   });
 
-  test("accepts a valid response with creatorPrincipalId as null", () => {
+  test("rejects a response with creatorPrincipalId as null", () => {
     const result = AgentResponse({
       ...validResponse,
       creatorPrincipalId: null,
     });
-    expect(result instanceof type.errors).toBe(false);
+    expect(result instanceof type.errors).toBe(true);
   });
 
-  test("accepts absent creatorPrincipalId (optional)", () => {
-    const result = AgentResponse(validResponse);
-    expect(result instanceof type.errors).toBe(false);
+  test("rejects a response with creatorPrincipalId absent", () => {
+    const { creatorPrincipalId: _omitted, ...withoutCreator } = validResponse;
+    const result = AgentResponse(withoutCreator);
+    expect(result instanceof type.errors).toBe(true);
   });
 
   test("accepts grantRequirements on the response", () => {

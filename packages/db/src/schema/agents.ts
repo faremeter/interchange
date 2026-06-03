@@ -10,9 +10,9 @@ export const agent = pgTable("agent", {
     .references(() => tenant.id, { onDelete: "cascade" }),
   // Tracks the definition author's principal for resolving source:"creator"
   // grant requirements at launch. See AUTH.md § Grant Requirements on Definitions.
-  creatorPrincipalId: text("creator_principal_id").references(
-    () => principal.id,
-  ),
+  creatorPrincipalId: text("creator_principal_id")
+    .notNull()
+    .references(() => principal.id),
   name: text("name").notNull(),
   description: text("description"),
   systemPrompt: text("system_prompt"),

@@ -212,18 +212,6 @@ export function createInstanceRoutes({
       }
 
       const creatorPrincipalId = row.creatorPrincipalId;
-      if (!creatorPrincipalId) {
-        return c.json(
-          {
-            error: {
-              code: "not_launchable",
-              message:
-                "Definition has no creator principal for credential resolution",
-            },
-          },
-          409,
-        );
-      }
 
       // Parse modelConfig up front: the model identity is part of every
       // resolved InferenceSource (pre-catalog the same `defaultModel`
@@ -261,9 +249,9 @@ export function createInstanceRoutes({
         switch (outcome.reason) {
           case "skipped":
             // Requirement targets a principal that does not exist
-            // (creator without a creator id, or invoker without a session
-            // principal). Skip silently; the resulting empty sources[]
-            // is surfaced as a `not_launchable` 409 below.
+            // (invoker without a session principal). Skip silently;
+            // the resulting empty sources[] is surfaced as a
+            // `not_launchable` 409 below.
             continue;
           case "credential_error":
             return c.json(
