@@ -56,6 +56,11 @@ export function createMailTools(opts: MailToolsOptions): MailTools {
     async run(call, signal): Promise<ToolResult> {
       const handler = handlers.get(call.name);
       if (handler === undefined) {
+        // This branch is unreachable in the sidecar composition
+        // (mergeToolRunners dispatches by definition.name and only
+        // forwards mail-tool calls here). It exists so callers that
+        // use createMailTools as a standalone ToolRunner get the
+        // package's native object-shaped error.
         return {
           callId: call.id,
           content: { error: `Unknown tool: "${call.name}"` },
@@ -80,9 +85,14 @@ export function createMailTools(opts: MailToolsOptions): MailTools {
     async dispose() {
       if (disposed) return;
       disposed = true;
-      // No transport teardown — the transport is owned by the host that
-      // constructed it. dispose is here for symmetry with createPosixTools
-      // and as a seam for any future per-package resources.
+      // No-op today: the transport is owned by the host that
+      // constructed it, and the only handler with active resources
+      // (mail_wait subscribes via transport.watch and registers a
+      // setTimeout / abort listener) releases them through the
+      // per-call AbortSignal rather than through this dispose hook.
+      // dispose exists for symmetry with createPosixTools and as a
+      // seam for any future per-package resources; callers must not
+      // rely on it to cancel in-flight tool calls.
     },
   };
 }
