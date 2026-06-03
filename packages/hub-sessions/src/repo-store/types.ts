@@ -44,9 +44,7 @@ export type UserPrincipal = typeof UserPrincipal.infer;
 /**
  * Regex defining the shape of a valid `RepoId.id`. The substrate
  * validates against this at every public operation and throws an Error
- * prefixed with `"repo_id_invalid: "` on mismatch. Exposed so callers
- * that want to validate ids before constructing a `RepoId` (e.g. shims
- * that throw their own legacy error messages) can use the same rule.
+ * prefixed with `"repo_id_invalid: "` on mismatch.
  */
 export const SAFE_REPO_ID = /^[a-zA-Z0-9_-]+$/;
 
