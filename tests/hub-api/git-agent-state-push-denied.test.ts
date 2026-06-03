@@ -16,7 +16,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { runGit, startHub, type HubHandle } from "./lib/git-harness";
+import {
+  harnessDbEnvAvailable,
+  runGit,
+  startHub,
+  type HubHandle,
+} from "./lib/git-harness";
 import {
   apiCall,
   createTenant,
@@ -119,7 +124,7 @@ function definitionStateGitUrl(
   return `${hubUrl}/api/tenants/${tenantId}/agents/definitions/${agentId}/state.git`;
 }
 
-describe("agent-state push denied", () => {
+describe.skipIf(!harnessDbEnvAvailable())("agent-state push denied", () => {
   test("advertise deny body names read-only", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);

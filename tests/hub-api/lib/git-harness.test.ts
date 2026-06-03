@@ -15,6 +15,7 @@ import postgres from "postgres";
 
 import {
   discoverGitBinary,
+  harnessDbEnvAvailable,
   runGit,
   startHub,
   tokenAskpassEnv,
@@ -102,7 +103,7 @@ describe("tokenAskpassEnv", () => {
   });
 });
 
-describe("startHub", () => {
+describe.skipIf(!harnessDbEnvAvailable())("startHub", () => {
   test("spawns a hub against an isolated schema, drops the schema on stop", async () => {
     const harnessConfig = loadHarnessDbConfig();
 

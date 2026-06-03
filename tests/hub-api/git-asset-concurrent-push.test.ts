@@ -8,7 +8,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { runGit, startHub, type HubHandle } from "./lib/git-harness";
+import {
+  harnessDbEnvAvailable,
+  runGit,
+  startHub,
+  type HubHandle,
+} from "./lib/git-harness";
 import {
   assetSmartHttpUrl,
   createAsset,
@@ -82,7 +87,7 @@ async function setupWorker(
   return { cloneDir };
 }
 
-describe("concurrent push race", () => {
+describe.skipIf(!harnessDbEnvAvailable())("concurrent push race", () => {
   test("one push wins; the other reports non-fast-forward", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);

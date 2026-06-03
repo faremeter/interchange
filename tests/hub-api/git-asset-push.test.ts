@@ -14,7 +14,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { runGit, startHub, type HubHandle } from "./lib/git-harness";
+import {
+  harnessDbEnvAvailable,
+  runGit,
+  startHub,
+  type HubHandle,
+} from "./lib/git-harness";
 import {
   assetSmartHttpUrl,
   createAsset,
@@ -97,7 +102,7 @@ function withBasicAuth(url: string, user: string, pass: string): string {
   return u.toString();
 }
 
-describe("authorized push", () => {
+describe.skipIf(!harnessDbEnvAvailable())("authorized push", () => {
   test("fast-forward push succeeds against a permissive token", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);
@@ -201,7 +206,7 @@ describe("authorized push", () => {
   }, 90_000);
 });
 
-describe("refPattern-forbidden push", () => {
+describe.skipIf(!harnessDbEnvAvailable())("refPattern-forbidden push", () => {
   test("push to refs/heads/secret is rejected as (forbidden)", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);
@@ -267,7 +272,7 @@ describe("refPattern-forbidden push", () => {
   }, 90_000);
 });
 
-describe("read-only token push", () => {
+describe.skipIf(!harnessDbEnvAvailable())("read-only token push", () => {
   test("push with a token lacking receivePack is denied", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);

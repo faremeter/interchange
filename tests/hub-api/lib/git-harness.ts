@@ -169,6 +169,24 @@ function optionalKey(source: Record<string, string>, key: string): string {
 }
 
 /**
+ * Returns true when the repo has the three `.env` files the
+ * integration harness reads (`.env`, `.env.migrate`, `.env.hub`).
+ * Test files use this with `describe.skipIf(...)` so a fresh
+ * checkout without a configured database can still run `make all`.
+ *
+ * Absence-only: files that exist but lack required keys still
+ * surface a loud error from `loadHarnessDbConfig`/`loadHubEnv`.
+ * The gate is specifically for the "no env at all" case.
+ */
+export function harnessDbEnvAvailable(): boolean {
+  return (
+    existsSync(path.join(REPO_ROOT, ".env")) &&
+    existsSync(path.join(REPO_ROOT, ".env.migrate")) &&
+    existsSync(path.join(REPO_ROOT, ".env.hub"))
+  );
+}
+
+/**
  * Read the repo's `.env` + `.env.migrate` and surface the migration
  * user's credentials. The migration user is what the harness uses
  * to create schemas and apply DDL; the spawned hub still runs as

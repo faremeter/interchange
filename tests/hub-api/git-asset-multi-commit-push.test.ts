@@ -9,7 +9,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { runGit, startHub, type HubHandle } from "./lib/git-harness";
+import {
+  harnessDbEnvAvailable,
+  runGit,
+  startHub,
+  type HubHandle,
+} from "./lib/git-harness";
 import {
   assetSmartHttpUrl,
   createAsset,
@@ -48,7 +53,7 @@ function withBasicAuth(url: string, user: string, pass: string): string {
   return u.toString();
 }
 
-describe("multi-commit push", () => {
+describe.skipIf(!harnessDbEnvAvailable())("multi-commit push", () => {
   test("a pack carrying multiple delta-related commits indexes cleanly", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);

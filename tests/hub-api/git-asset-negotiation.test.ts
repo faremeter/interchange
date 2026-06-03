@@ -7,7 +7,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { runGit, startHub, type HubHandle } from "./lib/git-harness";
+import {
+  harnessDbEnvAvailable,
+  runGit,
+  startHub,
+  type HubHandle,
+} from "./lib/git-harness";
 import {
   assetSmartHttpUrl,
   createAsset,
@@ -70,7 +75,7 @@ function parseCountObjects(out: string): {
   };
 }
 
-describe("incremental fetch", () => {
+describe.skipIf(!harnessDbEnvAvailable())("incremental fetch", () => {
   test("a second fetch after a remote-side push transfers only the delta", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);
