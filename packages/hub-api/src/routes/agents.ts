@@ -42,7 +42,7 @@ function formatAgent(
   return {
     id: parsed.id,
     tenantId: parsed.tenantId,
-    creatorPrincipalId: parsed.creatorPrincipalId ?? undefined,
+    creatorPrincipalId: parsed.creatorPrincipalId,
     name: parsed.name,
     description: parsed.description ?? null,
     systemPrompt: parsed.systemPrompt ?? null,

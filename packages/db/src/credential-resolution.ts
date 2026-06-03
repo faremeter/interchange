@@ -235,6 +235,12 @@ export async function resolveOneCredential(
   invokerPrincipalId: string | null,
   defaultModel: string,
 ): Promise<CredentialOutcome> {
+  // Reject requirements whose targeted principal does not exist. Without
+  // these guards a null creator or invoker would fall through to
+  // `resolveCredentialRequirement`, where the principal filter becomes
+  // `isNull(credential.principalId)` — the tenant-credential lookup — and
+  // a tenant credential would be returned as if it satisfied the
+  // creator- or invoker-source requirement.
   if (req.source === "creator" && !creatorPrincipalId) {
     return { ok: false, reason: "skipped", requirement: req };
   }

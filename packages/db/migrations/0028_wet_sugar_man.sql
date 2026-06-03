@@ -1,0 +1,1 @@
+ALTER TABLE "agent" ALTER COLUMN "creator_principal_id" SET NOT NULL;
