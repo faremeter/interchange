@@ -2,6 +2,7 @@
   "name": "@intx/hub-app",
   "version": "0.1.1",
   "license": "LGPL-2.1-only",
+  "private": true,
   "type": "module",
   "dependencies": {
     "@intx/crypto-node": "workspace:*",
