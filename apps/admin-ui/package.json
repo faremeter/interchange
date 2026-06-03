@@ -1,6 +1,6 @@
 {
   "name": "@intx/admin-ui",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "license": "LGPL-2.1-only",
   "private": true,
   "type": "module",
