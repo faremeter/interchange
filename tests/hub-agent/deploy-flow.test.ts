@@ -178,6 +178,7 @@ type HubEnv = {
   agentEvents: { addr: string; sid: string; event: unknown }[];
   deployAcks: Map<string, string>;
   statePacks: { agentAddress: string; ref: string; commitSha: string }[];
+  statePackReceiveFailures: { agentAddress: string; error: string }[];
   hubDataDir: string;
 };
 
@@ -185,6 +186,7 @@ async function startHub(): Promise<HubEnv> {
   const agentEvents: HubEnv["agentEvents"] = [];
   const deployAcks = new Map<string, string>();
   const statePacks: HubEnv["statePacks"] = [];
+  const statePackReceiveFailures: HubEnv["statePackReceiveFailures"] = [];
 
   const hubDataDir = await makeTempDir("hub-data-");
   const hubSigningKey = await generateKeyPair();
@@ -205,12 +207,32 @@ async function startHub(): Promise<HubEnv> {
         }
         const agentAddress = repoId.id;
         const agentId = parseAgentId(agentAddress);
-        await agentRepoStore.receiveStatePack(
-          { kind: "agent-state", id: agentId },
-          pack,
-          ref,
-          commitSha,
-        );
+        // Mirror createHubSessionLookups' fallback branch only: catch
+        // every receive failure and surface it as a structured
+        // "corrupt" rejection, so a transient (e.g. the agent
+        // directory being torn down concurrently with an in-flight
+        // pack write) does not propagate as an unhandled rejection
+        // through the WebSocket message handler. The production
+        // lookups distinguish a path_violation prefix and report that
+        // as a separate reason; this mock does not, because this test
+        // never exercises tree-validator rejection.
+        try {
+          await agentRepoStore.receiveStatePack(
+            { kind: "agent-state", id: agentId },
+            pack,
+            ref,
+            commitSha,
+          );
+        } catch (err) {
+          // Capture the underlying error into the hub's diagnostic
+          // buffer so a regression does not hide behind the catch.
+          // sidecarDiagnostics surfaces this on waitFor timeouts, and
+          // tests that care can inspect hub.statePackReceiveFailures
+          // directly.
+          const message = err instanceof Error ? err.message : String(err);
+          statePackReceiveFailures.push({ agentAddress, error: message });
+          return { accepted: false, reason: "corrupt" as const };
+        }
         statePacks.push({ agentAddress, ref, commitSha });
         return { accepted: true };
       },
@@ -270,6 +292,7 @@ async function startHub(): Promise<HubEnv> {
     agentEvents,
     deployAcks,
     statePacks,
+    statePackReceiveFailures,
     hubDataDir,
   };
 }
@@ -285,8 +308,21 @@ let sidecarDataDir: string;
 const sidecarStderr: string[] = [];
 
 function sidecarDiagnostics(): string {
-  if (sidecarStderr.length === 0) return "";
-  return `sidecar stderr:\n${sidecarStderr.slice(-20).join("")}`;
+  const parts: string[] = [];
+  if (sidecarStderr.length > 0) {
+    parts.push(`sidecar stderr:\n${sidecarStderr.slice(-20).join("")}`);
+  }
+  const failures = hub?.statePackReceiveFailures ?? [];
+  if (failures.length > 0) {
+    parts.push(
+      `state-pack receive failures (last ${String(Math.min(failures.length, 10))}):\n` +
+        failures
+          .slice(-10)
+          .map((f) => `  ${f.agentAddress}: ${f.error}`)
+          .join("\n"),
+    );
+  }
+  return parts.join("\n\n");
 }
 
 const AGENT_ADDRESS = "test-agent@integration.interchange";
