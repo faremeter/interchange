@@ -152,6 +152,7 @@ All scripts live in `bin/`. The bash scripts source the bundled [opsh](https://g
 | `bin/add-package`     | `bin/add-package <name>`                         | Scaffold a new `@intx/<name>` package                                                                   |
 | `bin/check-env`       | `bin/check-env`                                  | Verify git hooks are configured                                                                         |
 | `bin/audit`           | `bin/audit --dir <path> --session <id> [--json]` | Inspect an agent's tool authorization audit trail                                                       |
+| `bin/discover.ts`     | `bun bin/discover.ts --provider <name> [flags]`  | Run the wire-capture rig against a registered inference provider (needs provider credentials in env)    |
 | `bin/gen-api-docs.ts` | `bun bin/gen-api-docs.ts`                        | Generate API documentation from route schemas                                                           |
 | `bin/posix-demo`      | `bin/posix-demo`                                 | Run the POSIX (alpha/beta) agent demo (auto-loads `.env`; reads `ALPHA_*`/`BETA_*`)                     |
 | `bin/ring-demo`       | `bin/ring-demo`                                  | Run the ring agent demo (auto-loads `.env`; reads `RING_*`)                                             |
