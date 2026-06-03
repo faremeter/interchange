@@ -8,6 +8,12 @@
 
 ## Quick Start
 
+After cloning, install workspace dependencies. The Makefile does not run this for you, and `make build` will fail with `TS2307: Cannot find module '@intx/...'` for any workspace package whose symlink under `node_modules/@intx/` has not been materialized yet:
+
+```bash
+bun install
+```
+
 If env files are already configured (see Environment Setup below):
 
 ```bash
