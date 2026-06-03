@@ -312,6 +312,9 @@
     "packages/hub-common": {
       "name": "@intx/hub-common",
       "version": "0.0.0",
+      "dependencies": {
+        "@intx/types": "workspace:*",
+      },
     },
     "packages/hub-sessions": {
       "name": "@intx/hub-sessions",
