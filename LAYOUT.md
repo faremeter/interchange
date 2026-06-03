@@ -72,6 +72,7 @@ Each package implements an interface defined in `@intx/types`. The harness accep
 | ------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@intx/tools-posix` | Server      | File read/write/edit, shell execution, git operations. Requires filesystem and process spawning.                                            |
 | `@intx/tools-lsp`   | Server      | Language-server diagnostics. Composes with `tools-posix` and spawns LSP servers over JSON-RPC. Requires process spawning and `which` shell. |
+| `@intx/tools-mail`  | Any         | Mail send/read/search/reply/wait operations on the agent's inbox. Composes with any `MessageTransport` implementation.                      |
 
 ### Why the splits exist
 
