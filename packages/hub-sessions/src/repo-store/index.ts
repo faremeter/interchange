@@ -11,5 +11,5 @@ export type {
   TreeContent,
   ValidatePushResult,
 } from "./types";
-export { SAFE_REPO_ID, UserPrincipal } from "./types";
+export { UserPrincipal } from "./types";
 export { createRepoStore, type CreateRepoStoreConfig } from "./store";

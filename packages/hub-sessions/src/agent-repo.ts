@@ -1,6 +1,6 @@
 import { createSSHSignature } from "@intx/crypto-node";
 
-import { createRepoStore, SAFE_REPO_ID } from "./repo-store";
+import { createRepoStore } from "./repo-store";
 import type { AuthorizeFn, RepoId, RepoStore } from "./repo-store";
 import {
   agentStateKindHandler,
@@ -108,15 +108,7 @@ export function createAgentRepoStore(config: {
 
   const hub: AgentStateHubPrincipal = { kind: "hub" };
 
-  // The substrate enforces the same SAFE_REPO_ID rule with a different
-  // error prefix; we throw the legacy message here so existing callers
-  // and tests that match on it continue to work.
   function repoId(agentId: string): RepoId {
-    if (!SAFE_REPO_ID.test(agentId)) {
-      throw new Error(
-        `agentId contains unsafe characters: ${JSON.stringify(agentId)}`,
-      );
-    }
     return { kind: "agent-state", id: agentId };
   }
 

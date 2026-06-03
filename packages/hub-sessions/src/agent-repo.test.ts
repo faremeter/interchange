@@ -299,12 +299,12 @@ describe("AgentRepoStore", () => {
       store.writeDeployTree("../../evil", {
         systemPrompt: "x",
       }),
-    ).toThrow("agentId contains unsafe characters");
+    ).toThrow("repo_id_invalid: ../../evil");
 
     expect(() =>
       store.writeDeployTree("agent@domain", {
         systemPrompt: "x",
       }),
-    ).toThrow("agentId contains unsafe characters");
+    ).toThrow("repo_id_invalid: agent@domain");
   });
 });
