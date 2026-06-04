@@ -30,15 +30,20 @@ The sidecar manages agent harnesses on behalf of the hub. Each agent gets its ow
 ## Sidecar Package Structure
 
 The sidecar app is a thin wiring file that composes building blocks
-out of `@intx/hub-agent`. The per-agent disk layout, harness
-lifecycle, and the hub WebSocket protocol live in the package; the
-app supplies the concrete crypto / tool / storage / authz plugins.
+out of `@intx/hub-agent`, `@intx/harness`, and `@intx/agent`. The
+per-agent disk layout, harness lifecycle, and the hub WebSocket
+protocol live in `@intx/hub-agent`; the in-process agent runtime
+(`createAgent(def, env)` wrapping the reactor exactly once) lives in
+`@intx/agent`; `@intx/harness` narrows to a composition layer that
+calls `createAgent` and adds transport subscription, the connector
+router, the INBOX watch, and connector-reply forwarding. The app
+supplies the concrete crypto / tool / storage / authz plugins.
 
 ```
 apps/sidecar/
 ├── src/
 │   ├── index.ts             # Entry point, wires the stores, SessionManager, and HubLink
-│   └── default-harness.ts   # HarnessBuilder implementation using posix/LSP/storage-isogit/authz
+│   └── default-harness.ts   # HarnessBuilder; constructs the AgentDefinition and env, calls createHarness(def, env)
 ├── package.json
 └── tsconfig.json
 ```
@@ -218,7 +223,7 @@ If the sidecar discovers agent repositories but has no key pairs for them (e.g.,
 
 Mail is the first-class communication primitive. The sidecar persists outbound mail from agents via `mail.outbound` frames sent to the hub. The hub persists inbound mail sent by users via `POST .../instances/:instanceId/mail` and dispatches it to the sidecar as a `mail.delivered` agent event.
 
-The `onEvent` callback in `HarnessConfig` receives `InferenceEvent` values, which cover inference activity, tool execution, reactor lifecycle, and fork events. `message.received` is a `ReactorInboundEvent` — it is delivered directly to the reactor director and is not forwarded to session channel subscribers. This keeps the external event stream focused on observable inference activity rather than internal routing signals.
+The composition-layer harness exposes the agent's reactor event stream as `harness.stream()`, an `AsyncIterable<ReactorEmittedEvent>`. The sidecar's `HarnessBuilder` drains that stream and adapts each event into an `onEvent(event)` callback for the hub session channel. The stream carries inference activity, tool execution, reactor lifecycle, and fork events. `message.received` is a `ReactorInboundEvent` — it is delivered directly to the reactor director and is not forwarded to session channel subscribers. This keeps the external event stream focused on observable inference activity rather than internal routing signals.
 
 Inference traces are stored separately from mail. The hub records one `inference_turn` per inference cycle and one or more `turn_part` rows per turn. The `/turns` endpoint serves these to UI clients independently of the `/mail` endpoint.
 

@@ -1,15 +1,10 @@
-export { createHarness } from "./harness";
-export type { Harness } from "./harness";
-
-export type { HarnessConfig } from "./config";
-export { validateConfig } from "./config";
-export type { BeforeToolExtension } from "@intx/types/runtime";
-
 export {
-  createDefaultDirector,
-  DefaultDirector,
-  type DefaultDirectorPolicy,
-} from "@intx/inference";
+  createHarness,
+  defineMailTools,
+  type Harness,
+  type MailEnv,
+  type MailToolWrapper,
+} from "./harness";
 
 export { mergeToolRunners } from "./merge-tool-runners";
 

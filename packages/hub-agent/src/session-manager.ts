@@ -343,7 +343,9 @@ export function createSessionManager(
         bundle,
       });
 
-      bundle.harness.start();
+      // The composition-layer harness is started by `createHarness` --
+      // by the time the builder returns the bundle, the agent's
+      // reactor is already running. No separate start() step.
       logger.info`Started session for ${agentAddress} (session ${sessionId})`;
     } catch (err) {
       sessions.delete(agentAddress);
@@ -393,7 +395,7 @@ export function createSessionManager(
     if (session === undefined) {
       throw new Error(`No session exists for agent "${agentAddress}"`);
     }
-    session.harness.stop();
+    await session.harness.close();
     const disposerErrors = await runDisposers(session, agentAddress);
     await drainMailQueue(agentAddress);
     sessions.delete(agentAddress);
@@ -418,7 +420,7 @@ export function createSessionManager(
     if (session === undefined) {
       throw new Error(`No session exists for agent "${agentAddress}"`);
     }
-    session.harness.stop();
+    await session.harness.close();
     const disposerErrors = await runDisposers(session, agentAddress);
     await drainMailQueue(agentAddress);
     sessions.delete(agentAddress);

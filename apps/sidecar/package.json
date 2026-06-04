@@ -5,10 +5,12 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@intx/agent": "workspace:*",
     "@intx/authz": "workspace:*",
     "@intx/crypto-node": "workspace:*",
     "@intx/harness": "workspace:*",
     "@intx/hub-agent": "workspace:*",
+    "@intx/inference": "workspace:*",
     "@intx/log": "workspace:*",
     "@intx/mail-memory": "workspace:*",
     "@intx/storage-isogit": "workspace:*",

@@ -10,10 +10,14 @@
     }
   },
   "dependencies": {
-    "@intx/inference": "workspace:*",
+    "@intx/agent": "workspace:*",
     "@intx/log": "workspace:*",
+    "@intx/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@intx/inference-testing": "workspace:*",
     "@intx/mime": "workspace:*",
-    "@intx/types": "workspace:*",
+    "@intx/storage-isogit": "workspace:*",
     "arktype": "catalog:"
   }
 }

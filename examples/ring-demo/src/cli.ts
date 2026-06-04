@@ -2,6 +2,14 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  buildDefaultDirectorRef,
+  createDefaultDirectorRegistry,
+  defineAgent,
+  defineTool,
+} from "@intx/agent";
+import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
+import type { ReactorEmittedEvent } from "@intx/inference";
 import { setup, getLogger } from "@intx/log";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
@@ -11,9 +19,11 @@ import { createMailTools } from "@intx/tools-mail";
 import {
   createHarness,
   createHarnessRuntimeCapabilities,
-  mergeToolRunners,
+  defineMailTools,
+  type Harness,
+  type MailEnv,
 } from "@intx/harness";
-import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
 await setup({ dev: true });
 
@@ -152,7 +162,8 @@ const stores = await Promise.all(
 // ---------------------------------------------------------------------------
 
 let shutdownInitiated = false;
-const harnesses: ReturnType<typeof createHarness>[] = [];
+const harnesses: Harness[] = [];
+const stopLoggers: (() => void)[] = [];
 const toolRunners: {
   mail: ReturnType<typeof createMailTools>;
   posix: ReturnType<typeof createPosixTools>;
@@ -180,7 +191,7 @@ transportUser.watch("INBOX", (event) => {
 // Event logging
 // ---------------------------------------------------------------------------
 
-function makeEventLogger(label: string): (event: InferenceEvent) => void {
+function makeEventLogger(label: string): (event: ReactorEmittedEvent) => void {
   return (event) => {
     switch (event.type) {
       case "inference.start":
@@ -350,20 +361,71 @@ for (const [i, name] of AGENT_NAMES.entries()) {
     capabilities: createHarnessRuntimeCapabilities({ transport }),
   });
   const posix = createPosixTools({ cwd: process.cwd() });
-  const tools = mergeToolRunners([mail, posix]);
   toolRunners.push({ mail, posix });
-  const h = createHarness({
-    address: agentAddress(name),
-    systemPrompt: buildRingPrompt(name, i),
-    source,
-    transport,
-    crypto,
-    storage,
-    tools,
-    onEvent: makeEventLogger(name),
-    defaultDirectorPolicy: i !== 0 ? { mode: "reactive" } : {},
+
+  const mailFactory = defineMailTools(() => ({
+    definitions: mail.definitions,
+    run: (call, signal) => mail.run(call, signal),
+  }));
+  const posixFactory = defineTool({
+    id: `@interchange-demo/ring-demo/posix-${name}`,
+    factory: () => ({
+      definitions: posix.definitions,
+      run: (call, signal) => posix.run(call, signal),
+    }),
   });
+
+  const def = defineAgent({
+    id: agentAddress(name),
+    systemPrompt: buildRingPrompt(name, i),
+    // The braintrust-style ring agents past index 0 use the reactive
+    // director mode (one tool call per inbound message, no second
+    // infer); alpha uses conversational so it can compose the final
+    // reply.
+    director:
+      i !== 0
+        ? buildDefaultDirectorRef({ mode: "reactive" })
+        : buildDefaultDirectorRef({}),
+    tools: [mailFactory, posixFactory],
+    capabilities: [],
+    inference: {
+      sources: [{ provider: source.provider, model: source.model }],
+    },
+  });
+
+  const env: MailEnv = {
+    source,
+    storage,
+    workdir: join(TMP_ROOT, name),
+    audit: noopAuditStore(),
+    authorize: permissiveAuthorize(),
+    directors: createDefaultDirectorRegistry(),
+    transport,
+    address: agentAddress(name),
+  };
+
+  const h = await createHarness(def, env);
   harnesses.push(h);
+
+  const logger = makeEventLogger(name);
+  // Register the StreamConsumer synchronously so events emitted in
+  // the window before the IIFE's for-await loop starts are buffered
+  // rather than dropped.
+  const events = h.stream();
+  let stop = false;
+  void (async () => {
+    try {
+      for await (const event of events) {
+        if (stop) break;
+        logger(event);
+      }
+    } catch {
+      /* swallow during shutdown */
+    }
+  })();
+  stopLoggers.push(() => {
+    stop = true;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -374,14 +436,21 @@ function shutdown(signal: string): void {
   if (shutdownInitiated) return;
   shutdownInitiated = true;
   log.info("Received {signal}, shutting down", { signal });
-  for (const h of harnesses) h.stop();
+  for (const s of stopLoggers) s();
   clearTimeout(safetyTimer);
-  // Each per-agent tool runner owns its own resources. mergeToolRunners
-  // does not aggregate dispose — the demo built the per-package runners
-  // and is responsible for disposing them.
-  void Promise.all(
-    toolRunners.flatMap(({ mail, posix }) => [mail.dispose(), posix.dispose()]),
-  );
+  // Each per-agent tool runner owns its own resources. createHarness
+  // does not aggregate dispose -- the demo built the per-package
+  // runners and is responsible for disposing them after each harness
+  // closes.
+  void (async () => {
+    await Promise.all(harnesses.map((h) => h.close()));
+    await Promise.all(
+      toolRunners.flatMap(({ mail, posix }) => [
+        mail.dispose(),
+        posix.dispose(),
+      ]),
+    );
+  })();
 }
 
 process.once("SIGINT", () => shutdown("SIGINT"));
@@ -395,10 +464,11 @@ const safetyTimer = setTimeout(() => {
 }, 300_000);
 
 // ---------------------------------------------------------------------------
-// Start and seed
+// Seed
 // ---------------------------------------------------------------------------
-
-for (const h of harnesses) h.start();
+//
+// The composition-layer harnesses are started by createHarness above;
+// no separate start() step is needed.
 
 log.info("Sending prompt to alpha: {prompt}", { prompt: SEED_PROMPT });
 

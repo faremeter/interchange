@@ -1,379 +1,490 @@
-// Agent harness: supervisor, connector, and reactor wiring.
+// @intx/harness composition layer.
 //
-// The harness is the supervisor layer between the message transport and the
-// reactor. It watches the agent's INBOX, routes messages by thread, and
-// manages the connector lifecycle.
+// The harness imports `@intx/agent` and composes a mail-transport
+// surface on top of `createAgent(def, env)`. The reactor is wrapped
+// exactly once -- inside the agent harness in `@intx/agent`. This
+// module owns transport subscription, the connector router and its
+// state persistence, the INBOX watch loop, and the outbound side of
+// `connector.reply` events.
 //
-// Connector semantics:
-//   - Messages in the active connector thread are fetched, delivered to the
-//     reactor, and deleted from the INBOX (consumed).
-//   - All other inbound messages (replies to agent sends, unsolicited
-//     inter-agent mail) are delivered to the reactor and stay in the INBOX.
-//   - Outbound replies are sent by the harness when the reactor emits a
-//     connector.reply event, with correct threading headers.
-//
-// The INBOX is a delivery queue — the persistent conversation record lives in
-// the context store (git), not the mailbox.
-//
-// (ARCHITECTURE.md § Agent Harness, INFERENCE.md § Relationship to Harness)
+// What this module does *not* own: reactor wrapping, audit accumulation
+// or flushing, source-registry hot-swap. Those live in `@intx/agent`
+// and are reached via `agent.deliver`, `agent.setSource`, and
+// `agent.stream()` respectively.
 
-import { getLogger } from "@intx/log";
-import { createReactorAssembly, createDefaultDirector } from "@intx/inference";
-import type { ReactorEmittedEvent } from "@intx/inference";
 import {
+  createAgent,
+  defineTool,
+  type Agent,
+  type AgentDefinition,
+  type AnnotatedToolFactory,
+  type BaseEnv,
+  type ToolBundle,
+} from "@intx/agent";
+import { getLogger } from "@intx/log";
+import type {
+  BlobReader,
+  ConnectorThreadState,
+  ContextStore,
+  InboundMessage,
   InferenceSource,
-  applyInferenceSourceFields,
-  type BlobReader,
-  type ContextStore,
-  type InboundMessage,
-  type Unsubscribe,
-  type ReactorDirector,
+  MessageTransport,
+  Unsubscribe,
 } from "@intx/types/runtime";
 
-import type { ErrorRecord } from "@intx/types/audit";
-
-import type { HarnessConfig } from "./config";
-import { validateConfig } from "./config";
 import { createConnectorRouter, type RouteDecision } from "./connector-router";
-import { type } from "arktype";
 
 const logger = getLogger(["interchange", "harness"]);
 
-export type Harness = {
-  /**
-   * Begin watching the agent's INBOX and start the reactor event loop.
-   * Must be called exactly once.
-   */
-  start(): void;
+/**
+ * Env extension the composition layer requires beyond `BaseEnv`. Tools
+ * shipped by this package declare the matching `requires` so
+ * `validateEnv` can blame either at the env entry point.
+ *
+ * `onReplySendFailed` is invoked when the reply drain catches a failure
+ * from `connectorRouter.composeReply` or `transport.send` for an
+ * outbound `connector.reply`. The reply is dropped and the router
+ * state is not advanced; the callback is the only programmatic surface
+ * a caller has to observe the loss. Production deployments that need
+ * retry semantics layer them on top of this callback.
+ *
+ * The callback may be synchronous or async; the reply drain awaits its
+ * resolution so an async callback's rejection is observed (and logged)
+ * rather than surfacing as an unhandled promise rejection.
+ *
+ * `onReplyDrainTerminated` is invoked when the reply drain's `for await`
+ * loop exits abnormally -- the only documented case is a
+ * `StreamBackpressureError` thrown by the agent's event stream when the
+ * drain's per-consumer buffer overruns `streamBufferMax`. After this
+ * fires the harness is no longer forwarding `connector.reply` events to
+ * the transport: in-process `agent.send()` callers still resolve, but
+ * outbound replies are silently dropped until `close()`. Production
+ * deployments that need to alert on this failure mode subscribe via
+ * this callback; the harness only emits a `logger.warn` otherwise. The
+ * callback may be synchronous or async and is awaited the same way
+ * `onReplySendFailed` is, so an async rejection is observed (and
+ * logged) rather than escaping as an unhandled rejection.
+ */
+export interface MailEnv extends BaseEnv {
+  transport: MessageTransport;
+  address: string;
+  onConnectorStateChanged?: (state: ConnectorThreadState | null) => void;
+  onReplySendFailed?: (cause: unknown) => void | Promise<void>;
+  onReplyDrainTerminated?: (cause: unknown) => void | Promise<void>;
+}
 
-  /**
-   * Initiate graceful shutdown: abort the reactor, unsubscribe from the
-   * transport watch, and flush state to the context store.
-   */
-  stop(): void;
-
-  /**
-   * Inject an already-fetched inbound message directly into the reactor.
-   * Useful for testing and for messages the harness receives through channels
-   * other than the INBOX watch.
-   */
+/**
+ * Narrowed public surface returned by `createHarness`. `close` is the
+ * only direct surface; everything else is a pass-through to the
+ * underlying agent. `stream` is exposed so observability consumers can
+ * subscribe to the reactor's event stream without having to grab the
+ * agent reference.
+ */
+export interface Harness {
+  close(): Promise<void>;
   deliver(message: InboundMessage): void;
-
-  /**
-   * Hot-swap the active inference source. Takes effect on the next
-   * inference call — in-flight calls continue with the previous source.
-   */
   setSource(source: InferenceSource): void;
-
-  /**
-   * Read-only blob reader backed by this harness's context store. Pass it to
-   * the tool factory (e.g. `createPosixTools({ blobReader })`) so the agent
-   * can resolve `tool-output:///{callId}` URIs through the same store the
-   * reactor commits to.
-   */
+  stream: Agent["stream"];
   readonly blobReader: BlobReader;
-};
+}
 
-export function createHarness(config: HarnessConfig): Harness {
-  validateConfig(config);
+/**
+ * Mail-tool factory shape. The `createMailTools` constructor in
+ * `@intx/tools-mail` builds a runner from a transport-bearing
+ * capability set; the harness wraps that into a single `defineTool`
+ * bundle whose `requires` names the env keys the wrapper touches.
+ *
+ * Callers (e.g. the sidecar) supply the wrapper as a tool factory on
+ * their `AgentDefinition`. `createHarness` does not synthesize it
+ * internally -- the caller is the layer that knows which mail-tool
+ * implementation to use.
+ */
+export type MailToolWrapper = (
+  transport: MessageTransport,
+) => Omit<ToolBundle, "dispose">;
 
-  const { transport, storage, source, tools, onEvent } = config;
-
-  let director: ReactorDirector;
-  if (config.director !== undefined) {
-    director = config.director;
-  } else {
-    // The caller-supplied tools runner carries the full set of tool
-    // definitions the model should see; pass them through to the
-    // director as-is.
-    director = createDefaultDirector(
-      config.systemPrompt,
-      tools.definitions,
-      config.defaultDirectorPolicy ?? {},
-    );
+/**
+ * Invoke the caller-supplied `onReplySendFailed` callback and absorb any
+ * failure it raises. Extracted from the reply drain so the await-the-
+ * callback contract is testable in isolation: a bare invocation would
+ * compile (TypeScript admits `async () => void` as satisfying a `void`-
+ * returning signature) but would let an async callback's rejection
+ * escape as an unhandled promise rejection. Awaiting protects against
+ * that; the helper exists so the protection is asserted by a test
+ * rather than implied by inspection of the drain.
+ *
+ * Exported only for the regression test in this package; no external
+ * consumer should call it.
+ *
+ * The export-and-mark-internal shape is the codebase's convention
+ * for helpers that exist to make a production-code contract
+ * testable in isolation. A separate `@intx/harness/testing`
+ * entry-point was considered and rejected: the helper is one
+ * try/catch wrapper around the production callback, tightly
+ * coupled to the `MailEnv` callback type defined adjacent to it.
+ * Moving it would either duplicate the production code in a test
+ * module (defeating the point) or require a parallel entry-point
+ * whose only export is a single function -- bundler ceremony for a
+ * boundary TypeScript cannot enforce anyway, since deep imports
+ * (`@intx/harness/src/harness`) reach the same module regardless
+ * of what `index.ts` re-exports. The docstring convention is
+ * load-bearing here: the marker is the contract.
+ *
+ * `invokeReplyDrainTerminated` (below) follows the same shape for
+ * the same reason.
+ */
+export async function invokeReplySendFailed(
+  callback: NonNullable<MailEnv["onReplySendFailed"]>,
+  cause: unknown,
+): Promise<void> {
+  try {
+    await callback(cause);
+  } catch (callbackError) {
+    logger.error`onReplySendFailed callback threw: ${callbackError}`;
   }
+}
 
-  const sessionId = crypto.randomUUID();
+/**
+ * Invoke the caller-supplied `onReplyDrainTerminated` callback and
+ * absorb any failure it raises. Mirrors `invokeReplySendFailed`:
+ * extracted from the reply drain so the await-the-callback contract
+ * is testable in isolation, exported only for the regression test in
+ * this package.
+ */
+export async function invokeReplyDrainTerminated(
+  callback: NonNullable<MailEnv["onReplyDrainTerminated"]>,
+  cause: unknown,
+): Promise<void> {
+  try {
+    await callback(cause);
+  } catch (callbackError) {
+    logger.error`onReplyDrainTerminated callback threw: ${callbackError}`;
+  }
+}
 
-  const auditStore = config.auditStore;
+/**
+ * Construct an `AnnotatedToolFactory` for a mail-tool bundle. The
+ * factory binds `transport` from env at construction time and produces
+ * a bundle whose lifetime is tied to the agent. Disposal of the
+ * underlying mail tools is the caller's responsibility (the env is the
+ * agent's dependency contract; the caller owns what it puts in env);
+ * the agent itself does not call bundle disposers (see the
+ * `ToolBundle` contract in `@intx/agent`). Callers that need to
+ * dispose mail tools on shutdown retain a reference to the underlying
+ * `MailToolWrapper`'s output and invoke its `dispose` directly --
+ * routing disposal through the bundle the agent receives would still
+ * not fire since the agent never holds it.
+ *
+ * The `requires: ["transport", "address"]` declaration captures the
+ * env-key surface of the entire mail composition path -- the factory
+ * body reads `transport`, and `createHarness` (which the caller pairs
+ * this factory with) reads `env.address` to label rejected-message
+ * log records identifying which agent's router refused the message.
+ * No routing decision keys off `env.address` -- the connector router
+ * routes on per-message thread state, not on the agent's own
+ * address -- so the field is observability-only. It still belongs in
+ * `requires` because the harness's log record assumes the field is
+ * populated; declaring it here lets the agent's `validateEnv` blame a
+ * missing `address` at construction time rather than letting the
+ * watch loop discover it under operational load. Callers that hand-
+ * build a `defineTool` factory for a different mail-tool runner must
+ * remember to surface `address` on their own `requires` if their
+ * `createHarness` consumes it -- the agent has no way to deduce
+ * composition-layer env requirements from a factory body that does
+ * not itself read the field.
+ *
+ * The `requires` set is fixed at the two keys above by design; this
+ * helper is not the extension point for mail-tool runners that need
+ * additional env keys. A mail tool that wants to read (say) a tenant
+ * identifier from env should drop down to `defineTool` directly,
+ * declare its own `requires` with the full surface, and call the
+ * underlying mail-tool constructor inside that factory. Folding an
+ * additional `requires` parameter into `defineMailTools` would push
+ * the "what does the harness need vs. what does the tool runner
+ * need" partition onto the caller, which is exactly the partition
+ * this helper exists to hide.
+ */
+export function defineMailTools(
+  wrapper: MailToolWrapper,
+): AnnotatedToolFactory<MailEnv> {
+  return defineTool<MailEnv>({
+    id: "@intx/harness/mail",
+    requires: ["transport", "address"],
+    factory: (env) => {
+      const bundle = wrapper(env.transport);
+      return {
+        definitions: bundle.definitions,
+        run: (call, signal) => bundle.run(call, signal),
+      };
+    },
+  });
+}
 
-  const accumulatedErrors: ErrorRecord[] = [];
-  let errorSeq = 0;
-
-  // -------------------------------------------------------------------------
-  // Connector state: track which thread(s) this reactor owns.
-  // -------------------------------------------------------------------------
+/**
+ * Construct a composition-layer agent: the underlying agent wrapped
+ * with connector-state-aware storage, transport subscription, INBOX
+ * watch, and connector-reply forwarding.
+ *
+ * The reactor is wrapped exactly once -- inside `createAgent`.
+ * `createHarness` augments env.storage with connector-state load/save
+ * and subscribes to the agent's event stream to intercept
+ * `connector.reply` events for outbound transport sends.
+ */
+export async function createHarness<EnvReq extends MailEnv>(
+  def: AgentDefinition<EnvReq>,
+  env: EnvReq,
+): Promise<Harness> {
+  const transport = env.transport;
 
   const connectorRouter = createConnectorRouter(
-    config.onConnectorStateChanged !== undefined
-      ? { onStateChanged: config.onConnectorStateChanged }
+    env.onConnectorStateChanged !== undefined
+      ? { onStateChanged: env.onConnectorStateChanged }
       : undefined,
   );
 
-  // Wrap the context store so load() restores connector state and the reactor's
-  // per-cycle writeMetadata picks up the live connector state via the underlying
-  // store's setConnectorState buffer (Phase 4: connector state rides along with
-  // metadata.json rather than being injected during commit).
-  const wrappedStore: ContextStore = {
+  // Wrap env.storage so load() restores connector state and per-cycle
+  // writeMetadata picks up the live connector state via the underlying
+  // store's setConnectorState buffer.
+  //
+  // The wrapper is implemented as a Proxy over env.storage so adding a
+  // new method to ContextStore does not require touching the harness:
+  // any method not named in `overrides` forwards to env.storage with
+  // its `this` bound to env.storage. The two overrides intercept
+  // load (cold-boot restore) and writeMetadata (flush router snapshot
+  // before delegate). `setConnectorState` is left to the default
+  // Proxy fall-through path since the harness adds no behaviour beyond
+  // delegation there.
+  const overrides: Pick<ContextStore, "load" | "writeMetadata"> = {
     async load(signal) {
-      const loaded = await storage.load(signal);
+      const loaded = await env.storage.load(signal);
       connectorRouter.restore(loaded.connectorState);
       return loaded;
     },
-    setConnectorState(state) {
-      storage.setConnectorState(state);
-    },
-    async commit(options, signal) {
-      return storage.commit(options, signal);
-    },
-    async branch(name, signal) {
-      return storage.branch(name, signal);
-    },
-    async log(limit, signal) {
-      return storage.log(limit, signal);
-    },
-    async readAt(hash, signal) {
-      return storage.readAt(hash, signal);
-    },
-    async writeBlob(key, bytes, contentType, signal) {
-      return storage.writeBlob(key, bytes, contentType, signal);
-    },
-    async readBlob(key, signal) {
-      return storage.readBlob(key, signal);
-    },
-    async writePrompt(turns, signal) {
-      return storage.writePrompt(turns, signal);
-    },
-    async writeResponse(turn, signal) {
-      return storage.writeResponse(turn, signal);
-    },
-    async writeManifest(records, signal) {
-      return storage.writeManifest(records, signal);
-    },
-    async writeTurns(turns, signal) {
-      return storage.writeTurns(turns, signal);
-    },
     async writeMetadata(metadata, signal) {
-      // Flush the current in-memory connector state into the wrapped store's
-      // buffer so writeMetadata picks it up alongside pendingOperations and
-      // tokenUsage. This is the reactor's per-cycle moment to durably record
-      // connector thread state.
-      storage.setConnectorState(connectorRouter.snapshot());
-      return storage.writeMetadata(metadata, signal);
-    },
-    async readManifestHistory(limit, signal) {
-      return storage.readManifestHistory(limit, signal);
+      // Flush the current in-memory connector state into the wrapped
+      // store's buffer so writeMetadata picks it up alongside
+      // pendingOperations and tokenUsage. This is the reactor's
+      // per-cycle moment to durably record connector thread state.
+      env.storage.setConnectorState(connectorRouter.snapshot());
+      return env.storage.writeMetadata(metadata, signal);
     },
   };
 
-  /**
-   * Delete a message from the INBOX after it has been delivered to the reactor.
-   */
-  async function consumeFromInbox(message: InboundMessage): Promise<void> {
-    try {
-      await transport.setFlags(message.ref, ["\\Deleted"]);
-      await transport.expunge("INBOX");
-    } catch (cause) {
-      logger.warn`Failed to consume message uid=${message.ref.uid} from INBOX: ${cause}`;
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // Event interception
-  // -------------------------------------------------------------------------
-
-  function handleEvent(event: ReactorEmittedEvent): void {
-    // Handle connector.reply: send the reply via transport.
-    if (event.type === "connector.reply") {
-      const replyContent = event.data.content;
-
-      void (async () => {
-        try {
-          const parts = connectorRouter.composeReply();
-          const receipt = await transport.send({
-            ...parts,
-            content: replyContent,
-            type: "conversation.message",
-          });
-          connectorRouter.onReplySent(receipt);
-        } catch (cause) {
-          logger.error`Failed to send connector reply: ${cause}`;
-        }
-      })();
-    }
-
-    // message.received is reactor-internal; do not forward to the caller.
-    if (event.type === "message.received") return;
-
-    if (event.type === "inference.error" && auditStore) {
-      accumulatedErrors.push({
-        source: "inference",
-        category: event.data.error.category,
-        message: event.data.error.message,
-        fatal: false,
-        timestamp: new Date().toISOString(),
-        sessionId,
-        seq: errorSeq++,
-        ...(event.data.error.statusCode !== undefined
-          ? { statusCode: event.data.error.statusCode }
-          : {}),
-      });
-    }
-
-    if (event.type === "reactor.error" && auditStore) {
-      accumulatedErrors.push({
-        source: "reactor",
-        category: "reactor_error",
-        message: event.data.error,
-        fatal: event.data.fatal,
-        timestamp: new Date().toISOString(),
-        sessionId,
-        seq: errorSeq++,
-      });
-    }
-
-    onEvent(event);
-  }
-
-  // -------------------------------------------------------------------------
-  // Reactor
-  // -------------------------------------------------------------------------
-
-  async function flushErrors(): Promise<void> {
-    if (accumulatedErrors.length === 0) return;
-    if (auditStore === undefined) return;
-    const count = accumulatedErrors.length;
-    await auditStore.commitErrors(accumulatedErrors.slice(0, count));
-    accumulatedErrors.splice(0, count);
-  }
-
-  // activeSource is held as a single mutable object whose reference is
-  // shared with the reactor's config (via the assembly helper). The reactor
-  // reads the source lazily at each inference call, so mutating the
-  // fields on this object hot-swaps credentials and model without
-  // restarting.
-  const activeSource: InferenceSource = { ...source };
-
-  const { reactor, blobReader } = createReactorAssembly({
-    sessionId,
-    director,
-    source: activeSource,
-    toolRunner: tools,
-    contextStore: wrappedStore,
-    onEvent: handleEvent,
-    ...(config.authorize !== undefined ? { authorize: config.authorize } : {}),
-    ...(config.auditStore !== undefined
-      ? { auditStore: config.auditStore }
-      : {}),
-    ...(config.beforeToolExtensions !== undefined
-      ? { beforeToolExtensions: config.beforeToolExtensions }
-      : {}),
-    // flushErrors only runs when audit is wired — preserves today's
-    // behavior where harness.ts only invokes flushErrors inside the
-    // auditCollector branch.
-    ...(config.auditStore !== undefined
-      ? { afterCheckpoint: flushErrors, onShutdown: flushErrors }
-      : {}),
+  const wrappedStorage: ContextStore = new Proxy(env.storage, {
+    get(target, prop, _receiver) {
+      if (prop === "load") return overrides.load;
+      if (prop === "writeMetadata") return overrides.writeMetadata;
+      const value = Reflect.get(target, prop, target);
+      // Bind methods to the underlying store so isogit-style
+      // closure-captured state and prototype-bound this both resolve
+      // against the real store, not the proxy.
+      return typeof value === "function" ? value.bind(target) : value;
+    },
   });
 
-  let unsubscribe: Unsubscribe | null = null;
-  let started = false;
-  let stopped = false;
+  const agentEnv = { ...env, storage: wrappedStorage };
 
-  function start(): void {
-    if (started) {
-      throw new Error("Harness is already started");
-    }
-    started = true;
+  const agent = await createAgent(def, agentEnv);
 
-    // Subscribe to the INBOX before starting the reactor so no messages are
-    // missed in the window between subscription and first watch callback.
-    unsubscribe = transport.watch("INBOX", (event) => {
-      if (stopped) return;
-
-      if (event.type !== "exists") {
-        return;
+  // From here through the final `return`, the agent is constructed
+  // and the workdir lock is held. Anything that throws -- the reply
+  // drain's IIFE-construction expression, `transport.watch()`,
+  // anything in the watch callback's synchronous registration -- has
+  // to release the lock by closing the agent before re-raising; the
+  // caller never sees the agent and cannot do it themselves.
+  // `createAgent` covers its own internal failure paths via its
+  // `succeeded`/`finally` shape; this is the matching coverage for
+  // the harness's own construction tail.
+  let harnessSucceeded = false;
+  try {
+    // Background drain of the agent's event stream. Intercepts
+    // `connector.reply` to send the reply via transport; everything
+    // else flows past unobserved. Other consumers can subscribe to the
+    // exposed `stream()` method to see the same events.
+    //
+    // Reply sends are serialized through `replyChain` so two replies
+    // fired in quick succession do not interleave their
+    // composeReply / transport.send / onReplySent sequence -- the
+    // second reply waits for the first's receipt to land in the router
+    // before composing its own.
+    let stopReplyDrain = false;
+    let replyChain: Promise<void> = Promise.resolve();
+    const replyDrainDone = (async () => {
+      try {
+        for await (const event of agent.stream()) {
+          if (stopReplyDrain) break;
+          if (event.type === "connector.reply") {
+            const replyContent = event.data.content;
+            replyChain = replyChain.then(async () => {
+              try {
+                const parts = connectorRouter.composeReply();
+                const receipt = await transport.send({
+                  ...parts,
+                  content: replyContent,
+                  type: "conversation.message",
+                });
+                connectorRouter.onReplySent(receipt);
+              } catch (cause) {
+                // The reply is dropped and the router state stays at
+                // its pre-send value. Surface the loss to the caller's
+                // optional onReplySendFailed callback in addition to
+                // the operator-facing log so programmatic consumers
+                // (retries, alerting) can observe what logger.error
+                // alone hides.
+                logger.error`Failed to send connector reply: ${cause}`;
+                if (env.onReplySendFailed !== undefined) {
+                  await invokeReplySendFailed(env.onReplySendFailed, cause);
+                }
+              }
+            });
+          }
+        }
+        // Drain any pending reply before the loop exits so close() sees
+        // a settled state.
+        await replyChain;
+      } catch (cause) {
+        // The agent's stream throws on backpressure violations; log and
+        // exit the drain. The reply path stops working but the rest of
+        // the harness keeps running until close() tears it down.
+        // Surface the loss to the caller's optional
+        // `onReplyDrainTerminated` callback so programmatic consumers
+        // (alerting, watchdogs) can observe what `logger.warn` alone
+        // hides.
+        logger.warn`Reply-drain stream terminated: ${cause}`;
+        if (env.onReplyDrainTerminated !== undefined) {
+          await invokeReplyDrainTerminated(env.onReplyDrainTerminated, cause);
+        }
       }
+    })();
+
+    // Delete a message from the INBOX after it has been delivered to the
+    // reactor.
+    //
+    // A failure here is logged and swallowed: the router state has
+    // already been committed and `agent.deliver` has accepted the
+    // message, so re-raising would unwind a half-applied delivery. The
+    // message stays in the INBOX and a future startup (or watch firing)
+    // re-fetches it, re-routes it, and re-delivers it. The router's
+    // persisted state makes that benign on the routing side: the sender
+    // is already a thread participant, so `route()` returns either a
+    // `continue` (which is a no-op state mutation since the sender is
+    // unchanged) or a `passthrough` (no headers match). The agent's
+    // director sees a duplicate `message.received`; idempotent
+    // directors are unaffected, and the audit trail records the
+    // duplicate for post-hoc reconciliation.
+    async function consumeFromInbox(message: InboundMessage): Promise<void> {
+      try {
+        await transport.setFlags(message.ref, ["\\Deleted"]);
+        await transport.expunge("INBOX");
+      } catch (cause) {
+        logger.warn`Failed to consume message uid=${message.ref.uid} from INBOX: ${cause}`;
+      }
+    }
+
+    // INBOX watch loop. Subscribe before the agent's reactor is fully
+    // settled so no message is missed in the window between subscription
+    // and the first watch callback.
+    let stopped = false;
+    const unsubscribe: Unsubscribe = transport.watch("INBOX", (event) => {
+      if (stopped) return;
+      if (event.type !== "exists") return;
 
       const ref = { uid: event.uid, mailbox: "INBOX" };
 
       void (async () => {
-        let message;
         try {
-          message = await transport.fetchFull(ref);
+          let message: InboundMessage;
+          try {
+            message = await transport.fetchFull(ref);
+          } catch (cause) {
+            logger.error`Failed to fetch message uid=${event.uid}: ${cause}`;
+            return;
+          }
+
+          if (stopped) return;
+
+          let decision: RouteDecision;
+          try {
+            decision = connectorRouter.route(message);
+          } catch (cause) {
+            // A router-rejected message (malformed headers, parse error
+            // inside the router, etc.) is still surfaced to the agent
+            // as an inbound `message.received`. The agent's director
+            // decides what the message means and how to respond;
+            // dropping it on the floor here would hide messages the
+            // operator may want to see. The router's state is *not*
+            // committed for the rejected message, so subsequent replies
+            // compose against the pre-rejection thread state.
+            logger.warn`Connector router rejected message uid=${message.ref.uid} for agent ${env.address}: ${cause instanceof Error ? cause.message : String(cause)}`;
+            if (stopped) return;
+            agent.deliver(message);
+            return;
+          }
+
+          if (decision.kind === "passthrough") {
+            if (stopped) return;
+            agent.deliver(message);
+            return;
+          }
+
+          // start or continue: commit router state synchronously before
+          // any await so a concurrent watch callback observes the
+          // updated state.
+          connectorRouter.commit(decision);
+          if (stopped) return;
+          agent.deliver(message);
+          await consumeFromInbox(message);
         } catch (cause) {
-          logger.error`Failed to fetch message uid=${event.uid}: ${cause}`;
-          return;
+          // `agent.deliver` throws `AgentClosedError` synchronously when
+          // called after the agent has closed. The `if (stopped) return`
+          // guards above narrow the race window but cannot close it: a
+          // `close()` call landing between the guard and the synchronous
+          // throw still surfaces the rejection here. The fetched message
+          // is dropped; close() is in progress and the harness is
+          // tearing down, so the loss is expected. Without this catch
+          // the rejection would escape the void-IIFE as an unhandled
+          // promise rejection on the event loop.
+          if (cause instanceof Error && cause.name === "AgentClosedError") {
+            logger.warn`INBOX watch dropped uid=${event.uid} because the agent closed mid-delivery`;
+            return;
+          }
+          logger.error`INBOX watch failed for uid=${event.uid}: ${cause}`;
         }
-
-        if (stopped) return;
-
-        // Only connector-thread messages are consumed from the INBOX.
-        // Everything else is delivered to the reactor and stays in the
-        // INBOX so message tools can access it.
-        //
-        // route() can throw on malformed inbound headers (e.g. a From
-        // header that is not a valid RFC 5322 address). Surface the
-        // failure via the logger and fall through to passthrough so
-        // the message still reaches the reactor for inspection, but
-        // do not advance router state or consume.
-        let decision: RouteDecision;
-        try {
-          decision = connectorRouter.route(message);
-        } catch (cause) {
-          logger.warn`Connector router rejected message uid=${message.ref.uid} for agent ${config.address}: ${cause instanceof Error ? cause.message : String(cause)}`;
-          reactor.deliver(message);
-          return;
-        }
-
-        if (decision.kind === "passthrough") {
-          // Non-connector mail (replies to agent sends, unsolicited
-          // inter-agent mail, etc.). Deliver to reactor for notification
-          // but leave in INBOX for message tools.
-          reactor.deliver(message);
-          return;
-        }
-
-        // start or continue: commit router state synchronously before
-        // any await so that a concurrent watch callback fired during
-        // consumeFromInbox observes the updated state.
-        connectorRouter.commit(decision);
-        reactor.deliver(message);
-        await consumeFromInbox(message);
       })();
     });
 
-    reactor.start();
-  }
-
-  function stop(): void {
-    if (stopped) return;
-    stopped = true;
-
-    reactor.abort("user_disconnect");
-
-    if (unsubscribe !== null) {
+    async function close(): Promise<void> {
+      if (stopped) return;
+      stopped = true;
       unsubscribe();
-      unsubscribe = null;
+      stopReplyDrain = true;
+      await agent.close();
+      // The reply-drain loop exits once the underlying stream closes
+      // (close() above terminates streamConsumers). Awaiting here makes
+      // close idempotent and lets callers rely on a settled state.
+      await replyDrainDone;
+    }
+
+    const harness: Harness = {
+      close,
+      deliver: (message) => agent.deliver(message),
+      setSource: (source) => agent.setSource(source),
+      stream: () => agent.stream(),
+      blobReader: agent.blobReader,
+    };
+    harnessSucceeded = true;
+    return harness;
+  } finally {
+    if (!harnessSucceeded) {
+      // Close the agent without waiting on its shutdown timeout so a
+      // synchronous post-`createAgent` throw does not stall the
+      // caller's failure path. The `.catch` swallows any rejection
+      // from the close: the caller is already receiving the original
+      // throw, and a noisier-than-original close failure here would
+      // mask it.
+      void agent.close().catch(() => {
+        // Swallow per the comment above.
+      });
     }
   }
-
-  function deliver(message: InboundMessage): void {
-    reactor.deliver(message);
-  }
-
-  function setSource(newSource: InferenceSource): void {
-    const parsed = InferenceSource(newSource);
-    if (parsed instanceof type.errors) {
-      throw new Error(`Invalid InferenceSource: ${parsed.summary}`);
-    }
-    // Mutate the shared activeSource object in place so the reactor's
-    // next inference call (which reads the source lazily through the
-    // same reference held by the assembly helper) observes the new
-    // fields. Defaults and capabilities rotate alongside the
-    // credentials.
-    applyInferenceSourceFields(activeSource, parsed);
-  }
-
-  return { start, stop, deliver, setSource, blobReader };
 }

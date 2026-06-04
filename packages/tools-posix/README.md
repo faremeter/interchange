@@ -30,7 +30,7 @@ the filesystem.
 import { createHarness } from "@intx/harness";
 import { createPosixTools } from "@intx/tools-posix";
 
-const harness = createHarness(harnessConfig);
+const harness = await createHarness(def, env);
 const tools = createPosixTools({
   cwd: workDir,
   blobReader: harness.blobReader,
