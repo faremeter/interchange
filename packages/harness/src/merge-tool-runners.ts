@@ -1,11 +1,15 @@
-// Generic, mail-agnostic merger for tool runners. Takes an arbitrary list
-// of (runner + its declared definitions) and produces a single runner
-// whose definitions list is the concatenation, with name-collision
-// detection at construction.
+// Generic, mail-agnostic merger for tool runners. Takes an arbitrary
+// list of (runner + its declared definitions) and produces a single
+// runner whose definitions list is the concatenation, with
+// name-collision detection at construction.
 //
-// Used by hosts (e.g. the sidecar) that want to compose multiple tool
-// packages — mail, posix, lsp, third-party — into the single
-// `ToolRunner & { definitions }` shape the harness accepts.
+// Retained for external callers that compose multiple bundles outside
+// the `defineTool` shape -- the in-tree composition path now flows
+// through `defineMailTools` / `AnnotatedToolFactory`, and the agent's
+// own `resolveTools` handles definition aggregation and dispatch. No
+// in-tree code path calls this helper at run time; it stays in the
+// public surface because the harness ships it for hosts that prefer
+// the merged-runner shape.
 
 import type {
   ToolCall,

@@ -1,38 +1,66 @@
 # @intx/harness
 
-Agent harness runtime. Composes the inference reactor, tool
-runners, deploy-tree reader, default director, runtime
-capabilities, and connector router into a single supervisor that
-sits between the message transport and the reactor.
+Composition layer over `@intx/agent` that adds the mail-transport
+surface: INBOX watch, connector router, connector-reply outbound
+forwarding, and connector-state persistence layered on top of the
+agent's context store. The reactor is wrapped exactly once -- inside
+`@intx/agent`'s `createAgent` -- and the harness composes around that.
 
-The harness watches the agent's INBOX, routes inbound messages by
-thread, sends connector replies with the right threading headers,
-and drives the reactor loop to completion. Consumed by
-`@intx/agent` for in-process agents and by `@intx/hub-agent` for
-sidecar-hosted agents.
+Consumed by `apps/sidecar` for sidecar-hosted agents and by demo
+examples that need a transport-bearing agent.
 
 ```ts
-import { createHarness, mergeToolRunners } from "@intx/harness";
+import {
+  createDefaultDirectorRegistry,
+  defineAgent,
+  defineTool,
+} from "@intx/agent";
+import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
+import { createHarness, defineMailTools } from "@intx/harness";
+import { createIsogitStore } from "@intx/storage-isogit";
 
-const harness = createHarness({
-  address: "agent@tenant.interchange.network",
-  systemPrompt,
-  source, // InferenceSource: id, provider, model, apiKey, baseURL
-  transport, // MessageTransport
-  crypto, // CryptoProvider
-  storage, // ContextStore
-  tools: mergeToolRunners([mailTools, posixTools]),
-  onEvent: (event) => {
-    // event: InferenceEvent — persist or forward
-  },
+const mailFactory = defineMailTools(() => ({
+  definitions: myMailTools.definitions,
+  run: (call, signal) => myMailTools.run(call, signal),
+}));
+
+const posixFactory = defineTool({
+  id: "@my-org/agent/posix",
+  factory: () => ({
+    definitions: myPosixTools.definitions,
+    run: (call, signal) => myPosixTools.run(call, signal),
+  }),
 });
 
-harness.start();
+const def = defineAgent({
+  id: "agent@tenant.interchange.network",
+  systemPrompt,
+  tools: [mailFactory, posixFactory],
+  capabilities: [],
+  inference: { sources: [{ provider: source.provider, model: source.model }] },
+});
+
+const harness = await createHarness(def, {
+  source,
+  storage: await createIsogitStore(workdir),
+  workdir,
+  audit: noopAuditStore(),
+  authorize: permissiveAuthorize(),
+  directors: createDefaultDirectorRegistry(),
+  transport,
+  address: "agent@tenant.interchange.network",
+});
+
+// Subscribe to events via harness.stream(); compose with your own
+// downstream observability sink.
+for await (const event of harness.stream()) {
+  // ...
+}
+
+await harness.close();
 ```
 
-`HarnessConfig` in `src/config.ts` lists the optional fields:
-`director` or `defaultDirectorPolicy` (mutually exclusive),
-`beforeToolExtensions`, `auditStore`, `authorize`, and
-`onConnectorStateChanged`. `mergeToolRunners` composes multiple
-`ToolRunner` implementations into a single runner that dispatches
-by tool definition name.
+The narrowed `Harness` surface is `close()`, `deliver(message)`,
+`setSource(source)`, `stream()`, and `blobReader`. `mergeToolRunners`
+remains available for callers that compose multiple bundles outside
+the `defineTool` shape.

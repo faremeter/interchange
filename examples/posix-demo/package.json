@@ -8,8 +8,10 @@
     "start": "bun run src/cli.ts"
   },
   "dependencies": {
+    "@intx/agent": "workspace:*",
     "@intx/crypto-node": "workspace:*",
     "@intx/harness": "workspace:*",
+    "@intx/inference": "workspace:*",
     "@intx/log": "workspace:*",
     "@intx/mail-memory": "workspace:*",
     "@intx/storage-isogit": "workspace:*",

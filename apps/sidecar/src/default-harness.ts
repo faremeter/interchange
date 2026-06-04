@@ -11,9 +11,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { evaluateGrants } from "@intx/authz";
 import {
+  createDefaultDirectorRegistry,
+  defineAgent,
+  defineTool,
+} from "@intx/agent";
+import {
   createHarness,
   createHarnessRuntimeCapabilities,
-  mergeToolRunners,
+  defineMailTools,
+  type MailEnv,
 } from "@intx/harness";
 import { readDeployTree } from "@intx/hub-agent";
 import { hasProvider } from "@intx/inference";
@@ -50,9 +56,6 @@ export function createDefaultHarnessBuilder(): HarnessBuilder {
     }): Promise<HarnessBundle> {
       const signer = (payload: string) => crypto.signSSH(payload);
 
-      // Construct disk-backed siblings up front. If a later step throws
-      // their handles are still safe to drop on the floor — the stores
-      // hold no process-level resources that require explicit teardown.
       const storage = await createIsogitStore(storeDir, signer);
       const mailStore = await createMailAuditStore(storeDir, signer);
 
@@ -88,29 +91,79 @@ export function createDefaultHarnessBuilder(): HarnessBuilder {
       };
 
       try {
-        // Same transport reference: mail tools send via it, the harness
-        // watches INBOX and sends connector replies on it.
         const capabilities = createHarnessRuntimeCapabilities({
           transport: agentTransport,
         });
         const mailTools = createMailTools({ capabilities });
 
         try {
-          const tools = mergeToolRunners([mailTools, posixTools]);
-
-          const harness = createHarness({
-            address: agentAddress,
-            systemPrompt,
-            source,
-            transport: agentTransport,
-            crypto,
-            storage,
-            authorize,
-            auditStore: storage,
-            tools,
-            onEvent,
-            onConnectorStateChanged,
+          // Wrap each tool bundle as an AnnotatedToolFactory. The
+          // posix bundle is transport-independent (no `requires`); the
+          // mail bundle declares requires: ["transport", "address"]
+          // via defineMailTools. The intersection EnvRequiredByAll
+          // lands on MailEnv because the mail factory drags it up.
+          const posixFactory = defineTool({
+            id: "@intx/tools-posix/sidecar-bundle",
+            factory: () => ({
+              definitions: posixTools.definitions,
+              run: (call, signal) => posixTools.run(call, signal),
+            }),
           });
+
+          const mailFactory = defineMailTools(() => ({
+            definitions: mailTools.definitions,
+            run: (call, signal) => mailTools.run(call, signal),
+          }));
+
+          const def = defineAgent({
+            id: agentAddress,
+            systemPrompt,
+            tools: [mailFactory, posixFactory],
+            capabilities: [],
+            inference: {
+              sources: [{ provider: source.provider, model: source.model }],
+            },
+          });
+
+          const env: MailEnv = {
+            source,
+            storage,
+            workdir: workDir,
+            audit: storage,
+            authorize,
+            directors: createDefaultDirectorRegistry(),
+            transport: agentTransport,
+            address: agentAddress,
+            onConnectorStateChanged,
+          };
+
+          const harness = await createHarness(def, env);
+
+          // The sidecar's event channel expects onEvent calls. The
+          // harness exposes the underlying agent's event stream;
+          // forward every event (except message.received, an
+          // assembly-internal signal) onto the legacy callback.
+          //
+          // `harness.stream()` is invoked synchronously here so the
+          // underlying StreamConsumer is registered before any
+          // microtask runs. The IIFE below iterates the returned
+          // AsyncIterable; events emitted in the window between
+          // createHarness() resolving and the for-await loop starting
+          // are buffered by the consumer and delivered on the first
+          // iteration.
+          const events = harness.stream();
+          let stopForward = false;
+          const forwardDone = (async () => {
+            try {
+              for await (const event of events) {
+                if (stopForward) break;
+                if (event.type === "message.received") continue;
+                onEvent(event);
+              }
+            } catch (cause) {
+              logger.warn`Event forwarder terminated: ${cause}`;
+            }
+          })();
 
           return {
             harness,
@@ -119,11 +172,17 @@ export function createDefaultHarnessBuilder(): HarnessBuilder {
               grantsRef.current = grants;
             },
             // LIFO of physical construction order: mail was created
-            // after posix, so mail is disposed first. Both disposers
-            // are currently independent and idempotent; LIFO is the
-            // safe default for any future addition that introduces a
-            // dependency between them.
-            disposers: [() => mailTools.dispose(), () => posixTools.dispose()],
+            // after posix, so mail is disposed first. The event
+            // forwarder runs in the background; awaiting it during
+            // teardown lets the caller observe a settled state.
+            disposers: [
+              async () => {
+                stopForward = true;
+                await forwardDone;
+              },
+              () => mailTools.dispose(),
+              () => posixTools.dispose(),
+            ],
           };
         } catch (innerErr) {
           try {

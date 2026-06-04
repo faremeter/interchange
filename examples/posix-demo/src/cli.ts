@@ -2,6 +2,13 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  createDefaultDirectorRegistry,
+  defineAgent,
+  defineTool,
+} from "@intx/agent";
+import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
+import type { ReactorEmittedEvent } from "@intx/inference";
 import { setup, getLogger } from "@intx/log";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
@@ -11,9 +18,11 @@ import { createMailTools } from "@intx/tools-mail";
 import {
   createHarness,
   createHarnessRuntimeCapabilities,
-  mergeToolRunners,
+  defineMailTools,
+  type Harness,
+  type MailEnv,
 } from "@intx/harness";
-import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
 await setup({ dev: true });
 
@@ -156,14 +165,15 @@ const [storageAlpha, storageBeta] = await Promise.all([
 // ---------------------------------------------------------------------------
 
 // Keep per-package references so the shutdown path can dispose each
-// runner. mergeToolRunners only aggregates the dispatch surface.
+// runner. Each per-agent createMailTools() is constructed against
+// that agent's transport; the harness wraps it as a defineTool bundle
+// factory via defineMailTools().
 const toolsAlphaMail = createMailTools({
   capabilities: createHarnessRuntimeCapabilities({
     transport: transportAlpha,
   }),
 });
 const toolsAlphaPosix = createPosixTools({ cwd: process.cwd() });
-const toolsAlpha = mergeToolRunners([toolsAlphaMail, toolsAlphaPosix]);
 
 const toolsBetaMail = createMailTools({
   capabilities: createHarnessRuntimeCapabilities({
@@ -171,7 +181,23 @@ const toolsBetaMail = createMailTools({
   }),
 });
 const toolsBetaPosix = createPosixTools({ cwd: process.cwd() });
-const toolsBeta = mergeToolRunners([toolsBetaMail, toolsBetaPosix]);
+
+function posixFactoryFor(posixTools: typeof toolsAlphaPosix) {
+  return defineTool({
+    id: "@interchange-demo/posix-demo/posix",
+    factory: () => ({
+      definitions: posixTools.definitions,
+      run: (call, signal) => posixTools.run(call, signal),
+    }),
+  });
+}
+
+function mailFactoryFor(mailTools: typeof toolsAlphaMail) {
+  return defineMailTools(() => ({
+    definitions: mailTools.definitions,
+    run: (call, signal) => mailTools.run(call, signal),
+  }));
+}
 
 // ---------------------------------------------------------------------------
 // Shutdown coordination
@@ -202,7 +228,7 @@ transportUser.watch("INBOX", (event) => {
 // Event logging
 // ---------------------------------------------------------------------------
 
-function makeEventLogger(label: string): (event: InferenceEvent) => void {
+function makeEventLogger(label: string): (event: ReactorEmittedEvent) => void {
   return (event) => {
     switch (event.type) {
       case "inference.start":
@@ -274,9 +300,7 @@ function makeEventLogger(label: string): (event: InferenceEvent) => void {
 // Harnesses
 // ---------------------------------------------------------------------------
 
-const harnessAlpha = createHarness({
-  address: ALPHA_ADDRESS,
-  systemPrompt: `You are Alpha, an agent that relays messages between the user and other agents.
+const ALPHA_SYSTEM_PROMPT = `You are Alpha, an agent that relays messages between the user and other agents.
 
 IMPORTANT: When the user mentions another agent by name, you MUST immediately call the mail_send tool to contact that agent. Do NOT reply to the user asking what to send. Do NOT introduce yourself. Just call the tool.
 
@@ -285,26 +309,84 @@ Example: If the user says "Ask Beta what his favorite color is", you call mail_s
 Known agents:
   Beta: ${BETA_ADDRESS}
 
-After you receive a response from an agent, tell the user what they said.`,
-  source: alphaSource,
-  transport: transportAlpha,
-  crypto: cryptoAlpha,
-  storage: storageAlpha,
-  tools: toolsAlpha,
-  onEvent: makeEventLogger("alpha"),
+After you receive a response from an agent, tell the user what they said.`;
+
+const BETA_SYSTEM_PROMPT =
+  "You are Beta, a thoughtful agent. When someone asks you a question, answer honestly and with personality. Be concise but interesting.";
+
+const alphaDef = defineAgent({
+  id: ALPHA_ADDRESS,
+  systemPrompt: ALPHA_SYSTEM_PROMPT,
+  tools: [mailFactoryFor(toolsAlphaMail), posixFactoryFor(toolsAlphaPosix)],
+  capabilities: [],
+  inference: {
+    sources: [{ provider: alphaSource.provider, model: alphaSource.model }],
+  },
 });
 
-const harnessBeta = createHarness({
-  address: BETA_ADDRESS,
-  systemPrompt:
-    "You are Beta, a thoughtful agent. When someone asks you a question, answer honestly and with personality. Be concise but interesting.",
-  source: betaSource,
-  transport: transportBeta,
-  crypto: cryptoBeta,
-  storage: storageBeta,
-  tools: toolsBeta,
-  onEvent: makeEventLogger("beta"),
+const betaDef = defineAgent({
+  id: BETA_ADDRESS,
+  systemPrompt: BETA_SYSTEM_PROMPT,
+  tools: [mailFactoryFor(toolsBetaMail), posixFactoryFor(toolsBetaPosix)],
+  capabilities: [],
+  inference: {
+    sources: [{ provider: betaSource.provider, model: betaSource.model }],
+  },
 });
+
+const alphaEnv: MailEnv = {
+  source: alphaSource,
+  storage: storageAlpha,
+  workdir: alphaDir,
+  audit: noopAuditStore(),
+  authorize: permissiveAuthorize(),
+  directors: createDefaultDirectorRegistry(),
+  transport: transportAlpha,
+  address: ALPHA_ADDRESS,
+};
+
+const betaEnv: MailEnv = {
+  source: betaSource,
+  storage: storageBeta,
+  workdir: betaDir,
+  audit: noopAuditStore(),
+  authorize: permissiveAuthorize(),
+  directors: createDefaultDirectorRegistry(),
+  transport: transportBeta,
+  address: BETA_ADDRESS,
+};
+
+const harnessAlpha: Harness = await createHarness(alphaDef, alphaEnv);
+const harnessBeta: Harness = await createHarness(betaDef, betaEnv);
+
+// Drain each harness's event stream in the background and route to the
+// per-agent logger. The createHarness composition layer no longer
+// takes an `onEvent` callback; observability consumers subscribe via
+// stream() instead.
+function startEventLogger(harness: Harness, label: string): () => void {
+  const logger = makeEventLogger(label);
+  // Register the StreamConsumer synchronously so events emitted in
+  // the window before the IIFE's for-await loop starts are buffered
+  // rather than dropped.
+  const events = harness.stream();
+  let stop = false;
+  void (async () => {
+    try {
+      for await (const event of events) {
+        if (stop) break;
+        logger(event);
+      }
+    } catch {
+      // Stream may close during shutdown; swallow.
+    }
+  })();
+  return () => {
+    stop = true;
+  };
+}
+
+const stopAlphaLogger = startEventLogger(harnessAlpha, "alpha");
+const stopBetaLogger = startEventLogger(harnessBeta, "beta");
 
 // ---------------------------------------------------------------------------
 // Signal handling
@@ -314,21 +396,25 @@ function shutdown(signal: string): void {
   if (shutdownInitiated) return;
   shutdownInitiated = true;
   log.info("Received {signal}, shutting down", { signal });
-  harnessAlpha.stop();
-  harnessBeta.stop();
+  stopAlphaLogger();
+  stopBetaLogger();
   clearTimeout(safetyTimer);
   // Each per-agent tool runner owns its own resources (LSP child
   // processes via the posix tool runner's plugins, future per-package
   // teardown via the mail tool runner). Dispose them so the demo exits
-  // cleanly. mergeToolRunners does not aggregate dispose — the demo
+  // cleanly. createHarness does not aggregate dispose -- the demo
   // built the per-package runners and is responsible for disposing
-  // them.
-  void Promise.all([
-    toolsAlphaMail.dispose(),
-    toolsAlphaPosix.dispose(),
-    toolsBetaMail.dispose(),
-    toolsBetaPosix.dispose(),
-  ]);
+  // them after the harness closes.
+  void (async () => {
+    await harnessAlpha.close();
+    await harnessBeta.close();
+    await Promise.all([
+      toolsAlphaMail.dispose(),
+      toolsAlphaPosix.dispose(),
+      toolsBetaMail.dispose(),
+      toolsBetaPosix.dispose(),
+    ]);
+  })();
 }
 
 process.once("SIGINT", () => shutdown("SIGINT"));
@@ -343,11 +429,11 @@ const safetyTimer = setTimeout(() => {
 }, 120_000);
 
 // ---------------------------------------------------------------------------
-// Start harnesses and seed conversation
+// Seed conversation
 // ---------------------------------------------------------------------------
-
-harnessAlpha.start();
-harnessBeta.start();
+//
+// The composition-layer harness is started by createHarness above; no
+// separate start() step is needed.
 
 log.info("Sending to Alpha: {seed}", { seed: DEMO_SEED });
 

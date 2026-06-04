@@ -56,11 +56,13 @@ export function createMailTools(opts: MailToolsOptions): MailTools {
     async run(call, signal): Promise<ToolResult> {
       const handler = handlers.get(call.name);
       if (handler === undefined) {
-        // This branch is unreachable in the sidecar composition
-        // (mergeToolRunners dispatches by definition.name and only
-        // forwards mail-tool calls here). It exists so callers that
-        // use createMailTools as a standalone ToolRunner get the
-        // package's native object-shaped error.
+        // This branch is unreachable in the sidecar composition: the
+        // agent's `resolveTools` dispatches `call.name` to the owning
+        // bundle by definition.name, so only names this runner
+        // declared can ever reach `run`. It exists so callers that
+        // use createMailTools as a standalone ToolRunner (rather than
+        // through `defineMailTools`) get the package's native
+        // object-shaped error.
         return {
           callId: call.id,
           content: { error: `Unknown tool: "${call.name}"` },

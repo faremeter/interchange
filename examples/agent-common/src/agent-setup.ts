@@ -22,7 +22,6 @@ import {
   type Agent,
   type AgentTool,
   type BaseEnv,
-  type Dependencies,
 } from "@intx/agent";
 import { permissiveAuthorize } from "@intx/agent/testing";
 import { createIsogitStore } from "@intx/storage-isogit";
@@ -146,7 +145,7 @@ export async function openExampleAgent<T extends CommonMainOptions>(
     audit: storage,
     authorize: permissiveAuthorize(),
     directors: createDefaultDirectorRegistry(),
-    ...(opts.deps !== undefined ? { deps: opts.deps as Dependencies } : {}),
+    ...(opts.deps !== undefined ? { deps: opts.deps } : {}),
   };
 
   return createAgent(def, env);
