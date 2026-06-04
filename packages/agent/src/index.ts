@@ -11,14 +11,33 @@ export { AgentInUseError } from "./lock";
 export {
   type AgentTool,
   type AgentToolRunner,
+  type AnnotatedToolFactory,
   type StringToolHandler,
+  type ToolBundle,
+  type ToolFactory,
+  type ToolFactoryMeta,
   type ToolHandler,
   DuplicateToolError,
   createToolRunner,
+  defineTool,
   fromToolRunner,
   stringTool,
   tool,
 } from "./tool";
+export { type AuthorizeFn, type BaseEnv, AgentEnvError } from "./env";
+export {
+  type AgentResult,
+  type AnnotatedDirectorFactory,
+  type Director,
+  type DirectorConfigSchema,
+  type DirectorDecision,
+  type DirectorFactory,
+  type DirectorFactoryMeta,
+  type DirectorRef,
+  type DirectorRegistry,
+} from "./director-types";
+export { validateNamespacedId } from "./namespace";
+export { CanonicalizationError, canonicalizeForHash } from "./canonicalize";
 export {
   type SourceRegistry,
   InvalidInferenceSourceError,
