@@ -137,10 +137,12 @@ auditing the typed-message contract.
 The system intentionally separates **delivery** (what this example
 demonstrates) from **rendering** (what the default director chose
 not to take a position on). To make the model react to a structured
-payload, supply a custom `ReactorDirector` that, on
-`message.received`, projects the payload's `body` into a user turn
-before calling `capabilities.infer`. The director can be passed to
-`createAgent({ director })`.
+payload, supply a custom director that, on `message.received`, projects
+the payload's `body` into a user turn before calling
+`capabilities.infer`. Author-defined directors register via
+`defineDirector(...)` and are named on `AgentDefinition.director` as a
+`DirectorRef`; the env's `directors` registry resolves the ref at
+`createAgent(def, env)` time.
 
 A complete custom-director example is out of scope here, but the
 shape is:

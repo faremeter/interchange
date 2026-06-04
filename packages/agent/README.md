@@ -10,8 +10,19 @@ If you want an agent that lives behind a mailbox instead, see
 `@intx/harness`.
 
 ```ts
-import { createAgent } from "@intx/agent";
+import {
+  createAgent,
+  createDefaultDirectorRegistry,
+  defineAgent,
+} from "@intx/agent";
+import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
+import { createIsogitStore } from "@intx/storage-isogit";
 
+// `apiKey` and `model` come from the caller's env / config; pick the
+// shape that fits the deployment. The snippet below uses literals so
+// it copy-pastes cleanly.
+const apiKey = process.env.ANTHROPIC_API_KEY ?? "";
+const model = "claude-sonnet-4-6";
 const source = {
   id: `anthropic:${model}`,
   provider: "anthropic",
@@ -20,12 +31,26 @@ const source = {
   model,
 };
 
-const agent = await createAgent({
-  contextDir: "./tmp/my-agent",
-  sources: [source],
-  defaultSource: source.id,
+const workdir = "./tmp/my-agent";
+const storage = await createIsogitStore(workdir);
+
+const def = defineAgent({
+  id: "my-agent",
   systemPrompt: "...",
   tools: [],
+  capabilities: [],
+  inference: {
+    sources: [{ provider: source.provider, model: source.model }],
+  },
+});
+
+const agent = await createAgent(def, {
+  source,
+  storage,
+  workdir,
+  audit: noopAuditStore(),
+  authorize: permissiveAuthorize(),
+  directors: createDefaultDirectorRegistry(),
 });
 
 const { reply } = await agent.send("hello");

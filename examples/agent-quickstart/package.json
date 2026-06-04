@@ -17,6 +17,7 @@
     "@intx/agent": "workspace:*",
     "@intx/example-agent-common": "workspace:*",
     "@intx/inference": "workspace:*",
+    "@intx/storage-isogit": "workspace:*",
     "@intx/types": "workspace:*"
   }
 }

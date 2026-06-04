@@ -1,15 +1,23 @@
 // Factory for the coding-agent reference consumer.
 //
-// `createCodingAgent` builds an `@intx/agent` Agent wired against
-// the posix tools (with the LSP plugin attached) and a real
-// `contextDir`-backed isogit store. The factory is separated from the
-// CLI entry so tests can construct the same agent with a stubbed
-// inference source.
+// `createCodingAgent` builds an `@intx/agent` Agent wired against the
+// posix tools (with the LSP plugin attached) and a real workdir-backed
+// isogit store. The factory is separated from the CLI entry so tests
+// can construct the same agent with a stubbed inference source.
 
 import { mkdirSync } from "node:fs";
 
-import { createAgent, fromToolRunner, type Agent } from "@intx/agent";
-import type { Dependencies } from "@intx/inference";
+import {
+  createAgent,
+  createDefaultDirectorRegistry,
+  defineAgent,
+  defineTool,
+  type Agent,
+  type BaseEnv,
+  type Dependencies,
+} from "@intx/agent";
+import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
+import { createIsogitStore } from "@intx/storage-isogit";
 import { createLSPPlugin } from "@intx/tools-lsp";
 import { createPosixTools, type PosixTools } from "@intx/tools-posix";
 import type { InferenceSource } from "@intx/types/runtime";
@@ -85,16 +93,43 @@ export async function createCodingAgent(
     };
   }
 
+  // Wrap the already-constructed posix tool runner as a defineTool
+  // bundle factory. The bundle is closed over the runner; the caller
+  // owns the dispose lifetime (we invoke posixTools.dispose() from
+  // close()) since the env contract treats disposers as caller-owned.
+  const posixFactory = defineTool({
+    id: "@interchange-demo/coding-agent/posix",
+    factory: () => ({
+      definitions: posixTools.definitions,
+      run: (call, signal) => posixTools.run(call, signal),
+    }),
+  });
+
+  const storage = await createIsogitStore(opts.contextDir);
+
+  const def = defineAgent({
+    id: "coding-agent",
+    systemPrompt: CODING_AGENT_SYSTEM_PROMPT,
+    tools: [posixFactory],
+    capabilities: [],
+    inference: {
+      sources: [{ provider: source.provider, model: source.model }],
+    },
+  });
+
+  const env: BaseEnv = {
+    source,
+    storage,
+    workdir: opts.contextDir,
+    audit: noopAuditStore(),
+    authorize: permissiveAuthorize(),
+    directors: createDefaultDirectorRegistry(),
+    ...(opts.deps !== undefined ? { deps: opts.deps } : {}),
+  };
+
   let agent: Agent;
   try {
-    agent = await createAgent({
-      contextDir: opts.contextDir,
-      sources: [source],
-      defaultSource: source.id,
-      systemPrompt: CODING_AGENT_SYSTEM_PROMPT,
-      tools: fromToolRunner(posixTools),
-      ...(opts.deps !== undefined ? { deps: opts.deps } : {}),
-    });
+    agent = await createAgent(def, env);
   } catch (cause) {
     await posixTools.dispose();
     throw cause;

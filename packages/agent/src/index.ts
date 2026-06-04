@@ -7,7 +7,7 @@
 // connector threads, outbound replies via MessageTransport) while the
 // agent drives it from in-process calls.
 
-export { AgentInUseError } from "./lock";
+export { AgentContextLockError } from "./lock";
 export {
   type AgentTool,
   type AgentToolRunner,
@@ -24,7 +24,12 @@ export {
   stringTool,
   tool,
 } from "./tool";
-export { type AuthorizeFn, type BaseEnv, AgentEnvError } from "./env";
+export {
+  type AuthorizeFn,
+  type BaseEnv,
+  type Dependencies,
+  AgentEnvError,
+} from "./env";
 export {
   type AnnotatedDirectorFactory,
   type DirectorAgentContext,
@@ -40,6 +45,7 @@ export { type DefinedDirector, defineDirector } from "./director";
 export {
   createDefaultDirectorRegistry,
   createDirectorRegistry,
+  UnknownDirectorIdError,
 } from "./director-registry";
 export {
   type DefaultDirectorConfig,
@@ -54,12 +60,23 @@ export {
 } from "./source";
 export {
   type Agent,
-  type AgentConfig,
   type SendOptions,
   type SendResult,
   AgentClosedError,
-  AgentConfigError,
   createAgent,
 } from "./agent";
+export {
+  type AgentDefinition,
+  type DefineAgentConfig,
+  type EnvRequiredByAll,
+  type InferencePreference,
+  defineAgent,
+} from "./definition";
+export {
+  effectiveDirectorRef,
+  getRequiredEnvKeys,
+  validateEnv,
+} from "./env-validation";
+export type { RequiredEnvKeys } from "./env-validation";
 export { SendQueueFullError } from "./send-queue";
 export { StreamBackpressureError } from "./stream";

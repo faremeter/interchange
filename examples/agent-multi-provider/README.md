@@ -19,8 +19,9 @@ the pattern in user-land.
 
 ## What it shows
 
-- `createAgent({ sources, defaultSource })` accepts a list of
-  `InferenceSource` entries and the `id` of the one to start with.
+- The example helper passes both `InferenceSource` entries via
+  `spec.sources` and names the active one via `spec.defaultSource`.
+  At the env level only one source is active at a time;
   `setSource(source)` rotates the active source (id, credentials,
   model, defaults, capabilities) in place.
 - A small policy module (`./src/policy.ts`) decides which source

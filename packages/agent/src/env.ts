@@ -21,6 +21,10 @@ import type {
 
 import type { DirectorRegistry } from "./director-types";
 
+// `Dependencies` is re-exported from `@intx/inference`, where the
+// reactor assembly owns its canonical shape.
+export type { Dependencies };
+
 /**
  * Authorization callback shape. Tools call `authorize` before invoking;
  * the reactor assembly's authz extension threads the call through. The
@@ -67,9 +71,6 @@ export interface BaseEnv {
    * `workdir` values pointing at the same on-disk storage directory
    * will silently corrupt each other -- the invariant is the caller's
    * to maintain.
-   *
-   * Tools that need a working directory (e.g. `@intx/tools-posix`) read
-   * from this field through their env-DI declaration.
    */
   workdir: string;
 
@@ -94,42 +95,88 @@ export interface BaseEnv {
    * Optional; do not require this field on the production path.
    */
   deps?: Dependencies;
+
+  /**
+   * Optional deterministic session id. Production callers omit and let
+   * the agent generate a fresh UUID; tests that assert on audit-record
+   * sessionIds supply a stable value.
+   */
+  sessionId?: string;
+
+  /**
+   * Override for the default 10 000-character tool-result size cap.
+   * Forwarded to the reactor assembly's size-cap transform.
+   */
+  sizeCapMaxChars?: number;
+
+  /**
+   * Maximum number of pending sends (active + queued). Beyond this,
+   * `send()` rejects with `SendQueueFullError`. Defaults to 16.
+   */
+  sendQueueMax?: number;
+
+  /**
+   * Maximum events any single `stream()` consumer may buffer. Beyond
+   * this, the next read on that consumer's iterator throws
+   * `StreamBackpressureError`; other consumers are unaffected. Defaults
+   * to 1024.
+   */
+  streamBufferMax?: number;
+
+  /**
+   * Maximum milliseconds `close()` waits for the reactor's shutdown
+   * sequence (audit flush, in-flight commits) before releasing the
+   * lock and returning. Defaults to 5000. Zero disables the wait
+   * (useful for tests whose reactor shutdown is intentionally blocked).
+   */
+  closeTimeoutMs?: number;
 }
 
 /**
- * Thrown by `validateEnv` when one or more declared env keys are
- * absent on the supplied env, or when the agent definition references
- * a director id the registry could not resolve.
+ * Thrown by `validateEnv` when the env-shape check fails. Two failure
+ * modes are reported separately so consumers can react to each:
  *
- * `missing` lists the absent env-key names. `contributors` lists every
- * tool / director / `BaseEnv` label that declared at least one missing
- * key. `missingByContributor` pairs each contributor with the specific
- * keys it declared as missing so consumers can render an error UI that
- * tells the author which factory blamed which key (the flat `missing`
- * and `contributors` arrays carry the same data without the join).
- *
- * `unresolvedDirectors` lists `DirectorRef.id`s the registry could not
- * resolve. These are surfaced through a separate field rather than
- * being mixed into `missing` (env-key names) so consumers can
- * distinguish the two failure modes programmatically.
+ * - `missing` lists the env key names that were absent. `contributors`
+ *   lists every tool / director / `BaseEnv` label that declared at
+ *   least one missing key (`BaseEnv` is the contributor for the six
+ *   core fields). `missingByContributor` pairs each contributor with
+ *   the specific keys it declared as missing so consumers can render
+ *   an error UI that tells the author which factory blamed which key
+ *   (the flat `missing` and `contributors` arrays carry the same data
+ *   without the join).
+ * - `unresolvedDirectors` lists the `DirectorRef.id`s the registry
+ *   could not resolve (the agent definition referenced a director the
+ *   registry does not contain). These land on a separate field rather
+ *   than being mixed into `missing` (env-key names) so consumers can
+ *   distinguish the two failure modes programmatically.
  */
 export class AgentEnvError extends Error {
   readonly missing: readonly string[];
   readonly contributors: readonly string[];
   readonly missingByContributor: ReadonlyMap<string, readonly string[]>;
+  readonly unresolvedDirectors: readonly string[];
 
   constructor(
     missing: readonly string[],
     contributors: readonly string[],
     missingByContributor: ReadonlyMap<string, readonly string[]> = new Map(),
+    unresolvedDirectors: readonly string[] = [],
   ) {
-    super(
-      `agent env is missing required keys: ${missing.join(", ")} ` +
-        `(required by: ${contributors.join(", ")})`,
-    );
+    const parts: string[] = [];
+    if (missing.length > 0) {
+      parts.push(
+        `missing required keys: ${missing.join(", ")} ` +
+          `(required by: ${contributors.join(", ")})`,
+      );
+    }
+    if (unresolvedDirectors.length > 0) {
+      parts.push(`unresolved director ids: ${unresolvedDirectors.join(", ")}`);
+    }
+    super(`agent env validation failed: ${parts.join("; ")}`);
     this.name = "AgentEnvError";
     this.missing = missing;
     this.contributors = contributors;
     this.missingByContributor = missingByContributor;
+    this.unresolvedDirectors = unresolvedDirectors;
   }
 }

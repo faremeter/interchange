@@ -90,10 +90,10 @@ The interesting code lives in two places:
    found, the CLI calls `agent.blobReader.read(uri)` to materialise
    the original bytes.
 
-The default size cap is **10 000 characters**. Override it via
-`createAgent({ sizeCapMaxChars: N })` if you have a use case that
-needs a smaller cap (force spilling for everything) or a larger one
-(allow more inline content per turn).
+The default size cap is **10 000 characters**. Override it by passing a
+`sizeCapMaxChars` field on the env handed to `createAgent(def, env)` —
+use a smaller cap to force spilling for every tool result, or a larger
+one to allow more inline content per turn.
 
 ## Why spill at all?
 

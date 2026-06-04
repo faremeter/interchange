@@ -1,14 +1,33 @@
 // agent-quickstart: the smallest possible @intx/agent program.
 //
-// The body of `main()` below is the answer to "what does an agent
-// look like?" — construct, send a prompt, print the reply, close.
-// This is the only example that calls `createAgent` inline; the
-// other seven agent-* examples go through
-// `openExampleAgent` in @intx/example-agent-common so they
-// can keep their focus on the feature they demonstrate. Read this
-// file when you want to see the full `createAgent` surface.
+// The body of `main()` below is the answer to "what does an agent look
+// like?" -- define, build an env, instantiate, send a prompt, print
+// the reply, close. This is the only example that spells the
+// definition + env shape inline; the other seven agent-* examples go
+// through `openExampleAgent` in @intx/example-agent-common so they can
+// keep their focus on the feature they demonstrate. Read this file
+// when you want to see the *required* `defineAgent` / `createAgent`
+// surface.
+//
+// The env below sets only the required `BaseEnv` keys (`source`,
+// `storage`, `workdir`, `audit`, `authorize`, `directors`). The
+// optional tuning knobs documented on `BaseEnv` -- `closeTimeoutMs`,
+// `sendQueueMax`, `streamBufferMax`, `sizeCapMaxChars`, `sessionId`,
+// `deps` -- are intentionally omitted from this example to keep the
+// minimum-shape surface obvious. Each optional field has its own
+// demonstrating example in the agent-* set; see
+// `examples/agent-blob-spill` for `sizeCapMaxChars` and the agent-*
+// READMEs for the others.
 
-import { createAgent } from "@intx/agent";
+import { mkdirSync } from "node:fs";
+
+import {
+  createAgent,
+  createDefaultDirectorRegistry,
+  defineAgent,
+  type BaseEnv,
+} from "@intx/agent";
+import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
 import {
   defaultContextDir,
   optional,
@@ -16,6 +35,7 @@ import {
   resolveStdio,
   type SingleSourceMainOptions,
 } from "@intx/example-agent-common";
+import { createIsogitStore } from "@intx/storage-isogit";
 
 const EXAMPLE_NAME = "agent-quickstart";
 
@@ -37,14 +57,31 @@ export async function main(
   const source = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
   if (source === null) return 1;
 
-  const agent = await createAgent({
-    contextDir: opts.contextDir ?? defaultContextDir(EXAMPLE_NAME),
-    sources: [source],
-    defaultSource: source.id,
+  const contextDir = opts.contextDir ?? defaultContextDir(EXAMPLE_NAME);
+  mkdirSync(contextDir, { recursive: true });
+  const storage = await createIsogitStore(contextDir);
+
+  const def = defineAgent({
+    id: EXAMPLE_NAME,
     systemPrompt: "You are a helpful assistant. Keep replies concise.",
     tools: [],
-    ...optional("deps", opts.deps),
+    capabilities: [],
+    inference: {
+      sources: [{ provider: source.provider, model: source.model }],
+    },
   });
+
+  const agentEnv: BaseEnv = {
+    source,
+    storage,
+    workdir: contextDir,
+    audit: noopAuditStore(),
+    authorize: permissiveAuthorize(),
+    directors: createDefaultDirectorRegistry(),
+    ...optional("deps", opts.deps),
+  };
+
+  const agent = await createAgent(def, agentEnv);
   try {
     const { reply } = await agent.send(prompt);
     stdout(reply + "\n");

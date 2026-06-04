@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { resolve } from "node:path";
 
-import { acquireContextDirLock, AgentInUseError } from "./lock";
+import { acquireContextDirLock, AgentContextLockError } from "./lock";
 
 describe("acquireContextDirLock", () => {
   test("returns a lock whose path is the resolved absolute path", () => {
@@ -17,7 +17,7 @@ describe("acquireContextDirLock", () => {
     const lock = acquireContextDirLock("/tmp/agent-lock-2");
     try {
       expect(() => acquireContextDirLock("/tmp/agent-lock-2")).toThrow(
-        AgentInUseError,
+        AgentContextLockError,
       );
     } finally {
       lock.release();
@@ -39,7 +39,7 @@ describe("acquireContextDirLock", () => {
     const lock = acquireContextDirLock("/tmp/agent-lock-4/../agent-lock-4/foo");
     try {
       expect(() => acquireContextDirLock("/tmp/agent-lock-4/foo")).toThrow(
-        AgentInUseError,
+        AgentContextLockError,
       );
     } finally {
       lock.release();
@@ -51,7 +51,9 @@ describe("acquireContextDirLock", () => {
     const lock = acquireContextDirLock("relative-lock-test-dir");
     try {
       expect(lock.path).toBe(absolute);
-      expect(() => acquireContextDirLock(absolute)).toThrow(AgentInUseError);
+      expect(() => acquireContextDirLock(absolute)).toThrow(
+        AgentContextLockError,
+      );
     } finally {
       lock.release();
     }
@@ -76,15 +78,15 @@ describe("acquireContextDirLock", () => {
     reacquired.release();
   });
 
-  test("AgentInUseError exposes contextDir as the resolved path", () => {
+  test("AgentContextLockError exposes workdir as the resolved path", () => {
     const lock = acquireContextDirLock("/tmp/agent-lock-7");
     try {
       acquireContextDirLock("/tmp/agent-lock-7");
-      throw new Error("should have thrown AgentInUseError");
+      throw new Error("should have thrown AgentContextLockError");
     } catch (err) {
-      expect(err).toBeInstanceOf(AgentInUseError);
-      if (err instanceof AgentInUseError) {
-        expect(err.contextDir).toBe(resolve("/tmp/agent-lock-7"));
+      expect(err).toBeInstanceOf(AgentContextLockError);
+      if (err instanceof AgentContextLockError) {
+        expect(err.workdir).toBe(resolve("/tmp/agent-lock-7"));
       }
     } finally {
       lock.release();

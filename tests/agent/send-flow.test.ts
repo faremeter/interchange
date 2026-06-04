@@ -15,10 +15,16 @@ import { join } from "node:path";
 import {
   AgentClosedError,
   createAgent,
+  createDefaultDirectorRegistry,
+  defineAgent,
   SendQueueFullError,
   type Agent,
+  type AgentDefinition,
+  type BaseEnv,
 } from "@intx/agent";
+import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
 import { setupHarness, type Harness } from "@intx/inference-testing";
+import { createIsogitStore } from "@intx/storage-isogit";
 import type { ConversationTurn, InferenceSource } from "@intx/types/runtime";
 
 const SOURCE: InferenceSource = {
@@ -28,6 +34,36 @@ const SOURCE: InferenceSource = {
   apiKey: "sk-test-send-flow",
   model: "claude-3-5-sonnet",
 };
+
+function definition(): AgentDefinition<BaseEnv> {
+  return defineAgent({
+    id: "send-flow-test",
+    systemPrompt: "send-flow test",
+    tools: [],
+    capabilities: [],
+    inference: {
+      sources: [{ provider: SOURCE.provider, model: SOURCE.model }],
+    },
+  });
+}
+
+async function envFor(
+  workdir: string,
+  harness: Harness,
+  extras: Partial<BaseEnv> = {},
+): Promise<BaseEnv> {
+  const storage = await createIsogitStore(workdir);
+  return {
+    source: SOURCE,
+    storage,
+    workdir,
+    audit: noopAuditStore(),
+    authorize: permissiveAuthorize(),
+    directors: createDefaultDirectorRegistry(),
+    deps: harness.deps,
+    ...extras,
+  };
+}
 
 describe("@intx/agent send-flow integration", () => {
   let workDir: string;
@@ -46,14 +82,10 @@ describe("@intx/agent send-flow integration", () => {
   test("end-to-end send round-trips to a connector.reply", async () => {
     harness.scenario.replyOnce("anthropic", { text: "Hi there!" });
 
-    const agent = await createAgent({
-      contextDir: join(workDir, "ctx"),
-      sources: [SOURCE],
-      defaultSource: SOURCE.id,
-      systemPrompt: "send-flow test",
-      tools: [],
-      deps: harness.deps,
-    });
+    const agent = await createAgent(
+      definition(),
+      await envFor(join(workDir, "ctx"), harness),
+    );
 
     try {
       const sendPromise = agent.send("Hello");
@@ -70,14 +102,7 @@ describe("@intx/agent send-flow integration", () => {
     harness.scenario.replyOnce("anthropic", { text: "Persisted reply" });
 
     const dir = join(workDir, "ctx");
-    const agent = await createAgent({
-      contextDir: dir,
-      sources: [SOURCE],
-      defaultSource: SOURCE.id,
-      systemPrompt: "send-flow test",
-      tools: [],
-      deps: harness.deps,
-    });
+    const agent = await createAgent(definition(), await envFor(dir, harness));
 
     let firstHistory: ConversationTurn[] = [];
     try {
@@ -95,14 +120,10 @@ describe("@intx/agent send-flow integration", () => {
     // Reopen on the same directory and verify the projection survives.
     // The reopened agent does not need a working provider; we only
     // exercise history(), which reads from the store directly.
-    const reopened = await createAgent({
-      contextDir: dir,
-      sources: [SOURCE],
-      defaultSource: SOURCE.id,
-      systemPrompt: "send-flow test",
-      tools: [],
-      deps: harness.deps,
-    });
+    const reopened = await createAgent(
+      definition(),
+      await envFor(dir, harness),
+    );
 
     try {
       const turns = await reopened.history();
@@ -116,14 +137,10 @@ describe("@intx/agent send-flow integration", () => {
   test("readAt returns the conversation at the recorded commit hash", async () => {
     harness.scenario.replyOnce("anthropic", { text: "Checkpoint reply" });
 
-    const agent = await createAgent({
-      contextDir: join(workDir, "ctx"),
-      sources: [SOURCE],
-      defaultSource: SOURCE.id,
-      systemPrompt: "send-flow test",
-      tools: [],
-      deps: harness.deps,
-    });
+    const agent = await createAgent(
+      definition(),
+      await envFor(join(workDir, "ctx"), harness),
+    );
 
     try {
       const sendPromise = agent.send("Hello");
@@ -146,16 +163,11 @@ describe("@intx/agent send-flow integration", () => {
   test("close-while-pending rejects queued sends with AgentClosedError", async () => {
     harness.scenario.replyOnce("anthropic", { text: "should never observe" });
 
-    const agent: Agent = await createAgent({
-      contextDir: join(workDir, "ctx"),
-      sources: [SOURCE],
-      defaultSource: SOURCE.id,
-      systemPrompt: "send-flow test",
-      tools: [],
-      deps: harness.deps,
-    });
+    const agent: Agent = await createAgent(
+      definition(),
+      await envFor(join(workDir, "ctx"), harness),
+    );
 
-    // Kick off an in-flight send, then a queued second one.
     let firstReason: unknown;
     let secondReason: unknown;
     const first = agent.send("first").catch((err: unknown) => {
@@ -165,11 +177,8 @@ describe("@intx/agent send-flow integration", () => {
       secondReason = err;
     });
 
-    // Close without advancing the clock — the in-flight inference is
-    // parked on a matcher, so the active send hasn't completed yet.
     await agent.close();
 
-    // Let any settle-microtasks complete.
     await first;
     await second;
 
@@ -180,22 +189,16 @@ describe("@intx/agent send-flow integration", () => {
   test("setSource hot-swaps credentials before the next inference", async () => {
     harness.scenario.replyOnce("anthropic", { text: "first-provider reply" });
 
-    const agent = await createAgent({
-      contextDir: join(workDir, "ctx"),
-      sources: [SOURCE],
-      defaultSource: SOURCE.id,
-      systemPrompt: "send-flow test",
-      tools: [],
-      deps: harness.deps,
-    });
+    const agent = await createAgent(
+      definition(),
+      await envFor(join(workDir, "ctx"), harness),
+    );
 
     try {
       const first = agent.send("Hello");
       await harness.run();
       await first;
 
-      // Swap to a new credential. The next send picks up the new apiKey
-      // when the reactor reads the active source at start-of-inference.
       agent.setSource({
         id: SOURCE.id,
         provider: "anthropic",
@@ -224,23 +227,16 @@ describe("@intx/agent send-flow integration", () => {
   test("setSource rotates the model in the next inference request", async () => {
     harness.scenario.replyOnce("anthropic", { text: "first-model reply" });
 
-    const agent = await createAgent({
-      contextDir: join(workDir, "ctx"),
-      sources: [SOURCE],
-      defaultSource: SOURCE.id,
-      systemPrompt: "send-flow test",
-      tools: [],
-      deps: harness.deps,
-    });
+    const agent = await createAgent(
+      definition(),
+      await envFor(join(workDir, "ctx"), harness),
+    );
 
     try {
       const first = agent.send("Hello");
       await harness.run();
       await first;
 
-      // Swap to a completely different model. The wrapped director's
-      // capabilities.infer substitutes the live model on each call, so
-      // the next request body should carry the new model name.
       const NEW_MODEL = "claude-3-5-haiku";
       agent.setSource({
         id: `anthropic:${NEW_MODEL}`,
@@ -276,14 +272,10 @@ describe("@intx/agent send-flow integration", () => {
   test("abort signal on in-flight send rejects without blocking the agent", async () => {
     harness.scenario.replyOnce("anthropic", { text: "abandoned reply" });
 
-    const agent = await createAgent({
-      contextDir: join(workDir, "ctx"),
-      sources: [SOURCE],
-      defaultSource: SOURCE.id,
-      systemPrompt: "send-flow test",
-      tools: [],
-      deps: harness.deps,
-    });
+    const agent = await createAgent(
+      definition(),
+      await envFor(join(workDir, "ctx"), harness),
+    );
 
     try {
       const ctl = new AbortController();
@@ -294,17 +286,12 @@ describe("@intx/agent send-flow integration", () => {
           abortedReason = err;
         });
 
-      // Abort while the inference is parked on the matcher.
       ctl.abort();
       await sendPromise;
       expect(abortedReason).toBeDefined();
 
-      // Even though the previous cycle is still draining in the
-      // background, advancing the clock allows it to complete so the
-      // next send can run cleanly on the same agent.
       await harness.run();
 
-      // Wire a fresh reply for the next send.
       harness.scenario.replyOnce("anthropic", { text: "post-abort reply" });
       const next = agent.send("Round two");
       await harness.run();
@@ -318,23 +305,15 @@ describe("@intx/agent send-flow integration", () => {
   test("synchronously throws SendQueueFullError past the configured cap", async () => {
     harness.scenario.replyOnce("anthropic", { text: "stalled response" });
 
-    const agent = await createAgent({
-      contextDir: join(workDir, "ctx"),
-      sources: [SOURCE],
-      defaultSource: SOURCE.id,
-      systemPrompt: "send-flow test",
-      tools: [],
-      deps: harness.deps,
-      sendQueueMax: 2,
-    });
+    const agent = await createAgent(
+      definition(),
+      await envFor(join(workDir, "ctx"), harness, { sendQueueMax: 2 }),
+    );
 
     try {
-      // Two sends saturate the queue; the inference is parked on the
-      // matcher with no clock advance, so none complete.
       const p1 = agent.send("a");
       const p2 = agent.send("b");
       expect(() => agent.send("c")).toThrow(SendQueueFullError);
-      // Avoid unhandled-rejection warnings on the parked sends.
       p1.catch(() => undefined);
       p2.catch(() => undefined);
     } finally {

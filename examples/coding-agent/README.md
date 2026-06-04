@@ -10,10 +10,14 @@ end-to-end. Treat it as documentation that compiles.
 
 ## What it shows
 
-- Constructing an agent via `createAgent` with a real `contextDir`.
+- Constructing an `AgentDefinition` via `defineAgent` and an env with an
+  isogit-backed `ContextStore` at a real `contextDir`, then
+  instantiating via `createAgent(def, env)`.
 - Bridging an existing `ToolRunner` (the bundle returned by
-  `createPosixTools` with the LSP plugin attached) into the agent via
-  `fromToolRunner`.
+  `createPosixTools` with the LSP plugin attached) into the agent via a
+  `defineTool` bundle factory that closes over the runner. Disposal
+  stays caller-owned; the example's `close()` awaits the agent then
+  invokes `posixTools.dispose()`.
 - A single-shot `send()` that returns the model's reply.
 - Persistent history: re-running the example against the same `contextDir`
   picks up where the previous run left off — this is the resume-from-crash
