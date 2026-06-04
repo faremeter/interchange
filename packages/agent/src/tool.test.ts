@@ -3,12 +3,16 @@ import { describe, test, expect } from "bun:test";
 import type { ToolDefinition } from "@intx/types/runtime";
 
 import {
+  type ToolBundle,
+  type ToolFactory,
   createToolRunner,
+  defineTool,
   DuplicateToolError,
   fromToolRunner,
   stringTool,
   tool,
 } from "./tool";
+import type { BaseEnv } from "./env";
 
 const DEF_A: ToolDefinition = {
   name: "a",
@@ -213,5 +217,123 @@ describe("createToolRunner", () => {
     );
 
     expect(received).toEqual({ foo: 1, bar: "x" });
+  });
+});
+
+describe("defineTool", () => {
+  function emptyBundle(): ToolBundle {
+    return {
+      definitions: [],
+      async run(call) {
+        return { callId: call.id, content: "" };
+      },
+    };
+  }
+
+  test("attaches id and frozen requires to the factory", () => {
+    const factory = defineTool({
+      id: "@vendor/pkg/name",
+      requires: ["transport", "address"],
+      factory: () => emptyBundle(),
+    });
+
+    expect(factory.id).toBe("@vendor/pkg/name");
+    expect(factory.requires).toEqual(["transport", "address"]);
+    expect(Object.isFrozen(factory.requires)).toBe(true);
+  });
+
+  test("defaults requires to an empty frozen array when omitted", () => {
+    const factory = defineTool({
+      id: "@vendor/pkg/name",
+      factory: () => emptyBundle(),
+    });
+
+    expect(factory.requires).toEqual([]);
+    expect(Object.isFrozen(factory.requires)).toBe(true);
+  });
+
+  test("rejects bare ids", () => {
+    expect(() =>
+      defineTool({
+        id: "bareName",
+        factory: () => emptyBundle(),
+      }),
+    ).toThrow(/must be package-namespaced/);
+  });
+
+  test("the factory's behaviour is preserved as the callable shape", () => {
+    let envSeen: BaseEnv | undefined;
+    const factory = defineTool({
+      id: "pkg/probe",
+      factory: (env) => {
+        envSeen = env;
+        return {
+          definitions: [
+            {
+              name: "probe",
+              description: "probe",
+              inputSchema: { type: "object" },
+            },
+          ],
+          async run(call) {
+            return { callId: call.id, content: "probed" };
+          },
+        };
+      },
+    });
+
+    // Tool factories declare which env keys they touch via `requires`;
+    // their factory body should only read those keys. The probe tool
+    // here declares nothing, so the env it receives is only checked for
+    // reference equality. Constructing a fully-structured `BaseEnv`
+    // would force importing several unrelated types; the partial object
+    // exercise is intentional.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub, never indexed beyond identity comparison
+    const fakeEnv = { workdir: "/tmp/x" } as unknown as BaseEnv;
+    const bundle = factory(fakeEnv);
+    expect(envSeen).toBe(fakeEnv);
+    expect(bundle.definitions).toHaveLength(1);
+    expect(bundle.definitions[0]?.name).toBe("probe");
+  });
+
+  test("does not mutate the requires array supplied by the caller", () => {
+    const requires: readonly string[] = ["transport"];
+    const factory = defineTool({
+      id: "pkg/name",
+      requires,
+      factory: () => emptyBundle(),
+    });
+
+    expect(factory.requires).toEqual(["transport"]);
+    expect(factory.requires).not.toBe(requires);
+  });
+
+  test("does not mutate the factory function when reused across calls", () => {
+    // A caller that shares a single factory function across two
+    // `defineTool` registrations needs each annotated factory to be a
+    // distinct identity with its own metadata. Mutating `opts.factory`
+    // would let the second call silently overwrite the first's
+    // annotations and return the same identity twice.
+    const sharedFactory: ToolFactory = () => emptyBundle();
+    const a = defineTool({
+      id: "pkg/tool-a",
+      factory: sharedFactory,
+    });
+    const b = defineTool({
+      id: "pkg/tool-b",
+      requires: ["transport"],
+      factory: sharedFactory,
+    });
+
+    expect(a.id).toBe("pkg/tool-a");
+    expect(b.id).toBe("pkg/tool-b");
+    expect(a.requires).toEqual([]);
+    expect(b.requires).toEqual(["transport"]);
+    expect(a).not.toBe(b);
+    // The shared underlying factory is itself not annotated; only the
+    // wrappers carry metadata. Reflect off the function value directly
+    // so we can probe for accidental annotations without a cast.
+    expect(Reflect.get(sharedFactory, "id")).toBeUndefined();
+    expect(Reflect.get(sharedFactory, "requires")).toBeUndefined();
   });
 });

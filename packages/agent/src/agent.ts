@@ -35,6 +35,7 @@ import {
   type Dependencies,
   type ReactorEmittedEvent,
 } from "@intx/inference";
+import { getLogger } from "@intx/log";
 import { createInboundMessage } from "@intx/mime";
 import { createIsogitStore } from "@intx/storage-isogit";
 import type {
@@ -54,6 +55,8 @@ import { createSourceRegistry, type SourceRegistry } from "./source";
 import { createSendQueue, type SendQueue } from "./send-queue";
 import { createStreamConsumer, type StreamConsumer } from "./stream";
 import { createToolRunner, type AgentTool, type AgentToolRunner } from "./tool";
+
+const logger = getLogger(["interchange", "agent"]);
 
 const DEFAULT_SEND_FROM = "user@local";
 const DEFAULT_SEND_TO = "agent@local";
@@ -166,6 +169,23 @@ export type Agent = {
   ): Promise<SendResult>;
   stream(): AsyncIterable<ReactorEmittedEvent>;
   deliver(message: InboundMessage): void;
+  /**
+   * Begin shutdown. The reactor is aborted, the send queue drains with
+   * `AgentClosedError`, every active stream iterator terminates, the
+   * shutdown sequence (audit flush + in-flight commits) is awaited up
+   * to `env.closeTimeoutMs`, and the singleton-per-workdir lock is
+   * released so another agent can open the same directory.
+   *
+   * Stream consumers are terminated synchronously before
+   * `shutdownComplete` is awaited, so any reactor event emitted in the
+   * shutdown window (after `reactor.abort()` but before the assembly's
+   * `onShutdown` resolves) is no longer visible to a `stream()`
+   * iterator. The audit path is not affected: `inference.error` and
+   * `reactor.error` records emitted in that window still flow through
+   * `accumulatedErrors` and are flushed by `onShutdown`. Callers that
+   * need to observe late events should subscribe before `close()` and
+   * tolerate the iterator's terminal close.
+   */
   close(): Promise<void>;
   /**
    * Replace the active source's fields in place. Picked up at the start
@@ -269,6 +289,26 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
   const streamBufferMax = config.streamBufferMax ?? DEFAULT_STREAM_BUFFER_MAX;
   const streamConsumers = new Set<StreamConsumer>();
 
+  // Pre-start buffer for events emitted between `reactor.start()` and
+  // the first `stream()` consumer attaching. Without this buffer those
+  // events fan out into an empty consumer set and are dropped silently:
+  // `reactor.start()` runs synchronously inside `createAgent`, before
+  // the caller has a chance to register a consumer, so a `reactor.start`
+  // event (or any other event the reactor emits during its
+  // synchronous startup window) would be lost. We buffer up to
+  // `streamBufferMax` events; when the first consumer attaches, the
+  // buffer is drained into it and discarded. Subsequent consumers see
+  // only events emitted after their own registration, matching the
+  // existing per-consumer fan-out semantics. Overflow during the
+  // pre-start window drops the oldest events with a log warning rather
+  // than throwing: aborting `reactor.start()` mid-startup leaves the
+  // agent in a worse state than missing observability for the very
+  // earliest events, and a startup that emits more than
+  // `streamBufferMax` events before any consumer registers is a
+  // pathology the caller can observe via the warning.
+  let preStartBuffer: ReactorEmittedEvent[] | undefined = [];
+  let preStartBufferOverflows = 0;
+
   // Per-active-cycle bookkeeping for send(). The reactor produces one or
   // more inference.done events during a cycle; we keep the most recent
   // assistant turn so the final connector.reply can be paired with the
@@ -343,6 +383,22 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     // flush). resolveShutdown is idempotent.
     if (event.type === "reactor.done") {
       resolveShutdown();
+    }
+
+    // Pre-start window: if no consumer has attached yet, buffer the
+    // event so the first consumer to attach picks it up. The buffer is
+    // discarded after the first drain; later consumers see only
+    // events emitted after their own registration. Overflow drops the
+    // oldest event with a log warning -- raising here would abort
+    // reactor startup, which is worse than missing observability for
+    // the earliest events.
+    if (preStartBuffer !== undefined && streamConsumers.size === 0) {
+      if (preStartBuffer.length >= streamBufferMax) {
+        preStartBuffer.shift();
+        preStartBufferOverflows += 1;
+      }
+      preStartBuffer.push(event);
+      return;
     }
 
     // Iterate a snapshot so removing closed consumers mid-iteration is
@@ -422,6 +478,19 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
   function stream(): AsyncIterable<ReactorEmittedEvent> {
     ensureOpen();
     const consumer = createStreamConsumer(streamBufferMax);
+    // Drain the pre-start buffer into the first consumer that
+    // attaches so events emitted between reactor.start() and the
+    // first stream() call are not lost. The buffer is discarded after
+    // the first drain -- later consumers see only events emitted
+    // after their own registration, matching the per-consumer
+    // semantics every other code path expects.
+    if (preStartBuffer !== undefined) {
+      if (preStartBufferOverflows > 0) {
+        logger.warn`pre-start event buffer overflowed by ${preStartBufferOverflows} event(s) before the first stream() consumer attached; oldest events were dropped`;
+      }
+      for (const event of preStartBuffer) consumer.push(event);
+      preStartBuffer = undefined;
+    }
     streamConsumers.add(consumer);
     return consumer.iterator();
   }
@@ -457,6 +526,20 @@ export async function createAgent(config: AgentConfig): Promise<Agent> {
     activeCycle = null;
     for (const consumer of streamConsumers) consumer.close();
     streamConsumers.clear();
+
+    // Surface any pre-start buffer state the caller never observed.
+    // The buffer drains into the first `stream()` consumer at
+    // attachment time and logs its overflow count then. If no
+    // consumer ever attached (e.g. a send()-only caller that never
+    // subscribed to the event stream), the buffer and its overflow
+    // counter would silently disappear here without an operator
+    // signal. Log the overflow once at close time so a startup
+    // pathology that dropped reactor.start-window events is at
+    // least observable in the logs.
+    if (preStartBuffer !== undefined && preStartBufferOverflows > 0) {
+      logger.warn`pre-start event buffer overflowed by ${preStartBufferOverflows} event(s) and no stream() consumer ever attached to drain it; oldest events were dropped`;
+    }
+    preStartBuffer = undefined;
 
     // Wait for the reactor's shutdown sequence (audit flush, in-flight
     // commits) before releasing the lock so a subsequent createAgent on
