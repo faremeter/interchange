@@ -26,11 +26,9 @@ export {
 } from "./tool";
 export { type AuthorizeFn, type BaseEnv, AgentEnvError } from "./env";
 export {
-  type AgentResult,
   type AnnotatedDirectorFactory,
-  type Director,
+  type DirectorAgentContext,
   type DirectorConfigSchema,
-  type DirectorDecision,
   type DirectorFactory,
   type DirectorFactoryMeta,
   type DirectorRef,
@@ -38,6 +36,16 @@ export {
 } from "./director-types";
 export { validateNamespacedId } from "./namespace";
 export { CanonicalizationError, canonicalizeForHash } from "./canonicalize";
+export { type DefinedDirector, defineDirector } from "./director";
+export {
+  createDefaultDirectorRegistry,
+  createDirectorRegistry,
+} from "./director-registry";
+export {
+  type DefaultDirectorConfig,
+  buildDefaultDirectorRef,
+  defaultDirectorFactory,
+} from "./default-director";
 export {
   type SourceRegistry,
   InvalidInferenceSourceError,
