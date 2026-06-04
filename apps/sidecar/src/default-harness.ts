@@ -14,8 +14,8 @@ import {
   createHarness,
   createHarnessRuntimeCapabilities,
   mergeToolRunners,
-  readDeployTree,
 } from "@intx/harness";
+import { readDeployTree } from "@intx/hub-agent";
 import { hasProvider } from "@intx/inference";
 import { getLogger } from "@intx/log";
 import { createIsogitStore, createMailAuditStore } from "@intx/storage-isogit";

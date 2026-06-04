@@ -12,11 +12,15 @@ not see that machinery.
 
 ## What it shows
 
-- Constructing an agent with `createAgent({ contextDir, sources,
-defaultSource, systemPrompt, tools })`.
+- Constructing an `AgentDefinition` via `defineAgent` with `id`,
+  `systemPrompt`, `tools`, `capabilities`, and `inference`.
+- Building a `BaseEnv` with the active source, an isogit `ContextStore`,
+  a workdir, a no-op audit store, a permissive authorize, and the
+  built-in director registry.
+- Instantiating via `createAgent(def, env)`.
 - A single round trip through `agent.send(prompt)`.
 - Tearing the agent down with `agent.close()` so the singleton-per-
-  `contextDir` lock is released cleanly.
+  `workdir` lock is released cleanly.
 
 Notably absent: tools, streaming, structured payloads, multi-turn
 state. Those each have their own example in this directory.

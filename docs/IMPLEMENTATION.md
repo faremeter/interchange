@@ -743,7 +743,7 @@ The hub's signing public key is provisioned to the sidecar at registration time.
 
 ### Credential Isolation
 
-The deploy tree never contains credentials. API keys, OAuth tokens, and other secrets travel in the `HarnessConfig.providers` field of the `agent.deploy` frame, which is ephemeral (not persisted to git). The `keys/` directory is excluded from git via `.gitignore`.
+The deploy tree never contains credentials. API keys, OAuth tokens, and other secrets travel in the `sources` field of the wire-format `HarnessConfig` from `@intx/types/runtime` on the `agent.deploy` frame, which is ephemeral (not persisted to git). The `keys/` directory is excluded from git via `.gitignore`.
 
 ## Change History: Git-Backed Storage
 

@@ -7,13 +7,19 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./testing": {
+      "types": "./src/testing/index.ts",
+      "default": "./src/testing/index.ts"
     }
   },
   "dependencies": {
     "@intx/inference": "workspace:*",
     "@intx/mime": "workspace:*",
-    "@intx/storage-isogit": "workspace:*",
     "@intx/types": "workspace:*",
     "arktype": "catalog:"
+  },
+  "devDependencies": {
+    "@intx/storage-isogit": "workspace:*"
   }
 }

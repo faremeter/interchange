@@ -114,11 +114,28 @@ function validateConfig(config: unknown, schema: DirectorConfigSchema): void {
   // that as a definition-time author error.
   if (typeof schema !== "function") {
     throw new Error(
-      "defineDirector: configSchema must be an arktype validator (callable)",
+      "director configSchema must be an arktype validator (callable)",
     );
   }
   const result: unknown = schema(config);
   if (result instanceof type.errors) {
     throw new Error(`director config validation failed: ${result.summary}`);
   }
+}
+
+/**
+ * Run the registered config schema against a `DirectorRef.config`.
+ * Throws on schema rejection or on a non-callable schema.
+ *
+ * `defineDirector.build(config)` runs this at definition-construction
+ * time. `createAgent` runs it again at resolve time so a caller that
+ * hand-constructs a `DirectorRef` (the type is public; nothing forces
+ * refs through `build`) cannot bypass the schema check and hand a
+ * malformed config to the factory.
+ */
+export function validateDirectorConfig(
+  config: unknown,
+  schema: DirectorConfigSchema,
+): void {
+  validateConfig(config, schema);
 }

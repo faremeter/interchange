@@ -46,10 +46,11 @@ rm -rf ../../tmp/agent-resume
 
 ## Walkthrough
 
-1. **Resume is automatic.** `createAgent({ contextDir })` is the only
-   thing the example does to opt in. The context store materialises
-   inside `contextDir` on first use and replays prior commits on
-   subsequent opens.
+1. **Resume is automatic.** Constructing the env's `storage` (via
+   `createIsogitStore(contextDir)`) against the same directory is the
+   only thing the example does to opt in. The context store
+   materialises inside `contextDir` on first use and replays prior
+   commits on subsequent opens.
 
 2. **`history()` is cheap and side-effect free.** It returns the
    already-loaded turn projection from the store. The example calls

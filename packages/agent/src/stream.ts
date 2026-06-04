@@ -10,7 +10,7 @@
 // Loud failure matches the defensive-coding rule: silently dropping
 // events would hide consumer bugs, and unbounded buffering would let a
 // stalled consumer balloon the agent's memory. The cap is configurable
-// via `streamBufferMax` on `AgentConfig`.
+// via `streamBufferMax` on `BaseEnv`.
 
 import type { ReactorEmittedEvent } from "@intx/inference";
 

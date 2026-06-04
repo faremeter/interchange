@@ -24,6 +24,25 @@ import { defaultDirectorFactory } from "./default-director";
 type RegisteredFactory = AnnotatedDirectorFactory<unknown, BaseEnv>;
 
 /**
+ * Thrown by `DirectorRegistry.resolve` when the supplied ref names an
+ * id the registry does not contain. The error is named separately from
+ * `Error` so callers (specifically `validateEnv`) can distinguish an
+ * unknown-id failure from other runtime faults a custom `directors`
+ * implementation might raise. Custom `DirectorRegistry` implementations
+ * are expected to throw `UnknownDirectorIdError` on the unknown-id
+ * path; anything else propagates as a real failure.
+ */
+export class UnknownDirectorIdError extends Error {
+  readonly directorId: string;
+
+  constructor(directorId: string) {
+    super(`unknown director in registry: ${directorId}`);
+    this.name = "UnknownDirectorIdError";
+    this.directorId = directorId;
+  }
+}
+
+/**
  * Build a director registry from a flat list of factories. Throws
  * `Error` at construction on duplicate ids or when `defaultId` is not
  * present in `factories`.
@@ -51,7 +70,7 @@ export function createDirectorRegistry(opts: {
     resolve(ref: DirectorRef): RegisteredFactory {
       const factory = byId.get(ref.id);
       if (factory === undefined) {
-        throw new Error(`unknown director in registry: ${ref.id}`);
+        throw new UnknownDirectorIdError(ref.id);
       }
       return factory;
     },

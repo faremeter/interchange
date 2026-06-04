@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@intx/agent": "workspace:*",
+    "@intx/storage-isogit": "workspace:*",
     "@intx/tools-lsp": "workspace:*",
     "@intx/tools-posix": "workspace:*",
     "@intx/types": "workspace:*"
