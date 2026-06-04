@@ -17,6 +17,7 @@ import {
   AgentContextLockError,
   createDefaultDirectorRegistry,
   createDirectorRegistry,
+  defaultDirectorFactory,
   defineAgent,
   defineDirector,
 } from "@intx/agent";
@@ -769,6 +770,56 @@ describe("createHarness workdir lock", () => {
       expect(thrown).toBeInstanceOf(AgentContextLockError);
     } finally {
       await first.close();
+    }
+  });
+});
+
+describe("createHarness reactor-once", () => {
+  // The composition-layer cross-check for the @intx/agent fixture
+  // suite: `createHarness(def, env)` must wrap the reactor exactly
+  // once per instantiation, the same invariant the planner.test.ts
+  // and mail.test.ts fixtures pin on the agent-only path. The
+  // mail-fixture docstring at packages/agent/src/internal-fixtures/
+  // mail.test.ts:11-15 promises this assertion lives here so the
+  // agent package does not have to import @intx/harness (which would
+  // cycle the workspace dependency).
+  //
+  // The reactor count is a precise proxy for "the reactor assembly
+  // is wrapped exactly once": each createAgent (and therefore each
+  // createHarness, which delegates to it) resolves the director
+  // through the registry, calls the resolved factory once, and
+  // feeds the resulting director into createReactorAssembly.
+
+  test("invokes the director factory exactly once per instantiation", async () => {
+    let factoryCallCount = 0;
+    const countingDefault = defineDirector({
+      id: "@intx-harness-test/reactor-once/counting-default",
+      configSchema: type({}),
+      factory: (_config, env, agent) => {
+        factoryCallCount += 1;
+        return defaultDirectorFactory({}, env, agent);
+      },
+    });
+    const directors = createDirectorRegistry({
+      factories: [countingDefault.factory],
+      defaultId: countingDefault.factory.id,
+    });
+
+    const workdir = mkdtempSync(join(tmpdir(), "harness-reactor-once-"));
+    try {
+      const { transport } = makeMockTransport();
+      const storage = await createIsogitStore(workdir);
+      const harness = await createHarness(emptyDef(), {
+        ...mailEnv({ workdir, storage, transport }),
+        directors,
+      });
+      try {
+        expect(factoryCallCount).toBe(1);
+      } finally {
+        await harness.close();
+      }
+    } finally {
+      rmSync(workdir, { recursive: true, force: true });
     }
   });
 });
