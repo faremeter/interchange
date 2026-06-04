@@ -1,61 +1,40 @@
 // Type-only surface for the director registry.
 //
 // The runtime implementations -- `createDirectorRegistry`,
-// `defineDirector`, the director-to-reactor adapter, and the built-in
-// default factory -- arrive in a separate commit. This module holds
-// only the type-level shapes the env contract (`BaseEnv`) depends on, so
-// the env primitives can typecheck independently.
+// `defineDirector`, and the built-in default factory -- live in
+// adjacent files. This module holds only the type-level shapes the env
+// contract (`BaseEnv`) depends on, so the env primitives can typecheck
+// independently.
 //
-// (Workflow framework design spec v1, section 2 -- director registry.)
+// `DirectorFactory` returns a `ReactorDirector` directly. The only
+// director that flows through the registry today is the built-in
+// default, which is already `ReactorDirector`-shaped; no translation
+// layer is needed.
+
+import type { ReactorDirector, ToolDefinition } from "@intx/types/runtime";
 
 import type { BaseEnv } from "./env";
 
 /**
- * Result the author-facing director returns from a `step` call. The
- * three shapes form a closed set for Phase 1: the assembly orchestrates
- * `emit`, `reply`, `checkpoint`, and `compact` actions itself; author
- * directors only express the control-flow choices below.
- *
- *  - `continue`     - run the next inference call
- *  - `invoke-tool`  - dispatch a tool call before the next inference
- *  - `terminate`    - end the loop with a result
- *
- * Anything outside this set is a framework concern; the adapter rejects
- * other shapes with a typed error.
+ * Agent-instance properties a director factory needs at construction.
+ * Sourced from the `AgentDefinition` the agent harness is instantiating:
+ * the system prompt and the resolved tool definitions the model will
+ * see. Held separately from `BaseEnv` because these values are derived
+ * from the agent definition, not supplied by the caller as runtime env.
  */
-export type DirectorDecision =
-  | { kind: "continue" }
-  | { kind: "invoke-tool"; toolName: string; args: unknown }
-  | { kind: "terminate"; result: AgentResult };
-
-/**
- * Terminal result a director can return through
- * `DirectorDecision.terminate`. The author-facing shape is intentionally
- * narrow; richer reactor results (tool outputs, intermediate turns) are
- * surfaced through the agent's event stream, not the result.
- */
-export type AgentResult =
-  | { kind: "text"; text: string }
-  | { kind: "tool-result"; toolName: string; args: unknown };
-
-/**
- * Author-facing director interface. The agent harness adapts this onto
- * the reactor's `ReactorDirector.decide(state, capabilities)` shape;
- * `@intx/inference` is not touched.
- */
-export interface Director {
-  step(event: unknown): Promise<DirectorDecision>;
-  close(): Promise<void>;
+export interface DirectorAgentContext {
+  readonly systemPrompt: string;
+  readonly toolDefinitions: readonly ToolDefinition[];
 }
 
 /**
  * Reference to a director shipped with a bundle. The package-namespaced
- * id is the identity. The bundle the workflow ships with includes the
+ * id is the identity. The bundle that ships the director includes the
  * factory that maps the id back to runtime code; same bundle = same
  * factory, so no separate `factoryHash` is needed.
  *
- * `config` is canonicalized via `canonicalizeForHash` for deploy-time
- * hashing.
+ * `config` is canonical-JSON-serializable so deploy-hash consumers can
+ * stably hash the ref via `canonicalizeForHash(ref.config)`.
  */
 export interface DirectorRef<Config = unknown> {
   readonly id: string;
@@ -63,14 +42,20 @@ export interface DirectorRef<Config = unknown> {
 }
 
 /**
- * Factory function shape that produces a `Director` from a config and
- * the agent's runtime env. The implementation lives in the same bundle
- * as the agent definition; the registry resolves it from `DirectorRef.id`.
+ * Factory function shape that produces a `ReactorDirector` from a
+ * validated config, the agent's runtime env, and the agent-instance
+ * context (system prompt + tool definitions). The implementation lives
+ * in the same bundle as the agent definition; the registry resolves it
+ * from `DirectorRef.id`.
  */
 export type DirectorFactory<
   Config = unknown,
   EnvReq extends BaseEnv = BaseEnv,
-> = (config: Config, env: EnvReq) => Director;
+> = (
+  config: Config,
+  env: EnvReq,
+  agent: DirectorAgentContext,
+) => ReactorDirector;
 
 /**
  * Arktype validator for a director's config. Stored as `unknown` at the
