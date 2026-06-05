@@ -11,7 +11,7 @@
 // - `infer` + `done` together is invalid.
 // - `reply` + `infer` together is invalid.
 // - `reply` + `execute_tools` together is invalid.
-// - `reply` + `done` together is invalid.
+// - `reply` + `done` together is valid — used for terminal messages (abort, reject) before loop exit.
 // - `reply` + `suspend` together is invalid.
 // - `wait` + `infer` together is invalid.
 // - `wait` + `execute_tools` together is invalid.
@@ -101,9 +101,6 @@ export function validateActions(
     };
   }
 
-  if (replyActions.length > 0 && doneActions.length > 0) {
-    return { ok: false, error: "reply and done cannot appear together" };
-  }
 
   if (replyActions.length > 0 && suspendActions.length > 0) {
     return { ok: false, error: "reply and suspend cannot appear together" };

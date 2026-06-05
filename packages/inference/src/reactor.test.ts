@@ -656,14 +656,12 @@ describe("validateActions", () => {
     expect(result.error).toMatch(/duplicate.*fork/i);
   });
 
-  test("reply + done is invalid", () => {
+  test("reply + done is valid — used for terminal messages before loop exit", () => {
     const result = validateActions([
       { type: "reply", content: "goodbye" },
       { type: "done" },
     ]);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.error).toMatch(/reply.*done/i);
+    expect(result.ok).toBe(true);
   });
 
   test("reply + suspend is invalid", () => {
