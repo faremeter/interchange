@@ -89,7 +89,11 @@ describe("defineDirector", () => {
     }
     let seenConfig: Config | undefined;
     let seenAgent:
-      | { systemPrompt: string; toolDefinitions: readonly unknown[] }
+      | {
+          systemPrompt: string;
+          toolDefinitions: readonly unknown[];
+          compactorNames: readonly string[];
+        }
       | undefined;
 
     const defined = defineDirector<Config>({
@@ -100,6 +104,7 @@ describe("defineDirector", () => {
         seenAgent = {
           systemPrompt: agent.systemPrompt,
           toolDefinitions: agent.toolDefinitions,
+          compactorNames: agent.compactorNames,
         };
         return stubDirector();
       },
@@ -110,12 +115,14 @@ describe("defineDirector", () => {
     const agentContext = {
       systemPrompt: "you are a probe",
       toolDefinitions: [] as const,
+      compactorNames: [] as const,
     };
 
     defined.factory({ label: "x" }, env, agentContext);
     expect(seenConfig).toEqual({ label: "x" });
     expect(seenAgent?.systemPrompt).toBe("you are a probe");
     expect(seenAgent?.toolDefinitions).toEqual([]);
+    expect(seenAgent?.compactorNames).toEqual([]);
   });
 
   test("rejects a non-callable configSchema at build time", () => {
