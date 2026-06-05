@@ -163,6 +163,48 @@ export async function invokeReplyDrainTerminated(
 }
 
 /**
+ * Build the `load` / `writeMetadata` overrides the harness layers onto
+ * `env.storage`. Extracted from `createHarness` so the dirty-bit gating
+ * on `load()` is directly testable -- the production path constructs
+ * the overrides inline with the same arguments.
+ *
+ * The `isInMemoryStateAuthoritative` callback is read on every `load`
+ * invocation. The harness sets the bit from the router's
+ * `onStateChanged` callback so the gate flips on the same tick a
+ * commit produces its first state change; subsequent loads (whether
+ * driven by reactor recovery, mid-cycle, or anywhere else) leave the
+ * router's in-memory snapshot intact rather than blanking it with the
+ * pre-commit disk value.
+ *
+ * Exported for the regression test in this package; no external
+ * consumer should call it. Same shape and rationale as
+ * `invokeReplySendFailed` and `invokeReplyDrainTerminated` above --
+ * the helper is tightly coupled to the dirty-bit gating semantics
+ * that live in this module, and a separate testing entry-point
+ * would buy bundler ceremony for a boundary TypeScript cannot
+ * enforce. The docstring "internal" marker is the contract.
+ */
+export function createWrappedStorageOverrides(
+  baseStorage: ContextStore,
+  connectorRouter: ReturnType<typeof createConnectorRouter>,
+  isInMemoryStateAuthoritative: () => boolean,
+): Pick<ContextStore, "load" | "writeMetadata"> {
+  return {
+    async load(signal) {
+      const loaded = await baseStorage.load(signal);
+      if (!isInMemoryStateAuthoritative()) {
+        connectorRouter.restore(loaded.connectorState);
+      }
+      return loaded;
+    },
+    async writeMetadata(metadata, signal) {
+      baseStorage.setConnectorState(connectorRouter.snapshot());
+      return baseStorage.writeMetadata(metadata, signal);
+    },
+  };
+}
+
+/**
  * Construct an `AnnotatedToolFactory` for a mail-tool bundle. The
  * factory binds `transport` from env at construction time and produces
  * a bundle whose lifetime is tied to the agent. Disposal of the
@@ -236,15 +278,38 @@ export async function createHarness<EnvReq extends MailEnv>(
 ): Promise<Harness> {
   const transport = env.transport;
 
-  const connectorRouter = createConnectorRouter(
-    env.onConnectorStateChanged !== undefined
-      ? { onStateChanged: env.onConnectorStateChanged }
-      : undefined,
-  );
+  // The wrappedStorage's load() needs to know whether the router's
+  // in-memory state is "fresher" than disk. The dirty bit flips on the
+  // first state change emitted by the router (commit() in the watch
+  // loop, onReplySent() after a connector.reply) and never flips back.
+  // Once dirty, the wrappedStorage refuses to restore from disk -- the
+  // router's in-memory state is authoritative.
+  //
+  // The wrappedStorage subscribes to the router's onStateChanged so the
+  // dirty bit is set the same tick commit() runs, even if a
+  // contextStore.load() races behind it.
+  let inMemoryStateAuthoritative = false;
+  const userOnStateChanged = env.onConnectorStateChanged;
+  const connectorRouter = createConnectorRouter({
+    onStateChanged: (state) => {
+      inMemoryStateAuthoritative = true;
+      if (userOnStateChanged !== undefined) userOnStateChanged(state);
+    },
+  });
 
-  // Wrap env.storage so load() restores connector state and per-cycle
-  // writeMetadata picks up the live connector state via the underlying
-  // store's setConnectorState buffer.
+  // Wrap env.storage. The first load() restores connector state from
+  // disk only if no router commit has happened yet -- once a commit
+  // makes the router's state authoritative, subsequent loads return
+  // the store's payload unchanged and leave the in-memory state
+  // intact.
+  //
+  // The router's in-memory state diverges from disk between commit()
+  // (in the watch callback) and the next writeMetadata (at the
+  // reactor's per-cycle checkpoint). A load() landing in that window
+  // must not clobber the in-memory state with the stale disk value --
+  // doing so makes the harness's outbound connector.reply path drop
+  // replies with NoActiveConnectorThreadError when composeReply() runs
+  // after a mid-cycle reload.
   //
   // The wrapper is implemented as a Proxy over env.storage so adding a
   // new method to ContextStore does not require touching the harness:
@@ -254,21 +319,11 @@ export async function createHarness<EnvReq extends MailEnv>(
   // before delegate). `setConnectorState` is left to the default
   // Proxy fall-through path since the harness adds no behaviour beyond
   // delegation there.
-  const overrides: Pick<ContextStore, "load" | "writeMetadata"> = {
-    async load(signal) {
-      const loaded = await env.storage.load(signal);
-      connectorRouter.restore(loaded.connectorState);
-      return loaded;
-    },
-    async writeMetadata(metadata, signal) {
-      // Flush the current in-memory connector state into the wrapped
-      // store's buffer so writeMetadata picks it up alongside
-      // pendingOperations and tokenUsage. This is the reactor's
-      // per-cycle moment to durably record connector thread state.
-      env.storage.setConnectorState(connectorRouter.snapshot());
-      return env.storage.writeMetadata(metadata, signal);
-    },
-  };
+  const overrides = createWrappedStorageOverrides(
+    env.storage,
+    connectorRouter,
+    () => inMemoryStateAuthoritative,
+  );
 
   const wrappedStorage: ContextStore = new Proxy(env.storage, {
     get(target, prop, _receiver) {

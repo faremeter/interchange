@@ -40,8 +40,10 @@ import type {
   ReactorState,
 } from "@intx/types/runtime";
 
+import { createConnectorRouter } from "./connector-router";
 import {
   createHarness,
+  createWrappedStorageOverrides,
   defineMailTools,
   invokeReplyDrainTerminated,
   invokeReplySendFailed,
@@ -329,19 +331,11 @@ describe("createHarness outbound pipeline", () => {
     rmSync(workDir, { recursive: true, force: true });
   });
 
-  // The end-to-end outbound test (inbound mail -> reactor cycle ->
-  // connector.reply -> transport.send) is blocked at this commit by a
-  // wrappedStorage state-restore race: the harness's wrappedStorage
-  // calls `connectorRouter.restore(loaded.connectorState)` on every
-  // load(), and the reactor's startup-and-recovery loads fire between
-  // the watch callback's commit() and the drain's composeReply(),
-  // blanking router state. The drain catches the resulting
-  // NoActiveConnectorThreadError and silently drops the outbound
-  // reply. The infrastructure below (mock transport, inference-testing
-  // harness, createInboundMessage) stages the eventual assertion; a
-  // later commit makes the restore boot-only and flips the skip to a
-  // real assertion.
-  test.skip("delivers a connector.reply through to transport.send", async () => {
+  // Exercises the end-to-end outbound path: an INBOX-routed start
+  // decision drives the agent through stubbed inference, the agent
+  // emits connector.reply, and the harness's drain forwards the
+  // reply via transport.send.
+  test("delivers a connector.reply through to transport.send", async () => {
     inference.scenario.replyOnce("anthropic", { text: "outbound reply" });
 
     const { transport, control } = makeMockTransport();
@@ -486,6 +480,148 @@ describe("invokeReplyDrainTerminated", () => {
     const sentinel = new Error("drain dead");
     await invokeReplyDrainTerminated(callback, sentinel);
     expect(observedCause).toBe(sentinel);
+  });
+});
+
+describe("createWrappedStorageOverrides dirty-bit gating", () => {
+  // The boot-only restore fix pins the following invariant: the
+  // wrapped storage's `load()` calls `connectorRouter.restore(...)`
+  // only while no router commit has produced a state change. Once the
+  // router emits a state change the harness flips its in-memory-state-
+  // authoritative bit, and every subsequent `load()` returns the
+  // delegate's payload unchanged without resetting the router's
+  // in-memory snapshot. These tests pin the bit-gating directly so a
+  // regression in the load() guard is caught without depending on the
+  // full reactor cycle the end-to-end test exercises.
+
+  const makeStubStorage = (
+    connectorState: unknown,
+  ): {
+    storage: ContextStore;
+    loadCount: () => number;
+    setConnectorStateCalls: () => unknown[];
+  } => {
+    let loads = 0;
+    const setCalls: unknown[] = [];
+    const stub = {
+      async load() {
+        loads += 1;
+        return {
+          history: [],
+          pendingOperations: [],
+          tokenUsage: { totalInputTokens: 0, totalOutputTokens: 0 },
+          connectorState,
+        };
+      },
+      setConnectorState(state: unknown) {
+        setCalls.push(state);
+      },
+      async writeMetadata() {
+        // No-op: the test does not exercise the persisted-write path.
+      },
+    };
+    return {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- partial mock; methods the override does not call are not implemented
+      storage: stub as unknown as ContextStore,
+      loadCount: () => loads,
+      setConnectorStateCalls: () => setCalls,
+    };
+  };
+
+  const stateFromDisk = {
+    threadRoot: "<root-from-disk@test>",
+    lastMessageId: "<last-from-disk@test>",
+    replyTo: "alice@example.com",
+    cc: [],
+  };
+
+  const stateFromRouter = {
+    threadRoot: "<root-from-router@test>",
+    lastMessageId: "<last-from-router@test>",
+    replyTo: "alice@example.com",
+    cc: [],
+  };
+
+  test("restores from disk while the bit is unset", async () => {
+    const router = createConnectorRouter();
+    const { storage } = makeStubStorage(stateFromDisk);
+    const overrides = createWrappedStorageOverrides(
+      storage,
+      router,
+      () => false,
+    );
+    expect(router.snapshot()).toBeNull();
+    await overrides.load();
+    // Bit unset -> restore() was called, router now reflects disk.
+    expect(router.snapshot()).toEqual(stateFromDisk);
+  });
+
+  test("does not restore from disk after the bit is set", async () => {
+    const router = createConnectorRouter();
+    router.restore(stateFromRouter);
+    expect(router.snapshot()).toEqual(stateFromRouter);
+
+    // Bit set: the in-memory router state is authoritative. The
+    // override must NOT call restore() with the disk's stale payload.
+    const bit = true;
+    const { storage } = makeStubStorage(stateFromDisk);
+    const overrides = createWrappedStorageOverrides(storage, router, () => bit);
+    await overrides.load();
+    expect(router.snapshot()).toEqual(stateFromRouter);
+  });
+
+  test("respects the bit's live value across successive loads", async () => {
+    // The harness reads the bit as a thunk every load, so a flip
+    // between two loads must be observed. The first load restores
+    // (bit=false). After the flip, the second load preserves the
+    // router's then-current snapshot (bit=true). Asserts both halves
+    // of the gating in a single closure so a single-direction read of
+    // the bit (cached at construction time) would fail one of them.
+    const router = createConnectorRouter();
+    let bit = false;
+    const { storage, loadCount } = makeStubStorage(stateFromDisk);
+    const overrides = createWrappedStorageOverrides(storage, router, () => bit);
+
+    // First load: bit unset, restore from disk.
+    await overrides.load();
+    expect(router.snapshot()).toEqual(stateFromDisk);
+    expect(loadCount()).toBe(1);
+
+    // Simulate a router commit setting in-memory state and flipping
+    // the bit (this is the wiring the harness installs via
+    // onStateChanged).
+    router.restore(stateFromRouter);
+    bit = true;
+
+    // Second load: bit set, must NOT restore from disk.
+    await overrides.load();
+    expect(router.snapshot()).toEqual(stateFromRouter);
+    expect(loadCount()).toBe(2);
+  });
+
+  test("writeMetadata flushes the router's current snapshot through setConnectorState", async () => {
+    // Independent of the gating, the writeMetadata override has to
+    // forward the router's snapshot into the delegate store's
+    // setConnectorState buffer so the next durable write picks it up.
+    const router = createConnectorRouter();
+    router.restore(stateFromRouter);
+    const { storage, setConnectorStateCalls } = makeStubStorage(null);
+    const overrides = createWrappedStorageOverrides(
+      storage,
+      router,
+      () => true,
+    );
+    await overrides.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        thinking: 0,
+      },
+    });
+    expect(setConnectorStateCalls()).toEqual([stateFromRouter]);
   });
 });
 
