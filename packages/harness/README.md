@@ -61,6 +61,7 @@ await harness.close();
 ```
 
 The narrowed `Harness` surface is `close()`, `deliver(message)`,
-`setSource(source)`, `stream()`, and `blobReader`. `mergeToolRunners`
-remains available for callers that compose multiple bundles outside
-the `defineTool` shape.
+`setSource(source)`, `stream()`, and `blobReader`. Tool composition
+flows through `defineMailTools` and `defineTool` from `@intx/agent`;
+the agent's own `resolveTools` aggregates definitions and dispatches
+calls.
