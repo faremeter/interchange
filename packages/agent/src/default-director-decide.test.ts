@@ -145,6 +145,7 @@ function buildDirector(opts?: { mode?: "conversational" | "reactive" }) {
   return defaultDirectorFactory(opts ?? {}, env, {
     systemPrompt: "You are helpful.",
     toolDefinitions: NO_TOOLS,
+    compactorNames: [],
   });
 }
 

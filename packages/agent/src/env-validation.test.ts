@@ -49,6 +49,19 @@ describe("validateEnv", () => {
     expect(() => validateEnv(emptyDef(), baseEnv())).not.toThrow();
   });
 
+  test("does not require env.compactors", () => {
+    // The field is optional; an env that simply omits it is valid and a
+    // director that never emits `caps.compact(...)` runs unaffected.
+    const env = baseEnv();
+    expect(env.compactors).toBeUndefined();
+    expect(() => validateEnv(emptyDef(), env)).not.toThrow();
+  });
+
+  test("accepts env.compactors when supplied", () => {
+    const env: BaseEnv = { ...baseEnv(), compactors: {} };
+    expect(() => validateEnv(emptyDef(), env)).not.toThrow();
+  });
+
   test("collects missing core BaseEnv keys and blames BaseEnv", () => {
     const env = baseEnv();
     const bad = {

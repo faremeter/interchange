@@ -25,6 +25,7 @@ describe("defaultDirectorFactory", () => {
     const director = defaultDirectorFactory({}, env, {
       systemPrompt: "you are a planner",
       toolDefinitions: NO_TOOLS,
+      compactorNames: [],
     });
     expect(typeof director.decide).toBe("function");
   });
@@ -35,6 +36,7 @@ describe("defaultDirectorFactory", () => {
     const director = defaultDirectorFactory({ mode: "reactive" }, env, {
       systemPrompt: "ack only",
       toolDefinitions: NO_TOOLS,
+      compactorNames: [],
     });
     expect(typeof director.decide).toBe("function");
   });

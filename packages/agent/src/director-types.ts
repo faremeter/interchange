@@ -21,10 +21,20 @@ import type { BaseEnv } from "./env";
  * the system prompt and the resolved tool definitions the model will
  * see. Held separately from `BaseEnv` because these values are derived
  * from the agent definition, not supplied by the caller as runtime env.
+ *
+ * `compactorNames` is the exception to the "derived from definition"
+ * shape: it lists the names the deployer registered on `env.compactors`
+ * and is surfaced here so the director picks a known name to pass to
+ * `caps.compact(name, reason)`. The list is empty when the deployer
+ * omits the env field. The shape mirrors `toolDefinitions` for the
+ * same reason: a director that emits an action keyed by name benefits
+ * from learning the registered names at construction rather than
+ * trusting the deployer by convention.
  */
 export interface DirectorAgentContext {
   readonly systemPrompt: string;
   readonly toolDefinitions: readonly ToolDefinition[];
+  readonly compactorNames: readonly string[];
 }
 
 /**
@@ -44,7 +54,8 @@ export interface DirectorRef<Config = unknown> {
 /**
  * Factory function shape that produces a `ReactorDirector` from a
  * validated config, the agent's runtime env, and the agent-instance
- * context (system prompt + tool definitions). The implementation lives
+ * context (`DirectorAgentContext`: system prompt, resolved tool
+ * definitions, registered compactor names). The implementation lives
  * in the same bundle as the agent definition; the registry resolves it
  * from `DirectorRef.id`.
  */

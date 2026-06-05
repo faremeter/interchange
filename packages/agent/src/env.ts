@@ -15,6 +15,7 @@
 import type { AuthzCallResult, Dependencies } from "@intx/inference";
 import type {
   AuditStore,
+  Compactor,
   ContextStore,
   InferenceSource,
 } from "@intx/types/runtime";
@@ -82,6 +83,25 @@ export interface BaseEnv {
 
   /** Director registry. Required; no read-site fallback. */
   directors: DirectorRegistry;
+
+  /**
+   * Compactors registered for this deployment, keyed by name. The
+   * director picks a registered name and emits
+   * `caps.compact(name, reason)`; the reactor resolves the name against
+   * this map and runs the compactor's `apply()` on the conversation
+   * turns. Registered names are surfaced to the director factory at
+   * construction via `agentContext.compactorNames` so the director
+   * picks against a known set rather than guessing by convention.
+   *
+   * Optional: omitting the field is the same shape as registering an
+   * empty map. A `caps.compact(name, …)` call against an absent or
+   * empty registry produces the reactor's existing
+   * "no compactor registered" fatal error.
+   *
+   * Field placement mirrors `directors`: "what's registered at this
+   * deployment" is an env question, not an agent-definition question.
+   */
+  compactors?: Record<string, Compactor>;
 
   /**
    * Inference dependencies (notably `fetch`) for the reactor's

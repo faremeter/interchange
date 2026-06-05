@@ -304,6 +304,7 @@ function resolveDirector<EnvReq extends BaseEnv>(
   def: AgentDefinition<EnvReq>,
   env: EnvReq,
   toolDefinitions: readonly ToolDefinition[],
+  compactorNames: readonly string[],
 ): ReactorDirector {
   const ref: DirectorRef = def.director ?? env.directors.buildDefaultRef();
   const factory = env.directors.resolve(ref);
@@ -316,6 +317,7 @@ function resolveDirector<EnvReq extends BaseEnv>(
   return factory(ref.config, env, {
     systemPrompt: def.systemPrompt,
     toolDefinitions,
+    compactorNames,
   });
 }
 
@@ -348,7 +350,22 @@ export async function createAgent<EnvReq extends BaseEnv>(
       sources: [env.source],
       defaultSource: env.source.id,
     });
-    const director = resolveDirector(def, env, resolvedTools.definitions);
+    // Capture the registered names as a frozen snapshot at construction
+    // so the director receives a stable list it can iterate. The
+    // reactor assembly retains the live `env.compactors` reference for
+    // `caps.compact` lookups, so a deployer that mutates the registry
+    // after `createAgent` returns would diverge this snapshot from the
+    // reactor's resolution. Treat `env.compactors` as immutable
+    // post-construction.
+    const compactorNames: readonly string[] = Object.freeze(
+      Object.keys(env.compactors ?? {}),
+    );
+    const director = resolveDirector(
+      def,
+      env,
+      resolvedTools.definitions,
+      compactorNames,
+    );
 
     const contextStore: ContextStore = env.storage;
     const auditStore = env.audit;
@@ -613,6 +630,7 @@ export async function createAgent<EnvReq extends BaseEnv>(
         ? { sizeCapMaxChars: env.sizeCapMaxChars }
         : {}),
       ...(deps !== undefined ? { deps } : {}),
+      ...(env.compactors !== undefined ? { compactors: env.compactors } : {}),
     });
 
     sendQueue = createSendQueue<InboundMessage, SendResult>({
