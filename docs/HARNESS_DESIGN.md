@@ -133,7 +133,9 @@ When a hub user composes mail to an agent, the hub decides what threading header
 
 The hub learns the cached connector state from a `connector.state.changed` frame the sidecar emits whenever the router's state mutates. Cache entries are dropped on sidecar disconnect.
 
-On reconnect, agents whose persisted state is non-null re-bootstrap the cache automatically: the router's `restore()` call from the reactor's `wrappedStore.load()` fires `onStateChanged` because the state transitions from the cold-start `null` to the persisted value, and the sidecar lifts that callback onto a wire frame. Agents whose persisted state is null emit no frame — the cache stays absent until the harness produces its first real state change. The route handler treats absent and null identically.
+On reconnect, agents whose persisted state is non-null re-bootstrap the cache automatically: the router's `restore()` call from the reactor's first `wrappedStore.load()` fires `onStateChanged` because the state transitions from the cold-start `null` to the persisted value, and the sidecar lifts that callback onto a wire frame. Agents whose persisted state is null emit no frame — the cache stays absent until the harness produces its first real state change. The route handler treats absent and null identically.
+
+The bootstrap restore happens **only on the first `wrappedStore.load()`**. Subsequent loads return the store's payload but do not restore from disk; once the router emits its first state change, the harness flips an `inMemoryStateAuthoritative` bit and refuses to clobber in-memory state with a stale disk value. This closes a race where the reactor's startup `load()` lands on the same microtask boundary as the watch callback's `commit()`: without the dirty bit, the second load would reset the router's freshly committed thread state to disk's null and the next `connector.reply` would fail to compose.
 
 Two observable windows where the cache may be empty or stale, both of which fall through to threading-less mail and self-heal on the next state change:
 
