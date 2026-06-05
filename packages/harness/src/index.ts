@@ -6,8 +6,6 @@ export {
   type MailToolWrapper,
 } from "./harness";
 
-export { mergeToolRunners } from "./merge-tool-runners";
-
 export { createHarnessRuntimeCapabilities } from "./runtime-capabilities";
 export type { HarnessRuntimeCapabilitiesOptions } from "./runtime-capabilities";
 
