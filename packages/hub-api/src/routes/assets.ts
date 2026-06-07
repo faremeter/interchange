@@ -31,7 +31,12 @@ import { type } from "arktype";
 
 import { authorize } from "@intx/authz";
 import { asset as assetTable } from "@intx/db/schema";
-import type { DB } from "@intx/db";
+import {
+  listAssetsForTenant,
+  resolveAssetById,
+  type AssetWithOrigin,
+  type DB,
+} from "@intx/db";
 import { repoActionToGrantVerb } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
 import {
@@ -44,7 +49,11 @@ import {
 } from "@intx/hub-sessions";
 import type { RepoAction, RepoKind } from "@intx/types/sidecar";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
-import { ErrorResponse } from "@intx/types";
+import {
+  AssetResponse,
+  AssetWithOriginResponse,
+  ErrorResponse,
+} from "@intx/types";
 
 import type { TenantEnv } from "../context";
 import { ts } from "../format";
@@ -52,7 +61,7 @@ import type {
   GitTokenClaims,
   TenantGitTokenEnv,
 } from "../middleware/git-token-auth";
-import type { RequireGrant } from "../middleware/grant";
+import { idResource, type RequireGrant } from "../middleware/grant";
 import {
   advertiseReceivePack,
   advertiseUploadPack,
@@ -229,6 +238,29 @@ export type CreateAssetRoutesDeps = {
   requireGrant: RequireGrant;
 };
 
+function formatAsset(row: typeof assetTable.$inferSelect) {
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    kind: row.kind,
+    name: row.name,
+    displayName: row.displayName,
+    creatorPrincipalId: row.creatorPrincipalId,
+    createdAt: ts(row.createdAt),
+    updatedAt: ts(row.updatedAt),
+  };
+}
+
+function formatAssetWithOrigin(
+  row: typeof assetTable.$inferSelect,
+  origin: AssetWithOrigin["origin"],
+) {
+  return {
+    ...formatAsset(row),
+    origin,
+  };
+}
+
 export function createAssetRoutes({
   db,
   assetService,
@@ -238,6 +270,122 @@ export function createAssetRoutes({
   requireGrant,
 }: CreateAssetRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
+
+  app.get(
+    "/",
+    requireGrant("asset:*", "read"),
+    describeRoute({
+      tags: ["Assets"],
+      summary: "List assets",
+      description:
+        "Lists assets for the tenant. With inherited=true (the default), assets defined on ancestor tenants are included; descendant tenants shadow ancestors when they declare the same (kind, name) pair. Each row carries an `origin` tag identifying the tenant that supplied it.",
+      parameters: [
+        {
+          name: "kind",
+          in: "query",
+          schema: { type: "string" },
+        },
+        {
+          name: "inherited",
+          in: "query",
+          schema: { type: "string", enum: ["true", "false"] },
+        },
+      ],
+      responses: {
+        200: {
+          description: "List of assets",
+          content: {
+            "application/json": {
+              schema: resolver(AssetWithOriginResponse.array()),
+            },
+          },
+        },
+      },
+    }),
+    async (c) => {
+      const tenantCtx = c.get("tenant");
+      const kindRaw = c.req.query("kind");
+      const inheritedRaw = c.req.query("inherited");
+      let inherited: boolean;
+      if (inheritedRaw === undefined || inheritedRaw === "true") {
+        inherited = true;
+      } else if (inheritedRaw === "false") {
+        inherited = false;
+      } else {
+        return c.json(
+          {
+            error: {
+              code: "bad_request",
+              message: `inherited must be "true" or "false", got ${JSON.stringify(inheritedRaw)}`,
+            },
+          },
+          400,
+        );
+      }
+
+      if (inherited) {
+        const rows = await listAssetsForTenant(db, tenantCtx.id, kindRaw);
+        return c.json(
+          rows.map((row) => formatAssetWithOrigin(row, row.origin)),
+        );
+      }
+
+      const conditions = [eq(assetTable.tenantId, tenantCtx.id)];
+      if (kindRaw !== undefined) {
+        conditions.push(eq(assetTable.kind, kindRaw));
+      }
+      const rows = await db.query.asset.findMany({
+        where: and(...conditions),
+      });
+      return c.json(
+        rows.map((row) =>
+          formatAssetWithOrigin(row, {
+            tenantId: row.tenantId,
+            direct: true,
+          }),
+        ),
+      );
+    },
+  );
+
+  app.get(
+    "/:assetId",
+    requireGrant(idResource("asset", "assetId"), "read"),
+    describeRoute({
+      tags: ["Assets"],
+      summary: "Get asset metadata",
+      description:
+        "Returns asset metadata. Resolves through the tenant hierarchy: assets declared on the tenant or any ancestor are visible. Sibling-tenant assets return 404 so callers cannot probe for cross-tenant existence.",
+      responses: {
+        200: {
+          description: "Asset metadata",
+          content: {
+            "application/json": { schema: resolver(AssetResponse) },
+          },
+        },
+        404: {
+          description: "Asset not found",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
+      },
+    }),
+    async (c) => {
+      const tenantCtx = c.get("tenant");
+      const assetId = c.req.param("assetId");
+
+      const row = await resolveAssetById(db, tenantCtx.id, assetId);
+      if (row === null) {
+        return c.json(
+          { error: { code: "not_found", message: "Asset not found" } },
+          404,
+        );
+      }
+
+      return c.json(formatAsset(row));
+    },
+  );
 
   app.post(
     "/",
@@ -294,19 +442,7 @@ export function createAssetRoutes({
             id: asset.id,
           },
         );
-        return c.json(
-          {
-            id: asset.id,
-            tenantId: asset.tenantId,
-            kind: asset.kind,
-            name: asset.name,
-            displayName: asset.displayName,
-            creatorPrincipalId: asset.creatorPrincipalId,
-            createdAt: ts(asset.createdAt),
-            updatedAt: ts(asset.updatedAt),
-          },
-          201,
-        );
+        return c.json(formatAsset(asset), 201);
       } catch (err) {
         if (err instanceof AssetServiceError) {
           let status: 400 | 409;

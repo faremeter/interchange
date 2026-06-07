@@ -103,7 +103,9 @@
 | GET | /api/tenants/:tenantId/agents/:agentId/history/:ref | Show changes in a commit |
 | GET | /api/tenants/:tenantId/agents/:agentId/branches | List branches |
 | POST | /api/tenants/:tenantId/agents/:agentId/history/:ref/restore | Restore agent data to a previous state |
+| GET | /api/tenants/:tenantId/assets | List assets |
 | POST | /api/tenants/:tenantId/assets | Create an asset |
+| GET | /api/tenants/:tenantId/assets/:assetId | Get asset metadata |
 | POST | /api/sidecars | Register or update a sidecar |
 | GET | /api/sidecars | List all sidecars |
 | GET | /api/sidecars/:id | Get a sidecar by ID |
@@ -991,6 +993,15 @@ Restores the agent's working directory to the state at the specified commit.
 
 ## Assets
 
+### GET /api/tenants/:tenantId/assets
+List assets
+
+Lists assets for the tenant. With inherited=true (the default), assets defined on ancestor tenants are included; descendant tenants shadow ancestors when they declare the same (kind, name) pair. Each row carries an `origin` tag identifying the tenant that supplied it.
+
+Query: kind?, inherited?: true|false
+
+200: AssetWithOriginResponse[] -- List of assets
+
 ### POST /api/tenants/:tenantId/assets
 Create an asset
 
@@ -1001,6 +1012,14 @@ Body: unknown
 201: unknown -- Asset created
 400: ErrorResponse -- Validation error
 409: ErrorResponse -- Asset already exists
+
+### GET /api/tenants/:tenantId/assets/:assetId
+Get asset metadata
+
+Returns asset metadata. Resolves through the tenant hierarchy: assets declared on the tenant or any ancestor are visible. Sibling-tenant assets return 404 so callers cannot probe for cross-tenant existence.
+
+200: AssetResponse -- Asset metadata
+404: ErrorResponse -- Asset not found
 
 ## Sidecars
 
@@ -1069,6 +1088,14 @@ Source: packages/types/src/me.ts
 ### ApproveAction
 `{ scope: "always" | "once" }`
 Source: packages/types/src/approvals.ts
+
+### AssetResponse
+`{ createdAt: string, creatorPrincipalId: string | null, displayName: string | null, id: string, kind: string, name: string, tenantId: string, updatedAt: string }`
+Source: packages/types/src/assets.ts
+
+### AssetWithOriginResponse
+`{ createdAt: string, creatorPrincipalId: string | null, displayName: string | null, id: string, kind: string, name: string, origin: { direct: boolean, tenantId: string }, tenantId: string, updatedAt: string }`
+Source: packages/types/src/assets.ts
 
 ### BranchInfo
 `{ name: string, isCurrent?: boolean, lastCommitAt?: string | null, lastCommitMessage?: string | null, lastCommitRef?: string | null }`
