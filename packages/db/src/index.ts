@@ -15,6 +15,13 @@ export {
   ProviderMetadata,
 } from "./credential-resolution";
 export {
+  resolveAssetByName,
+  resolveAssetById,
+  listAssetsForTenant,
+  type AssetRow,
+  type AssetWithOrigin,
+} from "./asset-resolution";
+export {
   parseAgentRow,
   parseAgentVersionRow,
   parseGrantRow,
