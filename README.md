@@ -1,21 +1,102 @@
 # Interchange
 
-An agentic operating system.
+**Run AI agents as first-class principals — with their own identity,
+permissions, and credentials — anywhere from a long-lived server to a
+Cloudflare Worker.**
 
-The hub — a multi-tenant control plane — manages tenants,
-principals (users and agents under one authorization model),
-capability grants, credentials, and agent lifecycle. Agents under
-hub management run in sidecars that drive a harness on the hub's
-behalf. The agent runtime — [`@intx/agent`](./packages/agent)
-and the family of packages around it — runs anywhere from a
-long-lived server to a Cloudflare Worker, swapping implementations
-of storage, cryptography, message transport, tools, and payments to
-match the environment. Both ends share the type definitions in
-[`@intx/types`](./packages/types).
+_An agentic operating system._
 
-What you build on top is up to you. A coding assistant. A
-mail-driven workflow agent. An autonomous trader. A research
-harness.
+Most agent code today is a script in a loop calling a model API. That
+works until you need to run someone _else's_ agent on their behalf:
+now you need identity, scoped permissions, credential management, an
+audit trail, and a runtime that survives a crash. Interchange is that
+layer.
+
+The same authorization engine that gates an agent's API calls also
+gates which **tools** it is allowed to invoke — so "what this agent
+is allowed to do" is one enforced policy, not something bolted on
+after.
+
+What you build on top is up to you:
+
+- **A coding assistant** that reads, writes, and reasons about a real
+  repository
+- **A mail-driven workflow agent** that acts on its own inbox
+- **An autonomous trader**
+- **A research harness** of agents that talk to each other
+
+## The smallest possible agent
+
+Define an agent, build its environment, send a prompt, close. The
+full file is
+[`examples/agent-quickstart`](./examples/agent-quickstart/README.md);
+this is its shape:
+
+```ts
+import {
+  createAgent,
+  createDefaultDirectorRegistry,
+  defineAgent,
+} from "@intx/agent";
+import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
+import { createIsogitStore } from "@intx/storage-isogit";
+
+const def = defineAgent({
+  id: "quickstart",
+  systemPrompt: "You are a helpful assistant. Keep replies concise.",
+  tools: [],
+  capabilities: [],
+  inference: {
+    sources: [{ provider: "anthropic", model: "claude-sonnet-4-6" }],
+  },
+});
+
+const agent = await createAgent(def, {
+  source, // resolved inference source: provider, model, and API key
+  storage: await createIsogitStore(contextDir),
+  workdir: contextDir,
+  audit: noopAuditStore(),
+  authorize: permissiveAuthorize(),
+  directors: createDefaultDirectorRegistry(),
+});
+
+const { reply } = await agent.send("Name three planets.");
+console.log(reply);
+await agent.close();
+```
+
+`agent.send()` and `agent.close()` are the only two methods you have
+to know. The `contextDir` is a real git repository — re-run against
+it and the conversation picks up where it left off.
+
+## How it works
+
+Two halves, sharing one set of type definitions in
+[`@intx/types`](./packages/types):
+
+```
+  ┌─────────────────────┐                    ┌────────────────────────────────┐
+  │         Hub         │  ◀── events ──▶    │            Sidecar             │
+  │    control plane    │                    │    harness + agent runtime     │
+  │                     │                    │                                │
+  │  tenants            │                    │  storage · crypto · transport  │
+  │  principals         │                    │  tools · payments              │
+  │  capability grants  │                    │  (swappable per environment)   │
+  │  credentials        │                    │                                │
+  └─────────────────────┘                    └────────────────────────────────┘
+   one authorization model                   portable core ships once, runs
+   for users and agents                       server → Worker → browser → …
+```
+
+- **The hub** — a multi-tenant control plane. Manages tenants,
+  principals (users _and_ agents under one authorization model),
+  capability grants, credentials, and agent lifecycle. Agents under
+  hub management run in sidecars that drive a harness on the hub's
+  behalf.
+- **The agent runtime** — [`@intx/agent`](./packages/agent) and the
+  family of packages around it. A portable core that ships once and
+  runs anywhere, swapping implementations of storage, cryptography,
+  message transport, tools, and payments to match the environment.
 
 ## Start here
 
