@@ -628,6 +628,49 @@ describe("receivePackObjects tree validation", () => {
     ).rejects.toThrow("path_violation");
   });
 
+  test("surfaces top-level files to the validator alongside directories", async () => {
+    // A push that injects a top-level file outside the kind handler's
+    // allowlist (e.g. an `evil.exe` next to legitimate asset subtrees)
+    // must be visible to the validator. The receivePack path used to
+    // filter to top-level directories only, which hid such files and
+    // silently admitted them past the allowlist.
+    const source = await makeRepoWithPaths([
+      { filepath: "tarballs/foo.tgz", content: "" },
+      { filepath: "package-registry.json", content: "{}" },
+      { filepath: "evil.exe", content: "bad" },
+    ]);
+    const pack = await createPackFromRepo(source.dir, source.oids);
+
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const seenPaths: string[] = [];
+    const validator: TreeValidator = (paths) => {
+      seenPaths.push(...paths);
+      return paths.every(
+        (p) =>
+          p === "tarballs" ||
+          p === ".gitignore" ||
+          p === "package-registry.json",
+      );
+    };
+
+    await expect(
+      receivePackObjects(
+        targetDir,
+        pack,
+        "refs/heads/registry",
+        source.commitSha,
+        "extra-file",
+        null,
+        validator,
+      ),
+    ).rejects.toThrow("path_violation");
+    expect(seenPaths).toContain("evil.exe");
+    expect(seenPaths).toContain("tarballs");
+    expect(seenPaths).toContain("package-registry.json");
+  });
+
   test("accepts any tree when no validator is provided", async () => {
     const source = await makeRepoWithPaths([
       { filepath: "state/turns.jsonl", content: "" },
