@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
@@ -8,6 +8,8 @@ import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
 import {
   createCredentialMutation,
+  type CreateCredentialBody,
+  tenantProvidersQuery,
   tenantCredentialsQuery,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
@@ -67,19 +69,31 @@ export function TenantCredentialsPage() {
   const { data: credentials, isLoading } = useQuery(
     tenantCredentialsQuery(tenantId),
   );
+  const { data: providers, isLoading: providersLoading } = useQuery(
+    tenantProvidersQuery(tenantId),
+  );
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
   const [createType, setCreateType] = useState<CredentialType>("api_key");
+  const [createProviderId, setCreateProviderId] = useState("");
   const [createSecret, setCreateSecret] = useState("");
   const [createDescription, setCreateDescription] = useState("");
+  const selectedProviderId = createProviderId || providers?.[0]?.id || "";
 
   function resetCreateForm() {
     setCreateName("");
     setCreateType("api_key");
+    setCreateProviderId("");
     setCreateSecret("");
     setCreateDescription("");
   }
+
+  useEffect(() => {
+    const providerId = providers?.[0]?.id;
+    if (!createOpen || createProviderId || !providerId) return;
+    setCreateProviderId(providerId);
+  }, [createOpen, createProviderId, providers]);
 
   const createMut = useMutation({
     ...createCredentialMutation(tenantId, queryClient),
@@ -163,12 +177,8 @@ export function TenantCredentialsPage() {
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              const body: {
-                name: string;
-                type: CredentialType;
-                secret: string;
-                description?: string;
-              } = {
+              const body: CreateCredentialBody = {
+                providerId: selectedProviderId,
                 name: createName.trim(),
                 type: createType,
                 secret: createSecret,
@@ -188,6 +198,25 @@ export function TenantCredentialsPage() {
                 required
                 autoFocus
               />
+            </div>
+            <div className="grid gap-2">
+              <Label>Provider</Label>
+              <Select
+                value={selectedProviderId}
+                onValueChange={setCreateProviderId}
+                disabled={providersLoading || !providers?.length}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select a provider" />
+                </SelectTrigger>
+                <SelectContent>
+                  {providers?.map((provider) => (
+                    <SelectItem key={provider.id} value={provider.id}>
+                      {provider.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="grid gap-2">
               <Label>Type</Label>
@@ -233,7 +262,10 @@ export function TenantCredentialsPage() {
               <Button
                 type="submit"
                 disabled={
-                  createMut.isPending || !createName.trim() || !createSecret
+                  createMut.isPending ||
+                  !selectedProviderId ||
+                  !createName.trim() ||
+                  !createSecret
                 }
               >
                 {createMut.isPending ? "Creating..." : "Create"}
