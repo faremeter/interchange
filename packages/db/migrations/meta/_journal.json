@@ -204,6 +204,20 @@
       "when": 1780502952568,
       "tag": "0028_wet_sugar_man",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1780694869983,
+      "tag": "0029_loose_warlock",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1780899731435,
+      "tag": "0030_session_asset_audit_split",
+      "breakpoints": true
     }
   ]
 }

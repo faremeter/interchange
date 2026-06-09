@@ -17,6 +17,9 @@ format: FORCE
 docs: FORCE
 	bun run docs
 
+builtins: FORCE
+	bun run bin/build-builtins.ts
+
 clean:
 	rm -f .env-checked .eslintcache
 	find . -type f -name tsconfig.tsbuildinfo -a ! -path '*/node_modules/*' | xargs rm -f
@@ -28,5 +31,5 @@ clean:
 
 include .env-checked
 
-.PHONY: all build lint test format docs clean
+.PHONY: all build lint test format docs clean builtins
 FORCE:

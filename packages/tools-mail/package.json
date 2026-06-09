@@ -3,13 +3,21 @@
   "version": "0.1.2",
   "license": "LGPL-2.1-only",
   "type": "module",
+  "interchange": {
+    "tools": "./dist/sidecar-bundle.js"
+  },
   "exports": {
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./sidecar-bundle": {
+      "types": "./src/sidecar-bundle.ts",
+      "default": "./src/sidecar-bundle.ts"
     }
   },
   "dependencies": {
+    "@intx/agent": "workspace:*",
     "@intx/types": "workspace:*",
     "arktype": "catalog:"
   }
