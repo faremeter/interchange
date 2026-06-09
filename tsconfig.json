@@ -22,6 +22,7 @@
     { "path": "packages/hub-client" },
     { "path": "packages/harness" },
     { "path": "packages/agent" },
+    { "path": "packages/workflow" },
     { "path": "apps/hub" },
     { "path": "apps/admin-ui" },
     { "path": "apps/sidecar" },
