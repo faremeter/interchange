@@ -52,8 +52,12 @@ export type AuthzDecision = {
   error: string | undefined;
 };
 
-export type AuthzExtensionOptions = {
-  authorize: (resource: string, action: string) => Promise<AuthzCallResult>;
+export type AuthzExtensionOptions<Ctx = unknown> = {
+  authorize: (
+    resource: string,
+    action: string,
+    context: Ctx,
+  ) => Promise<AuthzCallResult>;
   onDecision?: (decision: AuthzDecision) => void;
 };
 
@@ -88,9 +92,16 @@ function safeOnDecision(
   }
 }
 
-export function createAuthzExtension(
-  opts: AuthzExtensionOptions,
+export function createAuthzExtension<Ctx = unknown>(
+  opts: AuthzExtensionOptions<Ctx>,
 ): BeforeToolExtension {
+  // The reactor does not know workflow concepts; per-call context is the
+  // caller's domain. The third arg is plumbing here -- if the caller
+  // needs to attach context (workflow step, tenant id, request id), they
+  // do so by closure on the authorize function. The empty object is the
+  // safe default at this layer.
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the inference layer has no domain knowledge to construct a Ctx; callers that need a populated context use closure capture on the authorize function (see @intx/workflow's AuthorizeContext)
+  const emptyContext = Object.freeze({}) as Ctx;
   return {
     async beforeTool(call) {
       const resource = `tool:${call.name}`;
@@ -98,7 +109,7 @@ export function createAuthzExtension(
 
       let result: AuthzCallResult;
       try {
-        result = await opts.authorize(resource, action);
+        result = await opts.authorize(resource, action, emptyContext);
       } catch (cause) {
         const msg = cause instanceof Error ? cause.message : String(cause);
         const decision: AuthzDecision = {

@@ -9,11 +9,12 @@ import type { AuthorizeFn } from "../env";
 
 /**
  * Construct a permissive AuthorizeFn that allows every call. The
- * returned function ignores its arguments and returns the same shape
- * the production authz extension expects.
+ * returned function ignores its arguments (including the third
+ * per-call context parameter) and returns the same shape the
+ * production authz extension expects.
  */
 export function permissiveAuthorize(): AuthorizeFn {
-  return async () => ({
+  return async (_resource, _action, _context) => ({
     effect: "allow",
     matchingGrants: [],
     resolvedBy: null,

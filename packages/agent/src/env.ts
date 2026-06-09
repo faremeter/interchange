@@ -31,14 +31,21 @@ export type { Dependencies };
  * the reactor assembly's authz extension threads the call through. The
  * shape matches `@intx/inference`'s `AuthzExtensionOptions.authorize`.
  *
- * Callers that need to attach per-call context (tenant id, request id,
- * workflow step) capture it by closure when constructing the function,
- * so the signature stays narrow and each layer specializes its own
- * context without baking another layer's vocabulary into the type.
+ * `Ctx` parameterizes the per-call context the closure receives.
+ * `unknown` is the default: bare callers do not interpret it. Higher-
+ * layer runtimes that have a richer notion of context (the workflow
+ * runtime supplies `{ stepId, attempt, runId }` via `@intx/workflow`'s
+ * `AuthorizeContext`) construct a closure whose third arg is ignored
+ * and which delegates to a runtime-typed authorize with the context
+ * captured at closure-build time. The third arg in the public signature
+ * is plumbing so the inference layer can pass through whatever shape
+ * the caller's runtime chooses without learning that runtime's
+ * vocabulary.
  */
-export type AuthorizeFn = (
+export type AuthorizeFn<Ctx = unknown> = (
   resource: string,
   action: string,
+  context: Ctx,
 ) => Promise<AuthzCallResult>;
 
 /**

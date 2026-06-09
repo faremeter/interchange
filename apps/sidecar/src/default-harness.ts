@@ -780,7 +780,11 @@ export function createDefaultHarnessBuilder(
 
       const grantsRef = { current: agentConfig.grants };
       const { principalId, tenantId } = agentConfig;
-      const authorize = async (resource: string, action: string) =>
+      const authorize = async (
+        resource: string,
+        action: string,
+        _context: unknown,
+      ) =>
         evaluateGrants(grantsRef.current, resource, action, {
           principalId,
           tenantId,
