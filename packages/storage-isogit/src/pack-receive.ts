@@ -31,11 +31,15 @@ export type TreeValidatorResult = true | { ok: false; reason: string };
  *
  * `topLevelPaths` lists the names directly under the tree root.
  * `readBlob` reads any blob in the tree by its repo-root-relative POSIX
- * path. Validators that only need path-level checks can ignore `readBlob`.
+ * path. `listDir` enumerates the names directly under a
+ * tree-root-relative POSIX directory path (no trailing slash, no
+ * leading slash); pass the empty string to list the root. Validators
+ * that only need path-level checks can ignore `readBlob` and `listDir`.
  */
 export type TreeValidator = (
   topLevelPaths: string[],
   readBlob: (path: string) => Promise<Uint8Array>,
+  listDir: (path: string) => Promise<string[]>,
 ) => boolean | TreeValidatorResult | Promise<boolean | TreeValidatorResult>;
 
 /**
@@ -510,14 +514,16 @@ export async function receivePackObjects(
         dir,
         oid: commit.tree,
       });
-      // Only top-level *directories* are surfaced to the kind handler;
-      // top-level files (e.g. a `.gitignore` written by the genesis
-      // commit) are not asset subtrees and would otherwise be passed to
-      // handlers that expect every entry to be a directory containing
-      // a manifest (skill's `<dir>/SKILL.md`, agent-state's deploy/).
-      const topLevelPaths = tree
-        .filter((e) => e.type === "tree")
-        .map((e) => e.path);
+      // Surface every top-level tree entry — directories and files —
+      // to the kind handler. The writeTree path already passes both;
+      // the receivePack path used to filter to directories only, which
+      // hid top-level files (e.g. an extra `evil.exe` at the root, or
+      // a stray `package-registry.json`) from handlers that reject
+      // anything outside their allowlist. Handlers that need to
+      // distinguish file from directory inspect the entries
+      // themselves via `readBlob` / `listDir`; widening here makes the
+      // allowlist real on this path.
+      const topLevelPaths = tree.map((e) => e.path);
       const readBlob = async (relPath: string): Promise<Uint8Array> => {
         const segments = relPath.split("/");
         let currentTree = tree;
@@ -542,7 +548,24 @@ export async function receivePackObjects(
         const { blob } = await git.readBlob({ fs, dir, oid: blobEntry.oid });
         return blob;
       };
-      const verdict = await validateTree(topLevelPaths, readBlob);
+      const listDir = async (relPath: string): Promise<string[]> => {
+        if (relPath === "") {
+          return tree.map((e) => e.path);
+        }
+        let currentTree = tree;
+        for (const segment of relPath.split("/")) {
+          const entry = currentTree.find((e) => e.path === segment);
+          if (entry === undefined || entry.type !== "tree") {
+            throw new Error(
+              `listDir: path ${relPath} is not a directory in commit ${expectedSha} tree`,
+            );
+          }
+          const next = await git.readTree({ fs, dir, oid: entry.oid });
+          currentTree = next.tree;
+        }
+        return currentTree.map((e) => e.path);
+      };
+      const verdict = await validateTree(topLevelPaths, readBlob, listDir);
       if (verdict !== true) {
         const reason =
           typeof verdict === "object"
