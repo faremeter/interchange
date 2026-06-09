@@ -664,7 +664,8 @@ export function deleteGrantMutation(
 
 // Credentials
 
-type CreateCredentialBody = {
+export type CreateCredentialBody = {
+  providerId: string;
   name: string;
   type: "api_key" | "oauth_token" | "certificate" | "other";
   secret: string;
