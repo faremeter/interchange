@@ -197,6 +197,125 @@ export function defineTool<EnvReq extends BaseEnv = BaseEnv>(opts: {
 }
 
 /**
+ * A plugin contributes capabilities (extra tools, middleware, anything
+ * a host plugin protocol defines) without producing a `ToolBundle`
+ * itself. Plugins are first-class entries in an `interchange.tools`
+ * module alongside `AnnotatedToolFactory` exports.
+ *
+ * The shape the factory returns is host-defined: tool packages that
+ * accept plugins read `env.plugins` and dispatch by structural shape
+ * (or by an explicit kind marker the host agrees on). The agent
+ * runtime does not interpret plugin shapes; it only delivers them.
+ *
+ * The marker is a `Symbol.for`-registered key (PLUGIN_MARKER) so a
+ * duck-typed loader can separate plugins from `AnnotatedToolFactory`s
+ * without re-running `defineTool`/`definePlugin` against each export.
+ * Using a registered symbol (rather than a string key like `_plugin`)
+ * prevents third-party objects from accidentally satisfying the
+ * marker check by happening to have a property of the same name.
+ */
+export type PluginFactory<EnvReq extends BaseEnv, Result> = (
+  env: EnvReq,
+) => Result;
+
+/**
+ * Registered symbol that tags `AnnotatedPluginFactory` values. Exported
+ * so consumers that need to introspect plugin factories directly can
+ * read the marker without re-registering the key.
+ */
+export const PLUGIN_MARKER: unique symbol = Symbol.for("@intx/agent.plugin");
+
+export interface AnnotatedPluginMeta {
+  readonly id: string;
+  readonly requires: readonly string[];
+  readonly [PLUGIN_MARKER]: true;
+}
+
+export type AnnotatedPluginFactory<
+  EnvReq extends BaseEnv = BaseEnv,
+  Result = unknown,
+> = PluginFactory<EnvReq, Result> & AnnotatedPluginMeta;
+
+/**
+ * Constant on every plugin instance returned by `definePlugin`. Hosts
+ * that need to distinguish plugin instances from arbitrary objects
+ * received via `env.plugins` check this field before duck-typing on
+ * shape. The string value is the operative form of the contract — the
+ * value-side marker exists because the factory-side symbol marker
+ * (PLUGIN_MARKER above) is only visible to code that imported it,
+ * while the kind string travels through pure-JSON inspection too.
+ */
+export const TOOL_PLUGIN_KIND = "tool-plugin" as const;
+
+/** Type-level form of the kind marker. */
+export type ToolPluginKind = typeof TOOL_PLUGIN_KIND;
+
+/**
+ * Predicate hosts use to confirm a value off `env.plugins` was minted
+ * by `definePlugin` rather than happening to satisfy a shape-based
+ * check. Returns true iff the value is an object carrying the
+ * literal `kind: "tool-plugin"` marker.
+ */
+export function isToolPluginInstance(
+  value: unknown,
+): value is Record<string, unknown> & { kind: ToolPluginKind } {
+  if (value === null || typeof value !== "object") return false;
+  if (!("kind" in value)) return false;
+  return (value as { kind: unknown }).kind === TOOL_PLUGIN_KIND;
+}
+
+/**
+ * Define a plugin factory. The plugin's `Result` is host-defined and
+ * surfaces in `env.plugins` for the host-side tool factories that
+ * consume it. The returned instance is tagged with
+ * `kind: "tool-plugin"` so hosts can identify plugin instances
+ * structurally without falling back to duck-typing on the result's
+ * own shape.
+ *
+ * `id` must be package-namespaced — same rule as `defineTool` — so
+ * audit provenance threads through plugins as cleanly as through
+ * tools.
+ */
+export function definePlugin<
+  Result extends object,
+  EnvReq extends BaseEnv = BaseEnv,
+>(opts: {
+  id: string;
+  requires?: readonly string[];
+  factory: PluginFactory<EnvReq, Result>;
+}): AnnotatedPluginFactory<EnvReq, Result & { kind: ToolPluginKind }> {
+  validateNamespacedId(opts.id);
+  const requires = Object.freeze([
+    ...(opts.requires ?? []),
+  ]) as readonly string[];
+  const wrapped: PluginFactory<EnvReq, Result & { kind: ToolPluginKind }> = (
+    env,
+  ) => {
+    const instance = opts.factory(env);
+    // Re-stamping the marker is harmless if the factory chose to set
+    // it itself; otherwise we add it. Either way the returned value
+    // carries the contract.
+    return Object.assign(instance, { kind: TOOL_PLUGIN_KIND });
+  };
+  return Object.assign(wrapped, {
+    id: opts.id,
+    requires,
+    [PLUGIN_MARKER]: true as const,
+  });
+}
+
+/** Type predicate distinguishing plugin factories from tool factories. */
+export function isAnnotatedPluginFactory(
+  value: unknown,
+): value is AnnotatedPluginFactory {
+  if (typeof value !== "function") return false;
+  if (!(PLUGIN_MARKER in value)) return false;
+  // `PLUGIN_MARKER in value` narrows `value` to include the symbol
+  // key, so the index access below is type-safe without a cast.
+  return value[PLUGIN_MARKER] === true;
+}
+
+/**
  * Build a `ToolRunner` that dispatches by tool name. Throws
  * `DuplicateToolError` at construction if any two tools share a name.
  *

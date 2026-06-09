@@ -1,0 +1,1 @@
+ALTER TABLE "agent" ADD COLUMN "tool_packages" jsonb DEFAULT '[]'::jsonb NOT NULL;

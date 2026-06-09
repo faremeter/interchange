@@ -15,6 +15,7 @@
     { "path": "packages/tools-posix" },
     { "path": "packages/tools-lsp" },
     { "path": "packages/tools-mail" },
+    { "path": "packages/tool-packaging" },
     { "path": "packages/mime" },
     { "path": "packages/mail-memory" },
     { "path": "packages/pack-transport" },
@@ -44,6 +45,7 @@
     { "path": "examples/ring-demo" },
     { "path": "tests/hub-agent" },
     { "path": "tests/hub-api" },
+    { "path": "tests/tool-packaging" },
     { "path": "bin" }
   ]
 }

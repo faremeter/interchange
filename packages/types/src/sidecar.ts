@@ -436,6 +436,147 @@ export const PackRejectFrame = type({
 export type PackRejectFrame = typeof PackRejectFrame.infer;
 
 /**
+ * Categories of deploy-apply failure surfaced by the sidecar's
+ * tool-package loader. Each value maps one-to-one to a distinct point in
+ * the apply pipeline; a single category fires per failed attempt.
+ *
+ *   tarball.missing          — a manifest entry's asset-sourced tarball
+ *                              is not present at the recorded path.
+ *   asset.mount.missing      — a `kind: "asset"` manifest entry names
+ *                              an `assetId` that the deploy pack's
+ *                              `deploy/asset-mounts.json` does not
+ *                              cover. Indicates a mismatch between the
+ *                              resolver's view of attached assets and
+ *                              the materialization fan-out, not a
+ *                              missing file on disk.
+ *   integrity.mismatch       — fetched tarball bytes do not match the
+ *                              manifest's pinned SRI integrity.
+ *   registry.fetch.failed    — the configured registry refused or
+ *                              dropped the request for a tarball.
+ *   registry.unknown         — the manifest entry references a registry
+ *                              name not present in the sidecar's
+ *                              registry config.
+ *   registry.auth.failed     — the registry rejected the sidecar's
+ *                              credentials.
+ *   tarball.extract.failed   — tar extraction failed or the extracted
+ *                              tree was malformed.
+ *   manifest.invalid         — the manifest itself did not validate
+ *                              at the loader boundary (JSON.parse
+ *                              failure or arktype schema failure).
+ *                              Peer-dependency violations are caught
+ *                              earlier by the hub's resolver and
+ *                              surface as a launch failure rather
+ *                              than this frame.
+ *   package.entry.missing    — a top-level package's package.json had
+ *                              no `interchange.tools` field.
+ *   package.entry.invalid    — the resolved `interchange.tools` module
+ *                              exported nothing that looked like an
+ *                              AnnotatedToolFactory.
+ *   factory.construct.failed — a factory invocation threw, or required
+ *                              a capability key the env did not provide.
+ *   tool.name.duplicate      — a tool name is registered more than
+ *                              once in the apply's loaded set. The
+ *                              cross-bundle case (two pinned packages
+ *                              share a bundle id, producing colliding
+ *                              prefixed tool names) is rejected at
+ *                              apply time, before the swap. The
+ *                              intra-bundle case (one package exports
+ *                              two definitions sharing a raw name)
+ *                              surfaces at first agent construction
+ *                              with the same category instead of
+ *                              apply rejection: the loader cannot see
+ *                              `bundle.definitions` without invoking
+ *                              the factory, and the `BaseEnv` the
+ *                              factory needs is constructed by the
+ *                              sidecar harness AFTER the swap. Both
+ *                              paths carry the same category so the
+ *                              operator-facing failure shape is
+ *                              uniform regardless of which check
+ *                              fired; only the channel (apply.error
+ *                              frame vs runtime construct failure)
+ *                              differs.
+ *   apply.swap.failed        — every loaded factory validated, but the
+ *                              pending→active filesystem rename failed
+ *                              (e.g. EXDEV, EPERM). The prior active
+ *                              tree was restored via rollback, so the
+ *                              instance still runs `previousDeployId`.
+ *                              A double-rename failure where rollback
+ *                              also fails does not surface as this
+ *                              category — the sidecar throws and tears
+ *                              the harness down, because no structured
+ *                              failure can honestly report
+ *                              `previousDeployId` once on-disk state
+ *                              has diverged from it.
+ *   apply.previous-rotation.failed
+ *                            — the pending→active swap succeeded (the
+ *                              new deploy is live on disk), but the
+ *                              post-swap rotation that retires the
+ *                              prior-previous tree and promotes the
+ *                              just-staged prior-active into the
+ *                              previous slot failed. The instance is
+ *                              now running the new deploy, so
+ *                              `previousDeployId` on this failure
+ *                              carries the NEW deploy id rather than
+ *                              the pre-apply one. The on-disk
+ *                              leftover (`previous.staged`) is swept
+ *                              by the next apply's pending-clear step.
+ */
+export const DeployApplyErrorCategory = type.enumerated(
+  "tarball.missing",
+  "asset.mount.missing",
+  "integrity.mismatch",
+  "registry.fetch.failed",
+  "registry.unknown",
+  "registry.auth.failed",
+  "tarball.extract.failed",
+  "manifest.invalid",
+  "package.entry.missing",
+  "package.entry.invalid",
+  "factory.construct.failed",
+  "tool.name.duplicate",
+  "apply.swap.failed",
+  "apply.previous-rotation.failed",
+);
+export type DeployApplyErrorCategory = typeof DeployApplyErrorCategory.infer;
+
+/**
+ * Sidecar reports a failed deploy-apply attempt back to the hub.
+ *
+ * `previousDeployId` is the atomicity contract for every category
+ * except `apply.previous-rotation.failed`: it names the deploy the
+ * instance was running before the rejected attempt, and after this
+ * frame is emitted the instance continues to run that deploy untouched.
+ *
+ * For `apply.previous-rotation.failed` the field has inverted meaning.
+ * The pending→active swap committed before the post-swap rotation
+ * failed, so the new deploy is live on disk; the field carries the
+ * **new** deploy id so the hub can record the on-disk truth rather
+ * than a stale pre-apply id. The atomicity contract is preserved in
+ * the sense that the field always reflects the deploy id the instance
+ * is now running — what shifts is whether "now" is pre-apply or
+ * post-apply, depending on whether the swap committed before the
+ * failure. Renaming the field to make this explicit would break the
+ * wire shape; the category's semantics document the override instead.
+ *
+ * `package` is set when the failure implicates a specific manifest
+ * entry; deploy-wide failures (manifest.invalid) omit it.
+ */
+export const DeployApplyErrorFrame = type({
+  type: "'deploy.apply.error'",
+  agentAddress: "string",
+  attemptId: "string",
+  previousDeployId: "string",
+  category: DeployApplyErrorCategory,
+  message: "string",
+  "package?": type({
+    name: "string",
+    version: "string",
+  }),
+  occurredAt: "string",
+});
+export type DeployApplyErrorFrame = typeof DeployApplyErrorFrame.infer;
+
+/**
  * Hub requests the sidecar to push its current agent state. The sidecar
  * responds by sending pack.push frames followed by pack.done using the
  * same transferId.
@@ -467,7 +608,8 @@ export const SidecarFrame = RegisterFrame.or(ReconnectFrame)
   .or(PackPushFrame)
   .or(PackDoneFrame)
   .or(PackAckFrame)
-  .or(PackRejectFrame);
+  .or(PackRejectFrame)
+  .or(DeployApplyErrorFrame);
 export type SidecarFrame = typeof SidecarFrame.infer;
 
 /** All frame types the hub sends to the sidecar. */

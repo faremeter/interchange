@@ -31,9 +31,21 @@
     "./grant-wire": {
       "types": "./src/grant-wire.ts",
       "default": "./src/grant-wire.ts"
+    },
+    "./tool-packages": {
+      "types": "./src/tool-packages.ts",
+      "default": "./src/tool-packages.ts"
+    },
+    "./package-json": {
+      "types": "./src/package-json.ts",
+      "default": "./src/package-json.ts"
     }
   },
   "dependencies": {
-    "arktype": "catalog:"
+    "arktype": "catalog:",
+    "semver": "^7.7.2"
+  },
+  "devDependencies": {
+    "@types/semver": "^7.7.1"
   }
 }

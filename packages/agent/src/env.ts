@@ -150,6 +150,19 @@ export interface BaseEnv {
    * (useful for tests whose reactor shutdown is intentionally blocked).
    */
   closeTimeoutMs?: number;
+
+  /**
+   * Plugin instances produced by plugin factories the host loaded
+   * before instantiating tool factories. Each entry is the value the
+   * plugin factory returned (`AnnotatedPluginFactory`'s `Result`).
+   *
+   * Tool packages that accept plugins read this field and filter for
+   * plugins they recognise (by structural shape or a kind marker the
+   * host-side packages agree on). The agent runtime delivers plugins
+   * without interpreting them — composition is the receiving tool
+   * package's responsibility.
+   */
+  plugins?: readonly unknown[];
 }
 
 /**
