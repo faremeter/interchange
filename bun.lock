@@ -315,6 +315,7 @@
         "better-auth": "^1.4.18",
         "hono": "^4.11.9",
         "hono-openapi": "^1.2.0",
+        "ssri": "^12.0.0",
       },
     },
     "packages/hub-client": {
@@ -343,8 +344,11 @@
         "@intx/mime": "workspace:*",
         "@intx/pack-transport": "workspace:*",
         "@intx/storage-isogit": "workspace:*",
+        "@intx/tool-packaging": "workspace:*",
         "@intx/types": "workspace:*",
         "arktype": "catalog:",
+        "isomorphic-git": "^1.27.2",
+        "tar": "^7.5.1",
       },
     },
     "packages/inference": {

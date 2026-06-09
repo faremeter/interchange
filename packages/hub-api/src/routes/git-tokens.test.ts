@@ -280,6 +280,7 @@ function createTestApp(opts: TestAppOpts) {
       assetService: {} as never,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- stub; see assetService above.
       repoStore: {} as never,
+      maxTarballBytes: 10_000_000,
     }),
     db,
   };

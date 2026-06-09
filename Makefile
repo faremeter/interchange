@@ -20,6 +20,9 @@ docs: FORCE
 builtins: FORCE
 	bun run bin/build-builtins.ts
 
+publish-builtins: builtins
+	bun bin/publish-tool-packages.ts --registry workspace-builtins --from dist/builtins
+
 clean:
 	rm -f .env-checked .eslintcache
 	find . -type f -name tsconfig.tsbuildinfo -a ! -path '*/node_modules/*' | xargs rm -f
@@ -31,5 +34,5 @@ clean:
 
 include .env-checked
 
-.PHONY: all build lint test format docs clean builtins
+.PHONY: all build lint test format docs clean builtins publish-builtins
 FORCE:

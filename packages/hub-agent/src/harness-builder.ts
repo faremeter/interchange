@@ -17,6 +17,16 @@ import type {
   InferenceSource,
   MessageTransport,
 } from "@intx/types/runtime";
+import type { DeployApplyErrorFrame } from "@intx/types/sidecar";
+
+/**
+ * Per-attempt context the builder uses to emit a deploy-apply error
+ * frame back to the hub. The host (typically the sidecar app's wiring
+ * to hub-link) translates this into the wire-level frame.
+ */
+export type DeployApplyErrorEmitter = (
+  payload: Omit<DeployApplyErrorFrame, "type" | "agentAddress">,
+) => void;
 
 /**
  * Inputs the builder receives for one agent's session-start. The package
@@ -36,6 +46,17 @@ export type BuildHarnessArgs = {
   crypto: CryptoProvider;
   onEvent: (event: InferenceEvent) => void;
   onConnectorStateChanged: (state: ConnectorThreadState | null) => void;
+  /**
+   * Emit a `deploy.apply.error` frame back to the hub when the tool-
+   * package loader rejects an apply. The builder calls this just
+   * before throwing to abort harness construction; the host wires it
+   * to the sidecar's hub-link. Hosts that do not yet support
+   * tool-package distribution can omit this — a builder that
+   * encounters a manifest while this is undefined throws with no
+   * dedicated frame, which lands as a generic `agent.error` via the
+   * existing session-start error handler.
+   */
+  emitDeployApplyError?: DeployApplyErrorEmitter;
 };
 
 /**

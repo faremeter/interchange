@@ -21,6 +21,11 @@ export const agent = pgTable("agent", {
   modelConfig: jsonb("model_config"),
   capabilities: jsonb("capabilities"),
   credentialRequirements: jsonb("credential_requirements"),
+  // Pinned tool packages, validated as ToolPackagePin[] at parse time.
+  // Empty array (the default) means the agent has no NPM-distributed
+  // tool packages wired to it; the loader receives an empty closure
+  // and produces no tool factories for this agent.
+  toolPackages: jsonb("tool_packages").notNull().default([]),
   // Grant requirements manifest — resolved at launch into materialized grants
   // on the instance principal. See AUTH.md § Grant Requirements on Definitions.
   grantRequirements: jsonb("grant_requirements"),

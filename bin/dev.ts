@@ -8,14 +8,18 @@
 // shutdown.
 //
 // Usage:
-//   bun bin/dev.ts                # start hub + sidecar + admin-ui
-//   bun bin/dev.ts --seed         # also seed the database after hub is ready
-//   bun bin/dev.ts --no-admin-ui  # skip the admin UI dev server
-//   bun bin/dev.ts --no-sidecar   # skip the sidecar
+//   bun bin/dev.ts                       # start hub + sidecar + admin-ui
+//   bun bin/dev.ts --seed                # also seed the database after hub is ready
+//   bun bin/dev.ts --no-admin-ui         # skip the admin UI dev server
+//   bun bin/dev.ts --no-sidecar          # skip the sidecar
+//   bun bin/dev.ts --no-publish-builtins # skip the built-in tool-package publish
 
 import { $, type ProcessPromise, type ProcessOutput } from "zx";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
+
+import { publishToolPackages } from "./publish-tool-packages";
+import { WORKSPACE_BUILTINS_REGISTRY } from "@intx/hub-sessions";
 
 $.verbose = false;
 
@@ -38,9 +42,23 @@ const args = new Set(process.argv.slice(2));
 const wantSeed = args.delete("--seed");
 const skipAdminUI = args.delete("--no-admin-ui");
 const skipSidecar = args.delete("--no-sidecar");
+const skipPublishBuiltins = args.delete("--no-publish-builtins");
 
 if (args.size > 0) {
   console.error(`Unknown flags: ${[...args].join(", ")}`);
+  process.exit(1);
+}
+
+// The seed pins three built-in tool packages (`@intx/tools-*`); their
+// tarballs live in the workspace-builtins package-registry asset and
+// are published by the build/publish step above. Seeding without
+// publishing produces agent definitions whose launch immediately
+// fails with `tarball.missing` because the registry asset is empty.
+// Fail loudly here rather than after a successful seed run.
+if (skipPublishBuiltins && wantSeed) {
+  console.error(
+    "--no-publish-builtins is incompatible with --seed: the seed creates agent definitions that pin the workspace built-ins; without a publish the launch would fail with tarball.missing. Either drop --no-publish-builtins or drop --seed.",
+  );
   process.exit(1);
 }
 
@@ -125,9 +143,16 @@ function spawnLabeled(
 }
 
 let shuttingDown = false;
+// The highest-severity exit code requested so far. Repeated shutdown
+// calls (SIGINT during teardown, child-process failure landing while
+// we are already winding down) monotonically escalate this value
+// rather than overwriting it — a child-process failure that arrived
+// after a Ctrl-C must not be silently downgraded to exit-0.
+let pendingExitCode = 0;
 
 async function shutdown(code: number): Promise<never> {
-  if (shuttingDown) process.exit(code);
+  if (code > pendingExitCode) pendingExitCode = code;
+  if (shuttingDown) process.exit(pendingExitCode);
   shuttingDown = true;
   console.log("\nShutting down...");
 
@@ -150,7 +175,7 @@ async function shutdown(code: number): Promise<never> {
     }
   }
 
-  process.exit(code);
+  process.exit(pendingExitCode);
 }
 
 process.on("SIGINT", () => shutdown(0));
@@ -268,6 +293,84 @@ try {
 }
 
 console.log("Hub is ready.");
+
+// -- Step 3a: Publish built-in tool packages --
+//
+// Built-ins ride the same asset-substrate path as any operator-published
+// package-registry asset. Build the tarballs deterministically, then
+// publish them into the workspace-builtins registry on the dev tenant.
+// The publish step authenticates as the seeded admin and is idempotent:
+// it sign-ups-or-signs-in, ensures the tenant exists, ensures the asset
+// row exists, and PUTs every tarball under `dist/builtins/`.
+//
+// Runs before `--seed` so that when the seed wires up agent pins those
+// pins reference tarballs that are already in the registry. The seed
+// step itself remains the canonical place for agent/role/credential
+// fixtures.
+
+if (!skipPublishBuiltins) {
+  console.log("Building built-in tool-package tarballs...");
+  try {
+    const build = await $({
+      cwd: ROOT,
+      env: { ...process.env, ...sharedEnv },
+    })`bun run bin/build-builtins.ts`;
+    for (const line of build.stdout.split("\n")) {
+      if (line) console.log(`\x1b[90m[builtins]\x1b[0m ${line}`);
+    }
+    for (const line of build.stderr.split("\n")) {
+      if (line) console.error(`\x1b[90m[builtins]\x1b[0m ${line}`);
+    }
+  } catch (err) {
+    console.error("Built-in tarball build failed:");
+    if (hasStderr(err)) {
+      console.error(err.stderr);
+    } else {
+      console.error(err instanceof Error ? err.message : String(err));
+    }
+    await shutdown(1);
+  }
+
+  console.log("Publishing built-in tool packages to the hub...");
+  // Dev orchestration owns the publish parameters: it knows the seed's
+  // admin identity and tenant slug, and the publish entry point itself
+  // is a boundary that takes a fully-populated PublishOptions. Defaults
+  // are resolved here, at the edge, rather than inside the publish
+  // function. Env overrides let an operator point dev.ts at a non-seed
+  // hub without editing the script.
+  const adminEmailEnv = process.env["HUB_ADMIN_EMAIL"];
+  const adminPasswordEnv = process.env["HUB_ADMIN_PASSWORD"];
+  const tenantSlugEnv = process.env["HUB_TENANT_SLUG"];
+  const tenantNameEnv = process.env["HUB_TENANT_NAME"];
+  try {
+    await publishToolPackages({
+      hubURL,
+      adminEmail:
+        adminEmailEnv === undefined || adminEmailEnv === ""
+          ? "alice@example.com"
+          : adminEmailEnv,
+      adminPassword:
+        adminPasswordEnv === undefined || adminPasswordEnv === ""
+          ? "password123"
+          : adminPasswordEnv,
+      tenantSlug:
+        tenantSlugEnv === undefined || tenantSlugEnv === ""
+          ? "acme"
+          : tenantSlugEnv,
+      tenantName:
+        tenantNameEnv === undefined || tenantNameEnv === ""
+          ? "Acme Corp"
+          : tenantNameEnv,
+      registryName: WORKSPACE_BUILTINS_REGISTRY,
+      fromDir: resolve(ROOT, "dist/builtins"),
+    });
+  } catch (err) {
+    console.error("Publishing built-in tool packages failed:");
+    console.error(err instanceof Error ? err.message : String(err));
+    await shutdown(1);
+  }
+  console.log("Built-in tool packages published.");
+}
 
 // -- Step 3: Seed (optional) --
 

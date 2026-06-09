@@ -17,7 +17,7 @@ import {
   sessionMail,
   turnPart,
 } from "@intx/db/schema";
-import { resolveOneCredential } from "@intx/db";
+import { parseAgentRow, resolveOneCredential } from "@intx/db";
 import type { DB } from "@intx/db";
 import { evaluateGrants, authorize } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
@@ -598,6 +598,7 @@ export function createInstanceRoutes({
             sources,
             defaultSource,
           },
+          toolPackagePins: parseAgentRow(row).toolPackages,
           deployContent: {
             systemPrompt: row.systemPrompt,
           },

@@ -351,6 +351,56 @@ describe("AssetService", () => {
       expect(dbFixture.assets).toHaveLength(0);
     });
 
+    test("rejects a package-registry asset whose name shadows a configured HTTP registry", async () => {
+      // The session service builds the per-launch tool-package
+      // registry map by iterating package-registry assets first and
+      // HTTP registries second, with an asset-wins-on-name-collision
+      // rule. Without the reserved-name gate, a `package-registry`
+      // asset named `npmjs` on any tenant would silently shadow the
+      // public npm registry for every session resolving through that
+      // tenant — an opaque reroute the operator did not request. Pin
+      // the rejection at the asset-creation boundary so the collision
+      // surfaces at intent time, not as a debugging exercise later.
+      const reservedService = createAssetService({
+        db: dbFixture.db,
+        repoStore,
+        reservedPackageRegistryNames: new Set(["npmjs"]),
+      });
+      const err = await reservedService
+        .createAsset({
+          tenantId: "tnt_1",
+          kind: "package-registry",
+          name: "npmjs",
+        })
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(AssetServiceError);
+      if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
+      expect(err.reason).toBe("name_reserved");
+      expect(err.message).toContain("npmjs");
+      expect(dbFixture.assets).toHaveLength(0);
+    });
+
+    test("a reserved name only shadows the matching kind", async () => {
+      // The reserved-name gate scopes to `package-registry` — a skill
+      // asset named `npmjs` poses no shadowing risk against the
+      // registry map. Surface that asymmetry in the test so a future
+      // refactor that broadens the gate has to update this assertion
+      // along with the code.
+      const reservedService = createAssetService({
+        db: dbFixture.db,
+        repoStore,
+        reservedPackageRegistryNames: new Set(["npmjs"]),
+      });
+      const asset = await reservedService.createAsset({
+        tenantId: "tnt_1",
+        kind: "skill",
+        name: "npmjs",
+      });
+      expect(asset.kind).toBe("skill");
+      expect(asset.name).toBe("npmjs");
+    });
+
     test("surfaces duplicate (tenantId, kind, name) as duplicate_asset", async () => {
       await service.createAsset({
         tenantId: "tnt_1",
@@ -535,6 +585,148 @@ describe("AssetService", () => {
       expect(row.asset.kind).toBe("skill");
       expect(row.asset.name).toBe("greet");
       expect(row.asset.displayName).toBe("Greeting");
+    });
+  });
+
+  describe("readAssetBlob / listAssetBlobs", () => {
+    test("readAssetBlob returns the bytes of a blob at HEAD", async () => {
+      const asset = await service.createAsset({
+        tenantId: "tnt_1",
+        kind: "skill",
+        name: "greet",
+      });
+
+      dbFixture.nextFindFirstAssetId(asset.id);
+      await service.populateAsset({
+        assetId: asset.id,
+        ref: "refs/heads/main",
+        tree: VALID_SKILL_TREE,
+        principal: HUB,
+      });
+
+      dbFixture.nextFindFirstAssetId(asset.id);
+      const bytes = await service.readAssetBlob({
+        assetId: asset.id,
+        path: "greet/SKILL.md",
+      });
+      const text = new TextDecoder().decode(bytes);
+      expect(text).toContain("name: greet");
+    });
+
+    test("listAssetBlobs returns only blob entries (skips subtrees)", async () => {
+      const asset = await service.createAsset({
+        tenantId: "tnt_1",
+        kind: "skill",
+        name: "greet",
+      });
+
+      dbFixture.nextFindFirstAssetId(asset.id);
+      await service.populateAsset({
+        assetId: asset.id,
+        ref: "refs/heads/main",
+        tree: VALID_SKILL_TREE,
+        principal: HUB,
+      });
+
+      dbFixture.nextFindFirstAssetId(asset.id);
+      const names = await service.listAssetBlobs({
+        assetId: asset.id,
+        dir: "",
+      });
+      // The only root entry produced by VALID_SKILL_TREE is the
+      // `greet/` subtree. listAssetBlobs filters to blob entries so
+      // callers iterating the result can readBlob each name without a
+      // per-entry type check; the subtree is excluded by design.
+      expect(names).not.toContain("greet");
+    });
+
+    test("readAssetBlob throws not_found on a missing asset", async () => {
+      dbFixture.nextFindFirstAssetId("ast_missing");
+      const err = await service
+        .readAssetBlob({ assetId: "ast_missing", path: "x" })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(AssetServiceError);
+      if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
+      expect(err.reason).toBe("not_found");
+    });
+
+    test("readAssetBlob throws not_found on a missing path", async () => {
+      const asset = await service.createAsset({
+        tenantId: "tnt_1",
+        kind: "skill",
+        name: "greet",
+      });
+      dbFixture.nextFindFirstAssetId(asset.id);
+      await service.populateAsset({
+        assetId: asset.id,
+        ref: "refs/heads/main",
+        tree: VALID_SKILL_TREE,
+        principal: HUB,
+      });
+
+      dbFixture.nextFindFirstAssetId(asset.id);
+      const err = await service
+        .readAssetBlob({
+          assetId: asset.id,
+          path: "does-not-exist",
+        })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(AssetServiceError);
+      if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
+      expect(err.reason).toBe("not_found");
+    });
+
+    test("listAssetBlobs throws not_found on a non-directory path", async () => {
+      const asset = await service.createAsset({
+        tenantId: "tnt_1",
+        kind: "skill",
+        name: "greet",
+      });
+      dbFixture.nextFindFirstAssetId(asset.id);
+      await service.populateAsset({
+        assetId: asset.id,
+        ref: "refs/heads/main",
+        tree: VALID_SKILL_TREE,
+        principal: HUB,
+      });
+
+      dbFixture.nextFindFirstAssetId(asset.id);
+      const err = await service
+        .listAssetBlobs({
+          assetId: asset.id,
+          dir: "missing-dir",
+        })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(AssetServiceError);
+      if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
+      expect(err.reason).toBe("not_found");
+    });
+
+    test("listAssetBlobs rejects malformed dir arguments at the boundary", async () => {
+      const asset = await service.createAsset({
+        tenantId: "tnt_1",
+        kind: "skill",
+        name: "greet",
+      });
+      dbFixture.nextFindFirstAssetId(asset.id);
+      await service.populateAsset({
+        assetId: asset.id,
+        ref: "refs/heads/main",
+        tree: VALID_SKILL_TREE,
+        principal: HUB,
+      });
+
+      const malformedDirs = ["/", "/tarballs", "tarballs/", "a//b", "a/../b"];
+      for (const dir of malformedDirs) {
+        const err = await service
+          .listAssetBlobs({ assetId: asset.id, dir })
+          .catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(AssetServiceError);
+        if (!(err instanceof AssetServiceError)) {
+          throw new Error("unreachable");
+        }
+        expect(err.reason).toBe("path_violation");
+      }
     });
   });
 });

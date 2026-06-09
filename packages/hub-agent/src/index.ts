@@ -14,6 +14,7 @@ export type {
   HarnessBuilder,
   HarnessBundle,
   BuildHarnessArgs,
+  DeployApplyErrorEmitter,
 } from "./harness-builder";
 export {
   createSessionManager,

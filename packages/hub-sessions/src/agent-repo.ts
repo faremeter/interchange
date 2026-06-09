@@ -1,4 +1,5 @@
 import { createSSHSignature } from "@intx/crypto-node";
+import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
 import { createRepoStore } from "./repo-store";
 import type { AuthorizeFn, RepoId, RepoStore } from "./repo-store";
@@ -10,9 +11,29 @@ import {
   type AgentStateSidecarPrincipal,
 } from "./agent-state-kind";
 import { skillKindHandler, skillAuthorize } from "./skill-kind";
+import {
+  packageRegistryKindHandler,
+  packageRegistryAuthorize,
+} from "./package-registry-kind";
 
 export type DeployContent = {
   systemPrompt: string;
+  /**
+   * Optional. When present, written to
+   * `deploy/tool-packages-manifest.json` so the sidecar's loader can
+   * materialize the pinned tool-package closure on apply.
+   */
+  toolPackageManifest?: ToolPackageManifest;
+  /**
+   * Optional. `assetId` → workspace-relative mount path for every
+   * asset id referenced by a `kind: "asset"` entry in
+   * `toolPackageManifest`. When present, written to
+   * `deploy/asset-mounts.json`; the sidecar's loader reads it back via
+   * `readDeployTree` and resolves asset-sourced tarballs against it.
+   * Empty maps and absent values produce no file on disk — both shapes
+   * read back as an empty mount table.
+   */
+  assetMounts?: ReadonlyMap<string, string>;
 };
 
 export type AgentRepoStore = {
@@ -76,6 +97,8 @@ export function createAgentRepoStore(config: {
         return agentStateAuthorize(principal, incomingRepoId, ref, action);
       case "skill":
         return skillAuthorize(principal, incomingRepoId, ref, action);
+      case "package-registry":
+        return packageRegistryAuthorize(principal, incomingRepoId, ref, action);
       default: {
         const _exhaustive: never = incomingRepoId.kind;
         return {
@@ -101,6 +124,7 @@ export function createAgentRepoStore(config: {
     handlers: {
       "agent-state": agentStateKindHandler,
       skill: skillKindHandler,
+      "package-registry": packageRegistryKindHandler,
     },
     authorize,
     signingCallback: () => signer,
@@ -118,6 +142,20 @@ export function createAgentRepoStore(config: {
       const files: Record<string, string> = {
         "deploy/prompt.md": content.systemPrompt,
       };
+      if (content.toolPackageManifest !== undefined) {
+        files["deploy/tool-packages-manifest.json"] = JSON.stringify(
+          content.toolPackageManifest,
+          null,
+          2,
+        );
+      }
+      if (content.assetMounts !== undefined && content.assetMounts.size > 0) {
+        files["deploy/asset-mounts.json"] = JSON.stringify(
+          { assetMounts: Object.fromEntries(content.assetMounts) },
+          null,
+          2,
+        );
+      }
       return store.writeTree(hub, id, AGENT_STATE_DEPLOY_REF, {
         files,
         clearPrefix: "deploy/",

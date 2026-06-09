@@ -15,6 +15,7 @@
 
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
+import type { DeployApplyErrorFrame } from "@intx/types/sidecar";
 import type {
   ConnectorThreadState,
   CryptoProvider,
@@ -112,6 +113,12 @@ export function createSidecarOrchestrator(
   ) => void = () => {
     /* replaced after HubLink construction */
   };
+  let dispatchDeployApplyError: (
+    agentAddress: string,
+    payload: Omit<DeployApplyErrorFrame, "type" | "agentAddress">,
+  ) => void = () => {
+    /* replaced after HubLink construction */
+  };
 
   const sessions = createSessionManager({
     transport,
@@ -124,6 +131,9 @@ export function createSidecarOrchestrator(
     },
     onConnectorStateChanged(agentAddress, state) {
       dispatchConnectorState(agentAddress, state);
+    },
+    onDeployApplyError(agentAddress, payload) {
+      dispatchDeployApplyError(agentAddress, payload);
     },
   });
 
@@ -141,6 +151,7 @@ export function createSidecarOrchestrator(
 
   dispatchEvent = hubLink.sendEvent;
   dispatchConnectorState = hubLink.sendConnectorState;
+  dispatchDeployApplyError = hubLink.sendDeployApplyError;
 
   function start(): void {
     hubLink.connect();

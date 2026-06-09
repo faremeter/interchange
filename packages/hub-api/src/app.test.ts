@@ -41,6 +41,7 @@ const app = createApp({
   eventCollectors,
   assetService: null,
   repoStore: null,
+  maxTarballBytes: 10_000_000,
 });
 
 describe("app", () => {
@@ -193,6 +194,7 @@ describe("mountHubRoutes composition", () => {
       eventCollectors,
       assetService: null,
       repoStore: null,
+      maxTarballBytes: 10_000_000,
     });
 
     const siblingRes = await thirdParty.request("/sibling/whoami");
@@ -215,6 +217,7 @@ describe("mountHubRoutes composition", () => {
       eventCollectors,
       assetService: null,
       repoStore: null,
+      maxTarballBytes: 10_000_000,
     });
 
     // Without an auth handler mounted by the caller, /api/auth/* is

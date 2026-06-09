@@ -9,11 +9,33 @@ import {
   createDetachedSignatureFromProvider,
   type MessageHeaders,
 } from "@intx/mime";
-import type { DB } from "@intx/db";
-import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
+import { listAssetsForTenant, type DB } from "@intx/db";
+import {
+  sessionAsset as sessionAssetTable,
+  type SessionAssetSource,
+} from "@intx/db/schema";
 import type { CryptoProvider, HarnessConfig } from "@intx/types/runtime";
+import {
+  type RegistryConfig,
+  type RegistrySource,
+  type ScopeRoute,
+  AssetRegistrySource,
+  HttpRegistrySource,
+  ManifestInvalidError,
+  createClosureResolver,
+} from "@intx/tool-packaging";
+import type {
+  ToolPackageManifest,
+  ToolPackagePin,
+} from "@intx/types/tool-packages";
+
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
-import type { AgentAssetWithAsset, AssetService } from "./asset-service";
+import {
+  DEFAULT_ASSET_REF,
+  type AgentAssetWithAsset,
+  type Asset,
+  type AssetService,
+} from "./asset-service";
 import {
   buildAvailableSkillsStanza,
   type AvailableSkillEntry,
@@ -63,6 +85,15 @@ export type SessionService = {
     instanceId: string;
     config: HarnessConfig;
     deployContent: DeployContent;
+    /**
+     * The agent definition's pinned tool packages. When non-empty, the
+     * service uses its injected `toolPackageResolver` to compute the
+     * full pinned closure and ships the resulting manifest as part of
+     * the deploy tree. An empty array (or absent value) means no
+     * tool-package manifest is materialized; the sidecar's loader is
+     * a no-op for this deploy.
+     */
+    toolPackagePins?: readonly ToolPackagePin[];
   }): Promise<void>;
 
   /**
@@ -105,6 +136,40 @@ export type SessionServiceDeps = {
   /** DB handle used for `session_asset` manifest inserts. Required
    * iff `assetService` is set. */
   db?: DB["db"];
+  /**
+   * Tool-package registry configuration. Required iff any agent the
+   * service launches has non-empty `toolPackagePins`. When set, the
+   * service builds a per-agent `ClosureResolver` at launch time: the
+   * registry map combines (a) every `package-registry` asset visible
+   * to the agent's tenant via the INTR-178 walker — keyed by
+   * `asset.name` — and (b) the statically-configured HTTP registries
+   * in `httpRegistries`.
+   *
+   * **Name-collision policy.** When an asset and an HTTP registry
+   * both claim the same registry name, the asset wins. This mirrors
+   * the inner-shadows-outer rule the tenancy walker already applies
+   * to asset resolution and gives operators a single mental model:
+   * closer-scope shadows wider-scope. The rule is a contract this
+   * service guarantees, not an iteration-order accident — consumers
+   * may rely on it to override a wider-scope HTTP registry by
+   * publishing an asset at a closer tenancy.
+   *
+   * `defaultRegistry` names the entry the resolver consults for any
+   * package whose scope does not match `scopeRouting`. The name must
+   * resolve in the combined map for the given agent — if no asset and
+   * no HTTP entry carries that name, launch fails at the
+   * registry-resolution step.
+   */
+  toolPackageRegistries?: {
+    /**
+     * Registry identifier → registry config. The key is the
+     * identifier `scopeRouting` entries and manifest `registry`
+     * references point at; the value carries url plus optional auth.
+     */
+    readonly httpRegistries: ReadonlyMap<string, RegistryConfig>;
+    readonly defaultRegistry: string;
+    readonly scopeRouting?: readonly ScopeRoute[];
+  };
 };
 
 // Hub-side principal for reading skill repos. Skills are signed by the
@@ -113,7 +178,17 @@ export type SessionServiceDeps = {
 const HUB_PRINCIPAL: Principal = { kind: "hub" };
 
 type ResolvedAttachment = {
-  agentAssetId: string;
+  /** The `agent_asset` row id when this attachment came from an
+   * explicit `agent_asset` attachment; `null` when it came from a
+   * resolver-derived package-registry asset that has no per-agent
+   * attachment row. The `session_asset.source` column distinguishes
+   * the two paths in the audit record. */
+  agentAssetId: string | null;
+  /** Which materialization path produced this attachment.
+   * `"direct"` mirrors `agentAssetId !== null`; `"resolved"` mirrors
+   * `agentAssetId === null`. The session-asset row carries the
+   * resolved value so audit queries can filter without joining. */
+  source: SessionAssetSource;
   /** Asset `name` column. Used to build the qualified `<asset.name>/<skill-name>`
    * prefix in the `<available_skills>` stanza. */
   assetName: string;
@@ -128,6 +203,66 @@ type ResolvedAttachment = {
 
 function createPackSha(pack: Uint8Array): string {
   return createHash("sha256").update(pack).digest("hex");
+}
+
+/**
+ * Walk a resolved tool-package manifest and return every distinct
+ * `assetId` referenced by a `kind: "asset"` entry. Order is the
+ * resolver's BFS order so the fan-out below is deterministic for
+ * tests; a `Set` would be wrong here because tests assert specific
+ * orderings.
+ */
+function collectDistinctAssetIds(manifest: ToolPackageManifest): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of manifest.entries) {
+    if (entry.source.kind !== "asset") continue;
+    if (seen.has(entry.source.assetId)) continue;
+    seen.add(entry.source.assetId);
+    out.push(entry.source.assetId);
+  }
+  return out;
+}
+
+/**
+ * Dedup the union of `direct` and `resolved` attachments by asset id
+ * (taken from `repoId.id`), with `direct` taking precedence whenever
+ * both name the same asset.
+ *
+ * The package-registry "both name the same asset" case is refused
+ * upstream at the resolver block (a direct attachment plus a resolver
+ * pin for the same package-registry asset would emit assetMounts at
+ * the resolver's ref while the direct attachment materializes at the
+ * operator's chosen ref, leaving the loader to resolve manifest
+ * entries against tarballs that do not exist at the materialized
+ * mount). Skill attachments cannot collide via the resolver path —
+ * the resolver only emits package-registry entries — so the dedup
+ * still has to handle skill self-collisions defensively and to fall
+ * through cleanly when both sources happen to name an asset the
+ * upstream check has not flagged.
+ *
+ * The function takes the two sources as named parameters rather than a
+ * pre-merged list so the precedence rule is structural: a future
+ * refactor cannot accidentally swap the order by re-arranging an
+ * intermediate spread.
+ */
+function dedupAttachmentsByAssetId(args: {
+  direct: readonly ResolvedAttachment[];
+  resolved: readonly ResolvedAttachment[];
+}): ResolvedAttachment[] {
+  const seen = new Set<string>();
+  const out: ResolvedAttachment[] = [];
+  for (const att of args.direct) {
+    if (seen.has(att.repoId.id)) continue;
+    seen.add(att.repoId.id);
+    out.push(att);
+  }
+  for (const att of args.resolved) {
+    if (seen.has(att.repoId.id)) continue;
+    seen.add(att.repoId.id);
+    out.push(att);
+  }
+  return out;
 }
 
 /**
@@ -146,6 +281,8 @@ function resolveMountPath(row: AgentAssetWithAsset): string {
   switch (row.asset.kind) {
     case "skill":
       return `skills/${row.asset.name}/`;
+    case "package-registry":
+      return `package-registries/${row.asset.name}/`;
     case "agent-state":
       throw new Error(
         `mount_path_required: agent_asset row ${row.id} references agent-state asset ${row.asset.id}; agent-state attachments are not supported`,
@@ -160,11 +297,22 @@ function resolveMountPath(row: AgentAssetWithAsset): string {
 }
 
 export function createSessionService(deps: SessionServiceDeps): SessionService {
-  const { sidecarRouter, agentRepoStore, assetService, db } = deps;
+  const {
+    sidecarRouter,
+    agentRepoStore,
+    assetService,
+    db,
+    toolPackageRegistries,
+  } = deps;
 
   if (assetService !== undefined && db === undefined) {
     throw new Error(
       "createSessionService: db is required when assetService is set",
+    );
+  }
+  if (toolPackageRegistries !== undefined && db === undefined) {
+    throw new Error(
+      "createSessionService: db is required when toolPackageRegistries is set",
     );
   }
 
@@ -174,8 +322,10 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     instanceId: string;
     config: HarnessConfig;
     deployContent: DeployContent;
+    toolPackagePins?: readonly ToolPackagePin[];
   }): Promise<void> {
     const { agentAddress, agentId, instanceId, config, deployContent } = params;
+    const toolPackagePins = params.toolPackagePins ?? [];
 
     // Phase 0: Resolve attached assets first so the skill index is in
     // hand before the deploy tree is written. The `<available_skills>`
@@ -194,13 +344,123 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     }
 
     const stanza = buildAvailableSkillsStanza(availableSkills);
-    const effectiveDeployContent: DeployContent =
+    let effectiveDeployContent: DeployContent =
       stanza.length === 0
         ? deployContent
         : {
             ...deployContent,
             systemPrompt: `${deployContent.systemPrompt}\n\n${stanza}\n`,
           };
+
+    // Phase 0a-bis: Resolve the agent's tool-package pins into a full
+    // closure manifest. Empty pins skip the resolver entirely. A
+    // ManifestInvalidError (e.g. unsatisfied peer dependency) is a
+    // launch-time failure — the deploy never ships and the sidecar
+    // is not touched.
+    //
+    // The resolver runs once per launch with no cross-launch caching;
+    // the packument cache scopes only within a single closure walk.
+    // Acceptable at the current N (handful of agents, small pin sets
+    // per agent) — a tenant-scoped packument cache or a per-pin set
+    // resolved-manifest cache would be the obvious scaling lever
+    // when launch latency becomes the bottleneck.
+    const manifestAssetAttachments: ResolvedAttachment[] = [];
+    if (toolPackagePins.length > 0) {
+      if (toolPackageRegistries === undefined) {
+        throw new SessionLaunchError(
+          "write",
+          new Error(
+            `agent ${agentId} has ${String(toolPackagePins.length)} pinned tool package(s) but the session service has no toolPackageRegistries configured`,
+          ),
+          false,
+        );
+      }
+      if (assetService === undefined) {
+        throw new SessionLaunchError(
+          "write",
+          new Error(
+            `agent ${agentId} has pinned tool packages but the session service has no assetService configured for asset-backed registries`,
+          ),
+          false,
+        );
+      }
+      let manifest: ToolPackageManifest;
+      let assetIndex: Map<string, Asset>;
+      try {
+        const built = await buildAndResolve({
+          agentId,
+          tenantId: config.tenantId,
+          pins: toolPackagePins,
+          registries: toolPackageRegistries,
+          assetService,
+        });
+        manifest = built.manifest;
+        assetIndex = built.assetIndex;
+      } catch (err) {
+        if (err instanceof ManifestInvalidError) {
+          logger.warn`tool-package manifest validation failed for agent ${agentId}: ${err.message}`;
+        }
+        throw new SessionLaunchError("write", err, false);
+      }
+
+      const assetMounts = new Map<string, string>();
+      try {
+        // Refuse to mix a direct package-registry attachment with a
+        // resolver-driven pin against the same asset id. The resolver
+        // path emits an `assetMounts` entry pointing at the asset's
+        // DEFAULT_ASSET_REF tip, but a direct attachment may carry any
+        // ref the operator chose at attach time. The downstream dedup
+        // in `dedupAttachmentsByAssetId` lets the direct attachment win
+        // — its bytes would materialize at the operator's chosen ref
+        // while `assetMounts` still names the resolver's ref, leaving
+        // the loader to resolve manifest entries against tarballs that
+        // do not exist at the materialized mount. Surface the conflict
+        // at launch as a manifest-shaped violation rather than letting
+        // the integrity mismatch surface deep inside the sidecar apply.
+        const directPackageRegistryAttachments = attachments.filter(
+          (att) => att.assetKind === "package-registry",
+        );
+        for (const assetId of collectDistinctAssetIds(manifest)) {
+          const conflict = directPackageRegistryAttachments.find(
+            (att) => att.repoId.id === assetId,
+          );
+          if (conflict !== undefined) {
+            throw new ManifestInvalidError(
+              `package-registry asset ${conflict.assetKind}/${conflict.assetName} (${assetId}) is both directly attached to the agent and selected by the tool-package resolver; attach OR pin via tenancy, not both`,
+            );
+          }
+        }
+        for (const assetId of collectDistinctAssetIds(manifest)) {
+          const asset = assetIndex.get(assetId);
+          if (asset === undefined) {
+            // The asset id appears in the manifest but is not in the
+            // tenant-visible asset set. This can only happen if the
+            // resolver's registry map and the asset index disagree —
+            // the same scan populated both, so reaching this branch
+            // would indicate an upstream invariant violation.
+            throw new Error(
+              `resolved tool-package manifest references asset ${assetId} which is not visible to tenant ${config.tenantId}`,
+            );
+          }
+          const mountPath = `package-registries/${asset.name}/`;
+          assetMounts.set(assetId, mountPath);
+          manifestAssetAttachments.push(
+            await resolveDirectAssetAttachment({
+              asset,
+              mountPath,
+            }),
+          );
+        }
+      } catch (err) {
+        throw new SessionLaunchError("write", err, false);
+      }
+
+      effectiveDeployContent = {
+        ...effectiveDeployContent,
+        toolPackageManifest: manifest,
+        ...(assetMounts.size > 0 ? { assetMounts } : {}),
+      };
+    }
 
     // Phase 0b: Write deploy tree and produce packfile (hub-local, no
     // sidecar state to clean up if this fails).
@@ -237,11 +497,41 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     // but the row is missing, the session has materialization without
     // a recorded manifest. If the row insert fails, the pack send
     // must not happen.
-    if (assetService !== undefined && attachments.length > 0) {
-      for (const att of attachments) {
+    //
+    // The fan-out covers two sources: the agent's direct attachments
+    // (skills, today) and the package-registry assets the tool-package
+    // resolver picked from. The latter live behind tenant inheritance
+    // rather than a per-agent attachment row, so the session service
+    // synthesizes the attachment view in `manifestAssetAttachments`.
+    //
+    // Both sources can name the same `package-registry` asset — a
+    // direct attachment and a resolver pin would each compute
+    // `mountPath = "package-registries/<asset.name>/"` and collide on
+    // the `(instanceId, mountPath)` PK in `session_asset`. Dedup by
+    // asset id BEFORE the inserts and let the direct attachment win:
+    // it is an explicit operator action and carries an `agentAssetId`
+    // the audit query joins against. The resolver-derived row would
+    // produce the same materialized contents, so dropping it is
+    // semantically lossless.
+    const fanOut: ResolvedAttachment[] = dedupAttachmentsByAssetId({
+      direct: attachments,
+      resolved: manifestAssetAttachments,
+    });
+    if (assetService !== undefined && fanOut.length > 0) {
+      // Track every successfully committed attachment so a later
+      // fan-out failure can roll back the earlier rows in lockstep
+      // with the sidecar undeploy. Without this, fan-out[0] succeeds,
+      // fan-out[1] fails, attemptCleanup tears down the sidecar — but
+      // fan-out[0]'s session_asset row survives and a future
+      // materialization query reads a manifest the sidecar no longer
+      // honors.
+      const committed: ResolvedAttachment[] = [];
+      for (const att of fanOut) {
         try {
           await sendAttachmentPack(instanceId, agentAddress, att);
+          committed.push(att);
         } catch (err) {
+          await rollbackCommittedAttachments(instanceId, committed);
           await attemptCleanup(agentAddress, "pack", err);
           throw new SessionLaunchError("pack", err, false);
         }
@@ -253,6 +543,31 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     } catch (err) {
       await attemptCleanup(agentAddress, "start", err);
       throw new SessionLaunchError("start", err, false);
+    }
+  }
+
+  async function rollbackCommittedAttachments(
+    instanceId: string,
+    committed: readonly ResolvedAttachment[],
+  ): Promise<void> {
+    if (db === undefined) return;
+    if (committed.length === 0) return;
+    // Per-row try/catch so a single rollback failure does not stop the
+    // sweep — every committed row needs to come off the books before
+    // the caller emits the original sendPack error.
+    for (const att of committed) {
+      try {
+        await db
+          .delete(sessionAssetTable)
+          .where(
+            and(
+              eq(sessionAssetTable.instanceId, instanceId),
+              eq(sessionAssetTable.mountPath, att.mountPath),
+            ),
+          );
+      } catch (err) {
+        logger.warn`session_asset rollback failed for earlier-committed instance=${instanceId} mountPath=${att.mountPath}: ${err instanceof Error ? err.message : String(err)}`;
+      }
     }
   }
 
@@ -268,19 +583,30 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       throw new Error("sendAttachmentPack invoked without a db handle");
     }
 
-    const { agentAssetId, mountPath, sourceCommitSha, repoId, pack, ref } =
-      attachment;
+    const {
+      agentAssetId,
+      source,
+      mountPath,
+      sourceCommitSha,
+      repoId,
+      pack,
+      ref,
+    } = attachment;
 
     const assetPackSha = createPackSha(pack);
 
     // Insert manifest row before the pack send so we never end up in
-    // the materialized-without-manifest state.
+    // the materialized-without-manifest state. Both direct and
+    // resolver-derived materializations write a row; the `source`
+    // column records which path produced it, and `agentAssetId` is
+    // null for resolver-derived rows.
     await db.insert(sessionAssetTable).values({
       instanceId,
       agentAssetId,
       mountPath,
       assetPackSha,
       sourceCommitSha,
+      source,
       materializedAt: new Date(),
     });
 
@@ -304,7 +630,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           .where(
             and(
               eq(sessionAssetTable.instanceId, instanceId),
-              eq(sessionAssetTable.agentAssetId, agentAssetId),
+              eq(sessionAssetTable.mountPath, mountPath),
             ),
           );
       } catch (rollbackErr) {
@@ -312,7 +638,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           rollbackErr instanceof Error
             ? rollbackErr.message
             : String(rollbackErr);
-        logger.warn`session_asset rollback failed for instance=${instanceId} agentAsset=${agentAssetId}: ${msg}`;
+        logger.warn`session_asset rollback failed for instance=${instanceId} mountPath=${mountPath}: ${msg}`;
       }
       throw err;
     }
@@ -352,9 +678,151 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     return {
       agentAssetId: row.id,
+      source: "direct",
       assetName: row.asset.name,
       assetKind: row.asset.kind,
       mountPath,
+      sourceCommitSha,
+      repoId,
+      pack,
+      ref: returnedRef,
+    };
+  }
+
+  /**
+   * Build a per-agent `ClosureResolver` from the tenant's visible
+   * package-registry assets plus the statically-configured HTTP
+   * registries, then run the closure resolution against `pins`.
+   *
+   * Returns the resolved manifest and an asset-id-keyed index of the
+   * package-registry assets the resolver knew about, so the caller can
+   * derive mount paths from the asset name without a second DB hit.
+   */
+  async function buildAndResolve(args: {
+    agentId: string;
+    tenantId: string;
+    pins: readonly ToolPackagePin[];
+    registries: NonNullable<SessionServiceDeps["toolPackageRegistries"]>;
+    assetService: AssetService;
+  }): Promise<{
+    manifest: ToolPackageManifest;
+    assetIndex: Map<string, Asset>;
+  }> {
+    if (db === undefined) {
+      // Guarded at construction; restate for the narrowing.
+      throw new Error("buildAndResolve invoked without a db handle");
+    }
+    const visibleAssets = await listAssetsForTenant(
+      db,
+      args.tenantId,
+      "package-registry",
+    );
+    const registryMap = new Map<string, RegistrySource>();
+    // `assetIndex` carries only the assets the resolver might have
+    // read from — i.e. one row per registry name, the one that won
+    // its `(kind, name)` slot. Shadowed assets that lost the
+    // collision are deliberately excluded: the resolver can never
+    // reach them, so the fan-out path must never see them in the
+    // index either. The walker walks leaf-to-root inside
+    // `listAssetsForTenant`, so the first occurrence of any
+    // `(kind, name)` wins — we replay the same shadowing here.
+    // Shadowed assets — those that lose the `(kind, name)` collision
+    // contest at a lower tenancy level — are dropped entirely from
+    // the per-launch registry map. They never appear in `assetIndex`
+    // either, so the fan-out that translates `kind: "asset"` manifest
+    // entries back to asset rows cannot reach them. This matches the
+    // resolver's view: a closure built from this map sees exactly
+    // the assets the resolver would have read from, and shadowed
+    // tarballs are invisible to both layers.
+    const assetIndex = new Map<string, Asset>();
+    for (const row of visibleAssets) {
+      if (registryMap.has(row.name)) continue;
+      const asset: Asset = {
+        id: row.id,
+        tenantId: row.tenantId,
+        kind: "package-registry",
+        name: row.name,
+        displayName: row.displayName,
+        creatorPrincipalId: row.creatorPrincipalId,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      };
+      assetIndex.set(asset.id, asset);
+      registryMap.set(
+        asset.name,
+        new AssetRegistrySource({
+          name: asset.name,
+          assetId: asset.id,
+          readBlob: (path) =>
+            args.assetService.readAssetBlob({
+              assetId: asset.id,
+              path,
+            }),
+          listBlobs: (dir) =>
+            args.assetService.listAssetBlobs({
+              assetId: asset.id,
+              dir,
+            }),
+        }),
+      );
+    }
+    for (const [name, cfg] of args.registries.httpRegistries) {
+      // Asset wins on collision with an HTTP registry of the same
+      // name; symmetric with the inner-shadows-outer rule that
+      // governs the tenant walker.
+      if (registryMap.has(name)) continue;
+      registryMap.set(name, new HttpRegistrySource({ name, config: cfg }));
+    }
+    if (!registryMap.has(args.registries.defaultRegistry)) {
+      throw new Error(
+        `agent ${args.agentId}: defaultRegistry "${args.registries.defaultRegistry}" is neither a tenant-visible package-registry asset nor a configured HTTP registry`,
+      );
+    }
+    const resolver = createClosureResolver({
+      registries: registryMap,
+      defaultRegistry: args.registries.defaultRegistry,
+      ...(args.registries.scopeRouting !== undefined
+        ? { scopeRouting: args.registries.scopeRouting }
+        : {}),
+    });
+    const manifest = await resolver.resolveClosure(args.pins);
+    return { manifest, assetIndex };
+  }
+
+  /**
+   * Build a `ResolvedAttachment` for an asset the resolver picked
+   * from but which has no per-agent attachment row. The pack is read
+   * from the asset's main ref (the same ref the resolver consumed
+   * tarballs from), and `agentAssetId` is `null` so the fan-out path
+   * knows to skip the `session_asset` insert.
+   */
+  async function resolveDirectAssetAttachment(args: {
+    asset: Asset;
+    mountPath: string;
+  }): Promise<ResolvedAttachment> {
+    const repoId: RepoId = { kind: args.asset.kind, id: args.asset.id };
+    const sourceCommitSha = await agentRepoStore.repoStore.resolveRef(
+      HUB_PRINCIPAL,
+      repoId,
+      DEFAULT_ASSET_REF,
+    );
+    if (sourceCommitSha === null) {
+      throw new Error(
+        `tool-package asset ${args.asset.kind}/${args.asset.id} has no commit on ${DEFAULT_ASSET_REF}`,
+      );
+    }
+    const { pack, ref: returnedRef } =
+      await agentRepoStore.repoStore.createPack(
+        HUB_PRINCIPAL,
+        repoId,
+        DEFAULT_ASSET_REF,
+      );
+    return {
+      agentAssetId: null,
+      source: "resolved",
+      assetName: args.asset.name,
+      assetKind: args.asset.kind,
+      mountPath: args.mountPath,
       sourceCommitSha,
       repoId,
       pack,

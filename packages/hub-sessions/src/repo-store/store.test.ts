@@ -556,6 +556,155 @@ describe("RepoStore", () => {
     expect(resolved).toBeNull();
   });
 
+  test("writeTree rolls the staging area back when validatePush rejects so subsequent writes land cleanly", async () => {
+    const dataDir = await makeTempDir("repo-store-writetree-rollback-");
+    let allowNext = false;
+    const handler: TestHandler = {
+      kind: "agent-state",
+      directoryPrefix: "repos-under-test",
+      validatePush(): ValidatePushResult {
+        if (allowNext) return { ok: true };
+        return { ok: false, reason: "stub rejected push" };
+      },
+      onRefUpdated(args) {
+        this.onRefUpdatedCalls.push(args);
+      },
+      onRefUpdatedCalls: [],
+    };
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    await expect(
+      store.writeTree(principal, repoId, REF, {
+        files: { "deploy/rejected.md": "first attempt" },
+        message: "first attempt — should be rejected",
+      }),
+    ).rejects.toThrow(/^path_violation/);
+
+    // The previous attempt's writeFileEntry staged
+    // deploy/rejected.md before validation refused. A working
+    // rollback drops the staged file from disk and the index so the
+    // next legitimate writeTree commits exactly the files it
+    // declares — no leftover content carried over.
+    allowNext = true;
+    const commit = await store.writeTree(principal, repoId, REF, {
+      files: { "deploy/accepted.md": "second attempt" },
+      message: "second attempt — accepted",
+    });
+
+    const gitDir = path.join(
+      dataDir,
+      handler.directoryPrefix,
+      repoId.id,
+      ".git",
+    );
+    const repoDir = path.dirname(gitDir);
+    const { tree: commitTree } = await git.readTree({
+      fs,
+      dir: repoDir,
+      oid: commit.commitSha,
+    });
+    const treeEntries = await readTreePaths(
+      repoDir,
+      commitTree.find((e) => e.path === "deploy")?.oid ?? "",
+    );
+    expect(treeEntries.sort()).toEqual(["accepted.md"]);
+    expect(
+      await fs.promises
+        .access(path.join(repoDir, "deploy", "rejected.md"))
+        .then(() => true)
+        .catch(() => false),
+    ).toBe(false);
+  });
+
+  test("writeTree rollback restores ref-existing files that the rejected push overwrote", async () => {
+    // A rejected push must not destroy content the target ref already
+    // held. The earlier rollback implementation unconditionally
+    // unlinked every staged path on validation failure; for paths that
+    // already lived at the ref (e.g. a top-level file the new push
+    // overwrote) that turned a validation refusal into silent data
+    // loss. This pins the restore-on-rollback behaviour: an accepted
+    // first push seeds a file at the ref, a rejected second push
+    // attempts to overwrite that same file, and after the validation
+    // failure the original ref content must still be on disk and in
+    // the index.
+    const dataDir = await makeTempDir("repo-store-writetree-restore-ref-");
+    let allowNext = true;
+    const handler: TestHandler = {
+      kind: "agent-state",
+      directoryPrefix: "repos-under-test",
+      validatePush(): ValidatePushResult {
+        if (allowNext) return { ok: true };
+        return { ok: false, reason: "stub rejected push" };
+      },
+      onRefUpdated(args) {
+        this.onRefUpdatedCalls.push(args);
+      },
+      onRefUpdatedCalls: [],
+    };
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    await store.writeTree(principal, repoId, REF, {
+      files: { "top-level.txt": "original content at ref" },
+      message: "seed ref-existing file",
+    });
+
+    allowNext = false;
+    await expect(
+      store.writeTree(principal, repoId, REF, {
+        files: { "top-level.txt": "rejected overwrite" },
+        message: "second attempt — should be rejected without losing ref",
+      }),
+    ).rejects.toThrow(/^path_violation/);
+
+    const gitDir = path.join(
+      dataDir,
+      handler.directoryPrefix,
+      repoId.id,
+      ".git",
+    );
+    const repoDir = path.dirname(gitDir);
+    const onDisk = await fs.promises.readFile(
+      path.join(repoDir, "top-level.txt"),
+      "utf-8",
+    );
+    expect(onDisk).toBe("original content at ref");
+
+    // A subsequent legitimate writeTree should land cleanly and the
+    // resulting commit's tree should hold the original content at
+    // top-level.txt — confirming the rejected push neither destroyed
+    // the file on disk nor left the index in a torn state that a
+    // follow-up commit would propagate.
+    allowNext = true;
+    const commit = await store.writeTree(principal, repoId, REF, {
+      files: { "other.txt": "unrelated next push" },
+      message: "third attempt — accepted",
+    });
+    const { tree } = await git.readTree({
+      fs,
+      dir: repoDir,
+      oid: commit.commitSha,
+    });
+    const topLevelEntry = tree.find((e) => e.path === "top-level.txt");
+    expect(topLevelEntry).toBeDefined();
+    if (topLevelEntry === undefined) throw new Error("unreachable");
+    const blob = await git.readBlob({
+      fs,
+      dir: repoDir,
+      oid: topLevelEntry.oid,
+    });
+    expect(new TextDecoder().decode(blob.blob)).toBe("original content at ref");
+  });
+
   test("writeTree passes the readBlob callback that resolves declared file contents", async () => {
     const dataDir = await makeTempDir("repo-store-writetree-readblob-");
     const captured: { paths: string[] | null; blob: Uint8Array | null } = {

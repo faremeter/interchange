@@ -27,6 +27,7 @@ import {
   type PackRejectFrame,
   type RepoId,
   type SyncRequestFrame,
+  type DeployApplyErrorFrame,
 } from "@intx/types/sidecar";
 import { createPackReceiver, chunkPack } from "@intx/pack-transport";
 import { base64Decode, base64Encode, hexDecode, hexEncode } from "@intx/types";
@@ -88,6 +89,15 @@ export type HubLink = {
   close(): void;
   sendEvent: SessionEventSink;
   sendConnectorState: ConnectorStateSink;
+  /**
+   * Ship a deploy.apply.error frame to the hub. Caller supplies the
+   * agentAddress separately so the frame's other fields stay close to
+   * the loader's failure-site description.
+   */
+  sendDeployApplyError: (
+    agentAddress: string,
+    payload: Omit<DeployApplyErrorFrame, "type" | "agentAddress">,
+  ) => void;
 };
 
 export function createHubLink(config: HubLinkConfig): HubLink {
@@ -759,5 +769,22 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     });
   };
 
-  return { connect, close, sendEvent, sendConnectorState };
+  const sendDeployApplyError: HubLink["sendDeployApplyError"] = (
+    agentAddress,
+    payload,
+  ) => {
+    send({
+      type: "deploy.apply.error",
+      agentAddress,
+      ...payload,
+    });
+  };
+
+  return {
+    connect,
+    close,
+    sendEvent,
+    sendConnectorState,
+    sendDeployApplyError,
+  };
 }

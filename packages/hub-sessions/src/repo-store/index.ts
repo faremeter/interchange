@@ -10,6 +10,7 @@ export type {
   RepoStore,
   TreeContent,
   ValidatePushResult,
+  WriteTreePreservingPrefixArgs,
 } from "./types";
 export { UserPrincipal } from "./types";
 export { createRepoStore, type CreateRepoStoreConfig } from "./store";

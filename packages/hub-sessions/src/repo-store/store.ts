@@ -21,6 +21,7 @@ import type {
   RepoKind,
   RepoStore,
   TreeContent,
+  WriteTreePreservingPrefixArgs,
 } from "./types";
 import { SAFE_REPO_ID } from "./types";
 
@@ -250,6 +251,257 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     await git.add({ fs, dir, filepath: relPath });
   }
 
+  // Read the set of paths present in the tree at the given ref so a
+  // post-validation rollback can distinguish genuinely-new staged paths
+  // (which the rollback must unlink) from paths that existed at the
+  // ref's tip and were merely overwritten by the staging pass (which
+  // the rollback must restore, not delete).
+  async function refPathSet(dir: string, ref: string): Promise<Set<string>> {
+    let sha: string;
+    try {
+      sha = await git.resolveRef({ fs, dir, ref });
+    } catch (err) {
+      if (hasCode(err) && err.code === "NotFoundError") {
+        return new Set();
+      }
+      throw err;
+    }
+    const entries = await git.listFiles({ fs, dir, ref: sha });
+    return new Set(entries);
+  }
+
+  // Undo the staged writes from a failed writeTreeUnderLock pass. For
+  // each newly-staged file: if the push target ref held that path,
+  // restore it from the ref's tip so the working tree and index match
+  // the ref bit-for-bit; otherwise drop the file from disk and the
+  // index because it had no prior presence to restore. Then re-checkout
+  // any prefix that the clearPrefix step removed wholesale. The
+  // combination leaves the working tree and index bit-identical to the
+  // ref for every path the failed pass touched, so a subsequent
+  // legitimate push does not pick up half-applied state and does not
+  // lose ref content that the rejected push happened to overwrite
+  // outside `clearedPrefix`.
+  async function resetWorkingTreeToRef(
+    dir: string,
+    ref: string,
+    args: {
+      stagedFiles: string[];
+      clearedPrefix: string | undefined;
+      refPaths: ReadonlySet<string>;
+    },
+  ): Promise<void> {
+    const toRestore: string[] = [];
+    for (const relPath of args.stagedFiles) {
+      if (args.refPaths.has(relPath)) {
+        toRestore.push(relPath);
+        continue;
+      }
+      try {
+        await git.remove({ fs, dir, filepath: relPath });
+      } catch (err) {
+        if (!hasCode(err) || err.code !== "NotFoundError") throw err;
+      }
+      try {
+        await fs.promises.unlink(path.join(dir, relPath));
+      } catch (err) {
+        if (!hasCode(err) || err.code !== "ENOENT") throw err;
+      }
+    }
+    if (toRestore.length > 0) {
+      // Read each ref-existing path's blob directly and rewrite the
+      // working-tree file plus stage it. `git.checkout` with the
+      // `filepaths` narrowing does not consistently re-materialize a
+      // working-tree file that the rollback flow has already touched
+      // (isomorphic-git treats the narrowed checkout as a subtree-walk
+      // hint and leaves the working tree untouched for paths already
+      // present in the index), so the rollback restores each path
+      // explicitly from the ref's tree.
+      let refSha: string | undefined;
+      try {
+        refSha = await git.resolveRef({ fs, dir, ref });
+      } catch (err) {
+        if (!hasCode(err) || err.code !== "NotFoundError") throw err;
+      }
+      if (refSha !== undefined) {
+        for (const relPath of toRestore) {
+          let blob: Uint8Array;
+          try {
+            const result = await git.readBlob({
+              fs,
+              dir,
+              oid: refSha,
+              filepath: relPath,
+            });
+            blob = result.blob;
+          } catch (err) {
+            if (hasCode(err) && err.code === "NotFoundError") continue;
+            throw err;
+          }
+          const fullPath = path.join(dir, relPath);
+          await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
+          await fs.promises.writeFile(fullPath, blob);
+          await git.add({ fs, dir, filepath: relPath });
+        }
+      }
+    }
+    if (args.clearedPrefix !== undefined) {
+      // Re-checkout the prefix from HEAD so the files the clearPrefix
+      // step removed reappear in the working tree and the index.
+      // `force: true` overwrites any leftover writes from the failed
+      // pass; the filepaths array narrows the checkout to just the
+      // prefix so we do not perturb unrelated paths.
+      try {
+        await git.checkout({
+          fs,
+          dir,
+          ref: "HEAD",
+          force: true,
+          filepaths: [args.clearedPrefix],
+        });
+      } catch (err) {
+        if (!hasCode(err) || err.code !== "NotFoundError") throw err;
+      }
+    }
+  }
+
+  // Unlocked body of writeTree. The caller is responsible for
+  // acquiring the per-repo lock before invoking this and for not
+  // releasing it until the returned promise settles. Extracted so
+  // writeTreePreservingPrefix can run a read-then-merge step under the
+  // same lock without holding two nested acquisitions.
+  async function writeTreeUnderLock(
+    repoId: RepoId,
+    ref: string,
+    content: TreeContent,
+  ): Promise<{ commitSha: string }> {
+    const dir = repoDir(repoId);
+    await storageInitRepo(dir, storageOptsFor(repoId, undefined));
+
+    const handler = handlerFor(repoId);
+
+    // Snapshot the target ref's path set before the clearPrefix +
+    // writeFileEntry pass mutates the index. A post-validation rollback
+    // uses this set to decide whether each staged path needs to be
+    // restored from the ref's tip (it existed there and was
+    // overwritten) or unlinked (it had no prior presence). Captured
+    // here, not inside resetWorkingTreeToHead, because the rollback
+    // runs after the index has been mutated. The snapshot reads `ref`
+    // (the push target) rather than HEAD: writes target a named ref
+    // and HEAD may point at a different branch the repo was
+    // initialized on, so reading HEAD would mis-classify every staged
+    // path as new and fall back to the unlink path.
+    const refPaths = await refPathSet(dir, ref);
+
+    if (content.clearPrefix !== undefined) {
+      validateClearPrefix(content.clearPrefix);
+      await clearIndexPrefix(dir, content.clearPrefix);
+      await fs.promises.rm(path.join(dir, content.clearPrefix), {
+        recursive: true,
+        force: true,
+      });
+    }
+
+    for (const [relPath, contents] of Object.entries(content.files)) {
+      await writeFileEntry(dir, relPath, contents);
+    }
+
+    const topLevelTreePaths = Array.from(
+      new Set(
+        Object.keys(content.files).map((p) => {
+          const slash = p.indexOf("/");
+          return slash === -1 ? p : p.substring(0, slash);
+        }),
+      ),
+    );
+    const readBlob = async (relPath: string): Promise<Uint8Array> => {
+      const entry = content.files[relPath];
+      if (entry === undefined) {
+        throw new Error(
+          `readBlob: path ${relPath} not present in tree content`,
+        );
+      }
+      if (typeof entry === "string") {
+        return new TextEncoder().encode(entry);
+      }
+      return entry;
+    };
+    const listDir = async (dirPath: string): Promise<string[]> => {
+      const prefix = dirPath === "" ? "" : `${dirPath}/`;
+      const names = new Set<string>();
+      for (const p of Object.keys(content.files)) {
+        if (prefix !== "" && !p.startsWith(prefix)) continue;
+        const rest = p.slice(prefix.length);
+        if (rest.length === 0) continue;
+        const slash = rest.indexOf("/");
+        names.add(slash === -1 ? rest : rest.substring(0, slash));
+      }
+      return Array.from(names);
+    };
+    const validation = await handler.validatePush({
+      repoId,
+      ref,
+      topLevelTreePaths,
+      readBlob,
+      listDir,
+    });
+    if (!validation.ok) {
+      // Roll the working tree and index back to HEAD before
+      // surfacing the validation refusal. Otherwise the staged
+      // writeFileEntry / clearPrefix steps above leave files and
+      // index entries on disk that the next legitimate push would
+      // either include silently (statusMatrix re-reports them) or
+      // trip a second validation refusal against. The reset is
+      // best-effort but logged loudly: a failure here means the
+      // repo is in a half-applied state the operator needs to fix
+      // by hand, which is strictly better than the silent-leak
+      // alternative.
+      try {
+        await resetWorkingTreeToRef(dir, ref, {
+          stagedFiles: Object.keys(content.files),
+          clearedPrefix: content.clearPrefix,
+          refPaths,
+        });
+      } catch (resetErr) {
+        logger.warn`repo-store rollback after validation refusal failed for ${repoId.kind}/${repoId.id}; the repo is in a half-applied state and may need manual cleanup — ${resetErr instanceof Error ? resetErr.message : String(resetErr)}`;
+      }
+      throw new Error(`path_violation: ${validation.reason}`);
+    }
+
+    // Resolve the previous ref value for the post-update hook (precise:
+    // null only when the ref truly doesn't exist) and the parent SHA for
+    // the new commit (best-effort: any error falls back to HEAD, so a
+    // first write on a never-touched ref produces a commit parented on
+    // the repo's initial commit instead of failing).
+    const oldSha = await resolveRefSha(dir, ref);
+    let parentSha: string;
+    try {
+      parentSha = await git.resolveRef({ fs, dir, ref });
+    } catch {
+      parentSha = await git.resolveRef({ fs, dir, ref: "HEAD" });
+    }
+
+    const commitSha = await git.commit({
+      fs,
+      dir,
+      message: content.message,
+      author: AUTHOR,
+      parent: [parentSha],
+      ref,
+      signingKey: "sshsig",
+      onSign: async ({ payload }) => ({
+        signature: createSSHSignature(
+          payload,
+          signingKey.privateKey,
+          signingKey.publicKey,
+        ),
+      }),
+    });
+
+    await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
+
+    return { commitSha };
+  }
+
   async function writeTree(
     principal: Principal,
     repoId: RepoId,
@@ -262,88 +514,83 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     // mutation, validatePush, commit, and the onRefUpdated hook. Holding
     // the lock through onRefUpdated keeps post-update consumers
     // serialized against the same ref's next writer.
-    return withRepoLock(repoId, async () => {
-      const dir = repoDir(repoId);
-      await storageInitRepo(dir, storageOptsFor(repoId, undefined));
+    return withRepoLock(repoId, () => writeTreeUnderLock(repoId, ref, content));
+  }
 
-      const handler = handlerFor(repoId);
-
-      if (content.clearPrefix !== undefined) {
-        validateClearPrefix(content.clearPrefix);
-        await clearIndexPrefix(dir, content.clearPrefix);
-        await fs.promises.rm(path.join(dir, content.clearPrefix), {
-          recursive: true,
-          force: true,
-        });
+  // Enumerate every blob directly under `prefix` in the tree at
+  // `ref`, returning a map from repo-root-relative path (including the
+  // prefix) to bytes. The empty map covers the ref-missing /
+  // prefix-missing cases — both legitimate first-write states for the
+  // prefix-preserving primitive.
+  async function readPrefixBlobs(
+    repoId: RepoId,
+    ref: string,
+    prefix: string,
+  ): Promise<Map<string, Uint8Array>> {
+    const dir = repoDir(repoId);
+    const out = new Map<string, Uint8Array>();
+    const repoExists = await fs.promises
+      .stat(path.join(dir, ".git"))
+      .then(() => true)
+      .catch(() => false);
+    if (!repoExists) return out;
+    const commitSha = await resolveRefSha(dir, ref);
+    if (commitSha === null) return out;
+    const { commit } = await git.readCommit({ fs, dir, oid: commitSha });
+    let currentOid = commit.tree;
+    const segments = prefix
+      .replace(/\/$/, "")
+      .split("/")
+      .filter((s) => s !== "");
+    for (const segment of segments) {
+      const { tree } = await git.readTree({ fs, dir, oid: currentOid });
+      const entry = tree.find((e) => e.path === segment);
+      if (entry === undefined || entry.type !== "tree") {
+        return out;
       }
-
-      for (const [relPath, contents] of Object.entries(content.files)) {
-        await writeFileEntry(dir, relPath, contents);
-      }
-
-      const topLevelTreePaths = Array.from(
-        new Set(
-          Object.keys(content.files).map((p) => {
-            const slash = p.indexOf("/");
-            return slash === -1 ? p : p.substring(0, slash);
-          }),
-        ),
-      );
-      const readBlob = async (relPath: string): Promise<Uint8Array> => {
-        const entry = content.files[relPath];
-        if (entry === undefined) {
-          throw new Error(
-            `readBlob: path ${relPath} not present in tree content`,
-          );
-        }
-        if (typeof entry === "string") {
-          return new TextEncoder().encode(entry);
-        }
-        return entry;
-      };
-      const validation = await handler.validatePush({
-        repoId,
-        ref,
-        topLevelTreePaths,
-        readBlob,
-      });
-      if (!validation.ok) {
-        throw new Error(`path_violation: ${validation.reason}`);
-      }
-
-      // Resolve the previous ref value for the post-update hook (precise:
-      // null only when the ref truly doesn't exist) and the parent SHA for
-      // the new commit (best-effort: any error falls back to HEAD, so a
-      // first write on a never-touched ref produces a commit parented on
-      // the repo's initial commit instead of failing).
-      const oldSha = await resolveRefSha(dir, ref);
-      let parentSha: string;
-      try {
-        parentSha = await git.resolveRef({ fs, dir, ref });
-      } catch {
-        parentSha = await git.resolveRef({ fs, dir, ref: "HEAD" });
-      }
-
-      const commitSha = await git.commit({
+      currentOid = entry.oid;
+    }
+    const { tree } = await git.readTree({ fs, dir, oid: currentOid });
+    // N+1 isomorphic-git round-trips: one tree read plus one
+    // readBlob per blob entry. Acceptable at the current scale
+    // (single-digit tarballs per registry); when a registry grows
+    // to hundreds of entries this becomes the obvious optimization
+    // target — readBlob can take the entry oid directly, avoiding
+    // the per-call path resolution.
+    for (const entry of tree) {
+      if (entry.type !== "blob") continue;
+      const { blob } = await git.readBlob({
         fs,
         dir,
-        message: content.message,
-        author: AUTHOR,
-        parent: [parentSha],
-        ref,
-        signingKey: "sshsig",
-        onSign: async ({ payload }) => ({
-          signature: createSSHSignature(
-            payload,
-            signingKey.privateKey,
-            signingKey.publicKey,
-          ),
-        }),
+        oid: commitSha,
+        filepath: `${prefix}${entry.path}`,
       });
+      out.set(`${prefix}${entry.path}`, blob);
+    }
+    return out;
+  }
 
-      await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
-
-      return { commitSha };
+  async function writeTreePreservingPrefix(
+    principal: Principal,
+    repoId: RepoId,
+    ref: string,
+    args: WriteTreePreservingPrefixArgs,
+  ): Promise<{ commitSha: string }> {
+    gateAccess(principal, repoId, ref, "writeTree");
+    validateClearPrefix(args.preservePrefix);
+    return withRepoLock(repoId, async () => {
+      // Reading and merging both happen inside the lock so two
+      // concurrent callers targeting the same prefix observe each
+      // other's commits in serial order — no lost-update window
+      // between the read and the writeTree.
+      await storageInitRepo(repoDir(repoId), storageOptsFor(repoId, undefined));
+      const existing = await readPrefixBlobs(repoId, ref, args.preservePrefix);
+      const files = await args.merge(existing);
+      return writeTreeUnderLock(repoId, ref, {
+        files,
+        clearPrefix: args.preservePrefix,
+        message: args.message,
+      });
     });
   }
 
@@ -377,12 +624,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
         commitSha,
         transferId,
         expectedOldSha,
-        async (paths, readBlob) => {
+        async (paths, readBlob, listDir) => {
           const result = await handler.validatePush({
             repoId,
             ref,
             topLevelTreePaths: paths,
             readBlob,
+            listDir,
           });
           if (!result.ok) {
             logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${result.reason}`;
@@ -418,6 +666,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   return {
     initRepo,
     writeTree,
+    writeTreePreservingPrefix,
     receivePack,
     createPack,
     resolveRef,

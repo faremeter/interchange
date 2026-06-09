@@ -22,9 +22,12 @@ import {
   createAssetService,
   createRepoStore,
   createSidecarEmitter,
+  packageRegistryAuthorize,
+  packageRegistryKindHandler,
   skillKindHandler,
   skillAuthorize,
   type AssetService,
+  type AuthorizeFn,
   type EventCollectorRegistry,
   type RepoStore,
   type SessionService,
@@ -214,11 +217,23 @@ async function createWiredSubstrate(): Promise<{
   const dataDir = await makeTempDir("asset-routes-");
   const signer = async (payload: string) =>
     createSSHSignature(payload, signingKey.privateKey, signingKey.publicKey);
+  const authorize: AuthorizeFn = (principal, repoId, ref, action) => {
+    if (repoId.kind === "skill") {
+      return skillAuthorize(principal, repoId, ref, action);
+    }
+    if (repoId.kind === "package-registry") {
+      return packageRegistryAuthorize(principal, repoId, ref, action);
+    }
+    return { allowed: false, reason: `no authorize for ${repoId.kind}` };
+  };
   const repoStore = createRepoStore({
     dataDir,
     signingKey,
-    handlers: { skill: skillKindHandler },
-    authorize: skillAuthorize,
+    handlers: {
+      skill: skillKindHandler,
+      "package-registry": packageRegistryKindHandler,
+    },
+    authorize,
     signingCallback: () => signer,
   });
   return { dataDir, repoStore };
@@ -353,6 +368,7 @@ async function setup(
     eventCollectors: createMockEventCollectors(),
     assetService,
     repoStore,
+    maxTarballBytes: 10_000_000,
   });
   return { app, state, repoStore, assetService, dataDir };
 }
@@ -685,6 +701,23 @@ function makeMultiTenantMockDB(state: MultiTenantState): DB["db"] {
     extractEqualities(where, filter);
     return rows.filter((r) => rowMatches(r, filter));
   }
+  function insertAsset(row: DBAssetRow): Promise<DBAssetRow[]> {
+    const duplicate = state.assets.some(
+      (existing) =>
+        existing.tenantId === row.tenantId &&
+        existing.kind === row.kind &&
+        existing.name === row.name,
+    );
+    if (duplicate) {
+      const err = new Error(
+        `duplicate key value violates unique constraint`,
+      ) as Error & { code?: string };
+      err.code = "23505";
+      return Promise.reject(err);
+    }
+    state.assets.push(row);
+    return Promise.resolve([row]);
+  }
   const mock = {
     query: {
       tenant: {
@@ -709,6 +742,18 @@ function makeMultiTenantMockDB(state: MultiTenantState): DB["db"] {
         findFirst: async () => undefined,
         findMany: async () => [],
       },
+    },
+    insert(table: unknown) {
+      if (table !== assetTable) {
+        throw new Error("multi-tenant mock only handles asset inserts");
+      }
+      return {
+        values(row: DBAssetRow) {
+          return {
+            returning: () => insertAsset(row),
+          };
+        },
+      };
     },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
@@ -766,6 +811,7 @@ function makeAssetRow(opts: {
 type MultiTenantHarness = {
   app: ReturnType<typeof createApp>;
   state: MultiTenantState;
+  assetService: AssetService;
 };
 
 async function setupMultiTenant(opts: {
@@ -838,8 +884,9 @@ async function setupMultiTenant(opts: {
     eventCollectors: createMockEventCollectors(),
     assetService,
     repoStore,
+    maxTarballBytes: 10_000_000,
   });
-  return { app, state };
+  return { app, state, assetService };
 }
 
 const AssetWithOriginShape = type({
@@ -1050,5 +1097,331 @@ describe("GET /api/tenants/:tenantId/assets/:assetId", () => {
       { method: "GET" },
     );
     expect(res.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tarball PUT / GET / DELETE
+// ---------------------------------------------------------------------------
+
+async function makeNpmTarball(pkg: {
+  name: string;
+  version: string;
+}): Promise<Uint8Array> {
+  const tar = await import("tar");
+  const stagingRoot = await makeTempDir("pkr-routes-");
+  const pkgDir = path.join(stagingRoot, "package");
+  await fs.promises.mkdir(pkgDir, { recursive: true });
+  await fs.promises.writeFile(
+    path.join(pkgDir, "package.json"),
+    JSON.stringify(pkg, null, 2),
+    "utf-8",
+  );
+  await fs.promises.writeFile(
+    path.join(pkgDir, "index.js"),
+    "module.exports = {};\n",
+  );
+  const out = path.join(stagingRoot, "out.tgz");
+  await tar.create(
+    {
+      cwd: stagingRoot,
+      gzip: true,
+      file: out,
+      portable: true,
+    },
+    ["package"],
+  );
+  return new Uint8Array(await fs.promises.readFile(out));
+}
+
+const PKR_GRANTS: GrantRule[] = [
+  {
+    id: "grant-root-create",
+    resource: "asset:*",
+    action: "create",
+    effect: "allow",
+    origin: "system",
+    conditions: null,
+    expiresAt: null,
+    roleId: null,
+    principalId: ROOT_PRINCIPAL_ID,
+  },
+  {
+    id: "grant-root-read",
+    resource: "asset:*",
+    action: "read",
+    effect: "allow",
+    origin: "system",
+    conditions: null,
+    expiresAt: null,
+    roleId: null,
+    principalId: ROOT_PRINCIPAL_ID,
+  },
+  {
+    id: "grant-root-write",
+    resource: "asset:*",
+    action: "write",
+    effect: "allow",
+    origin: "system",
+    conditions: null,
+    expiresAt: null,
+    roleId: null,
+    principalId: ROOT_PRINCIPAL_ID,
+  },
+];
+
+async function setupRegistry(): Promise<{
+  h: MultiTenantHarness;
+  assetId: string;
+}> {
+  const h = await setupMultiTenant({
+    userId: ROOT_USER_ID,
+    grants: PKR_GRANTS,
+  });
+  const asset = await h.assetService.createAsset({
+    tenantId: ROOT_TENANT_ID,
+    kind: "package-registry",
+    name: "builtins",
+    initOpts: { gitignore: SANE_GITIGNORE },
+  });
+  return { h, assetId: asset.id };
+}
+
+describe("PUT /api/tenants/:tenantId/assets/:assetId/tarballs/:filename", () => {
+  test("uploads a tarball and returns commit + integrity", async () => {
+    const { h, assetId } = await setupRegistry();
+    const bytes = await makeNpmTarball({
+      name: "tool-a",
+      version: "1.0.0",
+    });
+    const res = await h.app.request(
+      `/api/tenants/${ROOT_TENANT_ID}/assets/${assetId}/tarballs/tool-a-1.0.0.tgz`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/octet-stream" },
+        body: bytes,
+      },
+    );
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    if (!isObject(body)) throw new Error("expected object");
+    expect(typeof body["commit"]).toBe("string");
+    expect(typeof body["integrity"]).toBe("string");
+    const integrity = body["integrity"];
+    if (typeof integrity !== "string") throw new Error("integrity not string");
+    expect(integrity.startsWith("sha512-")).toBe(true);
+  });
+
+  test("rejects an unsafe filename with 400", async () => {
+    const { h, assetId } = await setupRegistry();
+    const res = await h.app.request(
+      `/api/tenants/${ROOT_TENANT_ID}/assets/${assetId}/tarballs/has spaces.tgz`,
+      { method: "PUT", body: new Uint8Array() },
+    );
+    // Hono encodes spaces; the route layer rejects on the
+    // SAFE_PATH_SEGMENT-style pattern check.
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects a filename without .tgz with 400", async () => {
+    const { h, assetId } = await setupRegistry();
+    const res = await h.app.request(
+      `/api/tenants/${ROOT_TENANT_ID}/assets/${assetId}/tarballs/tool-a-1.0.0.tar`,
+      { method: "PUT", body: new Uint8Array() },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects with 404 when the asset is not a package-registry", async () => {
+    const h = await setupMultiTenant({
+      userId: ROOT_USER_ID,
+      grants: PKR_GRANTS,
+    });
+    const skillAsset = await h.assetService.createAsset({
+      tenantId: ROOT_TENANT_ID,
+      kind: "skill",
+      name: "greet",
+      initOpts: { gitignore: SANE_GITIGNORE },
+    });
+    const res = await h.app.request(
+      `/api/tenants/${ROOT_TENANT_ID}/assets/${skillAsset.id}/tarballs/tool-a-1.0.0.tgz`,
+      {
+        method: "PUT",
+        body: await makeNpmTarball({ name: "tool-a", version: "1.0.0" }),
+      },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test("rejects with 404 when the asset id does not exist", async () => {
+    const h = await setupMultiTenant({
+      userId: ROOT_USER_ID,
+      grants: PKR_GRANTS,
+    });
+    const res = await h.app.request(
+      `/api/tenants/${ROOT_TENANT_ID}/assets/ast_missing/tarballs/tool-a-1.0.0.tgz`,
+      {
+        method: "PUT",
+        body: await makeNpmTarball({ name: "tool-a", version: "1.0.0" }),
+      },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test("rejects with 400 when the tarball's package.json fails validation", async () => {
+    const { h, assetId } = await setupRegistry();
+    // Build a tarball whose package.json is missing `name`.
+    const tar = await import("tar");
+    const stagingRoot = await makeTempDir("pkr-bad-");
+    const pkgDir = path.join(stagingRoot, "package");
+    await fs.promises.mkdir(pkgDir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({ version: "0.0.1" }),
+      "utf-8",
+    );
+    const out = path.join(stagingRoot, "out.tgz");
+    await tar.create(
+      { cwd: stagingRoot, gzip: true, file: out, portable: true },
+      ["package"],
+    );
+    const bytes = new Uint8Array(await fs.promises.readFile(out));
+    const res = await h.app.request(
+      `/api/tenants/${ROOT_TENANT_ID}/assets/${assetId}/tarballs/bad-0.0.1.tgz`,
+      { method: "PUT", body: bytes },
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /api/tenants/:tenantId/assets/:assetId/tarballs", () => {
+  test("lists uploaded tarballs with size and integrity", async () => {
+    const { h, assetId } = await setupRegistry();
+    const bytes = await makeNpmTarball({ name: "tool-a", version: "1.0.0" });
+    const putRes = await h.app.request(
+      `/api/tenants/${ROOT_TENANT_ID}/assets/${assetId}/tarballs/tool-a-1.0.0.tgz`,
+      { method: "PUT", body: bytes },
+    );
+    expect(putRes.status).toBe(200);
+
+    const listRes = await h.app.request(
+      `/api/tenants/${ROOT_TENANT_ID}/assets/${assetId}/tarballs`,
+      { method: "GET" },
+    );
+    expect(listRes.status).toBe(200);
+    const list: unknown = await listRes.json();
+    if (!Array.isArray(list)) throw new Error("expected array");
+    expect(list).toHaveLength(1);
+    const first = list[0];
+    if (!isObject(first)) throw new Error("expected object");
+    expect(first["filename"]).toBe("tool-a-1.0.0.tgz");
+    expect(typeof first["size"]).toBe("number");
+    expect(typeof first["integrity"]).toBe("string");
+  });
+
+  test("returns an empty list on a fresh registry", async () => {
+    const { h, assetId } = await setupRegistry();
+    const res = await h.app.request(
+      `/api/tenants/${ROOT_TENANT_ID}/assets/${assetId}/tarballs`,
+      { method: "GET" },
+    );
+    expect(res.status).toBe(200);
+    const list: unknown = await res.json();
+    expect(list).toEqual([]);
+  });
+
+  test("returns 404 when the asset is not a package-registry", async () => {
+    const h = await setupMultiTenant({
+      userId: ROOT_USER_ID,
+      grants: PKR_GRANTS,
+    });
+    const skillAsset = await h.assetService.createAsset({
+      tenantId: ROOT_TENANT_ID,
+      kind: "skill",
+      name: "greet",
+      initOpts: { gitignore: SANE_GITIGNORE },
+    });
+    const res = await h.app.request(
+      `/api/tenants/${ROOT_TENANT_ID}/assets/${skillAsset.id}/tarballs`,
+      { method: "GET" },
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("DELETE /api/tenants/:tenantId/assets/:assetId/tarballs/:filename", () => {
+  test("removes the tarball and commits", async () => {
+    const { h, assetId } = await setupRegistry();
+    const bytes = await makeNpmTarball({ name: "tool-a", version: "1.0.0" });
+    const putRes = await h.app.request(
+      `/api/tenants/${ROOT_TENANT_ID}/assets/${assetId}/tarballs/tool-a-1.0.0.tgz`,
+      { method: "PUT", body: bytes },
+    );
+    expect(putRes.status).toBe(200);
+
+    const delRes = await h.app.request(
+      `/api/tenants/${ROOT_TENANT_ID}/assets/${assetId}/tarballs/tool-a-1.0.0.tgz`,
+      { method: "DELETE" },
+    );
+    expect(delRes.status).toBe(200);
+    const body: unknown = await delRes.json();
+    if (!isObject(body)) throw new Error("expected object");
+    expect(typeof body["commit"]).toBe("string");
+
+    const listRes = await h.app.request(
+      `/api/tenants/${ROOT_TENANT_ID}/assets/${assetId}/tarballs`,
+      { method: "GET" },
+    );
+    const list: unknown = await listRes.json();
+    expect(list).toEqual([]);
+  });
+
+  test("returns 404 when the filename is not present", async () => {
+    const { h, assetId } = await setupRegistry();
+    const res = await h.app.request(
+      `/api/tenants/${ROOT_TENANT_ID}/assets/${assetId}/tarballs/missing-1.0.0.tgz`,
+      { method: "DELETE" },
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("PUT tarballs: concurrent writes against the same asset", () => {
+  test("two concurrent PUTs to different filenames both survive", async () => {
+    // Regression: the pre-fix route read existing entries OUTSIDE the
+    // per-repo lock and then issued writeTree(clearPrefix:"tarballs/")
+    // under it. Two concurrent PUTs would both pre-image the same
+    // empty (or stale) tip, and whichever write committed second would
+    // clobber the first. The fix moves the read inside the lock via
+    // repoStore.writeTreePreservingPrefix; both files must end up in
+    // the final tree.
+    const { h, assetId } = await setupRegistry();
+    const a = await makeNpmTarball({ name: "tool-a", version: "1.0.0" });
+    const b = await makeNpmTarball({ name: "tool-b", version: "1.0.0" });
+    const [resA, resB] = await Promise.all([
+      h.app.request(
+        `/api/tenants/${ROOT_TENANT_ID}/assets/${assetId}/tarballs/tool-a-1.0.0.tgz`,
+        { method: "PUT", body: a },
+      ),
+      h.app.request(
+        `/api/tenants/${ROOT_TENANT_ID}/assets/${assetId}/tarballs/tool-b-1.0.0.tgz`,
+        { method: "PUT", body: b },
+      ),
+    ]);
+    expect(resA.status).toBe(200);
+    expect(resB.status).toBe(200);
+
+    const listRes = await h.app.request(
+      `/api/tenants/${ROOT_TENANT_ID}/assets/${assetId}/tarballs`,
+      { method: "GET" },
+    );
+    expect(listRes.status).toBe(200);
+    const list: unknown = await listRes.json();
+    if (!Array.isArray(list)) throw new Error("expected array");
+    const filenames = list
+      .map((row: unknown) => (isObject(row) ? row["filename"] : null))
+      .filter((n): n is string => typeof n === "string")
+      .sort();
+    expect(filenames).toEqual(["tool-a-1.0.0.tgz", "tool-b-1.0.0.tgz"]);
   });
 });

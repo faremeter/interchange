@@ -124,6 +124,39 @@ export type TreeContent = {
   message: string;
 };
 
+/**
+ * Per-call options for `RepoStore.writeTreePreservingPrefix`. The
+ * substrate enumerates existing blobs under `preservePrefix` from the
+ * current ref tip while holding the per-repo lock, calls the caller's
+ * `merge` callback with those entries, and writes the returned set as
+ * the new value of the prefix subtree. Two concurrent callers
+ * targeting the same prefix serialize at the lock so neither one
+ * observes a stale pre-image of the other's commit.
+ */
+export type WriteTreePreservingPrefixArgs = {
+  /**
+   * Directory-subtree prefix whose existing blobs are surfaced to
+   * `merge` and then replaced wholesale by its return value. Must end
+   * with `/` and must not contain `..` or absolute path components.
+   */
+  preservePrefix: string;
+  /**
+   * Called under the per-repo lock with the current set of blobs
+   * directly under `preservePrefix` (keyed by repo-root-relative
+   * path, including the prefix). Returns the full set of files the
+   * substrate should write at the prefix; the prefix subtree is
+   * cleared and replaced with this set in a single commit. Paths
+   * outside the prefix are passed through unchanged. The callback may
+   * throw to abort the write; the substrate releases the lock and
+   * propagates the error.
+   */
+  merge: (
+    existing: ReadonlyMap<string, Uint8Array>,
+  ) => Promise<Record<string, string | Uint8Array>>;
+  /** Commit message for the resulting commit. */
+  message: string;
+};
+
 export interface KindHandler {
   kind: RepoKind;
   /**
@@ -144,14 +177,18 @@ export interface KindHandler {
    *
    * `topLevelTreePaths` lists the names directly under the tree
    * root. `readBlob` reads any blob in the tree by repo-root-relative
-   * POSIX path (e.g. `greet/SKILL.md`). Handlers that only need
-   * path-level checks can ignore `readBlob`.
+   * POSIX path (e.g. `greet/SKILL.md`). `listDir` enumerates the
+   * names directly under a tree-root-relative POSIX directory path
+   * (no trailing slash, no leading slash); pass the empty string to
+   * list the root. Handlers that only need path-level checks can
+   * ignore `readBlob` and `listDir`.
    */
   validatePush: (args: {
     repoId: RepoId;
     ref: string;
     topLevelTreePaths: string[];
     readBlob: (path: string) => Promise<Uint8Array>;
+    listDir: (path: string) => Promise<string[]>;
   }) => Promise<ValidatePushResult> | ValidatePushResult;
   /**
    * Fired after a successful ref update from any operation. `oldSha`
@@ -181,6 +218,28 @@ export interface RepoStore {
     repoId: RepoId,
     ref: string,
     content: TreeContent,
+  ): Promise<{ commitSha: string }>;
+  /**
+   * Read-then-write variant for use cases that mutate a single
+   * directory subtree against its current contents (overwrite one
+   * entry, delete one entry, augment by one entry). The substrate
+   * enumerates blobs under `args.preservePrefix` while holding the
+   * per-repo lock, invokes `args.merge` with those entries, and
+   * commits the returned set as the new value of the prefix.
+   *
+   * Two concurrent callers targeting the same prefix serialize at the
+   * lock, so the merge callback's pre-image is always the previous
+   * commit's tip — there is no read-outside-the-lock window where one
+   * caller could base its write on a stale view of the prefix.
+   *
+   * The substrate handles `clearPrefix` and the commit internally;
+   * paths outside the prefix are untouched.
+   */
+  writeTreePreservingPrefix(
+    principal: Principal,
+    repoId: RepoId,
+    ref: string,
+    args: WriteTreePreservingPrefixArgs,
   ): Promise<{ commitSha: string }>;
   /**
    * Receive a packfile and advance `ref` to `commitSha`.

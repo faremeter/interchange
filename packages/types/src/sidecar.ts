@@ -335,7 +335,11 @@ export type SourcesUpdateFrame = typeof SourcesUpdateFrame.infer;
  * Lives in `@intx/types` because the wire-level pack frames reference it;
  * the substrate package re-exports it for handler authors.
  */
-export const RepoKind = type.enumerated("agent-state", "skill");
+export const RepoKind = type.enumerated(
+  "agent-state",
+  "skill",
+  "package-registry",
+);
 export type RepoKind = typeof RepoKind.infer;
 
 /**

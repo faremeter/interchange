@@ -30,6 +30,7 @@ import { getLogger } from "@intx/log";
 import { hexEncode } from "@intx/types";
 import type { HubTransport } from "@intx/mail-memory";
 import type { GrantRule } from "@intx/types/authz";
+import type { DeployApplyErrorFrame } from "@intx/types/sidecar";
 import type {
   ConnectorThreadState,
   CryptoProvider,
@@ -69,6 +70,11 @@ export type ConnectorStateSink = (
   state: ConnectorThreadState | null,
 ) => void;
 
+export type DeployApplyErrorSink = (
+  agentAddress: string,
+  payload: Omit<DeployApplyErrorFrame, "type" | "agentAddress">,
+) => void;
+
 export type SessionManagerConfig = {
   transport: HubTransport;
   repoStore: AgentRepoStore;
@@ -82,6 +88,13 @@ export type SessionManagerConfig = {
   createAgentCrypto: (keyPair: KeyPair) => CryptoProvider;
   onEvent: SessionEventSink;
   onConnectorStateChanged: ConnectorStateSink;
+  /**
+   * Optional: emit a deploy-apply error frame to the hub when the
+   * harness builder rejects an apply attempt. Wired by the sidecar
+   * app to hub-link's frame channel. Hosts without tool-package
+   * distribution can omit this.
+   */
+  onDeployApplyError?: DeployApplyErrorSink;
 };
 
 export type ProvisionResult = {
@@ -178,6 +191,7 @@ export function createSessionManager(
     createAgentCrypto,
     onEvent,
     onConnectorStateChanged,
+    onDeployApplyError,
   } = config;
 
   const sessions = new Map<string, LiveSession>();
@@ -333,6 +347,13 @@ export function createSessionManager(
         onConnectorStateChanged(state) {
           onConnectorStateChanged(agentAddress, state);
         },
+        ...(onDeployApplyError !== undefined
+          ? {
+              emitDeployApplyError: (payload) => {
+                onDeployApplyError(agentAddress, payload);
+              },
+            }
+          : {}),
       });
 
       sessions.set(agentAddress, {

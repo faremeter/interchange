@@ -49,8 +49,19 @@ export {
   type SkillSidecarPrincipal,
 } from "./skill-kind";
 export {
+  packageRegistryKindHandler,
+  packageRegistryAuthorize,
+  asTarballEntry,
+  validateTarballPackageJSON,
+  TARBALLS_PREFIX,
+  TARBALL_FILENAME_PATTERN,
+  REGISTRY_INDEX_PATH,
+  WORKSPACE_BUILTINS_REGISTRY,
+} from "./package-registry-kind";
+export {
   createAssetService,
   AssetServiceError,
+  DEFAULT_ASSET_REF,
   type AssetService,
   type Asset,
   type AgentAsset,
@@ -60,12 +71,15 @@ export {
   type PopulateAssetParams,
   type AttachAssetParams,
   type AssetServiceErrorReason,
+  type ReadAssetBlobParams,
+  type ListAssetBlobsParams,
 } from "./asset-service";
 export {
   buildAvailableSkillsStanza,
   type AvailableSkillEntry,
 } from "./available-skills-stanza";
 export type {
+  AuthorizeFn,
   CreateRepoStoreConfig,
   InitRepoOpts,
   KindHandler,

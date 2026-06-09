@@ -17,7 +17,9 @@
 // createRepoStore. There is no class because there is no per-instance
 // mutable state — every method is a pure function over the deps.
 
+import fs from "node:fs";
 import { asc, eq } from "drizzle-orm";
+import git from "isomorphic-git";
 import { type DB } from "@intx/db";
 import {
   agentAsset as agentAssetTable,
@@ -70,8 +72,9 @@ export type AgentAssetWithAsset = AgentAsset & {
 
 export type CreateAssetParams = {
   tenantId: string;
-  /** Only "skill" is supported. "agent-state" is rejected because those
-   * repos are managed by the agent lifecycle, not the asset service. */
+  /** Accepted kinds: "skill", "package-registry". "agent-state" is
+   * rejected because those repos are managed by the agent lifecycle,
+   * not the asset service. */
   kind: RepoKind;
   name: string;
   displayName?: string;
@@ -106,7 +109,44 @@ export interface AssetService {
   populateAsset(params: PopulateAssetParams): Promise<{ commitSha: string }>;
   attachAsset(params: AttachAssetParams): Promise<AgentAsset>;
   listAgentAssets(agentId: string): Promise<AgentAssetWithAsset[]>;
+  /**
+   * In-process blob read. Resolves the asset's row, then reads the blob
+   * at `path` from the commit pointed to by `ref` (defaults to
+   * `refs/heads/main`). Throws `AssetServiceError("not_found", ...)`
+   * when the asset, ref, or path do not exist.
+   */
+  readAssetBlob(params: ReadAssetBlobParams): Promise<Uint8Array>;
+  /**
+   * Enumerate the immediate child entry names at `dir` in the asset's
+   * commit tree. `dir` is a repo-root-relative POSIX directory path
+   * (no trailing slash, no leading slash); pass the empty string to
+   * list the root. Throws `AssetServiceError("not_found", ...)` when
+   * the asset or ref do not exist, or when `dir` is not a directory.
+   */
+  listAssetBlobs(params: ListAssetBlobsParams): Promise<string[]>;
 }
+
+export type ReadAssetBlobParams = {
+  assetId: string;
+  path: string;
+  /** Defaults to `refs/heads/main`. */
+  ref?: string;
+};
+
+export type ListAssetBlobsParams = {
+  assetId: string;
+  /** Empty string lists the tree root. */
+  dir: string;
+  /** Defaults to `refs/heads/main`. */
+  ref?: string;
+};
+
+/**
+ * Default ref the read API resolves against when callers do not
+ * supply one. The smart-HTTP route and the REST tarball routes both
+ * push to this ref so it carries the published-asset HEAD.
+ */
+export const DEFAULT_ASSET_REF = "refs/heads/main";
 
 /** Discriminator for AssetServiceError variants. Lets callers branch
  * without instanceof gymnastics across the different error subclasses. */
@@ -116,6 +156,7 @@ export type AssetServiceErrorReason =
   | "duplicate_attachment"
   | "invalid_name"
   | "invalid_reference"
+  | "name_reserved"
   | "not_found"
   | "path_violation";
 
@@ -146,11 +187,53 @@ function isAccessMode(value: string): value is AccessMode {
   return value === "read-only" || value === "read-write";
 }
 
+/**
+ * Reject malformed `dir` arguments at the `listAssetBlobs` boundary
+ * before any tree walk begins. The empty string is the documented
+ * "list the root" form; anything else must be a relative path with
+ * no leading slash, no trailing slash, no `..` segment, and no empty
+ * segments (no `//`). This mirrors the same rules that
+ * `validateClearPrefix` in the repo-store enforces on `clearPrefix`
+ * arguments, surfaced here as a path-violation error so the caller
+ * sees a structured rejection instead of a confusing "no directory
+ * at /tarballs/" miss when an absolute or `..`-bearing input slips
+ * past upstream validation.
+ */
+function assertWellFormedListDir(dir: string): void {
+  if (dir === "") return;
+  if (dir === "/" || dir.startsWith("/")) {
+    throw new AssetServiceError(
+      "path_violation",
+      `listAssetBlobs: dir must be a relative path or "" for root; got ${JSON.stringify(dir)}`,
+    );
+  }
+  if (dir.endsWith("/")) {
+    throw new AssetServiceError(
+      "path_violation",
+      `listAssetBlobs: dir must not end with a trailing slash; got ${JSON.stringify(dir)}`,
+    );
+  }
+  const segments = dir.split("/");
+  for (const segment of segments) {
+    if (segment === "") {
+      throw new AssetServiceError(
+        "path_violation",
+        `listAssetBlobs: dir contains an empty segment ("//"): ${JSON.stringify(dir)}`,
+      );
+    }
+    if (segment === "..") {
+      throw new AssetServiceError(
+        "path_violation",
+        `listAssetBlobs: dir contains a ".." segment: ${JSON.stringify(dir)}`,
+      );
+    }
+  }
+}
+
 function rowToAsset(row: typeof assetTable.$inferSelect): Asset {
   // The schema stores `kind` as plain text. RepoKind is an arktype
-  // enum of ("agent-state" | "skill"); narrow by exhaustive check so
-  // an out-of-band kind value loudly fails rather than silently
-  // mistypes the returned shape.
+  // enum; narrow by exhaustive check so an out-of-band kind value
+  // loudly fails rather than silently mistypes the returned shape.
   let narrowed: RepoKind;
   switch (row.kind) {
     case "agent-state":
@@ -158,6 +241,9 @@ function rowToAsset(row: typeof assetTable.$inferSelect): Asset {
       break;
     case "skill":
       narrowed = "skill";
+      break;
+    case "package-registry":
+      narrowed = "package-registry";
       break;
     default:
       throw new Error(
@@ -197,8 +283,24 @@ export function createAssetService(deps: {
   // with createHubSessionLookups and its sibling services.
   db: DB["db"];
   repoStore: RepoStore;
+  /**
+   * Names that the session service treats as configured HTTP registries
+   * when assembling the per-launch package-registry map. A
+   * `package-registry` asset whose name collides with one of these
+   * shadows the corresponding HTTP registry at session-launch time
+   * (asset wins on name collision). Creating such an asset is almost
+   * always an operator footgun — silently rerouting the public npm
+   * registry traffic to a tenant-owned asset — so reject the creation
+   * up front rather than letting the misroute surface later. The host
+   * threads in its `httpRegistries` keys; the asset service holds them
+   * statically because the registry config is loaded at hub boot and
+   * does not change at runtime.
+   */
+  reservedPackageRegistryNames?: ReadonlySet<string>;
 }): AssetService {
   const { db, repoStore } = deps;
+  const reservedPackageRegistryNames =
+    deps.reservedPackageRegistryNames ?? new Set<string>();
 
   async function createAsset(params: CreateAssetParams): Promise<Asset> {
     if (params.kind === "agent-state") {
@@ -214,6 +316,27 @@ export function createAssetService(deps: {
         `createAsset rejects name ${JSON.stringify(
           params.name,
         )}: must be lowercase-kebab (letters, digits, hyphens; no leading or trailing hyphen)`,
+      );
+    }
+
+    if (
+      params.kind === "package-registry" &&
+      reservedPackageRegistryNames.has(params.name)
+    ) {
+      // Session-launch builds the per-launch registry map by iterating
+      // package-registry assets first and HTTP registries second, with
+      // an asset-wins-on-collision rule. A `package-registry` asset
+      // named after a configured HTTP registry would silently shadow
+      // that registry for every session that resolves through this
+      // tenant — almost certainly an operator misconfig, not an
+      // intended override. Reject the creation so the operator sees
+      // the collision at intent time instead of debugging an
+      // unexpected reroute later.
+      throw new AssetServiceError(
+        "name_reserved",
+        `createAsset rejects name ${JSON.stringify(
+          params.name,
+        )}: it collides with a configured HTTP registry of the same name and would silently shadow it at session launch`,
       );
     }
 
@@ -238,6 +361,11 @@ export function createAssetService(deps: {
     // logically identical asset. The asset-service db handle does not
     // expose transactions in the current narrowing, so this ordering is
     // the safest cross-cutting fix without widening the dep surface.
+    //
+    // Note: each failed insert with a fresh `id` does leave its own
+    // orphan repo directory on disk. The directories carry no asset
+    // row and no traffic, so they are inert; a periodic GC walker
+    // that drops on-disk repos with no matching row is a follow-up.
     await repoStore.initRepo({ kind: params.kind, id }, params.initOpts);
 
     let inserted: typeof assetTable.$inferSelect;
@@ -374,5 +502,109 @@ export function createAssetService(deps: {
     });
   }
 
-  return { createAsset, populateAsset, attachAsset, listAgentAssets };
+  async function resolveAssetRowOrThrow(
+    assetId: string,
+    label: string,
+  ): Promise<Asset> {
+    const row = await db.query.asset.findFirst({
+      where: eq(assetTable.id, assetId),
+    });
+    if (row === undefined) {
+      throw new AssetServiceError(
+        "not_found",
+        `${label}: asset ${assetId} not found`,
+      );
+    }
+    return rowToAsset(row);
+  }
+
+  async function resolveCommitTreeOid(
+    asset: Asset,
+    ref: string,
+    label: string,
+  ): Promise<{ dir: string; treeOid: string }> {
+    const dir = repoStore.getRepoDir({ kind: asset.kind, id: asset.id });
+    let commitSha: string;
+    try {
+      commitSha = await git.resolveRef({ fs, dir, ref });
+    } catch (cause) {
+      throw new AssetServiceError(
+        "not_found",
+        `${label}: asset ${asset.id} ref ${ref} not resolvable`,
+        cause,
+      );
+    }
+    const { commit } = await git.readCommit({ fs, dir, oid: commitSha });
+    return { dir, treeOid: commit.tree };
+  }
+
+  async function readAssetBlob(
+    params: ReadAssetBlobParams,
+  ): Promise<Uint8Array> {
+    const ref = params.ref ?? DEFAULT_ASSET_REF;
+    const asset = await resolveAssetRowOrThrow(params.assetId, "readAssetBlob");
+    const { dir, treeOid } = await resolveCommitTreeOid(
+      asset,
+      ref,
+      "readAssetBlob",
+    );
+    try {
+      const { blob } = await git.readBlob({
+        fs,
+        dir,
+        oid: treeOid,
+        filepath: params.path,
+      });
+      return blob;
+    } catch (cause) {
+      throw new AssetServiceError(
+        "not_found",
+        `readAssetBlob: asset ${params.assetId} has no blob at ${JSON.stringify(params.path)} on ref ${ref}`,
+        cause,
+      );
+    }
+  }
+
+  async function listAssetBlobs(
+    params: ListAssetBlobsParams,
+  ): Promise<string[]> {
+    assertWellFormedListDir(params.dir);
+    const ref = params.ref ?? DEFAULT_ASSET_REF;
+    const asset = await resolveAssetRowOrThrow(
+      params.assetId,
+      "listAssetBlobs",
+    );
+    const { dir, treeOid } = await resolveCommitTreeOid(
+      asset,
+      ref,
+      "listAssetBlobs",
+    );
+    if (params.dir === "") {
+      const { tree } = await git.readTree({ fs, dir, oid: treeOid });
+      return tree.filter((e) => e.type === "blob").map((e) => e.path);
+    }
+    let currentOid = treeOid;
+    for (const segment of params.dir.split("/")) {
+      const { tree } = await git.readTree({ fs, dir, oid: currentOid });
+      const entry = tree.find((e) => e.path === segment);
+      if (entry === undefined || entry.type !== "tree") {
+        throw new AssetServiceError(
+          "not_found",
+          `listAssetBlobs: asset ${params.assetId} has no directory at ${JSON.stringify(params.dir)} on ref ${ref}`,
+        );
+      }
+      currentOid = entry.oid;
+    }
+    const { tree } = await git.readTree({ fs, dir, oid: currentOid });
+    return tree.filter((e) => e.type === "blob").map((e) => e.path);
+  }
+
+  return {
+    createAsset,
+    populateAsset,
+    attachAsset,
+    listAgentAssets,
+    readAssetBlob,
+    listAssetBlobs,
+  };
 }
