@@ -1,0 +1,35 @@
+{
+  "name": "@intx/workflow",
+  "version": "0.0.1",
+  "license": "LGPL-2.1-only",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./state-machine": {
+      "types": "./src/state-machine/index.ts",
+      "default": "./src/state-machine/index.ts"
+    },
+    "./definition": {
+      "types": "./src/definition/index.ts",
+      "default": "./src/definition/index.ts"
+    },
+    "./runtime": {
+      "types": "./src/runtime/index.ts",
+      "default": "./src/runtime/index.ts"
+    },
+    "./runlocal": {
+      "types": "./src/runlocal/index.ts",
+      "default": "./src/runlocal/index.ts"
+    }
+  },
+  "dependencies": {
+    "@intx/agent": "workspace:*",
+    "@intx/inference": "workspace:*",
+    "@intx/log": "workspace:*",
+    "@intx/types": "workspace:*",
+    "arktype": "catalog:"
+  }
+}
