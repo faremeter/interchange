@@ -106,6 +106,9 @@
 | GET | /api/tenants/:tenantId/assets | List assets |
 | POST | /api/tenants/:tenantId/assets | Create an asset |
 | GET | /api/tenants/:tenantId/assets/:assetId | Get asset metadata |
+| PUT | /api/tenants/:tenantId/assets/:assetId/tarballs/:filename | Upload a tarball into a package-registry asset |
+| DELETE | /api/tenants/:tenantId/assets/:assetId/tarballs/:filename | Delete a tarball from a package-registry asset |
+| GET | /api/tenants/:tenantId/assets/:assetId/tarballs | List tarballs in a package-registry asset |
 | POST | /api/sidecars | Register or update a sidecar |
 | GET | /api/sidecars | List all sidecars |
 | GET | /api/sidecars/:id | Get a sidecar by ID |
@@ -1021,6 +1024,32 @@ Returns asset metadata. Resolves through the tenant hierarchy: assets declared o
 200: AssetResponse -- Asset metadata
 404: ErrorResponse -- Asset not found
 
+### PUT /api/tenants/:tenantId/assets/:assetId/tarballs/:filename
+Upload a tarball into a package-registry asset
+
+Commits raw tarball bytes at tarballs/<filename> in the package-registry asset's git tree. Overwrites permitted. The kind handler validates the tarball's package.json before the commit is accepted.
+
+200: unknown -- Tarball stored
+400: ErrorResponse -- Invalid filename or rejected content
+404: ErrorResponse -- Asset not found
+
+### DELETE /api/tenants/:tenantId/assets/:assetId/tarballs/:filename
+Delete a tarball from a package-registry asset
+
+Removes the named tarball from the package-registry asset and commits the resulting tree. Returns 404 if the asset or filename does not exist.
+
+200: unknown -- Tarball removed
+400: ErrorResponse -- Invalid filename
+404: ErrorResponse -- Asset or filename not found
+
+### GET /api/tenants/:tenantId/assets/:assetId/tarballs
+List tarballs in a package-registry asset
+
+Returns the current set of tarballs under tarballs/ for the package-registry asset, with size and SRI integrity for each entry.
+
+200: unknown -- Tarball list
+404: ErrorResponse -- Asset not found
+
 ## Sidecars
 
 ### POST /api/sidecars
@@ -1068,10 +1097,11 @@ Source: packages/types/src/agents.ts
 Source: packages/types/src/agents.ts
 
 ### AgentResponse
-`{ createdAt: string, creatorPrincipalId: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, updatedAt: string, capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, credentialRequirements?: { providerName: string, source: "creator" | "invoker" | "tenant", name?: string, scopes?: string[] }[], description?: string | null, grantRequirements?: { action: string, resource: string, source: "creator" | "invoker", conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, roles?: { id: string, name: string }[], systemPrompt?: string | null }`
+`{ createdAt: string, creatorPrincipalId: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, toolPackages: { name: /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/, version: string }[], updatedAt: string, capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, credentialRequirements?: { providerName: string, source: "creator" | "invoker" | "tenant", name?: string, scopes?: string[] }[], description?: string | null, grantRequirements?: { action: string, resource: string, source: "creator" | "invoker", conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, roles?: { id: string, name: string }[], systemPrompt?: string | null }`
 Source: packages/types/src/agents.ts
 
 **creatorPrincipalId**: Identifies the definition author's principal (definitions have no principalId of their own). Used for resolving creator-sourced grant and credential requirements.
+**toolPackages**: Tool packages this definition pins. Always present; an empty array means the definition pins no packages (the agent runs with whatever non-tool-package factories the sidecar harness ships).
 
 ### ApprovalResponse
 `{ action: string, agentId: string, createdAt: string, id: string, principalId: string, resource: string, sessionId: string, status: "approved" | "pending" | "rejected", tenantId: string, context?: { [string]: unknown } | null, resolvedAt?: string | null }`
@@ -1106,10 +1136,11 @@ Source: packages/types/src/agent-data.ts
 Source: packages/types/src/agent-data.ts
 
 ### CreateAgent
-`{ name: string, capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, credentialRequirements?: { providerName: string, source: "creator" | "invoker" | "tenant", name?: string, scopes?: string[] }[], description?: string, grantRequirements?: { action: string, resource: string, source: "creator" | "invoker", conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, roleIds?: string[], systemPrompt?: string }`
+`{ name: string, capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, credentialRequirements?: { providerName: string, source: "creator" | "invoker" | "tenant", name?: string, scopes?: string[] }[], description?: string, grantRequirements?: { action: string, resource: string, source: "creator" | "invoker", conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, roleIds?: string[], systemPrompt?: string, toolPackages?: { name: /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/, version: string }[] }`
 Source: packages/types/src/agents.ts
 
 **grantRequirements**: A grant requirements manifest, not live grants. Each entry declares a resource, action, and source (creator or invoker). The control plane resolves these requirements at each agent launch against the current authority of the creator and invoker.
+**toolPackages**: Tool packages pinned by this agent definition. Each entry must use a valid npm package name (lowercase, optionally `@scope/`-prefixed) and a parseable semver range; the array must contain no duplicate names. The hub resolves the full dependency closure at deploy-assembly time and ships the manifest to the sidecar; the sidecar materializes each pinned package and registers its tools with the harness.
 
 ### CreateAgentInstance
 `{ agentId: string, invokerGrants?: { action: string, resource: string, conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[] }`
@@ -1270,7 +1301,7 @@ Source: packages/types/src/tenants.ts
 Source: packages/types/src/observability.ts
 
 ### UpdateAgent
-`{ capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, credentialRequirements?: { providerName: string, source: "creator" | "invoker" | "tenant", name?: string, scopes?: string[] }[], description?: string, grantRequirements?: { action: string, resource: string, source: "creator" | "invoker", conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, name?: string, roleIds?: string[], systemPrompt?: string }`
+`{ capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, credentialRequirements?: { providerName: string, source: "creator" | "invoker" | "tenant", name?: string, scopes?: string[] }[], description?: string, grantRequirements?: { action: string, resource: string, source: "creator" | "invoker", conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, name?: string, roleIds?: string[], systemPrompt?: string, toolPackages?: { name: /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/, version: string }[] }`
 Source: packages/types/src/agents.ts
 
 ### UpdateCredential

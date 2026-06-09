@@ -17,7 +17,10 @@
     "@intx/mime": "workspace:*",
     "@intx/pack-transport": "workspace:*",
     "@intx/storage-isogit": "workspace:*",
+    "@intx/tool-packaging": "workspace:*",
     "@intx/types": "workspace:*",
-    "arktype": "catalog:"
+    "arktype": "catalog:",
+    "isomorphic-git": "^1.27.2",
+    "tar": "^7.5.1"
   }
 }

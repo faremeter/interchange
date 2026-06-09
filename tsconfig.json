@@ -43,6 +43,7 @@
     { "path": "examples/agent-gemini-image" },
     { "path": "examples/posix-demo" },
     { "path": "examples/ring-demo" },
+    { "path": "tests/hub-agent" },
     { "path": "tests/hub-api" },
     { "path": "tests/tool-packaging" },
     { "path": "bin" }

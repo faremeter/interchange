@@ -17,9 +17,21 @@ const repoRoot = resolve(import.meta.dirname ?? ".", "..");
 //    then pulling expression and JSON Schema from the runtime ArkType objects.
 // ---------------------------------------------------------------------------
 
+// Predicates appear in arktype schemas whenever a `.narrow` callback is
+// attached (e.g. ToolPackagePinArray's duplicate-name guard). Those rules
+// are runtime invariants that have no JSON-Schema analogue, so the
+// generator falls back to the predicate's base shape and keeps the
+// OpenAPI document focused on the wire shape. Validation still runs at
+// the REST boundary; the docs simply document the structural contract.
+const JSON_SCHEMA_OPTS = {
+  fallback: {
+    predicate: (ctx: { base: unknown }) => ctx.base,
+  },
+} as const;
+
 type ArkTypeValue = {
   expression: string;
-  toJsonSchema: () => Record<string, unknown>;
+  toJsonSchema: (opts?: typeof JSON_SCHEMA_OPTS) => Record<string, unknown>;
 };
 
 function isArkType(v: unknown): v is ArkTypeValue {
@@ -63,7 +75,7 @@ for (const file of typeFiles) {
     const t = allTypesMap.get(name);
     if (t === undefined) continue;
 
-    const js = t.toJsonSchema();
+    const js = t.toJsonSchema(JSON_SCHEMA_OPTS);
     delete js["$schema"];
 
     const description =
@@ -160,6 +172,7 @@ const app = createApp({
   assetService: {} as never,
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- stub; only /openapi.json is called
   repoStore: {} as never,
+  maxTarballBytes: 10_000_000,
 });
 const res = await app.request("/openapi.json");
 

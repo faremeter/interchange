@@ -8,6 +8,7 @@ import {
   createHubSessionOrchestrator,
   createSessionService,
   createSidecarRouter,
+  WORKSPACE_BUILTINS_REGISTRY,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { generateKeyPair } from "@intx/crypto-node";
@@ -39,6 +40,25 @@ const grantStore = createGrantStore(db);
 const hubDataDir = process.env["HUB_DATA_DIR"];
 if (!hubDataDir) {
   throw new Error("HUB_DATA_DIR environment variable is required");
+}
+
+// 10 MiB is the production cap for tool-package tarballs uploaded via
+// the package-registry PUT endpoint. The npm registry's own per-tarball
+// soft cap is several times this, but the substrate's tool packages are
+// the curated subset the operator vets; an upload pushing past 10 MiB
+// is far more likely to be misuse than a legitimate build. The
+// HUB_MAX_TARBALL_BYTES env var lets an operator opt into a different
+// cap without a code change.
+const DEFAULT_HUB_MAX_TARBALL_BYTES = 10 * 1024 * 1024;
+const hubMaxTarballBytesRaw = process.env["HUB_MAX_TARBALL_BYTES"];
+const hubMaxTarballBytes =
+  hubMaxTarballBytesRaw === undefined || hubMaxTarballBytesRaw.trim() === ""
+    ? DEFAULT_HUB_MAX_TARBALL_BYTES
+    : Number(hubMaxTarballBytesRaw);
+if (!Number.isFinite(hubMaxTarballBytes) || hubMaxTarballBytes <= 0) {
+  throw new Error(
+    `HUB_MAX_TARBALL_BYTES must be a positive number; got ${JSON.stringify(hubMaxTarballBytesRaw)}`,
+  );
 }
 
 const hubSigningKey = await generateKeyPair();
@@ -90,9 +110,21 @@ createHubSessionOrchestrator({
 // per-attachment pack fan-out and by the smart-HTTP asset routes for
 // clone and push. The E2E test seeds fixtures directly through this
 // service object.
+const httpRegistries = new Map([
+  ["npmjs", { url: "https://registry.npmjs.org" }],
+]);
+
 const assetService = createAssetService({
   db,
   repoStore: agentRepoStore.repoStore,
+  // Reserve every configured HTTP registry name so a `package-registry`
+  // asset cannot silently shadow it at session launch. The session
+  // service's per-launch registry assembly applies asset-wins-on-name-
+  // collision (see `session-service.ts` `assetIndex` build), which
+  // turns a same-named asset into an opaque reroute of the public
+  // npm registry; rejecting at creation surfaces the collision at
+  // intent time instead of debugging an unexpected reroute later.
+  reservedPackageRegistryNames: new Set(httpRegistries.keys()),
 });
 
 const sessionService = createSessionService({
@@ -100,6 +132,20 @@ const sessionService = createSessionService({
   agentRepoStore,
   assetService,
   db,
+  toolPackageRegistries: {
+    httpRegistries,
+    defaultRegistry: "npmjs",
+    // The `workspace-builtins` package-registry asset hosts the
+    // three in-tree tool packages (`@intx/tools-mail`,
+    // `@intx/tools-posix`, `@intx/tools-lsp`). Routing the `@intx`
+    // scope through it keeps an agent's pin set readable
+    // (`{ name: "@intx/tools-mail" }`) without forcing every pin to
+    // carry an explicit `registry` field. Operators who shadow this
+    // asset at a child tenancy with their own `workspace-builtins`
+    // asset get the closer-scope win for free, since the session
+    // service builds the per-launch registry map leaf-to-root.
+    scopeRouting: [{ scope: "@intx", registry: WORKSPACE_BUILTINS_REGISTRY }],
+  },
 });
 
 const app = createApp({
@@ -114,6 +160,7 @@ const app = createApp({
   eventCollectors,
   assetService,
   repoStore: agentRepoStore.repoStore,
+  maxTarballBytes: hubMaxTarballBytes,
   sidecarWsHandler: upgradeWebSocket((_c) => {
     let handle: WsHandle;
     return {

@@ -1,5 +1,6 @@
 import { type } from "arktype";
 import { grantEffects } from "./grants";
+import { ToolPackagePin, ToolPackagePinArray } from "./tool-packages";
 
 export const credentialRequirementSources = [
   "tenant",
@@ -57,6 +58,9 @@ export const CreateAgent = type({
   "grantRequirements?": GrantRequirement.array().describe(
     "A grant requirements manifest, not live grants. Each entry declares a resource, action, and source (creator or invoker). The control plane resolves these requirements at each agent launch against the current authority of the creator and invoker.",
   ),
+  "toolPackages?": ToolPackagePinArray.describe(
+    "Tool packages pinned by this agent definition. Each entry must use a valid npm package name (lowercase, optionally `@scope/`-prefixed) and a parseable semver range; the array must contain no duplicate names. The hub resolves the full dependency closure at deploy-assembly time and ships the manifest to the sidecar; the sidecar materializes each pinned package and registers its tools with the harness.",
+  ),
   "roleIds?": "string[]",
 });
 
@@ -70,6 +74,7 @@ export const UpdateAgent = type({
   "capabilities?": "Record<string, unknown>",
   "credentialRequirements?": CredentialRequirement.array(),
   "grantRequirements?": GrantRequirement.array(),
+  "toolPackages?": ToolPackagePinArray,
   "roleIds?": "string[]",
 });
 
@@ -90,6 +95,9 @@ export const AgentResponse = type({
   "capabilities?": "Record<string, unknown>",
   "credentialRequirements?": CredentialRequirement.array(),
   "grantRequirements?": GrantRequirement.array(),
+  toolPackages: ToolPackagePin.array().describe(
+    "Tool packages this definition pins. Always present; an empty array means the definition pins no packages (the agent runs with whatever non-tool-package factories the sidecar harness ships).",
+  ),
   "roles?": type({ id: "string", name: "string" }).array(),
   createdAt: "string",
   updatedAt: "string",

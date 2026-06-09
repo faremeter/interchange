@@ -54,6 +54,7 @@ function formatAgent(
     capabilities: parsed.capabilities ?? undefined,
     credentialRequirements: parsed.credentialRequirements ?? undefined,
     grantRequirements: parsed.grantRequirements ?? undefined,
+    toolPackages: parsed.toolPackages,
     roles,
     createdAt: ts(parsed.createdAt),
     updatedAt: ts(parsed.updatedAt),
@@ -253,6 +254,7 @@ export function createAgentRoutes({
               capabilities: body.capabilities ?? null,
               credentialRequirements: body.credentialRequirements ?? null,
               grantRequirements: body.grantRequirements ?? null,
+              toolPackages: body.toolPackages ?? [],
               currentVersion: "1",
               status: "deployed",
               createdAt: now,
@@ -437,6 +439,8 @@ export function createAgentRoutes({
         updates["credentialRequirements"] = body.credentialRequirements;
       if (body.grantRequirements !== undefined)
         updates["grantRequirements"] = body.grantRequirements;
+      if (body.toolPackages !== undefined)
+        updates["toolPackages"] = body.toolPackages;
 
       const updated = await db.transaction(async (tx) => {
         const row = first(

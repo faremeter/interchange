@@ -234,6 +234,7 @@ function createTestApp(opts: TestAppOpts) {
     eventCollectors: createMockEventCollectors(),
     assetService: null,
     repoStore: null,
+    maxTarballBytes: 10_000_000,
   });
 }
 

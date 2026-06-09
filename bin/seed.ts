@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 /* eslint-disable no-console */
 
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { type, type Type } from "arktype";
 import {
   TenantResponse,
@@ -12,8 +15,56 @@ import {
   ProviderResponse,
   paginatedSchema,
 } from "@intx/types";
+import { WORKSPACE_BUILTINS_REGISTRY } from "@intx/hub-sessions";
+import { extractTarballPackageJSON } from "@intx/tool-packaging";
 
 const AuthResponse = type({ "user?": { id: "string" } });
+
+const SEED_ROOT = resolve(import.meta.dirname ?? ".", "..");
+const BUILTINS_DIR = resolve(SEED_ROOT, "dist", "builtins");
+
+// Read every tarball under `dist/builtins/` and pin `(name, version)`
+// using the bytes the publisher will actually upload. Reading the
+// source packages' `package.json` instead would silently desynchronize
+// from the on-disk tarballs whenever a version is bumped without
+// re-running `make builtins`: the publish step would upload a tarball
+// whose filename still encodes the old version, but the seed would
+// pin the new version and the sidecar would fail with `tarball.missing`
+// at launch time. Going through the artifacts directly keeps the seed
+// honest about what was built.
+async function readBuiltinPins(): Promise<{ name: string; version: string }[]> {
+  let entries: string[];
+  try {
+    entries = readdirSync(BUILTINS_DIR);
+  } catch (cause) {
+    throw new Error(
+      `seed: cannot read ${BUILTINS_DIR}; run \`make builtins\` first`,
+      { cause },
+    );
+  }
+  const tarballs = entries.filter((f) => f.endsWith(".tgz")).sort();
+  if (tarballs.length === 0) {
+    throw new Error(
+      `seed: ${BUILTINS_DIR} contains no *.tgz files; run \`make builtins\` first`,
+    );
+  }
+  const pins: { name: string; version: string }[] = [];
+  for (const filename of tarballs) {
+    const abs = resolve(BUILTINS_DIR, filename);
+    const bytes = readFileSync(abs);
+    const outcome = await extractTarballPackageJSON(new Uint8Array(bytes));
+    if (outcome.kind !== "ok") {
+      throw new Error(
+        `seed: ${abs} did not yield a usable package.json (${outcome.kind})`,
+      );
+    }
+    pins.push({
+      name: outcome.parsed.name,
+      version: outcome.parsed.version,
+    });
+  }
+  return pins;
+}
 
 function parse<T extends Type>(
   schema: T,
@@ -29,6 +80,17 @@ function parse<T extends Type>(
 }
 
 const BASE = process.env["HUB_URL"] ?? "http://localhost:3000";
+
+// Built-in tool-package pins shared by the three workspace agents. The
+// matching tarballs are published into the `workspace-builtins`
+// package-registry asset by `bin/publish-tool-packages.ts`; the hub's
+// session-service scope-routing config maps the `@intx` scope onto
+// that asset. Pins are read directly from the artifacts under
+// `dist/builtins/` so the seed cannot pin a version that the build
+// step never produced — the previous behavior (consulting each
+// source package.json) silently desynchronized whenever a version
+// was bumped without re-running `make builtins`.
+const BUILTIN_TOOL_PACKAGES = await readBuiltinPins();
 
 type CookieJar = string[];
 
@@ -125,22 +187,36 @@ async function authenticate(
     password,
   });
 
-  if (signUp.cookies.length > 0) {
+  // better-auth's sign-up returns 200 on success and 422
+  // UNPROCESSABLE_ENTITY when the address is already registered.
+  // Anything else is a hub-side fault that must surface instead of
+  // being papered over by the sign-in fallback.
+  if (signUp.status === 200) {
     const userId =
       parse(AuthResponse, signUp.data, "sign-up response").user?.id ?? "";
     return { cookies: signUp.cookies, userId };
   }
 
-  // User already exists -- sign in instead
+  if (signUp.status !== 422) {
+    process.stderr.write(
+      `[seed] FATAL: unexpected sign-up response for ${email}: ${String(signUp.status)} ${JSON.stringify(signUp.data)}\n`,
+    );
+    process.exit(1);
+  }
+
   const signIn = await api("POST", "/api/auth/sign-in/email", {
     email,
     password,
   });
 
-  if (signIn.cookies.length === 0) {
+  if (signIn.status !== 200) {
     process.stderr.write(`[seed] FATAL: could not authenticate ${email}\n`);
-    process.stderr.write(`[seed]   sign-up: ${JSON.stringify(signUp.data)}\n`);
-    process.stderr.write(`[seed]   sign-in: ${JSON.stringify(signIn.data)}\n`);
+    process.stderr.write(
+      `[seed]   sign-up: ${String(signUp.status)} ${JSON.stringify(signUp.data)}\n`,
+    );
+    process.stderr.write(
+      `[seed]   sign-in: ${String(signIn.status)} ${JSON.stringify(signIn.data)}\n`,
+    );
     process.exit(1);
   }
 
@@ -224,6 +300,38 @@ const widgetsTenantId = await ensureTenant(
   aliceCookies,
 );
 log(`  Widgets tenant ID: ${widgetsTenantId}`);
+
+// -- Ensure the workspace-builtins package-registry asset exists --
+//
+// Agent pins below reference `@intx/tools-*` packages, which the hub's
+// scope-routing config maps to the `workspace-builtins` registry. The
+// asset row must exist on the Acme tenant so the session-service
+// resolver can find it at launch time. `bin/publish-tool-packages.ts`
+// (run from `bin/dev.ts` before seed) populates the tarballs; this
+// step is a safety net for re-runs of seed against a hub that already
+// has the asset row created.
+
+log("Ensuring workspace-builtins package-registry asset...");
+
+const { status: regStatus, data: regData } = await api(
+  "POST",
+  `/api/tenants/${acmeTenantId}/assets`,
+  { kind: "package-registry", name: WORKSPACE_BUILTINS_REGISTRY },
+  aliceCookies,
+);
+if (regStatus === 201 || regStatus === 409) {
+  log(
+    regStatus === 201
+      ? "  Created workspace-builtins asset"
+      : "  workspace-builtins asset already exists",
+  );
+} else {
+  process.stderr.write(
+    `[seed] FAIL ensure workspace-builtins: expected 201 or 409, got ${String(regStatus)}\n`,
+  );
+  process.stderr.write(`[seed]   ${JSON.stringify(regData)}\n`);
+  process.exit(1);
+}
 
 // -- Invite Bob to Acme --
 
@@ -437,6 +545,7 @@ const { status: a1Status, data: a1Data } = await api(
     systemPrompt:
       "You are a research assistant. Find and summarize information. When you receive a mail message, reply to it immediately with a helpful response. Do not wait for further instructions.",
     modelConfig: { defaultModel: "kimi-k2.6" },
+    toolPackages: BUILTIN_TOOL_PACKAGES,
     capabilities: { research: true, summarize: true },
     credentialRequirements: [
       { providerName: "OpenCode Go", source: "tenant", scopes: ["chat"] },
@@ -461,6 +570,7 @@ const { status: a2Status, data: a2Data } = await api(
     systemPrompt:
       "You are a code reviewer. Analyze code for bugs and improvements.",
     modelConfig: { defaultModel: "kimi-k2.6" },
+    toolPackages: BUILTIN_TOOL_PACKAGES,
     capabilities: { codeReview: true },
     credentialRequirements: [
       { providerName: "OpenCode Go", source: "tenant", scopes: ["chat"] },
@@ -509,6 +619,7 @@ When you edit or write files, the language server will automatically report type
 
 When you receive a task via mail, work through it methodically: understand the codebase, plan your approach, implement the changes, verify they build and pass tests, then report back with what you did.`,
     modelConfig: { defaultModel: "kimi-k2.6" },
+    toolPackages: BUILTIN_TOOL_PACKAGES,
     capabilities: { coding: true, fileSystem: true, languageServer: true },
     credentialRequirements: [
       { providerName: "OpenCode Go", source: "tenant", scopes: ["chat"] },

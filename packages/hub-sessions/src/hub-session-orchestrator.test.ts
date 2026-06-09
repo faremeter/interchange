@@ -251,6 +251,7 @@ function unusedRepoStore(): RepoStore {
   return {
     initRepo: unused,
     writeTree: unused,
+    writeTreePreservingPrefix: unused,
     receivePack: unused,
     createPack: unused,
     resolveRef: unused,

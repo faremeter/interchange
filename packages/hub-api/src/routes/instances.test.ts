@@ -328,6 +328,7 @@ function createTestApp(opts: TestAppOpts = {}) {
     eventCollectors: createMockEventCollectors(opts.collectorStatuses),
     assetService: null,
     repoStore: null,
+    maxTarballBytes: 10_000_000,
   });
 }
 
@@ -920,6 +921,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
         { source: "tenant", providerName: "test-provider" },
       ],
       grantRequirements: null,
+      toolPackages: [],
       currentVersion: "1",
       status: "deployed",
       createdAt: new Date("2025-01-01"),
@@ -995,6 +997,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       eventCollectors: createCapturingEventCollectors(),
       assetService: null,
       repoStore: null,
+      maxTarballBytes: 10_000_000,
     });
 
     const res = await app.request(
@@ -1060,6 +1063,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       eventCollectors: createCapturingEventCollectors(),
       assetService: null,
       repoStore: null,
+      maxTarballBytes: 10_000_000,
     });
 
     const res = await app.request(

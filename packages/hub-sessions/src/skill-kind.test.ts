@@ -23,6 +23,23 @@ function makeReadBlob(
   };
 }
 
+function makeListDir(
+  files: Record<string, string>,
+): (path: string) => Promise<string[]> {
+  return async (path) => {
+    const prefix = path === "" ? "" : `${path}/`;
+    const names = new Set<string>();
+    for (const p of Object.keys(files)) {
+      if (prefix !== "" && !p.startsWith(prefix)) continue;
+      const rest = p.slice(prefix.length);
+      if (rest.length === 0) continue;
+      const slash = rest.indexOf("/");
+      names.add(slash === -1 ? rest : rest.substring(0, slash));
+    }
+    return Array.from(names);
+  };
+}
+
 function skillMd(frontmatter: Record<string, unknown>, body = ""): string {
   const lines = ["---"];
   for (const [k, v] of Object.entries(frontmatter)) {
@@ -136,6 +153,7 @@ describe("skillKindHandler.validatePush", () => {
       ref: REF,
       topLevelTreePaths: ["greet"],
       readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
     });
     expect(result.ok).toBe(true);
 
@@ -174,6 +192,7 @@ describe("skillKindHandler.validatePush", () => {
       ref: REF,
       topLevelTreePaths: ["greet", "farewell"],
       readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
     });
     expect(result.ok).toBe(true);
 
@@ -201,6 +220,7 @@ describe("skillKindHandler.validatePush", () => {
       ref: REF,
       topLevelTreePaths: [],
       readBlob: makeReadBlob({}),
+      listDir: makeListDir({}),
     });
     expect(result.ok).toBe(true);
 
@@ -221,6 +241,7 @@ describe("skillKindHandler.validatePush", () => {
       ref: REF,
       topLevelTreePaths: ["greet"],
       readBlob: makeReadBlob({}),
+      listDir: makeListDir({}),
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -240,6 +261,7 @@ describe("skillKindHandler.validatePush", () => {
       ref: REF,
       topLevelTreePaths: ["greet"],
       readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -259,6 +281,7 @@ describe("skillKindHandler.validatePush", () => {
       ref: REF,
       topLevelTreePaths: ["BadName"],
       readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -279,6 +302,7 @@ describe("skillKindHandler.validatePush", () => {
       ref: REF,
       topLevelTreePaths: [longName],
       readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
     });
     expect(result.ok).toBe(false);
   });
@@ -296,6 +320,7 @@ describe("skillKindHandler.validatePush", () => {
       ref: REF,
       topLevelTreePaths: ["anthropic"],
       readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
     });
     expect(result.ok).toBe(false);
   });
@@ -313,6 +338,7 @@ describe("skillKindHandler.validatePush", () => {
       ref: REF,
       topLevelTreePaths: ["claude"],
       readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
     });
     expect(result.ok).toBe(false);
   });
@@ -330,6 +356,7 @@ describe("skillKindHandler.validatePush", () => {
       ref: REF,
       topLevelTreePaths: ["ok"],
       readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
     });
     expect(result.ok).toBe(false);
   });
@@ -347,6 +374,7 @@ describe("skillKindHandler.validatePush", () => {
       ref: REF,
       topLevelTreePaths: ["ok"],
       readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
     });
     expect(result.ok).toBe(false);
   });
@@ -364,6 +392,7 @@ describe("skillKindHandler.validatePush", () => {
       ref: REF,
       topLevelTreePaths: ["ok"],
       readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
     });
     expect(result.ok).toBe(false);
   });
@@ -381,6 +410,7 @@ describe("skillKindHandler.validatePush", () => {
       ref: REF,
       topLevelTreePaths: ["ok"],
       readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
     });
     expect(result.ok).toBe(false);
 

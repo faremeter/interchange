@@ -19,7 +19,11 @@
 // wire layer already has both behaviors, and pretending otherwise
 // would silently change failure handling.
 
-import type { PackRejectReason, RepoId } from "@intx/types/sidecar";
+import type {
+  DeployApplyErrorCategory,
+  PackRejectReason,
+  RepoId,
+} from "@intx/types/sidecar";
 import type { ConnectorThreadState } from "@intx/types/runtime";
 import { getLogger } from "@intx/log";
 
@@ -107,6 +111,26 @@ export type SidecarEventMap = {
   "deploy.ref.stale": {
     agentAddress: string;
   };
+
+  /** Notification. Emitted when the sidecar reports that its
+   * tool-package apply pipeline rejected a deploy. `category` matches
+   * the closed `DeployApplyErrorCategory` enum; `package` is set
+   * when the failure implicates a specific manifest entry.
+   * `previousDeployId` is the atomicity contract — it is always the
+   * deploy id the instance was running before the rejected attempt
+   * (the instance keeps running that deploy untouched). Listeners
+   * are responsible for surfacing the failure to operators and/or
+   * the deploy lifecycle subsystem; the wire layer only delivers.
+   */
+  "deploy.apply.error": {
+    agentAddress: string;
+    attemptId: string;
+    previousDeployId: string;
+    category: DeployApplyErrorCategory;
+    message: string;
+    package?: { name: string; version: string };
+    occurredAt: string;
+  };
 };
 
 export type SidecarEventType = keyof SidecarEventMap;
@@ -140,6 +164,7 @@ export function createSidecarEmitter(): SidecarEventEmitter {
     "agent.deploy.ack": new Set(),
     "agent.reconnected": new Set(),
     "deploy.ref.stale": new Set(),
+    "deploy.apply.error": new Set(),
     "connector.state.changed": new Set(),
   };
 

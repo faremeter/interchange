@@ -8,6 +8,7 @@ import {
   sidecarStatuses,
 } from "@intx/types";
 import { RepoAction } from "@intx/types/sidecar";
+import { ToolPackagePinArray } from "@intx/types/tool-packages";
 
 import type {
   agent,
@@ -90,6 +91,7 @@ export function parseAgentRow(row: typeof agent.$inferSelect) {
       row.grantRequirements !== null
         ? GrantRequirement.array().assert(row.grantRequirements)
         : null,
+    toolPackages: ToolPackagePinArray.assert(row.toolPackages),
   };
 }
 

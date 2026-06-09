@@ -85,6 +85,12 @@ export type MountHubRoutesDeps = {
    */
   assetService: AssetService | null;
   repoStore: RepoStore | null;
+  /**
+   * Maximum tarball payload accepted by the package-registry PUT
+   * endpoint. The hub edge owns the value; tests that exercise the
+   * asset surface supply their own cap.
+   */
+  maxTarballBytes: number;
 };
 
 /**
@@ -109,6 +115,7 @@ export function mountHubRoutes(
     sidecarWsHandler,
     assetService,
     repoStore,
+    maxTarballBytes,
   } = opts;
   if ((assetService === null) !== (repoStore === null)) {
     throw new Error(
@@ -150,8 +157,11 @@ export function mountHubRoutes(
   // so checking either one is equivalent. Keeping a single shape
   // across every gate site makes the contract obvious to a reader.
   if (repoStore !== null) {
+    // Constrain `:nameDotGit` to the `.git` suffix so the bearer
+    // middleware does not capture the REST tarball routes that share
+    // the `/api/tenants/:tenantId/assets/...` prefix.
     app.use(
-      "/api/tenants/:tenantId/assets/:kind/:nameDotGit/*",
+      "/api/tenants/:tenantId/assets/:kind/:nameDotGit{[^/]+\\.git}/*",
       createGitTokenAuth({ db }),
     );
   }
@@ -275,6 +285,7 @@ export function mountHubRoutes(
         grantStore,
         conditionRegistry,
         requireGrant,
+        maxTarballBytes,
       }),
     );
   }
@@ -319,6 +330,12 @@ export type CreateAppOpts = {
   sidecarWsHandler?: Handler<AppEnv>;
   assetService: AssetService | null;
   repoStore: RepoStore | null;
+  /**
+   * Maximum tarball payload accepted by the package-registry PUT
+   * endpoint. The hub edge resolves this from `HUB_MAX_TARBALL_BYTES`
+   * (or its config default) and supplies a concrete value.
+   */
+  maxTarballBytes: number;
 };
 
 export function createApp({
@@ -332,6 +349,7 @@ export function createApp({
   sidecarWsHandler,
   assetService,
   repoStore,
+  maxTarballBytes,
 }: CreateAppOpts) {
   const app = new Hono<AppEnv>();
 
@@ -353,6 +371,7 @@ export function createApp({
     eventCollectors,
     assetService,
     repoStore,
+    maxTarballBytes,
     ...(grantStore ? { grantStore } : {}),
     ...(sidecarWsHandler ? { sidecarWsHandler } : {}),
   });

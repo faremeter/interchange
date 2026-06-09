@@ -23,6 +23,7 @@
     "arktype": "catalog:",
     "better-auth": "^1.4.18",
     "hono": "^4.11.9",
-    "hono-openapi": "^1.2.0"
+    "hono-openapi": "^1.2.0",
+    "ssri": "^12.0.0"
   }
 }

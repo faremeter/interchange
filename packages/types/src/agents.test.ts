@@ -242,6 +242,7 @@ describe("AgentResponse", () => {
     name: "Agent",
     currentVersion: "1",
     status: "deployed" as const,
+    toolPackages: [],
     createdAt: "2024-01-01T00:00:00Z",
     updatedAt: "2024-01-01T00:00:00Z",
   };
@@ -262,6 +263,12 @@ describe("AgentResponse", () => {
   test("rejects a response with creatorPrincipalId absent", () => {
     const { creatorPrincipalId: _omitted, ...withoutCreator } = validResponse;
     const result = AgentResponse(withoutCreator);
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a response with toolPackages absent", () => {
+    const { toolPackages: _omitted, ...withoutToolPackages } = validResponse;
+    const result = AgentResponse(withoutToolPackages);
     expect(result instanceof type.errors).toBe(true);
   });
 
