@@ -17,7 +17,7 @@ const log = getLogger(["db", "credentials"]);
 
 const CredentialRequirements = CredentialRequirementType.array();
 
-export const ProviderMetadata = type({ baseURL: "string" });
+export const ProviderMetadata = type({ baseURL: "string", "maxTokens?": "number" });
 
 const AgentModelConfig = type({ defaultModel: "string" });
 
@@ -294,6 +294,9 @@ export async function resolveOneCredential(
       baseURL: metadata.baseURL,
       apiKey: resolved.secret,
       model: defaultModel,
+      ...(metadata.maxTokens !== undefined
+        ? { defaults: { maxTokens: metadata.maxTokens } }
+        : {}),
     },
   };
 }
