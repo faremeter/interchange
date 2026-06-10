@@ -524,8 +524,6 @@
       "dependencies": {
         "@intx/agent": "workspace:*",
         "@intx/inference": "workspace:*",
-        "@intx/log": "workspace:*",
-        "@intx/types": "workspace:*",
         "arktype": "catalog:",
       },
     },
