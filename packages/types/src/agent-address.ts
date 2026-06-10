@@ -4,12 +4,12 @@
 //
 // The shape of the right-hand side of the "@" is not validated beyond the
 // requirement that it be non-empty: tightening the contract (DNS-ish
-// validation, normalisation, etc.) is a separate follow-up. The parser
-// IS stricter than the previous hub-client implementation in one respect
-// — it rejects a bare local part with no "@" and an empty domain, where
-// the previous `split("@")[0]` extraction would have accepted them. All
-// observed callers feed full "<local>@<domain>" addresses or fall back
-// to the raw input.
+// validation, normalisation, etc.) is a separate follow-up.
+//
+// `@intx/hub-sessions`'s `parseAgentId` is the canonical throwing wrapper
+// over `parseAgentAddress` — call it when a `null` return would
+// propagate as a silent bug, and keep this parser's `null` return
+// reserved for callers that already have a structured fallback.
 
 const INSTANCE_PREFIX = "ins_";
 

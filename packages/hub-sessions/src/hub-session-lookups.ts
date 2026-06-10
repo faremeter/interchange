@@ -10,6 +10,7 @@ import { eq, and, isNull } from "drizzle-orm";
 import type { DB } from "@intx/db";
 import { agentInstance, sessionMail } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
+import { parseAgentAddress } from "@intx/types";
 
 import type { AgentRepoStore } from "./agent-repo";
 import { generateId } from "@intx/hub-common";
@@ -179,12 +180,18 @@ export function createHubSessionLookups(
   };
 }
 
+/**
+ * Extract the instance id from an `<instanceId>@<domain>` agent address.
+ * Throws on any input the `@intx/types`-owned `parseAgentAddress`
+ * rejects: missing or leading `@`, empty domain, or an instance id
+ * without the canonical `ins_` prefix.
+ */
 export function parseAgentId(agentAddress: string): string {
-  const atIdx = agentAddress.indexOf("@");
-  if (atIdx === -1) {
+  const parsed = parseAgentAddress(agentAddress);
+  if (parsed === null) {
     throw new Error(`Invalid agent address: "${agentAddress}"`);
   }
-  return agentAddress.substring(0, atIdx);
+  return parsed.instanceId;
 }
 
 export async function requireInstance(

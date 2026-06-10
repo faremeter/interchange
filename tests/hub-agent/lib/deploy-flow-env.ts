@@ -51,8 +51,8 @@ import {
 import { hexEncode } from "@intx/types";
 import { generateKeyPair } from "@intx/crypto-node";
 
-export const AGENT_ADDRESS = "test-agent@integration.interchange";
-export const AGENT_ID = "test-agent";
+export const AGENT_ADDRESS = "ins_test-agent@integration.interchange";
+export const AGENT_ID = "ins_test-agent";
 export const SESSION_ID = "ses_integration-1";
 export const SIDECAR_ID = "sc-integration-1";
 export const TOKEN = "test-token";
