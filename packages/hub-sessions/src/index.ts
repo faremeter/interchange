@@ -28,6 +28,7 @@ export {
 } from "./ws";
 export {
   createHubSessionLookups,
+  parseAgentId,
   type HubSessionLookupsDeps,
 } from "./hub-session-lookups";
 export {
