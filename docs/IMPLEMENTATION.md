@@ -292,6 +292,58 @@ Debug and telemetry data (state inspection, trace output, log tailing) flows onl
 
 Debug streams require explicit authorization — not all clients are permitted to attach debuggers to agents.
 
+## Workflow Process: Supervisor/Child IPC
+
+A deployed workflow runs in two processes per active deployment. The supervisor lives in the sidecar — it holds the mail-bus identity for the deployment's addresses, owns the per-deployment Ed25519 signing key the hub trusts, and reads the per-step credential snapshots out of each step's `agent-state` repo. The workflow-process is a Bun child the supervisor spawns; it loads operator-supplied workflow code (tools, directors, agent prompts) and executes runs against the runtime adapters. The supervisor is the authoritative side; the workflow-process is the untrusted side.
+
+The IPC between them is the airlock between those two halves. Per-frame crypto is what makes the airlock seal: nothing the child receives is acted on until its signature verifies under the supervisor's public key, and nothing the supervisor accepts from the child is acted on until its HMAC verifies under the shared key. The implementation lives at `packages/workflow-host/src/ipc/` with the threat model at the top of `packages/workflow-host/src/ipc/index.ts`.
+
+### Why This Boundary Exists
+
+The workflow-process runs code the operator deploys but the sidecar does not fully control: tool implementations, director prompts, agent harnesses talking to external APIs. The supervisor must continue to be trusted by the hub regardless of what happens inside the child, because the supervisor holds the deployment's credentials and signing keys. The IPC channels exist so the supervisor can hand the child everything it needs to run while keeping the credentials and the signing key inside the supervisor's own address space.
+
+### Two Channels, Split By Cost And Rate
+
+Each deployment gets two channels:
+
+- **Control channel.** NDJSON over stdio, Ed25519-signed by the supervisor. Carries trigger fires, signal deliveries, drain, recycle, shutdown, grants-updated, sources-updated, and the child's `ready` signal back. Low rate, high authority. Implementation lives in `packages/workflow-host/src/ipc/control-channel.ts`.
+- **Event channel.** A UNIX socketpair, HMAC-SHA256-authenticated with a 32-byte symmetric key derived at spawn time. Carries `InferenceEvent`s from the reactor (including the per-message `message.run.started` / `message.run.ended` brackets). High rate. Implementation lives in `packages/workflow-host/src/ipc/event-channel.ts`.
+
+Asymmetric crypto on control is correct because only the supervisor signs and the child must not forge supervisor commands. Symmetric HMAC on events is correct because both sides must authenticate every frame at reactor cadence — Ed25519 per frame at that rate would dominate runtime cost. The two channels' payload unions are disjoint by construction; the typed `ControlPayload` validator does not accept inference-event shapes and the typed `EventPayload` validator does not accept control-plane shapes, so a confused-deputy attack that smuggles a `drain` or `recycle` over the event channel fails at validation.
+
+### Frame Envelope
+
+Every frame on either channel carries `{ seq, channelId, payload }` inside the bytes that are authenticated. `seq` is a monotonic u64 counter the sender maintains per channel. `channelId` is the supervisor-minted channel identity. `payload` is the channel-specific JSON value. The wire format wraps the envelope with either `sig` (hex-encoded Ed25519, 64 bytes) on the control channel or `mac` (hex-encoded HMAC-SHA256 tag, 32 bytes) on the event channel. The envelope schema and canonical-JSON encoder live in `packages/workflow-host/src/ipc/envelope.ts`.
+
+### Replay Protection
+
+Two complementary mechanisms run side by side:
+
+- **Monotonic seq per channelId.** The receiver tracks the highest seq seen and requires the next frame's seq to equal `highestSeq + 1` exactly. A repeat or decrease is a replay; a gap is a drop. Either crashes the receiver.
+- **ChannelId rotation on every spawn and every recycle.** The supervisor mints a fresh 16-byte channelId via `crypto.randomBytes` (hex-encoded) at every spawn and at every recycle (the `generateChannelId` helper in `packages/workflow-host/src/ipc/crypto.ts`). The receiver compares the incoming channelId against the current one byte for byte; any mismatch crashes the receiver. A frame from a recycled child's predecessor, or a frame captured from a previous channelId's lifetime, carries the wrong channelId and is rejected loudly rather than silently dropped.
+
+The combination is what defends against frame replay across the spawn/recycle boundary that monotonic seq alone cannot defend against. The seq counter resets per channelId.
+
+### Trust-Anchor Bootstrap
+
+The spawn-time environment is the only channel the supervisor uses to hand trust anchors to the child. It carries exactly three values: `HOST_PUBKEY` (the supervisor's Ed25519 32-byte public key, hex), `IPC_HMAC_KEY` (the freshly minted 32-byte HMAC key, hex), and `IPC_CHANNEL_ID` (the freshly minted channelId, hex). The supervisor's Ed25519 private key never appears in env, never appears in any IPC payload, never appears in a log line, and never appears in an audit-log frame — it lives only as a 32-byte `Uint8Array` held in closure by the signing-key callback the supervisor wraps the control channel sender around. The env is constructed as a fresh object containing only those three variables, with no `...process.env` spread that could accidentally propagate a private value the supervisor's parent put in its own env.
+
+### Failure Stance
+
+The child verifies every control frame against `HOST_PUBKEY`; the supervisor verifies every event frame against `IPC_HMAC_KEY`. The contract on both sides is the same: any frame whose signature or MAC fails, whose channelId does not match the current one, or whose seq violates the monotonicity check is treated as a violation. The receiver calls a caller-supplied crash callback and ends the iterator. The supervisor's wiring promotes that crash to a process kill; the child does the same. Recycling brings the deployment back up cleanly with a fresh channelId.
+
+The event channel's userspace buffer is bounded (default 1024 frames, exported as `DEFAULT_EVENT_BUFFER_LIMIT`). On overrun the supervisor logs the saturation and the workflow-process kills itself. The audit chain is built from forwarded `InferenceEvent`s; a silent drop of even one event would corrupt the chain in a way no downstream consumer could detect. Between corrupt-but-quiet and crash-and-be-noticed, crash wins.
+
+### How This Differs From The Hub-Sidecar WebSocket Boundary
+
+The session-channels transport documented above runs between two trusted services across a network. Mutual TLS plus per-sidecar tokens plus challenge/response cover the authentication problem; framing is JSON over WebSocket; reconnection handles transport flakiness with sequence numbers carried on the resume; lifecycle frames travel alongside event frames on the same wire.
+
+The supervisor/child IPC runs between two processes on the same host where one of them is the trust anchor and the other is not. The threat model is "compromised user code in the child," not "lossy network in the middle." That changes three things in shape:
+
+- **Per-frame crypto, not per-session.** A long-lived authenticated session is not enough when the untrusted side could fabricate a single frame at any moment. Every frame carries its own authentication tag.
+- **Two separate transports, not one multiplexed wire.** Control and event differ in cost (asymmetric vs symmetric), in rate (low vs high), and in authority (one-way supervisor-to-child vs bidirectional). Multiplexing them onto a single wire would force the worst-case discipline of either, with no upside.
+- **Crash-on-violation, not retry-on-violation.** The WebSocket transport reconnects on transport faults. The IPC channels do not — a violation is treated as either a compromise or a programming bug, both of which the supervisor handles by killing the child and respawning with a fresh channelId. There is no "try again on the same wire" path.
+
 ## Authorization: OpenAPI-Based Capability Scoping
 
 When agents are granted access to external APIs, the full API surface often exceeds what the agent needs. Interchange uses OpenAPI specifications to define and enforce fine-grained authorization subsets.
