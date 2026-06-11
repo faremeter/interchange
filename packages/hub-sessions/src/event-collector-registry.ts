@@ -24,6 +24,7 @@ export type EventCollectorRegistry = {
     tenantId: string,
     sessionId: string,
     instanceId: string,
+    resumeTurn?: { id: string; nextOrdinal: number },
   ): void;
   dispatch(agentAddress: string, event: InferenceEvent): void;
   abandon(agentAddress: string): void;
@@ -73,6 +74,7 @@ export function createEventCollectorRegistry(
     tenantId: string,
     sessionId: string,
     instanceId: string,
+    resumeTurn?: { id: string; nextOrdinal: number },
   ): void {
     if (collectors.has(agentAddress)) {
       log.warn`Collector already exists for ${agentAddress}, replacing`;
@@ -84,6 +86,7 @@ export function createEventCollectorRegistry(
       sessionId,
       instanceId,
       tenantId,
+      ...(resumeTurn ? { resumeTurn } : {}),
       ...(onTurnFinalized
         ? {
             onTurnFinalized: (turn: TurnFinalized) =>

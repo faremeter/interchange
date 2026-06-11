@@ -10,10 +10,10 @@
 // than the full SidecarRouter, so tests can drive subscriber behavior
 // with a small stub and an isolated emitter.
 
-import { eq } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { type } from "arktype";
 import type { DB } from "@intx/db";
-import { agentInstance } from "@intx/db/schema";
+import { agentInstance, inferenceTurn, turnPart } from "@intx/db/schema";
 import { resolveInstanceSources } from "@intx/db";
 import { parseMailToEmail } from "@intx/mime";
 import { parseInferenceEvent } from "@intx/types/runtime";
@@ -166,11 +166,17 @@ export function createHubSessionOrchestrator(
           .where(eq(agentInstance.id, instance.id));
       }
       if (!eventCollectors.has(agentAddress)) {
+        // If the agent was mid-turn when the link dropped, the turn row is
+        // still 'running'. Adopt it so the resumed inference.done / step-finish
+        // parts land in that turn instead of being dropped for having no active
+        // turn — the live reply survives the reconnect (CL-1654).
+        const resumeTurn = await findOpenTurn(db, sessionId);
         eventCollectors.create(
           agentAddress,
           instance.tenantId,
           sessionId,
           instance.id,
+          resumeTurn,
         );
         log.info(
           "Restored event collector for reconnected agent {agentAddress}",
@@ -210,4 +216,38 @@ export function createHubSessionOrchestrator(
       for (const off of unsubscribers) off();
     },
   };
+}
+
+/**
+ * Find the session's still-open inference turn, if any, so a collector rebuilt
+ * on reconnect can resume it rather than dropping the trailing parts of a turn
+ * that was in flight when the link dropped. Returns the turn id and the next
+ * ordinal (one past the highest part already written) so the part sequence
+ * stays monotonic. Returns undefined when no running turn exists.
+ */
+async function findOpenTurn(
+  db: DB["db"],
+  sessionId: string,
+): Promise<{ id: string; nextOrdinal: number } | undefined> {
+  const [openTurn] = await db
+    .select({ id: inferenceTurn.id })
+    .from(inferenceTurn)
+    .where(
+      and(
+        eq(inferenceTurn.sessionId, sessionId),
+        eq(inferenceTurn.status, "running"),
+        isNull(inferenceTurn.endedAt),
+      ),
+    )
+    .orderBy(desc(inferenceTurn.startedAt))
+    .limit(1);
+
+  if (openTurn === undefined) return undefined;
+
+  const [maxRow] = await db
+    .select({ max: sql<number | null>`max(${turnPart.ordinal})` })
+    .from(turnPart)
+    .where(eq(turnPart.turnId, openTurn.id));
+
+  return { id: openTurn.id, nextOrdinal: (maxRow?.max ?? -1) + 1 };
 }

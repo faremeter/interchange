@@ -47,22 +47,30 @@ export type EventCollectorConfig = {
   instanceId: string;
   tenantId: string;
   onTurnFinalized?: (turn: TurnFinalized) => void;
+  // When a collector is rebuilt for a session whose agent was mid-turn at
+  // disconnect (e.g. a hub redeploy), adopt that still-running turn so the
+  // resumed inference.done / step-finish parts land in it rather than being
+  // dropped for having no active turn. `nextOrdinal` continues the existing
+  // part sequence so ordinals stay monotonic and collision-free.
+  resumeTurn?: { id: string; nextOrdinal: number };
 };
 
 export function createEventCollector(
   config: EventCollectorConfig,
 ): EventCollector {
-  const { db, sessionId, instanceId, tenantId, onTurnFinalized } = config;
+  const { db, sessionId, instanceId, tenantId, onTurnFinalized, resumeTurn } =
+    config;
 
   // Current inference turn being accumulated. A new turn is created on each
   // inference.start. Finalized on connector.reply, reactor.done,
-  // reactor.error (fatal), or abandon. Null when no turn is active.
-  let currentTurnId: string | null = null;
+  // reactor.error (fatal), or abandon. Null when no turn is active — except
+  // when resuming a running turn adopted on reconnect.
+  let currentTurnId: string | null = resumeTurn?.id ?? null;
   // Most recent turn ID, set in beginTurn. Unlike currentTurnId this is NOT
   // cleared on finalization — the SSE replay endpoint needs the turn ID
   // after the turn commits but before the collector is removed.
-  let lastTurnId: string | null = null;
-  let ordinal = 0;
+  let lastTurnId: string | null = resumeTurn?.id ?? null;
+  let ordinal = resumeTurn?.nextOrdinal ?? 0;
   // Prevents double-finalization when reactor.done and abandon() race.
   let finalized = false;
   // Set when inference.error fires so connector.reply knows to persist its

@@ -1385,3 +1385,77 @@ describe("EventCollector.getLastTurnId", () => {
     expect(collector.getLastTurnId()).not.toBe(firstTurnId);
   });
 });
+
+describe("EventCollector resumeTurn (reconnect adoption)", () => {
+  function doneTextEvent(): InferenceEvent {
+    return event("inference.done", 5, {
+      turn: {
+        role: "assistant",
+        content: [{ type: "text", text: "resumed reply" }],
+        model: "gpt-4",
+      },
+      usage: { input: 10, output: 20 },
+    });
+  }
+
+  test("drops trailing parts when no turn was adopted", async () => {
+    const fakeDB = createFakeDB();
+    const collector = createEventCollector({
+      db: fakeDB.db,
+      sessionId: "ses_test",
+      instanceId: "ins_test",
+      tenantId: "tnt_test",
+    });
+
+    // No inference.start: this simulates a fresh collector receiving the tail
+    // of a turn that began before a reconnect.
+    await collector.onEvent(doneTextEvent());
+
+    expect(fakeDB.inserts.filter((i) => i.table === "turn_part")).toHaveLength(0);
+    expect(collector.getCurrentTurnId()).toBeNull();
+  });
+
+  test("writes trailing parts into the adopted turn with continuing ordinals", async () => {
+    const fakeDB = createFakeDB();
+    const collector = createEventCollector({
+      db: fakeDB.db,
+      sessionId: "ses_test",
+      instanceId: "ins_test",
+      tenantId: "tnt_test",
+      resumeTurn: { id: "turn_resumed", nextOrdinal: 7 },
+    });
+
+    expect(collector.getCurrentTurnId()).toBe("turn_resumed");
+
+    await collector.onEvent(doneTextEvent());
+
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
+    const textPart = parts.find((p) => p.values.type === "text");
+    expect(textPart).not.toBeUndefined();
+    expect(at(parts, 0).values.turnId).toBe("turn_resumed");
+    expect(textPart?.values.content).toBe("resumed reply");
+    expect(textPart?.values.ordinal).toBe(7);
+    // No new inference_turn row is minted — the existing one is reused.
+    expect(fakeDB.inserts.filter((i) => i.table === "inference_turn")).toHaveLength(0);
+  });
+
+  test("finalizes the adopted turn on connector.reply / reactor.done", async () => {
+    const fakeDB = createFakeDB();
+    const collector = createEventCollector({
+      db: fakeDB.db,
+      sessionId: "ses_test",
+      instanceId: "ins_test",
+      tenantId: "tnt_test",
+      resumeTurn: { id: "turn_resumed", nextOrdinal: 3 },
+    });
+
+    await collector.onEvent(doneTextEvent());
+    await collector.onEvent(event("reactor.done", 6, {}));
+
+    const turnUpdates = fakeDB.updates.filter((u) => u.table === "inference_turn");
+    expect(turnUpdates).toHaveLength(1);
+    expect(at(turnUpdates, 0).set.status).toBe("completed");
+    expect(at(turnUpdates, 0).set.endedAt).toBeInstanceOf(Date);
+    expect(collector.getCurrentTurnId()).toBeNull();
+  });
+});

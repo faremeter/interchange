@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 
 import type { DB } from "@intx/db";
+import { inferenceTurn, turnPart } from "@intx/db/schema";
 import type { GrantRule, GrantStore } from "@intx/types/authz";
 import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
@@ -66,6 +67,11 @@ type MockDBOpts = {
    * tables; the helper returns empty arrays so the orchestrator's
    * credential push is a no-op. */
   emptyProviderTables?: boolean;
+  /** When set, the inference_turn select returns this still-running turn so
+   * findOpenTurn (reconnect adoption) resolves it. */
+  openTurn?: { id: string } | undefined;
+  /** Highest existing turn_part ordinal for the open turn (null = none). */
+  maxOrdinal?: number | null;
 };
 
 function createMockDB(opts: MockDBOpts) {
@@ -107,15 +113,31 @@ function createMockDB(opts: MockDBOpts) {
     },
     select() {
       return {
-        from: () => ({
-          where: () => ({
-            limit: () => Promise.resolve([]),
-            orderBy: () => ({ limit: () => Promise.resolve([]) }),
-          }),
-          innerJoin: () => ({
-            where: () => ({ limit: () => Promise.resolve([]) }),
-          }),
-        }),
+        from: (t: unknown) => {
+          if (t === inferenceTurn) {
+            const rows = opts.openTurn ? [opts.openTurn] : [];
+            return {
+              where: () => ({
+                orderBy: () => ({ limit: () => Promise.resolve(rows) }),
+                limit: () => Promise.resolve(rows),
+              }),
+            };
+          }
+          if (t === turnPart) {
+            return {
+              where: () => Promise.resolve([{ max: opts.maxOrdinal ?? null }]),
+            };
+          }
+          return {
+            where: () => ({
+              limit: () => Promise.resolve([]),
+              orderBy: () => ({ limit: () => Promise.resolve([]) }),
+            }),
+            innerJoin: () => ({
+              where: () => ({ limit: () => Promise.resolve([]) }),
+            }),
+          };
+        },
       };
     },
   } as unknown as DB["db"];
@@ -164,7 +186,12 @@ function createRouterFacade(): {
 }
 
 type CollectorCall =
-  | { kind: "create"; addr: string; sessionId: string }
+  | {
+      kind: "create";
+      addr: string;
+      sessionId: string;
+      resumeTurn: { id: string; nextOrdinal: number } | undefined;
+    }
   | { kind: "dispatch"; addr: string; event: InferenceEvent }
   | { kind: "abandon"; addr: string };
 
@@ -181,9 +208,9 @@ function createCollectorRegistry(
     calls,
     has,
     registry: {
-      create(addr, _tenantId, sessionId, _instanceId) {
+      create(addr, _tenantId, sessionId, _instanceId, resumeTurn) {
         has.add(addr);
-        calls.push({ kind: "create", addr, sessionId });
+        calls.push({ kind: "create", addr, sessionId, resumeTurn });
       },
       dispatch(addr, event) {
         calls.push({ kind: "dispatch", addr, event });
@@ -410,6 +437,55 @@ describe("createHubSessionOrchestrator", () => {
       if (created?.kind === "create") {
         expect(created.addr).toBe(AGENT_ADDRESS);
         expect(created.sessionId).toBe(SESSION_ID);
+      }
+    });
+
+    test("adopts the session's open running turn so trailing parts are not dropped", async () => {
+      harness = setup({
+        instance: makeInstance(),
+        openTurn: { id: "turn_open" },
+        maxOrdinal: 4,
+      });
+
+      await harness.events.emitAndAwait("agent.reconnected", {
+        agentAddress: AGENT_ADDRESS,
+      });
+
+      const created = harness.collectors.calls.find((c) => c.kind === "create");
+      expect(created).toBeDefined();
+      if (created?.kind === "create") {
+        expect(created.resumeTurn).toEqual({ id: "turn_open", nextOrdinal: 5 });
+      }
+    });
+
+    test("starts the next part at ordinal 0 when the open turn has no parts", async () => {
+      harness = setup({
+        instance: makeInstance(),
+        openTurn: { id: "turn_open" },
+        maxOrdinal: null,
+      });
+
+      await harness.events.emitAndAwait("agent.reconnected", {
+        agentAddress: AGENT_ADDRESS,
+      });
+
+      const created = harness.collectors.calls.find((c) => c.kind === "create");
+      if (created?.kind === "create") {
+        expect(created.resumeTurn).toEqual({ id: "turn_open", nextOrdinal: 0 });
+      }
+    });
+
+    test("passes no resumeTurn when the session has no open turn", async () => {
+      harness = setup({ instance: makeInstance(), openTurn: undefined });
+
+      await harness.events.emitAndAwait("agent.reconnected", {
+        agentAddress: AGENT_ADDRESS,
+      });
+
+      const created = harness.collectors.calls.find((c) => c.kind === "create");
+      expect(created).toBeDefined();
+      if (created?.kind === "create") {
+        expect(created.resumeTurn).toBeUndefined();
       }
     });
 
