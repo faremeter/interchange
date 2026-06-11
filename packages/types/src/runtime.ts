@@ -1221,6 +1221,28 @@ export const InferenceEvent = type({
     data: { message: WireInboundMessage },
   })
   .or({
+    type: "'message.run.started'",
+    seq: "number",
+    data: {
+      messageId: "string",
+      messageRunId: "string",
+      receivedAt: "number",
+    },
+  })
+  .or({
+    type: "'message.run.ended'",
+    seq: "number",
+    data: {
+      messageRunId: "string",
+      messageId: "string",
+      status: type.enumerated("completed", "failed"),
+      "error?": {
+        message: "string",
+        "kind?": "string",
+      },
+    },
+  })
+  .or({
     type: "'message.correlated'",
     seq: "number",
     data: { message: WireInboundMessage, correlationId: "string" },
@@ -1422,6 +1444,57 @@ export type InferenceEvent =
       type: "message.queued";
       seq: number;
       data: { message: InboundMessage };
+    }
+  | {
+      /**
+       * Per-message run-bracket open. Emitted by the reactor when it
+       * dequeues an inbound mail message and begins per-message work.
+       *
+       * `messageRunId` is reactor-minted, unique per dequeue. It is
+       * non-negotiable for crash-replay correlation: the reactor can
+       * legitimately dequeue the same `messageId` more than once across
+       * a crash + replay cycle, so two bracket-open events with the
+       * same `messageId` and no run-id cannot be unambiguously paired
+       * with their `message.run.ended` counterparts.
+       */
+      type: "message.run.started";
+      seq: number;
+      data: {
+        messageId: string;
+        messageRunId: string;
+        receivedAt: number;
+      };
+    }
+  | {
+      /**
+       * Per-message run-bracket close. Pairs with `message.run.started`
+       * by `messageRunId`. `messageId` is carried redundantly so log
+       * readers can correlate without a join against the open event.
+       *
+       * The `status` enum is `"completed" | "failed"` only.
+       * Cancellation lives in the workflow-runtime's
+       * `CancelRequested` -> `RunFailed` vocabulary, not on the
+       * reactor's bracket: the reactor does not run a state machine
+       * and what it observes when cancellation arrives is a harness
+       * abort, which is structurally `"failed"` with a specific
+       * `error.kind`.
+       *
+       * `error.kind` is documented as one of
+       * `"inference_error" | "tool_error" | "reactor_fatal" |
+       * "harness_aborted"` initially, extensible as new failure
+       * categories surface.
+       */
+      type: "message.run.ended";
+      seq: number;
+      data: {
+        messageRunId: string;
+        messageId: string;
+        status: "completed" | "failed";
+        error?: {
+          message: string;
+          kind?: string;
+        };
+      };
     }
   | {
       type: "message.correlated";
