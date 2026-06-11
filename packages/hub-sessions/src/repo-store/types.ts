@@ -309,4 +309,60 @@ export interface RepoStore {
    * they reach into for ref-listing and pack negotiation.
    */
   getRepoDir(repoId: RepoId): string;
+  /**
+   * Tail a ref's commit log. Returns an async iterator that emits
+   * `{ seq, event }` entries: one per commit on the ref. `seq` is
+   * zero-indexed at the ref's root commit and counts ancestors
+   * walking forward to HEAD, so the same commit always carries the
+   * same `seq` across restarts. The emitted `event` is the
+   * substrate-level commit descriptor; consumers that need richer
+   * shapes layer their own decoding on top.
+   *
+   * Cancellation: when `opts.signal` aborts, the iterator ends
+   * cleanly (no throw from the consumer's `for await`). The
+   * substrate releases the watcher slot on the same abort tick.
+   *
+   * Replay vs live:
+   *   - `from: { seq: number }` enumerates every prior commit on the
+   *     ref whose computed `seq` is >= the supplied number, then
+   *     transitions to live mode and continues with new commits.
+   *   - `from: "head"` records HEAD-of-ref at subscribe time and
+   *     emits only commits that land strictly after.
+   *
+   * Backpressure: events are buffered in userspace bounded by
+   * `bufferLimit` (default 1024). On overrun the iterator throws a
+   * loud error; silent drop would corrupt audit. Consumers that
+   * cannot keep up are expected to abort.
+   *
+   * The substrate's vocabulary is the ref-update envelope. Consumers
+   * that need to filter on a richer event kind (e.g. a workflow-event
+   * `type` discriminator committed at the new ref) layer a decoder on
+   * top — see `subscribeKind` for the typed entrypoint that loads the
+   * committed payload, narrows it with an arktype validator, and
+   * applies a per-call kind filter.
+   */
+  subscribe(
+    principal: Principal,
+    repoId: RepoId,
+    ref: string,
+    opts: {
+      signal: AbortSignal;
+      from: "head" | { seq: number };
+      bufferLimit?: number;
+    },
+  ): AsyncIterableIterator<{ seq: number; event: unknown }>;
 }
+
+/**
+ * Substrate-level event shape emitted by `RepoStore.subscribe`.
+ * Each successful commit on a watched ref produces one event with
+ * this shape. The substrate is schema-agnostic; higher layers that
+ * want to surface richer event vocabularies build their own decoders
+ * on top (see `subscribeKind` for the workflow-event entrypoint).
+ */
+export type RepoStoreSubscribeEvent = {
+  readonly type: "ref.updated";
+  readonly ref: string;
+  readonly oldSha: string | null;
+  readonly newSha: string;
+};

@@ -142,6 +142,9 @@ function unusedRepoStore(): RepoStore {
     getRepoDir: () => {
       throw new Error("mock AgentRepoStore.repoStore is not wired");
     },
+    subscribe: () => {
+      throw new Error("mock AgentRepoStore.repoStore is not wired");
+    },
   };
 }
 
@@ -169,6 +172,9 @@ function createFakeRepoStore(
     listRefs: unused,
     resolveHead: unused,
     getRepoDir: () => {
+      throw new Error("repoStore method not wired in fake");
+    },
+    subscribe: () => {
       throw new Error("repoStore method not wired in fake");
     },
     async resolveRef(_principal: Principal, repoId: RepoId, ref: string) {

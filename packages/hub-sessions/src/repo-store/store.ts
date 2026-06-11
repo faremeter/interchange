@@ -20,10 +20,23 @@ import type {
   RepoId,
   RepoKind,
   RepoStore,
+  RepoStoreSubscribeEvent,
   TreeContent,
   WriteTreePreservingPrefixArgs,
 } from "./types";
 import { SAFE_REPO_ID } from "./types";
+
+const DEFAULT_SUBSCRIBE_BUFFER_LIMIT = 1024;
+
+type SubscribeEntry = { seq: number; event: unknown };
+
+type SubscriberState = {
+  bufferLimit: number;
+  buffer: SubscribeEntry[];
+  closed: boolean;
+  error: Error | null;
+  waiter: ((value: IteratorResult<SubscribeEntry>) => void) | null;
+};
 
 const AUTHOR = {
   name: "interchange-hub",
@@ -97,6 +110,127 @@ export type CreateRepoStoreConfig = {
 
 export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   const { dataDir, signingKey, handlers, authorize, signingCallback } = config;
+
+  // Per-(repoId, ref) seq cache. Value is the seq of the ref's
+  // current tip; the next commit on the ref gets `cached + 1`. The
+  // cache is populated lazily — on each ref update we either bump
+  // the cached value or recompute it from `git.log` walk. Cleared
+  // on any failure inside the update path so a half-applied state
+  // never poisons future reads.
+  const seqCache = new Map<string, number>();
+
+  // Per-(repoId, ref) subscriber set. Each subscriber holds its own
+  // buffer, kind filter, and waiter callback so concurrent
+  // subscribers do not interfere with each other.
+  const subscribers = new Map<string, Set<SubscriberState>>();
+
+  function refKey(repoId: RepoId, ref: string): string {
+    return `${repoId.kind}/${repoId.id}/${ref}`;
+  }
+
+  // Count commits reachable from `ref`. Returns 0 when the ref does
+  // not yet exist. `git.log` returns newest-first; the count gives
+  // the seq the next commit would land at if added now (the current
+  // tip's seq is `count - 1`).
+  async function countCommits(dir: string, ref: string): Promise<number> {
+    try {
+      const entries = await git.log({ fs, dir, ref });
+      return entries.length;
+    } catch (err) {
+      if (hasCode(err) && err.code === "NotFoundError") return 0;
+      throw err;
+    }
+  }
+
+  // Walk the ref's commit history oldest-first, assigning seq 0 to
+  // the root commit and incrementing toward HEAD. Each entry's
+  // `event` is the substrate-level commit descriptor — same shape
+  // the live path emits, so replay and live are vocabulary-identical.
+  async function replayHistory(
+    dir: string,
+    ref: string,
+  ): Promise<SubscribeEntry[]> {
+    let entries: Awaited<ReturnType<typeof git.log>>;
+    try {
+      entries = await git.log({ fs, dir, ref });
+    } catch (err) {
+      if (hasCode(err) && err.code === "NotFoundError") return [];
+      throw err;
+    }
+    const reversed = [...entries].reverse();
+    const out: SubscribeEntry[] = [];
+    let prev: string | null = null;
+    for (let i = 0; i < reversed.length; i++) {
+      const entry = reversed[i];
+      if (entry === undefined) throw new Error("unreachable");
+      const event: RepoStoreSubscribeEvent = {
+        type: "ref.updated",
+        ref,
+        oldSha: prev,
+        newSha: entry.oid,
+      };
+      out.push({ seq: i, event });
+      prev = entry.oid;
+    }
+    return out;
+  }
+
+  function deliverToSubscriber(sub: SubscriberState, entry: SubscribeEntry) {
+    if (sub.closed) return;
+    if (sub.waiter !== null) {
+      const w = sub.waiter;
+      sub.waiter = null;
+      w({ value: entry, done: false });
+      return;
+    }
+    if (sub.buffer.length >= sub.bufferLimit) {
+      sub.error = new Error(
+        `subscribe_buffer_overrun: subscriber exceeded bufferLimit=${String(sub.bufferLimit)}`,
+      );
+      sub.closed = true;
+      return;
+    }
+    sub.buffer.push(entry);
+  }
+
+  // Called from inside the per-repo lock immediately after a
+  // successful ref update. Computes the new tip's seq (either by
+  // bumping the cached value or by walking the log), then fans the
+  // event out to every subscriber registered for this (repoId, ref).
+  // Errors raised by individual subscriber delivery (e.g. buffer
+  // overrun) are captured on the subscriber's state so the
+  // ref-update path itself is never destabilised by a slow consumer.
+  async function emitRefUpdate(
+    repoId: RepoId,
+    ref: string,
+    oldSha: string | null,
+    newSha: string,
+  ): Promise<void> {
+    const key = refKey(repoId, ref);
+    let seq: number;
+    const cached = seqCache.get(key);
+    if (cached !== undefined) {
+      seq = cached + 1;
+    } else {
+      const dir = repoDir(repoId);
+      const count = await countCommits(dir, ref);
+      // `count` is the number of commits including the one we just
+      // produced. The tip's seq is `count - 1`.
+      seq = Math.max(0, count - 1);
+    }
+    seqCache.set(key, seq);
+
+    const event: RepoStoreSubscribeEvent = {
+      type: "ref.updated",
+      ref,
+      oldSha,
+      newSha,
+    };
+    const entry: SubscribeEntry = { seq, event };
+    const set = subscribers.get(key);
+    if (set === undefined) return;
+    for (const sub of set) deliverToSubscriber(sub, entry);
+  }
 
   function handlerFor(repoId: RepoId): KindHandler {
     const handler = handlers[repoId.kind];
@@ -498,6 +632,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     });
 
     await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
+    await emitRefUpdate(repoId, ref, oldSha, commitSha);
 
     return { commitSha };
   }
@@ -641,6 +776,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       );
 
       await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
+      await emitRefUpdate(repoId, ref, oldSha, commitSha);
     });
   }
 
@@ -663,6 +799,168 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return resolveRefSha(repoDir(repoId), ref);
   }
 
+  function subscribe(
+    principal: Principal,
+    repoId: RepoId,
+    ref: string,
+    opts: {
+      signal: AbortSignal;
+      from: "head" | { seq: number };
+      bufferLimit?: number;
+    },
+  ): AsyncIterableIterator<{ seq: number; event: unknown }> {
+    gateAccess(principal, repoId, ref, "resolveRef");
+
+    const bufferLimit = opts.bufferLimit ?? DEFAULT_SUBSCRIBE_BUFFER_LIMIT;
+    if (!Number.isInteger(bufferLimit) || bufferLimit <= 0) {
+      throw new Error(
+        `subscribe_buffer_limit_invalid: ${String(opts.bufferLimit)}`,
+      );
+    }
+
+    const sub: SubscriberState = {
+      bufferLimit,
+      buffer: [],
+      closed: false,
+      error: null,
+      waiter: null,
+    };
+
+    const key = refKey(repoId, ref);
+    let set = subscribers.get(key);
+    if (set === undefined) {
+      set = new Set();
+      subscribers.set(key, set);
+    }
+    set.add(sub);
+
+    const removeSubscriber = () => {
+      const current = subscribers.get(key);
+      if (current === undefined) return;
+      current.delete(sub);
+      if (current.size === 0) subscribers.delete(key);
+    };
+
+    const finish = () => {
+      if (sub.closed) {
+        // Already closed by abort or error. Still flush any waiter
+        // so the consumer's pending `next()` resolves promptly.
+      }
+      sub.closed = true;
+      removeSubscriber();
+      if (sub.waiter !== null) {
+        const w = sub.waiter;
+        sub.waiter = null;
+        w({ value: undefined, done: true });
+      }
+    };
+
+    const onAbort = () => {
+      sub.closed = true;
+      removeSubscriber();
+      if (sub.waiter !== null) {
+        const w = sub.waiter;
+        sub.waiter = null;
+        w({ value: undefined, done: true });
+      }
+    };
+
+    if (opts.signal.aborted) {
+      // Aborted before any work — return an iterator that yields
+      // {done: true} immediately. The subscriber is registered then
+      // removed for symmetry with the live path's cleanup.
+      onAbort();
+    } else {
+      opts.signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    // Replay queue: events sourced from history that the iterator
+    // surfaces before falling through to the live buffer. Filled
+    // synchronously by the first `next()` call (replayHistory does
+    // the git.log walk), then drained one entry per next().
+    let replayQueue: SubscribeEntry[] | null = null;
+    let replayPrimed = false;
+
+    async function primeReplay(): Promise<void> {
+      replayPrimed = true;
+      const dir = repoDir(repoId);
+      if (opts.from === "head") {
+        // Seed the seq cache so the next commit on the ref carries
+        // the correct seq even if no prior commit had ever populated
+        // it. Subscribers that come in with `from: "head"` see only
+        // new commits — there is no history to replay.
+        const cached = seqCache.get(key);
+        if (cached === undefined) {
+          const count = await countCommits(dir, ref);
+          if (count > 0) seqCache.set(key, count - 1);
+        }
+        replayQueue = [];
+        return;
+      }
+      const all = await replayHistory(dir, ref);
+      // Seed the seq cache from the replay so live deliveries
+      // continue the seq sequence correctly.
+      if (all.length > 0) {
+        const last = all[all.length - 1];
+        if (last === undefined) throw new Error("unreachable");
+        seqCache.set(key, last.seq);
+      }
+      const fromSeq = opts.from.seq;
+      replayQueue = all.filter((e) => e.seq >= fromSeq);
+    }
+
+    const iterator: AsyncIterableIterator<SubscribeEntry> = {
+      [Symbol.asyncIterator]() {
+        return iterator;
+      },
+      async next(): Promise<IteratorResult<SubscribeEntry>> {
+        if (!replayPrimed) {
+          try {
+            await primeReplay();
+          } catch (err) {
+            finish();
+            throw err;
+          }
+        }
+        if (replayQueue !== null && replayQueue.length > 0) {
+          const entry = replayQueue.shift();
+          if (entry === undefined) throw new Error("unreachable");
+          return { value: entry, done: false };
+        }
+        if (sub.buffer.length > 0) {
+          const entry = sub.buffer.shift();
+          if (entry === undefined) throw new Error("unreachable");
+          return { value: entry, done: false };
+        }
+        if (sub.error !== null) {
+          const err = sub.error;
+          sub.error = null;
+          finish();
+          throw err;
+        }
+        if (sub.closed) {
+          finish();
+          return { value: undefined, done: true };
+        }
+        return new Promise<IteratorResult<SubscribeEntry>>((resolve) => {
+          sub.waiter = resolve;
+        });
+      },
+      async return(): Promise<IteratorResult<SubscribeEntry>> {
+        opts.signal.removeEventListener("abort", onAbort);
+        finish();
+        return { value: undefined, done: true };
+      },
+      async throw(err: unknown): Promise<IteratorResult<SubscribeEntry>> {
+        opts.signal.removeEventListener("abort", onAbort);
+        finish();
+        throw err;
+      },
+    };
+
+    return iterator;
+  }
+
   return {
     initRepo,
     writeTree,
@@ -673,5 +971,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     listRefs,
     resolveHead,
     getRepoDir,
+    subscribe,
   };
 }

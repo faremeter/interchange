@@ -88,6 +88,30 @@ async function readTreePaths(dir: string, treeOid: string): Promise<string[]> {
   return tree.map((e) => e.path);
 }
 
+type RefUpdatedEvent = {
+  type: "ref.updated";
+  ref: string;
+  oldSha: string | null;
+  newSha: string;
+};
+
+function isRefUpdatedEvent(value: unknown): value is RefUpdatedEvent {
+  if (value === null || typeof value !== "object") return false;
+  if (!("type" in value) || value.type !== "ref.updated") return false;
+  if (!("ref" in value) || typeof value.ref !== "string") return false;
+  if (!("newSha" in value) || typeof value.newSha !== "string") return false;
+  if (!("oldSha" in value)) return false;
+  if (value.oldSha !== null && typeof value.oldSha !== "string") return false;
+  return true;
+}
+
+function asRefUpdated(event: unknown): RefUpdatedEvent {
+  if (!isRefUpdatedEvent(event)) {
+    throw new Error(`event is not RefUpdatedEvent: ${JSON.stringify(event)}`);
+  }
+  return event;
+}
+
 describe("RepoStore", () => {
   test("initRepo is idempotent", async () => {
     const dataDir = await makeTempDir("repo-store-init-");
@@ -1314,5 +1338,293 @@ describe("RepoStore", () => {
     expect(await targetStore.resolveRef(principal, repoId, REF)).toBe(
       commitSha,
     );
+  });
+
+  test("subscribe replays the full history from seq 0", async () => {
+    const dataDir = await makeTempDir("repo-store-sub-replay-0-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    const first = await store.writeTree(principal, repoId, REF, {
+      files: { "a.md": "1" },
+      message: "one",
+    });
+    const second = await store.writeTree(principal, repoId, REF, {
+      files: { "a.md": "2" },
+      message: "two",
+    });
+
+    const ac = new AbortController();
+    const iter = store.subscribe(principal, repoId, REF, {
+      signal: ac.signal,
+      from: { seq: 0 },
+    });
+
+    const collected: { seq: number; event: unknown }[] = [];
+    for (let i = 0; i < 3; i++) {
+      const next = await iter.next();
+      if (next.done) break;
+      collected.push(next.value);
+    }
+    ac.abort();
+
+    expect(collected.length).toBeGreaterThanOrEqual(2);
+    const seqs = collected.map((e) => e.seq);
+    expect(seqs).toEqual(Array.from({ length: seqs.length }, (_, i) => i));
+
+    const newShaList = collected.map((e) => {
+      const ev = asRefUpdated(e.event);
+      expect(ev.type).toBe("ref.updated");
+      expect(ev.ref).toBe(REF);
+      return ev.newSha;
+    });
+    expect(newShaList).toContain(first.commitSha);
+    expect(newShaList).toContain(second.commitSha);
+  });
+
+  test("subscribe replays from a non-zero seq", async () => {
+    const dataDir = await makeTempDir("repo-store-sub-replay-n-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    await store.writeTree(principal, repoId, REF, {
+      files: { "a.md": "1" },
+      message: "one",
+    });
+    const second = await store.writeTree(principal, repoId, REF, {
+      files: { "a.md": "2" },
+      message: "two",
+    });
+    const third = await store.writeTree(principal, repoId, REF, {
+      files: { "a.md": "3" },
+      message: "three",
+    });
+
+    const ac = new AbortController();
+    const iter = store.subscribe(principal, repoId, REF, {
+      signal: ac.signal,
+      from: { seq: 2 },
+    });
+
+    const collected: { seq: number; event: unknown }[] = [];
+    for (let i = 0; i < 2; i++) {
+      const next = await iter.next();
+      if (next.done) break;
+      collected.push(next.value);
+      if (collected.length === 2) break;
+    }
+    ac.abort();
+
+    const seqs = collected.map((e) => e.seq);
+    expect(seqs.every((s) => s >= 2)).toBe(true);
+
+    const newShaList = collected.map((e) => asRefUpdated(e.event).newSha);
+    expect(newShaList).toContain(second.commitSha);
+    expect(newShaList).toContain(third.commitSha);
+  });
+
+  test("subscribe from head emits only commits that land after subscribe", async () => {
+    const dataDir = await makeTempDir("repo-store-sub-head-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    await store.writeTree(principal, repoId, REF, {
+      files: { "a.md": "before" },
+      message: "before subscribe",
+    });
+
+    const ac = new AbortController();
+    const iter = store.subscribe(principal, repoId, REF, {
+      signal: ac.signal,
+      from: "head",
+    });
+
+    const newWrite = store.writeTree(principal, repoId, REF, {
+      files: { "a.md": "after" },
+      message: "after subscribe",
+    });
+    const [next, newCommit] = await Promise.all([iter.next(), newWrite]);
+    ac.abort();
+
+    expect(next.done).toBe(false);
+    if (next.done) throw new Error("unreachable");
+    const ev = asRefUpdated(next.value.event);
+    expect(ev.newSha).toBe(newCommit.commitSha);
+    expect(ev.oldSha).not.toBeNull();
+  });
+
+  test("subscribe ends cleanly when the abort signal fires", async () => {
+    const dataDir = await makeTempDir("repo-store-sub-abort-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    await store.initRepo(repoId);
+
+    const ac = new AbortController();
+    const iter = store.subscribe(principal, repoId, REF, {
+      signal: ac.signal,
+      from: "head",
+    });
+
+    // Schedule the abort on the next tick, then await next(). The
+    // pending waiter should resolve to {done: true} cleanly — no
+    // throw, no hang.
+    setTimeout(() => ac.abort(), 10);
+    const done = await iter.next();
+    expect(done.done).toBe(true);
+
+    // A second next() after abort is also done; the iterator stays
+    // closed without rethrowing.
+    const again = await iter.next();
+    expect(again.done).toBe(true);
+  });
+
+  test("subscribe throws on buffer overrun", async () => {
+    const dataDir = await makeTempDir("repo-store-sub-overrun-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    await store.initRepo(repoId);
+
+    const ac = new AbortController();
+    const iter = store.subscribe(principal, repoId, REF, {
+      signal: ac.signal,
+      from: "head",
+      bufferLimit: 2,
+    });
+
+    // Prime the iterator so the replay phase runs (and the seq
+    // cache is seeded) before we start filling the buffer.
+    const drainPromise = iter.next();
+
+    // The first commit's event satisfies the pending waiter set up
+    // by drainPromise — it does not occupy a buffer slot. The next
+    // three commits fill the buffer to its limit and then overrun.
+    const first = await store.writeTree(principal, repoId, REF, {
+      files: { "a.md": "1" },
+      message: "one",
+    });
+    await drainPromise.then((r) => {
+      if (r.done) throw new Error("unreachable");
+      expect(asRefUpdated(r.value.event).newSha).toBe(first.commitSha);
+    });
+
+    await store.writeTree(principal, repoId, REF, {
+      files: { "a.md": "2" },
+      message: "two",
+    });
+    await store.writeTree(principal, repoId, REF, {
+      files: { "a.md": "3" },
+      message: "three",
+    });
+    await store.writeTree(principal, repoId, REF, {
+      files: { "a.md": "4" },
+      message: "four",
+    });
+
+    // Drain the first two buffered events normally.
+    const a = await iter.next();
+    const b = await iter.next();
+    expect(a.done).toBe(false);
+    expect(b.done).toBe(false);
+
+    // The third pull surfaces the captured overrun error.
+    await expect(iter.next()).rejects.toThrow(/subscribe_buffer_overrun/);
+
+    ac.abort();
+  });
+
+  test("subscribe isolates multiple concurrent subscribers", async () => {
+    const dataDir = await makeTempDir("repo-store-sub-multi-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    await store.initRepo(repoId);
+
+    const acA = new AbortController();
+    const acB = new AbortController();
+    const iterA = store.subscribe(principal, repoId, REF, {
+      signal: acA.signal,
+      from: "head",
+    });
+    const iterB = store.subscribe(principal, repoId, REF, {
+      signal: acB.signal,
+      from: "head",
+    });
+
+    const pendingA = iterA.next();
+    const pendingB = iterB.next();
+    const write = await store.writeTree(principal, repoId, REF, {
+      files: { "a.md": "1" },
+      message: "one",
+    });
+
+    const [a, b] = await Promise.all([pendingA, pendingB]);
+    if (a.done || b.done) throw new Error("unreachable");
+
+    expect(asRefUpdated(a.value.event).newSha).toBe(write.commitSha);
+    expect(asRefUpdated(b.value.event).newSha).toBe(write.commitSha);
+    expect(a.value.seq).toBe(b.value.seq);
+
+    // Cancelling A does not affect B.
+    acA.abort();
+    const closedA = await iterA.next();
+    expect(closedA.done).toBe(true);
+
+    const pendingB2 = iterB.next();
+    const write2 = await store.writeTree(principal, repoId, REF, {
+      files: { "a.md": "2" },
+      message: "two",
+    });
+    const b2 = await pendingB2;
+    if (b2.done) throw new Error("unreachable");
+    expect(asRefUpdated(b2.value.event).newSha).toBe(write2.commitSha);
+    acB.abort();
+  });
+
+  test("subscribe authorize denial throws immediately", async () => {
+    const dataDir = await makeTempDir("repo-store-sub-deny-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: () => ({ allowed: false, reason: "denied" }),
+    });
+
+    const ac = new AbortController();
+    expect(() =>
+      store.subscribe(principal, repoId, REF, {
+        signal: ac.signal,
+        from: "head",
+      }),
+    ).toThrow(/^authorize_denied/);
   });
 });
