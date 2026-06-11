@@ -44,6 +44,7 @@ import semver from "semver";
 import npmRegistryFetch from "npm-registry-fetch";
 
 import type {
+  AnnotatedDirectorFactory,
   AnnotatedPluginFactory,
   AnnotatedToolFactory,
   BaseEnv,
@@ -72,6 +73,14 @@ const logger = getLogger(["sidecar", "tool-packaging", "loader"]);
  */
 export type LoadedToolFactory = AnnotatedToolFactory<BaseEnv>;
 
+/**
+ * Loaded director factory shape. Same erased-Config storage as the
+ * registry uses: the loader walks `interchange.directors` and surfaces
+ * every export the structural check accepts. Downstream consumers feed
+ * these into `createDirectorRegistry` alongside the built-in defaults.
+ */
+export type LoadedDirectorFactory = AnnotatedDirectorFactory<unknown, BaseEnv>;
+
 /** One pinned package after materialization and entry-module import. */
 export interface LoadedToolPackage {
   readonly name: string;
@@ -84,6 +93,16 @@ export interface LoadedToolPackage {
    * to the tool factories that read them.
    */
   readonly plugins: readonly AnnotatedPluginFactory[];
+  /**
+   * Director factories the package's `interchange.directors` module
+   * exported (via `defineDirector`). The capability walk resolves
+   * `DirectorRef.id` against these at deploy time; the agent runtime
+   * resolves them again at instantiation. Empty when the package's
+   * `package.json` omits the `interchange.directors` field — the
+   * walker treats absence as a no-op so a tools-only package stays
+   * valid.
+   */
+  readonly directors: readonly LoadedDirectorFactory[];
 }
 
 export interface HostPlatform {
@@ -332,14 +351,95 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
         package: { name: entry.name, version: entry.version },
       });
     }
-    const entryRel = readInterchangeToolsEntry(pkgJson);
-    if (entryRel === null) {
+    const toolsRel = readInterchangeEntry(pkgJson, "tools");
+    if (toolsRel === null) {
       throw new ToolLoaderError({
         category: "package.entry.missing",
         message: `${entry.name}@${entry.version} package.json has no "interchange.tools" field`,
         package: { name: entry.name, version: entry.version },
       });
     }
+    const toolsMod = await importInterchangeEntry({
+      entry,
+      pkgDir,
+      entryRel: toolsRel,
+      field: "tools",
+    });
+    const factories: LoadedToolFactory[] = [];
+    const plugins: AnnotatedPluginFactory[] = [];
+    for (const value of Object.values(toolsMod)) {
+      if (isAnnotatedPluginFactory(value)) {
+        plugins.push(value);
+      } else if (isAnnotatedToolFactory(value)) {
+        factories.push(
+          applyNamespacePrefix(value, {
+            name: entry.name,
+            version: entry.version,
+          }),
+        );
+      }
+    }
+    if (factories.length === 0 && plugins.length === 0) {
+      throw new ToolLoaderError({
+        category: "package.entry.invalid",
+        message: `${entry.name}@${entry.version} interchange.tools entry exported no AnnotatedToolFactory or AnnotatedPluginFactory values`,
+        package: { name: entry.name, version: entry.version },
+      });
+    }
+
+    // Director walk: separate `package.json` field, separate dynamic
+    // import, separate structural validation. Absence is a no-op so a
+    // tools-only package stays valid; a directors-only package is not
+    // supported because the tools field's absence is already a hard
+    // error above. A package whose director-entry module exports
+    // nothing director-shaped is rejected the same way the tool entry
+    // would be.
+    const directors: LoadedDirectorFactory[] = [];
+    const directorsRel = readInterchangeEntry(pkgJson, "directors");
+    if (directorsRel !== null) {
+      const directorsMod = await importInterchangeEntry({
+        entry,
+        pkgDir,
+        entryRel: directorsRel,
+        field: "directors",
+      });
+      for (const value of Object.values(directorsMod)) {
+        if (isAnnotatedDirectorFactory(value)) {
+          directors.push(value);
+        }
+      }
+      if (directors.length === 0) {
+        throw new ToolLoaderError({
+          category: "package.entry.invalid",
+          message: `${entry.name}@${entry.version} interchange.directors entry exported no AnnotatedDirectorFactory values`,
+          package: { name: entry.name, version: entry.version },
+        });
+      }
+    }
+
+    return {
+      name: entry.name,
+      version: entry.version,
+      factories,
+      plugins,
+      directors,
+    };
+  }
+
+  /**
+   * Resolve `entryRel` against `pkgDir`, enforce path-safety
+   * (`..`-traversal, absolute-path, and node_modules symlink-graph
+   * escapes), and dynamic-import the result. Centralized so the
+   * `interchange.tools` and `interchange.directors` walkers share one
+   * containment surface.
+   */
+  async function importInterchangeEntry(args: {
+    entry: ToolPackageManifestEntry;
+    pkgDir: string;
+    entryRel: string;
+    field: "tools" | "directors";
+  }): Promise<object> {
+    const { entry, pkgDir, entryRel, field } = args;
     const entryAbs = path.resolve(pkgDir, entryRel);
     // `entryRel` originates from the tarball's `package.json` and
     // crosses the trust boundary into the sidecar process. `..` or an
@@ -352,7 +452,7 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
     // `entryRel`. It is not enough on its own: the per-instance
     // scratch tree contains a `node_modules/` symlink graph the
     // loader builds to satisfy nested resolution, and an
-    // `interchange.tools` entry that traverses that graph would
+    // `interchange.*` entry that traverses that graph would
     // string-contain inside `pkgDir` but resolve via realpath to
     // another package's code (or anywhere else the symlink target
     // points). Re-check containment against the realpath so a
@@ -369,7 +469,7 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
     if (entryAbs !== pkgDir && !entryAbs.startsWith(containmentRoot)) {
       throw new ToolLoaderError({
         category: "package.entry.invalid",
-        message: `${entry.name}@${entry.version} interchange.tools entry path ${JSON.stringify(entryRel)} escapes the package directory`,
+        message: `${entry.name}@${entry.version} interchange.${field} entry path ${JSON.stringify(entryRel)} escapes the package directory`,
         package: { name: entry.name, version: entry.version },
       });
     }
@@ -388,7 +488,7 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
     } catch (err) {
       throw new ToolLoaderError({
         category: "package.entry.invalid",
-        message: `${entry.name}@${entry.version} interchange.tools entry path ${JSON.stringify(entryRel)} could not be resolved: ${describeError(err)}`,
+        message: `${entry.name}@${entry.version} interchange.${field} entry path ${JSON.stringify(entryRel)} could not be resolved: ${describeError(err)}`,
         package: { name: entry.name, version: entry.version },
       });
     }
@@ -401,7 +501,7 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
     ) {
       throw new ToolLoaderError({
         category: "package.entry.invalid",
-        message: `${entry.name}@${entry.version} interchange.tools entry path ${JSON.stringify(entryRel)} escapes the package extraction directory via a symlink`,
+        message: `${entry.name}@${entry.version} interchange.${field} entry path ${JSON.stringify(entryRel)} escapes the package extraction directory via a symlink`,
         package: { name: entry.name, version: entry.version },
       });
     }
@@ -422,44 +522,18 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
     } catch (err) {
       throw new ToolLoaderError({
         category: "package.entry.invalid",
-        message: `dynamic import of ${entry.name}@${entry.version} interchange.tools failed: ${describeError(err)}`,
+        message: `dynamic import of ${entry.name}@${entry.version} interchange.${field} failed: ${describeError(err)}`,
         package: { name: entry.name, version: entry.version },
       });
     }
     if (mod === null || typeof mod !== "object") {
       throw new ToolLoaderError({
         category: "package.entry.invalid",
-        message: `${entry.name}@${entry.version} interchange.tools entry did not return an object`,
+        message: `${entry.name}@${entry.version} interchange.${field} entry did not return an object`,
         package: { name: entry.name, version: entry.version },
       });
     }
-    const factories: LoadedToolFactory[] = [];
-    const plugins: AnnotatedPluginFactory[] = [];
-    for (const value of Object.values(mod)) {
-      if (isAnnotatedPluginFactory(value)) {
-        plugins.push(value);
-      } else if (isAnnotatedToolFactory(value)) {
-        factories.push(
-          applyNamespacePrefix(value, {
-            name: entry.name,
-            version: entry.version,
-          }),
-        );
-      }
-    }
-    if (factories.length === 0 && plugins.length === 0) {
-      throw new ToolLoaderError({
-        category: "package.entry.invalid",
-        message: `${entry.name}@${entry.version} interchange.tools entry exported no AnnotatedToolFactory or AnnotatedPluginFactory values`,
-        package: { name: entry.name, version: entry.version },
-      });
-    }
-    return {
-      name: entry.name,
-      version: entry.version,
-      factories,
-      plugins,
-    };
+    return mod;
   }
 
   return {
@@ -1296,15 +1370,28 @@ function isENOENT(err: unknown): boolean {
   return (err as { code: unknown }).code === "ENOENT";
 }
 
-function readInterchangeToolsEntry(pkgJson: unknown): string | null {
+function readInterchangeEntry(
+  pkgJson: unknown,
+  field: "tools" | "directors",
+): string | null {
   if (pkgJson === null || typeof pkgJson !== "object") return null;
   if (!("interchange" in pkgJson)) return null;
   const interchange = (pkgJson as { interchange: unknown }).interchange;
   if (interchange === null || typeof interchange !== "object") return null;
-  if (!("tools" in interchange)) return null;
-  const tools = (interchange as { tools: unknown }).tools;
-  if (typeof tools !== "string") return null;
-  return tools;
+  // Branch on the field rather than dynamic index-access so each path
+  // narrows through a single-property shape — matches the pattern the
+  // surrounding helpers use to inspect package.json without widening
+  // through a `Record<string, unknown>` assertion.
+  let value: unknown;
+  if (field === "tools") {
+    if (!("tools" in interchange)) return null;
+    value = (interchange as { tools: unknown }).tools;
+  } else {
+    if (!("directors" in interchange)) return null;
+    value = (interchange as { directors: unknown }).directors;
+  }
+  if (typeof value !== "string") return null;
+  return value;
 }
 
 /**
@@ -1432,11 +1519,48 @@ function isAnnotatedToolFactory(value: unknown): value is LoadedToolFactory {
   // alone instead of relying on the loader's ordering at the call site.
   if (isAnnotatedPluginFactory(value)) return false;
   if (!("id" in value) || !("requires" in value)) return false;
+  // Director factories carry id/requires plus a callable `configSchema`;
+  // without this guard a director placed in `interchange.tools` would be
+  // silently classified as a tool and namespace-prefixed. Mirrors the
+  // discriminator `isAnnotatedDirectorFactory` uses against tool shapes.
+  if ("configSchema" in value) {
+    const configSchema = (value as { configSchema: unknown }).configSchema;
+    if (typeof configSchema === "function") return false;
+  }
   const id = (value as { id: unknown }).id;
   const requires = (value as { requires: unknown }).requires;
   if (typeof id !== "string") return false;
   if (!Array.isArray(requires)) return false;
   return requires.every((r) => typeof r === "string");
+}
+
+/**
+ * Structural check for an `AnnotatedDirectorFactory` export. The shape
+ * is callable + `{ id: string, requires: string[], configSchema:
+ * function }`. The `configSchema` field is the discriminator against
+ * tool factories (which carry only `id` and `requires`); without it,
+ * any tool-factory export from a directors-entry module would be
+ * accepted as a director.
+ */
+function isAnnotatedDirectorFactory(
+  value: unknown,
+): value is LoadedDirectorFactory {
+  if (typeof value !== "function") return false;
+  if (isAnnotatedPluginFactory(value)) return false;
+  if (!("id" in value) || !("requires" in value)) return false;
+  if (!("configSchema" in value)) return false;
+  const id = (value as { id: unknown }).id;
+  const requires = (value as { requires: unknown }).requires;
+  const configSchema = (value as { configSchema: unknown }).configSchema;
+  if (typeof id !== "string") return false;
+  if (!Array.isArray(requires)) return false;
+  if (!requires.every((r) => typeof r === "string")) return false;
+  // `defineDirector` requires a callable arktype validator. A non-
+  // callable schema would crash later inside `validateDirectorConfig`;
+  // reject here so the failure surfaces as `package.entry.invalid` at
+  // load time rather than at first config-validation call.
+  if (typeof configSchema !== "function") return false;
+  return true;
 }
 
 function describeError(err: unknown): string {

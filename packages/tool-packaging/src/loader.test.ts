@@ -7,6 +7,7 @@ import ssri from "ssri";
 
 import { createTarballCache } from "./cache";
 import {
+  type LoadedDirectorFactory,
   type LoadedToolFactory,
   type TarballFetcher,
   ToolLoaderError,
@@ -46,6 +47,8 @@ interface FixtureSpec {
   version: string;
   interchangeToolsRelPath?: string | null; // null means omit the field
   entryModuleSource?: string; // emitted at the interchange.tools path
+  interchangeDirectorsRelPath?: string | null; // null means omit the field
+  directorsModuleSource?: string; // emitted at the interchange.directors path
   extraFiles?: Record<string, string>;
   dependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
@@ -71,10 +74,18 @@ async function packFixture(
     name: spec.name,
     version: spec.version,
   };
+  const interchangeField: Record<string, string> = {};
   if (spec.interchangeToolsRelPath !== null) {
-    pkgJson.interchange = {
-      tools: spec.interchangeToolsRelPath ?? "./tools.js",
-    };
+    interchangeField.tools = spec.interchangeToolsRelPath ?? "./tools.js";
+  }
+  if (
+    spec.interchangeDirectorsRelPath !== null &&
+    spec.interchangeDirectorsRelPath !== undefined
+  ) {
+    interchangeField.directors = spec.interchangeDirectorsRelPath;
+  }
+  if (Object.keys(interchangeField).length > 0) {
+    pkgJson.interchange = interchangeField;
   }
   if (spec.dependencies !== undefined) {
     pkgJson.dependencies = spec.dependencies;
@@ -94,6 +105,19 @@ async function packFixture(
     const entryAbs = path.resolve(packageDir, entryRel);
     await fs.mkdir(path.dirname(entryAbs), { recursive: true });
     await fs.writeFile(entryAbs, spec.entryModuleSource);
+  }
+
+  if (
+    spec.directorsModuleSource !== undefined &&
+    spec.interchangeDirectorsRelPath !== undefined &&
+    spec.interchangeDirectorsRelPath !== null
+  ) {
+    const directorsAbs = path.resolve(
+      packageDir,
+      spec.interchangeDirectorsRelPath,
+    );
+    await fs.mkdir(path.dirname(directorsAbs), { recursive: true });
+    await fs.writeFile(directorsAbs, spec.directorsModuleSource);
   }
 
   for (const [rel, contents] of Object.entries(spec.extraFiles ?? {})) {
@@ -128,6 +152,31 @@ function makeFakeFactory(
     }),
   });
   return Object.assign(fn, { id, requires });
+}
+
+/**
+ * Build a director-factory-shaped stub the loader's structural check
+ * accepts. `configSchema` is a callable arktype-shaped validator (the
+ * real `defineDirector` requires this); the body returns a director
+ * stub adequate for the loader's structural narrow without exercising
+ * the runtime director protocol.
+ */
+function makeFakeDirectorFactory(
+  id: string,
+  requires: readonly string[] = [],
+): LoadedDirectorFactory {
+  const fn = () => {
+    throw new Error(
+      `stub director factory ${id} should not be invoked in loader tests`,
+    );
+  };
+  const configSchema = (value: unknown) => value;
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- LoadedDirectorFactory carries an erased Config (`unknown`); the structural fields the loader's predicate checks (id, requires, configSchema) are satisfied below, and the loader does not invoke the factory body in these tests.
+  return Object.assign(fn, {
+    id,
+    requires,
+    configSchema,
+  }) as unknown as LoadedDirectorFactory;
 }
 
 describe("createToolLoader", () => {
@@ -2531,5 +2580,421 @@ describe("readResponseWithLimit", () => {
     const buf = await readResponseWithLimit(res, cap, stubCtx);
     expect(buf.byteLength).toBe(payload.byteLength);
     expect(buf[0]).toBe(0x7f);
+  });
+});
+
+describe("interchange.directors walker", () => {
+  test("loads director factories from an interchange.directors entry alongside tool factories", async () => {
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    const fixture = await packFixture({
+      name: "tools-and-directors",
+      version: "1.0.0",
+      entryModuleSource: "// stub; importer is faked",
+      interchangeDirectorsRelPath: "./directors.js",
+      directorsModuleSource: "// stub; importer is faked",
+    });
+
+    const toolsModule = { main: makeFakeFactory("@vendor/main") };
+    const directorsModule = {
+      planner: makeFakeDirectorFactory("@vendor/main/planner"),
+    };
+    const loader = createToolLoader({
+      cache,
+      registries: new Map([["npmjs", { url: "https://r.test" }]]),
+      host: { os: "linux", cpu: "x64" },
+      fetchTarball: async () => fixture.bytes,
+      importModule: async (importUrl) => {
+        // Match on the entry basename rather than the substring
+        // "directors" because the per-instance scratch tree's mkdtemp
+        // suffix can happen to contain that substring.
+        if (importUrl.includes("directors.js")) return directorsModule;
+        return toolsModule;
+      },
+    });
+
+    const loaded = await loader.loadManifest({
+      manifest: {
+        schemaVersion: "1",
+        topLevel: [{ name: "tools-and-directors", version: "1.0.0" }],
+        entries: [
+          {
+            name: "tools-and-directors",
+            version: "1.0.0",
+            integrity: fixture.integrity,
+            source: { kind: "registry", registry: "npmjs" },
+          },
+        ],
+      },
+      instanceScratchDir: instanceDir,
+      assetRoot,
+      assetMounts: new Map(),
+    });
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]?.factories).toHaveLength(1);
+    expect(loaded[0]?.factories[0]?.id).toBe("@vendor/main");
+    expect(loaded[0]?.directors).toHaveLength(1);
+    expect(loaded[0]?.directors[0]?.id).toBe("@vendor/main/planner");
+  });
+
+  test("ignores a director-shaped export in the interchange.tools entry", async () => {
+    // The tools walker's predicate must reject director-shaped values so
+    // a director placed in `interchange.tools` is not silently
+    // classified as a tool and namespace-prefixed. Mirrors the
+    // discriminator the directors walker uses against tool shapes.
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    const fixture = await packFixture({
+      name: "tools-with-stray-director",
+      version: "1.0.0",
+      entryModuleSource: "// stub; importer is faked",
+    });
+
+    const toolsModule = {
+      tool: makeFakeFactory("@vendor/tool"),
+      strayDirector: makeFakeDirectorFactory("@vendor/director"),
+    };
+    const loader = createToolLoader({
+      cache,
+      registries: new Map([["npmjs", { url: "https://r.test" }]]),
+      host: { os: "linux", cpu: "x64" },
+      fetchTarball: async () => fixture.bytes,
+      importModule: async () => toolsModule,
+    });
+
+    const loaded = await loader.loadManifest({
+      manifest: {
+        schemaVersion: "1",
+        topLevel: [{ name: "tools-with-stray-director", version: "1.0.0" }],
+        entries: [
+          {
+            name: "tools-with-stray-director",
+            version: "1.0.0",
+            integrity: fixture.integrity,
+            source: { kind: "registry", registry: "npmjs" },
+          },
+        ],
+      },
+      instanceScratchDir: instanceDir,
+      assetRoot,
+      assetMounts: new Map(),
+    });
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]?.factories).toHaveLength(1);
+    expect(loaded[0]?.factories[0]?.id).toBe("@vendor/tool");
+    expect(loaded[0]?.directors).toEqual([]);
+  });
+
+  test("treats a missing interchange.directors field as a no-op", async () => {
+    // Locks the absence-is-fine contract: a tools-only package must
+    // still load. The directors walker contributes an empty list.
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    const fixture = await packFixture({
+      name: "tools-only",
+      version: "1.0.0",
+      entryModuleSource: "// stub",
+    });
+    const loader = createToolLoader({
+      cache,
+      registries: new Map([["npmjs", { url: "https://r.test" }]]),
+      host: { os: "linux", cpu: "x64" },
+      fetchTarball: async () => fixture.bytes,
+      importModule: async () => ({
+        main: makeFakeFactory("@vendor/tools-only"),
+      }),
+    });
+
+    const loaded = await loader.loadManifest({
+      manifest: {
+        schemaVersion: "1",
+        topLevel: [{ name: "tools-only", version: "1.0.0" }],
+        entries: [
+          {
+            name: "tools-only",
+            version: "1.0.0",
+            integrity: fixture.integrity,
+            source: { kind: "registry", registry: "npmjs" },
+          },
+        ],
+      },
+      instanceScratchDir: instanceDir,
+      assetRoot,
+      assetMounts: new Map(),
+    });
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]?.directors).toEqual([]);
+  });
+
+  test("package.entry.invalid when the package.json bytes are malformed JSON", async () => {
+    // Cross-cuts the directors walker: the package-json read happens
+    // once for both walkers, so a malformed package.json blocks both.
+    // Pinned here to document the shared failure surface.
+    const stagingDir = path.join(scratchRoot, "bad-json-dir-staging");
+    const pkgDir = path.join(stagingDir, "package");
+    await fs.mkdir(pkgDir, { recursive: true });
+    await fs.writeFile(path.join(pkgDir, "package.json"), "{ not valid json");
+    const tarballPath = path.join(stagingDir, "bad.tgz");
+    await tar.create({ cwd: stagingDir, gzip: true, file: tarballPath }, [
+      "package",
+    ]);
+    const bytes = await fs.readFile(tarballPath);
+    const integrity = ssri
+      .fromData(bytes, { algorithms: ["sha512"] })
+      .toString();
+
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    const loader = createToolLoader({
+      cache,
+      registries: new Map([["npmjs", { url: "https://r.test" }]]),
+      host: { os: "linux", cpu: "x64" },
+      fetchTarball: async () => Buffer.from(bytes),
+    });
+    let caught: unknown;
+    try {
+      await loader.loadManifest({
+        manifest: {
+          schemaVersion: "1",
+          topLevel: [{ name: "bad-json-dir", version: "1.0.0" }],
+          entries: [
+            {
+              name: "bad-json-dir",
+              version: "1.0.0",
+              integrity,
+              source: { kind: "registry", registry: "npmjs" },
+            },
+          ],
+        },
+        instanceScratchDir: instanceDir,
+        assetRoot,
+        assetMounts: new Map(),
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ToolLoaderError);
+    if (caught instanceof ToolLoaderError) {
+      expect(caught.category).toBe("package.entry.invalid");
+      expect(caught.message).toMatch(/malformed package\.json/);
+    }
+  });
+
+  test("rejects an interchange.directors entry path that escapes the package dir", async () => {
+    const sinkPath = path.join(scratchRoot, "loaded-directors-outside.mjs");
+    await fs.writeFile(sinkPath, "export const x = 1;");
+
+    const stagingDir = path.join(scratchRoot, "evil-dir-staging");
+    const pkgDir = path.join(stagingDir, "package");
+    await fs.mkdir(pkgDir, { recursive: true });
+    const layoutDir = path.join(instanceDir, "store", "evil-dir", "1.0.0");
+    const escapeRel = path.relative(layoutDir, sinkPath);
+    await fs.writeFile(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "evil-dir",
+        version: "1.0.0",
+        interchange: {
+          tools: "./tools.js",
+          directors: escapeRel,
+        },
+      }),
+    );
+    await fs.writeFile(path.join(pkgDir, "tools.js"), "");
+    const tarballPath = path.join(stagingDir, "evil-dir.tgz");
+    await tar.create({ cwd: stagingDir, gzip: true, file: tarballPath }, [
+      "package",
+    ]);
+    const finalBytes = await fs.readFile(tarballPath);
+    const integrity = ssri
+      .fromData(finalBytes, { algorithms: ["sha512"] })
+      .toString();
+
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    const loader = createToolLoader({
+      cache,
+      registries: new Map([["npmjs", { url: "https://r.test" }]]),
+      host: { os: "linux", cpu: "x64" },
+      fetchTarball: async () => Buffer.from(finalBytes),
+      importModule: async () => ({
+        main: makeFakeFactory("@vendor/tools-stub"),
+      }),
+    });
+
+    let caught: unknown;
+    try {
+      await loader.loadManifest({
+        manifest: {
+          schemaVersion: "1",
+          topLevel: [{ name: "evil-dir", version: "1.0.0" }],
+          entries: [
+            {
+              name: "evil-dir",
+              version: "1.0.0",
+              integrity,
+              source: { kind: "registry", registry: "npmjs" },
+            },
+          ],
+        },
+        instanceScratchDir: instanceDir,
+        assetRoot,
+        assetMounts: new Map(),
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ToolLoaderError);
+    if (caught instanceof ToolLoaderError) {
+      expect(caught.category).toBe("package.entry.invalid");
+      expect(caught.message).toMatch(/interchange\.directors/);
+      expect(caught.message).toMatch(/escapes the package directory/);
+    }
+  });
+
+  test("rejects an interchange.directors target reached via a symlink that escapes the extraction root", async () => {
+    const sinkPath = path.join(scratchRoot, "directors-symlink-sink.mjs");
+    await fs.writeFile(sinkPath, "export const x = 1;");
+
+    const fixture = await packFixture({
+      name: "evil-dir-symlink",
+      version: "1.0.0",
+      entryModuleSource: `
+export const main = Object.assign(
+  () => ({ definitions: [], run: async () => ({ callId: "x", content: "" }) }),
+  { id: "@vendor/evil-dir-symlink", requires: [] },
+);
+`,
+      interchangeDirectorsRelPath: "./directors-link.js",
+    });
+
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    await cache.put(fixture.integrity, fixture.bytes);
+    const extractedHandle = await cache.extractTarball(fixture.integrity);
+    const extractedRoot = extractedHandle.dir;
+    // Plant a symlink at the directors-entry name whose realpath
+    // resolves outside the package extraction directory.
+    await fs.symlink(
+      path.relative(extractedRoot, sinkPath),
+      path.join(extractedRoot, "directors-link.js"),
+    );
+    extractedHandle.release();
+
+    const loader = createToolLoader({
+      cache,
+      registries: new Map([["npmjs", { url: "https://r.test" }]]),
+      host: { os: "linux", cpu: "x64" },
+      fetchTarball: async () => Buffer.from(fixture.bytes),
+      importModule: async () => ({
+        main: makeFakeFactory("@vendor/evil-dir-symlink"),
+      }),
+    });
+
+    let caught: unknown;
+    try {
+      await loader.loadManifest({
+        manifest: {
+          schemaVersion: "1",
+          topLevel: [{ name: "evil-dir-symlink", version: "1.0.0" }],
+          entries: [
+            {
+              name: "evil-dir-symlink",
+              version: "1.0.0",
+              integrity: fixture.integrity,
+              source: { kind: "registry", registry: "npmjs" },
+            },
+          ],
+        },
+        instanceScratchDir: instanceDir,
+        assetRoot,
+        assetMounts: new Map(),
+      });
+    } catch (err) {
+      caught = err;
+    }
+    // The symlink fires `hardlinkTree`'s containment guard at layout
+    // time, before either walker runs. The directors walker's own
+    // realpath containment check is the second line of defense and
+    // shares the same operator-facing category; the test asserts the
+    // taxonomy mapping, not which layer produced the message.
+    expect(caught).toBeInstanceOf(ToolLoaderError);
+    if (caught instanceof ToolLoaderError) {
+      expect(caught.category).toBe("package.entry.invalid");
+      expect(caught.message).toMatch(
+        /escapes the package extraction directory/,
+      );
+    }
+  });
+
+  test("package.entry.invalid when the directors module import throws", async () => {
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    const fixture = await packFixture({
+      name: "dir-import-fail",
+      version: "1.0.0",
+      entryModuleSource: "// stub",
+      interchangeDirectorsRelPath: "./directors.js",
+      directorsModuleSource: "// stub",
+    });
+    const loader = createToolLoader({
+      cache,
+      registries: new Map([["npmjs", { url: "https://r.test" }]]),
+      host: { os: "linux", cpu: "x64" },
+      fetchTarball: async () => fixture.bytes,
+      importModule: async (importUrl) => {
+        if (importUrl.includes("directors.js")) {
+          throw new Error("director module boom");
+        }
+        return { main: makeFakeFactory("@vendor/dir-import-fail") };
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await loader.loadManifest({
+        manifest: {
+          schemaVersion: "1",
+          topLevel: [{ name: "dir-import-fail", version: "1.0.0" }],
+          entries: [
+            {
+              name: "dir-import-fail",
+              version: "1.0.0",
+              integrity: fixture.integrity,
+              source: { kind: "registry", registry: "npmjs" },
+            },
+          ],
+        },
+        instanceScratchDir: instanceDir,
+        assetRoot,
+        assetMounts: new Map(),
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ToolLoaderError);
+    if (caught instanceof ToolLoaderError) {
+      expect(caught.category).toBe("package.entry.invalid");
+      expect(caught.message).toMatch(
+        /dynamic import of dir-import-fail@1\.0\.0 interchange\.directors failed/,
+      );
+    }
   });
 });

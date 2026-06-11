@@ -52,6 +52,7 @@ export {
 export {
   type HostPlatform,
   type LoadManifestArgs,
+  type LoadedDirectorFactory,
   type LoadedToolFactory,
   type LoadedToolPackage,
   type LoaderConfig,

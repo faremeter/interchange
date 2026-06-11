@@ -77,6 +77,7 @@ describe("applyAtomic success", () => {
         version: "1.0.0",
         plugins: [],
         factories: [fakeFactory("@foo/a")],
+        directors: [],
       },
     ]);
     const result = await applyAtomic({
@@ -196,12 +197,14 @@ describe("applyAtomic failure: tool.name.duplicate", () => {
         version: "1.0.0",
         plugins: [],
         factories: [fakeFactory("@dup/x")],
+        directors: [],
       },
       {
         name: "b",
         version: "1.0.0",
         plugins: [],
         factories: [fakeFactory("@dup/x")],
+        directors: [],
       },
     ]);
     const result = await applyAtomic({
