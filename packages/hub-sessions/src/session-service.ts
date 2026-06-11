@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 
+import { type } from "arktype";
 import { and, eq } from "drizzle-orm";
 
+import {
+  createDefaultDirectorRegistry,
+  defaultDirectorFactory,
+} from "@intx/agent";
 import { getLogger } from "@intx/log";
 import {
   assembleMessage,
@@ -24,10 +29,19 @@ import {
   ManifestInvalidError,
   createClosureResolver,
 } from "@intx/tool-packaging";
-import type {
+import {
   ToolPackageManifest,
-  ToolPackagePin,
+  type ToolPackagePin,
 } from "@intx/types/tool-packages";
+import { defineWorkflow } from "@intx/workflow/definition";
+import {
+  createWorkflowDeployOrchestrator,
+  wrapHarnessAsTrivialAgent,
+  type ApprovalSet,
+  type DeployContent as OrchestratorDeployContent,
+  type LaunchSessionFn,
+  type WorkflowRepoWriter,
+} from "@intx/workflow-deploy";
 
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import {
@@ -300,6 +314,78 @@ function resolveMountPath(row: AgentAssetWithAsset): string {
   }
 }
 
+/**
+ * Compute the operator-approval set the workflow-deploy orchestrator
+ * needs for a trivial-wrap deploy. The wrapped agent has no tool
+ * factories, capabilities, or director ref (see
+ * `wrapHarnessAsTrivialAgent`), so the only grant shapes the
+ * capability walk surfaces are the per-source inference grants, the
+ * default-director grant, and the trigger-derived mail grants. The
+ * approval set covers exactly those shapes; the legacy agent-deploy
+ * path has already authorized the deployment in toto, and re-running
+ * deploy through the workflow surface must not synthesize a fresh
+ * approval prompt for grants the legacy path implicitly approved.
+ */
+function buildTrivialApprovalSet(args: {
+  agentAddress: string;
+  config: HarnessConfig;
+}): ApprovalSet {
+  const approvals = new Set<string>();
+  for (const source of args.config.sources) {
+    approvals.add(`inference.source:${source.provider}:${source.model}`);
+  }
+  approvals.add(`director:${defaultDirectorFactory.id}`);
+  approvals.add(`mail.address:${args.agentAddress}`);
+  const at = args.agentAddress.lastIndexOf("@");
+  if (at >= 0 && at < args.agentAddress.length - 1) {
+    approvals.add(`mail.send:${args.agentAddress.slice(at + 1)}`);
+  }
+  return approvals;
+}
+
+/**
+ * Translate the orchestrator's structural `DeployContent` (which types
+ * `toolPackageManifest` as `unknown`) back into the hub-sessions
+ * `DeployContent` shape. The orchestrator round-trips whatever the
+ * caller supplied, but the surface type widens `toolPackageManifest` to
+ * `unknown`; the validator narrows it back to the canonical shape
+ * `agentRepoStore.writeDeployTree` consumes.
+ */
+function bridgeOrchestratorDeployContent(
+  content: OrchestratorDeployContent,
+): DeployContent {
+  const bridged: DeployContent = { systemPrompt: content.systemPrompt };
+  if (content.toolPackageManifest !== undefined) {
+    const validated = ToolPackageManifest(content.toolPackageManifest);
+    if (validated instanceof type.errors) {
+      throw new Error(
+        `orchestrator deploy content carries an invalid toolPackageManifest: ${validated.summary}`,
+      );
+    }
+    bridged.toolPackageManifest = validated;
+  }
+  if (content.assetMounts !== undefined) {
+    bridged.assetMounts = content.assetMounts;
+  }
+  return bridged;
+}
+
+/**
+ * No-op `WorkflowRepoWriter` used by the legacy `launchSession`
+ * delegate. The workflow-deploy orchestrator writes a workflow repo
+ * tree before per-step launch; the legacy agent-deploy path never
+ * materialized a workflow repo and the integration-test surface does
+ * not exercise one, so the trivial wrap skips the write rather than
+ * inventing a phantom repo.
+ */
+function createNoopWorkflowRepoWriter(): WorkflowRepoWriter {
+  return {
+    async writeWorkflowRepo(_args) {
+      return;
+    },
+  };
+}
+
 export function createSessionService(deps: SessionServiceDeps): SessionService {
   const {
     sidecarRouter,
@@ -320,7 +406,15 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     );
   }
 
-  async function launchSession(params: {
+  /**
+   * Drive the per-agent deploy + session-start phases. Factored out of
+   * `launchSession` so the workflow-deploy orchestrator's trivial branch
+   * can call back into the exact phases the legacy agent-deploy path
+   * owns. The body here is the legacy `launchSession` body verbatim;
+   * `launchSession` itself now wraps the call in a single-step workflow
+   * and routes through the orchestrator.
+   */
+  async function executeLaunchPhases(params: {
     agentAddress: string;
     agentId: string;
     instanceId: string;
@@ -548,6 +642,72 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       await attemptCleanup(agentAddress, "start", err);
       throw new SessionLaunchError("start", err, false);
     }
+  }
+
+  /**
+   * Legacy agent-deploy entry point preserved bit-for-bit at its wire
+   * shape. The body now constructs a single-step trivial workflow from
+   * the deploy's `HarnessConfig` + `DeployContent`, synthesizes the
+   * matching operator-approval set, and delegates to the workflow-deploy
+   * orchestrator. The orchestrator's trivial branch round-trips back
+   * into `executeLaunchPhases` with the original `trivialBindings`,
+   * which preserves every on-disk and wire-level surface the legacy
+   * agent-deploy path exposed.
+   */
+  async function launchSession(params: {
+    agentAddress: string;
+    agentId: string;
+    instanceId: string;
+    config: HarnessConfig;
+    deployContent: DeployContent;
+    toolPackagePins?: readonly ToolPackagePin[];
+  }): Promise<void> {
+    const { agentAddress, agentId, instanceId, config, deployContent } = params;
+
+    const trivialAgent = wrapHarnessAsTrivialAgent({
+      config,
+      deployContent,
+    });
+    const workflow = defineWorkflow({
+      id: `wf_${agentId}`,
+      agent: trivialAgent,
+      trigger: { type: "mail", to: agentAddress },
+    });
+    const operatorApprovals = buildTrivialApprovalSet({
+      agentAddress,
+      config,
+    });
+
+    const launchSessionCallback: LaunchSessionFn = async (orchestratorParams) =>
+      executeLaunchPhases({
+        agentAddress: orchestratorParams.agentAddress,
+        agentId: orchestratorParams.agentId,
+        instanceId: orchestratorParams.instanceId,
+        config: orchestratorParams.config,
+        deployContent: bridgeOrchestratorDeployContent(
+          orchestratorParams.deployContent,
+        ),
+        ...(orchestratorParams.toolPackagePins !== undefined
+          ? { toolPackagePins: orchestratorParams.toolPackagePins }
+          : {}),
+      });
+
+    const orchestrator = createWorkflowDeployOrchestrator({
+      directorRegistry: createDefaultDirectorRegistry(),
+      workflowRepo: createNoopWorkflowRepoWriter(),
+      launchSession: launchSessionCallback,
+    });
+
+    await orchestrator.deployWorkflow({
+      workflow,
+      trivialBindings: { agentAddress, agentId, instanceId },
+      config,
+      deployContent,
+      ...(params.toolPackagePins !== undefined
+        ? { toolPackagePins: params.toolPackagePins }
+        : {}),
+      operatorApprovals,
+    });
   }
 
   async function rollbackCommittedAttachments(
