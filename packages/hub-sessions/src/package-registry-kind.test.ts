@@ -9,9 +9,13 @@ import {
   asTarballEntry,
   validateTarballPackageJSON,
 } from "./package-registry-kind";
-import type { RepoId } from "./repo-store";
+import type { Principal, RepoId } from "./repo-store";
 
 const REF = "refs/heads/main";
+
+const HUB_PRINCIPAL: Principal = { kind: "hub" };
+const noPriorBlob = async (): Promise<Uint8Array | null> => null;
+const noPriorDir = async (): Promise<string[]> => [];
 
 function uniqueRepoId(): RepoId {
   return {
@@ -205,6 +209,9 @@ describe("packageRegistryKindHandler.validatePush", () => {
       topLevelTreePaths: [".gitignore"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result).toEqual({ ok: true });
   });
@@ -217,6 +224,9 @@ describe("packageRegistryKindHandler.validatePush", () => {
       topLevelTreePaths: ["stray.json"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected reject");
@@ -234,6 +244,9 @@ describe("packageRegistryKindHandler.validatePush", () => {
       topLevelTreePaths: ["tarballs"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result).toEqual({ ok: true });
   });
@@ -249,6 +262,9 @@ describe("packageRegistryKindHandler.validatePush", () => {
       topLevelTreePaths: ["tarballs"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
   });
@@ -269,6 +285,9 @@ describe("packageRegistryKindHandler.validatePush", () => {
       topLevelTreePaths: ["tarballs"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected reject");
@@ -286,6 +305,9 @@ describe("packageRegistryKindHandler.validatePush", () => {
       topLevelTreePaths: ["tarballs"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected reject");
@@ -311,6 +333,9 @@ describe("packageRegistryKindHandler.validatePush", () => {
       topLevelTreePaths: ["tarballs"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected reject");
@@ -343,6 +368,9 @@ describe("packageRegistryKindHandler.validatePush", () => {
         }
         return realListDir(treePath);
       },
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected reject");

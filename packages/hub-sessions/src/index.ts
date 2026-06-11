@@ -71,6 +71,20 @@ export {
   type WorkflowSidecarPrincipal,
 } from "./workflow-kind";
 export {
+  workflowRunKindHandler,
+  workflowRunAuthorize,
+  WORKFLOW_RUN_GITIGNORE_PATH,
+  WORKFLOW_RUN_RUNS_PREFIX,
+  WORKFLOW_RUN_EVENTS_DIR,
+  WORKFLOW_RUN_ADDRESSES_PREFIX,
+  WORKFLOW_RUN_CONTROL_PREFIX,
+  type WorkflowRunPrincipal,
+  type WorkflowRunHubPrincipal,
+  type WorkflowRunSidecarPrincipal,
+  type WorkflowRunWorkflowProcessPrincipal,
+  type WorkflowRunSupervisorPrincipal,
+} from "./workflow-run-kind";
+export {
   createAssetService,
   AssetServiceError,
   DEFAULT_ASSET_REF,

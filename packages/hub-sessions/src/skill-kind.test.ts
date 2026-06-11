@@ -11,6 +11,10 @@ import { type } from "arktype";
 
 const REF = "refs/heads/main";
 
+const HUB_PRINCIPAL: Principal = { kind: "hub" };
+const noPriorBlob = async (): Promise<Uint8Array | null> => null;
+const noPriorDir = async (): Promise<string[]> => [];
+
 function makeReadBlob(
   files: Record<string, string>,
 ): (path: string) => Promise<Uint8Array> {
@@ -154,6 +158,9 @@ describe("skillKindHandler.validatePush", () => {
       topLevelTreePaths: ["greet"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(true);
 
@@ -193,6 +200,9 @@ describe("skillKindHandler.validatePush", () => {
       topLevelTreePaths: ["greet", "farewell"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(true);
 
@@ -221,6 +231,9 @@ describe("skillKindHandler.validatePush", () => {
       topLevelTreePaths: [],
       readBlob: makeReadBlob({}),
       listDir: makeListDir({}),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(true);
 
@@ -242,6 +255,9 @@ describe("skillKindHandler.validatePush", () => {
       topLevelTreePaths: ["greet"],
       readBlob: makeReadBlob({}),
       listDir: makeListDir({}),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -262,6 +278,9 @@ describe("skillKindHandler.validatePush", () => {
       topLevelTreePaths: ["greet"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -282,6 +301,9 @@ describe("skillKindHandler.validatePush", () => {
       topLevelTreePaths: ["BadName"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -303,6 +325,9 @@ describe("skillKindHandler.validatePush", () => {
       topLevelTreePaths: [longName],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
   });
@@ -321,6 +346,9 @@ describe("skillKindHandler.validatePush", () => {
       topLevelTreePaths: ["anthropic"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
   });
@@ -339,6 +367,9 @@ describe("skillKindHandler.validatePush", () => {
       topLevelTreePaths: ["claude"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
   });
@@ -357,6 +388,9 @@ describe("skillKindHandler.validatePush", () => {
       topLevelTreePaths: ["ok"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
   });
@@ -375,6 +409,9 @@ describe("skillKindHandler.validatePush", () => {
       topLevelTreePaths: ["ok"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
   });
@@ -393,6 +430,9 @@ describe("skillKindHandler.validatePush", () => {
       topLevelTreePaths: ["ok"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
   });
@@ -411,6 +451,9 @@ describe("skillKindHandler.validatePush", () => {
       topLevelTreePaths: ["ok"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
 

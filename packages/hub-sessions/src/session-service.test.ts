@@ -747,9 +747,12 @@ describe("SessionService", () => {
       const result = await skillKindHandler.validatePush({
         repoId,
         ref,
+        principal: { kind: "hub" },
         topLevelTreePaths: skills.map((s) => s.name),
         readBlob,
         listDir,
+        priorReadBlob: async () => null,
+        priorListDir: async () => [],
       });
       if (!result.ok) {
         throw new Error(`validatePush failed: ${result.reason}`);

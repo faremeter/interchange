@@ -175,20 +175,39 @@ export interface KindHandler {
    * of the authorize verdict: authorize gates access, validatePush
    * enforces content rules.
    *
-   * `topLevelTreePaths` lists the names directly under the tree
-   * root. `readBlob` reads any blob in the tree by repo-root-relative
-   * POSIX path (e.g. `greet/SKILL.md`). `listDir` enumerates the
-   * names directly under a tree-root-relative POSIX directory path
-   * (no trailing slash, no leading slash); pass the empty string to
-   * list the root. Handlers that only need path-level checks can
-   * ignore `readBlob` and `listDir`.
+   * `topLevelTreePaths` lists the names directly under the prospective
+   * tree root. `readBlob` reads any blob in the prospective tree by
+   * repo-root-relative POSIX path (e.g. `greet/SKILL.md`). `listDir`
+   * enumerates the names directly under a tree-root-relative POSIX
+   * directory path (no trailing slash, no leading slash); pass the
+   * empty string to list the root. Handlers that only need path-level
+   * checks can ignore `readBlob` and `listDir`.
+   *
+   * `priorReadBlob` and `priorListDir` mirror `readBlob` / `listDir`
+   * against the parent commit's tree — the ref's tip at the moment
+   * validatePush runs. Handlers use these to compare prospective
+   * content against the immediately-prior bytes (e.g. enforcing
+   * append-only invariants by rejecting any path whose prior bytes
+   * differ from the prospective bytes). `priorReadBlob` returns
+   * `null` when the path did not exist at the prior tree (or the
+   * ref has no prior commit — first push). `priorListDir` returns
+   * an empty array in the same cases.
+   *
+   * `principal` is the principal performing the push, the same value
+   * fed to the `authorize` hook. Handlers use it for principal-vs-
+   * payload cross-checks that a structural shape validator cannot
+   * express (e.g. "only a `hub` principal may write a `CancelRequested`
+   * whose origin is `hub-admin`").
    */
   validatePush: (args: {
     repoId: RepoId;
     ref: string;
+    principal: Principal;
     topLevelTreePaths: string[];
     readBlob: (path: string) => Promise<Uint8Array>;
     listDir: (path: string) => Promise<string[]>;
+    priorReadBlob: (path: string) => Promise<Uint8Array | null>;
+    priorListDir: (path: string) => Promise<string[]>;
   }) => Promise<ValidatePushResult> | ValidatePushResult;
   /**
    * Fired after a successful ref update from any operation. `oldSha`

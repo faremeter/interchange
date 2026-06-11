@@ -498,12 +498,85 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     }
   }
 
+  // Walk from a commit's root tree to the tree-or-blob entry at
+  // `relPath`. Returns `null` when any path segment is missing, or
+  // when the final entry does not match `expectedType`. Used to back
+  // both `priorReadBlob` and `priorListDir` so a handler can inspect
+  // the parent commit's tree from inside validatePush without each
+  // call duplicating the tree-walk.
+  async function resolveTreeEntry(
+    dir: string,
+    commitSha: string,
+    relPath: string,
+    expectedType: "blob" | "tree",
+  ): Promise<string | null> {
+    const { commit } = await git.readCommit({ fs, dir, oid: commitSha });
+    if (relPath === "") {
+      return expectedType === "tree" ? commit.tree : null;
+    }
+    const segments = relPath.split("/").filter((s) => s !== "");
+    let currentOid = commit.tree;
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i];
+      if (segment === undefined) throw new Error("unreachable");
+      const isLast = i === segments.length - 1;
+      const { tree } = await git.readTree({ fs, dir, oid: currentOid });
+      const entry = tree.find((e) => e.path === segment);
+      if (entry === undefined) return null;
+      if (isLast) {
+        if (entry.type !== expectedType) return null;
+        return entry.oid;
+      }
+      if (entry.type !== "tree") return null;
+      currentOid = entry.oid;
+    }
+    return currentOid;
+  }
+
+  // Build the `(priorReadBlob, priorListDir)` pair fed into a kind
+  // handler's validatePush. When `commitSha` is `null`, both closures
+  // surface the "ref had no prior commit" state — readBlob returns
+  // null, listDir returns an empty array. When non-null, they read
+  // against that commit's tree. Read failures on a path that does
+  // exist (an EIO mid-walk) surface as a thrown error so a handler's
+  // append-only check cannot silently degrade into an accept.
+  function buildPriorTreeClosures(
+    dir: string,
+    commitSha: string | null,
+  ): {
+    priorReadBlob: (path: string) => Promise<Uint8Array | null>;
+    priorListDir: (path: string) => Promise<string[]>;
+  } {
+    if (commitSha === null) {
+      return {
+        priorReadBlob: async () => null,
+        priorListDir: async () => [],
+      };
+    }
+    const priorReadBlob = async (
+      relPath: string,
+    ): Promise<Uint8Array | null> => {
+      const oid = await resolveTreeEntry(dir, commitSha, relPath, "blob");
+      if (oid === null) return null;
+      const { blob } = await git.readBlob({ fs, dir, oid });
+      return blob;
+    };
+    const priorListDir = async (relPath: string): Promise<string[]> => {
+      const oid = await resolveTreeEntry(dir, commitSha, relPath, "tree");
+      if (oid === null) return [];
+      const { tree } = await git.readTree({ fs, dir, oid });
+      return tree.map((e) => e.path);
+    };
+    return { priorReadBlob, priorListDir };
+  }
+
   // Unlocked body of writeTree. The caller is responsible for
   // acquiring the per-repo lock before invoking this and for not
   // releasing it until the returned promise settles. Extracted so
   // writeTreePreservingPrefix can run a read-then-merge step under the
   // same lock without holding two nested acquisitions.
   async function writeTreeUnderLock(
+    principal: Principal,
     repoId: RepoId,
     ref: string,
     content: TreeContent,
@@ -571,12 +644,24 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       }
       return Array.from(names);
     };
+    // The prior tree is whatever the ref points at the moment
+    // validatePush runs — i.e. the parent of the commit we are about
+    // to produce. `refPaths` above was snapshotted from the same
+    // commit, so both reads observe the same pre-image.
+    const priorCommitSha = await resolveRefSha(dir, ref);
+    const { priorReadBlob, priorListDir } = buildPriorTreeClosures(
+      dir,
+      priorCommitSha,
+    );
     const validation = await handler.validatePush({
       repoId,
       ref,
+      principal,
       topLevelTreePaths,
       readBlob,
       listDir,
+      priorReadBlob,
+      priorListDir,
     });
     if (!validation.ok) {
       // Roll the working tree and index back to HEAD before
@@ -649,7 +734,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     // mutation, validatePush, commit, and the onRefUpdated hook. Holding
     // the lock through onRefUpdated keeps post-update consumers
     // serialized against the same ref's next writer.
-    return withRepoLock(repoId, () => writeTreeUnderLock(repoId, ref, content));
+    return withRepoLock(repoId, () =>
+      writeTreeUnderLock(principal, repoId, ref, content),
+    );
   }
 
   // Enumerate every blob directly under `prefix` in the tree at
@@ -721,7 +808,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       await storageInitRepo(repoDir(repoId), storageOptsFor(repoId, undefined));
       const existing = await readPrefixBlobs(repoId, ref, args.preservePrefix);
       const files = await args.merge(existing);
-      return writeTreeUnderLock(repoId, ref, {
+      return writeTreeUnderLock(principal, repoId, ref, {
         files,
         clearPrefix: args.preservePrefix,
         message: args.message,
@@ -752,6 +839,18 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       const handler = handlerFor(repoId);
       const transferId = crypto.randomUUID().replace(/-/g, "");
 
+      // Capture the ref's tip before receivePackObjects advances it.
+      // The CAS check inside receivePackObjects also reads the tip; we
+      // do the same read here so the prior-tree closures handed to the
+      // kind handler observe the same pre-image. Reading outside the
+      // CAS is safe because we hold the per-repo lock — no concurrent
+      // writer can advance the ref between this read and the call.
+      const priorCommitSha = expectedOldSha;
+      const { priorReadBlob, priorListDir } = buildPriorTreeClosures(
+        dir,
+        priorCommitSha,
+      );
+
       const oldSha = await receivePackObjects(
         dir,
         pack,
@@ -763,9 +862,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
           const result = await handler.validatePush({
             repoId,
             ref,
+            principal,
             topLevelTreePaths: paths,
             readBlob,
             listDir,
+            priorReadBlob,
+            priorListDir,
           });
           if (!result.ok) {
             logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${result.reason}`;

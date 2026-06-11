@@ -10,6 +10,10 @@ import type { Principal, RepoId } from "./repo-store";
 
 const REF = "refs/heads/main";
 
+const HUB_PRINCIPAL: Principal = { kind: "hub" };
+const noPriorBlob = async (): Promise<Uint8Array | null> => null;
+const noPriorDir = async (): Promise<string[]> => [];
+
 function makeReadBlob(
   files: Record<string, string>,
 ): (path: string) => Promise<Uint8Array> {
@@ -73,6 +77,9 @@ describe("workflowKindHandler.validatePush", () => {
       ],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(true);
   });
@@ -88,6 +95,9 @@ describe("workflowKindHandler.validatePush", () => {
       topLevelTreePaths: [WORKFLOW_JSON_PATH],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(true);
   });
@@ -103,6 +113,9 @@ describe("workflowKindHandler.validatePush", () => {
       topLevelTreePaths: [WORKFLOW_GITIGNORE_PATH],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -121,6 +134,9 @@ describe("workflowKindHandler.validatePush", () => {
       topLevelTreePaths: [WORKFLOW_JSON_PATH, "stray-file.txt"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -139,6 +155,9 @@ describe("workflowKindHandler.validatePush", () => {
       topLevelTreePaths: [WORKFLOW_JSON_PATH, "extras"],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -156,6 +175,9 @@ describe("workflowKindHandler.validatePush", () => {
       topLevelTreePaths: [WORKFLOW_JSON_PATH],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -173,6 +195,9 @@ describe("workflowKindHandler.validatePush", () => {
       topLevelTreePaths: [WORKFLOW_JSON_PATH],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -195,6 +220,9 @@ describe("workflowKindHandler.validatePush", () => {
       topLevelTreePaths: [WORKFLOW_JSON_PATH],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -212,6 +240,9 @@ describe("workflowKindHandler.validatePush", () => {
       topLevelTreePaths: [WORKFLOW_JSON_PATH],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -233,6 +264,9 @@ describe("workflowKindHandler.validatePush", () => {
       ],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -256,6 +290,9 @@ describe("workflowKindHandler.validatePush", () => {
       ],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
@@ -282,6 +319,9 @@ describe("workflowKindHandler.validatePush", () => {
       ],
       readBlob: makeReadBlob(files),
       listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(true);
   });
