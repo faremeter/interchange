@@ -544,6 +544,7 @@
       "name": "@intx/workflow-host",
       "version": "0.0.1",
       "dependencies": {
+        "@intx/agent": "workspace:*",
         "@intx/hub-sessions": "workspace:*",
         "@intx/log": "workspace:*",
         "@intx/types": "workspace:*",
