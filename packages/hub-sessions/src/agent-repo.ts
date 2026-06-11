@@ -15,6 +15,7 @@ import {
   packageRegistryKindHandler,
   packageRegistryAuthorize,
 } from "./package-registry-kind";
+import { workflowKindHandler, workflowAuthorize } from "./workflow-kind";
 
 export type DeployContent = {
   systemPrompt: string;
@@ -100,7 +101,7 @@ export function createAgentRepoStore(config: {
       case "package-registry":
         return packageRegistryAuthorize(principal, incomingRepoId, ref, action);
       case "workflow":
-        throw new Error("kind handler not yet registered: workflow");
+        return workflowAuthorize(principal, incomingRepoId, ref, action);
       case "workflow-run":
         throw new Error("kind handler not yet registered: workflow-run");
       default: {
@@ -129,6 +130,7 @@ export function createAgentRepoStore(config: {
       "agent-state": agentStateKindHandler,
       skill: skillKindHandler,
       "package-registry": packageRegistryKindHandler,
+      workflow: workflowKindHandler,
     },
     authorize,
     signingCallback: () => signer,

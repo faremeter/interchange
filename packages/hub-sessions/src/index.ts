@@ -60,6 +60,17 @@ export {
   WORKSPACE_BUILTINS_REGISTRY,
 } from "./package-registry-kind";
 export {
+  workflowKindHandler,
+  workflowAuthorize,
+  workflowDefinitionEnvelopeSchema,
+  WORKFLOW_JSON_PATH,
+  CAPABILITY_DECLARATIONS_JSON_PATH,
+  WORKFLOW_GITIGNORE_PATH,
+  type WorkflowPrincipal,
+  type WorkflowHubPrincipal,
+  type WorkflowSidecarPrincipal,
+} from "./workflow-kind";
+export {
   createAssetService,
   AssetServiceError,
   DEFAULT_ASSET_REF,
