@@ -69,7 +69,7 @@ type MockDBOpts = {
   emptyProviderTables?: boolean;
   /** When set, the inference_turn select returns this still-running turn so
    * findOpenTurn (reconnect adoption) resolves it. */
-  openTurn?: { id: string } | undefined;
+  openTurn?: { id: string; startedAt: Date } | undefined;
   /** Highest existing turn_part ordinal for the open turn (null = none). */
   maxOrdinal?: number | null;
 };
@@ -443,7 +443,7 @@ describe("createHubSessionOrchestrator", () => {
     test("adopts the session's open running turn so trailing parts are not dropped", async () => {
       harness = setup({
         instance: makeInstance(),
-        openTurn: { id: "turn_open" },
+        openTurn: { id: "turn_open", startedAt: new Date() },
         maxOrdinal: 4,
       });
 
@@ -461,7 +461,7 @@ describe("createHubSessionOrchestrator", () => {
     test("starts the next part at ordinal 0 when the open turn has no parts", async () => {
       harness = setup({
         instance: makeInstance(),
-        openTurn: { id: "turn_open" },
+        openTurn: { id: "turn_open", startedAt: new Date() },
         maxOrdinal: null,
       });
 
@@ -477,6 +477,27 @@ describe("createHubSessionOrchestrator", () => {
 
     test("passes no resumeTurn when the session has no open turn", async () => {
       harness = setup({ instance: makeInstance(), openTurn: undefined });
+
+      await harness.events.emitAndAwait("agent.reconnected", {
+        agentAddress: AGENT_ADDRESS,
+      });
+
+      const created = harness.collectors.calls.find((c) => c.kind === "create");
+      expect(created).toBeDefined();
+      if (created?.kind === "create") {
+        expect(created.resumeTurn).toBeUndefined();
+      }
+    });
+
+    test("does not adopt a turn older than the resumable window (orphaned zombie)", async () => {
+      harness = setup({
+        instance: makeInstance(),
+        openTurn: {
+          id: "turn_zombie",
+          startedAt: new Date(Date.now() - 60 * 60 * 1000),
+        },
+        maxOrdinal: 2,
+      });
 
       await harness.events.emitAndAwait("agent.reconnected", {
         agentAddress: AGENT_ADDRESS,

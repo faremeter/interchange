@@ -218,19 +218,35 @@ export function createHubSessionOrchestrator(
   };
 }
 
+// A turn this old at reconnect is almost certainly orphaned — a harness that
+// crashed mid-turn leaves the row 'running' forever (nothing finalizes it on
+// the crash path), and `agent.reconnected` proves only that the sidecar owns
+// the key, not that the inference is still alive. Adopting such a turn would
+// re-adopt the same zombie on every future reconnect, so bound adoption to a
+// turn that could plausibly still be streaming. Real in-flight turns at a hub
+// redeploy are seconds old; this leaves generous headroom for long inferences.
+const MAX_RESUMABLE_TURN_AGE_MS = 15 * 60 * 1000;
+
 /**
  * Find the session's still-open inference turn, if any, so a collector rebuilt
  * on reconnect can resume it rather than dropping the trailing parts of a turn
- * that was in flight when the link dropped. Returns the turn id and the next
- * ordinal (one past the highest part already written) so the part sequence
- * stays monotonic. Returns undefined when no running turn exists.
+ * that was in flight when the link dropped.
+ *
+ * Best-effort, not a guarantee: it preserves the tail only when the sidecar
+ * actually redelivers it on reconnect (frames emitted to the dead socket, or
+ * dropped under the hub-link send-queue cap, are gone regardless). It also
+ * skips turns older than MAX_RESUMABLE_TURN_AGE_MS so a crashed-harness zombie
+ * is not adopted indefinitely. Returns the turn id and the next ordinal (one
+ * past the highest part already written) so the part sequence stays monotonic;
+ * the caller is the sole writer to that turn, so the read-then-write is safe.
+ * Returns undefined when no adoptable running turn exists.
  */
 async function findOpenTurn(
   db: DB["db"],
   sessionId: string,
 ): Promise<{ id: string; nextOrdinal: number } | undefined> {
   const [openTurn] = await db
-    .select({ id: inferenceTurn.id })
+    .select({ id: inferenceTurn.id, startedAt: inferenceTurn.startedAt })
     .from(inferenceTurn)
     .where(
       and(
@@ -239,10 +255,13 @@ async function findOpenTurn(
         isNull(inferenceTurn.endedAt),
       ),
     )
-    .orderBy(desc(inferenceTurn.startedAt))
+    .orderBy(desc(inferenceTurn.startedAt), desc(inferenceTurn.id))
     .limit(1);
 
   if (openTurn === undefined) return undefined;
+  if (Date.now() - openTurn.startedAt.getTime() > MAX_RESUMABLE_TURN_AGE_MS) {
+    return undefined;
+  }
 
   const [maxRow] = await db
     .select({ max: sql<number | null>`max(${turnPart.ordinal})` })

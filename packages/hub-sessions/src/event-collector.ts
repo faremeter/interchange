@@ -48,10 +48,12 @@ export type EventCollectorConfig = {
   tenantId: string;
   onTurnFinalized?: (turn: TurnFinalized) => void;
   // When a collector is rebuilt for a session whose agent was mid-turn at
-  // disconnect (e.g. a hub redeploy), adopt that still-running turn so the
-  // resumed inference.done / step-finish parts land in it rather than being
-  // dropped for having no active turn. `nextOrdinal` continues the existing
-  // part sequence so ordinals stay monotonic and collision-free.
+  // disconnect (e.g. a hub redeploy), adopt that still-running turn so any
+  // resumed inference.done / step-finish parts the sidecar redelivers land in
+  // it rather than being dropped for having no active turn. Best-effort: parts
+  // already emitted to the dead socket, or dropped under the sidecar send-queue
+  // cap, are not recovered. `nextOrdinal` continues the existing part sequence
+  // so ordinals stay monotonic.
   resumeTurn?: { id: string; nextOrdinal: number };
 };
 
