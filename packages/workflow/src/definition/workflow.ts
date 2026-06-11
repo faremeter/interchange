@@ -68,6 +68,16 @@ export function defineWorkflow<EnvReq extends BaseEnv>(
   return normalize(normalized);
 }
 
+/**
+ * `stepId` must be a non-empty sequence of ASCII letters, digits,
+ * underscores, and hyphens. The constraint exists so the workflow-deploy
+ * orchestrator can derive per-step mail addresses by string concat
+ * without escaping. Exported for downstream consumers (notably the
+ * orchestrator's per-step address derivation) that need to assert the
+ * same shape.
+ */
+export const STEP_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
 function normalize(config: WorkflowConfig): WorkflowDefinition {
   if (!config.id) {
     throw new Error("defineWorkflow requires a non-empty id");
@@ -89,6 +99,18 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
     seen.add(stepId);
     if (stepId === "") {
       throw new Error("step ids cannot be empty");
+    }
+    // The workflow-deploy orchestrator derives per-step mail addresses
+    // of the form `ins_<deploymentId>-<stepId>@<deploymentDomain>` for
+    // multi-step deployments. Constraining `stepId` to
+    // `[a-zA-Z0-9_-]+` at definition time means the derived local-part
+    // never needs escaping and the address parser at the substrate
+    // boundary never sees a step-id-shaped local-part it cannot
+    // round-trip.
+    if (!STEP_ID_PATTERN.test(stepId)) {
+      throw new Error(
+        `step id ${JSON.stringify(stepId)} must match ${STEP_ID_PATTERN.source}`,
+      );
     }
     if (primitive.id !== "" && primitive.id !== stepId) {
       throw new Error(

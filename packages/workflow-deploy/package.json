@@ -12,6 +12,7 @@
   "dependencies": {
     "@intx/agent": "workspace:*",
     "@intx/tool-packaging": "workspace:*",
+    "@intx/types": "workspace:*",
     "@intx/workflow": "workspace:*"
   }
 }

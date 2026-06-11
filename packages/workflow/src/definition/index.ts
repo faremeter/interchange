@@ -50,6 +50,7 @@ export type {
 export {
   defineWorkflow,
   hashDefinition,
+  STEP_ID_PATTERN,
   type SingularWorkflowConfig,
   type WorkflowConfig,
   type WorkflowDefinition,

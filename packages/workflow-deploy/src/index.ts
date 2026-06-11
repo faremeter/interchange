@@ -1,11 +1,15 @@
-// @intx/workflow-deploy -- deploy-time validation of workflows.
+// @intx/workflow-deploy -- deploy-time validation and orchestration of
+// workflows.
 //
-// Two surfaces today:
+// Surfaces today:
 //   - capability walk: structural lift of `getRequiredEnvKeys` that
 //     emits the grant-shape declarations the operator-approval gate
 //     consumes.
-//   - approval gate: skeleton for the orchestrator to call into; the
-//     concrete implementation lands when the orchestrator is wired.
+//   - approval gate: consumes the walk's output plus an operator-
+//     supplied `ApprovalSet` and yields a per-step pending delta.
+//   - orchestrator: validates the workflow, runs the walk + approval
+//     gate, writes the workflow repo, and branches on the trivial-vs-
+//     multi-step dichotomy for per-agent launches.
 
 export {
   walkCapabilities,
@@ -13,8 +17,26 @@ export {
   type GrantDeclarations,
 } from "./capability-walk";
 export {
-  createNotYetImplementedApprovalGate,
+  createApprovalSetGate,
+  createApprovalSourceGate,
   type ApprovalDecision,
+  type ApprovalSet,
   type ApprovalSource,
   type CapabilityApprovalGate,
 } from "./capability-approval";
+export {
+  createWorkflowDeployOrchestrator,
+  deriveStepAddress,
+  deriveStepAgentId,
+  deriveStepInstanceId,
+  wrapHarnessAsTrivialAgent,
+  CapabilityApprovalDeniedError,
+  MultiStepDeploymentArgsMissingError,
+  WorkflowDefinitionInvalidError,
+  type DeployContent,
+  type DeployWorkflowArgs,
+  type LaunchSessionFn,
+  type WorkflowDeployOrchestrator,
+  type WorkflowDeployOrchestratorDeps,
+  type WorkflowRepoWriter,
+} from "./orchestrator";

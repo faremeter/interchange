@@ -1,37 +1,41 @@
 // Operator-approval gating for the deploy-time capability walk.
 //
-// This module is a skeleton. The walk's output (`CapabilityWalkResult`)
-// is the input every approval implementation consumes; the concrete
-// approval source (operator-side admin UI, pre-populated set
-// reconciled against the agent-deploy's existing per-agent grant
-// configuration, scripted policy file) is wired by the orchestrator
-// the next commit ships. The shape here is what the orchestrator's
-// gate calls into; downstream commits replace the
-// `notYetImplemented` body with the real approval source.
+// The orchestrator hands the walk's `CapabilityWalkResult` to a gate; the
+// gate compares the walk-derived per-step grants against an operator-
+// supplied `ApprovalSet` and decides whether the deploy may proceed.
 //
 // Approval semantics (v1):
-//   - The orchestrator passes the full `CapabilityWalkResult` plus the
-//     approver's already-approved grant set; the gate decides whether
-//     to proceed by computing the per-step "needs approval" delta.
+//   - The operator supplies a flat set of approved grant-shape strings
+//     (`ApprovalSet`). Every grant the walk surfaced on every step must
+//     appear in that set; any miss is a per-step `pending` entry and
+//     fails the gate.
 //   - A non-empty `unresolvedDirectors` field on the walk result is
-//     itself a deploy-time failure; the gate surfaces it as
-//     `"unresolvable director"` and the orchestrator aborts.
-//   - The trivial-workflow uniformity bridge: when the deployment is
-//     migrating from the agent-deploy surface, the approval source is
-//     pre-populated from the existing per-agent grant store so the
-//     operator does not see a fresh approval prompt for grants that
-//     were already approved on the legacy path.
+//     itself a deploy-time failure; the gate surfaces it through
+//     `ApprovalDecision` and the orchestrator aborts.
+//   - The trivial-workflow uniformity bridge: operators populating the
+//     approval set from the legacy per-agent grant store carry through
+//     the previously-approved grants so the operator does not see a
+//     fresh approval prompt for grants that were already approved on the
+//     legacy agent-deploy path.
 
 import type { CapabilityWalkResult } from "./capability-walk";
 
 /**
- * Source the approval gate consults. The orchestrator wires this from
- * the deployment context (admin UI cache, legacy grant-store mirror,
- * scripted policy). Returns the set of grant-shape strings the
- * approver has already accepted for this deployment.
+ * A flat set of grant-shape strings the operator has approved for this
+ * deployment. The orchestrator-side wiring synthesizes the set from the
+ * deployment context (admin UI cache, legacy grant-store mirror,
+ * scripted policy). Order does not matter; membership is the only thing
+ * the gate consults.
+ */
+export type ApprovalSet = ReadonlySet<string>;
+
+/**
+ * Source the approval gate consults. Kept as an indirection so a future
+ * implementation can defer the approval-set materialization until the
+ * gate actually runs (e.g. a remote operator UI fetch).
  */
 export interface ApprovalSource {
-  approvedGrants(): Promise<ReadonlySet<string>>;
+  approvedGrants(): Promise<ApprovalSet>;
 }
 
 /**
@@ -40,10 +44,9 @@ export interface ApprovalSource {
  * `ok: true` -- every grant the walk surfaced is approved and the
  * orchestrator may continue with deploy.
  * `ok: false` -- one or more grants are missing approval or the walk
- * surfaced unresolvable directors. `pending` carries the
- * per-step delta the operator must approve; `unresolvedDirectors`
- * mirrors the walk's field so the gate's caller does not need to
- * inspect both shapes.
+ * surfaced unresolvable directors. `pending` carries the per-step delta
+ * the operator must approve; `unresolvedDirectors` mirrors the walk's
+ * field so the gate's caller does not need to inspect both shapes.
  */
 export type ApprovalDecision =
   | { readonly ok: true }
@@ -54,30 +57,74 @@ export type ApprovalDecision =
     };
 
 /**
- * The approval gate the orchestrator calls. Implementations land in
- * the next commit alongside orchestrator wiring; this signature is
- * the stable contract.
+ * The approval gate the orchestrator calls. The single method consumes
+ * the walk output and yields a decision.
  */
 export interface CapabilityApprovalGate {
   evaluate(walk: CapabilityWalkResult): Promise<ApprovalDecision>;
 }
 
 /**
- * Stub gate. Throws so an orchestrator that wires it before the
- * concrete implementation lands gets a loud, structured failure
- * rather than a silent green-light. The throw is the correct shape
- * for a not-yet-wired deploy path: the orchestrator must refuse to
- * apply a deploy until the approval source is real.
+ * Build a gate that decides against a fixed `ApprovalSet`. Suitable for
+ * the operator-supplied flat-set case and for tests.
+ *
+ * The gate computes the per-step delta deterministically:
+ *
+ *   - Walk every step in the walk's `perStep` map (input order
+ *     preserved).
+ *   - For each step, list grants the walk surfaced that are not in the
+ *     approval set, preserving the walk's order to keep the operator-
+ *     facing pending list stable.
+ *   - Empty per-step deltas are omitted from the result map so the
+ *     operator-facing pending output names only steps with something to
+ *     approve.
+ *   - `unresolvedDirectors` is mirrored verbatim. A non-empty value
+ *     forces `ok: false` regardless of whether every per-step grant
+ *     happens to be approved -- the orchestrator must not let a deploy
+ *     proceed against a walk that could not resolve every director ref.
  */
-export function createNotYetImplementedApprovalGate(): CapabilityApprovalGate {
+export function createApprovalSetGate(
+  approvals: ApprovalSet,
+): CapabilityApprovalGate {
   return {
-    evaluate(_walk) {
-      return Promise.reject(
-        new Error(
-          "capability-approval gate is not wired yet; the orchestrator " +
-            "must supply a concrete ApprovalSource implementation",
-        ),
-      );
+    async evaluate(walk: CapabilityWalkResult): Promise<ApprovalDecision> {
+      const pending = new Map<string, readonly string[]>();
+      for (const [stepId, declarations] of walk.perStep) {
+        const missing: string[] = [];
+        for (const grant of declarations.grants) {
+          if (!approvals.has(grant)) {
+            missing.push(grant);
+          }
+        }
+        if (missing.length > 0) {
+          pending.set(stepId, Object.freeze(missing));
+        }
+      }
+      const unresolved = walk.unresolvedDirectors;
+      if (pending.size === 0 && unresolved.length === 0) {
+        return { ok: true };
+      }
+      return {
+        ok: false,
+        pending,
+        unresolvedDirectors: unresolved,
+      };
+    },
+  };
+}
+
+/**
+ * Build a gate that consults an `ApprovalSource` on every call. Useful
+ * when the approved-set materialization is async (e.g. a remote operator
+ * UI fetch) or per-call dynamic.
+ */
+export function createApprovalSourceGate(
+  source: ApprovalSource,
+): CapabilityApprovalGate {
+  return {
+    async evaluate(walk: CapabilityWalkResult): Promise<ApprovalDecision> {
+      const approvals = await source.approvedGrants();
+      return createApprovalSetGate(approvals).evaluate(walk);
     },
   };
 }
