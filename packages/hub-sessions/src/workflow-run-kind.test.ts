@@ -1,10 +1,25 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { generateKeyPair } from "@intx/crypto-node";
+import type { KeyPair } from "@intx/types/runtime";
 import {
   workflowRunKindHandler,
   workflowRunAuthorize,
+  enqueueInbox,
+  dequeueToProcessing,
+  markConsumed,
+  replayProcessingToInbox,
   WORKFLOW_RUN_GITIGNORE_PATH,
   WORKFLOW_RUN_RUNS_PREFIX,
+  WORKFLOW_RUN_ADDRESSES_PREFIX,
+  WORKFLOW_RUN_INBOX_DIR,
+  WORKFLOW_RUN_PROCESSING_DIR,
+  WORKFLOW_RUN_CONSUMED_DIR,
+  WORKFLOW_RUN_BLOBS_DIR,
 } from "./workflow-run-kind";
+import { createRepoStore } from "./repo-store";
 import type { Principal, RepoId } from "./repo-store";
 
 const REF = "refs/heads/events";
@@ -198,16 +213,6 @@ describe("workflowRunKindHandler.validatePush — accepts", () => {
 });
 
 describe("workflowRunKindHandler.validatePush — rejects top-level shape", () => {
-  test("rejects any path under addresses/ (deferred subtree)", async () => {
-    const r = await validate({
-      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
-      "addresses/user%40example.com/inbox/123.json": "{}",
-    });
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error("unreachable");
-    expect(r.reason).toMatch(/deferred .*addresses\//);
-  });
-
   test("rejects any path under control/ (unsupported subtree)", async () => {
     const r = await validate({
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
@@ -597,6 +602,103 @@ describe("workflowRunKindHandler.validatePush — append-only via prior-tree", (
   });
 });
 
+describe("workflowRunKindHandler.validatePush — blobs subtree", () => {
+  // The production `BlobSubstrate` adapter spills any output whose
+  // JSON-stringified form exceeds 1 MiB to
+  // `runs/<runId>/blobs/<sha256-hex>`. The key is a lowercase
+  // 64-character sha256 hex string. The blob value is opaque bytes;
+  // immutability is enforced by prior-tree byte-equality (mirroring
+  // the consumed-entry discipline in the claim-check subtree).
+  //
+  // The regression fixture below mirrors what the BlobSubstrate adapter
+  // commits when `recordOutput` is called with a value whose
+  // JSON-stringified length exceeds the inline threshold: a blob keyed
+  // by the sha256 of the payload bytes, sized comfortably above 1 MiB.
+
+  const BLOB_KEY_A =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  const BLOB_KEY_B =
+    "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+  const LARGE_BLOB_BYTES = "x".repeat(1_500_000);
+
+  function blobsTree(
+    runId: string,
+    blobs: Record<string, string>,
+  ): Record<string, string> {
+    const tree: Record<string, string> = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+    };
+    for (const [key, body] of Object.entries(blobs)) {
+      tree[
+        `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_BLOBS_DIR}/${key}`
+      ] = body;
+    }
+    return tree;
+  }
+
+  test("regression: accepts a 1.5 MiB blob committed under runs/<runId>/blobs/<sha256>", async () => {
+    const tree = blobsTree("run-spill", { [BLOB_KEY_A]: LARGE_BLOB_BYTES });
+    const r = await validate(tree);
+    expect(r.ok).toBe(true);
+  });
+
+  test("accepts a new blob whose key is a valid sha256 hex string", async () => {
+    const tree = blobsTree("run-a", { [BLOB_KEY_A]: "payload-bytes" });
+    const r = await validate(tree);
+    expect(r.ok).toBe(true);
+  });
+
+  test("rejects a blob whose key is not a 64-char lowercase sha256 hex string", async () => {
+    const tree = blobsTree("run-a", { "not-a-hash.bin": "payload-bytes" });
+    const r = await validate(tree);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/blob filename .* does not match/);
+  });
+
+  test("rejects a blob whose key has uppercase hex (non-canonical sha256)", async () => {
+    const upper = BLOB_KEY_A.toUpperCase();
+    const tree = blobsTree("run-a", { [upper]: "payload-bytes" });
+    const r = await validate(tree);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/blob filename .* does not match/);
+  });
+
+  test("rejects a mutated blob whose prior-tree bytes differ", async () => {
+    const prior = blobsTree("run-a", { [BLOB_KEY_A]: "original-bytes" });
+    const prospective = blobsTree("run-a", { [BLOB_KEY_A]: "mutated-bytes!" });
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /blob runs\/run-a\/blobs\/.* bytes diverge from the prior tree/,
+    );
+  });
+
+  test("accepts an idempotent re-write of an existing blob with identical bytes", async () => {
+    const bytes = "stable-bytes";
+    const prior = blobsTree("run-a", { [BLOB_KEY_A]: bytes });
+    const prospective = blobsTree("run-a", { [BLOB_KEY_A]: bytes });
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(true);
+  });
+
+  test("accepts appending a new blob alongside an existing immutable blob", async () => {
+    const prior = blobsTree("run-a", { [BLOB_KEY_A]: "first-bytes" });
+    const prospective = blobsTree("run-a", {
+      [BLOB_KEY_A]: "first-bytes",
+      [BLOB_KEY_B]: "second-bytes",
+    });
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(true);
+  });
+});
+
 describe("workflowRunAuthorize — repoId guard", () => {
   test("rejects calls when repoId.kind is not workflow-run", () => {
     const r = workflowRunAuthorize(
@@ -917,5 +1019,676 @@ describe("workflowRunAuthorize — unknown principal", () => {
     expect(r.allowed).toBe(false);
     if (r.allowed) throw new Error("unreachable");
     expect(r.reason).toMatch(/unknown principal kind/);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Claim-check substrate tests.
+
+const ADDRESS = "alice@example.com";
+const ADDRESS_SEG = encodeURIComponent(ADDRESS);
+
+function inboxPathFor(seg: string, receivedAt: number, messageId: string) {
+  return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${seg}/${WORKFLOW_RUN_INBOX_DIR}/${String(receivedAt)}-${messageId}.json`;
+}
+
+function processingPathFor(seg: string, receivedAt: number, messageId: string) {
+  return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${seg}/${WORKFLOW_RUN_PROCESSING_DIR}/${String(receivedAt)}-${messageId}.json`;
+}
+
+function consumedPathFor(seg: string, messageId: string) {
+  return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${seg}/${WORKFLOW_RUN_CONSUMED_DIR}/${messageId}.json`;
+}
+
+function inboxBody(
+  messageId: string,
+  receivedAt: number,
+  address = ADDRESS,
+): string {
+  return JSON.stringify({
+    messageId,
+    receivedAt,
+    address,
+    mailAuditRef: { store: "audit", path: `mail/${messageId}` },
+  });
+}
+
+function consumedBody(
+  messageId: string,
+  receivedAt: number,
+  runId: string,
+  consumedAt: number,
+  address = ADDRESS,
+): string {
+  return JSON.stringify({
+    messageId,
+    receivedAt,
+    address,
+    runId,
+    consumedAt,
+    mailAuditRef: { store: "audit", path: `mail/${messageId}` },
+  });
+}
+
+describe("workflowRunKindHandler.validatePush — claim-check subtree shape", () => {
+  test("accepts a single inbox entry with a well-formed envelope", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [inboxPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxBody("msg-1", 100),
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  test("accepts inbox + a future processing entry only when prior tree carried the inbox", async () => {
+    const inboxEntry = inboxBody("msg-1", 100);
+    const prior = {
+      [inboxPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxEntry,
+    };
+    const prospective = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [processingPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxEntry,
+    };
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(true);
+  });
+
+  test("rejects an address segment that does not round-trip URL-encoding", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_ADDRESSES_PREFIX}/raw@addr/${WORKFLOW_RUN_INBOX_DIR}/100-msg-1.json`]:
+        inboxBody("msg-1", 100, "raw@addr"),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/does not round-trip URL-encoding/);
+  });
+
+  test("rejects an unexpected subdirectory under an address", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_ADDRESSES_PREFIX}/${ADDRESS_SEG}/stray/x.json`]: "{}",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/contains unexpected entry "stray"/);
+  });
+
+  test("rejects an inbox filename that does not match <receivedAt>-<messageId>.json", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_ADDRESSES_PREFIX}/${ADDRESS_SEG}/${WORKFLOW_RUN_INBOX_DIR}/no-receivedat.json`]:
+        inboxBody("msg-1", 100),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /inbox filename .* does not match <receivedAt>-<messageId>\.json/,
+    );
+  });
+
+  test("rejects an inbox body whose receivedAt does not match its filename", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [inboxPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxBody("msg-1", 999),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/body\.receivedAt .* does not match filename/);
+  });
+
+  test("rejects an inbox body whose messageId does not match its filename", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [inboxPathFor(ADDRESS_SEG, 100, "msg-A")]: inboxBody("msg-B", 100),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/body\.messageId .* does not match filename/);
+  });
+
+  test("rejects an inbox body whose address does not match the decoded segment", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [inboxPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxBody(
+        "msg-1",
+        100,
+        "different@example.com",
+      ),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/body\.address .* does not match decoded address/);
+  });
+
+  test("rejects a consumed filename that is not <messageId>.json shape", async () => {
+    // Lay out a valid processing entry in the prior tree so we can
+    // exercise the consumed-only filename check rather than the
+    // transition check.
+    const prior = {
+      [processingPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxBody("msg-1", 100),
+    };
+    const prospective = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_ADDRESSES_PREFIX}/${ADDRESS_SEG}/${WORKFLOW_RUN_CONSUMED_DIR}/no.dot.json.bogus`]:
+        consumedBody("msg-1", 100, "run-1", 200),
+    };
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    // The malformed filename either trips the filename regex (no `.json`
+    // suffix) or trips the messageId-mismatch — either is a structural
+    // rejection at the consumed boundary.
+    expect(r.reason).toMatch(/consumed filename|consumed .* does not match/);
+  });
+
+  test("rejects a tree where the same messageId appears in inbox and processing", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [inboxPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxBody("msg-1", 100),
+      [processingPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxBody("msg-1", 100),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/appears in multiple queue states/);
+  });
+
+  test("rejects a tree where the same messageId appears in inbox and consumed", async () => {
+    // Need a prior processing entry so the consumed entry passes the
+    // transition check long enough to fail the atomicity check.
+    const prior = {
+      [processingPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxBody("msg-1", 100),
+    };
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [inboxPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxBody("msg-1", 100),
+        [consumedPathFor(ADDRESS_SEG, "msg-1")]: consumedBody(
+          "msg-1",
+          100,
+          "run-1",
+          200,
+        ),
+      },
+      { priorFiles: prior },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/appears in multiple queue states/);
+  });
+
+  test("rejects a processing entry that has no matching prior-tree inbox entry", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [processingPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxBody("msg-1", 100),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /processing .* prior tree has no matching inbox entry/,
+    );
+  });
+
+  test("rejects a consumed entry that has no matching prior-tree processing entry", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [consumedPathFor(ADDRESS_SEG, "msg-1")]: consumedBody(
+        "msg-1",
+        100,
+        "run-1",
+        200,
+      ),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /consumed .* prior tree has no matching processing entry/,
+    );
+  });
+
+  test("rejects a consumed envelope whose receivedAt diverges from the prior processing entry", async () => {
+    const prior = {
+      [processingPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxBody("msg-1", 100),
+    };
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [consumedPathFor(ADDRESS_SEG, "msg-1")]: consumedBody(
+          "msg-1",
+          999,
+          "run-1",
+          200,
+        ),
+      },
+      { priorFiles: prior },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /body\.receivedAt .* does not match the prior processing entry's receivedAt/,
+    );
+  });
+
+  test("rejects a mutation to a consumed entry that already exists in the prior tree", async () => {
+    const prior = {
+      [consumedPathFor(ADDRESS_SEG, "msg-1")]: consumedBody(
+        "msg-1",
+        100,
+        "run-1",
+        200,
+      ),
+    };
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [consumedPathFor(ADDRESS_SEG, "msg-1")]: consumedBody(
+          "msg-1",
+          100,
+          "run-2",
+          200,
+        ),
+      },
+      { priorFiles: prior },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/consumed .* bytes diverge from the prior tree/);
+  });
+
+  test("accepts a clean inbox→processing transition (atomic move via prospective tree)", async () => {
+    const inboxEntry = inboxBody("msg-1", 100);
+    const prior = {
+      [inboxPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxEntry,
+    };
+    const prospective = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [processingPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxEntry,
+    };
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(true);
+  });
+
+  test("accepts a clean processing→consumed transition with matching receivedAt", async () => {
+    const prior = {
+      [processingPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxBody("msg-1", 100),
+    };
+    const prospective = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [consumedPathFor(ADDRESS_SEG, "msg-1")]: consumedBody(
+        "msg-1",
+        100,
+        "run-1",
+        200,
+      ),
+    };
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------
+// End-to-end claim-check API tests against a real on-disk RepoStore.
+
+const claimCheckTempDirs: string[] = [];
+
+async function makeClaimCheckTempDir(prefix: string): Promise<string> {
+  const d = await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix));
+  claimCheckTempDirs.push(d);
+  return d;
+}
+
+let claimCheckSigningKey: KeyPair;
+
+beforeAll(async () => {
+  claimCheckSigningKey = await generateKeyPair();
+});
+
+afterAll(async () => {
+  for (const d of claimCheckTempDirs.splice(0)) {
+    await fs.promises.rm(d, { recursive: true, force: true }).catch((_e) => {
+      /* best effort cleanup */
+    });
+  }
+});
+
+async function makeClaimCheckStore(prefix: string): Promise<{
+  store: ReturnType<typeof createRepoStore>;
+  repoId: RepoId;
+  principal: Principal;
+}> {
+  const dataDir = await makeClaimCheckTempDir(prefix);
+  const store = createRepoStore({
+    dataDir,
+    signingKey: claimCheckSigningKey,
+    handlers: { "workflow-run": workflowRunKindHandler },
+    authorize: () => ({ allowed: true }),
+  });
+  const repoId: RepoId = {
+    kind: "workflow-run",
+    id: `dep-${Math.random().toString(36).slice(2, 10)}`,
+  };
+  await store.initRepo(repoId);
+  return { store, repoId, principal: HUB_PRINCIPAL };
+}
+
+describe("claim-check API — enqueueInbox", () => {
+  test("writes a single inbox entry with the expected filename and envelope", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore("cc-enq-");
+    const result = await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      receivedAt: 100,
+      mailAuditRef: { store: "audit", path: "mail/msg-1" },
+    });
+    expect(result.inboxKey).toBe("100-msg-1");
+    expect(result.envelope.messageId).toBe("msg-1");
+
+    const repoDir = store.getRepoDir(repoId);
+    const blob = await fs.promises.readFile(
+      path.join(repoDir, inboxPathFor(ADDRESS_SEG, 100, "msg-1")),
+      "utf-8",
+    );
+    const parsed: unknown = JSON.parse(blob);
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      !("messageId" in parsed) ||
+      !("address" in parsed) ||
+      !("receivedAt" in parsed)
+    ) {
+      throw new Error("unexpected inbox envelope shape");
+    }
+    expect(parsed.messageId).toBe("msg-1");
+    expect(parsed.address).toBe(ADDRESS);
+    expect(parsed.receivedAt).toBe(100);
+  });
+
+  test("two enqueueInbox calls coexist in the inbox subtree", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore("cc-enq2-");
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      receivedAt: 100,
+      mailAuditRef: { store: "audit", path: "mail/msg-1" },
+    });
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-2",
+      receivedAt: 200,
+      mailAuditRef: { store: "audit", path: "mail/msg-2" },
+    });
+    const repoDir = store.getRepoDir(repoId);
+    const inboxDir = path.join(
+      repoDir,
+      `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${ADDRESS_SEG}/${WORKFLOW_RUN_INBOX_DIR}`,
+    );
+    const entries = await fs.promises.readdir(inboxDir);
+    expect(entries.sort()).toEqual(["100-msg-1.json", "200-msg-2.json"]);
+  });
+
+  test("rejects an enqueue against a messageId already in processing", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-enq-dup-");
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      receivedAt: 100,
+      mailAuditRef: { store: "audit", path: "mail/msg-1" },
+    });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    await expect(
+      enqueueInbox(store, principal, repoId, {
+        address: ADDRESS,
+        messageId: "msg-1",
+        receivedAt: 300,
+        mailAuditRef: { store: "audit", path: "mail/msg-1" },
+      }),
+    ).rejects.toThrow(/claim_check_already_processing/);
+  });
+});
+
+describe("claim-check API — markConsumed", () => {
+  test("atomic move from processing to consumed preserves originating receivedAt", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore("cc-mark-");
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      receivedAt: 100,
+      mailAuditRef: { store: "audit", path: "mail/msg-1" },
+    });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    const result = await markConsumed(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      runId: "run-X",
+      consumedAt: 500,
+    });
+    expect(result.envelope.runId).toBe("run-X");
+    expect(result.envelope.receivedAt).toBe(100);
+
+    const repoDir = store.getRepoDir(repoId);
+    const processingDir = path.join(
+      repoDir,
+      `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${ADDRESS_SEG}/${WORKFLOW_RUN_PROCESSING_DIR}`,
+    );
+    const remaining: string[] = await fs.promises
+      .readdir(processingDir)
+      .catch((): string[] => []);
+    expect(remaining).toEqual([]);
+
+    const consumedPath = path.join(
+      repoDir,
+      consumedPathFor(ADDRESS_SEG, "msg-1"),
+    );
+    await fs.promises.access(consumedPath);
+  });
+
+  test("rejects a consume without a matching processing entry", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-mark-bad-");
+    await expect(
+      markConsumed(store, principal, repoId, {
+        address: ADDRESS,
+        messageId: "absent",
+        runId: "run-X",
+        consumedAt: 500,
+      }),
+    ).rejects.toThrow(/claim_check_processing_not_found/);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Substrate-level FIFO unit test — validation criterion 4 (substrate
+// half). Two messages enqueued in order, dequeued twice, then a
+// mid-FIFO "crash" leaves a processing entry behind;
+// `replayProcessingToInbox` must restore it under its original key so
+// the next dequeue picks the same entry that the crashed worker had
+// claimed.
+
+describe("claim-check substrate FIFO invariant", () => {
+  test("dequeues two messages in receivedAt order and re-dequeues after crash replay with the original key", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore("cc-fifo-");
+
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      receivedAt: 100,
+      mailAuditRef: { store: "audit", path: "mail/msg-1" },
+    });
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-2",
+      receivedAt: 200,
+      mailAuditRef: { store: "audit", path: "mail/msg-2" },
+    });
+
+    const first = await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    expect(first).not.toBeNull();
+    if (first === null) throw new Error("unreachable");
+    expect(first.envelope.messageId).toBe("msg-1");
+    expect(first.key).toBe("100-msg-1");
+
+    await markConsumed(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      runId: "run-1",
+      consumedAt: 150,
+    });
+
+    const second = await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    expect(second).not.toBeNull();
+    if (second === null) throw new Error("unreachable");
+    expect(second.envelope.messageId).toBe("msg-2");
+    expect(second.key).toBe("200-msg-2");
+
+    // Mid-FIFO crash: msg-2 stays in processing, no consumed entry
+    // landed. The worker process is gone. The recovery path moves
+    // processing entries back to inbox preserving the filename key.
+    const replay = await replayProcessingToInbox(
+      store,
+      principal,
+      repoId,
+      ADDRESS,
+    );
+    expect(replay.replayedKeys).toEqual(["200-msg-2"]);
+
+    const reDequeue = await dequeueToProcessing(
+      store,
+      principal,
+      repoId,
+      ADDRESS,
+    );
+    expect(reDequeue).not.toBeNull();
+    if (reDequeue === null) throw new Error("unreachable");
+    expect(reDequeue.envelope.messageId).toBe("msg-2");
+    expect(reDequeue.key).toBe("200-msg-2");
+
+    await markConsumed(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-2",
+      runId: "run-2",
+      consumedAt: 300,
+    });
+
+    const finalDequeue = await dequeueToProcessing(
+      store,
+      principal,
+      repoId,
+      ADDRESS,
+    );
+    expect(finalDequeue).toBeNull();
+  });
+
+  test("replayProcessingToInbox is a no-op when processing is empty", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-replay-noop-");
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      receivedAt: 100,
+      mailAuditRef: { store: "audit", path: "mail/msg-1" },
+    });
+    const replay = await replayProcessingToInbox(
+      store,
+      principal,
+      repoId,
+      ADDRESS,
+    );
+    expect(replay.replayedKeys).toEqual([]);
+    // The inbox entry is untouched.
+    const next = await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    expect(next).not.toBeNull();
+    if (next === null) throw new Error("unreachable");
+    expect(next.envelope.messageId).toBe("msg-1");
+  });
+
+  // Regression: lexicographic-sort FIFO bug. Before the fix,
+  // dequeueToProcessing sorted inbox filenames as strings, so a
+  // later-received message with a longer receivedAt prefix dequeued
+  // ahead of an earlier-received message with a shorter prefix
+  // (e.g. "100-msg-B" < "99-msg-A" because '1' < '9'). After the
+  // fix the substrate sorts by parsed numeric receivedAt and the
+  // earlier message wins.
+  test("non-uniform receivedAt widths still respect FIFO (msg-A at 99 dequeues before msg-B at 100)", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-fifo-width-");
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-A",
+      receivedAt: 99,
+      mailAuditRef: { store: "audit", path: "mail/A" },
+    });
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-B",
+      receivedAt: 100,
+      mailAuditRef: { store: "audit", path: "mail/B" },
+    });
+    const first = await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    expect(first).not.toBeNull();
+    if (first === null) throw new Error("unreachable");
+    expect(first.envelope.messageId).toBe("msg-A");
+    expect(first.key).toBe("99-msg-A");
+    const second = await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    expect(second).not.toBeNull();
+    if (second === null) throw new Error("unreachable");
+    expect(second.envelope.messageId).toBe("msg-B");
+    expect(second.key).toBe("100-msg-B");
+  });
+});
+
+// ---------------------------------------------------------------------
+// Regression: per-messageId atomicity gap. Before the fix,
+// enqueueInbox only rejected a same-receivedAt collision and a
+// processing/consumed scan for the messageId — it did NOT scan the
+// inbox prefix for a same-messageId-at-different-receivedAt match.
+// The validatePush atomicity Set was keyed by kind, so two inbox
+// entries with the same messageId and different receivedAt produced
+// a single-element {"inbox"} Set and did not trip the check.
+// After the fix, the second enqueue throws claim_check_already_inbox
+// and the inbox directory holds exactly one entry.
+
+describe("claim-check API — enqueueInbox per-messageId atomicity in inbox", () => {
+  test("rejects a second enqueue for the same messageId at a different receivedAt", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-enq-dup-inbox-");
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-X",
+      receivedAt: 100,
+      mailAuditRef: { store: "audit", path: "mail/X" },
+    });
+    await expect(
+      enqueueInbox(store, principal, repoId, {
+        address: ADDRESS,
+        messageId: "msg-X",
+        receivedAt: 200,
+        mailAuditRef: { store: "audit", path: "mail/X" },
+      }),
+    ).rejects.toThrow(/claim_check_already_inbox/);
+    const repoDir = store.getRepoDir(repoId);
+    const inboxDir = path.join(
+      repoDir,
+      `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${ADDRESS_SEG}/${WORKFLOW_RUN_INBOX_DIR}`,
+    );
+    const entries = await fs.promises.readdir(inboxDir);
+    expect(entries.sort()).toEqual(["100-msg-X.json"]);
+  });
+});
+
+// Regression at the validatePush layer for the same intra-state
+// atomicity gap. A prospective tree carrying two inbox entries for
+// the same messageId at distinct receivedAt values is structurally
+// invalid; the rejection lands on the same code path that catches
+// inbox+processing collisions.
+describe("workflowRunKindHandler.validatePush — claim-check intra-state atomicity", () => {
+  test("rejects a tree with two inbox entries sharing a messageId at different receivedAt", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [inboxPathFor(ADDRESS_SEG, 100, "msg-X")]: inboxBody("msg-X", 100),
+      [inboxPathFor(ADDRESS_SEG, 200, "msg-X")]: inboxBody("msg-X", 200),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/appears at multiple inbox positions/);
   });
 });
