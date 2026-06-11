@@ -225,6 +225,50 @@ export function createReactor(config: ReactorConfig): Reactor {
   let done = false;
   let shutdownStarted = false;
 
+  // Per-message run-bracket state. Set when the loop dequeues a
+  // message.received and begins per-message work; cleared at the
+  // terminal point (wait/reply/done) or at a reactor-fatal abandon.
+  // `messageRunId` is reactor-minted per dequeue via crypto.randomUUID
+  // so a crash-and-replay that re-delivers the same messageId still
+  // produces unambiguous start/end pairs downstream.
+  let currentMessageRunId: string | null = null;
+  let currentMessageId: string | null = null;
+
+  function openMessageRun(messageId: string): void {
+    currentMessageRunId = crypto.randomUUID();
+    currentMessageId = messageId;
+    emit({
+      type: "message.run.started",
+      seq: nextSeq(),
+      data: {
+        messageId,
+        messageRunId: currentMessageRunId,
+        receivedAt: Date.now(),
+      },
+    });
+  }
+
+  function closeMessageRun(
+    status: "completed" | "failed",
+    error?: { message: string; kind?: string },
+  ): void {
+    if (currentMessageRunId === null || currentMessageId === null) return;
+    const data: {
+      messageRunId: string;
+      messageId: string;
+      status: "completed" | "failed";
+      error?: { message: string; kind?: string };
+    } = {
+      messageRunId: currentMessageRunId,
+      messageId: currentMessageId,
+      status,
+    };
+    if (error !== undefined) data.error = error;
+    emit({ type: "message.run.ended", seq: nextSeq(), data });
+    currentMessageRunId = null;
+    currentMessageId = null;
+  }
+
   // Per-cycle accumulator of TransformRecord entries produced by every
   // transform invocation (tool result, context, compactor). Flushed via
   // contextStore.writeManifest at cycle boundaries.
@@ -742,11 +786,21 @@ export function createReactor(config: ReactorConfig): Reactor {
       }
 
       // Append inbound messages to conversation history so the provider sees them.
-      if (event.type === "message.received" && stateManager !== null) {
-        const msg = createInboundTurn(event.message);
-        if (msg !== null) {
-          stateManager.appendTurn(msg);
+      // Each dequeued message.received opens a fresh per-message run bracket.
+      // If a prior bracket is still open (defensive — should not occur given
+      // the dequeue priority that drains cycle events before new messages),
+      // close it as completed first so the new bracket starts cleanly.
+      if (event.type === "message.received") {
+        if (stateManager !== null) {
+          const msg = createInboundTurn(event.message);
+          if (msg !== null) {
+            stateManager.appendTurn(msg);
+          }
         }
+        if (currentMessageRunId !== null) {
+          closeMessageRun("completed");
+        }
+        openMessageRun(event.message.headers.messageId);
       }
 
       let actions;
@@ -761,6 +815,10 @@ export function createReactor(config: ReactorConfig): Reactor {
 
         logger.error`Director threw during decide: ${cause}`;
         emitError(`Director exception: ${msg}`, true);
+        closeMessageRun("failed", {
+          message: `Director exception: ${msg}`,
+          kind: "reactor_fatal",
+        });
         done = true;
         await initiateShutdown();
         break;
@@ -769,6 +827,10 @@ export function createReactor(config: ReactorConfig): Reactor {
       const validation = validateActions(actions);
       if (!validation.ok) {
         emitError(`Invalid action set: ${validation.error}`, true);
+        closeMessageRun("failed", {
+          message: `Invalid action set: ${validation.error}`,
+          kind: "reactor_fatal",
+        });
         done = true;
         await initiateShutdown();
         break;
@@ -813,15 +875,19 @@ export function createReactor(config: ReactorConfig): Reactor {
         // Flush the cycle (in case the director paired done with checkpoint
         // or other work) before shutting down.
         await commitCycle();
+        closeMessageRun("completed");
         done = true;
         await initiateShutdown();
         break;
       }
 
       // Handle wait: commit the cycle (if work happened) and return to the
-      // event loop without shutting down.
+      // event loop without shutting down. Wait is a per-message terminal:
+      // the reactor has nothing more to do for the message and is returning
+      // to idle.
       if (normalized.some((a) => a.type === "wait")) {
         await commitCycle();
+        closeMessageRun("completed");
         continue;
       }
 
@@ -888,6 +954,9 @@ export function createReactor(config: ReactorConfig): Reactor {
               : {}),
           },
         });
+        // Reply is a per-message terminal point: close the bracket so the
+        // next inbound message opens a fresh run.
+        closeMessageRun("completed");
         // After replying, wait for the next inbound message.
         continue;
       }
@@ -899,11 +968,13 @@ export function createReactor(config: ReactorConfig): Reactor {
         try {
           await executeCompact(compactAction.compactor, compactAction.reason);
         } catch (cause) {
+          const msg = cause instanceof Error ? cause.message : String(cause);
           logger.error`Compaction failed: ${cause}`;
-          emitError(
-            `Compaction failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-            true,
-          );
+          emitError(`Compaction failed: ${msg}`, true);
+          closeMessageRun("failed", {
+            message: `Compaction failed: ${msg}`,
+            kind: "reactor_fatal",
+          });
           done = true;
           await initiateShutdown();
           break;
@@ -1023,11 +1094,13 @@ export function createReactor(config: ReactorConfig): Reactor {
       try {
         await loop();
       } catch (cause) {
+        const msg = cause instanceof Error ? cause.message : String(cause);
         logger.error`Reactor loop threw unexpectedly: ${cause}`;
-        emitError(
-          `Internal reactor error: ${cause instanceof Error ? cause.message : String(cause)}`,
-          true,
-        );
+        emitError(`Internal reactor error: ${msg}`, true);
+        closeMessageRun("failed", {
+          message: `Internal reactor error: ${msg}`,
+          kind: "reactor_fatal",
+        });
         if (!shutdownStarted) {
           await initiateShutdown();
         }

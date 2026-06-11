@@ -3658,3 +3658,239 @@ describe("createReactor — transform chain ordering and compact action", () => 
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// 28. Per-message run-bracket emission
+// ---------------------------------------------------------------------------
+
+describe("createReactor — message.run bracket emission", () => {
+  test("trivial happy-path dequeue emits started then ended with completed", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) => caps.done(),
+      }),
+    });
+
+    reactor.start();
+    const inbound = makeInboundMessage();
+    reactor.deliver(inbound);
+    await waitFor("reactor.done");
+
+    const started = getEvent(events, "message.run.started");
+    const ended = getEvent(events, "message.run.ended");
+
+    expect(started.data.messageId).toBe(inbound.headers.messageId);
+    expect(typeof started.data.messageRunId).toBe("string");
+    expect(started.data.messageRunId.length).toBeGreaterThan(0);
+    expect(typeof started.data.receivedAt).toBe("number");
+
+    expect(ended.data.messageRunId).toBe(started.data.messageRunId);
+    expect(ended.data.messageId).toBe(inbound.headers.messageId);
+    expect(ended.data.status).toBe("completed");
+    expect(ended.data.error).toBeUndefined();
+
+    // Ordering: started before ended.
+    const startedIdx = events.findIndex(
+      (e) => e.type === "message.run.started",
+    );
+    const endedIdx = events.findIndex((e) => e.type === "message.run.ended");
+    expect(startedIdx).toBeLessThan(endedIdx);
+  });
+
+  test("wait terminal action emits ended with completed", async () => {
+    let count = 0;
+    const { reactor, events, waitFor } = createTestReactor({
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) => {
+          count++;
+          if (count >= 2) return caps.done();
+          return caps.wait();
+        },
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    setTimeout(() => reactor.deliver(makeInboundMessage()), 20);
+    await waitFor("reactor.done");
+
+    const endedEvents = events.filter((e) => e.type === "message.run.ended");
+    // Two bracket-ends: one per delivered message.
+    expect(endedEvents.length).toBe(2);
+    for (const e of endedEvents) {
+      if (e.type !== "message.run.ended") throw new Error("unreachable");
+      expect(e.data.status).toBe("completed");
+    }
+  });
+
+  test("reply terminal action emits ended with completed before connector.reply pairing", async () => {
+    let count = 0;
+    const { reactor, events, waitFor } = createTestReactor({
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) => {
+          count++;
+          if (count >= 2) return caps.done();
+          return caps.reply("ok");
+        },
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    setTimeout(() => reactor.deliver(makeInboundMessage()), 20);
+    await waitFor("reactor.done");
+
+    const replyIdx = events.findIndex((e) => e.type === "connector.reply");
+    const firstEndedIdx = events.findIndex(
+      (e) => e.type === "message.run.ended",
+    );
+    expect(replyIdx).toBeGreaterThan(-1);
+    expect(firstEndedIdx).toBeGreaterThan(replyIdx);
+
+    const endedEvents = events.filter((e) => e.type === "message.run.ended");
+    expect(endedEvents.length).toBe(2);
+  });
+
+  test("mid-message director exception emits ended with failed and reactor_fatal kind", async () => {
+    let firstSeen = false;
+    const director: ReactorDirector = {
+      async decide(event) {
+        if (event.type === "message.received" && !firstSeen) {
+          firstSeen = true;
+          return { type: "infer" as const };
+        }
+        throw new Error("director blew up");
+      },
+    };
+
+    const { reactor, events, waitFor } = createTestReactor({
+      director,
+      inferenceRunner: mockInferenceRunner("hello"),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const ended = getEvent(events, "message.run.ended");
+    expect(ended.data.status).toBe("failed");
+    expect(ended.data.error?.message).toMatch(/director blew up/);
+    expect(ended.data.error?.kind).toBe("reactor_fatal");
+  });
+
+  test("invalid action set abandons the message with failed status", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) => [caps.infer(), caps.done()],
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const ended = getEvent(events, "message.run.ended");
+    expect(ended.data.status).toBe("failed");
+    expect(ended.data.error?.kind).toBe("reactor_fatal");
+    expect(ended.data.error?.message).toMatch(/Invalid action set/);
+  });
+
+  test("bracket events sit between inference cycle and the connector.reply terminal", async () => {
+    let count = 0;
+    const { reactor, events, waitFor } = createTestReactor({
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) => {
+          count++;
+          if (count >= 2) return caps.done();
+          return caps.infer();
+        },
+        "inference.done": (_e, _s, caps) => caps.reply("response"),
+      }),
+      inferenceRunner: mockInferenceRunner("hello"),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    setTimeout(() => reactor.deliver(makeInboundMessage()), 30);
+    await waitFor("reactor.done");
+
+    const types = events.map((e) => e.type);
+    const startedIdx = types.indexOf("message.run.started");
+    const inferenceDoneIdx = types.indexOf("inference.done");
+    const replyIdx = types.indexOf("connector.reply");
+    const endedIdx = types.indexOf("message.run.ended");
+
+    expect(startedIdx).toBeGreaterThan(-1);
+    expect(inferenceDoneIdx).toBeGreaterThan(startedIdx);
+    expect(replyIdx).toBeGreaterThan(inferenceDoneIdx);
+    expect(endedIdx).toBeGreaterThan(replyIdx);
+  });
+
+  test("multiple sequential messages each get a unique messageRunId", async () => {
+    let count = 0;
+    const { reactor, events, waitFor } = createTestReactor({
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) => {
+          count++;
+          if (count >= 3) return caps.done();
+          return caps.wait();
+        },
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    setTimeout(() => reactor.deliver(makeInboundMessage()), 20);
+    setTimeout(() => reactor.deliver(makeInboundMessage()), 40);
+    await waitFor("reactor.done");
+
+    const started = events.filter((e) => e.type === "message.run.started");
+    expect(started.length).toBe(3);
+
+    const runIds = started.map((e) => {
+      if (e.type !== "message.run.started") throw new Error("unreachable");
+      return e.data.messageRunId;
+    });
+    const unique = new Set(runIds);
+    expect(unique.size).toBe(3);
+
+    // Every started event has a matching ended event with the same messageRunId.
+    const ended = events.filter((e) => e.type === "message.run.ended");
+    expect(ended.length).toBe(3);
+    const endedRunIds = ended.map((e) => {
+      if (e.type !== "message.run.ended") throw new Error("unreachable");
+      return e.data.messageRunId;
+    });
+    expect(new Set(endedRunIds)).toEqual(unique);
+  });
+
+  test("abort mid-message does not emit a bracket-end event", async () => {
+    // The bracket stays open across the abort by routing message.received
+    // to suspend. When the reactor is killed mid-message by an external
+    // abort, the bracket-end event must not fire — cancellation lives in
+    // the workflow-runtime vocabulary, not on the reactor's bracket.
+    const { reactor, events, waitFor } = createTestReactor({
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) =>
+          caps.suspend({
+            type: "approval",
+            gateId: "abort-gate",
+            timeoutMs: 60000,
+          }),
+      }),
+      shutdownTimeoutMs: 100,
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.gate.blocked");
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+
+    const ended = events.filter((e) => e.type === "message.run.ended");
+    expect(ended.length).toBe(0);
+    const started = events.filter((e) => e.type === "message.run.started");
+    expect(started.length).toBe(1);
+  });
+});

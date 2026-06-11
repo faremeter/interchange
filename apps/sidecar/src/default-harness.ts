@@ -925,8 +925,30 @@ export function createDefaultHarnessBuilder(
 
       // The sidecar's event channel expects onEvent calls. The
       // harness exposes the underlying agent's event stream; forward
-      // every event (except message.received, an assembly-internal
-      // signal) onto the legacy callback.
+      // every event onto the legacy callback EXCEPT `message.received`,
+      // which is the single intentional exclusion.
+      //
+      // Why `message.received` is filtered:
+      //  - It is an assembly-internal signal. The reactor emits it
+      //    when an inbound mail dequeues, but the hub-facing audit
+      //    chain expresses per-message work as the
+      //    `message.run.started` / `message.run.ended` bracket pair,
+      //    minted around the same dequeue. Forwarding both would
+      //    double-count per-message work in downstream consumers
+      //    (SessionManager, workflow-runtime translation) and would
+      //    leak the dequeue-vs-bracket distinction into a layer that
+      //    has no use for it.
+      //  - The raw inbound mail bytes are already authoritative in
+      //    the mail-audit store; the bracket events carry messageId
+      //    plus the reactor-minted messageRunId, which is what the
+      //    audit chain needs to correlate.
+      //
+      // The filter is an allowlist-of-everything-except, so new
+      // InferenceEvent members flow through by default. In particular,
+      // `message.run.started` and `message.run.ended` are forwarded
+      // unchanged; widening this filter to exclude other event types
+      // would silently drop hub-facing audit data and must be done
+      // deliberately.
       //
       // `harness.stream()` is invoked synchronously here so the
       // underlying StreamConsumer is registered before any microtask
