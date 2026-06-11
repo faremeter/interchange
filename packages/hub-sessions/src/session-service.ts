@@ -287,6 +287,10 @@ function resolveMountPath(row: AgentAssetWithAsset): string {
       throw new Error(
         `mount_path_required: agent_asset row ${row.id} references agent-state asset ${row.asset.id}; agent-state attachments are not supported`,
       );
+    case "workflow":
+      throw new Error("kind handler not yet registered: workflow");
+    case "workflow-run":
+      throw new Error("kind handler not yet registered: workflow-run");
     default: {
       const exhaustive: never = row.asset.kind;
       throw new Error(

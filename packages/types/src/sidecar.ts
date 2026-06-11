@@ -339,6 +339,8 @@ export const RepoKind = type.enumerated(
   "agent-state",
   "skill",
   "package-registry",
+  "workflow",
+  "workflow-run",
 );
 export type RepoKind = typeof RepoKind.infer;
 

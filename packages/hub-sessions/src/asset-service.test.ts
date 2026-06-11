@@ -306,20 +306,23 @@ describe("AssetService", () => {
       expect(out.commitSha).toMatch(/^[0-9a-f]{40}$/);
     });
 
-    test("rejects kind agent-state", async () => {
-      const err = await service
-        .createAsset({
-          tenantId: "tnt_1",
-          kind: "agent-state",
-          name: "x",
-        })
-        .catch((e: unknown) => e);
+    test.each([["agent-state"], ["workflow"], ["workflow-run"]] as const)(
+      "rejects kind %s",
+      async (kind) => {
+        const err = await service
+          .createAsset({
+            tenantId: "tnt_1",
+            kind,
+            name: "x",
+          })
+          .catch((e: unknown) => e);
 
-      expect(err).toBeInstanceOf(AssetServiceError);
-      if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
-      expect(err.reason).toBe("unsupported_kind");
-      expect(dbFixture.assets).toHaveLength(0);
-    });
+        expect(err).toBeInstanceOf(AssetServiceError);
+        if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
+        expect(err.reason).toBe("unsupported_kind");
+        expect(dbFixture.assets).toHaveLength(0);
+      },
+    );
 
     test("accepts a valid lowercase-kebab name", async () => {
       const asset = await service.createAsset({

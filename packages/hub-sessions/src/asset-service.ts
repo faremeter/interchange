@@ -303,10 +303,10 @@ export function createAssetService(deps: {
     deps.reservedPackageRegistryNames ?? new Set<string>();
 
   async function createAsset(params: CreateAssetParams): Promise<Asset> {
-    if (params.kind === "agent-state") {
+    if (params.kind !== "skill" && params.kind !== "package-registry") {
       throw new AssetServiceError(
         "unsupported_kind",
-        `createAsset rejects kind "agent-state": agent-state repos are managed by the agent lifecycle, not the asset service`,
+        `createAsset rejects kind ${JSON.stringify(params.kind)}: the asset service handles "skill" and "package-registry" assets; other repo kinds are managed by their respective subsystems`,
       );
     }
 

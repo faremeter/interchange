@@ -99,6 +99,10 @@ export function createAgentRepoStore(config: {
         return skillAuthorize(principal, incomingRepoId, ref, action);
       case "package-registry":
         return packageRegistryAuthorize(principal, incomingRepoId, ref, action);
+      case "workflow":
+        throw new Error("kind handler not yet registered: workflow");
+      case "workflow-run":
+        throw new Error("kind handler not yet registered: workflow-run");
       default: {
         const _exhaustive: never = incomingRepoId.kind;
         return {
