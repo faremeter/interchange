@@ -23,18 +23,22 @@ export {
   type SessionEventSink,
   type ConnectorStateSink,
   type AgentSession,
+  type AgentEventListener,
   type ProvisionResult,
   type RestoreResult,
   type RestoredAgent,
 } from "./session-manager";
 export {
   createHubLink,
+  type DeployRouter,
+  type DeployRouterResult,
   type HubLink,
   type HubLinkConfig,
   type ReconnectScheduler,
 } from "./ws/hub-link";
 export {
   createSidecarOrchestrator,
+  type CreateDeployRouter,
   type SidecarOrchestrator,
   type SidecarOrchestratorConfig,
   type SidecarCryptoOps,

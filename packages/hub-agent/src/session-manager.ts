@@ -113,6 +113,8 @@ export type RestoreResult = {
   failed: string[];
 };
 
+export type AgentEventListener = (event: InferenceEvent) => void;
+
 export type SessionManager = {
   provisionAgent(config: AgentConfig): Promise<ProvisionResult>;
   startSession(agentAddress: string): Promise<void>;
@@ -120,6 +122,15 @@ export type SessionManager = {
   abortSession(agentAddress: string, reason: string): Promise<void>;
   deliverMessage(agentAddress: string, message: InboundMessage): void;
   updateGrants(agentAddress: string, grants: GrantRule[]): Promise<void>;
+  /**
+   * Subscribe to InferenceEvents scoped to a specific agent address.
+   * Returns a disposer that removes the listener. Listeners fire
+   * synchronously before the global `onEvent` sink during dispatch.
+   * Production wires this against the workflow-host supervisor's
+   * trivial-launch path so the per-message reactor brackets the
+   * trivial workflow's run-event chain through `recordRunEvent`.
+   */
+  onAgentEvent(agentAddress: string, listener: AgentEventListener): () => void;
   updateSources(
     agentAddress: string,
     sources: InferenceSource[],
@@ -197,6 +208,32 @@ export function createSessionManager(
   const sessions = new Map<string, LiveSession>();
   const provisioned = new Map<string, ProvisionedAgent>();
   const pending = new Set<string>();
+
+  // Per-agent InferenceEvent fan-out. Subscribers register against a
+  // specific agentAddress; the dispatch site looks the listener set up
+  // by the event's owning address (the closure captured in startSession)
+  // and fires every listener synchronously before the global `onEvent`
+  // sink runs. Disposers remove a single listener and prune the set on
+  // emptiness so addresses without subscribers cost a single map miss.
+  const agentEventListeners = new Map<string, Set<AgentEventListener>>();
+
+  function onAgentEvent(
+    agentAddress: string,
+    listener: AgentEventListener,
+  ): () => void {
+    let set = agentEventListeners.get(agentAddress);
+    if (set === undefined) {
+      set = new Set();
+      agentEventListeners.set(agentAddress, set);
+    }
+    set.add(listener);
+    return () => {
+      const current = agentEventListeners.get(agentAddress);
+      if (current === undefined) return;
+      current.delete(listener);
+      if (current.size === 0) agentEventListeners.delete(agentAddress);
+    };
+  }
 
   // Checkpoint hash captured from the most recent connector.reply event for
   // each agent. Consumed (deleted) by the MessageSentHandler so that only
@@ -342,7 +379,27 @@ export function createSessionManager(
           ) {
             lastCheckpointHashes.set(agentAddress, event.data.checkpointHash);
           }
+          // Per-agent listeners fire before the global sink so an
+          // in-process consumer (the workflow-host trivial-launch
+          // subscriber) sees events at the same instant the hub
+          // forwarder does. Exceptions from a listener must not
+          // suppress the global forwarder; collect and rethrow only
+          // after `onEvent` has run.
+          let firstError: unknown;
+          const set = agentEventListeners.get(agentAddress);
+          if (set !== undefined) {
+            for (const listener of set) {
+              try {
+                listener(event);
+              } catch (err: unknown) {
+                if (firstError === undefined) firstError = err;
+                else
+                  logger.error`agent-event listener for ${agentAddress} threw: ${String(err)}`;
+              }
+            }
+          }
           onEvent(agentAddress, sessionId, event);
+          if (firstError !== undefined) throw firstError;
         },
         onConnectorStateChanged(state) {
           onConnectorStateChanged(agentAddress, state);
@@ -663,6 +720,7 @@ export function createSessionManager(
     abortSession,
     deliverMessage,
     updateGrants,
+    onAgentEvent,
     updateSources,
     hasSession,
     isProvisioned,

@@ -1,0 +1,20 @@
+#!/usr/bin/env bun
+// Package-owned entry script for the workflow-process child.
+//
+// The supervisor resolves this path via `require.resolve` /
+// `import.meta.resolve` and hands it to its `subprocessSpawner`
+// callback. The script's runtime body -- env parse, IPC channel
+// open, RepoStore construction, `runWorkflowChild` invocation --
+// is the next commit's responsibility. The file exists in this
+// commit so the path is resolvable from `WorkflowSupervisorBindings.
+// binaryPath` against a real install on disk.
+//
+// Until the body lands, an accidental invocation exits non-zero with
+// a message naming the missing implementation. The supervisor's
+// production wiring will be paired with the implementation in the
+// same release; an invocation that lands on this stub indicates a
+// release-coordination bug the operator should hear about loudly.
+process.stderr.write(
+  "workflow-host: bin/workflow-child invoked before runWorkflowChild has landed\n",
+);
+process.exit(78); // EX_CONFIG: configuration error

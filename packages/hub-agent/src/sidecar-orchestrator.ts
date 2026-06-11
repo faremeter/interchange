@@ -29,6 +29,7 @@ import { createSessionManager, type SessionManager } from "./session-manager";
 import type { HarnessBuilder } from "./harness-builder";
 import {
   createHubLink,
+  type DeployRouter,
   type HubLink,
   type ReconnectScheduler,
 } from "./ws/hub-link";
@@ -45,6 +46,28 @@ export type SidecarCryptoOps = {
   ): boolean;
 };
 
+/**
+ * Factory the orchestrator invokes once `sessions` and `keyStore`
+ * are constructed. The host returns the `DeployRouter` the link
+ * routes every inbound `agent.deploy` through; production wires
+ * this against a workflow-host supervisor whose `trivialLaunch`
+ * closes over `sessions.provisionAgent`. The host is responsible
+ * for closing over any other state the router needs (transport,
+ * substrate handle, signing keys) at the call site.
+ *
+ * `onAgentEvent` is the per-agent InferenceEvent subscription seam
+ * the trivial-launch closure uses to bracket the workflow-run event
+ * chain against the existing reactor moments
+ * (`message.run.started` / `inference.start` / `message.run.ended`).
+ * The orchestrator hands it through unchanged so the supervisor's
+ * `recordRunEvent` callback fires for the right address.
+ */
+export type CreateDeployRouter = (deps: {
+  sessions: SessionManager;
+  keyStore: AgentKeyStore;
+  onAgentEvent: SessionManager["onAgentEvent"];
+}) => DeployRouter;
+
 export type SidecarOrchestratorConfig = {
   hubURL: string;
   sidecarId: string;
@@ -54,6 +77,12 @@ export type SidecarOrchestratorConfig = {
   buildHarness: HarnessBuilder;
   createAgentCrypto: (keyPair: KeyPair) => CryptoProvider;
   cryptoOps: SidecarCryptoOps;
+  /**
+   * Host-injected `DeployRouter` factory. The orchestrator calls it
+   * once after `sessions` and `keyStore` are constructed; the
+   * returned router routes every `agent.deploy` frame on the link.
+   */
+  createDeployRouter: CreateDeployRouter;
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
   scheduleReconnect?: ReconnectScheduler;
@@ -83,6 +112,7 @@ export function createSidecarOrchestrator(
     buildHarness,
     createAgentCrypto,
     cryptoOps,
+    createDeployRouter,
     pingIntervalMs,
     reconnectDelayMs,
     scheduleReconnect,
@@ -137,6 +167,12 @@ export function createSidecarOrchestrator(
     },
   });
 
+  const deployRouter = createDeployRouter({
+    sessions,
+    keyStore,
+    onAgentEvent: sessions.onAgentEvent,
+  });
+
   const hubLink = createHubLink({
     hubURL,
     sidecarId,
@@ -144,6 +180,7 @@ export function createSidecarOrchestrator(
     transport,
     sessions,
     keyStore,
+    deployRouter,
     ...(pingIntervalMs !== undefined ? { pingIntervalMs } : {}),
     ...(reconnectDelayMs !== undefined ? { reconnectDelayMs } : {}),
     ...(scheduleReconnect !== undefined ? { scheduleReconnect } : {}),

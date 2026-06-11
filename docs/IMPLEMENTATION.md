@@ -334,6 +334,201 @@ The child verifies every control frame against `HOST_PUBKEY`; the supervisor ver
 
 The event channel's userspace buffer is bounded (default 1024 frames, exported as `DEFAULT_EVENT_BUFFER_LIMIT`). On overrun the supervisor logs the saturation and the workflow-process kills itself. The audit chain is built from forwarded `InferenceEvent`s; a silent drop of even one event would corrupt the chain in a way no downstream consumer could detect. Between corrupt-but-quiet and crash-and-be-noticed, crash wins.
 
+### Supervisor Lifecycle And Bindings
+
+The host-side supervisor implementation lives at
+`packages/workflow-host/src/supervisor/`. The factory
+`createWorkflowSupervisor(bindings)` takes a `WorkflowSupervisorBindings`
+object whose shape is:
+
+- `repoStore` — substrate-shaped `RepoStore` handle. The supervisor
+  reads grants and commits events through this one handle; per-
+  principal write-sites pass the principal kind explicitly rather
+  than going through pre-minted "RepoStore views".
+- `signAsPrincipal: (kind, payload) => SignedPayload` — host-owned
+  per-principal signing callback. The supervisor never sees the
+  principal's private key.
+- `mailBus` — `MailBusBindings` (`registerAddress`,
+  `unregisterAddress`, `subscribeMailForAddress`).
+- `subprocessSpawner` — invoked once per spawn against the
+  package-owned `packages/workflow-host/bin/workflow-child` script.
+  Production wires it against `Bun.spawn`; tests inject a mock.
+- Per-deployment configuration: `binaryPath`, `substrateEnv`,
+  `workflowRunRepoId`, `workflowRunRef`, `deploymentId`,
+  `deploymentMailAddress`, `readPrincipal`, `deriveStepAddress`.
+
+The supervisor's `spawn(opts)` method:
+
+1. Mints a fresh channelId, HMAC key, and IPC Ed25519 keypair.
+2. Builds the spawn-time env containing `IPC_CHANNEL_ID`,
+   `IPC_HMAC_KEY`, `HOST_PUBKEY`, `DEPLOYMENT_ID`,
+   `DEFINITION_HASH`, `MAILBOX_ADDRESS`, plus substrate-config keys
+   the host injected. Never the private key, never the principal-
+   signing key.
+3. Invokes `bindings.subprocessSpawner` and constructs the control-
+   channel sender + event-channel receiver against the returned
+   handle's stdio / event-socket fds.
+4. Awaits the child's `ready` frame on the control channel.
+5. Assembles the per-deployment `credentialsSnapshot` from each
+   step's `agent-state` repo (see next subsection) and registers
+   the deployment's mail address on the bus.
+6. Forwards inbound mail as `trigger.fire` control frames; mail that
+   arrives during `starting` buffers and drains in arrival order
+   after `ready`.
+
+Implementation lives in
+`packages/workflow-host/src/supervisor/supervisor.ts`. The
+`drain` and `recycle` methods are stubs in this commit; their full
+implementations land with the drain controller and recycle paths.
+
+### Deploy Routing (Option Z)
+
+The supervisor is the single ingress for inbound `agent.deploy`
+frames. The host-side handler calls `supervisor.deploy(frame)` and
+the supervisor decides between the trivial (1-step) passthrough
+and the multi-step IPC-backed spawn. Routing lives on the
+supervisor side of the seam; the host does not re-decide. The
+sidecar's hub-link surface lives at
+`packages/hub-agent/src/ws/hub-link.ts`; it consumes a
+`DeployRouter` binding whose production implementation is the
+workflow-host supervisor.
+
+Four invariants on the routing model are locked:
+
+1. **Supervisor owns `agent.deploy` framing.** The hub-side handler
+   in `packages/hub-agent/src/ws/hub-link.ts` calls
+   `deployRouter.deploy(frame)`; the production router is the
+   workflow-host supervisor's `supervisor.deploy(frame)`. No routing
+   logic leaks back into `hub-agent` or `hub-sessions`.
+2. **Trivial branch is a process-topology passthrough.** The
+   supervisor invokes the host-injected `trivialLaunch` callback
+   directly. No IPC channel opens. No workflow-process child is
+   spawned. No mail-bus subscription registers. The bytes flowing
+   through the deploy-flow gate path are bit-identical to the
+   pre-supervisor surface.
+3. **Trivial deploys emit the canonical workflow-run event chain.**
+   The supervisor commits `RunStarted` / `StepStarted` /
+   `StepCompleted` / `RunCompleted` to the workflow-run repo from
+   the supervisor process itself, signed via the host's
+   `signAsPrincipal("supervisor", ...)` callback. The chain fires
+   per inbound mail trigger (one run per fire) and is driven by
+   the host calling `bindings.recordRunEvent(...)` from the
+   trivialLaunch callback's reactor / harness lifecycle moments
+   (`message.run.started` / `message.run.ended` brackets). The
+   on-disk envelope is byte-identical to the one a multi-step
+   deployment's workflow-process child produces. Trivial and
+   multi-step deployments differ in process topology, not in
+   observability. The supervisor's signing key never leaves the
+   supervisor's address space; `signAsPrincipal` returns the raw
+   signature bytes for the canonical payload only after the
+   supervisor has serialized them.
+4. **`credentialsSnapshot` is multi-step-only.** The trivial branch
+   does not assemble a snapshot; `getCredentialsSnapshot()`
+   continues to return `null` after a trivial deploy. The
+   multi-step branch (`steps.length >= 2`) provisions per-step
+   `agent-state` repos, mints keys, spawns the workflow-process
+   child via `subprocessSpawner`, registers the deployment's mail
+   address, waits for `ready`, and assembles the
+   `credentialsSnapshot` -- this is the body of `spawn(opts)`,
+   which the multi-step branch is the worker for. The
+   `agent.deploy` wire frame today carries only a `HarnessConfig`
+   (no workflow definition); every frame is therefore trivial. The
+   seam exists now so the frame-format extension that carries a
+   `WorkflowDefinition` lands as a pure data-shape change.
+
+The supervisor's per-event commit primitive lives in
+`packages/workflow-host/src/supervisor/run-event-signing.ts`
+alongside the analogous `commitCancelRequested` path. The trivial
+branch's `recordRunEvent` is a thin closure over that primitive that
+the supervisor hands into the trivialLaunch bindings; the multi-step
+branch composes the same primitive from inside its in-supervisor
+event-channel receiver.
+
+The workflow-run repo's substrate `repoId.id` is constrained to
+`/^[a-zA-Z0-9_-]+$/` (`SAFE_REPO_ID` in
+`packages/hub-sessions/src/repo-store/types.ts`), which the
+agent-address shape (`ins_<id>@<domain>`) does not satisfy. The
+sidecar wiring derives the trivial branch's deployment id by
+substituting disallowed characters with `-`; see
+`deriveTrivialDeploymentId` in
+`apps/sidecar/src/workflow-host-wiring.ts`. The supervisor
+principal's `deploymentId` and the workflow-run `repoId.id` are kept
+equal so the workflow-run kind handler's principal-vs-repo authz
+check holds for every supervisor-authored event commit.
+
+The sidecar production wiring lives in
+`apps/sidecar/src/workflow-host-wiring.ts`:
+`createSidecarDeployRouter` constructs a fresh per-deployment
+supervisor on every inbound frame whose `trivialLaunch` closes
+over `SessionManager.provisionAgent` plus the hub-pairing-key
+recording the legacy handler performed inline. The `HubTransport`
+mail-bus adapter the supervisor consumes lives in the
+`@intx/workflow-host` package proper
+(`packages/workflow-host/src/mail-bus/`) so an alternative-sidecar
+implementation can reuse it without forking the wiring.
+
+### CredentialsSnapshot Assembly
+
+Per the Q6.4 discovery decision, each workflow step gets its own
+`agent-state` repo, and the supervisor enumerates the workflow
+definition's `stepOrder` at spawn time to assemble a per-step grant
+snapshot. The implementation lives in
+`packages/workflow-host/src/supervisor/credentials.ts`:
+
+- `defaultStepRepoId({ deploymentId, stepId })` returns the
+  `agent-state` repo identity for the step. The default convention
+  is `<deploymentId>-<stepId>`.
+- The grants file for a step rides at `state/grants.json` under the
+  step's repo working tree (the substrate's `getRepoDir` is a pure
+  path computation, mirroring the sibling production adapters'
+  working-tree-read pattern).
+- `assembleCredentialsSnapshot` reads each step's grants, hashes
+  them with sha256 over the canonical JSON serialization, and
+  returns a `CredentialsSnapshot` with per-step `address`, `grants`,
+  and `contentHash`. The hash is stable across processes so the
+  child can detect a stale snapshot pushed after a fresher one.
+- A missing grants file is treated as an empty grant array (so the
+  trivial path with no operator-supplied grants does not crash); a
+  malformed file fails loudly at the boundary.
+
+### Signed CancelRequested Authority
+
+Per interface decisions Q3, every CancelRequested origin flows
+through the same supervisor-signed path; the workflow-process has
+no asymmetric keypair of its own. The implementation lives in
+`packages/workflow-host/src/supervisor/cancel-signing.ts`:
+
+- The supervisor builds the event payload from the runId, origin,
+  reason, and ISO-8601 timestamp.
+- The canonical JSON bytes (without the `signature` field) are
+  passed to `bindings.signAsPrincipal("supervisor", payload)`,
+  which returns a `SignedPayload` carrying the raw 64-byte
+  Ed25519 signature plus the principal kind.
+- The supervisor attaches the signature to the on-disk blob and
+  commits via `RepoStore.writeTreePreservingPrefix` under a
+  `WorkflowRunSupervisorPrincipal`. The workflow-run kind handler
+  enforces the Q3 principal-vs-origin map at push validation;
+  routing every supervisor-signed origin through the same
+  principal kind keeps the trust anchor inventory at one signing
+  key per deployment.
+
+The `self`-origin case is the workflow-process forwarding its
+stated reason to the supervisor over the control IPC; the
+supervisor wraps it into a signed event without consulting the
+child for the signature.
+
+### Host Wiring (Sidecar Reference Implementation)
+
+The in-tree sidecar's wiring lives at
+`apps/sidecar/src/workflow-host-wiring.ts`. The module is
+intentionally thin -- it composes the sidecar's existing
+`HubTransport`, signing keypair, and substrate `RepoStore` handle
+into the bindings shape the supervisor expects, and exposes
+`createSidecarWorkflowSupervisor(opts)` for the deploy handler to
+invoke per workflow deployment. Anything that would benefit a
+future alternative-sidecar implementer belongs inside the
+`@intx/workflow-host` package, not in the wiring.
+
 ### How This Differs From The Hub-Sidecar WebSocket Boundary
 
 The session-channels transport documented above runs between two trusted services across a network. Mutual TLS plus per-sidecar tokens plus challenge/response cover the authentication problem; framing is JSON over WebSocket; reconnection handles transport flakiness with sequence numbers carried on the resume; lifecycle frames travel alongside event frames on the same wire.

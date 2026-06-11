@@ -62,6 +62,29 @@ const defaultScheduleReconnect: ReconnectScheduler = (callback, delayMs) => {
   };
 };
 
+/**
+ * Result the deploy router returns to the link after the trivial
+ * branch completes. Carries the values the link folds into the
+ * outbound `agent.deploy.ack` frame; the link itself stays out of
+ * the provisioning details.
+ */
+export type DeployRouterResult = {
+  /** Hex-encoded agent public key the hub records for verification. */
+  publicKey: string;
+};
+
+/**
+ * Single-ingress deploy contract the link routes every `agent.deploy`
+ * frame through. The workflow-host supervisor is the production
+ * implementation -- the supervisor decides between the trivial
+ * (1-step) passthrough and the multi-step IPC-backed branch. The
+ * shape lives on hub-agent so the package boundary stays one-way
+ * (`@intx/hub-agent` does not import `@intx/workflow-host`).
+ */
+export interface DeployRouter {
+  deploy(frame: AgentDeployFrame): Promise<DeployRouterResult>;
+}
+
 export type HubLinkConfig = {
   hubURL: string;
   sidecarId: string;
@@ -75,6 +98,15 @@ export type HubLinkConfig = {
    * those tables.
    */
   keyStore: AgentKeyStore;
+  /**
+   * Routes every inbound `agent.deploy` frame. Production wiring
+   * supplies a router that calls `supervisor.deploy(frame)` on a
+   * freshly-constructed workflow-host supervisor whose
+   * `trivialLaunch` closes over `SessionManager.provisionAgent`.
+   * The supervisor (greybeard's Option Z) owns the trivial vs
+   * multi-step decision; the link does not re-decide.
+   */
+  deployRouter: DeployRouter;
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
   scheduleReconnect?: ReconnectScheduler;
@@ -108,6 +140,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     transport,
     sessions,
     keyStore,
+    deployRouter,
     pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
     reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
     scheduleReconnect = defaultScheduleReconnect,
@@ -185,16 +218,13 @@ export function createHubLink(config: HubLinkConfig): HubLink {
 
   async function handleAgentDeploy(frame: AgentDeployFrame): Promise<void> {
     try {
-      const result = await sessions.provisionAgent(frame.config);
-      // SessionManager.provisionAgent already populated AgentKeyStore's
-      // in-memory keypair cache via keyStore.loadOrGenerateKey. We
-      // record the hub-side pairing key here so subsequent deploy
-      // pack frames have a verifier ready.
-      keyStore.recordHubKey(frame.agentAddress, frame.hubPublicKey);
-      await sessions.persistHubPublicKey(
-        frame.agentAddress,
-        frame.hubPublicKey,
-      );
+      // The deploy router (production: workflow-host supervisor)
+      // owns the agent.deploy framing decision -- trivial vs
+      // multi-step -- and returns the deploy public key the link
+      // folds into the outbound ack. The link itself does not
+      // re-decide; greybeard's Option Z places routing on the
+      // supervisor side of the seam.
+      const result = await deployRouter.deploy(frame);
       send({
         type: "agent.deploy.ack",
         agentAddress: frame.agentAddress,

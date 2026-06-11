@@ -14,6 +14,7 @@
     "@intx/crypto-node": "workspace:*",
     "@intx/hub-sessions": "workspace:*",
     "@intx/log": "workspace:*",
+    "@intx/mail-memory": "workspace:*",
     "@intx/types": "workspace:*",
     "@intx/workflow": "workspace:*",
     "arktype": "catalog:"

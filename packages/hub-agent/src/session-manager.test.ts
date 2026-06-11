@@ -8,6 +8,7 @@ import type { Harness } from "@intx/harness";
 import type {
   CryptoProvider,
   HarnessConfig,
+  InferenceEvent,
   KeyPair,
 } from "@intx/types/runtime";
 
@@ -350,5 +351,57 @@ describe("SessionManager.updateGrants routes through the bundle", () => {
     const configs = await repoStore.scanConfigs();
     const entry = configs.find((c) => c.address === "agent@local");
     expect(entry?.config.grants).toHaveLength(1);
+  });
+});
+
+describe("SessionManager.onAgentEvent per-agent fan-out", () => {
+  test("delivers events only to the subscribed agent's listeners and respects the disposer", async () => {
+    const dataDir = await tempDir();
+    const { manager, builder } = makeManagerHarness(dataDir);
+
+    await manager.provisionAgent(makeConfig("alice@local"));
+    await manager.startSession("alice@local");
+    await manager.provisionAgent(makeConfig("bob@local"));
+    await manager.startSession("bob@local");
+
+    const aliceBuild = builder.buildCalls.find(
+      (c) => c.agentAddress === "alice@local",
+    );
+    const bobBuild = builder.buildCalls.find(
+      (c) => c.agentAddress === "bob@local",
+    );
+    if (aliceBuild === undefined || bobBuild === undefined) {
+      throw new Error("unreachable: builder did not capture both addresses");
+    }
+
+    const aliceEvents: InferenceEvent[] = [];
+    const bobEvents: InferenceEvent[] = [];
+    const dispose = manager.onAgentEvent("alice@local", (e) =>
+      aliceEvents.push(e),
+    );
+    manager.onAgentEvent("bob@local", (e) => bobEvents.push(e));
+
+    const aliceTick: InferenceEvent = {
+      type: "inference.start",
+      seq: 0,
+      data: { model: "alice-m" },
+    };
+    const bobTick: InferenceEvent = {
+      type: "inference.start",
+      seq: 0,
+      data: { model: "bob-m" },
+    };
+    aliceBuild.onEvent(aliceTick);
+    bobBuild.onEvent(bobTick);
+
+    expect(aliceEvents).toEqual([aliceTick]);
+    expect(bobEvents).toEqual([bobTick]);
+
+    dispose();
+    aliceBuild.onEvent(aliceTick);
+    expect(aliceEvents).toEqual([aliceTick]);
+    // bob continues to receive after alice's disposer runs.
+    bobBuild.onEvent(bobTick);
+    expect(bobEvents).toEqual([bobTick, bobTick]);
   });
 });

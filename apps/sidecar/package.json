@@ -10,6 +10,7 @@
     "@intx/crypto-node": "workspace:*",
     "@intx/harness": "workspace:*",
     "@intx/hub-agent": "workspace:*",
+    "@intx/hub-sessions": "workspace:*",
     "@intx/inference": "workspace:*",
     "@intx/log": "workspace:*",
     "@intx/mail-memory": "workspace:*",
@@ -18,6 +19,7 @@
     "@intx/tools-lsp": "workspace:*",
     "@intx/tools-mail": "workspace:*",
     "@intx/tools-posix": "workspace:*",
-    "@intx/types": "workspace:*"
+    "@intx/types": "workspace:*",
+    "@intx/workflow-host": "workspace:*"
   }
 }

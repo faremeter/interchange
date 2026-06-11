@@ -67,6 +67,7 @@
         "@intx/crypto-node": "workspace:*",
         "@intx/harness": "workspace:*",
         "@intx/hub-agent": "workspace:*",
+        "@intx/hub-sessions": "workspace:*",
         "@intx/inference": "workspace:*",
         "@intx/log": "workspace:*",
         "@intx/mail-memory": "workspace:*",
@@ -76,6 +77,7 @@
         "@intx/tools-mail": "workspace:*",
         "@intx/tools-posix": "workspace:*",
         "@intx/types": "workspace:*",
+        "@intx/workflow-host": "workspace:*",
       },
     },
     "examples/agent-audit-log": {
@@ -545,14 +547,12 @@
       "version": "0.0.1",
       "dependencies": {
         "@intx/agent": "workspace:*",
+        "@intx/crypto-node": "workspace:*",
         "@intx/hub-sessions": "workspace:*",
         "@intx/log": "workspace:*",
         "@intx/types": "workspace:*",
         "@intx/workflow": "workspace:*",
         "arktype": "catalog:",
-      },
-      "devDependencies": {
-        "@intx/crypto-node": "workspace:*",
       },
     },
   },

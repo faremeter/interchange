@@ -18,9 +18,56 @@ import type {
 } from "@intx/types/runtime";
 import type { GrantRule } from "@intx/types/authz";
 
-import { createHubLink, type ReconnectScheduler } from "./hub-link";
+import {
+  createHubLink,
+  type DeployRouter,
+  type ReconnectScheduler,
+} from "./hub-link";
 import type { AgentKeyStore } from "../agent-key-store";
-import type { SessionManager } from "../session-manager";
+import type { AgentEventListener, SessionManager } from "../session-manager";
+
+/**
+ * Test-only deploy router that mirrors the pre-supervisor inline
+ * flow: provisionAgent + recordHubKey + persistHubPublicKey. The
+ * production wiring lifts this same closure into a workflow-host
+ * supervisor's `trivialLaunch`; the tests here exercise the link's
+ * surface against the closure directly so the SessionManager mock
+ * assertions are unchanged.
+ */
+function createTestDeployRouter(
+  sessions: SessionManager,
+  keyStore: AgentKeyStore,
+): DeployRouter {
+  return {
+    async deploy(frame) {
+      const result = await sessions.provisionAgent(frame.config);
+      keyStore.recordHubKey(frame.agentAddress, frame.hubPublicKey);
+      await sessions.persistHubPublicKey(
+        frame.agentAddress,
+        frame.hubPublicKey,
+      );
+      return { publicKey: result.publicKey };
+    },
+  };
+}
+
+/**
+ * Convenience spread for `createHubLink({ ... })` call sites that
+ * use a freshly-constructed `createTestKeyStore()` and a sessions
+ * mock: returns the `keyStore` and a matching `deployRouter` so the
+ * call site does not have to name a temporary binding for the
+ * keyStore-router pairing.
+ */
+function withTestDeployBindings(sessions: SessionManager): {
+  keyStore: AgentKeyStore & { registerKey(address: string, kp: KeyPair): void };
+  deployRouter: DeployRouter;
+} {
+  const keyStore = createTestKeyStore();
+  return {
+    keyStore,
+    deployRouter: createTestDeployRouter(sessions, keyStore),
+  };
+}
 import type { KeyPair } from "@intx/types/runtime";
 import { hexDecode } from "@intx/types";
 
@@ -187,6 +234,10 @@ function createMockSessionManager(): SessionManager & {
     commitInboundMail: (_agentAddress: string, _rawMessage: Uint8Array) =>
       Promise.resolve(),
     getSessionId: (_agentAddress: string) => undefined,
+    onAgentEvent:
+      (_agentAddress: string, _listener: AgentEventListener) => () => {
+        /* no-op disposer: the link tests do not exercise per-agent events */
+      },
   };
   return mock;
 }
@@ -313,7 +364,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
     });
 
     client.connect();
@@ -340,7 +391,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
     });
 
     client.connect();
@@ -374,7 +425,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
     });
 
     client.connect();
@@ -403,7 +454,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
     });
 
     client.connect();
@@ -438,7 +489,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
     });
 
     client.connect();
@@ -482,7 +533,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
     });
 
     client.connect();
@@ -533,7 +584,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
     });
 
     client.connect();
@@ -584,7 +635,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
     });
 
     client.connect();
@@ -638,7 +689,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport: transportA,
       sessions: sessionsA,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessionsA),
     });
     const clientB = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
@@ -646,7 +697,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport: transportB,
       sessions: sessionsB,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessionsB),
     });
 
     clientA.connect();
@@ -704,7 +755,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
     });
 
     client.connect();
@@ -733,7 +784,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
     });
 
     client.connect();
@@ -776,7 +827,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
     });
 
     client.connect();
@@ -861,7 +912,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
     });
 
     client.connect();
@@ -972,6 +1023,7 @@ describe("sidecar↔hub integration", () => {
       transport,
       sessions,
       keyStore,
+      deployRouter: createTestDeployRouter(sessions, keyStore),
     });
 
     client.connect();
@@ -1042,7 +1094,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
       pingIntervalMs: 100,
     });
 
@@ -1083,7 +1135,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
     });
 
     client.connect();
@@ -1143,7 +1195,7 @@ describe("sidecar↔hub integration", () => {
       token: "test-token",
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
     });
 
     client.connect();
@@ -1197,7 +1249,7 @@ describe("sidecar↔hub integration", () => {
 
       transport,
       sessions,
-      keyStore: createTestKeyStore(),
+      ...withTestDeployBindings(sessions),
       scheduleReconnect: fakeScheduleReconnect,
     });
 
