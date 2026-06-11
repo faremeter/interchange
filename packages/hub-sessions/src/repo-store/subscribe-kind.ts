@@ -66,6 +66,15 @@ export type SubscribeKindEntry<T> = {
    * commit-level seq exposed by `RepoStore.subscribe`.
    */
   seq: number;
+  /**
+   * Owning runId, parsed from the committed blob's path. The substrate
+   * stores each run's event log under `runs/<runId>/events/`; the helper
+   * surfaces the path segment so consumers can attribute each yielded
+   * event to its run without re-walking the tree. Required by the
+   * workflow-host scheduler's live-ingest path, which routes incoming
+   * `TimerSet` events to per-run queue entries.
+   */
+  runId: string;
   event: T;
 };
 
@@ -148,7 +157,7 @@ export async function* subscribeKind<V extends Type>(
           `subscribe_kind_validation_failed: ${candidate.blobPath}: ${narrowed.summary}`,
         );
       }
-      yield { seq: candidate.seq, event: narrowed };
+      yield { seq: candidate.seq, runId: candidate.runId, event: narrowed };
     }
   }
 }

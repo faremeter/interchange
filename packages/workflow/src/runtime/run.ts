@@ -22,9 +22,13 @@ import type {
 import { hashDefinition } from "../definition/index";
 import { evaluate, type SelectorContext } from "./selectors";
 import { hasFailedStep, isRunDone, nextSchedulable } from "./dag";
+import {
+  commit as commitToChain,
+  dropChain,
+  reloadState as reloadStateInChain,
+} from "./commit-chain";
 import type { RunResult, WorkflowRun, WorkflowRuntimeEnv } from "./env";
 import {
-  applyEvent,
   isTerminalRunPhase,
   resumeFromLog,
   TransitionError,
@@ -142,8 +146,23 @@ async function executeRun(
     // body, so long-running processes accumulating many workflows do
     // not hold dead promise chains for runs that crashed during
     // resume seeding or a stall guard.
-    commitChains.delete(runId);
+    dropChain(runId);
   }
+}
+
+function commit(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  event: WorkflowEvent,
+): Promise<ReturnType<typeof resumeFromLog>> {
+  return commitToChain(env, runId, event);
+}
+
+async function reloadState(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+): Promise<ReturnType<typeof resumeFromLog>> {
+  return reloadStateInChain(env, runId);
 }
 
 async function executeRunBody(
@@ -375,14 +394,6 @@ async function executeRunBody(
   };
 }
 
-async function reloadState(
-  env: WorkflowRuntimeEnv,
-  runId: string,
-): Promise<ReturnType<typeof resumeFromLog>> {
-  const events = await env.repoStore.read(runId);
-  return resumeFromLog(runId, events);
-}
-
 /**
  * Structural equality for two events at the same seq. The events are
  * plain JSON-serializable objects by the state-machine contract; a
@@ -432,49 +443,6 @@ async function emitChildCancelCascade(
     current = await commit(env, runId, event);
   }
   return current;
-}
-
-/**
- * Per-runId commit serialization.
- *
- * Concurrent primitives within the same run all call `commit` to write
- * events. The state machine requires strictly monotonic sequence
- * numbers, so two concurrent commits must not both read `state.lastSeq`
- * and append at `lastSeq + 1`. The mutex below ensures that read-state,
- * assign-seq, and append happen atomically per runId.
- *
- * The map is module-scoped because all `runtimeRun` invocations against
- * the same runId share the same lock; cross-test cleanup is not needed
- * because tests construct fresh in-memory env per call and the map
- * holds promise chains, not resources -- once a chain completes the
- * promises GC normally.
- */
-const commitChains = new Map<string, Promise<unknown>>();
-
-/**
- * Serialize an event commit per `runId` and assign its seq under the
- * lock. Callers build the event from their locally-observed state
- * (which may carry a stale `lastSeq` if another commit landed
- * concurrently), and `commit` reads the canonical state from the log
- * inside the lock and reassigns the event's seq to `fresh.lastSeq + 1`
- * before appending. The caller's `state.lastSeq` is therefore
- * effectively a hint; passing the state object is unnecessary.
- */
-async function commit(
-  env: WorkflowRuntimeEnv,
-  runId: string,
-  event: WorkflowEvent,
-): Promise<ReturnType<typeof resumeFromLog>> {
-  const prev = commitChains.get(runId) ?? Promise.resolve();
-  const next = (async (): Promise<ReturnType<typeof resumeFromLog>> => {
-    await prev.catch(() => undefined);
-    const fresh = await reloadState(env, runId);
-    const adjustedEvent: WorkflowEvent = { ...event, seq: fresh.lastSeq + 1 };
-    await env.repoStore.append(runId, adjustedEvent);
-    return applyEvent(fresh, adjustedEvent);
-  })();
-  commitChains.set(runId, next);
-  return next;
 }
 
 function triggerSnapshot(
@@ -752,7 +720,8 @@ async function runStep(
       // Schedule the next attempt: emit TimerSet then AttemptScheduled.
       const backoff = computeBackoff(step.retry, attempt);
       const timerId = env.newId("timer");
-      const fireAt = new Date(env.clock().getTime() + backoff).toISOString();
+      const fireAtDate = new Date(env.clock().getTime() + backoff);
+      const fireAt = fireAtDate.toISOString();
       const timerSet: WorkflowEvent = {
         kind: "TimerSet",
         seq: after.lastSeq + 1,
@@ -773,10 +742,10 @@ async function runStep(
         fireAt,
       };
       after = await commit(env, runId, scheduled);
-      // Wait for the backoff and then commit TimerFired before
-      // looping into the next attempt. The step itself stays
-      // awaiting-timer through the wait.
-      await waitForTimer(env, runId, timerId, backoff, abort);
+      // Wait for the scheduler to commit TimerFired before looping
+      // into the next attempt. The step itself stays awaiting-timer
+      // through the wait.
+      await waitForTimer(env, runId, timerId, fireAtDate, abort);
       attempt = nextAttempt;
     } finally {
       abort.removeEventListener("abort", onOuter);
@@ -785,36 +754,65 @@ async function runStep(
   }
 }
 
+/**
+ * Event-sourced timer wait.
+ *
+ * Tells the scheduler to commit `TimerFired{timerId}` at `fireAt`,
+ * then subscribes to the run's log tail and resolves on the matching
+ * `TimerFired`. The scheduler is the single writer of `TimerFired`
+ * to the log; the runtime body never commits `TimerFired` itself.
+ *
+ * Disposing the scheduler entry on abort cancels the pending
+ * `TimerFired` commit so a stale TimerFired does not land in the log
+ * after the awaiter has already settled on a sibling event (e.g. an
+ * `awaitSignal` step whose signal arrived before the timeout).
+ *
+ * The replay base is `state.lastSeq + 1`: the scheduler may commit
+ * `TimerFired` before the subscriber's `for await` reaches the first
+ * iteration, so the subscription must start from the seq immediately
+ * after the caller's last-observed event rather than from `"head"`,
+ * which would miss a TimerFired that landed during the
+ * `await env.repoStore.subscribe(...)` setup.
+ */
 async function waitForTimer(
   env: WorkflowRuntimeEnv,
   runId: string,
   timerId: string,
-  delayMs: number,
+  fireAt: Date,
   abort: AbortSignal,
 ): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const dispose = env.scheduler.scheduleIn(delayMs, () => {
-      resolve();
-    });
-    const onAbort = (): void => {
-      dispose();
-      reject(new Error("aborted"));
-    };
-    if (abort.aborted) {
-      onAbort();
-      return;
-    }
-    abort.addEventListener("abort", onAbort, { once: true });
-  });
-  let state = await reloadState(env, runId);
-  const fired: WorkflowEvent = {
-    kind: "TimerFired",
-    seq: state.lastSeq + 1,
-    at: env.clock().toISOString(),
-    timerId,
+  const subscribeFromSeq = (await reloadState(env, runId)).lastSeq + 1;
+  const ac = new AbortController();
+  const onOuterAbort = (): void => {
+    ac.abort();
   };
-  state = await commit(env, runId, fired);
-  void state;
+  if (abort.aborted) {
+    throw new Error("aborted");
+  }
+  abort.addEventListener("abort", onOuterAbort, { once: true });
+  const dispose = env.scheduler.scheduleIn(runId, timerId, fireAt);
+  try {
+    for await (const { event } of env.repoStore.subscribe(runId, {
+      signal: ac.signal,
+      from: { seq: subscribeFromSeq },
+    })) {
+      if (event.kind === "TimerFired" && event.timerId === timerId) {
+        return;
+      }
+    }
+    if (abort.aborted) throw new Error("aborted");
+    // The subscription ended without a matching TimerFired and the
+    // outer abort did not fire. The only ways to get here are an
+    // explicit consumer-side `return()` (we are the consumer; this
+    // does not happen) or the substrate closing the stream
+    // unexpectedly. Either is a substrate-level invariant violation.
+    throw new Error(
+      `waitForTimer ${timerId} on run ${runId}: subscription ended without matching TimerFired`,
+    );
+  } finally {
+    dispose();
+    abort.removeEventListener("abort", onOuterAbort);
+  }
 }
 
 function computeBackoff(
@@ -1090,29 +1088,31 @@ async function runAwaitSignal(
       : {}),
   };
   state = await commit(env, runId, awaited);
-  // The per-step timeout commits TimerSet before scheduling so the
-  // pairing with TimerFired is explicit in the log. Without TimerSet,
-  // a production scheduler that reads logs at startup to re-arm
-  // unfired timers cannot see signal-await timeouts -- the deadline
-  // would be silently lost across a crash. The `Scheduler` interface
-  // itself is opaque about who commits TimerFired (see env.ts on the
-  // Scheduler / SignalChannel shape question); the runtime body
-  // commits TimerFired in the in-process runLocal case via the
-  // shared waitForTimer helper.
+  // The per-step timeout commits TimerSet before asking the scheduler
+  // to fire, so the pairing with the scheduler-committed `TimerFired`
+  // is explicit in the log. Without TimerSet, a production scheduler
+  // that reads logs at startup to re-arm unfired timers cannot see
+  // signal-await timeouts -- the deadline would be silently lost
+  // across a crash. The scheduler is the single writer of TimerFired
+  // to the log; the runtime body only commits TimerSet here and then
+  // tails the log for TimerFired via `repoStore.subscribe`.
   let timerId: string | undefined;
+  let fireAtDate: Date | undefined;
+  let subscribeFromSeq: number | undefined;
   if (primitive.timeout !== undefined) {
     timerId = env.newId("timer");
+    fireAtDate = new Date(env.clock().getTime() + primitive.timeout);
     let beforeTimer = await reloadState(env, runId);
     const timerSet: WorkflowEvent = {
       kind: "TimerSet",
       seq: beforeTimer.lastSeq + 1,
       at: env.clock().toISOString(),
       timerId,
-      fireAt: new Date(env.clock().getTime() + primitive.timeout).toISOString(),
+      fireAt: fireAtDate.toISOString(),
       stepId: primitive.id,
     };
     beforeTimer = await commit(env, runId, timerSet);
-    void beforeTimer;
+    subscribeFromSeq = beforeTimer.lastSeq + 1;
   }
   void state;
 
@@ -1123,11 +1123,31 @@ async function runAwaitSignal(
   abort.addEventListener("abort", onOuterAbort, { once: true });
   let timerDispose: (() => void) | undefined;
   let timerFired = false;
-  if (primitive.timeout !== undefined) {
-    timerDispose = env.scheduler.scheduleIn(primitive.timeout, () => {
-      timerFired = true;
-      combinedAbort.abort();
-    });
+  let timerWaitAbort: AbortController | undefined;
+  let timerWatch: Promise<void> | undefined;
+  if (
+    primitive.timeout !== undefined &&
+    timerId !== undefined &&
+    fireAtDate !== undefined &&
+    subscribeFromSeq !== undefined
+  ) {
+    timerDispose = env.scheduler.scheduleIn(runId, timerId, fireAtDate);
+    timerWaitAbort = new AbortController();
+    const watchedTimerId = timerId;
+    const watchedFromSeq = subscribeFromSeq;
+    const watchAbort = timerWaitAbort;
+    timerWatch = (async (): Promise<void> => {
+      for await (const { event } of env.repoStore.subscribe(runId, {
+        signal: watchAbort.signal,
+        from: { seq: watchedFromSeq },
+      })) {
+        if (event.kind === "TimerFired" && event.timerId === watchedTimerId) {
+          timerFired = true;
+          combinedAbort.abort();
+          return;
+        }
+      }
+    })();
   }
   try {
     const received = await env.signalChannel.awaitNext(
@@ -1156,18 +1176,11 @@ async function runAwaitSignal(
     // Distinguish timeout from outer cancellation: the safe-runner's
     // catch treats `cancelling` phase specially, but a timeout that
     // fires while the run is still `running` must surface as
-    // StepFailed and the paired TimerFired must land so the log
-    // pairing TimerSet <-> TimerFired is preserved.
-    if (timerFired && timerId !== undefined) {
-      let after = await reloadState(env, runId);
-      const fired: WorkflowEvent = {
-        kind: "TimerFired",
-        seq: after.lastSeq + 1,
-        at: env.clock().toISOString(),
-        timerId,
-      };
-      after = await commit(env, runId, fired);
-      void after;
+    // StepFailed. The scheduler has already committed TimerFired by
+    // the time the watch loop set `timerFired = true`; the runtime
+    // body MUST NOT commit a second TimerFired here -- single-writer
+    // is the invariant.
+    if (timerFired) {
       throw new Error(
         `signal-await on ${primitive.name} timed out after ${String(primitive.timeout)}ms`,
       );
@@ -1176,6 +1189,10 @@ async function runAwaitSignal(
   } finally {
     abort.removeEventListener("abort", onOuterAbort);
     if (timerDispose !== undefined) timerDispose();
+    if (timerWaitAbort !== undefined) timerWaitAbort.abort();
+    if (timerWatch !== undefined) {
+      await timerWatch.catch(() => undefined);
+    }
   }
 }
 
@@ -1197,16 +1214,17 @@ async function runSleep(
   });
   let state = await reloadState(env, runId);
   const timerId = env.newId("timer");
+  const fireAtDate = new Date(env.clock().getTime() + delay);
   const timerSet: WorkflowEvent = {
     kind: "TimerSet",
     seq: state.lastSeq + 1,
     at: env.clock().toISOString(),
     timerId,
-    fireAt: new Date(env.clock().getTime() + delay).toISOString(),
+    fireAt: fireAtDate.toISOString(),
     stepId: primitive.id,
   };
   state = await commit(env, runId, timerSet);
-  await waitForTimer(env, runId, timerId, delay, abort);
+  await waitForTimer(env, runId, timerId, fireAtDate, abort);
   void state;
   await emitStepCompletedWithValue(env, runId, primitive.id, null);
   return null;

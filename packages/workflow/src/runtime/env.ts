@@ -17,39 +17,78 @@ import type { Primitive } from "../definition/index";
 import type { WorkflowEvent } from "../state-machine/index";
 
 /**
- * Read/append event log per run. The append-only invariant is the
- * state machine's responsibility; the repo store is the durable
- * substrate the runtime writes to and reads from on resume.
+ * Read/append/tail event log per run. The append-only invariant is
+ * the state machine's responsibility; the repo store is the durable
+ * substrate the runtime writes to, reads from on resume, and tails
+ * from when awaiting an externally-committed event (the event-sourced
+ * `waitForTimer` shape).
  */
 export interface RepoStore {
   /** Return every committed event in seq order. */
   read(runId: string): Promise<readonly WorkflowEvent[]>;
   /** Append one event; rejects if seq is non-monotonic. */
   append(runId: string, event: WorkflowEvent): Promise<void>;
+  /**
+   * Tail the run's event log. Returns an async iterator yielding one
+   * `{ seq, event }` entry per committed `WorkflowEvent` on the run's
+   * ref, in commit order. `seq` is the workflow-event `seq` (the
+   * field the state machine assigns), not a substrate-level commit
+   * counter.
+   *
+   * Cancellation: when `opts.signal` aborts, the iterator ends
+   * cleanly (no throw from the consumer's `for await`).
+   *
+   * Replay vs live:
+   *   - `from: { seq: number }` enumerates every prior event whose
+   *     `seq` is >= the supplied number, then transitions to live
+   *     mode and continues with newly-committed events.
+   *   - `from: "head"` records the run's last seq at subscribe time
+   *     and emits only events committed strictly after.
+   *
+   * Backpressure: events are buffered in userspace bounded by
+   * `bufferLimit` (default 1024). On overrun the iterator throws.
+   * Silent drop would corrupt the workflow-runtime's view of the
+   * world; consumers that cannot keep up are expected to abort.
+   *
+   * Production wraps the substrate's `subscribeKind` typed helper
+   * under the hood; runLocal serves events from the in-memory log.
+   * The runtime body's contract is the same shape across both.
+   */
+  subscribe(
+    runId: string,
+    opts: SubscribeOpts,
+  ): AsyncIterableIterator<{ seq: number; event: WorkflowEvent }>;
+}
+
+export interface SubscribeOpts {
+  signal: AbortSignal;
+  from: "head" | { seq: number };
+  bufferLimit?: number;
 }
 
 /**
  * Durable timer scheduler.
  *
- * The shape is callback-based: the runtime body calls `scheduleIn`,
- * commits `TimerSet` in its own event stream, and commits
- * `TimerFired` when the callback resolves. This is the only
- * callback-shaped substrate primitive in `WorkflowRuntimeEnv` --
- * every other primitive (`RepoStore`, `BlobSubstrate`,
- * `SignalChannel`) is in-memory or log-shaped. A future production
- * scheduler that observes `TimerSet` events from a durable log and
- * commits `TimerFired` from outside the workflow process would
- * prefer a "wait for `TimerFired` event in the log" shape; the
- * runtime body's `waitForTimer` helper would change with it. The
- * choice between the two shapes is a substrate-shaped decision that
- * is made when the durable substrate is implemented.
+ * Event-sourced shape: callers commit `TimerSet` against the run's
+ * log themselves; `scheduleIn` registers wall-clock intent against
+ * the scheduler so that at `fireAt` the scheduler commits
+ * `TimerFired{timerId}` to the run's log. The single-writer-on-
+ * `TimerFired` invariant lives here: the production scheduler is
+ * the only thing that commits `TimerFired` to the log. Callers
+ * await the commit by tailing `repoStore.subscribe`.
+ *
+ * The returned disposer cancels the pending `TimerFired` commit
+ * (the in-process race between the awaiting consumer settling on a
+ * sibling event -- a signal arrival under `awaitSignal` -- and the
+ * timer's deadline). On dispose the scheduler discards the queued
+ * callback; no `TimerFired` lands. The production scheduler honours
+ * the dispose by removing the queue entry; restart recovery never
+ * re-arms a disposed entry because the run's log already carries a
+ * sibling terminal event for that step by the time the runtime
+ * settled.
  */
 export interface Scheduler {
-  /**
-   * Schedule `fire` to run after `delayMs` milliseconds. The returned
-   * disposer cancels the pending callback.
-   */
-  scheduleIn(delayMs: number, fire: () => void): () => void;
+  scheduleIn(runId: string, timerId: string, fireAt: Date): () => void;
 }
 
 /**

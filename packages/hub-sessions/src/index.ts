@@ -100,5 +100,8 @@ export type {
   RepoAction,
   RepoId,
   RepoStore,
+  SubscribeKindEntry,
+  SubscribeKindOpts,
+  ValidatePushResult,
 } from "./repo-store";
-export { createRepoStore, UserPrincipal } from "./repo-store";
+export { createRepoStore, subscribeKind, UserPrincipal } from "./repo-store";

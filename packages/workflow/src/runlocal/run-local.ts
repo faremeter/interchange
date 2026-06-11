@@ -80,9 +80,10 @@ export function runLocal(
   const clock = options.clock ?? defaultClock;
   const newId = options.newId ?? defaultNewId;
 
+  const repoStore = createInMemoryRepoStore();
   const env: WorkflowRuntimeEnv = {
-    repoStore: createInMemoryRepoStore(),
-    scheduler: createInMemoryScheduler(),
+    repoStore,
+    scheduler: createInMemoryScheduler({ repoStore, clock }),
     signalChannel: createInMemorySignalChannel({ newId: () => newId("sig") }),
     blobs: createInMemoryBlobSubstrate(),
     directors,

@@ -51,9 +51,11 @@ describe("childWorkflow terminal-status propagation", () => {
     const spawnChild: SpawnChildWorkflow = async () => ({
       terminalStatus: "failed",
     });
+    const clock = () => new Date();
+    const repoStore = createInMemoryRepoStore();
     const env: WorkflowRuntimeEnv = {
-      repoStore: createInMemoryRepoStore(),
-      scheduler: createInMemoryScheduler(),
+      repoStore,
+      scheduler: createInMemoryScheduler({ repoStore, clock }),
       signalChannel: createInMemorySignalChannel(),
       blobs: createInMemoryBlobSubstrate(),
       directors: createDefaultDirectorRegistry(),
@@ -64,7 +66,7 @@ describe("childWorkflow terminal-status propagation", () => {
       }),
       invokeStep: async ({ input }) => ({ output: input }),
       spawnChild,
-      clock: () => new Date(),
+      clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     };
     const result = await runtimeRun(parent, env).complete;
@@ -84,9 +86,11 @@ describe("childWorkflow terminal-status propagation", () => {
     const spawnChild: SpawnChildWorkflow = async () => ({
       terminalStatus: "cancelled",
     });
+    const clock = () => new Date();
+    const repoStore = createInMemoryRepoStore();
     const env: WorkflowRuntimeEnv = {
-      repoStore: createInMemoryRepoStore(),
-      scheduler: createInMemoryScheduler(),
+      repoStore,
+      scheduler: createInMemoryScheduler({ repoStore, clock }),
       signalChannel: createInMemorySignalChannel(),
       blobs: createInMemoryBlobSubstrate(),
       directors: createDefaultDirectorRegistry(),
@@ -97,7 +101,7 @@ describe("childWorkflow terminal-status propagation", () => {
       }),
       invokeStep: async ({ input }) => ({ output: input }),
       spawnChild,
-      clock: () => new Date(),
+      clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     };
     const result = await runtimeRun(parent, env).complete;
@@ -177,9 +181,11 @@ describe("cancellation log invariants", () => {
       return settled;
     };
 
+    const clock = () => new Date();
+    const repoStore = createInMemoryRepoStore();
     const env: WorkflowRuntimeEnv = {
-      repoStore: createInMemoryRepoStore(),
-      scheduler: createInMemoryScheduler(),
+      repoStore,
+      scheduler: createInMemoryScheduler({ repoStore, clock }),
       signalChannel: createInMemorySignalChannel(),
       blobs: createInMemoryBlobSubstrate(),
       directors: createDefaultDirectorRegistry(),
@@ -190,7 +196,7 @@ describe("cancellation log invariants", () => {
       }),
       invokeStep: async ({ input }) => ({ output: input }),
       spawnChild,
-      clock: () => new Date(),
+      clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     };
 

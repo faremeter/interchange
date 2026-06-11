@@ -104,6 +104,7 @@ describe("subscribeKind", () => {
     expect(first.done).toBe(false);
     if (first.done) throw new Error("unreachable");
     expect(first.value.seq).toBe(0);
+    expect(first.value.runId).toBe("r1");
     expect(first.value.event.type).toBe("TimerFired");
     if (first.value.event.type !== "TimerFired") {
       throw new Error("expected TimerFired");
@@ -187,7 +188,7 @@ describe("subscribeKind", () => {
       kinds: ["TimerFired"],
     });
 
-    const collected: { seq: number; timerId: string }[] = [];
+    const collected: { seq: number; runId: string; timerId: string }[] = [];
     for (let i = 0; i < 3; i++) {
       const next = await iter.next();
       if (next.done) break;
@@ -196,12 +197,14 @@ describe("subscribeKind", () => {
       }
       collected.push({
         seq: next.value.seq,
+        runId: next.value.runId,
         timerId: next.value.event.data.timerId,
       });
     }
     ac.abort();
 
     expect(collected.map((e) => e.seq)).toEqual([0, 1, 2]);
+    expect(collected.map((e) => e.runId)).toEqual(["r1", "r1", "r1"]);
     expect(collected.map((e) => e.timerId)).toEqual(["t0", "t1", "t2"]);
   });
 });

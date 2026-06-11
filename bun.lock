@@ -535,6 +535,10 @@
         "@intx/log": "workspace:*",
         "@intx/types": "workspace:*",
         "@intx/workflow": "workspace:*",
+        "arktype": "catalog:",
+      },
+      "devDependencies": {
+        "@intx/crypto-node": "workspace:*",
       },
     },
   },

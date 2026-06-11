@@ -66,9 +66,11 @@ describe("resume-from-log seam", () => {
       throw new Error("must not invoke a step during resume");
     };
 
+    const clock = () => new Date();
+    const repoStore = createInMemoryRepoStore();
     const env: WorkflowRuntimeEnv = {
-      repoStore: createInMemoryRepoStore(),
-      scheduler: createInMemoryScheduler(),
+      repoStore,
+      scheduler: createInMemoryScheduler({ repoStore, clock }),
       signalChannel: createInMemorySignalChannel(),
       blobs: createInMemoryBlobSubstrate(),
       directors: createDefaultDirectorRegistry(),
@@ -82,7 +84,7 @@ describe("resume-from-log seam", () => {
         childRunId: "n/a",
         terminalStatus: "completed",
       }),
-      clock: () => new Date(),
+      clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     };
 
@@ -105,9 +107,11 @@ describe("resume-from-log seam", () => {
     // Force the step's output to spill to a blob by capping inline at
     // a tiny size; the originating substrate retains the blob.
     const originating = createInMemoryBlobSubstrate({ inlineMaxBytes: 4 });
+    const clock = () => new Date();
+    const repoStore = createInMemoryRepoStore();
     const env: WorkflowRuntimeEnv = {
-      repoStore: createInMemoryRepoStore(),
-      scheduler: createInMemoryScheduler(),
+      repoStore,
+      scheduler: createInMemoryScheduler({ repoStore, clock }),
       signalChannel: createInMemorySignalChannel(),
       blobs: originating,
       directors: createDefaultDirectorRegistry(),
@@ -120,7 +124,7 @@ describe("resume-from-log seam", () => {
         output: { large: "x".repeat(64) },
       }),
       spawnChild: async () => ({ terminalStatus: "completed" }),
-      clock: () => new Date(),
+      clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     };
     const result1 = await runtimeRun(def, env).complete;
