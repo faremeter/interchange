@@ -527,6 +527,16 @@
         "arktype": "catalog:",
       },
     },
+    "packages/workflow-host": {
+      "name": "@intx/workflow-host",
+      "version": "0.0.1",
+      "dependencies": {
+        "@intx/hub-sessions": "workspace:*",
+        "@intx/log": "workspace:*",
+        "@intx/types": "workspace:*",
+        "@intx/workflow": "workspace:*",
+      },
+    },
   },
   "catalog": {
     "arktype": "^2.1.29",
@@ -815,6 +825,8 @@
     "@intx/types": ["@intx/types@workspace:packages/types"],
 
     "@intx/workflow": ["@intx/workflow@workspace:packages/workflow"],
+
+    "@intx/workflow-host": ["@intx/workflow-host@workspace:packages/workflow-host"],
 
     "@isaacs/fs-minipass": ["@isaacs/fs-minipass@4.0.1", "", { "dependencies": { "minipass": "^7.0.4" } }, "sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w=="],
 
