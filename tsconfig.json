@@ -23,6 +23,7 @@
     { "path": "packages/harness" },
     { "path": "packages/agent" },
     { "path": "packages/workflow" },
+    { "path": "packages/workflow-deploy" },
     { "path": "packages/workflow-host" },
     { "path": "apps/hub" },
     { "path": "apps/admin-ui" },

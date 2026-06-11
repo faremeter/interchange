@@ -1,0 +1,17 @@
+{
+  "name": "@intx/workflow-deploy",
+  "version": "0.0.1",
+  "license": "LGPL-2.1-only",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "@intx/agent": "workspace:*",
+    "@intx/tool-packaging": "workspace:*",
+    "@intx/workflow": "workspace:*"
+  }
+}

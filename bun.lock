@@ -527,6 +527,15 @@
         "arktype": "catalog:",
       },
     },
+    "packages/workflow-deploy": {
+      "name": "@intx/workflow-deploy",
+      "version": "0.0.1",
+      "dependencies": {
+        "@intx/agent": "workspace:*",
+        "@intx/tool-packaging": "workspace:*",
+        "@intx/workflow": "workspace:*",
+      },
+    },
     "packages/workflow-host": {
       "name": "@intx/workflow-host",
       "version": "0.0.1",
@@ -829,6 +838,8 @@
     "@intx/types": ["@intx/types@workspace:packages/types"],
 
     "@intx/workflow": ["@intx/workflow@workspace:packages/workflow"],
+
+    "@intx/workflow-deploy": ["@intx/workflow-deploy@workspace:packages/workflow-deploy"],
 
     "@intx/workflow-host": ["@intx/workflow-host@workspace:packages/workflow-host"],
 
