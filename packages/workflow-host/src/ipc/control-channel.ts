@@ -153,6 +153,21 @@ export const ControlPayload = type(
        */
       childPublicKey: "string",
     },
+  })
+  .or({
+    // Child-initiated request to recycle the workflow-process. The
+    // child emits this when its own self-check decides it needs to be
+    // recycled (an internal consistency error it can't recover from,
+    // a watchdog tripping); the supervisor receives it on its
+    // upstream control-channel reader and funnels it into the same
+    // `triggerRecycle` code path the operator and policy origins use.
+    // The `reason` rides verbatim into the supervisor's reason field;
+    // the supervisor does not interpret it beyond logging and
+    // attaching it to the recycle attempt.
+    type: "'recycle.request'",
+    data: {
+      reason: "string",
+    },
   });
 
 export type ControlPayload = typeof ControlPayload.infer;

@@ -43,6 +43,22 @@ export {
   type DrainTimeoutOpts,
 } from "./drain-timeout";
 
+export {
+  createRecyclePolicy,
+  triggerRecycle,
+  DEFAULT_KILL_TIMEOUT_MS,
+  DEFAULT_POLICY_INTERVAL_MS,
+  MAX_BUFFERED_MAIL,
+  type ChildWiring,
+  type RecycleAttempt,
+  type RecycleContext,
+  type RecycleOrigin,
+  type RecyclePolicy,
+  type RecyclePolicyBounds,
+  type RecyclePolicyOpts,
+  type TriggerRecycleOpts,
+} from "./recycle";
+
 export type {
   MailBusBindings,
   PrincipalSigner,

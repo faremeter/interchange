@@ -67,6 +67,14 @@ import {
   DEFAULT_DRAIN_TIMEOUT_MS,
   type DrainTimeoutAccumulator,
 } from "./drain-timeout";
+import {
+  createRecyclePolicy,
+  triggerRecycle,
+  type ChildWiring,
+  type RecycleAttempt,
+  type RecycleOrigin,
+  type RecyclePolicy,
+} from "./recycle";
 import type {
   RecordRunEvent,
   SubprocessHandle,
@@ -144,15 +152,17 @@ export interface WorkflowSupervisor {
    * `CancelRequested{origin: "supervisor-drain"}` per run via the
    * accumulator's existing path. The promise resolves once the
    * `drain` mail has been forwarded; the accumulators tick in the
-   * background and stop on shutdown or terminal-phase reach.
+   * background and stop on shutdown or terminal-phase reach. The
+   * recycle path reuses this primitive verbatim for its drain step.
    */
   drain(opts: DrainOpts): Promise<void>;
   /**
    * Recycle the child: drain -> kill -> respawn with a fresh
-   * channelId. Stub in this commit; the full implementation lands
-   * with recycle in a later commit.
+   * channelId. Funnels every recycle origin (operator command,
+   * supervisor policy, child self-initiated) through the same
+   * `triggerRecycle` code path.
    */
-  recycle(opts: RecycleOpts): Promise<void>;
+  recycle(opts: RecycleOpts): Promise<RecycleAttempt>;
   /**
    * Current snapshot of the credentials pushed to the child. Surfaced
    * so the host can audit the per-step contentHash without
@@ -210,6 +220,13 @@ export type DrainOpts = {
 
 export type RecycleOpts = {
   reason: string;
+  /**
+   * Origin of the recycle request. Defaults to `"operator"` when the
+   * supervisor's caller-facing API is invoked directly; the policy
+   * timer wires `"policy"` and the child-side `recycle.request`
+   * upstream frame wires `"self"`.
+   */
+  origin?: RecycleOrigin;
 };
 
 /**
@@ -226,7 +243,9 @@ export function createWorkflowSupervisor(
    * fires but before the child signals `ready`. Once `ready` lands,
    * the supervisor drains this buffer into the control channel as
    * `trigger.fire` frames; subsequent inbound mail bypasses the
-   * buffer.
+   * buffer. The same buffer is reused across a recycle: during the
+   * kill/respawn gap the subscription pushes here, and the recycle
+   * path drains the buffer into the new child once `ready` lands.
    */
   const mailBuffer: Uint8Array[] = [];
   /**
@@ -267,6 +286,17 @@ export function createWorkflowSupervisor(
       }
     });
   const drainTimeoutMs = bindings.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
+  /**
+   * Cached per-spawn context the recycle path needs to respawn the
+   * child against the same deploy tree. Populated on `spawn(opts)`;
+   * cleared on `shutdown`. The recycle path never mutates the
+   * `stepOrder` or `definitionHash` -- the orthogonality with redeploy
+   * lives at this field: a deploy-tree change would land via a
+   * different code path that minted a new supervisor.
+   */
+  let spawnContext: SpawnContext | null = null;
+  let recyclePolicy: RecyclePolicy | null = null;
+  let recycleInProgress = false;
 
   async function deploy(frame: SupervisorDeployFrame): Promise<void> {
     // The `agent.deploy` wire frame currently carries only a
@@ -305,6 +335,115 @@ export function createWorkflowSupervisor(
     });
   }
 
+  function onChildCrash(reason: string): void {
+    logger.error`workflow-process control channel crash: {reason}`;
+    void shutdownInternal({ reason });
+  }
+
+  function onMailMessage(rawMessage: Uint8Array): void {
+    // During `starting` and `recycling` the supervisor buffers; the
+    // buffer drains in arrival order once `ready` lands (initial
+    // spawn) or the recycle path's step 6 runs (recycle).
+    if (state.phase === "starting" || state.phase === "recycling") {
+      mailBuffer.push(rawMessage);
+      return;
+    }
+    if (state.phase === "running") {
+      const sender = state.controlSender;
+      void forwardMailAndTrack(sender, rawMessage).catch((cause) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.error`forwardMail failed: ${message}`;
+      });
+      return;
+    }
+    // In any other phase (idle, stopping, stopped) the host's
+    // higher-level lifecycle is already tearing the deployment down;
+    // the message drops on the floor.
+  }
+
+  /**
+   * Pump child-initiated upstream control frames after `ready` has
+   * landed. The supervisor's primary `waitForReady` consumed the
+   * `ready` frame and returned; this generator continues the iterator
+   * and recognises the upstream variants the protocol allows from the
+   * child (today: `recycle.request`). Any frame the supervisor does
+   * not recognise on the upstream side is dropped after a logged
+   * warning -- the receiver iterator already validated the envelope
+   * and signature.
+   */
+  async function pumpUpstreamControl(
+    iter: AsyncGenerator<ControlPayload, void, void>,
+  ): Promise<void> {
+    for await (const payload of iter) {
+      if (payload.type === "recycle.request") {
+        logger.info`workflow-process self-initiated recycle.request: ${payload.data.reason}`;
+        // Run the recycle off the iterator's loop so the iterator can
+        // continue draining frames the supervisor's drain step will
+        // produce. The recycle path tears the iterator down via the
+        // existing kill of the child handle.
+        void recycle({
+          reason: `self-initiated: ${payload.data.reason}`,
+          origin: "self",
+        }).catch((cause) => {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.error`self-initiated recycle failed: ${message}`;
+        });
+        return;
+      }
+      logger.warn`workflow-process upstream control payload ignored: type=${payload.type}`;
+    }
+  }
+
+  async function wireChild(args: {
+    channelId: string;
+    hmacKey: Uint8Array;
+    ipcKeypair: { privateKey: Uint8Array; publicKey: Uint8Array };
+    handle: SubprocessHandle;
+    onInferenceEvent: (event: EventPayload) => void;
+  }): Promise<{
+    wiring: ChildWiring;
+    readyPromise: Promise<{ childPid: number }>;
+    controlIncoming: AsyncGenerator<ControlPayload, void, void>;
+  }> {
+    const controlSender = createControlChannelSender({
+      privateKeySeed: args.ipcKeypair.privateKey,
+      channelId: args.channelId,
+      writer: args.handle.controlWriter,
+    });
+
+    const controlIncoming = receiveControlChannel({
+      publicKey: { bootstrapFromReady: true },
+      channelId: args.channelId,
+      reader: args.handle.controlReader,
+      onCrash: onChildCrash,
+    });
+
+    const readyPromise = waitForReady(controlIncoming);
+
+    const eventIter = receiveEventChannel({
+      hmacKey: args.hmacKey,
+      channelId: args.channelId,
+      reader: args.handle.eventReader,
+      onCrash: (reason) => {
+        logger.error`workflow-process event channel crash: {reason}`;
+        void shutdownInternal({ reason });
+      },
+    });
+    const eventPump = pumpEvents(eventIter, args.onInferenceEvent);
+
+    return {
+      wiring: {
+        handle: args.handle,
+        controlSender,
+        channelId: args.channelId,
+        eventPump,
+      },
+      readyPromise,
+      controlIncoming,
+    };
+  }
+
   async function spawn(opts: SpawnOpts): Promise<SpawnResult> {
     if (state.phase !== "idle") {
       throw new Error(
@@ -329,57 +468,20 @@ export function createWorkflowSupervisor(
       env,
     });
 
-    const controlSender = createControlChannelSender({
-      privateKeySeed: ipcKeypair.privateKey,
+    const wired = await wireChild({
       channelId,
-      writer: handle.controlWriter,
-    });
-
-    // Defer the control-receive iterator construction so the child
-    // has a chance to write `ready` before the supervisor starts
-    // pumping. The receiver's onCrash callback is wired into the
-    // supervisor's process-kill path so a frame violation tears the
-    // child down.
-    const onCrash = (reason: string): void => {
-      logger.error`workflow-process control channel crash: {reason}`;
-      void shutdownInternal({ reason });
-    };
-
-    // Upstream control frames are signed by the child's own keypair.
-    // The child mints it at startup and publishes the public half in
-    // the payload of the upstream `ready` frame; the receiver opens
-    // in bootstrap mode and extracts the key from that first frame
-    // before verifying any signature. The supervisor never holds the
-    // child's private key in any code path.
-    const controlIncoming = receiveControlChannel({
-      publicKey: { bootstrapFromReady: true },
-      channelId,
-      reader: handle.controlReader,
-      onCrash,
-    });
-
-    const readyPromise = waitForReady(controlIncoming, opts.onInferenceEvent);
-
-    // Wire the event channel receiver. The supervisor is the verifier;
-    // an HMAC/seq/channelId violation calls `onCrash` and the child
-    // is killed.
-    const eventIter = receiveEventChannel({
       hmacKey,
-      channelId,
-      reader: handle.eventReader,
-      onCrash: (reason) => {
-        logger.error`workflow-process event channel crash: {reason}`;
-        void shutdownInternal({ reason });
-      },
+      ipcKeypair,
+      handle,
+      onInferenceEvent: opts.onInferenceEvent,
     });
-    const eventPump = pumpEvents(eventIter, opts.onInferenceEvent);
 
     state = {
       phase: "starting",
       handle,
-      controlSender,
+      controlSender: wired.wiring.controlSender,
       channelId,
-      eventPump,
+      eventPump: wired.wiring.eventPump,
       onInferenceEvent: opts.onInferenceEvent,
       mailUnsubscribe: null,
       credentialsSnapshot: null,
@@ -400,29 +502,11 @@ export function createWorkflowSupervisor(
     bindings.mailBus.registerAddress(bindings.deploymentMailAddress);
     const mailUnsubscribe = bindings.mailBus.subscribeMailForAddress(
       bindings.deploymentMailAddress,
-      (rawMessage) => {
-        // While starting, buffer; once ready, forward immediately.
-        if (state.phase === "starting") {
-          mailBuffer.push(rawMessage);
-          return;
-        }
-        if (state.phase === "running") {
-          const sender = state.controlSender;
-          void forwardMailAndTrack(sender, rawMessage).catch((cause) => {
-            const message =
-              cause instanceof Error ? cause.message : String(cause);
-            logger.error`forwardMail failed: ${message}`;
-          });
-          return;
-        }
-        // In any other phase (shutting down, stopped), drop -- the
-        // host's higher-level lifecycle is already tearing the
-        // deployment down.
-      },
+      onMailMessage,
     );
     state.mailUnsubscribe = mailUnsubscribe;
 
-    const readyInfo = await readyPromise;
+    const readyInfo = await wired.readyPromise;
 
     // Drain the buffered mail before transitioning to running. The
     // ordering matters: any inbound mail that landed during
@@ -431,9 +515,9 @@ export function createWorkflowSupervisor(
     state = {
       phase: "running",
       handle,
-      controlSender,
+      controlSender: wired.wiring.controlSender,
       channelId,
-      eventPump,
+      eventPump: wired.wiring.eventPump,
       onInferenceEvent: opts.onInferenceEvent,
       mailUnsubscribe,
       credentialsSnapshot,
@@ -441,7 +525,52 @@ export function createWorkflowSupervisor(
     while (mailBuffer.length > 0) {
       const message = mailBuffer.shift();
       if (message === undefined) break;
-      await forwardMailAndTrack(controlSender, message);
+      await forwardMailAndTrack(wired.wiring.controlSender, message);
+    }
+
+    // Cache the spawn context for the recycle path. The recycle path
+    // reuses the same stepOrder/definitionHash/onInferenceEvent on
+    // every respawn -- those are the strict-orthogonality anchors
+    // with redeploy, and the supervisor never mutates them.
+    const now = bindings.recyclePolicyNow ?? defaultNow;
+    spawnContext = {
+      stepOrder: opts.stepOrder,
+      definitionHash: opts.definitionHash,
+      onInferenceEvent: opts.onInferenceEvent,
+      spawnedAt: now(),
+    };
+
+    // Start the upstream control pump so the supervisor sees the
+    // child's `recycle.request` (and any future upstream variant) as
+    // it arrives. The pump exits when the iterator ends, which
+    // happens when the child closes its end of the control channel
+    // -- either on shutdown or on recycle's `kill` step.
+    void pumpUpstreamControl(wired.controlIncoming).catch((cause) => {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.error`upstream control pump failed: ${message}`;
+    });
+
+    // Arm the recycle policy. The policy is a no-op when all bounds
+    // are `undefined`; bounds resolution lives inside `createRecyclePolicy`.
+    if (bindings.recyclePolicy !== undefined) {
+      const setTimer = bindings.recyclePolicySetTimer ?? defaultSetTimer;
+      const clearTimer = bindings.recyclePolicyClearTimer ?? defaultClearTimer;
+      recyclePolicy = createRecyclePolicy({
+        bounds: bindings.recyclePolicy,
+        now,
+        spawnedAt: spawnContext.spawnedAt,
+        ...(bindings.readRssBytes !== undefined
+          ? { readRssBytes: bindings.readRssBytes }
+          : {}),
+        ...(bindings.readGrantsAgeMs !== undefined
+          ? { readGrantsAgeMs: bindings.readGrantsAgeMs }
+          : {}),
+        setTimer,
+        clearTimer,
+        trigger: async (reason) => {
+          await recycle({ reason, origin: "policy" });
+        },
+      });
     }
 
     return {
@@ -500,7 +629,16 @@ export function createWorkflowSupervisor(
       accumulator.stop();
     }
     drainAccumulators.clear();
-    if (prior.phase === "starting" || prior.phase === "running") {
+    if (recyclePolicy !== null) {
+      recyclePolicy.stop();
+      recyclePolicy = null;
+    }
+    spawnContext = null;
+    if (
+      prior.phase === "starting" ||
+      prior.phase === "running" ||
+      prior.phase === "recycling"
+    ) {
       if (prior.mailUnsubscribe !== null) prior.mailUnsubscribe();
       try {
         bindings.mailBus.unregisterAddress(bindings.deploymentMailAddress);
@@ -527,8 +665,16 @@ export function createWorkflowSupervisor(
     // Drain is meaningful only when a workflow-process child is up;
     // calling it from `idle`/`stopping`/`stopped` is a no-op so the
     // higher-level host shutdown sequence can call drain
-    // unconditionally without sniffing the phase.
-    if (state.phase !== "running" && state.phase !== "starting") return;
+    // unconditionally without sniffing the phase. The recycle path
+    // calls drain from `recycling` -- the kill/respawn gap is the
+    // window where the existing controlSender is still live.
+    if (
+      state.phase !== "running" &&
+      state.phase !== "starting" &&
+      state.phase !== "recycling"
+    ) {
+      return;
+    }
     // Forward the `drain` control mail to the child. The child's
     // `DrainController` flips its signal on receipt; the runtime
     // body's four observation points read the change on the next
@@ -565,13 +711,142 @@ export function createWorkflowSupervisor(
     }
   }
 
-  function recycle(_opts: RecycleOpts): Promise<void> {
-    // Stub for this commit; the recycle flow lands separately.
-    return Promise.reject(
-      new Error(
-        "workflow-host supervisor: recycle() is a stub; full implementation lands with the recycle commit",
-      ),
-    );
+  async function recycle(opts: RecycleOpts): Promise<RecycleAttempt> {
+    if (recycleInProgress) {
+      throw new Error("supervisor: recycle already in progress");
+    }
+    if (state.phase !== "running") {
+      throw new Error(
+        `supervisor: recycle called in phase ${state.phase}; expected running`,
+      );
+    }
+    if (spawnContext === null) {
+      throw new Error(
+        "supervisor: recycle called without a spawn context; spawn() must complete first",
+      );
+    }
+    recycleInProgress = true;
+    const origin: RecycleOrigin = opts.origin ?? "operator";
+    const prior = state;
+    const priorContext = spawnContext;
+    // Transition to `recycling` so the mail subscription handler
+    // buffers inbound messages across the gap rather than racing
+    // against the dead controlSender.
+    state = {
+      phase: "recycling",
+      handle: prior.handle,
+      controlSender: prior.controlSender,
+      channelId: prior.channelId,
+      eventPump: prior.eventPump,
+      onInferenceEvent: prior.onInferenceEvent,
+      mailUnsubscribe: prior.mailUnsubscribe,
+      credentialsSnapshot: prior.credentialsSnapshot,
+    };
+    let attempt: RecycleAttempt;
+    try {
+      attempt = await triggerRecycle(
+        {
+          bindings,
+          stepOrder: priorContext.stepOrder,
+          definitionHash: priorContext.definitionHash,
+          onInferenceEvent: priorContext.onInferenceEvent,
+          current: {
+            handle: prior.handle,
+            controlSender: prior.controlSender,
+            channelId: prior.channelId,
+            eventPump: prior.eventPump,
+          },
+          mailBuffer,
+          drain: async (deadlineMs) => {
+            // The recycle path's drain step uses the same drain
+            // primitive an operator drain command would use.
+            await drain({ deadlineMs });
+          },
+          forwardMail: forwardMailAndTrack,
+          installNewChild: ({
+            wiring,
+            credentialsSnapshot,
+            controlIncoming,
+          }) => {
+            // Phase guard: a `shutdown()` that landed during the
+            // kill/respawn gap (between `subprocessSpawner` and this
+            // callback) has flipped `state.phase` to `stopping` or
+            // `stopped`. The new child is now an orphan -- the
+            // supervisor was supposed to be tearing down, not
+            // installing a fresh cohort. Kill the new wiring's
+            // handle and bail out without registering it on
+            // `state`. `shutdownInternal`'s own teardown path has
+            // already disposed the prior cohort; there is nothing
+            // for this callback to do.
+            if (state.phase !== "recycling") {
+              wiring.handle.kill("SIGTERM");
+              return;
+            }
+            // Transition back to running with the new wiring; the
+            // mail subscription and registration are unchanged.
+            state = {
+              phase: "running",
+              handle: wiring.handle,
+              controlSender: wiring.controlSender,
+              channelId: wiring.channelId,
+              eventPump: wiring.eventPump,
+              onInferenceEvent: priorContext.onInferenceEvent,
+              mailUnsubscribe: prior.mailUnsubscribe,
+              credentialsSnapshot,
+            };
+            // Cache fresh spawn context with the updated spawnedAt
+            // so the policy timer's uptime check resets on recycle.
+            const now = bindings.recyclePolicyNow ?? defaultNow;
+            spawnContext = {
+              stepOrder: priorContext.stepOrder,
+              definitionHash: priorContext.definitionHash,
+              onInferenceEvent: priorContext.onInferenceEvent,
+              spawnedAt: now(),
+            };
+            // Re-arm the upstream control pump on the new wiring's
+            // iterator. The old wiring's iterator ended when the
+            // recycle path killed the predecessor handle.
+            void pumpUpstreamControl(controlIncoming).catch((cause) => {
+              const message =
+                cause instanceof Error ? cause.message : String(cause);
+              logger.error`upstream control pump (post-recycle) failed: ${message}`;
+            });
+          },
+          onCrash: onChildCrash,
+          ...(bindings.recyclePolicySetTimer !== undefined
+            ? { setTimer: bindings.recyclePolicySetTimer }
+            : {}),
+          ...(bindings.recyclePolicyClearTimer !== undefined
+            ? { clearTimer: bindings.recyclePolicyClearTimer }
+            : {}),
+        },
+        { origin, reason: opts.reason },
+      );
+    } catch (cause) {
+      // `triggerRecycle` failed after we transitioned to `recycling`.
+      // Leaving the supervisor in `recycling` indefinitely would wedge
+      // every subsequent operation; the only recovery would be a host-
+      // level shutdown. Tear the prior cohort down through the same
+      // path a real shutdown uses so the supervisor reaches a clean
+      // `stopped` state, then re-throw so the operator sees the
+      // recycle failure and can redeploy.
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.error`recycle failed; tearing supervisor down: ${message}`;
+      recycleInProgress = false;
+      await shutdownInternal({
+        reason: `recycle failed: ${message}`,
+      }).catch((shutdownCause) => {
+        const inner =
+          shutdownCause instanceof Error
+            ? shutdownCause.message
+            : String(shutdownCause);
+        logger.error`shutdown after recycle failure also threw: ${inner}`;
+      });
+      throw cause;
+    } finally {
+      recycleInProgress = false;
+    }
+    return attempt;
   }
 
   function getCredentialsSnapshot(): CredentialsSnapshot | null {
@@ -597,7 +872,8 @@ type SupervisorState =
   | { phase: "stopping" }
   | { phase: "stopped" }
   | ({ phase: "starting" } & ActiveState)
-  | ({ phase: "running" } & ActiveState);
+  | ({ phase: "running" } & ActiveState)
+  | ({ phase: "recycling" } & ActiveState);
 
 type ActiveState = {
   handle: SubprocessHandle;
@@ -609,28 +885,59 @@ type ActiveState = {
   credentialsSnapshot: CredentialsSnapshot | null;
 };
 
+type SpawnContext = {
+  stepOrder: readonly string[];
+  definitionHash: string;
+  onInferenceEvent: (event: EventPayload) => void;
+  spawnedAt: number;
+};
+
 /**
  * Iterate the control-channel receive iterator until the child's
- * `ready` frame arrives. Non-ready frames are processed (currently
- * the only such frame is the future `self`-cancel request the child
- * uses for the Q3 path, which lands with the recycle/drain work).
+ * `ready` frame arrives. Upstream payloads other than `ready` (e.g.
+ * `recycle.request`) appear after `ready`; the supervisor's
+ * `pumpUpstreamControl` consumes them off the same iterator after
+ * spawn returns.
  */
 async function waitForReady(
   iter: AsyncGenerator<ControlPayload, void, void>,
-  _onInferenceEvent: (event: EventPayload) => void,
 ): Promise<{ childPid: number }> {
-  for await (const payload of iter) {
+  // Use explicit `next()` rather than `for await ... return` so the
+  // generator is NOT finalized via `iter.return()` when ready lands.
+  // The supervisor's upstream-control pump continues iterating the
+  // same generator after `ready`, and a finalized generator would
+  // immediately yield `{done: true}` to the pump and silently drop
+  // the child's subsequent upstream frames (e.g. `recycle.request`).
+  while (true) {
+    const next = await iter.next();
+    if (next.done === true) {
+      throw new Error(
+        "workflow-host supervisor: control channel ended before child emitted ready",
+      );
+    }
+    const payload = next.value;
     if (payload.type === "ready") {
       return { childPid: payload.data.childPid };
     }
-    // Other payload types on the supervisor's *receive* side are
-    // child-initiated control upstream (e.g. a self-cancel request
-    // forwarded from the child); the protocol's full upstream
-    // vocabulary lands with the recycle/drain commits.
+    // Drop other variants encountered before `ready`; the child is
+    // not supposed to send anything else first, but the receiver
+    // validated the envelope and signature, so a stray frame here is
+    // a programming bug worth surfacing in the warning channel
+    // rather than crashing the iterator.
   }
-  throw new Error(
-    "workflow-host supervisor: control channel ended before child emitted ready",
-  );
+}
+
+function defaultNow(): number {
+  return Date.now();
+}
+
+function defaultSetTimer(cb: () => void, ms: number): unknown {
+  return setTimeout(cb, ms);
+}
+
+function defaultClearTimer(handle: unknown): void {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the handle is the value `setTimeout` returned, narrowed back at the boundary
+  clearTimeout(handle as ReturnType<typeof setTimeout>);
 }
 
 /**

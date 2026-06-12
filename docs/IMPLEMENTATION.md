@@ -377,9 +377,11 @@ The supervisor's `spawn(opts)` method:
    after `ready`.
 
 Implementation lives in
-`packages/workflow-host/src/supervisor/supervisor.ts`. The
-`drain` and `recycle` methods are stubs in this commit; their full
-implementations land with the drain controller and recycle paths.
+`packages/workflow-host/src/supervisor/supervisor.ts`. The recycle
+sequence is library code in
+`packages/workflow-host/src/supervisor/recycle.ts`; see the Recycle
+subsection below for the six-step contract and the three trigger
+origins.
 
 ### Workflow-Process Child
 
@@ -434,7 +436,10 @@ ChannelSender` writes against; the event channel is the
    - `grants-updated` -> swap the active credentialsSnapshot.
    - `drain` -> forward to the drain controller (no-op placeholder
      in this commit; the real controller lands separately).
-   - `recycle` -> no-op (recycle path lands separately).
+   - `recycle` -> log-only notification on the child side; the
+     supervisor's recycle path drives the kill/respawn from outside
+     the child, so the downstream `recycle` payload exists for
+     symmetry with the protocol but is not the trigger.
    - `shutdown` -> stop accepting new triggers and exit the loop.
 
 #### Trust Anchors
@@ -620,14 +625,118 @@ Child-workflow drain coordination splits two ways:
   its own runtime, which then drains through its own four
   observation points.
 
+#### Recycle
+
+Recycle is the supervisor's "same deploy tree, fresh process" path,
+implemented as library code in
+`packages/workflow-host/src/supervisor/recycle.ts` and consumed by
+the supervisor object's `recycle()` method.
+
+**Strict orthogonality with redeploy.** Recycle uses the SAME deploy
+tree -- the same `workflow.json`, the same workflow-asset repo, the
+same per-step `agent-state` repos. Redeploy is the other shape: a
+new deploy tree, a new workflow definition, possibly different
+agents. The recycle module never refetches the deploy tree, never
+consults an updated workflow definition, never re-resolves agents.
+The module header documents the invariant loudly: if a deploy-tree
+change is needed the host runs redeploy, which is a different code
+path with different authorization and a different rollback shape.
+The recycle module must not grow a "maybe also refetch the deploy
+tree" mode -- that would erase the orthogonality and let a recycle
+silently turn into a redeploy.
+
+**Six-step sequence (locked):**
+
+1. **`drain`** -- the supervisor sends the existing `drain` control
+   mail (from the drain-controller commit). The child's
+   `DrainController` flips its signal; the runtime body's four
+   observation points pick up the change on their next tick.
+   `drainTimeout` escalation applies normally -- the supervisor's
+   drain-timeout accumulator runs orthogonally and commits a signed
+   `CancelRequested{origin: "supervisor-drain"}` if cancel-mode work
+   outlasts the deadline. The recycle path does NOT reimplement
+   drain; it consumes the supervisor's existing `drain()` primitive.
+2. **`kill`** -- the supervisor terminates the workflow-process child
+   via the injected subprocess spawner's `SubprocessHandle.kill`
+   surface. SIGTERM first; if the child does not exit within
+   `DEFAULT_KILL_TIMEOUT_MS` (operator-overridable), the recycle
+   path escalates to SIGKILL. The injected spawner owns the Node
+   primitives; the recycle path never reaches into them directly.
+3. **`respawn`** -- the supervisor mints a fresh 16-byte hex
+   channelId via the same `generateChannelId` helper the initial
+   spawn uses, generates a new 32-byte HMAC key, mints a fresh
+   Ed25519 IPC keypair, re-reads per-step credentials via the
+   injected `RepoStore`, and spawns a new Bun child via the same
+   subprocess-spawner binding. The new IPC anchors flow through
+   spawn-time env exactly as the initial spawn's anchors did.
+4. **`self-discover`** -- the new child runs its existing
+   self-discovery on spawn (the same code path the initial-spawn
+   case uses). The recycle path does not coordinate this step.
+5. **`resume`** -- self-discovery resumes any in-flight runs from
+   the workflow-run log. The runtime body's seed-events path
+   re-arms timers, pending awaits, and uncancelled children.
+6. **Mail buffer drain** -- the supervisor drains its buffered mail
+   into the new child over the control IPC. Inbound mail that
+   arrived during the kill/respawn gap was buffered in the
+   supervisor's queue; this step replays it in arrival order as
+   `trigger.fire` control frames. Subsequent inbound mail bypasses
+   the buffer and forwards immediately.
+
+**Mail address ownership across the gap.** The supervisor holds the
+mail-bus registration across the recycle via the injected mail-bus
+binding. No re-register, no unregister, no subscription cycling.
+Inbound mail during the kill/respawn gap buffers in the supervisor's
+bounded queue (`MAX_BUFFERED_MAIL`, 256 messages). On saturation the
+recycle path surfaces a loud error rather than silently dropping
+inbound mail -- a saturated buffer indicates either an upstream
+stuck on the deployment or a recycle stuck partway through, and
+either case is one the operator must see. Once the new child emits
+`ready`, the supervisor drains the buffer over control IPC.
+
+**ChannelId rotation per the IPC contract.** Every respawn mints a
+new channelId via `generateChannelId` (16 bytes from
+`crypto.randomBytes`, hex-encoded). The new channel's receiver
+crashes on any frame carrying the predecessor channelId -- a stale
+frame is by construction either a replay or a programming bug, and
+crashing on mismatch is the only honest response. The seq counter
+resets per channelId because the IPC contract pins seq monotonicity
+to the channelId's lifetime; the rotation is what defends against
+frame replay across the recycle boundary that monotonic seq alone
+cannot defend against.
+
+**Three trigger origins funnel through `triggerRecycle(reason)`:**
+
+- **Operator command.** The host receives a `recycle` request via
+  its caller-facing API and routes it to the supervisor's
+  `recycle()` method, which delegates here with origin `operator`.
+- **Supervisor policy.** A periodic check inside the supervisor
+  (`createRecyclePolicy`) wakes on the configured interval
+  (default `DEFAULT_POLICY_INTERVAL_MS`, ~1 minute) and evaluates
+  the configured bounds: `maxUptimeMs`, `maxRssBytes`,
+  `maxGrantsAgeMs`. Defaults are unlimited (the bound is disabled
+  unless the operator sets a threshold). On a threshold trip the
+  policy calls `triggerRecycle` with origin `policy` and a reason
+  naming the tripped bound.
+- **Workflow-process self-initiated.** The child sends a
+  `recycle.request` payload over control IPC when its own self-
+  check decides it needs to be recycled (an internal consistency
+  error it can't recover from, a watchdog tripping). The
+  supervisor's upstream control-channel reader recognises the
+  variant and funnels into `triggerRecycle` with origin `self`. The
+  IPC payload union extension is the only contract change recycle
+  introduces; the envelope, signature, and channelId/seq rules are
+  unchanged.
+
+All three origins land in the same code path. The reason string is
+the only origin-specific data the path carries forward.
+
 #### Placeholders And Future Work
 
-`recycle` is a no-op placeholder in this commit. The signal-channel
-seam is constructed per run with an empty `RunState` reader -- a
-pre-await signal still resolves through the live `subscribeKind`
-tail, but a resume-rehydrated queued signal needs the runtime
-body's `RunState` reader plumbing, which lands when the per-run
-state-machine reader is wired into the child.
+The signal-channel seam is constructed per run with an empty
+`RunState` reader -- a pre-await signal still resolves through the
+live `subscribeKind` tail, but a resume-rehydrated queued signal
+needs the runtime body's `RunState` reader plumbing, which lands
+when the per-run state-machine reader is wired into the child.
 
 ### Deploy Routing (Option Z)
 

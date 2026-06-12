@@ -610,6 +610,14 @@ async function handleControlPayload(
         "workflow-child received a `ready` frame on its inbound control channel; this is a supervisor-only payload",
       );
     }
+    case "recycle.request": {
+      // `recycle.request` is the child->supervisor self-initiated
+      // recycle path; receiving one on the child's downstream side is
+      // the same shape of protocol violation as a downstream `ready`.
+      throw new Error(
+        "workflow-child received a `recycle.request` frame on its inbound control channel; this is a child-only upstream payload",
+      );
+    }
   }
 }
 

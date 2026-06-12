@@ -338,4 +338,37 @@ export interface WorkflowSupervisorBindings {
    * Defaults to `clearTimeout` when omitted.
    */
   clearTimer?: (handle: unknown) => void;
+  /**
+   * Optional recycle-policy configuration. Absent or all-`undefined`
+   * fields disable the periodic check; the supervisor's policy timer
+   * is not armed. Operator overrides land here via the host's
+   * per-deployment config.
+   */
+  recyclePolicy?: import("./recycle").RecyclePolicyBounds;
+  /**
+   * Optional RSS reader the policy consults per tick when
+   * `recyclePolicy.maxRssBytes` is set. Returns the workflow-process
+   * child's current resident-set size in bytes, or `undefined` if the
+   * host does not have a current sample.
+   */
+  readRssBytes?: () => number | undefined;
+  /**
+   * Optional grants-age reader the policy consults per tick when
+   * `recyclePolicy.maxGrantsAgeMs` is set. Returns the wall-clock age
+   * (ms) of the most recent grants refresh visible to this
+   * supervisor, or `undefined` if no refresh has been observed yet.
+   */
+  readGrantsAgeMs?: () => number | undefined;
+  /**
+   * Optional now-reader for the recycle policy. Defaults to
+   * `Date.now()`; tests inject a deterministic clock.
+   */
+  recyclePolicyNow?: () => number;
+  /**
+   * Optional setTimer/clearTimer pair for the recycle policy and the
+   * recycle path's SIGKILL escalation. Defaults to
+   * `setTimeout`/`clearTimeout`; tests inject a controllable timer.
+   */
+  recyclePolicySetTimer?: (cb: () => void, ms: number) => unknown;
+  recyclePolicyClearTimer?: (handle: unknown) => void;
 }
