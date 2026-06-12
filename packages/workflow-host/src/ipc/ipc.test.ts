@@ -33,6 +33,16 @@ import type {
 } from "./index";
 import { type } from "arktype";
 
+/**
+ * Synthetic `childPublicKey` hex used to populate `ready` payloads
+ * in tests whose receiver pins a fixed `publicKey` Uint8Array
+ * (non-bootstrap mode). The receiver verifies signatures against the
+ * key it was constructed with; the `childPublicKey` field is just
+ * payload content here and never gets read out as a key. Tests that
+ * exercise bootstrap mode supply a real keypair's public half.
+ */
+const TEST_CHILD_PUBKEY_HEX = "ab".repeat(32);
+
 function createMemoryNdjsonStream(): {
   writer: NdjsonWriter;
   reader: NdjsonReader;
@@ -144,7 +154,10 @@ describe("FrameEnvelope schema", () => {
     const envelope: FrameEnvelope = {
       seq: 1,
       channelId: "abcd",
-      payload: { type: "ready", data: { childPid: 42 } },
+      payload: {
+        type: "ready",
+        data: { childPid: 42, childPublicKey: TEST_CHILD_PUBKEY_HEX },
+      },
     };
     const bytes = encodeEnvelope(envelope);
     const decoded = decodeEnvelope(bytes);
@@ -252,7 +265,10 @@ describe("Control channel", () => {
       }
     })();
 
-    await sender.send({ type: "ready", data: { childPid: 42 } });
+    await sender.send({
+      type: "ready",
+      data: { childPid: 42, childPublicKey: TEST_CHILD_PUBKEY_HEX },
+    });
     await sender.send({ type: "drain", data: { deadlineMs: 5_000 } });
     await sender.send({
       type: "trigger.fire",
@@ -264,7 +280,10 @@ describe("Control channel", () => {
 
     expect(crashes).toEqual([]);
     expect(received).toEqual([
-      { type: "ready", data: { childPid: 42 } },
+      {
+        type: "ready",
+        data: { childPid: 42, childPublicKey: TEST_CHILD_PUBKEY_HEX },
+      },
       { type: "drain", data: { deadlineMs: 5_000 } },
       {
         type: "trigger.fire",
@@ -293,7 +312,10 @@ describe("Control channel", () => {
     const envelope: FrameEnvelope = {
       seq: 1,
       channelId,
-      payload: { type: "ready", data: { childPid: 1 } },
+      payload: {
+        type: "ready",
+        data: { childPid: 1, childPublicKey: TEST_CHILD_PUBKEY_HEX },
+      },
     };
     const forged: SignedEnvelope = {
       envelope,
@@ -330,7 +352,10 @@ describe("Control channel", () => {
       }
     })();
 
-    await sender.send({ type: "ready", data: { childPid: 1 } });
+    await sender.send({
+      type: "ready",
+      data: { childPid: 1, childPublicKey: TEST_CHILD_PUBKEY_HEX },
+    });
     stream.close();
     await consumer;
 
@@ -359,7 +384,10 @@ describe("Control channel", () => {
       const envelope: FrameEnvelope = {
         seq,
         channelId,
-        payload: { type: "ready", data: { childPid: seq } },
+        payload: {
+          type: "ready",
+          data: { childPid: seq, childPublicKey: TEST_CHILD_PUBKEY_HEX },
+        },
       };
       const sig = signEd25519(encodeEnvelope(envelope), kp.privateKey);
       const signed: SignedEnvelope = { envelope, sig: hexEncode(sig) };
@@ -397,7 +425,10 @@ describe("Control channel", () => {
       const envelope: FrameEnvelope = {
         seq,
         channelId,
-        payload: { type: "ready", data: { childPid: seq } },
+        payload: {
+          type: "ready",
+          data: { childPid: seq, childPublicKey: TEST_CHILD_PUBKEY_HEX },
+        },
       };
       const sig = signEd25519(encodeEnvelope(envelope), kp.privateKey);
       const signed: SignedEnvelope = { envelope, sig: hexEncode(sig) };
@@ -439,7 +470,10 @@ describe("Control channel", () => {
         if (receivedA.length === 1) return;
       }
     })();
-    await senderA.send({ type: "ready", data: { childPid: 1 } });
+    await senderA.send({
+      type: "ready",
+      data: { childPid: 1, childPublicKey: TEST_CHILD_PUBKEY_HEX },
+    });
     await consumerA;
     streamA.close();
 
@@ -463,12 +497,25 @@ describe("Control channel", () => {
         if (receivedB.length === 1) return;
       }
     })();
-    await senderB.send({ type: "ready", data: { childPid: 2 } });
+    await senderB.send({
+      type: "ready",
+      data: { childPid: 2, childPublicKey: TEST_CHILD_PUBKEY_HEX },
+    });
     await consumerB;
     streamB.close();
 
-    expect(receivedA).toEqual([{ type: "ready", data: { childPid: 1 } }]);
-    expect(receivedB).toEqual([{ type: "ready", data: { childPid: 2 } }]);
+    expect(receivedA).toEqual([
+      {
+        type: "ready",
+        data: { childPid: 1, childPublicKey: TEST_CHILD_PUBKEY_HEX },
+      },
+    ]);
+    expect(receivedB).toEqual([
+      {
+        type: "ready",
+        data: { childPid: 2, childPublicKey: TEST_CHILD_PUBKEY_HEX },
+      },
+    ]);
   });
 });
 

@@ -123,6 +123,16 @@ export type SchedulerHandle = {
    */
   stop(): Promise<void>;
   /**
+   * Cancel any queued timer matching `(runId, timerId)`. The
+   * runtime-shaped `Scheduler.scheduleIn` returns a disposer the
+   * runtime body invokes when the awaiting site settles on a sibling
+   * event before the timer's deadline; the adapter routes that
+   * disposer here so the host scheduler does not commit a
+   * `TimerFired` after the runtime has moved on. Idempotent: a call
+   * for an unknown key is a no-op.
+   */
+  cancelQueued(runId: string, timerId: string): void;
+  /**
    * Test-visible view of currently-queued timers. The shape is
    * intentionally narrow: the runtime body never inspects the
    * scheduler's queue; tests assert on it directly.
@@ -311,6 +321,13 @@ export function createWorkflowHostScheduler(
           /* swallow aborted-iterator surface */
         });
       }
+    },
+    cancelQueued(runId, timerId) {
+      const key = queueKey(runId, timerId);
+      const entry = queues.get(key);
+      if (entry === undefined) return;
+      clearTimeout(entry.timeout);
+      queues.delete(key);
     },
     queuedTimers() {
       return [...queues.values()].map((t) => ({

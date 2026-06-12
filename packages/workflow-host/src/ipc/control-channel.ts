@@ -1,13 +1,28 @@
-// Control channel: NDJSON over stdio, Ed25519-signed by the supervisor.
+// Control channel: NDJSON over stdio, Ed25519-signed per direction.
 //
-// The supervisor sends control frames; the workflow-process child
-// verifies and applies them. The supervisor holds the Ed25519
-// private key in its own address space and never hands it to the
-// child -- the child only receives the matching public key in the
-// spawn-time env (`HOST_PUBKEY`). The signing direction is one-way:
-// child-to-supervisor traffic does not flow over this channel
-// (replies come back via the event channel or by submitting commits
-// against the workflow-run repo the supervisor observes).
+// Two Ed25519 keypairs flow per spawn:
+//   - Supervisor's keypair. The supervisor holds the private half and
+//     signs every downstream (supervisor->child) frame. The matching
+//     public half is passed to the child in spawn-time env
+//     (`HOST_PUBKEY`) and the child verifies downstream frames
+//     against it. The supervisor's PRIVATE KEY NEVER LEAVES THE
+//     SUPERVISOR'S ADDRESS SPACE.
+//   - Child's keypair. The child mints it at startup, holds the
+//     private half in its own address space, and signs every upstream
+//     (child->supervisor) frame. The matching public half rides as
+//     `childPublicKey` on the upstream `ready` frame's payload; the
+//     supervisor extracts it on receive and uses it to verify
+//     subsequent upstream frames. The CHILD'S PRIVATE KEY NEVER
+//     LEAVES THE CHILD'S ADDRESS SPACE.
+//
+// Upstream `ready` bootstraps the supervisor's view of the child's
+// public key. The supervisor's receiver opens in bootstrap mode:
+// the first frame's envelope is parsed structurally so the
+// supervisor can extract `childPublicKey` from the payload, then the
+// signature is verified against that key. Subsequent upstream frames
+// verify against the same key. A child-signed frame whose claimed
+// `childPublicKey` does not match the bootstrap value (or any
+// non-`ready` first frame) crashes the receiver.
 //
 // Wire format: one signed envelope per line. Each line is the JSON
 // serialization of `{ envelope: { seq, channelId, payload }, sig:
@@ -30,6 +45,27 @@ import {
   SignedEnvelope,
 } from "./envelope";
 import { signEd25519, verifyEd25519 } from "./crypto";
+
+/**
+ * Wire-shape of one per-step credentials entry the supervisor pushes
+ * inside a `grants-updated` frame. Mirrors `CredentialsSnapshotStep`
+ * in `supervisor/credentials.ts` -- duplicated here as an arktype
+ * validator so the control-channel module stays free of a
+ * compile-time import on the supervisor module (the IPC module sits
+ * underneath the supervisor and child modules in the dependency
+ * graph). The contentHash pins the per-step grants so the child can
+ * detect a stale push and ignore an out-of-order one.
+ */
+export const CredentialsSnapshotStepPayload = type({
+  stepId: "string",
+  address: "string",
+  grants: "unknown[]",
+  contentHash: "string",
+});
+
+export const CredentialsSnapshotPayload = type({
+  steps: CredentialsSnapshotStepPayload.array(),
+});
 
 /**
  * Discriminated union of every control-channel payload kind. The
@@ -79,6 +115,23 @@ export const ControlPayload = type(
   .or({
     type: "'grants-updated'",
     data: {
+      /**
+       * Full credentialsSnapshot the supervisor assembled. The child
+       * replaces its in-memory snapshot wholesale on receive so the
+       * authorize closure binds to the new per-step grants on the
+       * next step invocation. Carried inline rather than by reference
+       * because the snapshot is per-step grants payload -- the
+       * supervisor is the only producer and the child is the only
+       * consumer, so the substrate round-trip would just add latency.
+       */
+      snapshot: CredentialsSnapshotPayload,
+      /**
+       * Per-step content hashes the supervisor expects the snapshot
+       * to pin to. Surfaced separately so receivers can cheap-compare
+       * a push against the snapshot they already have without rehashing
+       * each step's grants. Optional; the receiver does not require it
+       * but uses it for the staleness cross-check when present.
+       */
       "stepHashes?": "Record<string, string>",
     },
   })
@@ -92,6 +145,13 @@ export const ControlPayload = type(
     type: "'ready'",
     data: {
       childPid: "number",
+      /**
+       * Hex-encoded Ed25519 public key the child minted at startup.
+       * The supervisor extracts this on receive and uses it to verify
+       * every subsequent upstream control frame's signature. The
+       * child's private key never leaves the child's address space.
+       */
+      childPublicKey: "string",
     },
   });
 
@@ -148,7 +208,21 @@ export function createControlChannelSender(
 }
 
 export interface ControlChannelReceiverOpts {
-  publicKey: Uint8Array;
+  /**
+   * Public key used to verify every inbound frame. When `Uint8Array`
+   * the value is fixed at construction time (the child's downstream
+   * receiver uses the supervisor's pubkey from `HOST_PUBKEY`). When
+   * `{ bootstrapFromReady: true }` the receiver opens in
+   * bootstrap mode: the first frame must be `ready` and must carry
+   * a `childPublicKey` hex-encoded Ed25519 public key in its payload.
+   * The receiver extracts the key, verifies the first frame's
+   * signature against it, then continues verifying subsequent frames
+   * against the same key. The supervisor's upstream receiver opens
+   * in bootstrap mode so the child can publish its own public key
+   * over the wire without the supervisor ever holding the matching
+   * private half.
+   */
+  publicKey: Uint8Array | { bootstrapFromReady: true };
   channelId: string;
   reader: NdjsonReader;
   /**
@@ -171,6 +245,9 @@ export async function* receiveControlChannel(
   opts: ControlChannelReceiverOpts,
 ): AsyncGenerator<ControlPayload, void, void> {
   let highestSeq = 0;
+  let activePublicKey: Uint8Array | null =
+    opts.publicKey instanceof Uint8Array ? opts.publicKey : null;
+  const bootstrapping = activePublicKey === null;
   for await (const line of opts.reader.read()) {
     if (line.length === 0) continue;
 
@@ -212,10 +289,41 @@ export async function* receiveControlChannel(
       return;
     }
 
-    const ok = verifyEd25519(envelopeBytes, sigBytes, opts.publicKey);
+    if (activePublicKey === null) {
+      // Bootstrap mode: the first frame must be `ready`. Extract the
+      // child's public key from the payload, then verify the
+      // first frame's signature against it. The receiver crashes if
+      // the payload is not a `ready` frame or carries a malformed
+      // `childPublicKey`.
+      const candidate = ControlPayload(signed.envelope.payload);
+      if (candidate instanceof type.errors) {
+        opts.onCrash(
+          `control channel bootstrap payload failed validation: ${candidate.summary}`,
+        );
+        return;
+      }
+      if (candidate.type !== "ready") {
+        opts.onCrash(
+          `control channel bootstrap expected a ready frame, got ${candidate.type}`,
+        );
+        return;
+      }
+      let bootstrapKey: Uint8Array;
+      try {
+        bootstrapKey = hexDecode(candidate.data.childPublicKey);
+      } catch (cause) {
+        opts.onCrash(
+          `control channel bootstrap childPublicKey decode failed: ${errorMessage(cause)}`,
+        );
+        return;
+      }
+      activePublicKey = bootstrapKey;
+    }
+
+    const ok = verifyEd25519(envelopeBytes, sigBytes, activePublicKey);
     if (!ok) {
       opts.onCrash(
-        `control channel signature did not verify (seq=${String(signed.envelope.seq)}, channelId=${signed.envelope.channelId})`,
+        `control channel signature did not verify (seq=${String(signed.envelope.seq)}, channelId=${signed.envelope.channelId}${bootstrapping ? "; bootstrap" : ""})`,
       );
       return;
     }

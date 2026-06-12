@@ -21,25 +21,46 @@
 //
 // Design pieces, with the failure mode each one defends against:
 //
-// 1. Asymmetric crypto on the control channel.
-//    The supervisor signs outbound control frames (trigger fires,
-//    signal deliveries, drain, recycle, shutdown, grants-updated,
-//    sources-updated, ready) with Ed25519. The supervisor's PRIVATE
-//    KEY NEVER LEAVES THE SUPERVISOR'S ADDRESS SPACE. The child
-//    receives only the corresponding 32-byte public key, passed in
-//    spawn-time env (`HOST_PUBKEY`). The spawn-time env is the only
-//    bootstrap surface; it carries pubkey + HMAC key + channelId and
-//    NEVER the supervisor's private key. A leak via fork() memory
+// 1. Asymmetric crypto on the control channel, two keypairs per spawn.
+//    Both directions of the control channel carry Ed25519-signed
+//    frames; each direction uses its own keypair so neither end
+//    holds the private half of the keypair its peer signs with.
+//
+//    Supervisor's keypair (downstream: supervisor -> child).
+//    The supervisor mints the keypair at spawn time, signs every
+//    downstream control frame (trigger.fire, signal.deliver, drain,
+//    recycle, shutdown, grants-updated, sources-updated) with the
+//    private half, and passes the corresponding 32-byte public half
+//    to the child in spawn-time env (`HOST_PUBKEY`). The
+//    SUPERVISOR'S PRIVATE KEY NEVER LEAVES THE SUPERVISOR'S ADDRESS
+//    SPACE. The spawn-time env carries pubkey + HMAC key + channelId
+//    and NEVER the supervisor's private key. A leak via fork() memory
 //    copy is impossible because the supervisor uses `spawn` with an
 //    explicitly constructed `env` object -- there is no inheritance
 //    of the supervisor's process env into the child by reference.
 //    A leak via accidental `process.env` propagation is prevented by
 //    constructing the child env as a fresh object containing only
-//    the three documented variables (no `...process.env` spread).
-//    A leak via serialization is prevented by the supervisor never
-//    placing the private key in any IPC payload, log line, or
-//    audit-log frame -- it lives only as a 32-byte Uint8Array held
-//    in closure by the signing-key callback.
+//    the documented variables (no `...process.env` spread). A leak
+//    via serialization is prevented by the supervisor never placing
+//    the private key in any IPC payload, log line, or audit-log
+//    frame -- it lives only as a 32-byte Uint8Array held in closure
+//    by the signing-key callback.
+//
+//    Child's keypair (upstream: child -> supervisor).
+//    The child mints its own Ed25519 keypair at startup, signs every
+//    upstream control frame with the private half, and publishes the
+//    matching public half in the payload of the upstream `ready`
+//    frame as `childPublicKey` (hex-encoded). The supervisor's
+//    upstream receiver opens in bootstrap mode: it parses the first
+//    frame's envelope structurally, extracts `childPublicKey`,
+//    verifies the `ready` frame's signature against it, and uses the
+//    same key to verify every subsequent upstream frame. The CHILD'S
+//    PRIVATE KEY NEVER LEAVES THE CHILD'S ADDRESS SPACE. A
+//    compromised child cannot forge a frame the supervisor accepts
+//    under a different key: the bootstrap pins the verification key
+//    to the value the first `ready` frame published, and a frame
+//    that claims a different sender is one whose signature the
+//    receiver cannot verify.
 //
 // 2. HMAC-SHA256 on the event channel.
 //    Symmetric authentication is correct for the high-rate path
@@ -119,6 +140,8 @@
 
 export {
   ControlPayload,
+  CredentialsSnapshotPayload,
+  CredentialsSnapshotStepPayload,
   createControlChannelSender,
   receiveControlChannel,
   type ControlChannelSender,

@@ -545,11 +545,16 @@
     "packages/workflow-host": {
       "name": "@intx/workflow-host",
       "version": "0.0.1",
+      "bin": {
+        "workflow-child": "./bin/workflow-child",
+      },
       "dependencies": {
         "@intx/agent": "workspace:*",
         "@intx/crypto-node": "workspace:*",
         "@intx/hub-sessions": "workspace:*",
+        "@intx/inference": "workspace:*",
         "@intx/log": "workspace:*",
+        "@intx/mail-memory": "workspace:*",
         "@intx/types": "workspace:*",
         "@intx/workflow": "workspace:*",
         "arktype": "catalog:",

@@ -287,8 +287,14 @@ export function createWorkflowSupervisor(
       void shutdownInternal({ reason });
     };
 
+    // Upstream control frames are signed by the child's own keypair.
+    // The child mints it at startup and publishes the public half in
+    // the payload of the upstream `ready` frame; the receiver opens
+    // in bootstrap mode and extracts the key from that first frame
+    // before verifying any signature. The supervisor never holds the
+    // child's private key in any code path.
     const controlIncoming = receiveControlChannel({
-      publicKey: ipcKeypair.publicKey,
+      publicKey: { bootstrapFromReady: true },
       channelId,
       reader: handle.controlReader,
       onCrash,

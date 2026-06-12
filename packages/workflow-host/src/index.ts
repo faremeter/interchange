@@ -94,3 +94,31 @@ export {
   type NdjsonReader,
   type NdjsonWriter,
 } from "./ipc";
+
+export {
+  EVENT_CHANNEL_FD,
+  createCredentialsBackedAuthorize,
+  discoverInFlightRuns,
+  parseSpawnTimeEnv,
+  runWorkflowChild,
+  runWorkflowChildFromProcessEnv,
+  type CredentialsSnapshotRef,
+  type DiscoverRunsOpts,
+  type DiscoveredRun,
+  type DrainController,
+  type GrantEvaluator,
+  type RunWorkflowChildBindings,
+  type RunWorkflowChildFromProcessEnvOpts,
+  type RunWorkflowChildOpts,
+  type RunWorkflowChildResult,
+  type SpawnTimeEnv,
+  type SubstrateFactory,
+  type SubstrateFactoryEnv,
+} from "./child/index";
+
+export {
+  adaptHostScheduler,
+  createWorkflowHostScheduler,
+  type SchedulerHandle,
+  type SchedulerOpts,
+} from "./seams/index";

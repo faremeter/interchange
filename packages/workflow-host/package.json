@@ -13,6 +13,7 @@
     "@intx/agent": "workspace:*",
     "@intx/crypto-node": "workspace:*",
     "@intx/hub-sessions": "workspace:*",
+    "@intx/inference": "workspace:*",
     "@intx/log": "workspace:*",
     "@intx/mail-memory": "workspace:*",
     "@intx/types": "workspace:*",

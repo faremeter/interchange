@@ -1,0 +1,10 @@
+#!/usr/bin/env bun
+import { runWorkflowChildFromProcessEnv } from "@intx/workflow-host";
+import {
+  SIDECAR_SUBSTRATE_CONFIG_KEYS,
+  createSubstrate,
+} from "../src/workflow-substrate-factory";
+
+await runWorkflowChildFromProcessEnv(createSubstrate, {
+  substrateConfigKeys: SIDECAR_SUBSTRATE_CONFIG_KEYS,
+});

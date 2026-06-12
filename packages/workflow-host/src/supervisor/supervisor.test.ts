@@ -375,9 +375,14 @@ describe("createWorkflowSupervisor", () => {
       [{ resource: "thing", action: "read" }],
     );
 
-    // Deterministic IPC keypair so the test's "child" side can sign
-    // a `ready` frame the supervisor accepts.
-    const ipcKeyPair = await generateKeyPair();
+    // Deterministic IPC keypairs so the test's "child" side can sign
+    // a `ready` frame the supervisor accepts. Two keypairs ride per
+    // spawn: the supervisor's (downstream signing) and the child's
+    // (upstream signing). The supervisor never sees the child's
+    // private key; the child publishes its public half in the
+    // `ready` frame's payload.
+    const supervisorIpcKeyPair = await generateKeyPair();
+    const childIpcKeyPair = await generateKeyPair();
 
     const supervisorToChild = createMemoryNdjsonStream();
     const childToSupervisor = createMemoryNdjsonStream();
@@ -421,7 +426,7 @@ describe("createWorkflowSupervisor", () => {
     });
     const bindings: WorkflowSupervisorBindings = {
       ...baseBindings,
-      ipcKeyPairFactory: () => Promise.resolve(ipcKeyPair),
+      ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
     };
     const supervisor = createWorkflowSupervisor(bindings);
 
@@ -445,7 +450,7 @@ describe("createWorkflowSupervisor", () => {
       throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
     }
     const childSender = createControlChannelSender({
-      privateKeySeed: ipcKeyPair.privateKey,
+      privateKeySeed: childIpcKeyPair.privateKey,
       channelId,
       writer: {
         write(line: string) {
@@ -466,7 +471,10 @@ describe("createWorkflowSupervisor", () => {
     mailBus.deliver("deployment-x@example.com", new TextEncoder().encode("m2"));
     await childSender.send({
       type: "ready",
-      data: { childPid: 4321 },
+      data: {
+        childPid: 4321,
+        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      },
     });
 
     const result = await spawnPromise;
@@ -978,7 +986,13 @@ describe("IPC integration smoke", () => {
       channelId,
       writer: upstream.writer,
     });
-    await sender.send({ type: "ready", data: { childPid: 1 } });
+    await sender.send({
+      type: "ready",
+      data: {
+        childPid: 1,
+        childPublicKey: Buffer.from(keyPair.publicKey).toString("hex"),
+      },
+    });
     expect(upstream.flushed()).toHaveLength(1);
 
     const eventStream = createMemoryFrameStream();

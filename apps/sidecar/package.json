@@ -4,6 +4,9 @@
   "license": "LGPL-2.1-only",
   "private": true,
   "type": "module",
+  "bin": {
+    "workflow-child": "./bin/workflow-child"
+  },
   "dependencies": {
     "@intx/agent": "workspace:*",
     "@intx/authz": "workspace:*",
@@ -20,6 +23,7 @@
     "@intx/tools-mail": "workspace:*",
     "@intx/tools-posix": "workspace:*",
     "@intx/types": "workspace:*",
+    "@intx/workflow": "workspace:*",
     "@intx/workflow-host": "workspace:*"
   }
 }

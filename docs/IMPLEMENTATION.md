@@ -381,6 +381,151 @@ Implementation lives in
 `drain` and `recycle` methods are stubs in this commit; their full
 implementations land with the drain controller and recycle paths.
 
+### Workflow-Process Child
+
+The workflow-process child's runtime body is `runWorkflowChild`. It
+lives in `packages/workflow-host/src/child/run-child.ts` and is the
+single function each host's thin entry script invokes via
+`runWorkflowChildFromProcessEnv` (the process-boundary helper in
+the same package). The signature is:
+
+```ts
+runWorkflowChild(opts: {
+  env: SpawnTimeEnv;             // parsed spawn-time env
+  controlReader: NdjsonReader;   // supervisor -> child
+  controlWriter: NdjsonWriter;   // child -> supervisor
+  eventWriter: FrameWriter;      // child -> supervisor (InferenceEvents)
+  bindings: RunWorkflowChildBindings;
+}): Promise<RunWorkflowChildResult>
+```
+
+Every I/O stream and every substrate handle is injected. Nothing
+inside the function reads `process.env` or reaches into a singleton;
+the binary is the only component that crosses that boundary.
+Integration tests bypass the binary and exercise `runWorkflowChild`
+directly with mock streams and an in-memory substrate.
+
+#### Lifecycle
+
+1. **Open the IPC channels.** The control channel is the
+   `receiveControlChannel` iterator the supervisor's `createControl
+ChannelSender` writes against; the event channel is the
+   `createEventChannelSender` the child publishes to.
+2. **Construct `WorkflowRuntimeEnv`.** Each in-flight run gets a
+   per-run `BlobSubstrate` and `SignalChannel`; the per-deployment
+   `RepoStore` adapter and the host-process `Scheduler` singleton
+   are shared. The `authorize` slot is the credentialsSnapshot-backed
+   closure documented below.
+3. **Self-discovery.** The child enumerates `runs/<runId>/` under
+   the workflow-run repo's working tree, calls `resumeFromLog` for
+   each run whose log lacks a terminal event
+   (`RunCompleted`/`RunFailed`/`RunCancelled`), and invokes
+   `runtimeRun(env, definition, { resumeFromEvents })` for each one
+   it surfaces. The runtime body's resume path re-arms unfired
+   timers, pending awaits, and uncancelled children from the seed log.
+   Self-discovery runs before `ready` so a fresh `trigger.fired`
+   cannot race ahead of a resume.
+4. **`ready`.** The child emits a signed `ready` control frame back
+   to the supervisor via the same `createControlChannelSender` shape
+   the downstream uses, signed under the IPC keypair the supervisor
+   minted at spawn time.
+5. **Control-loop.** The child consumes the receiver iterator:
+   - `trigger.fire` -> open a new run via `runtimeRun`.
+   - `grants-updated` -> swap the active credentialsSnapshot.
+   - `drain` -> forward to the drain controller (no-op placeholder
+     in this commit; the real controller lands separately).
+   - `recycle` -> no-op (recycle path lands separately).
+   - `shutdown` -> stop accepting new triggers and exit the loop.
+
+#### Trust Anchors
+
+The spawn-time env (`SpawnTimeEnv`) carries:
+
+- `IPC_CHANNEL_ID` -- supervisor-minted channelId per spawn.
+- `IPC_HMAC_KEY` -- 32-byte shared HMAC key for the event channel.
+- `HOST_PUBKEY` -- the supervisor's Ed25519 public key for verifying
+  inbound control frames. **The supervisor's private key never
+  appears in env, never appears in any IPC payload, never appears
+  in a log line.** It lives only in the supervisor's address space.
+- `DEPLOYMENT_ID`, `DEFINITION_HASH`, `MAILBOX_ADDRESS` --
+  per-deployment identifiers the runtime body uses to attribute
+  every committed event back to the owning deployment.
+
+`parseSpawnTimeEnv` validates the env at the boundary and returns
+the typed struct; missing keys, malformed hex, or off-size byte
+payloads throw before the child opens IPC.
+
+#### CredentialsSnapshot-Backed Authorize
+
+The child's `WorkflowAuthorizeFn` closure captures a mutable
+`CredentialsSnapshotRef`; every authorize call looks up the
+originating step's grants by `stepId` and delegates to a
+host-supplied `GrantEvaluator`. A `grants-updated` control frame
+swaps the snapshot in place, so subsequent steps see the fresh
+grants without reconstructing the runtime env. The initial
+snapshot can arrive as a binding (multi-step deploys whose host
+wires it at spawn time) or via the first `grants-updated` frame;
+the closure raises if a step's authorize fires before any snapshot
+has landed.
+
+#### Channel-To-Loop Mapping
+
+- **Control channel.** Supervisor -> child. Carries every
+  `ControlPayload` variant (`trigger.fire`, `signal.deliver`,
+  `drain`, `recycle`, `shutdown`, `grants-updated`,
+  `sources-updated`) plus the child's upstream `ready` ride. Every
+  inbound frame is verified against `HOST_PUBKEY`; the receiver
+  iterator crashes the loop on any signature/channelId/seq
+  violation.
+- **Event channel.** Child -> supervisor. Carries `EventPayload`
+  (InferenceEvents the harness emits). The child authenticates
+  every outbound frame with HMAC under `IPC_HMAC_KEY`; the
+  supervisor's `receiveEventChannel` verifies the same way.
+
+#### Thin binary per host
+
+`@intx/workflow-host` ships the runtime logic as a library; the
+package itself does not ship a `bin` entry. Each host owns the
+binary the supervisor's `subprocessSpawner` invokes, and the
+binary is a thin entry script (~5 lines: a `bun` shebang, an
+`import` of `runWorkflowChildFromProcessEnv`, an `import` of the
+host's substrate factory, an `await` of the helper).
+
+The substrate factory is the host-owned slot. It is a callback
+typed `(env: SubstrateFactoryEnv) => Promise<RunWorkflowChildBindings>`
+that closes over the host's concrete infrastructure: the
+substrate-shaped `RepoStore`, the host-process scheduler
+singleton (adapted via `adaptHostScheduler` to the runtime's
+`Scheduler` shape), the production `invokeStep` and `spawnChild`
+adapters, the host's grant evaluator, and the IPC upstream
+signing key. `SubstrateFactoryEnv` is a narrow typed struct (the
+parsed `SpawnTimeEnv` plus a `substrateConfig` record listing the
+keys the host's binary called out); the factory never sees
+`NodeJS.ProcessEnv` directly.
+
+The supervisor's `binaryPath` binding resolves to the host's own
+binary statically. In the sidecar's wiring
+(`apps/sidecar/src/workflow-host-wiring.ts`) the resolution lives
+in a wiring-module-load-time constant computed via
+`import.meta.resolve("../bin/workflow-child")`; the same pattern
+applies to any alternative-sidecar implementation.
+
+The in-tree sidecar's substrate factory is
+`apps/sidecar/src/workflow-substrate-factory.ts` and the binary
+is `apps/sidecar/bin/workflow-child`. An alternative-sidecar
+implementer ships its own factory + binary and points its
+supervisor's `binaryPath` at the alternative binary.
+
+#### Placeholders And Future Work
+
+`DrainController` is a no-op placeholder in this commit. `recycle`
+is a no-op. The signal-channel seam is constructed per run with an
+empty `RunState` reader -- a pre-await signal still resolves
+through the live `subscribeKind` tail, but a resume-rehydrated
+queued signal needs the runtime body's `RunState` reader plumbing,
+which lands when the per-run state-machine reader is wired into
+the child.
+
 ### Deploy Routing (Option Z)
 
 The supervisor is the single ingress for inbound `agent.deploy`

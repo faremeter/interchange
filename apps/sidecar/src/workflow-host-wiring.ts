@@ -7,8 +7,6 @@
 // Any logic that would benefit a future alternative-sidecar
 // implementation lives inside `@intx/workflow-host`, not here.
 
-import path from "node:path";
-
 import { sign as nodeSign } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
@@ -62,19 +60,18 @@ function deriveTrivialDeploymentId(agentAddress: string): string {
   return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
 }
 
-function defaultBinaryPath(): string {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  return path.resolve(
-    here,
-    "..",
-    "..",
-    "..",
-    "packages",
-    "workflow-host",
-    "bin",
-    "workflow-child",
-  );
-}
+// The supervisor's `binaryPath` binding resolves to the sidecar's
+// own `bin/workflow-child` script via `import.meta.resolve` against
+// the `@intx/sidecar-app` package. The script lives next to this
+// wiring module (`../bin/workflow-child`); resolving it statically
+// at wiring-module load time keeps the production spawn surface
+// independent of any runtime env override. Tests inject a sentinel
+// path via the `binaryPath` opts override; production wiring
+// closes over this constant.
+const SIDECAR_WORKFLOW_CHILD_BINARY: string = (() => {
+  const url = import.meta.resolve("../bin/workflow-child");
+  return fileURLToPath(url);
+})();
 
 const defaultSubprocessSpawner: SubprocessSpawner = () => {
   throw new Error(
@@ -377,7 +374,7 @@ export function createSidecarWorkflowSupervisor(
     },
     mailBus,
     subprocessSpawner: opts.subprocessSpawner ?? defaultSubprocessSpawner,
-    binaryPath: opts.binaryPath ?? defaultBinaryPath(),
+    binaryPath: opts.binaryPath ?? SIDECAR_WORKFLOW_CHILD_BINARY,
     substrateEnv: opts.substrateEnv,
     workflowRunRepoId: opts.workflowRunRepoId,
     workflowRunRef: opts.workflowRunRef,
