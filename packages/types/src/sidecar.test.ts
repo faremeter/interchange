@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
 import {
+  AgentDeployFrame,
   DeployApplyErrorCategory,
   DeployApplyErrorFrame,
   SidecarFrame,
@@ -103,5 +104,93 @@ describe("SidecarFrame union", () => {
       occurredAt: "2026-06-05T20:00:00.000Z",
     });
     expect(result instanceof type.errors).toBe(false);
+  });
+});
+
+describe("AgentDeployFrame", () => {
+  const baseConfig = {
+    sessionId: "ses_1",
+    agentId: "agt_1",
+    tenantId: "ten_1",
+    principalId: "pri_1",
+    agentAddress: "agt_1@example.test",
+    systemPrompt: "system prompt",
+    tools: [],
+    grants: [],
+    sources: [
+      {
+        id: "src_default",
+        provider: "openai",
+        baseURL: "https://api.openai.test",
+        apiKey: "sk-test",
+        model: "gpt-test",
+      },
+    ],
+    defaultSource: "src_default",
+  };
+
+  const trivialFrame = {
+    type: "agent.deploy" as const,
+    agentAddress: "agt_1@example.test",
+    agentId: "agt_1",
+    config: baseConfig,
+    hubPublicKey: "hub_pubkey_hex",
+  };
+
+  const stepSource = {
+    id: "src_step",
+    provider: "openai",
+    baseURL: "https://api.openai.test",
+    apiKey: "sk-step",
+    model: "gpt-step",
+  };
+
+  test("accepts the existing trivial-shape frame (no workflow field)", () => {
+    const result = AgentDeployFrame(trivialFrame);
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a multi-step frame with matching definition and sources", () => {
+    const result = AgentDeployFrame({
+      ...trivialFrame,
+      workflow: {
+        definition: {
+          id: "wf_demo",
+          stepOrder: ["plan", "act"],
+          steps: { plan: {}, act: {} },
+        },
+        sources: { plan: stepSource, act: stepSource },
+      },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a frame whose workflow.definition is present without sources", () => {
+    const result = AgentDeployFrame({
+      ...trivialFrame,
+      workflow: {
+        definition: {
+          id: "wf_demo",
+          stepOrder: ["plan"],
+          steps: { plan: {} },
+        },
+      },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a frame whose stepOrder names a step missing from sources", () => {
+    const result = AgentDeployFrame({
+      ...trivialFrame,
+      workflow: {
+        definition: {
+          id: "wf_demo",
+          stepOrder: ["plan", "act"],
+          steps: { plan: {}, act: {} },
+        },
+        sources: { plan: stepSource },
+      },
+    });
+    expect(result instanceof type.errors).toBe(true);
   });
 });

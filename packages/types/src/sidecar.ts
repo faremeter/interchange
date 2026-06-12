@@ -198,8 +198,52 @@ export const MailInboundFrame = type({
 export type MailInboundFrame = typeof MailInboundFrame.infer;
 
 /**
+ * Workflow projection carried on an `agent.deploy` frame for the
+ * multi-step branch. Presence of the field at the deploy router is the
+ * discriminator between the trivial-launch path (single-step,
+ * `config`-driven) and the multi-step path (workflow-process spawn,
+ * per-step source pins).
+ *
+ * `definition` is the wire projection of `WorkflowDefinition` from
+ * `@intx/workflow`. The arktype validator enforces the shape the deploy
+ * router and the sidecar's per-step env construction read directly
+ * (`id`, `steps`, `stepOrder`); deeper validation of authoring-time
+ * fields lives on the workflow definition surface, not on the wire.
+ *
+ * `sources` pins one inference source per step in `definition.stepOrder`
+ * so the workflow-process child can resolve inference at step invocation
+ * without a round trip to the hub. Every `stepOrder` entry must have a
+ * matching `sources` entry; the validator rejects frames that violate
+ * this invariant at the boundary.
+ */
+export const AgentDeployWorkflow = type({
+  definition: type({
+    id: "string",
+    stepOrder: "string[]",
+    steps: { "[string]": "unknown" },
+    "+": "delete",
+  }),
+  sources: { "[string]": InferenceSource },
+}).narrow((value, ctx) => {
+  for (const stepId of value.definition.stepOrder) {
+    if (!Object.prototype.hasOwnProperty.call(value.sources, stepId)) {
+      return ctx.mustBe(
+        `a workflow projection whose sources cover every step in stepOrder; ${JSON.stringify(stepId)} is missing`,
+      );
+    }
+  }
+  return true;
+});
+export type AgentDeployWorkflow = typeof AgentDeployWorkflow.infer;
+
+/**
  * Deploy an agent to this sidecar. The sidecar initializes a harness from
  * the config.
+ *
+ * `workflow` is set only on multi-step deployments. Absent on every
+ * trivial-shape frame (every frame the system currently emits); the
+ * deploy router uses field presence to discriminate the two branches
+ * without consulting `config`.
  */
 export const AgentDeployFrame = type({
   type: "'agent.deploy'",
@@ -207,6 +251,7 @@ export const AgentDeployFrame = type({
   agentId: "string",
   config: HarnessConfig,
   hubPublicKey: "string",
+  "workflow?": AgentDeployWorkflow,
 });
 export type AgentDeployFrame = typeof AgentDeployFrame.infer;
 

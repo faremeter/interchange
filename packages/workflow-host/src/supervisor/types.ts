@@ -12,6 +12,8 @@ import type {
   Principal,
   RepoStore as SubstrateRepoStore,
 } from "@intx/hub-sessions";
+import type { InferenceSource } from "@intx/types/runtime";
+import type { WorkflowDefinition } from "@intx/workflow/definition";
 
 import type { FrameReader, NdjsonReader, NdjsonWriter } from "../ipc/index";
 import type {
@@ -136,12 +138,24 @@ export type SubprocessSpawner = (args: {
  * interpretation and passes it through to the trivial-launch
  * callback (multi-step routing carries it into spawn-time env in
  * later commits).
+ *
+ * `workflow` is the multi-step projection. Absent on every trivial-
+ * launch frame; presence is the discriminator the deploy router uses
+ * to branch into `supervisor.spawn()` instead of `trivialLaunch`. The
+ * field carries the workflow definition (so the supervisor can
+ * construct the per-step substrate env without round-tripping the
+ * hub) and the per-step inference source pins keyed by
+ * `definition.stepOrder` step ids.
  */
 export interface SupervisorDeployFrame {
   agentAddress: string;
   agentId: string;
   config: unknown;
   hubPublicKey: string;
+  workflow?: {
+    definition: WorkflowDefinition;
+    sources: Record<string, InferenceSource>;
+  };
 }
 
 /**
