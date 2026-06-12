@@ -33,23 +33,50 @@ import os from "node:os";
 import path from "node:path";
 
 import * as tar from "tar";
+import git from "isomorphic-git";
 import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import type { Subprocess } from "bun";
 
 import {
+  assembleSignedContent,
+  assembleMessage,
+  createDetachedSignatureFromProvider,
+  type MessageHeaders,
+} from "@intx/mime";
+import {
   createAgentRepoStore,
   createSessionService,
   createSidecarRouter,
+  dequeueToProcessing,
+  enqueueInbox,
   DEFAULT_ASSET_REF,
   parseAgentId,
+  WORKFLOW_RUN_EVENTS_DIR,
+  WORKFLOW_RUN_RUNS_PREFIX,
+  type AgentRepoStore,
   type AssetService,
+  type RepoId,
   type SidecarRouter,
   type SessionService,
+  type WorkflowRunHubPrincipal,
+  type WorkflowRunSupervisorPrincipal,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { hexEncode } from "@intx/types";
-import { generateKeyPair } from "@intx/crypto-node";
+import { createNodeCrypto, generateKeyPair } from "@intx/crypto-node";
+import {
+  createWorkflowDeployOrchestrator,
+  type LaunchSessionFn,
+  type WorkflowRepoWriter,
+} from "@intx/workflow-deploy";
+import { createDefaultDirectorRegistry } from "@intx/agent";
+import { createWorkflowHostSignalChannel } from "@intx/workflow-host";
+import type { HarnessConfig } from "@intx/types/runtime";
+import type { ToolPackagePin } from "@intx/types/tool-packages";
+import type { ApprovalSet } from "@intx/workflow-deploy";
+import { emptyState, type WorkflowDefinition } from "@intx/workflow";
+import { deriveTrivialDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 
 export const AGENT_ADDRESS = "ins_test-agent@integration.interchange";
 export const AGENT_ID = "ins_test-agent";
@@ -235,6 +262,7 @@ export type HubEnv = {
   server: ReturnType<typeof Bun.serve>;
   router: SidecarRouter;
   sessionService: SessionService;
+  agentRepoStore: AgentRepoStore;
   agentEvents: { addr: string; sid: string; event: unknown }[];
   deployAcks: Map<string, string>;
   statePacks: { agentAddress: string; ref: string; commitSha: string }[];
@@ -461,6 +489,7 @@ export async function startHub(
     server,
     router,
     sessionService,
+    agentRepoStore,
     agentEvents,
     deployAcks,
     statePacks,
@@ -533,11 +562,35 @@ export async function startSidecarSubprocess(opts: {
   return { proc, dataDir, stderr };
 }
 
+/**
+ * Per-deployment handle tracked by the env. Populated by
+ * `deployWorkflow`; consulted by `readWorkflowRunEvents`,
+ * `waitForWorkflowRunComplete`, `injectSignal`, and
+ * `simulateProcessingCrash` so the Phase I integration tests never
+ * thread the workflow-run repo identity themselves.
+ */
+export type DeploymentHandle = {
+  deploymentId: string;
+  workflowDefinition: WorkflowDefinition;
+  workflowRunRepoId: RepoId;
+  workflowRunRef: string;
+  mailAddress: string;
+};
+
 export type DeployFlowEnv = {
   hub: HubEnv;
   inference: MockInference;
   sidecar: SidecarHandle;
   sidecarDiagnostics: () => string;
+  /** Per-deployment handles populated by `deployWorkflow`. */
+  deployments: Map<string, DeploymentHandle>;
+  /**
+   * Register an externally-constructed deployment handle on the env.
+   * Tests call this when the deployment was driven outside
+   * `deployWorkflow` (e.g. a pre-staged repo state) so the env's
+   * helpers can resolve the handle by `deploymentId`.
+   */
+  registerDeployment(handle: DeploymentHandle): void;
   teardown: () => Promise<void>;
 };
 
@@ -603,6 +656,16 @@ export async function startDeployFlowEnv(
     diagnostics: sidecarDiagnostics,
   });
 
+  const deployments = new Map<string, DeploymentHandle>();
+  const registerDeployment = (handle: DeploymentHandle): void => {
+    if (deployments.has(handle.deploymentId)) {
+      throw new Error(
+        `deploy-flow env: deployment ${handle.deploymentId} is already registered`,
+      );
+    }
+    deployments.set(handle.deploymentId, handle);
+  };
+
   const teardown = async (): Promise<void> => {
     // Wait for the sidecar subprocess to fully exit before removing
     // its data directory. The earlier shape (kill, then immediately
@@ -611,6 +674,7 @@ export async function startDeployFlowEnv(
     // EACCES, or partial removal, which the `.catch(() => {})`
     // shrouded. Errors must surface from the rm, so the catch is
     // dropped here.
+    deployments.clear();
     sidecar.proc.kill();
     await sidecar.proc.exited;
     hub.server.stop(true);
@@ -620,5 +684,562 @@ export async function startDeployFlowEnv(
     }
   };
 
-  return { hub, inference, sidecar, sidecarDiagnostics, teardown };
+  return {
+    hub,
+    inference,
+    sidecar,
+    sidecarDiagnostics,
+    deployments,
+    registerDeployment,
+    teardown,
+  };
+}
+
+// =========================================================================
+// Phase I helpers
+// =========================================================================
+//
+// Helpers shared by the Phase I end-to-end tests. Pre-landing them in
+// one fixture commit avoids the file-touch conflict that would result
+// from five parallel test commits each extending the fixture
+// independently.
+//
+// Each helper composes against the actual production paths in
+// `@intx/workflow-deploy`, `@intx/workflow-host`, and the workflow-run
+// kind handler in `@intx/hub-sessions`. None of the helpers reach into
+// stubs; the `injectSignal` path commits a real `SignalReceived` blob
+// via `createWorkflowHostSignalChannel`, the `simulateProcessingCrash`
+// path drives the workflow-run kind handler's exported claim-check
+// primitives, and so on.
+
+const DEFAULT_DEPLOYMENT_DOMAIN = "integration.interchange";
+const DEFAULT_WORKFLOW_RUN_REF = "refs/heads/main";
+
+/**
+ * Options accepted by `deployWorkflow`. The helper composes the
+ * workflow-deploy orchestrator against the env's hub substrate and
+ * routes per-step launches through `env.hub.sessionService.launchSession`
+ * so the trivial-branch round-trip and the multi-step branch both
+ * exercise the production code paths.
+ */
+export type DeployWorkflowOpts = {
+  /**
+   * Harness configuration shared across every step's launch. The
+   * orchestrator overrides `agentAddress`, `agentId`, and `systemPrompt`
+   * per step in the multi-step branch.
+   */
+  config: HarnessConfig;
+  /**
+   * Deploy-tree content shared across every step's launch. The
+   * orchestrator overrides `systemPrompt` per step in the multi-step
+   * branch from the step's agent definition.
+   */
+  deployContent: { systemPrompt: string };
+  /** Pre-existing per-agent address binding for the trivial branch. */
+  trivialBindings?: {
+    agentAddress: string;
+    agentId: string;
+    instanceId: string;
+  };
+  /**
+   * Stable identifier the multi-step branch concatenates into derived
+   * agent addresses. Required when `trivialBindings` is absent.
+   */
+  deploymentId?: string;
+  /**
+   * Mail-domain for the deployment. Required when `trivialBindings` is
+   * absent. Defaults to the integration test's canonical domain so
+   * callers that exercise the multi-step branch with the default
+   * fixture wiring do not have to thread the domain through.
+   */
+  deploymentDomain?: string;
+  /** Tool-package pins to ship with every step's deploy. */
+  toolPackagePins?: readonly ToolPackagePin[];
+  /**
+   * Flat set of grant-shape strings the operator has approved for this
+   * deployment. Every grant the capability walk surfaces must be in
+   * this set.
+   */
+  operatorApprovals: ApprovalSet;
+  /**
+   * Optional per-deployment `workflow-run` ref override. Defaults to
+   * `refs/heads/main`, mirroring the sidecar wiring's default.
+   */
+  workflowRunRef?: string;
+  /**
+   * Optional override for the deployment's mail address. Defaults to
+   * the trivial bindings' `agentAddress` (trivial branch) or
+   * `ins_<deploymentId>@<deploymentDomain>` (multi-step branch).
+   */
+  deploymentMailAddress?: string;
+};
+
+/**
+ * Handle returned by `deployWorkflow`. Carries the deployment id the
+ * orchestrator settled on plus the workflow-run repo identity the
+ * other helpers consult.
+ */
+export type DeployWorkflowHandle = {
+  deploymentId: string;
+  workflowRunRepoId: RepoId;
+  workflowRunRef: string;
+  mailAddress: string;
+};
+
+/**
+ * Build a workflow-deploy orchestrator wired against the env's hub
+ * substrate and run it against the supplied workflow. Trivial
+ * single-step workflows route through `env.hub.sessionService.launchSession`
+ * (which itself invokes the orchestrator's trivial branch); multi-step
+ * workflows derive per-step addresses and route each launch through
+ * the same `launchSession` callback.
+ *
+ * Registers the resulting handle on `env.deployments` so the other
+ * Phase I helpers (event reads, signal injection, drain initiation,
+ * processing-crash simulation) can resolve the deployment by id.
+ */
+export async function deployWorkflow(
+  env: DeployFlowEnv,
+  workflow: WorkflowDefinition,
+  opts: DeployWorkflowOpts,
+): Promise<DeployWorkflowHandle> {
+  const workflowRunRef = opts.workflowRunRef ?? DEFAULT_WORKFLOW_RUN_REF;
+
+  let deploymentId: string;
+  let mailAddress: string;
+  if (opts.trivialBindings !== undefined) {
+    if (workflow.stepOrder.length !== 1) {
+      throw new Error(
+        `deployWorkflow: trivialBindings supplied for a ${String(workflow.stepOrder.length)}-step workflow; trivial deploy requires exactly one step`,
+      );
+    }
+    deploymentId = opts.trivialBindings.agentAddress;
+    mailAddress =
+      opts.deploymentMailAddress ?? opts.trivialBindings.agentAddress;
+  } else {
+    const explicit = opts.deploymentId;
+    if (explicit === undefined) {
+      throw new Error(
+        "deployWorkflow: deploymentId is required when trivialBindings is absent",
+      );
+    }
+    deploymentId = explicit;
+    const deploymentDomain = opts.deploymentDomain ?? DEFAULT_DEPLOYMENT_DOMAIN;
+    mailAddress =
+      opts.deploymentMailAddress ?? `ins_${deploymentId}@${deploymentDomain}`;
+  }
+
+  // The supervisor's trivial branch projects the agent address into
+  // a substrate-safe slug via `deriveTrivialDeploymentId` before
+  // writing workflow-run events (see
+  // `apps/sidecar/src/workflow-host-wiring.ts`). The fixture must
+  // report the same slug so downstream helpers query the repo the
+  // supervisor actually committed to. Multi-step deployments supply
+  // their own substrate-safe `deploymentId` and pass through
+  // unchanged.
+  const workflowRunRepoSlug =
+    opts.trivialBindings !== undefined
+      ? deriveTrivialDeploymentId(opts.trivialBindings.agentAddress)
+      : deploymentId;
+  const workflowRunRepoId: RepoId = {
+    kind: "workflow-run",
+    id: workflowRunRepoSlug,
+  };
+
+  // Route every per-step launch through the session service. The
+  // session service's `launchSession` itself routes through the
+  // orchestrator's trivial branch, so this preserves the bit-identical
+  // trivial round-trip the existing deploy-flow test asserts.
+  //
+  // `launchSession`'s `deployContent` parameter widens
+  // `toolPackageManifest` to `unknown` in the orchestrator's surface
+  // shape; the session-service's `bridgeOrchestratorDeployContent`
+  // narrows it back at the inner boundary, so the cast here only
+  // crosses the structural-shape gap between the orchestrator's
+  // `OrchestratorDeployContent` and the session-service's
+  // `DeployContent`.
+  const launchSession: LaunchSessionFn = async (orchestratorParams) => {
+    const deployContent = orchestratorParams.deployContent;
+    await env.hub.sessionService.launchSession({
+      agentAddress: orchestratorParams.agentAddress,
+      agentId: orchestratorParams.agentId,
+      instanceId: orchestratorParams.instanceId,
+      config: orchestratorParams.config,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the session-service's launchSession invokes the orchestrator internally and re-narrows `toolPackageManifest` via arktype; this fixture forwards the orchestrator-shaped deploy content as-is
+      deployContent: deployContent as Parameters<
+        SessionService["launchSession"]
+      >[0]["deployContent"],
+      ...(orchestratorParams.toolPackagePins !== undefined
+        ? { toolPackagePins: orchestratorParams.toolPackagePins }
+        : {}),
+    });
+  };
+
+  const workflowRepo: WorkflowRepoWriter = {
+    async writeWorkflowRepo(args) {
+      const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
+      const principal: WorkflowRunHubPrincipal = { kind: "hub" };
+      const files: Record<string, string> = {};
+      for (const [k, v] of args.files) {
+        files[k] = v;
+      }
+      await env.hub.agentRepoStore.repoStore.writeTree(
+        principal,
+        repoId,
+        DEFAULT_ASSET_REF,
+        {
+          files,
+          message: `deployWorkflow: write workflow repo ${args.workflowRepoId}`,
+        },
+      );
+    },
+  };
+
+  const orchestrator = createWorkflowDeployOrchestrator({
+    directorRegistry: createDefaultDirectorRegistry(),
+    workflowRepo,
+    launchSession,
+  });
+
+  await orchestrator.deployWorkflow({
+    workflow,
+    config: opts.config,
+    deployContent: opts.deployContent,
+    operatorApprovals: opts.operatorApprovals,
+    ...(opts.trivialBindings !== undefined
+      ? { trivialBindings: opts.trivialBindings }
+      : {}),
+    ...(opts.trivialBindings === undefined
+      ? {
+          deploymentId,
+          deploymentDomain: opts.deploymentDomain ?? DEFAULT_DEPLOYMENT_DOMAIN,
+        }
+      : {}),
+    ...(opts.toolPackagePins !== undefined
+      ? { toolPackagePins: opts.toolPackagePins }
+      : {}),
+  });
+
+  const handle: DeploymentHandle = {
+    deploymentId,
+    workflowDefinition: workflow,
+    workflowRunRepoId,
+    workflowRunRef,
+    mailAddress,
+  };
+  env.registerDeployment(handle);
+
+  return {
+    deploymentId,
+    workflowRunRepoId,
+    workflowRunRef,
+    mailAddress,
+  };
+}
+
+/**
+ * Resolve a deployment handle by id. Throws if no deployment has been
+ * registered under that id so a typo or stale id surfaces as a loud
+ * failure rather than a silent no-op.
+ */
+function requireDeployment(
+  env: DeployFlowEnv,
+  deploymentId: string,
+): DeploymentHandle {
+  const handle = env.deployments.get(deploymentId);
+  if (handle === undefined) {
+    throw new Error(
+      `deploy-flow env: no deployment registered for ${deploymentId}; call deployWorkflow or registerDeployment first`,
+    );
+  }
+  return handle;
+}
+
+/**
+ * A workflow-run event as committed under `runs/<runId>/events/<seq>.json`.
+ * The discriminator field is `type`; the per-type body is opaque to
+ * this helper.
+ */
+export type WorkflowRunEvent = {
+  seq: number;
+  type: string;
+  body: Record<string, unknown>;
+};
+
+/**
+ * Read every event under `runs/<runId>/events/` from the deployment's
+ * workflow-run repo and return them in ascending `seq` order. Returns
+ * an empty array when the run has not yet committed any events or the
+ * repo has not yet been created (e.g. the deployment hasn't taken the
+ * multi-step branch yet).
+ */
+export async function readWorkflowRunEvents(
+  env: DeployFlowEnv,
+  deploymentId: string,
+  runId: string,
+): Promise<WorkflowRunEvent[]> {
+  const handle = requireDeployment(env, deploymentId);
+  const repoDir = env.hub.agentRepoStore.repoStore.getRepoDir(
+    handle.workflowRunRepoId,
+  );
+  let oid: string;
+  try {
+    oid = await git.resolveRef({
+      fs,
+      dir: repoDir,
+      ref: handle.workflowRunRef,
+    });
+  } catch {
+    return [];
+  }
+  const eventsDir = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_EVENTS_DIR}`;
+  let tree: Awaited<ReturnType<typeof git.readTree>>;
+  try {
+    tree = await git.readTree({
+      fs,
+      dir: repoDir,
+      oid,
+      filepath: eventsDir,
+    });
+  } catch {
+    return [];
+  }
+  const events: WorkflowRunEvent[] = [];
+  for (const entry of tree.tree) {
+    if (entry.type !== "blob") continue;
+    const m = /^(0|[1-9][0-9]*)\.json$/.exec(entry.path);
+    if (m === null || m[1] === undefined) continue;
+    const seq = Number.parseInt(m[1], 10);
+    const blob = await git.readBlob({
+      fs,
+      dir: repoDir,
+      oid: entry.oid,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow-run kind handler validates the parsed shape at push time; readers downstream of validatePush observe Record<string, unknown>
+    const parsed = JSON.parse(new TextDecoder().decode(blob.blob)) as Record<
+      string,
+      unknown
+    >;
+    const type = parsed["type"];
+    if (typeof type !== "string") {
+      throw new Error(
+        `readWorkflowRunEvents: event at ${entry.path} is missing a string \`type\` field`,
+      );
+    }
+    events.push({ seq, type, body: parsed });
+  }
+  events.sort((a, b) => a.seq - b.seq);
+  return events;
+}
+
+/**
+ * Options for `waitForWorkflowRunComplete`. Mirrors the shape of
+ * `waitFor` so the helper composes the same diagnostic surface.
+ */
+export type WaitForWorkflowRunCompleteOpts = {
+  timeoutMs?: number;
+  diagnostics?: () => string;
+};
+
+/** Terminal event discriminators the kind handler recognises. */
+export const WORKFLOW_RUN_TERMINAL_TYPES: ReadonlySet<string> = new Set([
+  "RunCompleted",
+  "RunFailed",
+  "RunCancelled",
+]);
+
+/**
+ * Poll the deployment's workflow-run event log until the run's
+ * terminal event lands. Returns the terminal event.
+ */
+export async function waitForWorkflowRunComplete(
+  env: DeployFlowEnv,
+  deploymentId: string,
+  runId: string,
+  opts: WaitForWorkflowRunCompleteOpts = {},
+): Promise<WorkflowRunEvent> {
+  const { timeoutMs = 10_000, diagnostics } = opts;
+  const start = Date.now();
+  for (;;) {
+    const events = await readWorkflowRunEvents(env, deploymentId, runId);
+    const terminal = events.find((e) =>
+      WORKFLOW_RUN_TERMINAL_TYPES.has(e.type),
+    );
+    if (terminal !== undefined) return terminal;
+    if (Date.now() - start > timeoutMs) {
+      const diag = diagnostics?.();
+      const ctx = diag ? `\n${diag}` : "";
+      throw new Error(
+        `waitForWorkflowRunComplete timed out after ${String(timeoutMs)}ms for ${deploymentId}/${runId}${ctx}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+/**
+ * Options for `fireMailTrigger`. `messageId` defaults to a stable
+ * synthesized id so the FIFO test can supply distinct ids per call
+ * without colliding on the dedup index.
+ */
+export type FireMailTriggerOpts = {
+  /**
+   * RFC 2822 `Message-Id` of the synthesized mail. The fixture
+   * supplies a stable default when omitted; the FIFO crash-replay
+   * test overrides per call.
+   */
+  messageId?: string;
+  /** Mail body (conversation text). Defaults to a placeholder. */
+  content?: string;
+  /** Sender address. Defaults to a test-stable user address. */
+  from?: string;
+};
+
+/**
+ * Construct a signed mail message and route it via the hub's
+ * `routeMail` path -- the same surface the existing deploy-flow
+ * integration test uses to fire a mail at the agent. Returns the
+ * `Message-Id` the helper chose so the caller can correlate the
+ * downstream `RunStarted` against the message that triggered it.
+ */
+export async function fireMailTrigger(
+  env: DeployFlowEnv,
+  address: string,
+  opts: FireMailTriggerOpts = {},
+): Promise<{ messageId: string }> {
+  const messageId =
+    opts.messageId ??
+    `<wf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}@integration.interchange>`;
+  const content = opts.content ?? "Hello.";
+  const from = opts.from ?? "user@integration.interchange";
+
+  const keyPair = await generateKeyPair();
+  const crypto = createNodeCrypto(keyPair);
+  const headers: MessageHeaders = {
+    from,
+    to: [address],
+    cc: undefined,
+    date: new Date(),
+    messageId,
+    subject: undefined,
+    inReplyTo: undefined,
+    references: undefined,
+    mimeVersion: "1.0",
+    interchangeType: "conversation.message",
+    interchangeCorrelationId: undefined,
+    interchangeTenantId: undefined,
+    interchangeAgentId: undefined,
+    interchangeSessionId: undefined,
+    interchangeOfferingId: undefined,
+    interchangeSchemaVersion: undefined,
+    traceparent: undefined,
+    tracestate: undefined,
+  };
+  const signedContent = assembleSignedContent({
+    kind: "conversation",
+    text: content,
+  });
+  const signature = await createDetachedSignatureFromProvider(
+    signedContent,
+    crypto,
+  );
+  const rawMessage = assembleMessage(headers, signedContent, signature);
+  const base64 = Buffer.from(rawMessage).toString("base64");
+  const delivered = env.hub.router.routeMail(address, base64);
+  if (!delivered) {
+    throw new Error(
+      `fireMailTrigger: routeMail returned false for ${address}; address is not routable on the hub`,
+    );
+  }
+  return { messageId };
+}
+
+/**
+ * Commit a `SignalReceived` event into the deployment's workflow-run
+ * repo via the production signal-channel `deliver` path. The state
+ * reader passed to the channel returns a fresh empty `RunState`; the
+ * production `deliver` flow does not consult the reader (it only
+ * reads `unconsumedSignals`/`observedSignalIds` from `awaitNext`),
+ * so the helper does not need to thread a live runtime state.
+ */
+export async function injectSignal(
+  env: DeployFlowEnv,
+  deploymentId: string,
+  runId: string,
+  signalName: string,
+  payload: unknown,
+): Promise<{ signalId: string }> {
+  const handle = requireDeployment(env, deploymentId);
+  const supervisorPrincipal: WorkflowRunSupervisorPrincipal = {
+    kind: "supervisor",
+    deploymentId: handle.deploymentId,
+  };
+  const channel = createWorkflowHostSignalChannel({
+    repoStore: env.hub.agentRepoStore.repoStore,
+    principal: supervisorPrincipal,
+    repoId: handle.workflowRunRepoId,
+    ref: handle.workflowRunRef,
+    runId,
+    readState: () => emptyState(runId),
+    newId: () =>
+      `sig_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    clock: () => new Date(),
+  });
+  try {
+    const signalId = `sig_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    await channel.deliver(signalName, payload, signalId);
+    return { signalId };
+  } finally {
+    await channel.stop();
+  }
+}
+
+/**
+ * Write a `processing/<receivedAt>-<messageId>.json` entry directly
+ * into the deployment's workflow-run repo. The helper composes
+ * `enqueueInbox` followed by `dequeueToProcessing` -- the same two
+ * substrate primitives the supervisor uses on a normal mail trigger
+ * fire -- so the resulting on-disk state is bit-identical to the
+ * state a supervisor crash would leave behind after the dequeue
+ * commit but before the matching `markConsumed`. The kind handler's
+ * `validatePush` requires the inbox→processing transition to be
+ * backed by a matching prior inbox entry, so any "direct" write
+ * that bypassed the inbox would be rejected at the substrate
+ * boundary; routing through the two primitives is the only honest
+ * way to land the post-crash state.
+ */
+export async function simulateProcessingCrash(
+  env: DeployFlowEnv,
+  deploymentId: string,
+  address: string,
+  messageId: string,
+  receivedAt: number,
+): Promise<void> {
+  const handle = requireDeployment(env, deploymentId);
+  const principal: WorkflowRunHubPrincipal = { kind: "hub" };
+  await enqueueInbox(
+    env.hub.agentRepoStore.repoStore,
+    principal,
+    handle.workflowRunRepoId,
+    {
+      address,
+      messageId,
+      receivedAt,
+      mailAuditRef: {
+        store: "deploy-flow-env-simulated-crash",
+        path: `${address}/${messageId}`,
+      },
+    },
+  );
+  const dequeued = await dequeueToProcessing(
+    env.hub.agentRepoStore.repoStore,
+    principal,
+    handle.workflowRunRepoId,
+    address,
+  );
+  if (dequeued === null) {
+    throw new Error(
+      `simulateProcessingCrash: dequeueToProcessing returned null after enqueueInbox; inbox is unexpectedly empty for ${address}/${messageId}`,
+    );
+  }
 }

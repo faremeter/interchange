@@ -56,7 +56,7 @@ const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
  * per agent address by design, and a collision implies two
  * deployments are claiming the same trivial workflow surface.
  */
-function deriveTrivialDeploymentId(agentAddress: string): string {
+export function deriveTrivialDeploymentId(agentAddress: string): string {
   return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
 }
 

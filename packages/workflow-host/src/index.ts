@@ -142,6 +142,10 @@ export {
 export {
   adaptHostScheduler,
   createWorkflowHostScheduler,
+  createWorkflowHostSignalChannel,
+  SignalReceivedEnvelope,
   type SchedulerHandle,
   type SchedulerOpts,
+  type SignalChannelHandle,
+  type SignalChannelOpts,
 } from "./seams/index";

@@ -291,8 +291,15 @@ export function createWorkflowHostSignalChannel(
             }
             if (duplicate) return out;
             const nextSeq = maxSeq + 1;
+            // The workflow-run kind handler's `EventEnvelope`
+            // validator requires `seq: number` on every event blob;
+            // the same `nextSeq` we use to mint the filename also
+            // carries into the body so a reader that hydrates the
+            // envelope (state-machine resume, audit reads) sees a
+            // self-describing event without consulting the filename.
             out[`${prefix}${String(nextSeq)}.json`] = JSON.stringify({
               type: "SignalReceived",
+              seq: nextSeq,
               data: { signalName: name, signalId: id, payload },
               at,
             });

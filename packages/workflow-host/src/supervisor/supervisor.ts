@@ -969,10 +969,10 @@ async function forwardMail(
   // The IPC `trigger.fire` payload carries the runId, messageId, and
   // receivedAt. The supervisor parses the RFC 2822 envelope's
   // Message-ID and mints a runId at fire time (one run per trigger
-  // fire per discovery Q3.1). For this commit the runId/messageId
-  // derivation is a thin pass: the message bytes are surfaced as the
-  // `messageId` discriminator; later commits substitute the real
-  // RFC 2822 envelope parse when the deploy-mail bridging lands.
+  // fire). The runId/messageId derivation here is a thin pass: the
+  // message bytes are surfaced as the `messageId` discriminator
+  // until the real RFC 2822 envelope parse lands with the deploy-
+  // mail bridging.
   const messageId = await deriveMessageId(rawMessage);
   await sender.send({
     type: "trigger.fire",
