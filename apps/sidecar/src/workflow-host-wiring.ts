@@ -156,11 +156,27 @@ export function createSidecarDeployRouter(deps: {
   transport: HubTransport;
   repoStore: RepoStore;
   signingKeySeed: Uint8Array;
+  /**
+   * Record a `(deploymentId -> agentAddress)` mapping the boot edge's
+   * workflow-run pack push facade consults when it must address an
+   * outbound pack frame. Fires once per inbound `agent.deploy` frame
+   * before the supervisor's `deploy()` call so the first `recordRunEvent`
+   * commit (which triggers the push hook) sees the mapping. Tests that
+   * do not exercise the pack push path may pass a no-op.
+   */
+  registerDeployment: (entry: {
+    deploymentId: string;
+    agentAddress: string;
+  }) => void;
 }): DeployRouter {
   return {
     async deploy(frame): Promise<DeployRouterResult> {
       let publicKey: string | undefined;
       const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
+      deps.registerDeployment({
+        deploymentId,
+        agentAddress: frame.agentAddress,
+      });
       const wired = createSidecarWorkflowSupervisor({
         transport: deps.transport,
         repoStore: deps.repoStore,
@@ -213,13 +229,12 @@ export function createSidecarDeployRouter(deps: {
             driveTrivialRunChain(event, bindings.recordRunEvent, cell).catch(
               (err: unknown) => {
                 // Capture rejections inside the listener so a substrate
-                // failure (e.g. the trivial-only RepoStore placeholder
-                // throwing on `writeTreePreservingPrefix`) does not
-                // surface as an unhandled rejection on the host
-                // process. The trivial branch's audit chain is
-                // best-effort against the deploy path; persistent
-                // substrate misconfigurations log loudly here without
-                // killing the agent's reactor.
+                // failure (e.g. the hub rejecting the workflow-run pack
+                // push) does not surface as an unhandled rejection on
+                // the host process. The trivial branch's audit chain
+                // is best-effort against the deploy path; persistent
+                // substrate or transport misconfigurations log loudly
+                // here without killing the agent's reactor.
                 const msg = err instanceof Error ? err.message : String(err);
                 logger.warn`trivial run-event recording failed for ${bindings.agentAddress}: ${msg}`;
               },

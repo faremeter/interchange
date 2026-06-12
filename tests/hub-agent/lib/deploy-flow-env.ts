@@ -336,6 +336,29 @@ export async function startHub(
         statePacks.push({ agentAddress, ref, commitSha });
         return { accepted: true };
       },
+      async receiveWorkflowRunPack(repoId, pack, ref, commitSha) {
+        if (repoId.kind !== "workflow-run") {
+          throw new Error(
+            `deploy-flow test mock received unsupported workflow-run repo kind ${JSON.stringify(repoId.kind)}`,
+          );
+        }
+        try {
+          await agentRepoStore.receiveWorkflowRunPack(
+            repoId,
+            pack,
+            ref,
+            commitSha,
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          statePackReceiveFailures.push({
+            agentAddress: repoId.id,
+            error: `workflow-run pack: ${message}`,
+          });
+          return { accepted: false, reason: "corrupt" as const };
+        }
+        return { accepted: true };
+      },
     },
   });
   router.events.on("agent.event", ({ agentAddress, sessionId, event }) => {

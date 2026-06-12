@@ -17,6 +17,7 @@
     "@intx/inference": "workspace:*",
     "@intx/log": "workspace:*",
     "@intx/mail-memory": "workspace:*",
+    "@intx/pack-transport": "workspace:*",
     "@intx/storage-isogit": "workspace:*",
     "@intx/tool-packaging": "workspace:*",
     "@intx/tools-lsp": "workspace:*",

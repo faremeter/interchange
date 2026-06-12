@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import { sign as nodeSign } from "node:crypto";
 import path from "node:path";
 import { setup } from "@intx/log";
@@ -8,8 +9,8 @@ import {
   importPrivateKeyBytes,
   verifySSHSignature,
 } from "@intx/crypto-node";
-import { createSidecarOrchestrator } from "@intx/hub-agent";
-import type { RepoStore } from "@intx/hub-sessions";
+import { createSidecarOrchestrator, type HubLink } from "@intx/hub-agent";
+import { createAgentRepoStore } from "@intx/hub-sessions";
 import { createTarballCache } from "@intx/tool-packaging";
 
 import { readCacheMaxBytes, readRegistryMaxTarballBytes } from "./config";
@@ -25,31 +26,13 @@ import {
   createSidecarDeployRouter,
   createSidecarWorkflowSupervisor,
 } from "./workflow-host-wiring";
+import {
+  createDeploymentAddressRegistry,
+  createWorkflowRunPackClient,
+  createWorkflowRunPackPushingRepoStore,
+} from "./workflow-run-pack-client";
 
 await setup();
-
-/**
- * Substrate-RepoStore placeholder for the trivial-only routing the
- * production sidecar exercises today. The workflow-host supervisor
- * accepts a substrate `RepoStore` in its bindings; the trivial
- * branch never reaches into it (no `requestCancel`, no `spawn`).
- * The proxy below throws on any access so a future code path that
- * does reach in surfaces a precise failure rather than a silent
- * miss. Substrate plumbing for the multi-step branch lands in a
- * separate commit.
- */
-function createTrivialOnlyRepoStorePlaceholder(): RepoStore {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- placeholder; every access throws via the proxy
-  return new Proxy({} as RepoStore, {
-    get(_target, prop) {
-      return () => {
-        throw new Error(
-          `sidecar trivial-only RepoStore placeholder: ${String(prop)} invoked; multi-step substrate plumbing not yet wired`,
-        );
-      };
-    },
-  });
-}
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -82,7 +65,118 @@ await createTarballCache({
   maxBytes: cacheMaxBytes,
 }).sweepOrphans();
 
+// Load or mint the sidecar's local Ed25519 keypair. The supervisor
+// principal signs every workflow-run commit with this key; the
+// substrate's `signingCallback` signs every SSH-signed commit with
+// it; the workflow-host child's substrate factory re-uses it via the
+// `SIDECAR_SIGNING_*` spawn-time env vars. One key, one identity for
+// the sidecar process.
+const SIDECAR_SIGNING_DIR = path.join(dataDir, ".sidecar-signing");
+const SIDECAR_PRIVATE_KEY_PATH = path.join(
+  SIDECAR_SIGNING_DIR,
+  "ed25519.private",
+);
+const SIDECAR_PUBLIC_KEY_PATH = path.join(
+  SIDECAR_SIGNING_DIR,
+  "ed25519.public",
+);
+
+async function loadOrMintSidecarKeypair(): Promise<{
+  publicKey: Uint8Array;
+  privateKey: Uint8Array;
+}> {
+  let havePriv = false;
+  let havePub = false;
+  try {
+    await fs.access(SIDECAR_PRIVATE_KEY_PATH);
+    havePriv = true;
+  } catch {
+    havePriv = false;
+  }
+  try {
+    await fs.access(SIDECAR_PUBLIC_KEY_PATH);
+    havePub = true;
+  } catch {
+    havePub = false;
+  }
+  if (havePriv !== havePub) {
+    throw new Error(
+      `sidecar signing keypair under ${SIDECAR_SIGNING_DIR} is partial: privateKey=${String(havePriv)} publicKey=${String(havePub)}; remove the directory to reset`,
+    );
+  }
+  if (havePriv && havePub) {
+    const [priv, pub] = await Promise.all([
+      fs.readFile(SIDECAR_PRIVATE_KEY_PATH),
+      fs.readFile(SIDECAR_PUBLIC_KEY_PATH),
+    ]);
+    return {
+      privateKey: new Uint8Array(priv),
+      publicKey: new Uint8Array(pub),
+    };
+  }
+  const keyPair = await generateKeyPair();
+  await fs.mkdir(SIDECAR_SIGNING_DIR, { recursive: true });
+  await Promise.all([
+    fs.writeFile(SIDECAR_PRIVATE_KEY_PATH, keyPair.privateKey, {
+      mode: 0o600,
+    }),
+    fs.writeFile(SIDECAR_PUBLIC_KEY_PATH, keyPair.publicKey),
+  ]);
+  return keyPair;
+}
+
+const sidecarSigningKey = await loadOrMintSidecarKeypair();
+
+// Construct the substrate-backed RepoStore at the boot edge. The
+// supervisor consumes this through the deploy router; the trivial
+// branch's `recordRunEvent` reaches `writeTreePreservingPrefix` on
+// this store. The boot-edge facade below wraps the store so a
+// successful workflow-run write fires the pack push hook before its
+// Promise resolves.
+const agentRepoStore = createAgentRepoStore({
+  dataDir,
+  signingKey: sidecarSigningKey,
+});
+
+// The deploy router records `(deploymentId -> agentAddress)` here on
+// every inbound `agent.deploy`; the facade resolves the mapping when
+// firing the pack push so the outbound frames carry the right
+// agentAddress for hub-side routing.
+const deploymentAddressRegistry = createDeploymentAddressRegistry();
+
 const transport = createInMemoryTransport();
+
+// The pack-push client closes over the substrate (for `createPack`)
+// and a lazy hub-link binding (for `pushWorkflowRunPack`). The link
+// reference is set once the orchestrator is constructed below; the
+// closure here is consulted lazily because the
+// `createSidecarOrchestrator` factory calls `createDeployRouter`
+// during its constructor, before the orchestrator handle is bound.
+let resolvedHubLink: HubLink | null = null;
+const workflowRunPackClient = createWorkflowRunPackClient({
+  substrate: agentRepoStore.repoStore,
+  hubLink: {
+    pushWorkflowRunPack(opts) {
+      if (resolvedHubLink === null) {
+        throw new Error(
+          "sidecar boot: workflow-run pack push attempted before hub link was constructed",
+        );
+      }
+      return resolvedHubLink.pushWorkflowRunPack(opts);
+    },
+  },
+});
+
+// Wrap the substrate's RepoStore with the boot-edge facade so a
+// successful supervisor write against a workflow-run repo fires the
+// pack push hook before its Promise resolves. Non-workflow-run writes
+// (today, the agent-state deploy-applier path) flow through
+// unchanged.
+const wrappedRepoStore = createWorkflowRunPackPushingRepoStore({
+  underlying: agentRepoStore.repoStore,
+  packClient: workflowRunPackClient,
+  registry: deploymentAddressRegistry,
+});
 
 const orchestrator = createSidecarOrchestrator({
   hubURL: requireEnv("HUB_WS_URL"),
@@ -110,19 +204,15 @@ const orchestrator = createSidecarOrchestrator({
       keyStore,
       onAgentEvent,
       transport,
-      // Trivial-branch routing does not touch the substrate
-      // RepoStore (the workflow-host supervisor only calls into
-      // it on the multi-step `spawn` / `requestCancel` paths).
-      // The production sidecar does not yet wire a substrate
-      // handle into its boot edge; the placeholder below throws
-      // on any access so a future code path that depends on it
-      // surfaces a precise error rather than a silent miss. The
-      // multi-step branch lands with the substrate-handle plumb
-      // in a separate commit.
-      repoStore: createTrivialOnlyRepoStorePlaceholder(),
-      signingKeySeed: new Uint8Array(32),
+      repoStore: wrappedRepoStore,
+      signingKeySeed: sidecarSigningKey.privateKey,
+      registerDeployment: ({ deploymentId, agentAddress }) => {
+        deploymentAddressRegistry.record(deploymentId, agentAddress);
+      },
     }),
 });
+
+resolvedHubLink = orchestrator.hubLink;
 
 orchestrator.start();
 

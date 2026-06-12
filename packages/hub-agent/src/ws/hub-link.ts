@@ -29,7 +29,7 @@ import {
   type SyncRequestFrame,
   type DeployApplyErrorFrame,
 } from "@intx/types/sidecar";
-import { createPackReceiver, chunkPack } from "@intx/pack-transport";
+import { createPackReceiver, createPackSender } from "@intx/pack-transport";
 import { base64Decode, base64Encode, hexDecode, hexEncode } from "@intx/types";
 
 import type { AgentKeyStore } from "../agent-key-store";
@@ -130,6 +130,21 @@ export type HubLink = {
     agentAddress: string,
     payload: Omit<DeployApplyErrorFrame, "type" | "agentAddress">,
   ) => void;
+  /**
+   * Ship a workflow-run pack to the hub. Streams the supplied pack as
+   * `repo.pack.push` chunks followed by a `repo.pack.done`, then
+   * resolves on the matching `repo.pack.ack` (rejects on
+   * `repo.pack.reject` with the carried reason). The hub routes the
+   * pack to its `workflow-run` receiver because `repoId.kind` is
+   * `"workflow-run"`.
+   */
+  pushWorkflowRunPack: (opts: {
+    agentAddress: string;
+    repoId: RepoId;
+    pack: Uint8Array;
+    ref: string;
+    commitSha: string;
+  }) => Promise<void>;
 };
 
 export function createHubLink(config: HubLinkConfig): HubLink {
@@ -153,6 +168,13 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   let lastPongAt = 0;
 
   const packReceiver = createPackReceiver();
+  // One sender owns the agent-state push path (`handleSyncRequest`,
+  // `handleAgentUndeploy`) and the workflow-run push path
+  // (`pushWorkflowRunPack`). transferIds for the two flows live in
+  // disjoint namespaces (`undeploy-*` / sync-supplied / `workflow-run-*`),
+  // so a single pending-id map is unambiguous; the protocol logic
+  // (chunking, ack-handshake) lives once in `@intx/pack-transport`.
+  const packSender = createPackSender({ sendFrame: (frame) => send(frame) });
 
   // Serialize frame processing so async handlers (deploy, undeploy, abort)
   // cannot race against each other.
@@ -274,7 +296,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     // statePushed reflects whether we sent the pack frames, not whether
     // the hub acknowledged them. We intentionally skip waiting for
     // repo.pack.ack here to avoid blocking the undeploy on a round-trip
-    // that may never complete if the hub is shutting down.
+    // that may never complete if the hub is shutting down -- so the
+    // pending Promise's rejection on disconnect is intentionally
+    // swallowed below.
     try {
       const { pack, commitSha, ref } = await sessions.createStatePack(
         frame.agentAddress,
@@ -284,24 +308,18 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         id: frame.agentAddress,
       };
 
-      for (const chunk of chunkPack(pack)) {
-        send({
-          type: "repo.pack.push",
+      void packSender
+        .send({
           agentAddress: frame.agentAddress,
           repoId,
           transferId: `undeploy-${frame.agentAddress}`,
-          seq: chunk.seq,
-          data: chunk.data,
+          pack,
+          ref,
+          commitSha,
+        })
+        .catch(() => {
+          // Intentional: undeploy's pack push is best-effort. See above.
         });
-      }
-      send({
-        type: "repo.pack.done",
-        agentAddress: frame.agentAddress,
-        repoId,
-        transferId: `undeploy-${frame.agentAddress}`,
-        ref,
-        commitSha,
-      });
 
       statePushed = true;
     } catch (err) {
@@ -500,11 +518,11 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
-  // Tracks outbound state pack transfers (sidecar → hub).
-  const pendingStatePacks = new Map<
-    string,
-    { resolve(): void; reject(error: string): void }
-  >();
+  // Counter the boot edge consumes via `pushWorkflowRunPack` to mint
+  // collision-free transferIds. Lives on the link so undeploy /
+  // sync-request / workflow-run all share one monotonically increasing
+  // sequence space.
+  let workflowRunPackCounter = 0;
 
   async function handleSyncRequest(frame: SyncRequestFrame): Promise<void> {
     const { agentAddress, transferId } = frame;
@@ -513,36 +531,14 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         await sessions.createStatePack(agentAddress);
       const repoId: RepoId = { kind: "agent-state", id: agentAddress };
 
-      const ackPromise = new Promise<void>((resolve, reject) => {
-        pendingStatePacks.set(transferId, {
-          resolve,
-          reject(error: string) {
-            reject(new Error(error));
-          },
-        });
-      });
-
-      for (const chunk of chunkPack(pack)) {
-        send({
-          type: "repo.pack.push",
-          agentAddress,
-          repoId,
-          transferId,
-          seq: chunk.seq,
-          data: chunk.data,
-        });
-      }
-
-      send({
-        type: "repo.pack.done",
+      await packSender.send({
         agentAddress,
         repoId,
         transferId,
+        pack,
         ref,
         commitSha,
       });
-
-      await ackPromise;
 
       logger.info`State push complete for ${agentAddress} (${commitSha.slice(0, 8)})`;
     } catch (err) {
@@ -552,23 +548,33 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   }
 
   function handlePackAck(frame: PackAckFrame): void {
-    const entry = pendingStatePacks.get(frame.transferId);
-    if (entry === undefined) {
+    if (!packSender.handleAck(frame)) {
       logger.warn`Received repo.pack.ack for unknown transferId ${frame.transferId}`;
-      return;
     }
-    pendingStatePacks.delete(frame.transferId);
-    entry.resolve();
   }
 
   function handlePackReject(frame: PackRejectFrame): void {
-    const entry = pendingStatePacks.get(frame.transferId);
-    if (entry === undefined) {
+    if (!packSender.handleReject(frame)) {
       logger.warn`Received repo.pack.reject for unknown transferId ${frame.transferId}`;
-      return;
     }
-    pendingStatePacks.delete(frame.transferId);
-    entry.reject(`Pack rejected by hub: ${frame.reason}`);
+  }
+
+  async function pushWorkflowRunPack(opts: {
+    agentAddress: string;
+    repoId: RepoId;
+    pack: Uint8Array;
+    ref: string;
+    commitSha: string;
+  }): Promise<void> {
+    const transferId = `workflow-run-${++workflowRunPackCounter}-${opts.repoId.id}`;
+    await packSender.send({
+      agentAddress: opts.agentAddress,
+      repoId: opts.repoId,
+      transferId,
+      pack: opts.pack,
+      ref: opts.ref,
+      commitSha: opts.commitSha,
+    });
   }
 
   async function handleMessage(data: string): Promise<void> {
@@ -677,10 +683,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       }, pingIntervalMs);
 
       packReceiver.reset();
-      for (const [id, entry] of pendingStatePacks) {
-        pendingStatePacks.delete(id);
-        entry.reject("Connection lost");
-      }
+      packSender.cancelAll("Connection lost");
 
       void (async () => {
         try {
@@ -816,5 +819,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     sendEvent,
     sendConnectorState,
     sendDeployApplyError,
+    pushWorkflowRunPack,
   };
 }

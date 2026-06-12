@@ -328,6 +328,9 @@ describe("createSidecarDeployRouter wires the InferenceEvent subscription to rec
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
+      registerDeployment: () => {
+        /* the in-test repoStore is a stub; the pack-push facade is exercised separately */
+      },
     });
 
     const result = await router.deploy({
