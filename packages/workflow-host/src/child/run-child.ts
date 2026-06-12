@@ -28,7 +28,6 @@
 //        - `trigger.fired` -> open a new run via `runtimeRun`.
 //        - `grants-updated` -> replace the credentialsSnapshot.
 //        - `drain` -> forward to the drain controller (no-op here).
-//        - `recycle` -> no-op (recycle path lands elsewhere).
 //        - `shutdown` -> stop accepting new triggers and exit the
 //          loop.
 //
@@ -45,9 +44,9 @@
 // `drain` control mail the controller flips its signal, the runtime
 // body observes the change at its four observation points, and the
 // `behaviorFor` resolver derived from the loaded `WorkflowDefinition`
-// classifies each in-flight step as cancel-mode or wait-mode. Recycle
-// remains a no-op in this commit; the wired-up recycle path lands in
-// its own commit.
+// classifies each in-flight step as cancel-mode or wait-mode. The
+// supervisor's recycle policy is OS-driven (drain, SIGTERM, SIGKILL,
+// respawn) and does not require a child-side control frame.
 
 import { type } from "arktype";
 
@@ -588,10 +587,6 @@ async function handleControlPayload(
       // deadline.
       logger.info`workflow-child drain requested (deadlineMs=${String(payload.data.deadlineMs)})`;
       ctx.drainController.requestDrain();
-      return false;
-    }
-    case "recycle": {
-      logger.info`workflow-child recycle requested (${payload.data.reason}); not yet implemented`;
       return false;
     }
     case "shutdown": {

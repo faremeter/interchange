@@ -101,12 +101,6 @@ export const ControlPayload = type(
     },
   })
   .or({
-    type: "'recycle'",
-    data: {
-      reason: "string",
-    },
-  })
-  .or({
     type: "'shutdown'",
     data: {
       reason: "string",
