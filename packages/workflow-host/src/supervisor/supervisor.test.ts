@@ -10,6 +10,9 @@ import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
   createWorkflowSupervisor,
+  type DrainTimeoutAccumulator,
+  type DrainTimeoutAccumulatorFactory,
+  type DrainTimeoutOpts,
   type MailBusBindings,
   type SubprocessSpawner,
   type SubprocessHandle,
@@ -506,6 +509,380 @@ describe("createWorkflowSupervisor", () => {
     await supervisor.shutdown();
     expect(killed).toBe(true);
     expect(mailBus.registered()).not.toContain("deployment-x@example.com");
+  });
+
+  test("drain() forwards the `drain` control frame and arms a drainTimeout accumulator per in-flight run", async () => {
+    const baseDir = await makeTempDir("supervisor-drain-arm-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const supervisorIpcKeyPair = await generateKeyPair();
+    const childIpcKeyPair = await generateKeyPair();
+
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      const handle: SubprocessHandle = {
+        pid: 9999,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      return handle;
+    };
+
+    // Mock accumulator factory the supervisor's `drain()` should
+    // consult. Each invocation records the opts and returns a
+    // controllable stub whose `start`/`stop` calls are visible to the
+    // test. The factory shape matches `createDrainTimeoutAccumulator`
+    // exactly so the supervisor binds it through the public
+    // `WorkflowSupervisorBindings.drainTimeoutAccumulatorFactory`
+    // slot.
+    type StubAccumulator = DrainTimeoutAccumulator & {
+      __opts: DrainTimeoutOpts;
+      __startCount: number;
+      __stopCount: number;
+    };
+    const stubs: StubAccumulator[] = [];
+    const factory: DrainTimeoutAccumulatorFactory = (opts) => {
+      const stub: StubAccumulator = {
+        __opts: opts,
+        __startCount: 0,
+        __stopCount: 0,
+        start() {
+          this.__startCount += 1;
+        },
+        pause() {
+          /* unused by the supervisor's arming path */
+        },
+        resume() {
+          /* unused by the supervisor's arming path */
+        },
+        stop() {
+          this.__stopCount += 1;
+        },
+        accumulatedMs() {
+          return 0;
+        },
+        get escalated() {
+          return false;
+        },
+      };
+      stubs.push(stub);
+      return stub;
+    };
+
+    const mailBus = createMockMailBus();
+    const baseBindings = await buildBindings({
+      baseDir,
+      spawner,
+      signSpy: () => ({
+        sig: new Uint8Array(64),
+        principalKind: "supervisor",
+      }),
+      mailBus,
+    });
+    const bindings: WorkflowSupervisorBindings = {
+      ...baseBindings,
+      ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
+      drainTimeoutAccumulatorFactory: factory,
+      drainTimeoutMs: 7_500,
+    };
+    const supervisor = createWorkflowSupervisor(bindings);
+
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      onInferenceEvent: () => {
+        /* unused in this test */
+      },
+    });
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+        },
+      },
+    });
+    while (!mailBus.registered().includes("deployment-x@example.com")) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    // Two pre-ready messages -> two in-flight runIds (the supervisor
+    // mints one runId per `trigger.fire` per discovery Q3.1).
+    mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("drain-msg-A"),
+    );
+    mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("drain-msg-B"),
+    );
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 9999,
+        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      },
+    });
+    await spawnPromise;
+
+    // No accumulators armed yet -- drain has not been called.
+    expect(stubs).toHaveLength(0);
+
+    await supervisor.drain({ deadlineMs: 7_500 });
+
+    // The supervisor's `drain` control frame landed on the
+    // supervisor-to-child stream. Two frames preceded it
+    // (`trigger.fire` per buffered message); the last frame is the
+    // drain payload.
+    const forwarded = supervisorToChild.flushed();
+    expect(forwarded.length).toBeGreaterThanOrEqual(3);
+    const drainFrameRaw = forwarded[forwarded.length - 1];
+    if (drainFrameRaw === undefined) {
+      throw new Error("no frames observed on supervisor-to-child stream");
+    }
+    const SignedFrame = type({
+      envelope: {
+        seq: "number",
+        channelId: "string",
+        payload: {
+          type: "string",
+          "+": "ignore",
+        },
+        "+": "ignore",
+      },
+      "+": "ignore",
+    });
+    const drainFrame = SignedFrame(JSON.parse(drainFrameRaw));
+    if (drainFrame instanceof type.errors) {
+      throw new Error(
+        `drain frame failed envelope shape check: ${drainFrame.summary}`,
+      );
+    }
+    expect(drainFrame.envelope.payload).toMatchObject({
+      type: "drain",
+      data: { deadlineMs: 7_500 },
+    });
+
+    // One accumulator armed per in-flight run. Each accumulator was
+    // started (the supervisor calls `start()` directly after the
+    // factory call); none has been stopped yet.
+    expect(stubs).toHaveLength(2);
+    for (const stub of stubs) {
+      expect(stub.__startCount).toBe(1);
+      expect(stub.__stopCount).toBe(0);
+      expect(stub.__opts.deploymentId).toBe("deployment-x");
+      expect(stub.__opts.repoId).toEqual({
+        kind: "workflow-run",
+        id: "deployment-x",
+      });
+      expect(stub.__opts.ref).toBe("refs/heads/main");
+      expect(stub.__opts.drainTimeoutMs).toBe(7_500);
+      expect(typeof stub.__opts.runId).toBe("string");
+      expect(stub.__opts.runId.length).toBeGreaterThan(0);
+    }
+    const runIds = stubs.map((s) => s.__opts.runId);
+    expect(new Set(runIds).size).toBe(2);
+
+    // Shutdown stops every armed accumulator before tearing the
+    // child down.
+    await supervisor.shutdown();
+    for (const stub of stubs) {
+      expect(stub.__stopCount).toBe(1);
+    }
+  });
+
+  test("drain() escalates via signAsPrincipal when the accumulator's timeout fires", async () => {
+    // Production-shaped wiring: bind the real
+    // `createDrainTimeoutAccumulator` and observe the
+    // `CancelRequested{origin: "supervisor-drain"}` commit landing on
+    // the stub RepoStore's write side after the supervisor's fake
+    // clock advances past the configured `drainTimeoutMs`. This is
+    // the supervisor-equivalent of the in-process round-trip the
+    // 13c integration test exercises.
+    const baseDir = await makeTempDir("supervisor-drain-escalate-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const supervisorIpcKeyPair = await generateKeyPair();
+    const childIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      const handle: SubprocessHandle = {
+        pid: 8888,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      return handle;
+    };
+
+    type FakeTimer = { cb: () => void; ms: number; cancelled: boolean };
+    const timers = new Set<FakeTimer>();
+    let fakeNow = 1_700_000_000_000;
+    const observedWrites: {
+      principal: { kind: string };
+      repoId: RepoId;
+      ref: string;
+      files: Record<string, string | Uint8Array>;
+    }[] = [];
+
+    const mailBus = createMockMailBus();
+    const baseBindings = await buildBindings({
+      baseDir,
+      spawner,
+      signSpy: () => ({
+        sig: new Uint8Array(64),
+        principalKind: "supervisor",
+      }),
+      mailBus,
+      onWrite: (args) => observedWrites.push(args),
+    });
+    const bindings: WorkflowSupervisorBindings = {
+      ...baseBindings,
+      ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
+      drainTimeoutMs: 1_000,
+      now: () => fakeNow,
+      setTimer: (cb, ms) => {
+        const t: FakeTimer = { cb, ms, cancelled: false };
+        timers.add(t);
+        return t;
+      },
+      clearTimer: (handle) => {
+        if (handle === null || typeof handle !== "object") return;
+        for (const t of timers) {
+          if (t === handle) {
+            t.cancelled = true;
+            timers.delete(t);
+            return;
+          }
+        }
+      },
+    };
+    const supervisor = createWorkflowSupervisor(bindings);
+
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      onInferenceEvent: () => {
+        /* unused in this test */
+      },
+    });
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+        },
+      },
+    });
+    while (!mailBus.registered().includes("deployment-x@example.com")) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("escalate-msg"),
+    );
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 8888,
+        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      },
+    });
+    await spawnPromise;
+
+    await supervisor.drain({ deadlineMs: 1_000 });
+    expect(timers.size).toBe(1);
+    // Advance the fake clock past the timeout and fire the
+    // accumulator's pending timer.
+    fakeNow += 1_000;
+    const due = [...timers];
+    for (const t of due) {
+      if (t.cancelled) continue;
+      timers.delete(t);
+      t.cb();
+    }
+    // Allow the async escalate commit to settle.
+    await new Promise<void>((r) => setTimeout(r, 5));
+
+    // The accumulator's escalation committed a CancelRequested event
+    // through the supervisor's substrate handle.
+    expect(observedWrites.length).toBe(1);
+    const write = observedWrites[0];
+    if (write === undefined) {
+      throw new Error("no CancelRequested commit captured");
+    }
+    expect(write.principal.kind).toBe("supervisor");
+    expect(write.repoId).toEqual({
+      kind: "workflow-run",
+      id: "deployment-x",
+    });
+    const eventEntry = Object.entries(write.files).find(([k]) =>
+      k.includes("/events/"),
+    );
+    if (eventEntry === undefined) {
+      throw new Error("no event blob captured in the commit");
+    }
+    const [, blobBytes] = eventEntry;
+    const blobJson =
+      typeof blobBytes === "string"
+        ? blobBytes
+        : new TextDecoder().decode(blobBytes);
+    const blob = readCancelRequestedBlob(blobJson);
+    expect(blob.type).toBe("CancelRequested");
+    expect(blob.origin).toBe("supervisor-drain");
+    expect(blob.signature.principalKind).toBe("supervisor");
+
+    await supervisor.shutdown();
   });
 
   test("requestCancel signs CancelRequested via signAsPrincipal for every origin", async () => {

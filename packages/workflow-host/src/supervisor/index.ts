@@ -35,6 +35,14 @@ export {
   type SupervisorRunEvent,
 } from "./run-event-signing";
 
+export {
+  createDrainTimeoutAccumulator,
+  DEFAULT_DRAIN_TIMEOUT_MS,
+  type DrainTimeoutAccumulator,
+  type DrainTimeoutAccumulatorFactory,
+  type DrainTimeoutOpts,
+} from "./drain-timeout";
+
 export type {
   MailBusBindings,
   PrincipalSigner,

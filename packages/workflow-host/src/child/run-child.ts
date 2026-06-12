@@ -40,10 +40,14 @@
 // invocation so a live update applies to subsequent steps without
 // reconstructing the env.
 //
-// DrainController is a NO-OP PLACEHOLDER in this commit. Recycle is
-// also a no-op. Both seams exist so the control-loop's `drain` and
-// `recycle` cases compile against a typed shape; the wired-up
-// implementations land in their own commits.
+// The DrainController is wired here against the production
+// `createWorkflowHostDrainController`: on receipt of the supervisor's
+// `drain` control mail the controller flips its signal, the runtime
+// body observes the change at its four observation points, and the
+// `behaviorFor` resolver derived from the loaded `WorkflowDefinition`
+// classifies each in-flight step as cancel-mode or wait-mode. Recycle
+// remains a no-op in this commit; the wired-up recycle path lands in
+// its own commit.
 
 import { type } from "arktype";
 
@@ -72,6 +76,11 @@ import type {
   WorkflowRuntimeEnv,
 } from "@intx/workflow";
 import { emptyState, runtimeRun } from "@intx/workflow";
+
+import {
+  createWorkflowHostDrainController,
+  type WorkflowHostDrainController,
+} from "../drain-controller";
 
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import { createWorkflowRunBlobSubstrate } from "../adapters/blob-substrate";
@@ -169,25 +178,14 @@ export function createCredentialsBackedAuthorize(
 }
 
 /**
- * Placeholder drain controller. The control-loop's `drain` case calls
- * `request(opts)` and the supervisor expects a settled promise; the
- * no-op here keeps the loop compiling and behaving as documented for
- * this commit (no in-flight cancellation, no audit frame). The real
- * controller lands in its own commit and replaces this implementation
- * wholesale; nothing inside the child depends on the placeholder's
- * specific shape beyond the `request` method's signature.
+ * The workflow-host child's drain controller is the production
+ * implementation defined in `../drain-controller.ts`. The control-loop
+ * calls `requestDrain()` on receipt of the supervisor's `drain`
+ * control mail; the controller flips its signal and the runtime body
+ * observes the change at its four observation points. The `behaviorFor`
+ * resolver consults the loaded `WorkflowDefinition`.
  */
-export interface DrainController {
-  request(opts: { deadlineMs: number; reason: string }): Promise<void>;
-}
-
-function createNoopDrainController(): DrainController {
-  return {
-    async request(opts) {
-      logger.info`workflow-child drain requested (deadlineMs=${String(opts.deadlineMs)} reason=${opts.reason}); placeholder no-op until the drain controller lands`;
-    },
-  };
-}
+export type DrainController = WorkflowHostDrainController;
 
 /**
  * Step-invoker shape the child binds. Widens the workflow-runtime
@@ -364,6 +362,8 @@ export async function runWorkflowChild(
     opts.bindings.evaluateGrants,
   );
 
+  const drainController = createWorkflowHostDrainController({ definition });
+
   // Self-discovery before announcing `ready`. The runtime body must
   // see every in-flight run before the supervisor starts forwarding
   // `trigger.fired` frames; otherwise a fresh trigger could land
@@ -384,6 +384,7 @@ export async function runWorkflowChild(
       directors,
       clock,
       newId,
+      drainController,
       onEvent: (event) => {
         void eventSender.send(event).catch((cause) => {
           logger.error`event-channel send failed during resume run ${run.runId}: ${String(cause)}`;
@@ -424,7 +425,6 @@ export async function runWorkflowChild(
     },
   });
 
-  const drainController = createNoopDrainController();
   const triggeredRunIds: string[] = [];
 
   // Control-loop. The receiver iterator yields one verified payload
@@ -500,6 +500,7 @@ async function handleControlPayload(
         directors: ctx.directors,
         clock: ctx.clock,
         newId: ctx.newId,
+        drainController: ctx.drainController,
         onEvent: (event) => {
           void ctx.eventSender.send(event).catch((cause) => {
             logger.error`event-channel send failed during run ${payload.data.runId}: ${String(cause)}`;
@@ -578,10 +579,15 @@ async function handleControlPayload(
       return false;
     }
     case "drain": {
-      await ctx.drainController.request({
-        deadlineMs: payload.data.deadlineMs,
-        reason: "control-channel drain",
-      });
+      // The supervisor's `drain` control mail flips the controller's
+      // signal. The runtime body's four observation points read the
+      // signal on their next tick; cancel-mode steps abort their
+      // local controllers, wait-mode steps continue. The
+      // supervisor's drainTimeout accumulator (host-side) escalates
+      // to a signed CancelRequested if cancel-mode work outlasts the
+      // deadline.
+      logger.info`workflow-child drain requested (deadlineMs=${String(payload.data.deadlineMs)})`;
+      ctx.drainController.requestDrain();
       return false;
     }
     case "recycle": {
@@ -621,6 +627,7 @@ function buildRuntimeEnv(args: {
   directors: DirectorRegistry;
   clock: () => Date;
   newId: (prefix: string) => string;
+  drainController: DrainController;
   onEvent: (event: EventPayload) => void;
 }): WorkflowRuntimeEnv {
   const signalChannel = createWorkflowHostSignalChannel({
@@ -661,6 +668,7 @@ function buildRuntimeEnv(args: {
     spawnChild: args.bindings.spawnChild,
     clock: args.clock,
     newId: args.newId,
+    drain: args.drainController,
   };
 }
 

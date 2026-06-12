@@ -7,7 +7,10 @@ export * from "./state-machine/index";
 export * from "./definition/index";
 export {
   runtimeRun,
+  createNoopDrainController,
+  resolveDrainBehavior,
   type BlobSubstrate,
+  type DrainController,
   type RepoStore,
   type RunResult,
   type RuntimeRunOptions,

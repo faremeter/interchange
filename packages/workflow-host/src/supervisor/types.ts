@@ -302,4 +302,40 @@ export interface WorkflowSupervisorBindings {
    * not consult it. See `TrivialLaunch` for the invariants.
    */
   trivialLaunch: TrivialLaunch;
+  /**
+   * Operator-overridable per-deployment `drainTimeout` in
+   * milliseconds. The supervisor's `drain()` path threads this value
+   * into every drainTimeout accumulator it arms. Absent value defers
+   * to the accumulator's `DEFAULT_DRAIN_TIMEOUT_MS` constant.
+   */
+  drainTimeoutMs?: number;
+  /**
+   * Optional override for the supervisor's drainTimeout accumulator
+   * factory. Production wires this against
+   * `createDrainTimeoutAccumulator` directly; tests inject a mock
+   * factory so the supervisor's drain arming becomes observable
+   * without rigging a fake timer host. The factory shape matches
+   * `createDrainTimeoutAccumulator`'s public signature exactly.
+   */
+  drainTimeoutAccumulatorFactory?: import("./drain-timeout").DrainTimeoutAccumulatorFactory;
+  /**
+   * Clock the supervisor threads into the drainTimeout accumulator.
+   * Production wires `() => Date.now()`; tests inject a deterministic
+   * fake clock. Defaults to `Date.now` when omitted.
+   */
+  now?: () => number;
+  /**
+   * Scheduling primitive the supervisor threads into the drainTimeout
+   * accumulator. Production wires `(cb, ms) => setTimeout(cb, ms)`;
+   * tests inject a deterministic timer host. Defaults to
+   * `setTimeout` when omitted.
+   */
+  setTimer?: (cb: () => void, ms: number) => unknown;
+  /**
+   * Disposer paired with `setTimer`. Production wires
+   * `(h) => clearTimeout(h as ReturnType<typeof setTimeout>)`;
+   * tests inject the matching disposer for their fake timer host.
+   * Defaults to `clearTimeout` when omitted.
+   */
+  clearTimer?: (handle: unknown) => void;
 }

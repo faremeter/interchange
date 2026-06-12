@@ -22,8 +22,10 @@ export {
   assembleCredentialsSnapshot,
   commitCancelRequested,
   commitRunEvent,
+  createDrainTimeoutAccumulator,
   defaultStepRepoId,
   hashGrants,
+  DEFAULT_DRAIN_TIMEOUT_MS,
   STEP_GRANTS_PATH,
   STEP_GRANTS_REF,
   SUPERVISOR_PRINCIPAL_KIND,
@@ -38,6 +40,9 @@ export {
   type CredentialsSnapshotStep,
   type DeriveStepAddress,
   type DrainOpts,
+  type DrainTimeoutAccumulator,
+  type DrainTimeoutAccumulatorFactory,
+  type DrainTimeoutOpts,
   type MailBusBindings,
   type PrincipalSigner,
   type RecordRunEvent,
@@ -55,6 +60,12 @@ export {
   type WorkflowSupervisorBindings,
   type WorkflowSupervisorPrincipalKind,
 } from "./supervisor/index";
+
+export {
+  createWorkflowHostDrainController,
+  type WorkflowHostDrainController,
+  type CreateWorkflowHostDrainControllerOpts,
+} from "./drain-controller";
 
 export {
   wrapHubTransportAsMailBus,

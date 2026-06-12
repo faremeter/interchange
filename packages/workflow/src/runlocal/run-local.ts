@@ -19,6 +19,7 @@ import type {
 } from "../authorize-context";
 import type { WorkflowDefinition } from "../definition/index";
 import { runtimeRun, type RuntimeRunOptions } from "../runtime/run";
+import { createNoopDrainController } from "../runtime/drain";
 import type {
   StepInvoker,
   SpawnChildWorkflow,
@@ -92,6 +93,7 @@ export function runLocal(
     spawnChild: createNoopSpawnChild(options.childResolver),
     clock,
     newId,
+    drain: createNoopDrainController(definition),
   };
 
   return runtimeRun(definition, env, extractRuntimeOptions(options));

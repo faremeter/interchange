@@ -20,6 +20,7 @@ import {
   createInMemoryRepoStore,
   createInMemoryScheduler,
   createInMemorySignalChannel,
+  createNoopDrainController,
   defineWorkflow,
   runLocal,
   resumeFromLog,
@@ -68,6 +69,7 @@ describe("childWorkflow terminal-status propagation", () => {
       spawnChild,
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
+      drain: createNoopDrainController(parent),
     };
     const result = await runtimeRun(parent, env).complete;
     expect(result.terminalStatus).toBe("failed");
@@ -103,6 +105,7 @@ describe("childWorkflow terminal-status propagation", () => {
       spawnChild,
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
+      drain: createNoopDrainController(parent),
     };
     const result = await runtimeRun(parent, env).complete;
     expect(result.terminalStatus).toBe("failed");
@@ -198,6 +201,7 @@ describe("cancellation log invariants", () => {
       spawnChild,
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
+      drain: createNoopDrainController(parent),
     };
 
     const run = runtimeRun(parent, env);

@@ -28,6 +28,7 @@ import {
   reloadState as reloadStateInChain,
 } from "./commit-chain";
 import type { RunResult, WorkflowRun, WorkflowRuntimeEnv } from "./env";
+import { shouldAbortForDrain } from "./drain";
 import {
   isTerminalRunPhase,
   resumeFromLog,
@@ -249,6 +250,14 @@ async function executeRunBody(
   }
   const stepPromises = new Map<string, Promise<void>>();
   const justSettled = new Set<string>();
+  // Per-step local abort controllers. Each scheduled primitive gets
+  // one of these; the controller fires when (a) the outer
+  // cancelController aborts (explicit cancel), or (b) drain.signal
+  // aborts AND the drain controller declares the step is
+  // `"cancel"`-behavior. The main loop entry observation point reads
+  // this map to abort in-flight cancel-mode steps when drain fires
+  // after the step was already scheduled.
+  const stepAborts = new Map<string, AbortController>();
 
   // Tick loop: schedule everything ready, await any in-flight to
   // settle, repeat until done. Cancellation aborts every in-flight
@@ -257,6 +266,21 @@ async function executeRunBody(
   while (!isRunDone(definition, state)) {
     if (cancelController.signal.aborted && state.phase !== "cancelling") {
       state = await reloadState(env, runId);
+    }
+
+    // Drain observation point #1: main loop entry. If drain has
+    // fired, abort every in-flight step whose declared behavior is
+    // `"cancel"`. The supervisor's drainTimeout accumulator on the
+    // host side ticks against these aborts; on expiry it commits a
+    // signed `CancelRequested{origin: "supervisor-drain"}` which
+    // the runtime body picks up via the existing cancel cascade.
+    if (env.drain.signal.aborted) {
+      for (const stepId of inFlight) {
+        if (shouldAbortForDrain(env.drain, stepId)) {
+          const ac = stepAborts.get(stepId);
+          if (ac !== undefined && !ac.signal.aborted) ac.abort();
+        }
+      }
     }
 
     const ready = nextSchedulable(definition, state, inFlight);
@@ -268,13 +292,19 @@ async function executeRunBody(
           Object.entries(stepOutputs).map(([id, output]) => [id, { output }]),
         ),
       };
+      const stepLocalAbort = createStepAbort(
+        primitive.id,
+        cancelController.signal,
+        env.drain,
+      );
+      stepAborts.set(primitive.id, stepLocalAbort);
       const promise = runPrimitiveSafe(
         definition,
         env,
         runId,
         primitive,
         ctx,
-        cancelController.signal,
+        stepLocalAbort.signal,
       )
         .then((output) => {
           stepOutputs[primitive.id] = output;
@@ -287,6 +317,7 @@ async function executeRunBody(
         .finally(() => {
           inFlight.delete(primitive.id);
           justSettled.add(primitive.id);
+          stepAborts.delete(primitive.id);
         });
       stepPromises.set(primitive.id, promise);
     }
@@ -462,6 +493,41 @@ function bytesToHex(bytes: Uint8Array): string {
     out += b.toString(16).padStart(2, "0");
   }
   return out;
+}
+
+/**
+ * Build the per-step local AbortController used as the `abort`
+ * argument to `runPrimitiveSafe`. Aborts when (a) the outer
+ * cancelController.signal aborts, or (b) drain.signal aborts and the
+ * step's declared drainBehavior is `"cancel"`. A `"wait"`-behavior
+ * step ignores drain entirely; only the explicit cancel path can
+ * abort it.
+ */
+function createStepAbort(
+  stepId: string,
+  outerSignal: AbortSignal,
+  drain: import("./drain").DrainController,
+): AbortController {
+  const ac = new AbortController();
+  if (outerSignal.aborted) {
+    ac.abort();
+    return ac;
+  }
+  if (shouldAbortForDrain(drain, stepId)) {
+    ac.abort();
+    return ac;
+  }
+  const onOuter = (): void => {
+    ac.abort();
+  };
+  outerSignal.addEventListener("abort", onOuter, { once: true });
+  const onDrain = (): void => {
+    if (shouldAbortForDrain(drain, stepId)) {
+      ac.abort();
+    }
+  };
+  drain.signal.addEventListener("abort", onDrain, { once: true });
+  return ac;
 }
 
 // =========================================================================
@@ -745,7 +811,27 @@ async function runStep(
       // Wait for the scheduler to commit TimerFired before looping
       // into the next attempt. The step itself stays awaiting-timer
       // through the wait.
-      await waitForTimer(env, runId, timerId, fireAtDate, abort);
+      await waitForTimer(
+        env,
+        runId,
+        timerId,
+        fireAtDate,
+        abort,
+        env.drain,
+        step.id,
+      );
+      // Drain observation point #2: retry-between-attempts in
+      // runStep. If drain has fired and the step's behavior is
+      // `"cancel"`, abort before launching the next attempt. The
+      // outer `abort` was wired through `createStepAbort` to fire on
+      // drain already; this guard is the explicit second site so a
+      // drain that lands during the brief window between
+      // waitForTimer settling and the next attempt's invokeStep call
+      // does not stall behind a live invokeStep that the supervisor
+      // is waiting on to wind down.
+      if (shouldAbortForDrain(env.drain, step.id)) {
+        throw new Error("aborted: drain requested");
+      }
       attempt = nextAttempt;
     } finally {
       abort.removeEventListener("abort", onOuter);
@@ -780,6 +866,8 @@ async function waitForTimer(
   timerId: string,
   fireAt: Date,
   abort: AbortSignal,
+  drain: import("./drain").DrainController,
+  stepId: string,
 ): Promise<void> {
   const subscribeFromSeq = (await reloadState(env, runId)).lastSeq + 1;
   const ac = new AbortController();
@@ -789,7 +877,22 @@ async function waitForTimer(
   if (abort.aborted) {
     throw new Error("aborted");
   }
+  // Drain observation point #3: waitForTimer entry. If drain is
+  // already aborted and the step's behavior is `"cancel"`, bail
+  // immediately without arming the subscription.
+  if (shouldAbortForDrain(drain, stepId)) {
+    throw new Error("aborted: drain requested");
+  }
   abort.addEventListener("abort", onOuterAbort, { once: true });
+  // Listen for drain transitions that land mid-wait. A drain that
+  // fires after the subscription has armed must abort the local
+  // controller so the `for await` ends cleanly.
+  const onDrain = (): void => {
+    if (shouldAbortForDrain(drain, stepId)) {
+      ac.abort();
+    }
+  };
+  drain.signal.addEventListener("abort", onDrain, { once: true });
   const dispose = env.scheduler.scheduleIn(runId, timerId, fireAt);
   try {
     for await (const { event } of env.repoStore.subscribe(runId, {
@@ -801,6 +904,9 @@ async function waitForTimer(
       }
     }
     if (abort.aborted) throw new Error("aborted");
+    if (shouldAbortForDrain(drain, stepId)) {
+      throw new Error("aborted: drain requested");
+    }
     // The subscription ended without a matching TimerFired and the
     // outer abort did not fire. The only ways to get here are an
     // explicit consumer-side `return()` (we are the consumer; this
@@ -812,6 +918,7 @@ async function waitForTimer(
   } finally {
     dispose();
     abort.removeEventListener("abort", onOuterAbort);
+    drain.signal.removeEventListener("abort", onDrain);
   }
 }
 
@@ -1116,11 +1223,28 @@ async function runAwaitSignal(
   }
   void state;
 
+  // Drain observation point #4: runAwaitSignal entry. If drain has
+  // fired and the step's behavior is `"cancel"` (an awaitSignal whose
+  // author explicitly opted in to cancel-on-drain), abort
+  // immediately. `awaitSignal` defaults to `"wait"` so the typical
+  // human-in-the-loop pause sits through drain untouched -- the
+  // supervisor's drainTimeout accumulator pauses while this step is
+  // the in-flight work.
+  if (shouldAbortForDrain(env.drain, primitive.id)) {
+    throw new Error("aborted: drain requested");
+  }
   const combinedAbort = new AbortController();
   const onOuterAbort = (): void => {
     combinedAbort.abort();
   };
   abort.addEventListener("abort", onOuterAbort, { once: true });
+  // Listen for drain transitions that land mid-await.
+  const onDrain = (): void => {
+    if (shouldAbortForDrain(env.drain, primitive.id)) {
+      combinedAbort.abort();
+    }
+  };
+  env.drain.signal.addEventListener("abort", onDrain, { once: true });
   let timerDispose: (() => void) | undefined;
   let timerFired = false;
   let timerWaitAbort: AbortController | undefined;
@@ -1188,6 +1312,7 @@ async function runAwaitSignal(
     throw cause;
   } finally {
     abort.removeEventListener("abort", onOuterAbort);
+    env.drain.signal.removeEventListener("abort", onDrain);
     if (timerDispose !== undefined) timerDispose();
     if (timerWaitAbort !== undefined) timerWaitAbort.abort();
     if (timerWatch !== undefined) {
@@ -1224,7 +1349,15 @@ async function runSleep(
     stepId: primitive.id,
   };
   state = await commit(env, runId, timerSet);
-  await waitForTimer(env, runId, timerId, fireAtDate, abort);
+  await waitForTimer(
+    env,
+    runId,
+    timerId,
+    fireAtDate,
+    abort,
+    env.drain,
+    primitive.id,
+  );
   void state;
   await emitStepCompletedWithValue(env, runId, primitive.id, null);
   return null;

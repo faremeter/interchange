@@ -516,15 +516,118 @@ is `apps/sidecar/bin/workflow-child`. An alternative-sidecar
 implementer ships its own factory + binary and points its
 supervisor's `binaryPath` at the alternative binary.
 
+#### Drain semantics
+
+The runtime body observes drain at exactly four sites in
+`packages/workflow/src/runtime/run.ts`. Each site reads
+`shouldAbortForDrain(env.drain, stepId)` from
+`packages/workflow/src/runtime/drain.ts` and aborts the step's local
+abort controller when (a) the drain signal has aborted AND (b) the
+step's declared `drainBehavior` is `"cancel"`. A step whose behavior
+is `"wait"` ignores drain; only an explicit cancel can abort it.
+
+The four observation points and why they are the four:
+
+1. **Main loop entry.** Per iteration, the runtime checks every
+   in-flight step. A drain that lands after a step was already
+   scheduled (the step's combined abort signal was wired through
+   `createStepAbort` at schedule time) is re-evaluated against the
+   live `behaviorFor` on every tick. This is where a drain that
+   fires while the workflow is paused on a `Promise.race` is first
+   observed.
+2. **Retry-between-attempts inside `runStep`.** A long-running
+   workflow that hit `StepFailed` and committed `AttemptScheduled`
+   is asleep inside `waitForTimer`. The site after `waitForTimer`
+   returns and before the next attempt's `invokeStep` runs is the
+   point where the runtime can short-circuit cleanly without
+   re-entering a fresh agent invocation that the supervisor would
+   then wait on to wind down.
+3. **`waitForTimer`.** The event-sourced timer wait subscribes to
+   the run's log tail. A drain that lands while the subscription
+   is live aborts the local controller so the `for await` ends
+   cleanly. The site is observed at entry and again as a
+   `drain.signal` listener attached during the wait.
+4. **`runAwaitSignal`.** The signal-channel await is the
+   human-in-the-loop site. `awaitSignal` defaults to `"wait"` so
+   the typical pause sits through drain untouched; an author who
+   explicitly opts in via `drainBehavior: "cancel"` gets the
+   short-circuit at entry and again on `drain.signal` mid-await.
+
+The four sites cover every place the runtime body blocks long
+enough for drain to matter. The state-machine primitives that do
+not block (gate, escalation, the outer map) settle without ever
+yielding to the event loop, so a drain observed at the next
+main-loop tick takes effect before they could matter.
+
+`"wait"` vs `"cancel"` is declared per primitive. The constructors
+in `packages/workflow/src/definition/primitives.ts` set the
+defaults: `step`, `sleep`, and `childWorkflow` default to
+`"cancel"` (long compute should not block a redeploy past the
+drainTimeout); `awaitSignal` defaults to `"wait"` (human-in-the-
+loop pauses are the canonical case the spec calls out, and
+operators do not want them silently cancelled at redeploy). `map`'s
+outer node carries no `drainBehavior` -- its inner step carries
+its own. `gate` and `escalation` are non-blocking and resolve as
+`"cancel"` for short-circuit purposes only.
+
+The supervisor's drainTimeout accumulator lives in
+`packages/workflow-host/src/supervisor/drain-timeout.ts`. Default
+`drainTimeout` is 60 seconds (`DEFAULT_DRAIN_TIMEOUT_MS`),
+operator-overridable per deployment. The accumulator ticks against
+wall-clock time only while the supervisor believes at least one
+`"cancel"`-behavior step is in flight; it pauses when every live
+step transitions to `"wait"` behavior and resumes when cancel-mode
+work reappears. Time spent paused does not consume the deadline.
+
+On `drainTimeout` expiry the accumulator invokes the supervisor's
+injected `signAsPrincipal("supervisor", ...)` callback to mint a
+signature over a canonical `CancelRequested{origin:
+"supervisor-drain"}` event and commits it through the supervisor's
+substrate handle. The runtime body observes the commit through its
+existing cancel-cascade path; no special drain-aware cancel branch
+is needed in `run.ts`.
+
+The canonical observable sequence at the in-process layer (asserted
+in this package's tests via `subscribeKind` against a fake
+`RepoStore`, and at the end-to-end layer by the I3 integration
+test) is:
+
+1. `drain` issued (host command, not a workflow-run event).
+2. Steps in `"wait"` mode commit nothing during the drain window.
+3. Steps in `"cancel"` mode: `drainTimeout` accumulates; on
+   expiry, `CancelRequested{origin: "supervisor-drain"}` appended
+   to the workflow-run log.
+4. `CancelPropagated` appended for each non-terminal step
+   (runtime-body cascade).
+5. `RunFailed{reason: "cancelled"}` / `RunCancelled` appended
+   (terminal).
+6. Workflow-process exit observed by the supervisor.
+
+Child-workflow drain coordination splits two ways:
+
+- **Same-deployment children** run inside the same workflow-process
+  as the parent. They share the parent's `DrainController` instance
+  through the runtime env; no extra mechanism is required. The
+  parent's main loop iteration over its own in-flight steps
+  includes the spawn step, and the existing
+  `ChildCancelRequested` emission path in `runtime/run.ts` covers
+  child propagation.
+- **Cross-deployment children** run under a different deployment
+  with its own supervisor and its own drain accumulator. The
+  parent's `ChildCancelRequested` event lands on the parent run's
+  log; the cross-deployment child's supervisor handles the
+  resulting cancel mail as `supervisor-operator` origin against
+  its own runtime, which then drains through its own four
+  observation points.
+
 #### Placeholders And Future Work
 
-`DrainController` is a no-op placeholder in this commit. `recycle`
-is a no-op. The signal-channel seam is constructed per run with an
-empty `RunState` reader -- a pre-await signal still resolves
-through the live `subscribeKind` tail, but a resume-rehydrated
-queued signal needs the runtime body's `RunState` reader plumbing,
-which lands when the per-run state-machine reader is wired into
-the child.
+`recycle` is a no-op placeholder in this commit. The signal-channel
+seam is constructed per run with an empty `RunState` reader -- a
+pre-await signal still resolves through the live `subscribeKind`
+tail, but a resume-rehydrated queued signal needs the runtime
+body's `RunState` reader plumbing, which lands when the per-run
+state-machine reader is wired into the child.
 
 ### Deploy Routing (Option Z)
 

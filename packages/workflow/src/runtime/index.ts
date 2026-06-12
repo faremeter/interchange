@@ -15,6 +15,12 @@ export type {
 
 export { runtimeRun, type RuntimeRunOptions } from "./run";
 
+export {
+  createNoopDrainController,
+  resolveDrainBehavior,
+  type DrainController,
+} from "./drain";
+
 export { nextSchedulable, isRunDone, hasFailedStep } from "./dag";
 
 export {

@@ -62,6 +62,11 @@ import {
 } from "./credentials";
 import { commitCancelRequested } from "./cancel-signing";
 import { commitRunEvent } from "./run-event-signing";
+import {
+  createDrainTimeoutAccumulator,
+  DEFAULT_DRAIN_TIMEOUT_MS,
+  type DrainTimeoutAccumulator,
+} from "./drain-timeout";
 import type {
   RecordRunEvent,
   SubprocessHandle,
@@ -130,9 +135,16 @@ export interface WorkflowSupervisor {
    */
   shutdown(): Promise<void>;
   /**
-   * Drain primitives and wait for in-flight work to settle. Stub in
-   * this commit; the full implementation lands with the drain
-   * controller in a later commit.
+   * Send the supervisor's `drain` control mail to the child and arm
+   * a drainTimeout accumulator against every in-flight run. The
+   * child's `DrainController` flips its signal on receipt and the
+   * runtime body picks the change up at the four observation
+   * points; cancel-mode steps abort locally, wait-mode steps continue
+   * running. On accumulator expiry, the supervisor commits a signed
+   * `CancelRequested{origin: "supervisor-drain"}` per run via the
+   * accumulator's existing path. The promise resolves once the
+   * `drain` mail has been forwarded; the accumulators tick in the
+   * background and stop on shutdown or terminal-phase reach.
    */
   drain(opts: DrainOpts): Promise<void>;
   /**
@@ -185,6 +197,14 @@ export type CancelCommitInfo = {
 };
 
 export type DrainOpts = {
+  /**
+   * Wire `deadlineMs` carried on the `drain` control frame so the
+   * child can echo the policy in its logs. The supervisor-side
+   * `drainTimeout` accumulator is driven by
+   * `WorkflowSupervisorBindings.drainTimeoutMs`, not by this value:
+   * the timeout policy is a per-deployment operator setting baked
+   * into the supervisor's bindings, not a per-call argument.
+   */
   deadlineMs: number;
 };
 
@@ -209,6 +229,44 @@ export function createWorkflowSupervisor(
    * buffer.
    */
   const mailBuffer: Uint8Array[] = [];
+  /**
+   * In-flight runIds the supervisor knows about. A runId enters this
+   * set when the supervisor forwards a `trigger.fire` for it on the
+   * control channel; the runId leaves the set via the recycle/drain
+   * cleanup path that lands in 12a (terminal-event observation lives
+   * on the event channel, which the supervisor will project into
+   * this set in that commit). For 11a's drain wire-up the supervisor
+   * arms one accumulator per entry here -- monotonic growth is fine
+   * because every accumulator stops cleanly on `shutdown`.
+   */
+  const inFlightRuns = new Set<string>();
+  /**
+   * Per-run drainTimeout accumulators armed by `drain()`. Held so
+   * `shutdown()` can stop every accumulator cleanly before tearing
+   * the deployment down (an accumulator left running would otherwise
+   * fire `setTimeout` after the supervisor has been disposed).
+   */
+  const drainAccumulators = new Map<string, DrainTimeoutAccumulator>();
+  const accumulatorFactory =
+    bindings.drainTimeoutAccumulatorFactory ?? createDrainTimeoutAccumulator;
+  const drainNow = bindings.now ?? Date.now;
+  const drainSetTimer =
+    bindings.setTimer ?? ((cb: () => void, ms: number) => setTimeout(cb, ms));
+  const drainClearTimer =
+    bindings.clearTimer ??
+    ((h: unknown) => {
+      // The production `drainSetTimer` returns the value of
+      // `setTimeout`, so the only handles flowing through
+      // `drainClearTimer` are `Timeout` objects. `clearTimeout`
+      // accepts `Timeout | undefined` -- the `undefined` branch is
+      // a no-op which is the right behaviour for the defensive
+      // path here.
+      if (h !== null && typeof h === "object") {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- handle round-trip: the matching `drainSetTimer` returns `ReturnType<typeof setTimeout>`; the accumulator preserves opaqueness, which forces a re-assertion here
+        clearTimeout(h as ReturnType<typeof setTimeout>);
+      }
+    });
+  const drainTimeoutMs = bindings.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
 
   async function deploy(frame: SupervisorDeployFrame): Promise<void> {
     // The `agent.deploy` wire frame currently carries only a
@@ -350,7 +408,7 @@ export function createWorkflowSupervisor(
         }
         if (state.phase === "running") {
           const sender = state.controlSender;
-          void forwardMail(sender, rawMessage).catch((cause) => {
+          void forwardMailAndTrack(sender, rawMessage).catch((cause) => {
             const message =
               cause instanceof Error ? cause.message : String(cause);
             logger.error`forwardMail failed: ${message}`;
@@ -383,7 +441,7 @@ export function createWorkflowSupervisor(
     while (mailBuffer.length > 0) {
       const message = mailBuffer.shift();
       if (message === undefined) break;
-      await forwardMail(controlSender, message);
+      await forwardMailAndTrack(controlSender, message);
     }
 
     return {
@@ -391,6 +449,21 @@ export function createWorkflowSupervisor(
       channelId,
       credentialsSnapshot,
     };
+  }
+
+  /**
+   * Forward an inbound message to the child and record its runId as
+   * in-flight. The standalone `forwardMail` helper below owns the
+   * wire-shape derivation; this wrapper closes over the
+   * `inFlightRuns` set so the drain path knows which accumulators to
+   * arm.
+   */
+  async function forwardMailAndTrack(
+    sender: ControlChannelSender,
+    rawMessage: Uint8Array,
+  ): Promise<void> {
+    const runId = await forwardMail(sender, rawMessage);
+    inFlightRuns.add(runId);
   }
 
   async function requestCancel(
@@ -418,6 +491,15 @@ export function createWorkflowSupervisor(
     if (state.phase === "idle" || state.phase === "stopped") return;
     const prior = state;
     state = { phase: "stopping" };
+    // Stop every armed drainTimeout accumulator before tearing the
+    // child down. An accumulator left running would otherwise fire
+    // its `setTimeout` callback against a shutdown-mid-flight
+    // supervisor; the explicit `stop()` makes the lifecycle
+    // deterministic.
+    for (const accumulator of drainAccumulators.values()) {
+      accumulator.stop();
+    }
+    drainAccumulators.clear();
     if (prior.phase === "starting" || prior.phase === "running") {
       if (prior.mailUnsubscribe !== null) prior.mailUnsubscribe();
       try {
@@ -441,15 +523,46 @@ export function createWorkflowSupervisor(
     logger.info`supervisor shutdown complete (${opts.reason})`;
   }
 
-  function drain(_opts: DrainOpts): Promise<void> {
-    // Stub for this commit; the drain controller lands separately.
-    // The supervisor exposes the seam now so callers binding the
-    // public surface compile against the eventual shape.
-    return Promise.reject(
-      new Error(
-        "workflow-host supervisor: drain() is a stub; full implementation lands with the drain commit",
-      ),
-    );
+  async function drain(opts: DrainOpts): Promise<void> {
+    // Drain is meaningful only when a workflow-process child is up;
+    // calling it from `idle`/`stopping`/`stopped` is a no-op so the
+    // higher-level host shutdown sequence can call drain
+    // unconditionally without sniffing the phase.
+    if (state.phase !== "running" && state.phase !== "starting") return;
+    // Forward the `drain` control mail to the child. The child's
+    // `DrainController` flips its signal on receipt; the runtime
+    // body's four observation points read the change on the next
+    // tick. The supervisor never blocks on the child's acknowledgement
+    // -- the accumulator below is the deadline-keeper, not the round
+    // trip.
+    await state.controlSender.send({
+      type: "drain",
+      data: { deadlineMs: opts.deadlineMs },
+    });
+    // Arm one accumulator per in-flight run. Each accumulator's
+    // `escalate` path commits a signed `CancelRequested{origin:
+    // "supervisor-drain"}` against the workflow-run repo via the
+    // existing `commitCancelRequested` substrate path, so the runtime
+    // body's cancellation cascade tears the run down without the
+    // supervisor having to thread any per-run wiring beyond what the
+    // accumulator already encapsulates.
+    for (const runId of inFlightRuns) {
+      if (drainAccumulators.has(runId)) continue;
+      const accumulator = accumulatorFactory({
+        substrate: bindings.repoStore,
+        repoId: bindings.workflowRunRepoId,
+        ref: bindings.workflowRunRef,
+        deploymentId: bindings.deploymentId,
+        runId,
+        signAsPrincipal: bindings.signAsPrincipal,
+        drainTimeoutMs,
+        now: drainNow,
+        setTimer: drainSetTimer,
+        clearTimer: drainClearTimer,
+      });
+      drainAccumulators.set(runId, accumulator);
+      accumulator.start();
+    }
   }
 
   function recycle(_opts: RecycleOpts): Promise<void> {
@@ -537,14 +650,15 @@ async function pumpEvents(
 
 /**
  * Forward an inbound RFC 2822 message to the child as a
- * `trigger.fire` control frame. The supervisor mints a
- * message-receivedAt timestamp at forward time so the child sees
+ * `trigger.fire` control frame and return the runId the frame
+ * carried so the caller can track it as in-flight. The supervisor
+ * mints a `receivedAt` timestamp at forward time so the child sees
  * monotonically-increasing timestamps across reordered IPC frames.
  */
 async function forwardMail(
   sender: ControlChannelSender,
   rawMessage: Uint8Array,
-): Promise<void> {
+): Promise<string> {
   // The IPC `trigger.fire` payload carries the runId, messageId, and
   // receivedAt. The supervisor parses the RFC 2822 envelope's
   // Message-ID and mints a runId at fire time (one run per trigger
@@ -561,6 +675,7 @@ async function forwardMail(
       receivedAt: Date.now(),
     },
   });
+  return messageId;
 }
 
 /**

@@ -15,6 +15,7 @@ import type {
 } from "../authorize-context";
 import type { Primitive } from "../definition/index";
 import type { WorkflowEvent } from "../state-machine/index";
+import type { DrainController } from "./drain";
 
 /**
  * Read/append/tail event log per run. The append-only invariant is
@@ -228,6 +229,14 @@ export interface WorkflowRuntimeEnv {
   clock: () => Date;
   /** Random id generator for run ids, signal ids, timer ids. */
   newId: (prefix: string) => string;
+  /**
+   * Drain controller the runtime body observes at four sites: main
+   * loop entry, retry-between-attempts in `runStep`, `waitForTimer`,
+   * and `runAwaitSignal`. The runtime never mutates the controller;
+   * the host implements the writing side. runLocal supplies a no-op
+   * controller whose signal never fires.
+   */
+  drain: DrainController;
 }
 
 /**

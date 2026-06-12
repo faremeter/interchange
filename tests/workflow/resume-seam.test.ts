@@ -14,6 +14,7 @@ import {
   createInMemoryRepoStore,
   createInMemoryScheduler,
   createInMemorySignalChannel,
+  createNoopDrainController,
   defineWorkflow,
   runLocal,
   runtimeRun,
@@ -86,6 +87,7 @@ describe("resume-from-log seam", () => {
       }),
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
+      drain: createNoopDrainController(def),
     };
 
     const run2 = runtimeRun(def, env, {
@@ -126,6 +128,7 @@ describe("resume-from-log seam", () => {
       spawnChild: async () => ({ terminalStatus: "completed" }),
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
+      drain: createNoopDrainController(def),
     };
     const result1 = await runtimeRun(def, env).complete;
     expect(result1.terminalStatus).toBe("completed");
