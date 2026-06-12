@@ -140,16 +140,16 @@ export function createHubSessionLookups(
       ];
     },
 
-    async receiveStatePack(repoId, pack, ref, commitSha) {
+    async receiveAgentStatePack(repoId, pack, ref, commitSha) {
       if (repoId.kind !== "agent-state") {
         throw new Error(
-          `hub-session lookups received unsupported repo kind ${JSON.stringify(repoId.kind)}`,
+          `hub-session lookups receiveAgentStatePack received unsupported repo kind ${JSON.stringify(repoId.kind)}`,
         );
       }
       const agentAddress = repoId.id;
       const agentId = parseAgentId(agentAddress);
       try {
-        await agentRepoStore.receiveStatePack(
+        await agentRepoStore.receiveAgentStatePack(
           { kind: "agent-state", id: agentId },
           pack,
           ref,
@@ -173,6 +173,38 @@ export function createHubSessionLookups(
         // the underlying error so the cause stays traceable on the
         // hub side.
         logger.error`State pack receive failed for ${agentAddress}: ${msg}`;
+        return { accepted: false, reason: "corrupt" as const };
+      }
+      return { accepted: true };
+    },
+
+    async receiveWorkflowRunPack(repoId, pack, ref, commitSha) {
+      if (repoId.kind !== "workflow-run") {
+        throw new Error(
+          `hub-session lookups receiveWorkflowRunPack received unsupported repo kind ${JSON.stringify(repoId.kind)}`,
+        );
+      }
+      const deploymentId = repoId.id;
+      try {
+        await agentRepoStore.receiveWorkflowRunPack(
+          { kind: "workflow-run", id: deploymentId },
+          pack,
+          ref,
+          commitSha,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.startsWith("path_violation")) {
+          logger.warn`Workflow-run pack rejected for ${deploymentId}: ${msg}`;
+          return { accepted: false, reason: "path_violation" as const };
+        }
+        // Mirror the agent-state branch's catch-all: any other failure
+        // from the repo subsystem (filesystem races, kind-handler
+        // diagnostics surfaced as Error messages, etc.) becomes a
+        // structured `corrupt` rejection so the sender can re-push,
+        // and the underlying error is logged so the cause stays
+        // traceable on the hub side.
+        logger.error`Workflow-run pack receive failed for ${deploymentId}: ${msg}`;
         return { accepted: false, reason: "corrupt" as const };
       }
       return { accepted: true };

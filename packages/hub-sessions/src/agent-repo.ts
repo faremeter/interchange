@@ -19,6 +19,7 @@ import { workflowKindHandler, workflowAuthorize } from "./workflow-kind";
 import {
   workflowRunKindHandler,
   workflowRunAuthorize,
+  type WorkflowRunSupervisorPrincipal,
 } from "./workflow-run-kind";
 
 export type DeployContent = {
@@ -61,14 +62,35 @@ export type AgentRepoStore = {
   ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }>;
 
   /**
-   * Receive and store a state pack from a sidecar. Indexes the pack
-   * objects and updates the ref without materializing a working tree.
+   * Receive and store an agent-state pack from a sidecar. Indexes the
+   * pack objects and updates the ref without materializing a working
+   * tree.
    *
-   * `repoId.kind` must be `"agent-state"` — this store is per-agent and
-   * does not generalize across kinds. The `repoId.id` is used as the
-   * agent address internally.
+   * `repoId.kind` must be `"agent-state"`. The `repoId.id` is used as
+   * the agent address internally. Stamps an
+   * `AgentStateSidecarPrincipal` so the agent-state kind handler
+   * authorizes the receivePack as a per-agent sidecar write.
    */
-  receiveStatePack(
+  receiveAgentStatePack(
+    repoId: RepoId,
+    pack: Uint8Array,
+    ref: string,
+    commitSha: string,
+  ): Promise<void>;
+
+  /**
+   * Receive and store a workflow-run pack from a sidecar. Indexes the
+   * pack objects and updates the ref without materializing a working
+   * tree.
+   *
+   * `repoId.kind` must be `"workflow-run"`. Stamps a
+   * `WorkflowRunSupervisorPrincipal` whose `deploymentId` equals
+   * `repoId.id`; the workflow-run kind handler denies sidecar-kind
+   * writes by design, so the supervisor branch is the correct path for
+   * sidecar-originated run-event commits (the supervisor lives on the
+   * sidecar and is the actual signer of the run events).
+   */
+  receiveWorkflowRunPack(
     repoId: RepoId,
     pack: Uint8Array,
     ref: string,
@@ -178,10 +200,10 @@ export function createAgentRepoStore(config: {
       return store.createPack(hub, repoId(agentId), AGENT_STATE_DEPLOY_REF);
     },
 
-    async receiveStatePack(incomingRepoId, pack, ref, commitSha) {
+    async receiveAgentStatePack(incomingRepoId, pack, ref, commitSha) {
       if (incomingRepoId.kind !== "agent-state") {
         throw new Error(
-          `AgentRepoStore.receiveStatePack requires repoId.kind === "agent-state", got ${JSON.stringify(incomingRepoId.kind)}`,
+          `AgentRepoStore.receiveAgentStatePack requires repoId.kind === "agent-state", got ${JSON.stringify(incomingRepoId.kind)}`,
         );
       }
       const agentId = incomingRepoId.id;
@@ -194,6 +216,27 @@ export function createAgentRepoStore(config: {
       await store.receivePack(
         principal,
         id,
+        ref,
+        pack,
+        commitSha,
+        expectedOldSha,
+      );
+    },
+
+    async receiveWorkflowRunPack(incomingRepoId, pack, ref, commitSha) {
+      if (incomingRepoId.kind !== "workflow-run") {
+        throw new Error(
+          `AgentRepoStore.receiveWorkflowRunPack requires repoId.kind === "workflow-run", got ${JSON.stringify(incomingRepoId.kind)}`,
+        );
+      }
+      const principal: WorkflowRunSupervisorPrincipal = {
+        kind: "supervisor",
+        deploymentId: incomingRepoId.id,
+      };
+      const expectedOldSha = await store.resolveRef(hub, incomingRepoId, ref);
+      await store.receivePack(
+        principal,
+        incomingRepoId,
         ref,
         pack,
         commitSha,

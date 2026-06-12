@@ -107,13 +107,21 @@ function createMockRepoStore(): AgentRepoStore & { calls: Call[] } {
         ref: "refs/heads/deploy",
       };
     },
-    async receiveStatePack(
+    async receiveAgentStatePack(
       repoId: { kind: "agent-state"; id: string },
       _pack: Uint8Array,
       _ref: string,
       _commitSha: string,
     ) {
-      calls.push({ method: "receiveStatePack", args: [repoId.id] });
+      calls.push({ method: "receiveAgentStatePack", args: [repoId.id] });
+    },
+    async receiveWorkflowRunPack(
+      _repoId: { kind: "workflow-run"; id: string },
+      _pack: Uint8Array,
+      _ref: string,
+      _commitSha: string,
+    ) {
+      throw new Error("mock: receiveWorkflowRunPack not implemented");
     },
     getSigningPublicKey() {
       return new Uint8Array(32);

@@ -299,7 +299,7 @@ export async function startHub(
     requestTimeoutMs: 10_000,
     hubPublicKey: hexEncode(hubSigningKey.publicKey),
     lookups: {
-      async receiveStatePack(repoId, pack, ref, commitSha) {
+      async receiveAgentStatePack(repoId, pack, ref, commitSha) {
         if (repoId.kind !== "agent-state") {
           throw new Error(
             `deploy-flow test mock received unsupported repo kind ${JSON.stringify(repoId.kind)}`,
@@ -317,7 +317,7 @@ export async function startHub(
         // this mock does not, because this fixture never exercises
         // tree-validator rejection.
         try {
-          await agentRepoStore.receiveStatePack(
+          await agentRepoStore.receiveAgentStatePack(
             { kind: "agent-state", id: agentId },
             pack,
             ref,

@@ -238,8 +238,15 @@ export function createSidecarRouter(
   };
   const pendingUndeploys = new Map<string, PendingUndeploy>();
 
-  // Receives state packs pushed from sidecars.
-  const statePackReceiver = createPackReceiver();
+  // Receives agent-state packs pushed from sidecars. The wire frames
+  // (`repo.pack.push` / `repo.pack.done`) are shared with the
+  // workflow-run flow; dispatch on `repoId.kind` picks which receiver
+  // observes the chunks. The two receivers maintain independent
+  // in-flight pack state and independent cancel-by-agent semantics so a
+  // pending workflow-run transfer cannot disturb a concurrent agent-
+  // state transfer for the same agent and vice versa.
+  const agentStatePackReceiver = createPackReceiver();
+  const workflowRunPackReceiver = createPackReceiver();
 
   let requestCounter = 0;
 
@@ -403,10 +410,10 @@ export function createSidecarRouter(
         rejectPackPending(frame.transferId, frame.reason);
         break;
       case "repo.pack.push":
-        handleStatePackPush(ws, frame);
+        handlePackPush(ws, frame);
         break;
       case "repo.pack.done":
-        void handleStatePackDone(ws, frame);
+        void handlePackDone(ws, frame);
         break;
       case "deploy.apply.error":
         // Gate the failure emit on the sending sidecar actually
@@ -936,9 +943,14 @@ export function createSidecarRouter(
       req.reject(`Sidecar ${conn.sidecarId} disconnected`);
     }
 
-    // Cancel any in-flight inbound state transfers from this sidecar.
+    // Cancel any in-flight inbound pack transfers from this sidecar
+    // across both receivers. The two receivers track their own in-
+    // flight transferIds, so a pending workflow-run transfer for an
+    // agent that just disconnected won't outlive the connection just
+    // because the agent-state receiver has nothing to cancel.
     for (const addr of conn.agentAddresses) {
-      statePackReceiver.cancelByAgent(addr);
+      agentStatePackReceiver.cancelByAgent(addr);
+      workflowRunPackReceiver.cancelByAgent(addr);
     }
 
     events.emit("sidecar.disconnect", {
@@ -1069,7 +1081,40 @@ export function createSidecarRouter(
     req.reject(error);
   }
 
-  function handleStatePackPush(ws: WsHandle, frame: PackPushFrame): void {
+  // Routing rule: pick the receiver dedicated to the repoId.kind the
+  // frame carries. The receivers' in-flight state is independent, so a
+  // workflow-run transferId can never collide with or evict an
+  // agent-state transferId for the same agentAddress.
+  function pickPackReceiver(
+    repoId: RepoId,
+  ): { receiver: ReturnType<typeof createPackReceiver> } | null {
+    switch (repoId.kind) {
+      case "agent-state":
+        return { receiver: agentStatePackReceiver };
+      case "workflow-run":
+        return { receiver: workflowRunPackReceiver };
+      // The remaining kinds in `RepoKind` (`skill`, `package-registry`,
+      // `workflow`) have no sidecar->hub pack flow today. A frame
+      // arriving with those kinds is malformed at this layer.
+      default:
+        return null;
+    }
+  }
+
+  function pickReceivePackLookup(
+    repoId: RepoId,
+  ): SidecarLookups["receiveAgentStatePack"] | undefined {
+    switch (repoId.kind) {
+      case "agent-state":
+        return lookups.receiveAgentStatePack;
+      case "workflow-run":
+        return lookups.receiveWorkflowRunPack;
+      default:
+        return undefined;
+    }
+  }
+
+  function handlePackPush(ws: WsHandle, frame: PackPushFrame): void {
     const conn = connections.get(ws);
     if (conn === undefined) return;
     if (!conn.agentAddresses.has(frame.agentAddress)) {
@@ -1077,7 +1122,20 @@ export function createSidecarRouter(
       return;
     }
 
-    const reason = statePackReceiver.handlePush(frame);
+    const picked = pickPackReceiver(frame.repoId);
+    if (picked === null) {
+      logger.warn`Received repo.pack.push with unsupported repoId.kind ${frame.repoId.kind}`;
+      conn.send({
+        type: "repo.pack.reject",
+        agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
+        transferId: frame.transferId,
+        reason: "corrupt",
+      });
+      return;
+    }
+
+    const reason = picked.receiver.handlePush(frame);
     if (reason !== null) {
       conn.send({
         type: "repo.pack.reject",
@@ -1089,7 +1147,7 @@ export function createSidecarRouter(
     }
   }
 
-  async function handleStatePackDone(
+  async function handlePackDone(
     ws: WsHandle,
     frame: PackDoneFrame,
   ): Promise<void> {
@@ -1100,7 +1158,20 @@ export function createSidecarRouter(
       return;
     }
 
-    const result = statePackReceiver.handleDone(frame);
+    const picked = pickPackReceiver(frame.repoId);
+    if (picked === null) {
+      logger.warn`Received repo.pack.done with unsupported repoId.kind ${frame.repoId.kind}`;
+      conn.send({
+        type: "repo.pack.reject",
+        agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
+        transferId: frame.transferId,
+        reason: "corrupt",
+      });
+      return;
+    }
+
+    const result = picked.receiver.handleDone(frame);
     if (result === null) {
       conn.send({
         type: "repo.pack.reject",
@@ -1112,8 +1183,8 @@ export function createSidecarRouter(
       return;
     }
 
-    const receiveStatePack = lookups.receiveStatePack;
-    if (receiveStatePack === undefined) {
+    const receivePackLookup = pickReceivePackLookup(frame.repoId);
+    if (receivePackLookup === undefined) {
       conn.send({
         type: "repo.pack.ack",
         agentAddress: frame.agentAddress,
@@ -1123,7 +1194,7 @@ export function createSidecarRouter(
       return;
     }
 
-    const verdict = await receiveStatePack(
+    const verdict = await receivePackLookup(
       frame.repoId,
       result.pack,
       result.ref,

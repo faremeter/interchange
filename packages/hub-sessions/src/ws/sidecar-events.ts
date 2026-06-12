@@ -241,11 +241,30 @@ export type SidecarLookups = {
     raw: Uint8Array;
   }) => Promise<SidecarMailPersistedRow[]>;
 
-  /** Ingests a received state pack and returns whether the wire layer
-   * should ack or reject the pack to the sidecar. `repoId` identifies the
-   * source repo at the hub (e.g. `{ kind: "agent-state", id: agentAddress }`
-   * for the agent-state flow). */
-  receiveStatePack?: (
+  /** Ingests a received agent-state pack and returns whether the wire
+   * layer should ack or reject the pack to the sidecar. `repoId.kind`
+   * is `"agent-state"` and `repoId.id` is the agent address. The wire
+   * layer dispatches on `repoId.kind` against the receive lookups
+   * before calling either; this lookup must reject any pack whose
+   * `repoId.kind` is not `"agent-state"`. */
+  receiveAgentStatePack?: (
+    repoId: RepoId,
+    pack: Uint8Array,
+    ref: string,
+    commitSha: string,
+  ) => Promise<
+    { accepted: true } | { accepted: false; reason: PackRejectReason }
+  >;
+
+  /** Ingests a received workflow-run pack and returns whether the wire
+   * layer should ack or reject the pack to the sidecar. `repoId.kind`
+   * is `"workflow-run"` and `repoId.id` is the deployment id (which the
+   * hub-side substrate maps to a `WorkflowRunSupervisorPrincipal`
+   * during the receivePack call). The wire layer dispatches on
+   * `repoId.kind` against the receive lookups before calling either;
+   * this lookup must reject any pack whose `repoId.kind` is not
+   * `"workflow-run"`. */
+  receiveWorkflowRunPack?: (
     repoId: RepoId,
     pack: Uint8Array,
     ref: string,

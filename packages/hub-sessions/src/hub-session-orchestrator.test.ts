@@ -228,8 +228,11 @@ function createRepoStoreStub(): {
           ref: "refs/heads/deploy",
         };
       },
-      async receiveStatePack() {
-        throw new Error("mock: receiveStatePack not implemented");
+      async receiveAgentStatePack() {
+        throw new Error("mock: receiveAgentStatePack not implemented");
+      },
+      async receiveWorkflowRunPack() {
+        throw new Error("mock: receiveWorkflowRunPack not implemented");
       },
       getSigningPublicKey() {
         return new Uint8Array(32);

@@ -2,6 +2,8 @@ import { sign as nodeSign } from "node:crypto";
 import { describe, test, expect, beforeEach } from "bun:test";
 import { generateKeyPair, importPrivateKeyBytes } from "@intx/crypto-node";
 import { hexDecode, hexEncode, parseAgentAddress } from "@intx/types";
+import { chunkPack } from "@intx/pack-transport";
+import type { PackRejectReason, RepoId } from "@intx/types/sidecar";
 import { createSidecarRouter, type WsHandle } from "./sidecar-handler";
 
 function signChallenge(
@@ -2212,6 +2214,273 @@ describe("SidecarRouter", () => {
       ).rejects.toThrow("Hub signing key is required");
 
       expect(router.getRoutableAddresses()).not.toContain("new-agent@local");
+    });
+  });
+
+  describe("pack receive dispatch", () => {
+    type RecordedReceive = {
+      method: "receiveAgentStatePack" | "receiveWorkflowRunPack";
+      repoId: RepoId;
+      pack: Uint8Array;
+      ref: string;
+      commitSha: string;
+    };
+
+    function buildPackRouter(
+      verdicts: {
+        agentState?:
+          | { accepted: true }
+          | { accepted: false; reason: PackRejectReason };
+        workflowRun?:
+          | { accepted: true }
+          | { accepted: false; reason: PackRejectReason };
+      } = {},
+    ) {
+      const calls: RecordedReceive[] = [];
+      const stateVerdict = verdicts.agentState ?? ({ accepted: true } as const);
+      const wfrVerdict = verdicts.workflowRun ?? ({ accepted: true } as const);
+      const packRouter = createSidecarRouter({
+        requestTimeoutMs: 500,
+        hubPublicKey: TEST_HUB_KEY,
+        lookups: {
+          async receiveAgentStatePack(repoId, pack, ref, commitSha) {
+            calls.push({
+              method: "receiveAgentStatePack",
+              repoId,
+              pack,
+              ref,
+              commitSha,
+            });
+            return stateVerdict;
+          },
+          async receiveWorkflowRunPack(repoId, pack, ref, commitSha) {
+            calls.push({
+              method: "receiveWorkflowRunPack",
+              repoId,
+              pack,
+              ref,
+              commitSha,
+            });
+            return wfrVerdict;
+          },
+        },
+      });
+      return { router: packRouter, calls };
+    }
+
+    function registerAddr(
+      r: ReturnType<typeof createSidecarRouter>,
+      ws: ReturnType<typeof createMockWs>,
+      sidecarId: string,
+      addr: string,
+    ) {
+      r.handleOpen(ws);
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId,
+          token: "tok",
+          agentAddresses: [addr],
+        }),
+      );
+    }
+
+    function pushPack(
+      r: ReturnType<typeof createSidecarRouter>,
+      ws: ReturnType<typeof createMockWs>,
+      args: {
+        agentAddress: string;
+        repoId: RepoId;
+        transferId: string;
+        pack: Uint8Array;
+        ref: string;
+        commitSha: string;
+      },
+    ) {
+      for (const chunk of chunkPack(args.pack)) {
+        r.handleMessage(
+          ws,
+          JSON.stringify({
+            type: "repo.pack.push",
+            agentAddress: args.agentAddress,
+            repoId: args.repoId,
+            transferId: args.transferId,
+            seq: chunk.seq,
+            data: chunk.data,
+          }),
+        );
+      }
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "repo.pack.done",
+          agentAddress: args.agentAddress,
+          repoId: args.repoId,
+          transferId: args.transferId,
+          ref: args.ref,
+          commitSha: args.commitSha,
+        }),
+      );
+    }
+
+    test("workflow-run pack frames invoke receiveWorkflowRunPack and ack the sidecar", async () => {
+      const { router: r, calls } = buildPackRouter();
+      const ws = createMockWs();
+      const addr = "agent-wfr@local";
+      registerAddr(r, ws, "sc-wfr", addr);
+
+      const transferId = "t-wfr-1";
+      const repoId: RepoId = { kind: "workflow-run", id: "dep-wfr-1" };
+      const ref = "refs/heads/events";
+      const commitSha = "f".repeat(40);
+      const pack = new Uint8Array([1, 2, 3, 4, 5]);
+
+      pushPack(r, ws, {
+        agentAddress: addr,
+        repoId,
+        transferId,
+        pack,
+        ref,
+        commitSha,
+      });
+
+      // The receiveWorkflowRunPack lookup is async; wait a tick.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(calls.length).toBe(1);
+      const [call] = calls;
+      if (call === undefined) throw new Error("expected one recorded call");
+      expect(call.method).toBe("receiveWorkflowRunPack");
+      expect(call.repoId).toEqual(repoId);
+      expect(call.ref).toBe(ref);
+      expect(call.commitSha).toBe(commitSha);
+      expect(Array.from(call.pack)).toEqual(Array.from(pack));
+
+      const ack = lastSent(ws);
+      expect(ack.type).toBe("repo.pack.ack");
+      expect(ack.transferId).toBe(transferId);
+      expect(ack.repoId).toEqual(repoId);
+    });
+
+    test("agent-state and workflow-run packs use independent receivers (concurrent transferIds)", async () => {
+      const { router: r, calls } = buildPackRouter();
+      const ws = createMockWs();
+      const addr = "agent-mix@local";
+      registerAddr(r, ws, "sc-mix", addr);
+
+      // Reuse the same transferId across kinds. The two receivers'
+      // in-flight state must be independent, so this must NOT collide.
+      const transferId = "shared-transfer";
+
+      const statePack = new Uint8Array([10, 11, 12]);
+      const stateRepoId: RepoId = { kind: "agent-state", id: addr };
+
+      const wfrPack = new Uint8Array([20, 21, 22]);
+      const wfrRepoId: RepoId = { kind: "workflow-run", id: "dep-mix-1" };
+
+      // Push the agent-state chunk first, then a workflow-run chunk
+      // sharing the same transferId. If state were shared, the
+      // workflow-run push would either evict the state transfer or get
+      // rejected as a duplicate.
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "repo.pack.push",
+          agentAddress: addr,
+          repoId: stateRepoId,
+          transferId,
+          seq: 0,
+          data: btoa(String.fromCharCode(...statePack)),
+        }),
+      );
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "repo.pack.push",
+          agentAddress: addr,
+          repoId: wfrRepoId,
+          transferId,
+          seq: 0,
+          data: btoa(String.fromCharCode(...wfrPack)),
+        }),
+      );
+
+      // Verify no rejection was sent before the done frames arrive.
+      for (const sent of ws.sent) {
+        const parsed: { type: string } = JSON.parse(sent);
+        expect(parsed.type).not.toBe("repo.pack.reject");
+      }
+
+      // Complete both transfers.
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "repo.pack.done",
+          agentAddress: addr,
+          repoId: stateRepoId,
+          transferId,
+          ref: "refs/instances/test",
+          commitSha: "a".repeat(40),
+        }),
+      );
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "repo.pack.done",
+          agentAddress: addr,
+          repoId: wfrRepoId,
+          transferId,
+          ref: "refs/heads/events",
+          commitSha: "b".repeat(40),
+        }),
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(calls.map((c) => c.method).sort()).toEqual([
+        "receiveAgentStatePack",
+        "receiveWorkflowRunPack",
+      ]);
+
+      const stateCall = calls.find((c) => c.method === "receiveAgentStatePack");
+      const wfrCall = calls.find((c) => c.method === "receiveWorkflowRunPack");
+      if (stateCall === undefined) {
+        throw new Error("expected an agent-state receive call");
+      }
+      if (wfrCall === undefined) {
+        throw new Error("expected a workflow-run receive call");
+      }
+      expect(Array.from(stateCall.pack)).toEqual(Array.from(statePack));
+      expect(Array.from(wfrCall.pack)).toEqual(Array.from(wfrPack));
+    });
+
+    test("workflow-run pack receive rejection is forwarded to the sidecar", async () => {
+      const { router: r } = buildPackRouter({
+        workflowRun: { accepted: false, reason: "path_violation" },
+      });
+      const ws = createMockWs();
+      const addr = "agent-wfr-rej@local";
+      registerAddr(r, ws, "sc-wfr-rej", addr);
+
+      const transferId = "t-wfr-rej";
+      const repoId: RepoId = { kind: "workflow-run", id: "dep-wfr-rej" };
+      pushPack(r, ws, {
+        agentAddress: addr,
+        repoId,
+        transferId,
+        pack: new Uint8Array([9, 9, 9]),
+        ref: "refs/heads/events",
+        commitSha: "c".repeat(40),
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const last = lastSent(ws);
+      expect(last.type).toBe("repo.pack.reject");
+      expect(last.reason).toBe("path_violation");
+      expect(last.transferId).toBe(transferId);
+      expect(last.repoId).toEqual(repoId);
     });
   });
 });

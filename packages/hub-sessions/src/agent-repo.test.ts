@@ -94,7 +94,7 @@ describe("AgentRepoStore", () => {
     expect(ref).toBe("refs/heads/deploy");
   });
 
-  test("receiveStatePack indexes objects and updates ref", async () => {
+  test("receiveAgentStatePack indexes objects and updates ref", async () => {
     const dataDir = await makeTempDir("agent-repo-state-");
     const store = createAgentRepoStore({ dataDir, signingKey });
 
@@ -120,7 +120,7 @@ describe("AgentRepoStore", () => {
     const { pack } = await createDeployPack(sourceDir, "refs/heads/main");
 
     const stateRef = "refs/instances/test-instance";
-    await store.receiveStatePack(
+    await store.receiveAgentStatePack(
       { kind: "agent-state", id: "agent-3" },
       pack,
       stateRef,
@@ -136,7 +136,7 @@ describe("AgentRepoStore", () => {
     expect(resolved).toBe(stateCommit);
   });
 
-  test("receiveStatePack accepts packs with .gitignore alongside state", async () => {
+  test("receiveAgentStatePack accepts packs with .gitignore alongside state", async () => {
     const dataDir = await makeTempDir("agent-repo-gitignore-");
     const store = createAgentRepoStore({ dataDir, signingKey });
 
@@ -163,7 +163,7 @@ describe("AgentRepoStore", () => {
 
     const { pack } = await createDeployPack(sourceDir, "refs/heads/main");
     const stateRef = "refs/instances/gi-test";
-    await store.receiveStatePack(
+    await store.receiveAgentStatePack(
       { kind: "agent-state", id: "agent-gi" },
       pack,
       stateRef,
@@ -179,7 +179,7 @@ describe("AgentRepoStore", () => {
     expect(resolved).toBe(stateCommit);
   });
 
-  test("receiveStatePack rejects packs with only .gitignore and no state/", async () => {
+  test("receiveAgentStatePack rejects packs with only .gitignore and no state/", async () => {
     const dataDir = await makeTempDir("agent-repo-gitignore-only-");
     const store = createAgentRepoStore({ dataDir, signingKey });
 
@@ -201,7 +201,7 @@ describe("AgentRepoStore", () => {
     const { pack } = await createDeployPack(sourceDir, "refs/heads/main");
 
     await expect(
-      store.receiveStatePack(
+      store.receiveAgentStatePack(
         { kind: "agent-state", id: "agent-gio" },
         pack,
         "refs/instances/test",
@@ -210,7 +210,7 @@ describe("AgentRepoStore", () => {
     ).rejects.toThrow("path_violation");
   });
 
-  test("receiveStatePack rejects packs with paths outside state/", async () => {
+  test("receiveAgentStatePack rejects packs with paths outside state/", async () => {
     const dataDir = await makeTempDir("agent-repo-confined-");
     const store = createAgentRepoStore({ dataDir, signingKey });
 
@@ -244,7 +244,7 @@ describe("AgentRepoStore", () => {
     const { pack } = await createDeployPack(sourceDir, "refs/heads/main");
 
     await expect(
-      store.receiveStatePack(
+      store.receiveAgentStatePack(
         { kind: "agent-state", id: "agent-confined" },
         pack,
         "refs/instances/test",
@@ -289,6 +289,107 @@ describe("AgentRepoStore", () => {
       .then(() => true)
       .catch(() => false);
     expect(stateExists).toBe(false);
+  });
+
+  test("receiveWorkflowRunPack indexes a workflow-run genesis pack and updates the ref", async () => {
+    const dataDir = await makeTempDir("agent-repo-wfr-");
+    const store = createAgentRepoStore({ dataDir, signingKey });
+
+    // Construct a workflow-run pack carrying a `.gitignore`-only
+    // genesis tree (the workflow-run kind handler explicitly accepts
+    // this as the initial commit so deploy-time init can land before
+    // any run produces an event).
+    const sourceDir = await makeTempDir("wfr-source-");
+    await git.init({ fs, dir: sourceDir, defaultBranch: "main" });
+    await fs.promises.writeFile(path.join(sourceDir, ".gitignore"), "");
+    await git.add({ fs, dir: sourceDir, filepath: ".gitignore" });
+    const wfrCommit = await git.commit({
+      fs,
+      dir: sourceDir,
+      message: "Workflow-run genesis",
+      author: { name: "test", email: "test@test" },
+    });
+
+    const { pack } = await createDeployPack(sourceDir, "refs/heads/main");
+
+    const wfrRef = "refs/heads/events";
+    const deploymentId = "dep-wfr-happy";
+    await store.receiveWorkflowRunPack(
+      { kind: "workflow-run", id: deploymentId },
+      pack,
+      wfrRef,
+      wfrCommit,
+    );
+
+    const repoDir = path.join(dataDir, "workflow-runs", deploymentId);
+    const resolved = await git.resolveRef({
+      fs,
+      dir: repoDir,
+      ref: wfrRef,
+    });
+    expect(resolved).toBe(wfrCommit);
+  });
+
+  test("receiveWorkflowRunPack rejects packs whose repoId.kind is not workflow-run", async () => {
+    const dataDir = await makeTempDir("agent-repo-wfr-wrong-kind-");
+    const store = createAgentRepoStore({ dataDir, signingKey });
+
+    const sourceDir = await makeTempDir("wfr-wrong-kind-source-");
+    await git.init({ fs, dir: sourceDir, defaultBranch: "main" });
+    await fs.promises.writeFile(path.join(sourceDir, ".gitignore"), "");
+    await git.add({ fs, dir: sourceDir, filepath: ".gitignore" });
+    const commit = await git.commit({
+      fs,
+      dir: sourceDir,
+      message: "Wrong kind",
+      author: { name: "test", email: "test@test" },
+    });
+
+    const { pack } = await createDeployPack(sourceDir, "refs/heads/main");
+
+    await expect(
+      store.receiveWorkflowRunPack(
+        { kind: "agent-state", id: "agent-x" },
+        pack,
+        "refs/heads/events",
+        commit,
+      ),
+    ).rejects.toThrow(
+      /receiveWorkflowRunPack requires repoId\.kind === "workflow-run"/,
+    );
+  });
+
+  test("receiveAgentStatePack rejects packs whose repoId.kind is not agent-state", async () => {
+    const dataDir = await makeTempDir("agent-repo-state-wrong-kind-");
+    const store = createAgentRepoStore({ dataDir, signingKey });
+
+    const sourceDir = await makeTempDir("state-wrong-kind-source-");
+    await git.init({ fs, dir: sourceDir, defaultBranch: "main" });
+    await fs.promises.mkdir(path.join(sourceDir, "state"), { recursive: true });
+    await fs.promises.writeFile(
+      path.join(sourceDir, "state", "turns.jsonl"),
+      "{}",
+    );
+    await git.add({ fs, dir: sourceDir, filepath: "state/turns.jsonl" });
+    const commit = await git.commit({
+      fs,
+      dir: sourceDir,
+      message: "Misrouted",
+      author: { name: "test", email: "test@test" },
+    });
+
+    const { pack } = await createDeployPack(sourceDir, "refs/heads/main");
+
+    await expect(
+      store.receiveAgentStatePack(
+        { kind: "workflow-run", id: "dep-misrouted" },
+        pack,
+        "refs/heads/state",
+        commit,
+      ),
+    ).rejects.toThrow(
+      /receiveAgentStatePack requires repoId\.kind === "agent-state"/,
+    );
   });
 
   test("rejects agent IDs with path traversal characters", () => {
