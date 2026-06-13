@@ -15,18 +15,29 @@
 // `createAgentRepoStore`-backed store and a not-yet-wired hub sink
 // that throws on `pushWorkflowRunPack`.
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterAll } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import type { Principal, RepoId, RepoStore } from "@intx/hub-sessions";
 import type { InferenceSource } from "@intx/types/runtime";
-import type { AuthorizeContext, StepInvokeRequest } from "@intx/workflow";
-import type {
-  ChildPackPushBridge,
-  SubstrateFactoryEnv,
+import { defineAgent, type AgentDefinition, type BaseEnv } from "@intx/agent";
+import {
+  defineWorkflow,
+  step,
+  type AuthorizeContext,
+  type StepInvokeRequest,
+  type StepInvokeResult,
+} from "@intx/workflow";
+import {
+  createWorkflowRunRepoStore,
+  type ChildPackPushBridge,
+  type SubstrateFactoryEnv,
 } from "@intx/workflow-host";
-import type { AgentDefinition, BaseEnv } from "@intx/agent";
 
 import {
+  createSidecarRunChild,
   createSidecarStepBuildEnv,
   createSidecarSubstrateFactory,
   createStepInferenceSourceResolver,
@@ -504,5 +515,382 @@ describe("createSidecarStepBuildEnv", () => {
       void env.directors.resolve;
     }).toThrow(/directors slot is not wired/);
     expect(env.workdir).toMatch(/__sidecar_workflow_child_workdir_not_wired__/);
+  });
+});
+
+// =========================================================================
+// createSidecarRunChild
+//
+// In-process child-workflow recursion. The sidecar's substrate factory
+// wires the `runChild` callback the spawn-child adapter delegates to.
+// The callback constructs a child WorkflowRuntimeEnv against the same
+// workflow-run substrate the parent runs in, scopes every write under
+// `runs/<childRunId>/...` (sub-namespace scoping via the runtime
+// body's per-call `runId` argument), and invokes `runtimeRun` to drive
+// the child to a terminal phase.
+//
+// The tests here use a stub `RepoStore` (a thin in-memory layer that
+// records writes by path) so the createSidecarRunChild callback's
+// behavior is observable end-to-end without relying on the production
+// workflow-run kind handler's append-time seq enforcement (which is
+// out of scope for this task's allowed files). The stub's
+// writeTreePreservingPrefix passes the merge callback through and
+// stores the resulting blob set keyed by path, so the test can read
+// back which `runs/<runId>/events/...` keys the runtime wrote to.
+// =========================================================================
+
+const WORKFLOW_PROCESS_PRINCIPAL: Principal = { kind: "workflow-process" };
+
+const runChildTempDirs: string[] = [];
+
+afterAll(async () => {
+  for (const d of runChildTempDirs.splice(0)) {
+    await fs.promises.rm(d, { recursive: true, force: true }).catch(() => {
+      /* best effort */
+    });
+  }
+});
+
+async function makeRunChildTempDir(prefix: string): Promise<string> {
+  const d = await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix));
+  runChildTempDirs.push(d);
+  return d;
+}
+
+function makeTrivialAgent(): AgentDefinition<BaseEnv> {
+  // The agent definition is only carried into the step invoker as a
+  // tag; the test's injected invokeStep does not call the agent.
+  return defineAgent({
+    id: "trivial",
+    systemPrompt: "you are trivial",
+    tools: [],
+    capabilities: [],
+    inference: { sources: [{ provider: "fake", model: "fake" }] },
+  });
+}
+
+function makeNoopScheduler(): {
+  scheduleIn: (runId: string, timerId: string, fireAt: Date) => () => void;
+} {
+  // The trivial fixture's single step does not schedule timers, but
+  // the WorkflowRuntimeEnv shape requires a scheduler. A no-op is
+  // sufficient: it never fires, never disposes, never observes the
+  // runtime body's awaitNext.
+  return {
+    scheduleIn: () => () => {
+      /* no-op */
+    },
+  };
+}
+
+/**
+ * In-memory stub `RepoStore` (hub-sessions shape) that records every
+ * `writeTreePreservingPrefix` call's resulting blob set keyed by path.
+ * The stub honors the merge callback's return value verbatim so the
+ * runtime adapter's seq-monotonic check still runs against the stub's
+ * recorded set; the difference from the production substrate is that
+ * the stub does NOT enforce the workflow-run kind handler's
+ * validatePush gate, which lets the runtime body's seq starting at 1
+ * (state.lastSeq=0 + 1) coexist with the adapter's
+ * first-merge-callback-sees-empty-then-passes-seq-1 path.
+ */
+function createStubRunSubstrate(rootDir: string): RepoStore {
+  // path -> bytes per repoId+ref pair. The stub stores one tree per
+  // `${repoId.kind}/${repoId.id}/${ref}` namespace.
+  const trees = new Map<string, Map<string, string | Uint8Array>>();
+  function treeKey(repoId: RepoId, ref: string): string {
+    return `${repoId.kind}/${repoId.id}/${ref}`;
+  }
+  function getTree(
+    repoId: RepoId,
+    ref: string,
+  ): Map<string, string | Uint8Array> {
+    const k = treeKey(repoId, ref);
+    let tree = trees.get(k);
+    if (tree === undefined) {
+      tree = new Map();
+      trees.set(k, tree);
+    }
+    return tree;
+  }
+  const stub: Partial<RepoStore> = {
+    getRepoDir(repoId: RepoId): string {
+      return path.join(rootDir, repoId.kind, repoId.id);
+    },
+    async writeTreePreservingPrefix(_principal, repoId, ref, args) {
+      const tree = getTree(repoId, ref);
+      // The merge callback receives a copy of the existing prefix
+      // entries (matching the production substrate's documented
+      // semantics). The runtime adapter only ever reads the keys to
+      // compute the next seq, so passing the full tree is fine here.
+      const existing = new Map<string, Uint8Array>();
+      for (const [k, v] of tree) {
+        if (k.startsWith(args.preservePrefix)) {
+          existing.set(k, typeof v === "string" ? Buffer.from(v) : v);
+        }
+      }
+      const next = await args.merge(existing);
+      // Replace every preservePrefix-rooted entry with the merge
+      // result. Files outside the prefix are left untouched.
+      for (const k of Array.from(tree.keys())) {
+        if (k.startsWith(args.preservePrefix)) {
+          tree.delete(k);
+        }
+      }
+      for (const [k, v] of Object.entries(next)) {
+        tree.set(k, v);
+      }
+      // Mirror the writes to disk under getRepoDir so a downstream
+      // `read` via the production adapter's `fs.readFile` path can
+      // observe the events.
+      const repoDir = path.join(rootDir, repoId.kind, repoId.id);
+      for (const [k, v] of Object.entries(next)) {
+        const full = path.join(repoDir, k);
+        await fs.promises.mkdir(path.dirname(full), { recursive: true });
+        await fs.promises.writeFile(
+          full,
+          typeof v === "string" ? v : Buffer.from(v),
+        );
+      }
+      return { commitSha: "stub-commit-sha" };
+    },
+    subscribe(
+      _principal: Principal,
+      _repoId: RepoId,
+      _ref: string,
+      _opts: {
+        signal: AbortSignal;
+        from: "head" | { seq: number };
+        bufferLimit?: number;
+      },
+    ): AsyncIterableIterator<{ seq: number; event: unknown }> {
+      // The trivial fixture's single step does not subscribe to the
+      // run's event log, so an empty iterator is sufficient.
+      return (async function* () {
+        // empty
+      })();
+    },
+  };
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- in-test stub; unimplemented methods surface via the Proxy fallthrough
+  return new Proxy(stub as RepoStore, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (value !== undefined) return value;
+      return () => {
+        throw new Error(
+          `stub RepoStore: ${String(prop)} not implemented for createSidecarRunChild tests`,
+        );
+      };
+    },
+  });
+}
+
+describe("createSidecarRunChild", () => {
+  test("runs a trivial child workflow to completion under runs/<childRunId>/events/", async () => {
+    const rootDir = await makeRunChildTempDir("sidecar-run-child-completed-");
+    const substrate = createStubRunSubstrate(rootDir);
+    const workflowRunRepoId: RepoId = {
+      kind: "workflow-run",
+      id: "dep-run-child-1",
+    };
+
+    const definition = defineWorkflow({
+      id: "child-trivial",
+      trigger: { type: "manual" },
+      steps: {
+        only: step({ agent: makeTrivialAgent() }),
+      },
+    });
+
+    const observedRequests: StepInvokeRequest[] = [];
+    const invokeStep = async (
+      req: StepInvokeRequest,
+    ): Promise<StepInvokeResult> => {
+      observedRequests.push(req);
+      return { output: { reply: "ok" } };
+    };
+
+    const runChild = createSidecarRunChild({
+      substrate,
+      workflowRunRepoId,
+      workflowRunRef: "refs/heads/main",
+      principal: WORKFLOW_PROCESS_PRINCIPAL,
+      scheduler: makeNoopScheduler(),
+      invokeStep,
+    });
+
+    const ctrl = new AbortController();
+    const result = await runChild({
+      definition,
+      definitionRef: "child-trivial",
+      childRunId: "child-run-1",
+      input: { goal: "trivial" },
+      parentRunId: "parent-run-1",
+      parentStepId: "step-spawn",
+      signal: ctrl.signal,
+    });
+
+    expect(result.terminalStatus).toBe("completed");
+    // The invokeStep should have been called once with the runtime's
+    // AuthorizeContext carrying the child's runId.
+    expect(observedRequests).toHaveLength(1);
+    expect(observedRequests[0]?.authzContext.runId).toBe("child-run-1");
+    expect(observedRequests[0]?.authzContext.stepId).toBe("only");
+
+    // The child's events log lives under the child's runId via the
+    // production `createWorkflowRunRepoStore` adapter, which mirrors
+    // writes to disk under `runs/<childRunId>/events/<seq>.json` of
+    // the workflow-run repo dir. Constructing a sibling adapter
+    // against the same substrate reads those events back.
+    const verifier = createWorkflowRunRepoStore({
+      substrate,
+      repoId: workflowRunRepoId,
+      principal: WORKFLOW_PROCESS_PRINCIPAL,
+      ref: "refs/heads/main",
+    });
+    const childEvents = await verifier.read("child-run-1");
+    const childTypes = childEvents.map((e) => e.kind);
+    expect(childTypes).toContain("RunStarted");
+    expect(childTypes).toContain("StepStarted");
+    expect(childTypes).toContain("StepCompleted");
+    expect(childTypes).toContain("RunCompleted");
+    // No write landed under the parent's runId -- the runtime is
+    // driven by the child's runId alone.
+    const parentEvents = await verifier.read("parent-run-1");
+    expect(parentEvents).toHaveLength(0);
+  });
+
+  test("propagates a mid-flight parent abort as terminalStatus 'cancelled'", async () => {
+    const rootDir = await makeRunChildTempDir("sidecar-run-child-cancelled-");
+    const substrate = createStubRunSubstrate(rootDir);
+    const workflowRunRepoId: RepoId = {
+      kind: "workflow-run",
+      id: "dep-run-child-2",
+    };
+
+    const definition = defineWorkflow({
+      id: "child-hang",
+      trigger: { type: "manual" },
+      steps: {
+        only: step({ agent: makeTrivialAgent() }),
+      },
+    });
+
+    // The step's invocation blocks until the abort signal fires; the
+    // runtime body's cancel cascade then settles the step with
+    // CancelPropagated and the run with RunCancelled.
+    const stepEnteredCtrl = new AbortController();
+    const invokeStep = async (
+      req: StepInvokeRequest,
+    ): Promise<StepInvokeResult> => {
+      // Mark step entry so the test can fire the parent abort once the
+      // runtime is actually inside the step.
+      stepEnteredCtrl.abort();
+      await new Promise<void>((_resolve, reject) => {
+        if (req.signal.aborted) {
+          reject(new DOMException("aborted", "AbortError"));
+          return;
+        }
+        req.signal.addEventListener(
+          "abort",
+          () => {
+            reject(new DOMException("aborted", "AbortError"));
+          },
+          { once: true },
+        );
+      });
+      throw new Error("unreachable: invokeStep should have aborted");
+    };
+
+    const runChild = createSidecarRunChild({
+      substrate,
+      workflowRunRepoId,
+      workflowRunRef: "refs/heads/main",
+      principal: WORKFLOW_PROCESS_PRINCIPAL,
+      scheduler: makeNoopScheduler(),
+      invokeStep,
+    });
+
+    const ctrl = new AbortController();
+    const settled = runChild({
+      definition,
+      definitionRef: "child-hang",
+      childRunId: "child-run-2",
+      input: null,
+      parentRunId: "parent-run-2",
+      parentStepId: "step-spawn",
+      signal: ctrl.signal,
+    });
+    // Wait until the step actually entered before aborting; otherwise
+    // the abort lands before the runtime's main loop reached the step
+    // and the test races a no-step-yet cancellation.
+    await new Promise<void>((resolve) => {
+      if (stepEnteredCtrl.signal.aborted) {
+        resolve();
+        return;
+      }
+      stepEnteredCtrl.signal.addEventListener("abort", () => resolve(), {
+        once: true,
+      });
+    });
+    ctrl.abort();
+    const result = await settled;
+    expect(result.terminalStatus).toBe("cancelled");
+  });
+
+  test("the child runtime threads childRunId into the AuthorizeContext (not parentRunId)", async () => {
+    // Sub-namespace scoping is fundamentally about the runtime body's
+    // per-call runId argument: the same scope that drives the
+    // adapter's `runs/<runId>/events/<seq>.json` path computation
+    // surfaces in the AuthorizeContext threaded into every step
+    // invocation. Asserting on the AuthorizeContext lets us verify
+    // the scoping without depending on the kind handler's append-seq
+    // enforcement contract.
+    const rootDir = await makeRunChildTempDir("sidecar-run-child-authz-");
+    const substrate = createStubRunSubstrate(rootDir);
+    const workflowRunRepoId: RepoId = {
+      kind: "workflow-run",
+      id: "dep-run-child-3",
+    };
+
+    const definition = defineWorkflow({
+      id: "child-authz",
+      trigger: { type: "manual" },
+      steps: {
+        only: step({ agent: makeTrivialAgent() }),
+      },
+    });
+
+    const captured: AuthorizeContext[] = [];
+    const invokeStep = async (
+      req: StepInvokeRequest,
+    ): Promise<StepInvokeResult> => {
+      captured.push(req.authzContext);
+      return { output: { reply: "ok" } };
+    };
+
+    const runChild = createSidecarRunChild({
+      substrate,
+      workflowRunRepoId,
+      workflowRunRef: "refs/heads/main",
+      principal: WORKFLOW_PROCESS_PRINCIPAL,
+      scheduler: makeNoopScheduler(),
+      invokeStep,
+    });
+
+    const ctrl = new AbortController();
+    await runChild({
+      definition,
+      definitionRef: "child-authz",
+      childRunId: "child-run-3",
+      input: null,
+      parentRunId: "parent-run-3",
+      parentStepId: "step-spawn",
+      signal: ctrl.signal,
+    });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.runId).toBe("child-run-3");
+    expect(captured[0]?.runId).not.toBe("parent-run-3");
   });
 });

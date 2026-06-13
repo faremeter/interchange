@@ -53,7 +53,7 @@ const allowAll: AuthorizeFn = () => ({ allowed: true });
 // gates every action.
 const WORKFLOW_PROCESS_PRINCIPAL: Principal = { kind: "workflow-process" };
 
-function freshRunStarted(runId: string, seq = 0): WorkflowEvent {
+function freshRunStarted(runId: string, seq = 1): WorkflowEvent {
   return {
     kind: "RunStarted",
     seq,
@@ -101,15 +101,15 @@ describe("workflow-host RepoStore adapter — happy path", () => {
     });
 
     const runId = "run-1";
-    await adapter.append(runId, freshRunStarted(runId, 0));
-    await adapter.append(runId, freshStepStarted(1));
+    await adapter.append(runId, freshRunStarted(runId, 1));
+    await adapter.append(runId, freshStepStarted(2));
 
     const events = await adapter.read(runId);
     expect(events).toHaveLength(2);
     expect(events[0]?.kind).toBe("RunStarted");
-    expect(events[0]?.seq).toBe(0);
+    expect(events[0]?.seq).toBe(1);
     expect(events[1]?.kind).toBe("StepStarted");
-    expect(events[1]?.seq).toBe(1);
+    expect(events[1]?.seq).toBe(2);
   });
 
   test("on-disk envelope carries top-level seq and type matching the workflow-run kind handler contract", async () => {
@@ -134,18 +134,18 @@ describe("workflow-host RepoStore adapter — happy path", () => {
     });
 
     const runId = "run-envelope";
-    await adapter.append(runId, freshRunStarted(runId, 0));
+    await adapter.append(runId, freshRunStarted(runId, 1));
 
     const eventPath = path.join(
       substrate.getRepoDir(repoId),
       "runs",
       runId,
       "events",
-      "0.json",
+      "1.json",
     );
     const raw = await fs.promises.readFile(eventPath, "utf8");
     const parsed: Record<string, unknown> = JSON.parse(raw);
-    expect(parsed.seq).toBe(0);
+    expect(parsed.seq).toBe(1);
     expect(parsed.type).toBe("RunStarted");
     // The on-disk shape does not carry `kind`; the discriminator on
     // disk is `type` per the workflow-run kind handler's contract.
@@ -174,13 +174,13 @@ describe("workflow-host RepoStore adapter — happy path", () => {
     });
 
     const runId = "run-monotonic";
-    for (let seq = 0; seq < 5; seq += 1) {
+    for (let seq = 1; seq <= 5; seq += 1) {
       const event: WorkflowEvent =
-        seq === 0 ? freshRunStarted(runId, 0) : freshStepStarted(seq);
+        seq === 1 ? freshRunStarted(runId, 1) : freshStepStarted(seq);
       await adapter.append(runId, event);
     }
     const events = await adapter.read(runId);
-    expect(events.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4]);
+    expect(events.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5]);
   });
 });
 
@@ -210,15 +210,16 @@ describe("workflow-host RepoStore adapter — append-result error translation", 
     });
 
     const runId = "run-seq-conflict";
-    // First append lands at seq 0.
-    await adapter.append(runId, freshRunStarted(runId, 0));
-    // The next append's caller-supplied seq is 0 (stale); the adapter
-    // sees the prior tree already has seq 0 and the next seq is 1.
+    // First append lands at seq 1 (the runtime body's first emit is
+    // `emptyState.lastSeq + 1`).
+    await adapter.append(runId, freshRunStarted(runId, 1));
+    // The next append's caller-supplied seq is 1 (stale); the adapter
+    // sees the prior tree already has seq 1 and the next seq is 2.
     // The single-writer-invariant violation must surface as a thrown
     // Error naming both the expected and supplied seqs.
-    const stale = freshStepStarted(0);
+    const stale = freshStepStarted(1);
     await expect(adapter.append(runId, stale)).rejects.toThrow(
-      /seq conflict on append to run-seq-conflict.*single-writer invariant violated.*expected seq 1.*caller supplied 0/,
+      /seq conflict on append to run-seq-conflict.*single-writer invariant violated.*expected seq 2.*caller supplied 1/,
     );
   });
 
@@ -281,14 +282,14 @@ describe("workflow-host RepoStore adapter — append-result error translation", 
 
     const runId = "run-validate-failed";
     await expect(
-      adapter.append(runId, freshRunStarted(runId, 0)),
+      adapter.append(runId, freshRunStarted(runId, 1)),
     ).rejects.toThrow(/rejected-for-test: RunStarted is forbidden/);
     // The thrown error must NOT still carry the substrate's
     // `path_violation:` prefix; the adapter strips it so the runtime
     // sees a clean reason.
     let capturedMessage = "";
     try {
-      await adapter.append(runId, freshRunStarted(runId, 0));
+      await adapter.append(runId, freshRunStarted(runId, 1));
     } catch (err) {
       capturedMessage = err instanceof Error ? err.message : String(err);
     }
@@ -321,6 +322,46 @@ describe("workflow-host RepoStore adapter — read coherence", () => {
   });
 });
 
+describe("workflow-host RepoStore adapter — first-seq contract against runtime body", () => {
+  test("append with seq=1 on an empty events tree (the runtime body's actual first event)", async () => {
+    // The runtime body emits events at `state.lastSeq + 1` and
+    // `emptyState.lastSeq = 0`, so the first append on a fresh run
+    // carries seq=1. The adapter must accept that against an empty
+    // events tree rather than rejecting on a seq-conflict against an
+    // off-by-one baseline.
+    const dataDir = await makeTempDir("repo-store-adapter-first-seq-");
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: "deployment-first-seq",
+    };
+    const principal = WORKFLOW_PROCESS_PRINCIPAL;
+    const substrate = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "workflow-run": workflowRunKindHandler },
+      authorize: allowAll,
+    });
+    await substrate.writeTree({ kind: "hub" }, repoId, REF, {
+      files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" },
+      message: "genesis",
+    });
+    const adapter = createWorkflowRunRepoStore({
+      substrate,
+      repoId,
+      principal,
+      ref: REF,
+    });
+
+    const runId = "run-first-seq";
+    await expect(
+      adapter.append(runId, freshRunStarted(runId, 1)),
+    ).resolves.toBeUndefined();
+    const events = await adapter.read(runId);
+    expect(events.map((e) => e.seq)).toEqual([1]);
+    expect(events[0]?.kind).toBe("RunStarted");
+  });
+});
+
 describe("workflow-host RepoStore adapter — permissive handler smoke", () => {
   test("write+read round-trip via permissive handler preserves event fields", async () => {
     const dataDir = await makeTempDir("repo-store-adapter-smoke-");
@@ -350,14 +391,14 @@ describe("workflow-host RepoStore adapter — permissive handler smoke", () => {
     });
 
     const runId = "smoke-run";
-    const original = freshRunStarted(runId, 0);
+    const original = freshRunStarted(runId, 1);
     await adapter.append(runId, original);
     const events = await adapter.read(runId);
     expect(events).toHaveLength(1);
     const restored = events[0];
     if (restored === undefined) throw new Error("unreachable");
     expect(restored.kind).toBe("RunStarted");
-    expect(restored.seq).toBe(0);
+    expect(restored.seq).toBe(1);
     if (restored.kind !== "RunStarted") throw new Error("unreachable");
     expect(restored.runId).toBe(runId);
     expect(restored.definitionHash).toBe("definition-hash");

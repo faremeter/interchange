@@ -256,7 +256,13 @@ async function appendEvent(
       {
         preservePrefix: prefix,
         merge: async (existing) => {
-          let maxSeq = -1;
+          // The runtime body emits events at `state.lastSeq + 1` and
+          // `emptyState.lastSeq = 0`, so the first append on an empty
+          // events tree carries seq=1. The adapter mirrors that
+          // convention: the prior tree's lastSeq is the maximum seq
+          // observed under the prefix, or 0 when no events exist yet;
+          // the expected next seq is `priorLastSeq + 1`.
+          let priorLastSeq = 0;
           for (const filepath of existing.keys()) {
             const name = filepath.slice(prefix.length);
             const match = EVENT_FILENAME_RE.exec(name);
@@ -264,9 +270,9 @@ async function appendEvent(
             const seqStr = match[1];
             if (seqStr === undefined) continue;
             const seq = Number.parseInt(seqStr, 10);
-            if (seq > maxSeq) maxSeq = seq;
+            if (seq > priorLastSeq) priorLastSeq = seq;
           }
-          const nextSeq = maxSeq + 1;
+          const nextSeq = priorLastSeq + 1;
           if (event.seq !== nextSeq) {
             // Capture the divergence and return an unchanged tree so
             // the substrate's commit short-circuits (the kind handler

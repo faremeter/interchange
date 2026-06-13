@@ -41,6 +41,24 @@
 // honor a parent-initiated cancellation. The adapter does not wrap
 // the signal -- the same `AbortSignal` flows through so the abort
 // reason attribution is unchanged across the boundary.
+//
+// Sub-namespace scoping (in-process recursion): the adapter is the
+// resolution point that gives the runtime-supplied `runChild` callback
+// a concrete `WorkflowDefinition` paired with the parent's allocated
+// `childRunId`. The callback is expected to construct a child
+// `WorkflowRuntimeEnv` whose `repoStore`/`blobs`/`signalChannel` route
+// every per-run write through the SAME workflow-run repo the parent
+// runs in, with the runtime body's per-call `runId` argument being the
+// child's allocated `childRunId`. The workflow-run substrate's path
+// shape is `runs/<runId>/events/<seq>.json` (and `runs/<runId>/blobs/`
+// for the blob substrate), so feeding `childRunId` into the child env
+// at the call boundary lands every child event under
+// `runs/<childRunId>/...` of the parent's deployment workflow-run
+// repo, sibling to the parent's own `runs/<parentRunId>/...` subtree.
+// The adapter itself does not construct that env -- the supervisor's
+// `runChild` does -- but the callback's input shape (`{ definition,
+// childRunId, ... }`) is the seam that makes the scoping unambiguous
+// at the boundary.
 
 import { type } from "arktype";
 

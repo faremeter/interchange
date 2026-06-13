@@ -8,11 +8,14 @@ import type { KeyPair } from "@intx/types/runtime";
 import {
   createRepoStore,
   workflowKindHandler,
+  workflowRunKindHandler,
   WORKFLOW_JSON_PATH,
+  WORKFLOW_RUN_GITIGNORE_PATH,
 } from "@intx/hub-sessions";
 import type { AuthorizeFn, Principal, RepoId } from "@intx/hub-sessions";
-import type { WorkflowDefinition } from "@intx/workflow";
+import type { WorkflowDefinition, WorkflowEvent } from "@intx/workflow";
 
+import { createWorkflowRunRepoStore } from "./repo-store";
 import { createWorkflowSpawnChild, type RunChildWorkflow } from "./spawn-child";
 
 const tempDirs: string[] = [];
@@ -393,6 +396,138 @@ describe("workflow-host SpawnChildWorkflow adapter - abort handling", () => {
     expect(observedSignals[0]).toBe(ctrl.signal);
     ctrl.abort();
     await expect(settled).rejects.toMatchObject({ name: "AbortError" });
+  });
+});
+
+describe("workflow-host SpawnChildWorkflow adapter - sub-namespace scoping", () => {
+  test("a runChild that writes through the workflow-run RepoStore against the child's runId lands events under runs/<childRunId>/events/", async () => {
+    // Two substrates: one for the workflow asset (so the adapter can
+    // resolve the definition), and one for the workflow-run repo the
+    // child's runChild callback writes its events into. In production
+    // both kinds live on the same substrate; the test keeps them
+    // separate to make the path assertions unambiguous.
+    const wfDataDir = await makeTempDir("spawn-child-scope-wf-");
+    const wfSubstrate = createRepoStore({
+      dataDir: wfDataDir,
+      signingKey,
+      handlers: { workflow: workflowKindHandler },
+      authorize: allowAll,
+    });
+    const wfRepoId: RepoId = { kind: "workflow", id: "wf-scope" };
+    await seedWorkflowAsset(
+      wfSubstrate,
+      wfRepoId,
+      JSON.stringify(validWorkflowEnvelope("wf-scope")),
+    );
+
+    const runDataDir = await makeTempDir("spawn-child-scope-run-");
+    const runSubstrate = createRepoStore({
+      dataDir: runDataDir,
+      signingKey,
+      handlers: { "workflow-run": workflowRunKindHandler },
+      authorize: allowAll,
+    });
+    const runRepoId: RepoId = { kind: "workflow-run", id: "dep-scope" };
+    // workflow-run kind handler accepts the gitignore-only genesis;
+    // seed it so the first append has a coherent prior tree to extend.
+    await runSubstrate.writeTree({ kind: "hub" }, runRepoId, REF, {
+      files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" },
+      message: "genesis",
+    });
+
+    const workflowRunPrincipal: Principal = { kind: "workflow-process" };
+    // First, seed the parent's RunStarted under runs/<parentRunId>/.
+    const parentAdapter = createWorkflowRunRepoStore({
+      substrate: runSubstrate,
+      repoId: runRepoId,
+      principal: workflowRunPrincipal,
+      ref: REF,
+    });
+    const parentRunStarted: WorkflowEvent = {
+      kind: "RunStarted",
+      seq: 1,
+      at: new Date(0).toISOString(),
+      runId: "parent-scope",
+      definitionHash: "parent-hash",
+      trigger: { type: "manual", payload: {} },
+    };
+    await parentAdapter.append("parent-scope", parentRunStarted);
+
+    // Now wire the spawn-child adapter. The runChild callback uses the
+    // same workflow-run substrate but appends through a sibling
+    // adapter scoped to the child's runId at the call boundary.
+    const childAdapter = createWorkflowRunRepoStore({
+      substrate: runSubstrate,
+      repoId: runRepoId,
+      principal: workflowRunPrincipal,
+      ref: REF,
+    });
+    const runChild: RunChildWorkflow = async ({ childRunId }) => {
+      const event: WorkflowEvent = {
+        kind: "RunStarted",
+        seq: 1,
+        at: new Date(0).toISOString(),
+        runId: childRunId,
+        definitionHash: "child-hash",
+        trigger: { type: "manual", payload: {} },
+      };
+      await childAdapter.append(childRunId, event);
+      return { terminalStatus: "completed" };
+    };
+
+    const spawn = createWorkflowSpawnChild({
+      substrate: wfSubstrate,
+      principal: SIDECAR_PRINCIPAL,
+      deployRef: REF,
+      runChild,
+    });
+
+    const ctrl = new AbortController();
+    const result = await spawn({
+      definitionRef: "wf-scope",
+      childRunId: "child-scope",
+      input: { goal: "scope" },
+      parentRunId: "parent-scope",
+      parentStepId: "step-a",
+      signal: ctrl.signal,
+    });
+    expect(result.terminalStatus).toBe("completed");
+
+    // Inspect the workflow-run repo on disk: both runs should have
+    // their own events subtree. The child's events MUST live under
+    // runs/<childRunId>/events/, sibling to the parent's tree, not
+    // commingled.
+    const runDir = runSubstrate.getRepoDir(runRepoId);
+    const childEventsDir = path.join(runDir, "runs", "child-scope", "events");
+    const parentEventsDir = path.join(runDir, "runs", "parent-scope", "events");
+    const childEntries = await fs.promises.readdir(childEventsDir);
+    expect(childEntries).toContain("1.json");
+    const parentEntries = await fs.promises.readdir(parentEventsDir);
+    expect(parentEntries).toContain("1.json");
+    // The two trees must not point at the same file: a structural
+    // accident in which the child's path computation collapses onto
+    // the parent's would corrupt the parent's log on the next append.
+    expect(childEventsDir).not.toBe(parentEventsDir);
+
+    // The child's events read back through the runtime-shape adapter
+    // when keyed on the child's runId. The parent's read does not see
+    // the child's RunStarted, and vice versa.
+    const childEvents = await childAdapter.read("child-scope");
+    expect(childEvents).toHaveLength(1);
+    expect(childEvents[0]?.kind).toBe("RunStarted");
+    const childFirst = childEvents[0];
+    if (childFirst === undefined || childFirst.kind !== "RunStarted") {
+      throw new Error("expected RunStarted at seq 1");
+    }
+    expect(childFirst.runId).toBe("child-scope");
+
+    const parentEvents = await parentAdapter.read("parent-scope");
+    expect(parentEvents).toHaveLength(1);
+    const parentFirst = parentEvents[0];
+    if (parentFirst === undefined || parentFirst.kind !== "RunStarted") {
+      throw new Error("expected RunStarted at seq 1");
+    }
+    expect(parentFirst.runId).toBe("parent-scope");
   });
 });
 
