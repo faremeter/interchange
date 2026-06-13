@@ -600,8 +600,46 @@ export function createSidecarDeployRouter(deps: {
     });
 
     const definitionHash = computeWireDefinitionHash(projection.definition);
+    // Per-deployment substrate-config keys the workflow-substrate-factory
+    // validator requires (`SIDECAR_SUBSTRATE_CONFIG_KEYS` /
+    // `SubstrateConfig` in `workflow-substrate-factory.ts`). The boot
+    // edge's `multistepSubstrateEnv` only carries the boot-edge constants
+    // (`SIDECAR_DATA_DIR`, signing keys, hub link anchors); the four
+    // workflow-definition / workflow-run identity keys must be derived
+    // per-deploy here so the child's substrate-config validator passes
+    // at startup.
+    //
+    // `WORKFLOW_RUN_REPO_ID` mirrors `workflowRunRepoId.id` (the
+    // substrate-safe slug of the deployment address) and
+    // `WORKFLOW_RUN_REF` mirrors `workflowRunRef`, so the child resolves
+    // the same workflow-run repo the supervisor is writing into.
+    //
+    // `WORKFLOW_DEFINITION_REPO_ID` is set to `projection.definition.id`
+    // (the workflow asset's repo id; see the orchestrator's
+    // `WorkflowRepoWriter.writeWorkflowRepo` call, which writes the
+    // asset repo keyed by `workflow.id`). The child's
+    // `loadWorkflowDefinition` in
+    // `packages/workflow-host/src/child/run-child.ts` reads
+    // `workflow.json` out of this repo's working tree. The current
+    // Phase I multi-step test path does not yet stage the workflow
+    // asset on the sidecar's substrate (the orchestrator writes the
+    // asset to the hub repo store, not the sidecar's data dir), so the
+    // child's `loadWorkflowDefinition` will not actually find a
+    // `workflow.json` until the workflow-asset deploy lands on the
+    // sidecar. The value is structurally correct -- a consistent,
+    // deterministic id derived from the definition -- so the substrate-
+    // config validator passes and the next gap (if any) surfaces
+    // structurally rather than at the env-keys boundary.
+    //
+    // `WORKFLOW_DEFINITION_REF` is `"refs/heads/main"` to mirror the
+    // hub's `DEFAULT_ASSET_REF` and the workflow-run ref the supervisor
+    // uses.
     const substrateEnv: Record<string, string> = {
       ...multistepSubstrateEnv,
+      WORKFLOW_DEFINITION_REPO_ID: projection.definition.id,
+      WORKFLOW_DEFINITION_REF: "refs/heads/main",
+      WORKFLOW_RUN_REPO_ID: deploymentId,
+      WORKFLOW_RUN_REF: "refs/heads/main",
       [STEP_INFERENCE_SOURCES_ENV_KEY]: JSON.stringify(projection.sources),
     };
 
