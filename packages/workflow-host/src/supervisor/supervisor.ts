@@ -45,6 +45,14 @@ import { type } from "arktype";
 import { getLogger } from "@intx/log";
 
 import { generateKeyPair } from "@intx/crypto-node";
+import {
+  enqueueInbox as defaultEnqueueInbox,
+  dequeueToProcessing as defaultDequeueToProcessing,
+  markConsumed as defaultMarkConsumed,
+  replayProcessingToInbox as defaultReplayProcessingToInbox,
+  type Principal,
+  type WorkflowRunSupervisorPrincipal,
+} from "@intx/hub-sessions";
 import { RepoId } from "@intx/types/sidecar";
 import type { CancelOrigin } from "@intx/workflow";
 
@@ -79,6 +87,9 @@ import {
   type RecyclePolicy,
 } from "./recycle";
 import type {
+  DeriveMailAuditRef,
+  InboxPrimitives,
+  MailAuditRef,
   RecordRunEvent,
   SubprocessHandle,
   SupervisorDeployFrame,
@@ -273,24 +284,11 @@ export function createWorkflowSupervisor(
 ): WorkflowSupervisor {
   let state: SupervisorState = { phase: "idle" };
   /**
-   * Buffer for inbound mail that arrives after `subscribeMailForAddress`
-   * fires but before the child signals `ready`. Once `ready` lands,
-   * the supervisor drains this buffer into the control channel as
-   * `trigger.fire` frames; subsequent inbound mail bypasses the
-   * buffer. The same buffer is reused across a recycle: during the
-   * kill/respawn gap the subscription pushes here, and the recycle
-   * path drains the buffer into the new child once `ready` lands.
-   */
-  const mailBuffer: Uint8Array[] = [];
-  /**
    * In-flight runIds the supervisor knows about. A runId enters this
    * set when the supervisor forwards a `trigger.fire` for it on the
-   * control channel; the runId leaves the set via the recycle/drain
-   * cleanup path that lands in 12a (terminal-event observation lives
-   * on the event channel, which the supervisor will project into
-   * this set in that commit). For 11a's drain wire-up the supervisor
-   * arms one accumulator per entry here -- monotonic growth is fine
-   * because every accumulator stops cleanly on `shutdown`.
+   * control channel; the runId leaves the set when the dispatch
+   * loop's terminal-event watcher fires `markConsumed`. The drain
+   * path arms one accumulator per entry here.
    */
   const inFlightRuns = new Set<string>();
   /**
@@ -320,6 +318,44 @@ export function createWorkflowSupervisor(
       }
     });
   const drainTimeoutMs = bindings.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
+  const inboxPrimitives: InboxPrimitives = bindings.inboxPrimitives ?? {
+    enqueueInbox: defaultEnqueueInbox,
+    dequeueToProcessing: defaultDequeueToProcessing,
+    markConsumed: defaultMarkConsumed,
+    replayProcessingToInbox: defaultReplayProcessingToInbox,
+  };
+  const deriveMailAuditRef: DeriveMailAuditRef =
+    bindings.deriveMailAuditRef ?? defaultInProcessMailAuditRef;
+  const defaultInboxWritePrincipal: WorkflowRunSupervisorPrincipal = {
+    kind: "supervisor",
+    deploymentId: bindings.deploymentId,
+  };
+  const inboxWritePrincipal: Principal =
+    bindings.inboxWritePrincipal ?? defaultInboxWritePrincipal;
+  /**
+   * Resolved on every successful `enqueueInbox`; the dispatch loop
+   * awaits this promise after a null dequeue so it returns to
+   * dequeueing the moment a fresh entry lands. Replaced with a fresh
+   * promise on every wake so the loop's next iteration starts from a
+   * clean signal.
+   */
+  let dispatchWake: { promise: Promise<void>; resolve: () => void } =
+    makeDispatchWake();
+  function makeDispatchWake(): {
+    promise: Promise<void>;
+    resolve: () => void;
+  } {
+    let resolver: () => void = () => undefined;
+    const promise = new Promise<void>((resolve) => {
+      resolver = resolve;
+    });
+    return { promise, resolve: resolver };
+  }
+  function wakeDispatch(): void {
+    const prev = dispatchWake;
+    dispatchWake = makeDispatchWake();
+    prev.resolve();
+  }
   /**
    * Cached per-spawn context the recycle path needs to respawn the
    * child against the same deploy tree. Populated on `spawn(opts)`;
@@ -375,24 +411,50 @@ export function createWorkflowSupervisor(
   }
 
   function onMailMessage(rawMessage: Uint8Array): void {
-    // During `starting` and `recycling` the supervisor buffers; the
-    // buffer drains in arrival order once `ready` lands (initial
-    // spawn) or the recycle path's step 6 runs (recycle).
-    if (state.phase === "starting" || state.phase === "recycling") {
-      mailBuffer.push(rawMessage);
+    // Every inbound mail flows through the FIFO inbox claim-check
+    // queue, regardless of the supervisor's current phase. The
+    // dispatch loop (started by `spawn()` and restarted by the
+    // recycle path's `installNewChild`) drains the inbox in arrival
+    // order and forwards each entry to the child as a `trigger.fire`.
+    //
+    // The substrate's per-repo lock serializes concurrent enqueues
+    // against drains and replays; arrival ordering is preserved by
+    // the envelope's `receivedAt` prefix on the inbox filename.
+    if (
+      state.phase === "idle" ||
+      state.phase === "stopping" ||
+      state.phase === "stopped"
+    ) {
+      // The host's higher-level lifecycle is already tearing the
+      // deployment down; the message drops on the floor rather than
+      // landing in an inbox no live dispatch loop will service.
       return;
     }
-    if (state.phase === "running") {
-      const sender = state.controlSender;
-      void forwardMailAndTrack(sender, rawMessage).catch((cause) => {
-        const message = cause instanceof Error ? cause.message : String(cause);
-        logger.error`forwardMail failed: ${message}`;
-      });
-      return;
-    }
-    // In any other phase (idle, stopping, stopped) the host's
-    // higher-level lifecycle is already tearing the deployment down;
-    // the message drops on the floor.
+    void enqueueInboundMail(rawMessage).catch((cause) => {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.error`enqueueInbox failed: ${message}`;
+    });
+  }
+
+  async function enqueueInboundMail(rawMessage: Uint8Array): Promise<void> {
+    const messageId = await deriveMessageId(rawMessage);
+    const mailAuditRef: MailAuditRef = deriveMailAuditRef(
+      messageId,
+      rawMessage,
+    );
+    const receivedAt = Date.now();
+    await inboxPrimitives.enqueueInbox(
+      bindings.repoStore,
+      inboxWritePrincipal,
+      bindings.workflowRunRepoId,
+      {
+        address: bindings.deploymentMailAddress,
+        messageId,
+        receivedAt,
+        mailAuditRef,
+      },
+    );
+    wakeDispatch();
   }
 
   /**
@@ -615,6 +677,11 @@ export function createWorkflowSupervisor(
       onInferenceEvent: opts.onInferenceEvent,
     });
 
+    // Cohort abort controller covers terminal-event watcher
+    // lifetime AND dispatch-loop lifetime; the abort fires on
+    // shutdown and on every recycle's `installNewChild`. The
+    // controller is minted unconditionally so the dispatch loop
+    // always has a cancellation source.
     state = {
       phase: "starting",
       handle,
@@ -624,10 +691,8 @@ export function createWorkflowSupervisor(
       onInferenceEvent: opts.onInferenceEvent,
       mailUnsubscribe: null,
       credentialsSnapshot: null,
-      terminalCohortAbort:
-        bindings.terminalEventSource !== undefined
-          ? new AbortController()
-          : null,
+      terminalCohortAbort: new AbortController(),
+      dispatchLoop: null,
     };
 
     const credentialsSnapshot = await assembleCredentialsSnapshot({
@@ -641,6 +706,34 @@ export function createWorkflowSupervisor(
         : {}),
     });
     state.credentialsSnapshot = credentialsSnapshot;
+
+    // Replay any orphaned `processing/` entries back to `inbox/`
+    // BEFORE the mail subscription fires. A crash mid-dispatch in a
+    // prior supervisor incarnation can leave an entry in
+    // `processing/` with no owner; the FIFO contract requires the
+    // entry move back to `inbox/` so the next dispatch picks it up
+    // in its original arrival position. The replay runs off the
+    // spawn critical path (the substrate write may roundtrip through
+    // the pack-pushing wrap and a slow hub) and the dispatch loop's
+    // first iteration awaits the result via `wakeDispatch` so the
+    // replay's completion is observable before any dispatch lands.
+    const replayDone = inboxPrimitives
+      .replayProcessingToInbox(
+        bindings.repoStore,
+        inboxWritePrincipal,
+        bindings.workflowRunRepoId,
+        bindings.deploymentMailAddress,
+      )
+      .then(() => {
+        wakeDispatch();
+      })
+      .catch((cause) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.warn`replayProcessingToInbox on spawn failed: ${message}`;
+      });
+    // Hold the replay promise so `shutdownInternal` can await its
+    // settlement before tearing the bindings down.
+    void replayDone;
 
     bindings.mailBus.registerAddress(bindings.deploymentMailAddress);
     const mailUnsubscribe = bindings.mailBus.subscribeMailForAddress(
@@ -674,11 +767,29 @@ export function createWorkflowSupervisor(
       },
     });
 
-    // Drain the buffered mail before transitioning to running. The
-    // ordering matters: any inbound mail that landed during
-    // `starting` must hit the child in arrival order before the
-    // first post-ready message.
+    // Transition to running. The dispatch loop (started below)
+    // picks up any pre-ready buffered mail through the FIFO inbox
+    // queue rather than through an in-memory buffer; arrival order
+    // is preserved by the envelope's `receivedAt` prefix on the
+    // inbox filename.
     const startingPhaseCohortAbort = state.terminalCohortAbort;
+    if (startingPhaseCohortAbort === null) {
+      throw new Error(
+        "supervisor: terminalCohortAbort missing after spawn handshake",
+      );
+    }
+    const dispatchLoop = runDispatchLoop(
+      wired.wiring.controlSender,
+      startingPhaseCohortAbort,
+    );
+    // Surface dispatch-loop failures via the logger; the loop's own
+    // catch already swallows per-iteration faults, but a structural
+    // failure (e.g. the cohort abort handler itself throws) lands
+    // here.
+    void dispatchLoop.catch((cause) => {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.error`dispatch loop terminated with error: ${message}`;
+    });
     state = {
       phase: "running",
       handle,
@@ -689,12 +800,13 @@ export function createWorkflowSupervisor(
       mailUnsubscribe,
       credentialsSnapshot,
       terminalCohortAbort: startingPhaseCohortAbort,
+      dispatchLoop,
     };
-    while (mailBuffer.length > 0) {
-      const message = mailBuffer.shift();
-      if (message === undefined) break;
-      await forwardMailAndTrack(wired.wiring.controlSender, message);
-    }
+    // Kick the dispatch loop in case mail landed in the inbox
+    // before the loop's first `await dispatchWake`. A wake against a
+    // freshly-minted promise is a no-op; the dispatch loop's first
+    // dequeue happens unconditionally.
+    wakeDispatch();
 
     // Cache the spawn context for the recycle path. The recycle path
     // reuses the same stepOrder/definitionHash/onInferenceEvent on
@@ -825,18 +937,171 @@ export function createWorkflowSupervisor(
   }
 
   /**
-   * Forward an inbound message to the child and record its runId as
-   * in-flight. The standalone `forwardMail` helper below owns the
-   * wire-shape derivation; this wrapper closes over the
-   * `inFlightRuns` set so the drain path knows which accumulators to
-   * arm.
+   * Forward one dequeued inbox entry to the child as `trigger.fire`
+   * and record its runId as in-flight. The runId is the messageId
+   * the envelope carries (one run per trigger fire per discovery
+   * Q3.1); the same value is what the dispatch loop waits on via
+   * `terminalEventSource`.
    */
-  async function forwardMailAndTrack(
+  async function forwardDispatchedEntry(
     sender: ControlChannelSender,
-    rawMessage: Uint8Array,
+    messageId: string,
+    receivedAt: number,
+  ): Promise<string> {
+    await sender.send({
+      type: "trigger.fire",
+      data: {
+        runId: messageId,
+        messageId,
+        receivedAt,
+      },
+    });
+    inFlightRuns.add(messageId);
+    return messageId;
+  }
+
+  /**
+   * One iteration of the dispatch loop: dequeue the FIFO-first inbox
+   * entry, forward it as a `trigger.fire`, wait for the corresponding
+   * run's terminal event (or for the cohort to abort), then
+   * `markConsumed`. Returns `true` if a dispatch landed (caller should
+   * loop immediately) and `false` if the inbox was empty (caller
+   * should await the next wake).
+   */
+  async function dispatchOne(
+    sender: ControlChannelSender,
+    cohortAbort: AbortController,
+  ): Promise<boolean> {
+    if (cohortAbort.signal.aborted) return false;
+    const dequeued = await inboxPrimitives.dequeueToProcessing(
+      bindings.repoStore,
+      inboxWritePrincipal,
+      bindings.workflowRunRepoId,
+      bindings.deploymentMailAddress,
+    );
+    if (dequeued === null) return false;
+    const envelope = dequeued.envelope;
+    const runId = await forwardDispatchedEntry(
+      sender,
+      envelope.messageId,
+      envelope.receivedAt,
+    );
+    await waitForRunTerminal(runId, cohortAbort.signal);
+    inFlightRuns.delete(runId);
+    if (cohortAbort.signal.aborted) {
+      // The cohort tore down before the terminal event arrived (or
+      // alongside it). Skip `markConsumed` so the recycle path's
+      // drain-side replay can reclaim the processing entry.
+      return false;
+    }
+    try {
+      await inboxPrimitives.markConsumed(
+        bindings.repoStore,
+        inboxWritePrincipal,
+        bindings.workflowRunRepoId,
+        {
+          address: bindings.deploymentMailAddress,
+          messageId: envelope.messageId,
+          runId,
+          consumedAt: Date.now(),
+        },
+      );
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.error`markConsumed failed for run ${runId}: ${message}`;
+    }
+    return true;
+  }
+
+  /**
+   * Wait until the run's terminal event lands or the cohort aborts.
+   * When `terminalEventSource` is not bound the loop falls back to
+   * waiting on the cohort abort -- the supervisor library tests rely
+   * on this fallback to exercise the dispatch ordering without
+   * standing up a substrate-backed event watcher.
+   */
+  async function waitForRunTerminal(
+    runId: string,
+    abortSignal: AbortSignal,
   ): Promise<void> {
-    const runId = await forwardMail(sender, rawMessage);
-    inFlightRuns.add(runId);
+    const source = bindings.terminalEventSource;
+    if (source === undefined) {
+      // Without a terminal-event source the dispatch loop has no
+      // signal to wait on. Resolve on the next microtask so the loop
+      // proceeds to `markConsumed`; this matches the pre-FIFO
+      // behaviour where the supervisor never gated on a run's
+      // terminal event. Cohort abort cancels the wait.
+      if (abortSignal.aborted) return;
+      await Promise.resolve();
+      return;
+    }
+    const iter = source(runId)[Symbol.asyncIterator]();
+    let onAbort: (() => void) | null = null;
+    const abortPromise = new Promise<{ done: true }>((resolve) => {
+      if (abortSignal.aborted) {
+        resolve({ done: true });
+        return;
+      }
+      onAbort = () => resolve({ done: true });
+      abortSignal.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      while (true) {
+        if (abortSignal.aborted) return;
+        const result = await Promise.race([iter.next(), abortPromise]);
+        if (result.done === true) return;
+        // A terminal event for this runId arrived; stop waiting.
+        return;
+      }
+    } finally {
+      if (onAbort !== null) {
+        abortSignal.removeEventListener("abort", onAbort);
+      }
+      if (typeof iter.return === "function") {
+        await iter.return(undefined).catch(() => {
+          /* swallowed: best-effort finalisation of the watcher iterator. */
+        });
+      }
+    }
+  }
+
+  /**
+   * The dispatch loop body. Runs until the cohort aborts; each
+   * iteration drains one inbox entry through the FIFO claim-check
+   * pipeline. The loop is restarted by `installNewChild` after a
+   * recycle and torn down by `shutdownInternal` and on cohort abort.
+   */
+  async function runDispatchLoop(
+    sender: ControlChannelSender,
+    cohortAbort: AbortController,
+  ): Promise<void> {
+    while (!cohortAbort.signal.aborted) {
+      let dispatched: boolean;
+      try {
+        dispatched = await dispatchOne(sender, cohortAbort);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.error`dispatch loop iteration failed: ${message}`;
+        // A failure deep inside the substrate is one the operator
+        // must see. The loop continues -- a transient failure should
+        // not wedge the deployment -- but the loop pauses on the
+        // wake so we do not busy-spin against a persistent fault.
+        dispatched = false;
+      }
+      if (dispatched) continue;
+      if (cohortAbort.signal.aborted) return;
+      const wake = dispatchWake.promise;
+      const abortPromise = new Promise<void>((resolve) => {
+        if (cohortAbort.signal.aborted) {
+          resolve();
+          return;
+        }
+        cohortAbort.signal.addEventListener("abort", () => resolve(), {
+          once: true,
+        });
+      });
+      await Promise.race([wake, abortPromise]);
+    }
   }
 
   async function requestCancel(
@@ -875,12 +1140,16 @@ export function createWorkflowSupervisor(
     }
     drainAccumulators.clear();
     if (
-      (prior.phase === "starting" ||
-        prior.phase === "running" ||
-        prior.phase === "recycling") &&
-      prior.terminalCohortAbort !== null
+      prior.phase === "starting" ||
+      prior.phase === "running" ||
+      prior.phase === "recycling"
     ) {
       prior.terminalCohortAbort.abort();
+      // Wake the dispatch loop so its `dispatchWake` await settles
+      // and the loop notices the cohort abort. Without the wake, the
+      // loop's `Promise.race` would sit on the wake promise until
+      // some other actor woke it.
+      wakeDispatch();
     }
     // Await every accumulator's `disposed()` so a pending escalation
     // commit or terminal-event watcher coroutine cannot outlive the
@@ -892,6 +1161,16 @@ export function createWorkflowSupervisor(
         }),
       ),
     );
+    if (
+      (prior.phase === "running" || prior.phase === "recycling") &&
+      prior.dispatchLoop !== null
+    ) {
+      await prior.dispatchLoop.catch(() => {
+        /* swallowed: dispatch-loop failures are surfaced by the
+           loop's own logger; the shutdown path only waits for the
+           loop's last iteration to settle. */
+      });
+    }
     if (recyclePolicy !== null) {
       recyclePolicy.stop();
       recyclePolicy = null;
@@ -994,9 +1273,21 @@ export function createWorkflowSupervisor(
     const origin: RecycleOrigin = opts.origin ?? "operator";
     const prior = state;
     const priorContext = spawnContext;
-    // Transition to `recycling` so the mail subscription handler
-    // buffers inbound messages across the gap rather than racing
-    // against the dead controlSender.
+    // Abort the prior cohort immediately so the prior dispatch loop
+    // exits before any inbound mail arrives during the kill/respawn
+    // gap. Without the up-front abort, the prior loop would race the
+    // `installNewChild` step and forward gap-window mail through the
+    // dying child's controlSender, which is observable as a missing
+    // `trigger.fire` on the new child once `ready` lands.
+    prior.terminalCohortAbort.abort();
+    wakeDispatch();
+    const priorDispatchLoop = prior.dispatchLoop;
+    // Transition to `recycling`. Inbound mail arriving during the
+    // kill/respawn gap continues to flow through `enqueueInbox`
+    // unchanged; the dispatch loop for the prior cohort has already
+    // been aborted above. The new dispatch loop picks up the inbox
+    // once `installNewChild` swaps the wiring and starts the loop
+    // against the new cohort.
     state = {
       phase: "recycling",
       handle: prior.handle,
@@ -1007,6 +1298,7 @@ export function createWorkflowSupervisor(
       mailUnsubscribe: prior.mailUnsubscribe,
       credentialsSnapshot: prior.credentialsSnapshot,
       terminalCohortAbort: prior.terminalCohortAbort,
+      dispatchLoop: null,
     };
     let attempt: RecycleAttempt;
     try {
@@ -1022,13 +1314,19 @@ export function createWorkflowSupervisor(
             channelId: prior.channelId,
             eventPump: prior.eventPump,
           },
-          mailBuffer,
           drain: async (deadlineMs) => {
             // The recycle path's drain step uses the same drain
             // primitive an operator drain command would use.
             await drain({ deadlineMs });
           },
-          forwardMail: forwardMailAndTrack,
+          replayProcessingToInbox: async () => {
+            await inboxPrimitives.replayProcessingToInbox(
+              bindings.repoStore,
+              inboxWritePrincipal,
+              bindings.workflowRunRepoId,
+              bindings.deploymentMailAddress,
+            );
+          },
           installNewChild: ({
             wiring,
             credentialsSnapshot,
@@ -1048,20 +1346,29 @@ export function createWorkflowSupervisor(
               wiring.handle.kill("SIGTERM");
               return;
             }
-            // Tear down the previous cohort's terminal-event
-            // watchers: abort the cohort controller and stop every
-            // armed accumulator. The accumulators were tracking runs
-            // that lived inside the killed child; the resumed child
-            // re-discovers any survivors and the next `drain()` mints
-            // fresh accumulators against the new cohort. Watcher
-            // lifetimes stay tied to one child's run cohort per the
-            // recycle contract.
-            const previousCohortAbort = prior.terminalCohortAbort;
-            if (previousCohortAbort !== null) previousCohortAbort.abort();
+            // The previous cohort was aborted at the entry to
+            // `recycle()` so the prior dispatch loop did not race
+            // the kill/respawn gap. Stop every armed accumulator
+            // (they were tracking runs that lived inside the killed
+            // child); the resumed child re-discovers any survivors
+            // and the next `drain()` mints fresh accumulators
+            // against the new cohort.
             for (const accumulator of drainAccumulators.values()) {
               accumulator.stop();
             }
             drainAccumulators.clear();
+            // Mint a fresh cohort abort and start a new dispatch
+            // loop against the new child's controlSender.
+            const newCohortAbort = new AbortController();
+            const newDispatchLoop = runDispatchLoop(
+              wiring.controlSender,
+              newCohortAbort,
+            );
+            void newDispatchLoop.catch((cause) => {
+              const message =
+                cause instanceof Error ? cause.message : String(cause);
+              logger.error`dispatch loop (post-recycle) terminated with error: ${message}`;
+            });
             // Transition back to running with the new wiring; the
             // mail subscription and registration are unchanged.
             state = {
@@ -1073,10 +1380,8 @@ export function createWorkflowSupervisor(
               onInferenceEvent: priorContext.onInferenceEvent,
               mailUnsubscribe: prior.mailUnsubscribe,
               credentialsSnapshot,
-              terminalCohortAbort:
-                bindings.terminalEventSource !== undefined
-                  ? new AbortController()
-                  : null,
+              terminalCohortAbort: newCohortAbort,
+              dispatchLoop: newDispatchLoop,
             };
             // Cache fresh spawn context with the updated spawnedAt
             // so the policy timer's uptime check resets on recycle.
@@ -1095,6 +1400,10 @@ export function createWorkflowSupervisor(
                 cause instanceof Error ? cause.message : String(cause);
               logger.error`upstream control pump (post-recycle) failed: ${message}`;
             });
+            // Kick the new dispatch loop so it picks up any inbox
+            // entries the previous cohort's replayProcessingToInbox
+            // just moved back.
+            wakeDispatch();
           },
           onCrash: onChildCrash,
           ...(bindings.recyclePolicySetTimer !== undefined
@@ -1106,6 +1415,15 @@ export function createWorkflowSupervisor(
         },
         { origin, reason: opts.reason },
       );
+      // After the recycle, await the previous cohort's dispatch
+      // loop so a teardown coroutine cannot survive past the
+      // recycle's return point.
+      if (priorDispatchLoop !== null) {
+        await priorDispatchLoop.catch(() => {
+          /* swallowed: dispatch-loop failures are surfaced by the
+             loop's own logger. */
+        });
+      }
     } catch (cause) {
       // `triggerRecycle` failed after we transitioned to `recycling`.
       // Leaving the supervisor in `recycling` indefinitely would wedge
@@ -1199,19 +1517,27 @@ type ActiveState = {
   mailUnsubscribe: (() => void) | null;
   credentialsSnapshot: CredentialsSnapshot | null;
   /**
-   * Per-spawn cohort abort controller for terminal-event watchers. Each
-   * watcher the supervisor mints inside `drain()` (via the accumulator)
-   * borrows this controller's signal; the watcher's iterator finalises
-   * when the controller aborts. `shutdownInternal` aborts the
-   * controller alongside `mailUnsubscribe`; `installNewChild` mints a
-   * fresh controller for the recycled cohort so a watcher minted in
+   * Per-spawn cohort abort controller for terminal-event watchers
+   * and the dispatch loop. Each watcher the supervisor mints inside
+   * `drain()` (via the accumulator) borrows this controller's
+   * signal; the dispatch loop borrows the same signal so its
+   * `dispatchOne` iteration tears down cleanly on shutdown / recycle.
+   * `shutdownInternal` aborts the controller alongside
+   * `mailUnsubscribe`; `installNewChild` mints a fresh controller
+   * for the recycled cohort so a watcher / loop iteration minted in
    * the previous cohort cannot survive into the next.
-   *
-   * `null` when the `terminalEventSource` binding is absent (test
-   * fixture default); accumulators in that case settle on timeout
-   * only.
    */
-  terminalCohortAbort: AbortController | null;
+  terminalCohortAbort: AbortController;
+  /**
+   * Promise the dispatch loop's body resolves with on exit. The
+   * `starting`-phase ActiveState carries `null` because the loop is
+   * not started until the child emits `ready`; once `spawn()`
+   * transitions to `running` the field carries the live loop
+   * promise. `shutdownInternal` awaits this promise after aborting
+   * the cohort so a dispatch-loop iteration that is mid-await
+   * settles before the supervisor tears the bindings down.
+   */
+  dispatchLoop: Promise<void> | null;
 };
 
 type SpawnContext = {
@@ -1285,33 +1611,17 @@ async function pumpEvents(
 }
 
 /**
- * Forward an inbound RFC 2822 message to the child as a
- * `trigger.fire` control frame and return the runId the frame
- * carried so the caller can track it as in-flight. The supervisor
- * mints a `receivedAt` timestamp at forward time so the child sees
- * monotonically-increasing timestamps across reordered IPC frames.
+ * Default `deriveMailAuditRef` derivation used when no host binding
+ * is configured. The reference points at an "in-process" store with
+ * the messageId as the path, which keeps the supervisor's library
+ * tests independent of any audit-store wiring. Production hosts
+ * supply a derivation coherent with their own mail-audit surface.
  */
-async function forwardMail(
-  sender: ControlChannelSender,
-  rawMessage: Uint8Array,
-): Promise<string> {
-  // The IPC `trigger.fire` payload carries the runId, messageId, and
-  // receivedAt. The supervisor parses the RFC 2822 envelope's
-  // Message-ID and mints a runId at fire time (one run per trigger
-  // fire). The runId/messageId derivation here is a thin pass: the
-  // message bytes are surfaced as the `messageId` discriminator
-  // until the real RFC 2822 envelope parse lands with the deploy-
-  // mail bridging.
-  const messageId = await deriveMessageId(rawMessage);
-  await sender.send({
-    type: "trigger.fire",
-    data: {
-      runId: messageId,
-      messageId,
-      receivedAt: Date.now(),
-    },
-  });
-  return messageId;
+function defaultInProcessMailAuditRef(
+  messageId: string,
+  _rawMessage: Uint8Array,
+): MailAuditRef {
+  return { store: "in-process", path: messageId };
 }
 
 /**

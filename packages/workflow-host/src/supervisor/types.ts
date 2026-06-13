@@ -9,9 +9,15 @@
 // instances against the same interface.
 
 import type {
+  DequeueToProcessingResult,
+  EnqueueInboxArgs,
+  EnqueueInboxResult,
+  MarkConsumedArgs,
+  MarkConsumedResult,
   Principal,
   RepoId,
   RepoStore as SubstrateRepoStore,
+  ReplayProcessingToInboxResult,
 } from "@intx/hub-sessions";
 import type { InferenceSource } from "@intx/types/runtime";
 import type { RunCancelled, RunCompleted, RunFailed } from "@intx/workflow";
@@ -263,6 +269,72 @@ export interface TrivialLaunchBindings {
 export type TrivialLaunch = (bindings: TrivialLaunchBindings) => Promise<void>;
 
 /**
+ * Logical pointer to the raw mail bytes the inbox claim-check
+ * envelope stamps. The substrate stores this as the `mailAuditRef`
+ * on every inbox/processing/consumed envelope; the substrate itself
+ * never dereferences it. The boot edge supplies a derivation
+ * coherent with wherever the deployment's mail audit actually lives
+ * (a sidecar's session-mail audit, an alternative host's audit
+ * store, etc.).
+ */
+export type MailAuditRef = { store: string; path: string };
+
+/**
+ * Host-supplied derivation that maps a parsed `messageId` plus the
+ * raw mail bytes into the logical audit reference the inbox claim-
+ * check envelope carries. Pure -- the supervisor invokes it on the
+ * mail-arrival hot path and expects no I/O. Absent binding falls
+ * back to a deterministic in-process derivation that synthesizes
+ * `{ store: "in-process", path: <messageId> }` so the supervisor's
+ * library tests that do not stand up an audit store still work; the
+ * production sidecar boot edge supplies a real derivation.
+ */
+export type DeriveMailAuditRef = (
+  messageId: string,
+  rawMessage: Uint8Array,
+) => MailAuditRef;
+
+/**
+ * Inbox claim-check primitives the supervisor's mail-arrival path
+ * and dispatch loop reach into. Production wires this against the
+ * concrete `enqueueInbox` / `dequeueToProcessing` / `markConsumed`
+ * / `replayProcessingToInbox` functions exported from
+ * `@intx/hub-sessions`; tests inject a deterministic in-memory
+ * stub so the supervisor's dispatch loop is observable without a
+ * real git substrate.
+ *
+ * The shape mirrors the upstream functions exactly so a binding
+ * miss surfaces as a structural type error rather than a runtime
+ * surprise.
+ */
+export interface InboxPrimitives {
+  enqueueInbox(
+    store: SubstrateRepoStore,
+    principal: Principal,
+    repoId: RepoId,
+    args: EnqueueInboxArgs,
+  ): Promise<EnqueueInboxResult>;
+  dequeueToProcessing(
+    store: SubstrateRepoStore,
+    principal: Principal,
+    repoId: RepoId,
+    address: string,
+  ): Promise<DequeueToProcessingResult>;
+  markConsumed(
+    store: SubstrateRepoStore,
+    principal: Principal,
+    repoId: RepoId,
+    args: MarkConsumedArgs,
+  ): Promise<MarkConsumedResult>;
+  replayProcessingToInbox(
+    store: SubstrateRepoStore,
+    principal: Principal,
+    repoId: RepoId,
+    address: string,
+  ): Promise<ReplayProcessingToInboxResult>;
+}
+
+/**
  * Constructor arguments for `createWorkflowSupervisor`. The shape
  * is greybeard's Q1 (a) call: one `RepoStore` handle plus a
  * `signAsPrincipal` callback that mints signatures on demand per
@@ -456,4 +528,36 @@ export interface WorkflowSupervisorBindings {
     ref: string;
     commitSha: string;
   }) => Promise<void>;
+  /**
+   * Compute the logical audit reference for an inbox entry. The
+   * substrate stamps this onto the envelope; the substrate itself
+   * does not dereference it. The boot edge supplies a derivation
+   * coherent with wherever the deployment's mail audit lives.
+   *
+   * Absent binding falls back to `{ store: "in-process",
+   * path: <messageId> }`, a deterministic derivation that lets the
+   * supervisor's library tests run without a host-side audit store.
+   */
+  deriveMailAuditRef?: DeriveMailAuditRef;
+  /**
+   * Inbox claim-check primitives the dispatch loop reaches into.
+   * Production wires this against `@intx/hub-sessions`'s concrete
+   * `enqueueInbox` / `dequeueToProcessing` / `markConsumed` /
+   * `replayProcessingToInbox`; tests inject a deterministic
+   * in-memory stub so the dispatch loop is observable without a
+   * git substrate.
+   */
+  inboxPrimitives?: InboxPrimitives;
+  /**
+   * Workflow-run substrate principal the supervisor uses to author
+   * inbox/processing/consumed writes. The substrate's workflow-run
+   * kind handler accepts a `{ kind: "supervisor", deploymentId }`
+   * principal for claim-check writes; the supervisor constructs this
+   * value once at bindings construction and reuses it for every
+   * claim-check operation. Defaults to `{ kind: "supervisor",
+   * deploymentId }` derived from `bindings.deploymentId`; tests
+   * override it when they need to assert on a structurally distinct
+   * principal shape.
+   */
+  inboxWritePrincipal?: Principal;
 }

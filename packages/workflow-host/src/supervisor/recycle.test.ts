@@ -20,6 +20,7 @@ import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
   createWorkflowSupervisor,
+  type InboxPrimitives,
   type MailBusBindings,
   type SignedPayload,
   type SubprocessHandle,
@@ -307,12 +308,125 @@ async function driveReady(
   return childSender;
 }
 
+function createMemoryInboxPrimitives(): InboxPrimitives {
+  type Entry = {
+    messageId: string;
+    receivedAt: number;
+    mailAuditRef: { store: string; path: string };
+  };
+  const state = new Map<
+    string,
+    {
+      inbox: Map<string, Entry>;
+      processing: Map<string, Entry>;
+      consumed: Map<string, Entry>;
+    }
+  >();
+  function getOrCreate(address: string) {
+    let entry = state.get(address);
+    if (entry === undefined) {
+      entry = { inbox: new Map(), processing: new Map(), consumed: new Map() };
+      state.set(address, entry);
+    }
+    return entry;
+  }
+  function key(receivedAt: number, messageId: string): string {
+    return `${String(receivedAt)}-${messageId}`;
+  }
+  return {
+    async enqueueInbox(_store, _principal, _repoId, args) {
+      const s = getOrCreate(args.address);
+      const k = key(args.receivedAt, args.messageId);
+      const envelope: Entry = {
+        messageId: args.messageId,
+        receivedAt: args.receivedAt,
+        mailAuditRef: args.mailAuditRef,
+      };
+      s.inbox.set(k, envelope);
+      return {
+        commitSha: "memory",
+        inboxKey: k,
+        envelope: {
+          messageId: args.messageId,
+          receivedAt: args.receivedAt,
+          address: args.address,
+          mailAuditRef: args.mailAuditRef,
+        },
+      };
+    },
+    async dequeueToProcessing(_store, _principal, _repoId, address) {
+      const s = getOrCreate(address);
+      const entries = [...s.inbox.entries()].sort(([, a], [, b]) => {
+        if (a.receivedAt !== b.receivedAt) return a.receivedAt - b.receivedAt;
+        if (a.messageId < b.messageId) return -1;
+        if (a.messageId > b.messageId) return 1;
+        return 0;
+      });
+      if (entries.length === 0) return null;
+      const head = entries[0];
+      if (head === undefined) throw new Error("unreachable");
+      const [k, envelope] = head;
+      s.inbox.delete(k);
+      s.processing.set(k, envelope);
+      return {
+        commitSha: "memory",
+        key: k,
+        envelope: {
+          messageId: envelope.messageId,
+          receivedAt: envelope.receivedAt,
+          address,
+          mailAuditRef: envelope.mailAuditRef,
+        },
+      };
+    },
+    async markConsumed(_store, _principal, _repoId, args) {
+      const s = getOrCreate(args.address);
+      let foundKey: string | null = null;
+      let envelope: Entry | null = null;
+      for (const [k, value] of s.processing) {
+        if (value.messageId === args.messageId) {
+          foundKey = k;
+          envelope = value;
+          break;
+        }
+      }
+      if (foundKey === null || envelope === null) {
+        throw new Error("processing entry not found");
+      }
+      s.processing.delete(foundKey);
+      s.consumed.set(args.messageId, envelope);
+      return {
+        commitSha: "memory",
+        envelope: {
+          messageId: envelope.messageId,
+          receivedAt: envelope.receivedAt,
+          address: args.address,
+          runId: args.runId,
+          consumedAt: args.consumedAt,
+          mailAuditRef: envelope.mailAuditRef,
+        },
+      };
+    },
+    async replayProcessingToInbox(_store, _principal, _repoId, address) {
+      const s = getOrCreate(address);
+      const replayedKeys: string[] = [];
+      for (const [k, value] of s.processing) {
+        s.inbox.set(k, value);
+        replayedKeys.push(k);
+      }
+      s.processing.clear();
+      return { commitSha: "memory", replayedKeys };
+    },
+  };
+}
+
 async function buildBindings(opts: {
   baseDir: string;
   spawner: SubprocessSpawner;
   mailBus: MailBusBindings;
   ipcKeypair: { privateKey: Uint8Array; publicKey: Uint8Array };
   recyclePolicy?: RecyclePolicyBounds;
+  inboxPrimitives?: InboxPrimitives;
 }): Promise<WorkflowSupervisorBindings> {
   const repoStore = createStubRepoStore(opts.baseDir);
   return {
@@ -336,6 +450,7 @@ async function buildBindings(opts: {
       throw new Error("trivialLaunch must not run in recycle tests");
     },
     ipcKeyPairFactory: () => Promise.resolve(opts.ipcKeypair),
+    inboxPrimitives: opts.inboxPrimitives ?? createMemoryInboxPrimitives(),
     ...(opts.recyclePolicy !== undefined
       ? { recyclePolicy: opts.recyclePolicy }
       : {}),
@@ -536,10 +651,20 @@ describe("supervisor recycle: mail buffered during the kill/respawn gap", () => 
     const attempt = await recyclePromise;
     expect(attempt.origin).toBe("operator");
 
-    // After ready, the supervisor drains the buffer into the new
-    // child as `trigger.fire` frames. There should be at least two
-    // outbound NDJSON lines to the new child (one per buffered
-    // message).
+    // After ready, the new child's dispatch loop drains the inbox
+    // claim-check queue in FIFO order. The loop processes runs
+    // serially -- one `trigger.fire` per iteration, waiting for the
+    // run's terminal event before advancing. Without a configured
+    // `terminalEventSource` the loop falls back to a microtask wait,
+    // which still serializes per run. Poll until both messages have
+    // been forwarded.
+    const deadline = Date.now() + 1_000;
+    while (
+      secondChild.supervisorToChild.flushed().length < 2 &&
+      Date.now() < deadline
+    ) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
     const flushed = secondChild.supervisorToChild.flushed();
     expect(flushed.length).toBeGreaterThanOrEqual(2);
 
@@ -780,6 +905,89 @@ describe("supervisor recycle: terminal-event watcher cohort", () => {
       expect(entry.returnCalled).toBe(true);
     }
 
+    await supervisor.shutdown();
+  });
+});
+
+describe("supervisor recycle: drain-side processing replay", () => {
+  test("triggerRecycle invokes replayProcessingToInbox between drain and kill", async () => {
+    // This is a focused unit test against `triggerRecycle`'s ordering
+    // contract: the `replayProcessingToInbox` callback must fire after
+    // `drain` returns and before `killChildHandle` lands. The test
+    // observes the order via call recording.
+    const baseDir = await makeTempDir("recycle-replay-order-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker({});
+    const calls: string[] = [];
+    const recordingInbox: InboxPrimitives = {
+      ...createMemoryInboxPrimitives(),
+      async replayProcessingToInbox(_store, _principal, _repoId, _address) {
+        calls.push("replayProcessingToInbox");
+        return { commitSha: "memory", replayedKeys: [] };
+      },
+    };
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: tracker.spawner,
+      mailBus,
+      ipcKeypair,
+      inboxPrimitives: recordingInbox,
+    });
+    const originalKill = tracker.children;
+    // Wrap the spawner so we can hook kill to record the call order.
+    const wrappedSpawner: SubprocessSpawner = (args) => {
+      const handle = tracker.spawner(args);
+      const originalKillFn = handle.kill;
+      return {
+        ...handle,
+        kill: (signal?: number | string) => {
+          calls.push("kill");
+          originalKillFn(signal);
+        },
+      };
+    };
+    const bindingsWithSpawner: WorkflowSupervisorBindings = {
+      ...bindings,
+      subprocessSpawner: wrappedSpawner,
+    };
+    const supervisor = createWorkflowSupervisor(bindingsWithSpawner);
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      onInferenceEvent: () => undefined,
+    });
+    while (originalKill.length === 0) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const first = originalKill[0];
+    if (first === undefined) throw new Error("first child missing");
+    await driveReady(first, ipcKeypair);
+    await spawnPromise;
+    // Clear out the spawn-time replay call so we can isolate the
+    // recycle-time one.
+    calls.length = 0;
+
+    const recyclePromise = supervisor.recycle({ reason: "ordering-test" });
+    while (originalKill.length < 2) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const second = originalKill[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await recyclePromise;
+    // The recycle path invokes `replayProcessingToInbox` BEFORE the
+    // kill. The order recorded in `calls` reflects that.
+    const replayIdx = calls.indexOf("replayProcessingToInbox");
+    const killIdx = calls.indexOf("kill");
+    expect(replayIdx).toBeGreaterThanOrEqual(0);
+    expect(killIdx).toBeGreaterThanOrEqual(0);
+    expect(replayIdx).toBeLessThan(killIdx);
     await supervisor.shutdown();
   });
 });

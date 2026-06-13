@@ -17,7 +17,12 @@ import { type } from "arktype";
 import { importPrivateKeyBytes } from "@intx/crypto-node";
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
-import type { Principal, RepoId, RepoStore } from "@intx/hub-sessions";
+import type {
+  Principal,
+  RepoId,
+  RepoStore,
+  WorkflowRunSupervisorPrincipal,
+} from "@intx/hub-sessions";
 import { subscribeKind } from "@intx/hub-sessions";
 import type {
   AgentKeyStore,
@@ -1168,6 +1173,28 @@ export function createSubscribeKindTerminalEventSource(deps: {
 }
 
 /**
+ * Logical mail-audit reference the supervisor stamps onto every
+ * inbox/processing/consumed envelope for sidecar-hosted deployments.
+ * The substrate does not dereference the value; it is a host-side
+ * pointer the audit consumer joins on. The trivial-branch single-agent
+ * mail audit is keyed by the deployment id plus the parsed messageId,
+ * which is unique per inbound message and stable across the FIFO
+ * pipeline's enqueue/dequeue/markConsumed transitions.
+ */
+export function deriveSidecarMailAuditRef(deploymentId: string): (
+  messageId: string,
+  rawMessage: Uint8Array,
+) => {
+  store: string;
+  path: string;
+} {
+  return (messageId, _rawMessage) => ({
+    store: "sidecar-mail-audit",
+    path: `${deploymentId}/${messageId}`,
+  });
+}
+
+/**
  * Construct a per-deployment supervisor with the sidecar's bindings
  * pre-wired. The host calls this once per `agent.deploy` frame; the
  * supervisor's trivial branch routes the deploy through the
@@ -1180,9 +1207,13 @@ export function createSidecarWorkflowSupervisor(
   const mailBus: HubTransportMailBusAdapter = wrapHubTransportAsMailBus(
     opts.transport,
   );
+  const supervisorPrincipal: WorkflowRunSupervisorPrincipal = {
+    kind: "supervisor",
+    deploymentId: opts.deploymentId,
+  };
   const terminalEventSource = createSubscribeKindTerminalEventSource({
     repoStore: opts.repoStore,
-    principal: { kind: "supervisor" },
+    principal: supervisorPrincipal,
     repoId: opts.workflowRunRepoId,
     ref: opts.workflowRunRef,
   });
@@ -1201,10 +1232,11 @@ export function createSidecarWorkflowSupervisor(
     workflowRunRef: opts.workflowRunRef,
     deploymentId: opts.deploymentId,
     deploymentMailAddress: opts.deploymentMailAddress,
-    readPrincipal: { kind: "supervisor" },
+    readPrincipal: supervisorPrincipal,
     deriveStepAddress: opts.deriveStepAddress,
     trivialLaunch: opts.trivialLaunch,
     terminalEventSource,
+    deriveMailAuditRef: deriveSidecarMailAuditRef(opts.deploymentId),
     ...(opts.pushWorkflowRunPack !== undefined
       ? { pushWorkflowRunPack: opts.pushWorkflowRunPack }
       : {}),

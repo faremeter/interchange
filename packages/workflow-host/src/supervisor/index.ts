@@ -61,6 +61,9 @@ export {
 } from "./recycle";
 
 export type {
+  DeriveMailAuditRef,
+  InboxPrimitives,
+  MailAuditRef,
   MailBusBindings,
   PrincipalSigner,
   RecordRunEvent,

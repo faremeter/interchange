@@ -42,18 +42,26 @@
 //   5. `resume` -- self-discovery resumes any in-flight runs from the
 //      workflow-run log. The runtime body's seed-events path re-arms
 //      timers, pending awaits, and uncancelled children.
-//   6. The supervisor drains its buffered mail into the new child
-//      over the control IPC. Inbound mail that arrived during the
-//      kill/respawn gap was buffered in the supervisor; this step
-//      replays it in arrival order.
+//   6. Buffered mail is the supervisor's FIFO inbox claim-check queue
+//      (the new child's dispatch loop picks up entries that arrived
+//      during the kill/respawn gap once it starts). The recycle path
+//      does NOT drain an in-memory mail buffer; every inbound message
+//      enqueues into the substrate-backed inbox regardless of phase.
 //
 // Mail-address ownership across the gap: the supervisor holds the
 // mail-bus registration across the recycle via the injected mail-bus
 // binding. No re-register, no unregister. Inbound mail during the
-// gap buffers in the supervisor's bounded queue. Once the new child
-// emits `ready`, the supervisor drains the buffer over control IPC.
-// The bound is `MAX_BUFFERED_MAIL` (256 messages); on saturation the
-// recycle path surfaces a loud error rather than silently dropping.
+// gap commits to the substrate-backed inbox; the new child's dispatch
+// loop dequeues in arrival order (the envelope's `receivedAt` prefix
+// preserves FIFO discipline across the gap).
+//
+// Before the kill lands the recycle path calls
+// `ctx.replayProcessingToInbox()` so any in-flight `processing/`
+// entries that the dying cohort's dispatch loop did not reach
+// `markConsumed` for get moved back to `inbox/` under their original
+// `<receivedAt>-<messageId>` keys. Without this step the dying child
+// would leave an orphaned processing entry that no live dispatch
+// loop owns.
 //
 // Three trigger origins funnel through `triggerRecycle(reason, ctx)`:
 //
@@ -167,19 +175,18 @@ export interface RecycleContext {
   readonly onInferenceEvent: (event: EventPayload) => void;
   /** Live child wiring on entry; replaced before return. */
   readonly current: ChildWiring;
-  /** Mail buffer the supervisor shares; the recycle path appends and drains it. */
-  readonly mailBuffer: Uint8Array[];
   /** Supervisor-side drain primitive; sends the existing drain mail. */
   readonly drain: (deadlineMs: number) => Promise<void>;
   /**
-   * Push a buffered mail message into the new child over control IPC.
-   * The supervisor owns the `trigger.fire` framing; the recycle path
-   * does not duplicate it.
+   * Replay any `processing/` claim-check entries for the deployment's
+   * mail address back to `inbox/` so the FIFO ordering survives the
+   * recycle. Invoked AFTER the drain step settles and BEFORE the kill
+   * step lands, which eliminates the race window where a processing
+   * entry would exist with no owner. The supervisor closes this
+   * callback over its `inboxPrimitives.replayProcessingToInbox` plus
+   * the deployment's substrate principal and repo identity.
    */
-  readonly forwardMail: (
-    sender: ControlChannelSender,
-    rawMessage: Uint8Array,
-  ) => Promise<void>;
+  readonly replayProcessingToInbox: () => Promise<void>;
   /**
    * Onward sink the supervisor uses to install the new child wiring
    * once the freshly-spawned child has emitted `ready` and the
@@ -252,6 +259,21 @@ export async function triggerRecycle(
   // whether it aborts or continues; `drainTimeout` escalation lands
   // through the existing supervisor-drain origin.
   await ctx.drain(drainDeadlineMs);
+
+  // After drain settles and BEFORE the kill lands, replay any
+  // in-flight `processing/` entries back to `inbox/`. Without this
+  // replay, a child whose run was mid-dispatch when drain expired
+  // would leave its `processing/` entry orphaned -- the dispatch
+  // loop for the dying cohort already aborted on cohort teardown
+  // and will not reach its `markConsumed` step. The new child's
+  // dispatch loop dequeues the recovered entries in arrival order
+  // (the envelope's `receivedAt` prefix preserves FIFO discipline).
+  try {
+    await ctx.replayProcessingToInbox();
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    logger.warn`recycle: replayProcessingToInbox before kill failed: ${message}`;
+  }
 
   // Step 2: kill. SIGTERM first; if the child does not exit within
   // `killTimeoutMs`, the handle's hard kill lands. The injected
@@ -340,21 +362,12 @@ export async function triggerRecycle(
     controlIncoming,
   });
 
-  // Step 6: drain the buffered mail into the new child. The mail
-  // subscription pushed into `ctx.mailBuffer` for every message that
-  // arrived after the kill and before `installNewChild` swapped the
-  // state into running. Replay in arrival order; subsequent mail
-  // bypasses the buffer.
-  if (ctx.mailBuffer.length > MAX_BUFFERED_MAIL) {
-    throw new Error(
-      `workflow-host supervisor: recycle mail buffer saturated (${String(ctx.mailBuffer.length)} > ${String(MAX_BUFFERED_MAIL)}); inbound mail was lost`,
-    );
-  }
-  while (ctx.mailBuffer.length > 0) {
-    const message = ctx.mailBuffer.shift();
-    if (message === undefined) break;
-    await ctx.forwardMail(controlSender, message);
-  }
+  // Step 6: the FIFO inbox claim-check queue holds any mail that
+  // arrived during the kill/respawn gap (every inbound message
+  // enqueues into the substrate-backed inbox regardless of phase).
+  // The new dispatch loop that `installNewChild` started dequeues
+  // those entries in arrival order; the recycle path does not need
+  // an in-memory drain step.
 
   return {
     origin: opts.origin,

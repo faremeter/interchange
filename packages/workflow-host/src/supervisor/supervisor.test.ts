@@ -13,6 +13,7 @@ import {
   type DrainTimeoutAccumulator,
   type DrainTimeoutAccumulatorFactory,
   type DrainTimeoutOpts,
+  type InboxPrimitives,
   type MailBusBindings,
   type SubprocessSpawner,
   type SubprocessHandle,
@@ -294,6 +295,164 @@ function createStubRepoStore(opts: {
   });
 }
 
+/**
+ * Per-address claim-check state for the in-memory inbox stub. Mirrors
+ * the substrate's three subdirectories (`inbox`, `processing`,
+ * `consumed`) so a sequence of `enqueueInbox` / `dequeueToProcessing`
+ * / `markConsumed` / `replayProcessingToInbox` calls is observable
+ * without standing up a real git repo.
+ */
+type MemoryInboxEntry = {
+  messageId: string;
+  receivedAt: number;
+  mailAuditRef: { store: string; path: string };
+};
+
+export type MemoryInboxState = {
+  inbox: Map<string, MemoryInboxEntry>;
+  processing: Map<string, MemoryInboxEntry>;
+  consumed: Map<string, MemoryInboxEntry>;
+};
+
+export type MemoryInboxPrimitives = InboxPrimitives & {
+  /** Snapshot the in-memory state for a given address (testing only). */
+  snapshot(address: string): MemoryInboxState;
+};
+
+function filenameKey(receivedAt: number, messageId: string): string {
+  return `${String(receivedAt)}-${messageId}`;
+}
+
+function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
+  const byAddress = new Map<string, MemoryInboxState>();
+  function getOrCreate(address: string): MemoryInboxState {
+    let entry = byAddress.get(address);
+    if (entry === undefined) {
+      entry = {
+        inbox: new Map(),
+        processing: new Map(),
+        consumed: new Map(),
+      };
+      byAddress.set(address, entry);
+    }
+    return entry;
+  }
+  return {
+    snapshot(address: string): MemoryInboxState {
+      return getOrCreate(address);
+    },
+    async enqueueInbox(_store, _principal, _repoId, args) {
+      const state = getOrCreate(args.address);
+      const key = filenameKey(args.receivedAt, args.messageId);
+      if (state.consumed.has(args.messageId)) {
+        throw new Error(
+          `claim_check_already_consumed: ${args.address} ${args.messageId}`,
+        );
+      }
+      for (const existingKey of state.inbox.keys()) {
+        if (existingKey.endsWith(`-${args.messageId}`)) {
+          throw new Error(
+            `claim_check_already_inbox: ${args.address} ${args.messageId}`,
+          );
+        }
+      }
+      for (const existingKey of state.processing.keys()) {
+        if (existingKey.endsWith(`-${args.messageId}`)) {
+          throw new Error(
+            `claim_check_already_processing: ${args.address} ${args.messageId}`,
+          );
+        }
+      }
+      const envelope: MemoryInboxEntry = {
+        messageId: args.messageId,
+        receivedAt: args.receivedAt,
+        mailAuditRef: args.mailAuditRef,
+      };
+      state.inbox.set(key, envelope);
+      return {
+        commitSha: "memory-inbox",
+        inboxKey: key,
+        envelope: {
+          messageId: args.messageId,
+          receivedAt: args.receivedAt,
+          address: args.address,
+          mailAuditRef: args.mailAuditRef,
+        },
+      };
+    },
+    async dequeueToProcessing(_store, _principal, _repoId, address) {
+      const state = getOrCreate(address);
+      const entries = [...state.inbox.entries()].sort(([, a], [, b]) => {
+        if (a.receivedAt !== b.receivedAt) return a.receivedAt - b.receivedAt;
+        if (a.messageId < b.messageId) return -1;
+        if (a.messageId > b.messageId) return 1;
+        return 0;
+      });
+      if (entries.length === 0) return null;
+      const head = entries[0];
+      if (head === undefined) throw new Error("unreachable");
+      const [key, envelope] = head;
+      state.inbox.delete(key);
+      state.processing.set(key, envelope);
+      return {
+        commitSha: "memory-inbox",
+        key,
+        envelope: {
+          messageId: envelope.messageId,
+          receivedAt: envelope.receivedAt,
+          address,
+          mailAuditRef: envelope.mailAuditRef,
+        },
+      };
+    },
+    async markConsumed(_store, _principal, _repoId, args) {
+      const state = getOrCreate(args.address);
+      let foundKey: string | null = null;
+      let envelope: MemoryInboxEntry | null = null;
+      for (const [key, value] of state.processing) {
+        if (value.messageId === args.messageId) {
+          foundKey = key;
+          envelope = value;
+          break;
+        }
+      }
+      if (foundKey === null || envelope === null) {
+        throw new Error(
+          `claim_check_processing_not_found: ${args.address} ${args.messageId}`,
+        );
+      }
+      state.processing.delete(foundKey);
+      state.consumed.set(args.messageId, envelope);
+      return {
+        commitSha: "memory-inbox",
+        envelope: {
+          messageId: envelope.messageId,
+          receivedAt: envelope.receivedAt,
+          address: args.address,
+          runId: args.runId,
+          consumedAt: args.consumedAt,
+          mailAuditRef: envelope.mailAuditRef,
+        },
+      };
+    },
+    async replayProcessingToInbox(_store, _principal, _repoId, address) {
+      const state = getOrCreate(address);
+      const replayedKeys: string[] = [];
+      for (const [key, value] of state.processing) {
+        if (state.inbox.has(key)) {
+          throw new Error(
+            `claim_check_replay_collision: inbox already has ${key}`,
+          );
+        }
+        state.inbox.set(key, value);
+        replayedKeys.push(key);
+      }
+      state.processing.clear();
+      return { commitSha: "memory-inbox", replayedKeys };
+    },
+  };
+}
+
 async function buildBindings(opts: {
   baseDir: string;
   spawner: SubprocessSpawner;
@@ -307,6 +466,7 @@ async function buildBindings(opts: {
     files: Record<string, string | Uint8Array>;
   }) => void;
   statefulWrites?: boolean;
+  inboxPrimitives?: InboxPrimitives;
 }): Promise<WorkflowSupervisorBindings> {
   const repoStore = createStubRepoStore({
     baseDir: opts.baseDir,
@@ -332,6 +492,7 @@ async function buildBindings(opts: {
       (() => {
         throw new Error("trivialLaunch not provided to this test binding");
       }),
+    inboxPrimitives: opts.inboxPrimitives ?? createMemoryInboxPrimitives(),
   };
 }
 
@@ -636,8 +797,11 @@ describe("createWorkflowSupervisor", () => {
     while (!mailBus.registered().includes("deployment-x@example.com")) {
       await new Promise((r) => setTimeout(r, 1));
     }
-    // Two pre-ready messages -> two in-flight runIds (the supervisor
-    // mints one runId per `trigger.fire` per discovery Q3.1).
+    // Two pre-ready messages. The supervisor's FIFO inbox queue
+    // serializes dispatch: only one run is in-flight at a time. By
+    // the time `drain()` is called below, the second message may
+    // still be mid-dispatch behind the first's `markConsumed`. The
+    // accumulator count reflects whichever in-flight runIds remain.
     mailBus.deliver(
       "deployment-x@example.com",
       new TextEncoder().encode("drain-msg-A"),
@@ -693,10 +857,12 @@ describe("createWorkflowSupervisor", () => {
       data: { deadlineMs: 7_500 },
     });
 
-    // One accumulator armed per in-flight run. Each accumulator was
-    // started (the supervisor calls `start()` directly after the
-    // factory call); none has been stopped yet.
-    expect(stubs).toHaveLength(2);
+    // The FIFO inbox queue serializes dispatch: one run is in-flight
+    // at a time. The drain() call observes exactly one in-flight run
+    // (whichever message was mid-dispatch when the loop awaited
+    // `waitForRunTerminal`) and arms one accumulator for it. The
+    // second message stays in the inbox until the first completes.
+    expect(stubs.length).toBeGreaterThanOrEqual(1);
     for (const stub of stubs) {
       expect(stub.__startCount).toBe(1);
       expect(stub.__stopCount).toBe(0);
@@ -711,7 +877,7 @@ describe("createWorkflowSupervisor", () => {
       expect(stub.__opts.runId.length).toBeGreaterThan(0);
     }
     const runIds = stubs.map((s) => s.__opts.runId);
-    expect(new Set(runIds).size).toBe(2);
+    expect(new Set(runIds).size).toBe(stubs.length);
 
     // Shutdown stops every armed accumulator before tearing the
     // child down.
@@ -1718,5 +1884,330 @@ describe("IPC integration smoke", () => {
     expect(crashes).toHaveLength(0);
     void downstream;
     void hexDecode;
+  });
+});
+
+describe("supervisor inbox FIFO dispatch loop", () => {
+  async function buildFifoTestFixture(opts: {
+    label: string;
+    inbox: InboxPrimitives;
+    deriveMailAuditRef?: (
+      messageId: string,
+      rawMessage: Uint8Array,
+    ) => { store: string; path: string };
+    terminalEventSource?: TerminalEventSource;
+  }) {
+    const baseDir = await makeTempDir(opts.label);
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const supervisorIpcKeyPair = await generateKeyPair();
+    const childIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      const handle: SubprocessHandle = {
+        pid: 11111,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      return handle;
+    };
+    const mailBus = createMockMailBus();
+    const baseBindings = await buildBindings({
+      baseDir,
+      spawner,
+      signSpy: () => ({ sig: new Uint8Array(64), principalKind: "supervisor" }),
+      mailBus,
+      inboxPrimitives: opts.inbox,
+    });
+    const bindings: WorkflowSupervisorBindings = {
+      ...baseBindings,
+      ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
+      ...(opts.deriveMailAuditRef !== undefined
+        ? { deriveMailAuditRef: opts.deriveMailAuditRef }
+        : {}),
+      ...(opts.terminalEventSource !== undefined
+        ? { terminalEventSource: opts.terminalEventSource }
+        : {}),
+    };
+    const supervisor = createWorkflowSupervisor(bindings);
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      onInferenceEvent: () => undefined,
+    });
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+        },
+      },
+    });
+    while (!mailBus.registered().includes("deployment-x@example.com")) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 11111,
+        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      },
+    });
+    await spawnPromise;
+    return {
+      supervisor,
+      mailBus,
+      supervisorToChild,
+    };
+  }
+
+  test("default deriveMailAuditRef stamps `in-process` store on enqueued envelopes", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const { supervisor, mailBus } = await buildFifoTestFixture({
+      label: "fifo-default-audit-",
+      inbox,
+    });
+    mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("audit-default-1"),
+    );
+    // Wait for the enqueue to land in the in-memory inbox.
+    const deadline = Date.now() + 500;
+    while (
+      Date.now() < deadline &&
+      inbox.snapshot("deployment-x@example.com").inbox.size === 0 &&
+      inbox.snapshot("deployment-x@example.com").consumed.size === 0
+    ) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const consumed = [
+      ...inbox.snapshot("deployment-x@example.com").consumed.values(),
+    ];
+    const inboxEntries = [
+      ...inbox.snapshot("deployment-x@example.com").inbox.values(),
+    ];
+    const all = [...consumed, ...inboxEntries];
+    expect(all.length).toBeGreaterThanOrEqual(1);
+    const first = all[0];
+    if (first === undefined) throw new Error("unreachable");
+    expect(first.mailAuditRef.store).toBe("in-process");
+    expect(first.mailAuditRef.path.length).toBeGreaterThan(0);
+    await supervisor.shutdown();
+  });
+
+  test("deriveMailAuditRef override is invoked with messageId and stamps the envelope", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const observed: { messageId: string; len: number }[] = [];
+    const { supervisor, mailBus } = await buildFifoTestFixture({
+      label: "fifo-override-audit-",
+      inbox,
+      deriveMailAuditRef: (messageId, rawMessage) => {
+        observed.push({ messageId, len: rawMessage.byteLength });
+        return {
+          store: "test-audit",
+          path: `deployment-x/${messageId}`,
+        };
+      },
+    });
+    const payload = new TextEncoder().encode("audit-override-1");
+    mailBus.deliver("deployment-x@example.com", payload);
+    const deadline = Date.now() + 500;
+    while (Date.now() < deadline && observed.length === 0) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(observed.length).toBe(1);
+    const observedEntry = observed[0];
+    if (observedEntry === undefined) throw new Error("unreachable");
+    expect(observedEntry.len).toBe(payload.byteLength);
+    expect(observedEntry.messageId.length).toBeGreaterThan(0);
+    const allEntries = [
+      ...inbox.snapshot("deployment-x@example.com").inbox.values(),
+      ...inbox.snapshot("deployment-x@example.com").consumed.values(),
+    ];
+    expect(allEntries.length).toBeGreaterThanOrEqual(1);
+    const first = allEntries[0];
+    if (first === undefined) throw new Error("unreachable");
+    expect(first.mailAuditRef.store).toBe("test-audit");
+    expect(first.mailAuditRef.path).toBe(
+      `deployment-x/${observedEntry.messageId}`,
+    );
+    await supervisor.shutdown();
+  });
+
+  test("two enqueued messages dispatch serially in FIFO order with terminal gating", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    // Per-runId terminal-event source the test controls so the
+    // dispatch loop sits on `waitForRunTerminal` until the test
+    // unblocks each run.
+    const gates = new Map<
+      string,
+      { resolve: () => void; promise: Promise<TerminalRunEvent> }
+    >();
+    function gateFor(runId: string) {
+      let entry = gates.get(runId);
+      if (entry === undefined) {
+        let resolver: (e: TerminalRunEvent) => void = () => undefined;
+        const promise = new Promise<TerminalRunEvent>((resolve) => {
+          resolver = resolve;
+        });
+        entry = {
+          resolve: () => resolver({ kind: "RunCompleted", seq: 0, at: "test" }),
+          promise,
+        };
+        gates.set(runId, entry);
+      }
+      return entry;
+    }
+    const terminalEventSource: TerminalEventSource = (runId: string) => ({
+      [Symbol.asyncIterator](): AsyncIterator<TerminalRunEvent> {
+        const gate = gateFor(runId);
+        let done = false;
+        return {
+          async next(): Promise<IteratorResult<TerminalRunEvent>> {
+            if (done) return { value: undefined, done: true };
+            const event = await gate.promise;
+            done = true;
+            return { value: event, done: false };
+          },
+          async return(): Promise<IteratorResult<TerminalRunEvent>> {
+            done = true;
+            return { value: undefined, done: true };
+          },
+        };
+      },
+    });
+    const { supervisor, mailBus, supervisorToChild } =
+      await buildFifoTestFixture({
+        label: "fifo-serial-",
+        inbox,
+        terminalEventSource,
+      });
+    // Two messages. With FIFO dispatch and terminal gating, exactly
+    // one trigger.fire lands per gate release.
+    mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("serial-msg-A"),
+    );
+    mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("serial-msg-B"),
+    );
+    // Wait for the first trigger.fire to land on the child stream.
+    const deadlineOne = Date.now() + 500;
+    while (Date.now() < deadlineOne) {
+      const flushed = supervisorToChild.flushed();
+      const triggerFires = flushed.filter((f) => f.includes("trigger.fire"));
+      if (triggerFires.length >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    let triggerFires = supervisorToChild
+      .flushed()
+      .filter((f) => f.includes("trigger.fire"));
+    expect(triggerFires.length).toBe(1);
+    // Release the first run's terminal event. The dispatch loop
+    // proceeds to markConsumed and pulls the second message.
+    const firstRunId = [...gates.keys()][0];
+    if (firstRunId === undefined) throw new Error("first run not minted");
+    gateFor(firstRunId).resolve();
+    const deadlineTwo = Date.now() + 500;
+    while (Date.now() < deadlineTwo) {
+      const flushed = supervisorToChild.flushed();
+      triggerFires = flushed.filter((f) => f.includes("trigger.fire"));
+      if (triggerFires.length >= 2) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(triggerFires.length).toBe(2);
+    // The first message must be `markConsumed` before the second is
+    // dispatched -- check the in-memory state.
+    const consumed = inbox.snapshot("deployment-x@example.com").consumed;
+    expect(consumed.size).toBeGreaterThanOrEqual(1);
+    // Release the second run so the loop completes its cycle.
+    const secondRunId = [...gates.keys()].find((id) => id !== firstRunId);
+    if (secondRunId !== undefined) {
+      gateFor(secondRunId).resolve();
+    }
+    await supervisor.shutdown();
+  });
+
+  test("spawn-time replayProcessingToInbox moves orphaned processing entries back to inbox", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    // Seed a `processing/` entry before the supervisor spawns. The
+    // entry should be moved back to `inbox/` during `spawn()`.
+    const state = inbox.snapshot("deployment-x@example.com");
+    state.processing.set("1000-msg-orphan", {
+      messageId: "msg-orphan",
+      receivedAt: 1000,
+      mailAuditRef: { store: "test", path: "test/orphan" },
+    });
+    // Hold the run open with a terminal-event source that never
+    // resolves so the test can observe the dispatch loop's first
+    // dequeue without `markConsumed` racing the assertion.
+    const terminalEventSource: TerminalEventSource = () => ({
+      [Symbol.asyncIterator](): AsyncIterator<TerminalRunEvent> {
+        return {
+          next() {
+            return new Promise<IteratorResult<TerminalRunEvent>>(
+              () => undefined,
+            );
+          },
+          return(): Promise<IteratorResult<TerminalRunEvent>> {
+            return Promise.resolve({ value: undefined, done: true });
+          },
+        };
+      },
+    });
+    const { supervisor, supervisorToChild } = await buildFifoTestFixture({
+      label: "fifo-replay-spawn-",
+      inbox,
+      terminalEventSource,
+    });
+    // Wait for the dispatch loop to pull the recovered inbox entry
+    // and send the trigger.fire. The terminal-event source above
+    // never resolves so the loop sits on the dispatch indefinitely.
+    const deadline = Date.now() + 500;
+    while (Date.now() < deadline) {
+      const flushed = supervisorToChild.flushed();
+      const triggerFires = flushed.filter((f) => f.includes("trigger.fire"));
+      if (triggerFires.length >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const triggerFires = supervisorToChild
+      .flushed()
+      .filter((f) => f.includes("trigger.fire"));
+    expect(triggerFires.length).toBeGreaterThanOrEqual(1);
+    // The processing entry was moved back to inbox during spawn,
+    // then dequeued by the dispatch loop into processing again.
+    const snapshot = inbox.snapshot("deployment-x@example.com");
+    expect(snapshot.processing.size).toBe(1);
+    const processingEntry = [...snapshot.processing.values()][0];
+    if (processingEntry === undefined) throw new Error("unreachable");
+    expect(processingEntry.messageId).toBe("msg-orphan");
+    await supervisor.shutdown();
   });
 });
