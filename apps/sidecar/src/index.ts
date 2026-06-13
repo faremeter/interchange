@@ -189,6 +189,13 @@ const sidecarToken = requireEnv("SIDECAR_TOKEN");
 // trust anchors. Today the IPC bridge in `pack.push.request` carries
 // the pack; the WebSocket-connection keys are reserved for a future
 // child-local hub link without redoing the boot-edge wiring.
+//
+// `PATH`, `HOME`, and `TMPDIR` are propagated from the boot edge's own
+// environment so the child's `#!/usr/bin/env bun` shebang can resolve
+// `bun`, agent code can find a writable home, and tmp-file APIs land
+// on the same temp root the host uses. The substrate-config validator
+// ignores undeclared keys, so these are visible to the OS for binary
+// lookup but invisible to the typed `SubstrateConfig` shape.
 const multistepSubstrateEnv: Record<string, string> = {
   SIDECAR_DATA_DIR: dataDir,
   SIDECAR_SIGNING_PUBLIC_KEY: Buffer.from(sidecarSigningKey.publicKey).toString(
@@ -200,7 +207,16 @@ const multistepSubstrateEnv: Record<string, string> = {
   HUB_WS_URL: hubWsUrl,
   SIDECAR_ID: sidecarId,
   SIDECAR_TOKEN: sidecarToken,
+  PATH: requireEnv("PATH"),
 };
+const hostHome = process.env["HOME"];
+if (hostHome !== undefined) {
+  multistepSubstrateEnv["HOME"] = hostHome;
+}
+const hostTmpdir = process.env["TMPDIR"];
+if (hostTmpdir !== undefined) {
+  multistepSubstrateEnv["TMPDIR"] = hostTmpdir;
+}
 
 const orchestrator = createSidecarOrchestrator({
   hubURL: hubWsUrl,
