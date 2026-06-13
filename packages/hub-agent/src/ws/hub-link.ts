@@ -559,6 +559,43 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   // sequence space.
   let workflowRunPackCounter = 0;
 
+  // Per-(repoId.id, ref) flag tracking whether at least one workflow-run
+  // pack push has been accepted by the hub, and a per-(repoId.id, ref)
+  // serialization queue. Both are needed because the hub's
+  // `receiveWorkflowRunPack` resolves the ref OUTSIDE the substrate's
+  // per-repo lock, then enters `receivePack` which acquires the lock
+  // and calls `initRepo` BEFORE the CAS check.
+  //
+  // First-push race:
+  //   The hub's `initRepo` creates a `.gitignore` genesis commit on
+  //   `refs/heads/main` inside the lock. `receivePackObjects`'s CAS
+  //   then compares that genesis (now the ref's tip) against the
+  //   caller-supplied `expectedOldSha` (null, because the caller's
+  //   pre-lock `resolveRef` observed an absent repo) and rejects with
+  //   `non_fast_forward`. The hub surfaces the failure as
+  //   `reason: "corrupt"` on the wire.
+  //
+  // Concurrent-push race:
+  //   Two pushes arriving close together both run their pre-lock
+  //   `resolveRef` against the same hub state; whichever loses the
+  //   `withRepoLock` race observes a stale `expectedOldSha` and
+  //   rejects with `non_fast_forward`.
+  //
+  // We close both windows on the sender side: serialize every push
+  // per `(repoId, ref)` so the second sender only fires after the
+  // first has been acked or rejected, and retry the FIRST push once
+  // to absorb the bootstrap race against the hub's `initRepo` step.
+  // Re-shipping the same pack against the now-initialized hub repo
+  // works because the hub's next `resolveRef` returns the genesis
+  // sha (instead of null) and the CAS passes. The retry is bounded
+  // to the first push per `(repoId, ref)` so a genuine corruption
+  // surfaces verbatim once the repo has been bootstrapped.
+  const workflowRunPackBootstrapped = new Set<string>();
+  const workflowRunPackQueues = new Map<string, Promise<void>>();
+  function workflowRunPackKey(repoId: RepoId, ref: string): string {
+    return `${repoId.kind}:${repoId.id}:${ref}`;
+  }
+
   async function handleSyncRequest(frame: SyncRequestFrame): Promise<void> {
     const { agentAddress, transferId } = frame;
     try {
@@ -601,15 +638,62 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     ref: string;
     commitSha: string;
   }): Promise<void> {
-    const transferId = `workflow-run-${++workflowRunPackCounter}-${opts.repoId.id}`;
-    await packSender.send({
-      agentAddress: opts.agentAddress,
-      repoId: opts.repoId,
-      transferId,
-      pack: opts.pack,
-      ref: opts.ref,
-      commitSha: opts.commitSha,
-    });
+    const key = workflowRunPackKey(opts.repoId, opts.ref);
+
+    async function sendOnce(): Promise<void> {
+      const transferId = `workflow-run-${++workflowRunPackCounter}-${opts.repoId.id}`;
+      await packSender.send({
+        agentAddress: opts.agentAddress,
+        repoId: opts.repoId,
+        transferId,
+        pack: opts.pack,
+        ref: opts.ref,
+        commitSha: opts.commitSha,
+      });
+    }
+
+    async function runWithBootstrap(): Promise<void> {
+      if (workflowRunPackBootstrapped.has(key)) {
+        await sendOnce();
+        return;
+      }
+      try {
+        await sendOnce();
+      } catch (first) {
+        // First push to a never-bootstrapped (repoId, ref) lost the
+        // race with the hub substrate's `receivePack` initRepo step
+        // (see the comment on `workflowRunPackBootstrapped` above).
+        // The hub has now initialized the repo as a side effect of
+        // the failed push; the retry uses the same pack but observes
+        // the bootstrap genesis as the CAS baseline and lands.
+        const reason = first instanceof Error ? first.message : String(first);
+        logger.warn`Workflow-run pack push bootstrap retry for ${opts.repoId.id}/${opts.ref}: ${reason}`;
+        await sendOnce();
+      }
+      workflowRunPackBootstrapped.add(key);
+    }
+
+    // Serialize pushes per (repoId, ref). The hub's `receiveWorkflowRunPack`
+    // does its `resolveRef` outside the substrate's per-repo lock, so
+    // overlapping pushes from this sender would each observe a stale
+    // baseline and the second to acquire the hub-side lock would
+    // reject with `non_fast_forward`. Chaining through this queue
+    // keeps the receive ordering consistent end-to-end.
+    const prior = workflowRunPackQueues.get(key) ?? Promise.resolve();
+    const next = prior.catch(() => undefined).then(() => runWithBootstrap());
+    workflowRunPackQueues.set(key, next);
+    try {
+      await next;
+    } finally {
+      // Drop the queue entry when the chain has settled and no
+      // follower has appended, so a long-idle (repoId, ref) does not
+      // hold a dead promise reference. A racing append replaces this
+      // entry before we get here; the conditional avoids clobbering
+      // a still-active chain.
+      if (workflowRunPackQueues.get(key) === next) {
+        workflowRunPackQueues.delete(key);
+      }
+    }
   }
 
   async function handleMessage(data: string): Promise<void> {
