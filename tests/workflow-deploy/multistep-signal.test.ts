@@ -258,7 +258,6 @@ describe("multi-step workflow round-trip with signal-await", () => {
       workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
       mailAddress: deploymentMailAddress,
-      supervisor: null,
     });
 
     // Per-step `agent-state` repos materialize on the hub: one per

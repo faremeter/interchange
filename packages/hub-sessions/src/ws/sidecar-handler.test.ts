@@ -2483,4 +2483,40 @@ describe("SidecarRouter", () => {
       expect(last.repoId).toEqual(repoId);
     });
   });
+
+  describe("sendDrain", () => {
+    test("ships a drain.deliver frame to the sidecar holding the deployment", () => {
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-drain-1",
+          token: "tok",
+          agentAddresses: ["dep@integration.interchange"],
+        }),
+      );
+      ws.sent.length = 0;
+
+      router.sendDrain({
+        agentAddress: "dep@integration.interchange",
+        deadlineMs: 7_500,
+      });
+
+      const last = lastSent(ws);
+      expect(last.type).toBe("drain.deliver");
+      expect(last.agentAddress).toBe("dep@integration.interchange");
+      expect(last.deadlineMs).toBe(7_500);
+    });
+
+    test("throws when no sidecar is registered for the address", () => {
+      expect(() =>
+        router.sendDrain({
+          agentAddress: "absent@integration.interchange",
+          deadlineMs: 1_000,
+        }),
+      ).toThrow(/No sidecar connected/);
+    });
+  });
 });

@@ -94,6 +94,9 @@ function createMockRouter(): SidecarRouter & {
     ) => {
       calls.push({ method: "sendSignalDeliver", args: [opts] });
     }) as SidecarRouter["sendSignalDeliver"],
+    sendDrain: ((opts: Parameters<SidecarRouter["sendDrain"]>[0]) => {
+      calls.push({ method: "sendDrain", args: [opts] });
+    }) as SidecarRouter["sendDrain"],
     subscribeAgent: (() => () => undefined) as SidecarRouter["subscribeAgent"],
     dispatchAgentEvent: () => undefined,
     getConnectedSidecars: () => [],

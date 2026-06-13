@@ -138,6 +138,21 @@ export type SidecarRouter = {
     signalId: string;
     payload: unknown;
   }): void;
+  /**
+   * Deliver a workflow-host drain control payload to the sidecar that
+   * hosts the named deployment-level mail address. The sidecar's
+   * hub-link routes the frame through its `drainInboundRouter` into
+   * the deployment's supervisor, which sends a `drain` control IPC
+   * frame to the workflow-process child and arms one `drainTimeout`
+   * accumulator per in-flight run. Cancel-mode steps abort on the
+   * child side; wait-mode steps continue. Accumulators commit a
+   * signed `CancelRequested{origin: "supervisor-drain"}` against the
+   * workflow-run repo when the deadline expires.
+   *
+   * Throws when no sidecar is registered for `agentAddress`; the
+   * caller is responsible for ensuring the deployment is live.
+   */
+  sendDrain(opts: { agentAddress: string; deadlineMs: number }): void;
 
   subscribeAgent(
     agentAddress: string,
@@ -1737,6 +1752,26 @@ export function createSidecarRouter(
     });
   }
 
+  function sendDrain(opts: { agentAddress: string; deadlineMs: number }): void {
+    const ws = addressIndex.get(opts.agentAddress);
+    if (ws === undefined) {
+      throw new Error(
+        `No sidecar connected for deployment "${opts.agentAddress}"`,
+      );
+    }
+    const conn = connections.get(ws);
+    if (conn === undefined) {
+      throw new Error(
+        `No sidecar connected for deployment "${opts.agentAddress}"`,
+      );
+    }
+    conn.send({
+      type: "drain.deliver",
+      agentAddress: opts.agentAddress,
+      deadlineMs: opts.deadlineMs,
+    });
+  }
+
   return {
     handleOpen,
     handleMessage,
@@ -1751,6 +1786,7 @@ export function createSidecarRouter(
     sendPack,
     sendSyncRequest,
     sendSignalDeliver,
+    sendDrain,
     subscribeAgent,
     dispatchAgentEvent: dispatchToSubscribers,
     getConnectedSidecars,

@@ -220,6 +220,8 @@ function createMockSidecarRouter(): SidecarRouter {
     sendSourcesUpdate: () => notImpl("sendSourcesUpdate"),
     sendPack: () => notImpl("sendPack"),
     sendSyncRequest: () => notImpl("sendSyncRequest"),
+    sendSignalDeliver: () => notImpl("sendSignalDeliver"),
+    sendDrain: () => notImpl("sendDrain"),
     subscribeAgent: () => notImpl("subscribeAgent"),
     dispatchAgentEvent: () => undefined,
     getConnectedSidecars: () => [],

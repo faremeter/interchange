@@ -28,6 +28,7 @@ import {
 } from "./workflow-host-wiring";
 import {
   createDeploymentAddressRegistry,
+  createMultistepDrainRouter,
   createMultistepMailRouter,
   createMultistepSignalRouter,
   createWorkflowRunPackClient,
@@ -167,6 +168,18 @@ const multistepMailRouter = createMultistepMailRouter();
 // single writer of the workflow-run repo on the sidecar side.
 const multistepSignalRouter = createMultistepSignalRouter();
 
+// Per-deployment-address drain handler registry the hub-link consults
+// on every inbound `drain.deliver` frame. The multi-step deploy router
+// registers a handler against the deployment's mail address once its
+// supervisor spawns; the handler forwards the drain into the
+// supervisor's `drain`, which sends a `drain` control IPC frame to the
+// workflow-process child and arms one drainTimeout accumulator per
+// in-flight run. Cancel-mode in-flight steps abort on the child side;
+// wait-mode steps continue. Accumulators commit a signed
+// `CancelRequested{origin: "supervisor-drain"}` against the
+// workflow-run repo when the deadline expires.
+const multistepDrainRouter = createMultistepDrainRouter();
+
 const transport = createInMemoryTransport();
 
 // The pack-push client closes over the substrate (for `createPack`)
@@ -263,6 +276,7 @@ const orchestrator = createSidecarOrchestrator({
   },
   mailInboundRouter: multistepMailRouter,
   signalInboundRouter: multistepSignalRouter,
+  drainInboundRouter: multistepDrainRouter,
   createDeployRouter: ({ sessions, keyStore, onAgentEvent }) =>
     createSidecarDeployRouter({
       sessions,
@@ -276,6 +290,7 @@ const orchestrator = createSidecarOrchestrator({
       },
       multistepMailRouter,
       multistepSignalRouter,
+      multistepDrainRouter,
       multistepSubstrateEnv,
       // The multi-step supervisor forwards `pack.push.request` upstream
       // control frames into this closure; the boot edge resolves them

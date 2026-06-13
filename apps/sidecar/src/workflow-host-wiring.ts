@@ -45,6 +45,7 @@ import type { AgentDeployFrame } from "@intx/types/sidecar";
 import { STEP_ID_PATTERN } from "@intx/workflow";
 
 import type {
+  MultistepDrainRouter,
   MultistepMailRouter,
   MultistepSignalRouter,
 } from "./workflow-run-pack-client";
@@ -606,6 +607,24 @@ export function createSidecarDeployRouter(deps: {
    * through the hub-link until the wiring is plumbed.
    */
   multistepSignalRouter?: MultistepSignalRouter;
+  /**
+   * Per-deployment-address drain handler registry the sidecar
+   * hub-link's `drain.deliver` path consults. The multi-step branch
+   * registers `wired.supervisor.drain` against the deployment's mail
+   * address once `supervisor.spawn` succeeds so a hub-side
+   * `drain.deliver` frame flows into the workflow-process child via
+   * the IPC's `drain` payload and arms the supervisor's per-run
+   * `drainTimeout` accumulators. Cancel-mode in-flight steps abort on
+   * the child side; wait-mode steps continue. Accumulators commit a
+   * signed `CancelRequested{origin: "supervisor-drain"}` against the
+   * workflow-run repo when the deadline expires.
+   *
+   * Optional so tests that exercise the trivial branch (or the
+   * multi-step branch without an end-to-end drain loop) can omit the
+   * binding; an absent registry means hub-side drain frames cannot
+   * route through the hub-link until the wiring is plumbed.
+   */
+  multistepDrainRouter?: MultistepDrainRouter;
 }): DeployRouter {
   const principalPublicKeyHex = derivePrincipalPublicKeyHex(
     deps.signingKeySeed,
@@ -820,6 +839,17 @@ export function createSidecarDeployRouter(deps: {
         signalId: args.signalId,
         payload: args.payload,
       });
+    });
+    // Register the drain handler against the deployment address so a
+    // hub-side `drain.deliver` frame dispatches through the
+    // supervisor's `drain`, which forwards a `drain` control IPC frame
+    // to the workflow-process child and arms one `drainTimeout`
+    // accumulator per in-flight run. Cancel-mode in-flight steps abort
+    // on the child side; wait-mode steps continue. Each accumulator
+    // commits a signed `CancelRequested{origin: "supervisor-drain"}`
+    // against the workflow-run repo when the deadline expires.
+    deps.multistepDrainRouter?.register(frame.agentAddress, async (args) => {
+      await wired.supervisor.drain({ deadlineMs: args.deadlineMs });
     });
 
     return { publicKey: principalPublicKeyHex };

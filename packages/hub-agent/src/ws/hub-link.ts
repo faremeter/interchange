@@ -27,6 +27,7 @@ import {
   type PackRejectFrame,
   type RepoId,
   type SignalDeliverFrame,
+  type DrainDeliverFrame,
   type SyncRequestFrame,
   type DeployApplyErrorFrame,
 } from "@intx/types/sidecar";
@@ -134,6 +135,33 @@ export interface SignalInboundRouter {
   tryRoute(frame: SignalDeliverFrame): Promise<boolean>;
 }
 
+/**
+ * Per-deployment-address drain handler registry the link consults on
+ * every inbound `drain.deliver` frame. Production wires this against
+ * the sidecar's multi-step deploy registry so the frame flows into the
+ * deployment's supervisor (which forwards a `drain` control IPC frame
+ * to the workflow-process child and arms one drainTimeout accumulator
+ * per in-flight run). Trivial deployments do not register a handler;
+ * the link logs and drops a frame whose `agentAddress` is unknown so
+ * the wire surface fails loudly rather than silently absorbing a
+ * misrouted delivery.
+ *
+ * The shape lives on hub-agent so the link does not import the sidecar
+ * host's wiring module, and so tests can substitute a stub.
+ */
+export interface DrainInboundRouter {
+  /**
+   * Attempt to dispatch `frame` to the supervisor registered against
+   * `frame.agentAddress`. Returns a promise that resolves to `true`
+   * when a handler accepted the frame, `false` when no handler is
+   * registered; the promise rejects when the handler is registered but
+   * the supervisor's `drain` itself throws. The link surfaces a
+   * rejection through a logged warning -- a structured failure-reply
+   * frame for drain does not exist on the wire today.
+   */
+  tryRoute(frame: DrainDeliverFrame): Promise<boolean>;
+}
+
 export type HubLinkConfig = {
   hubURL: string;
   sidecarId: string;
@@ -179,6 +207,17 @@ export type HubLinkConfig = {
    * misrouted delivery is observable rather than silent.
    */
   signalInboundRouter?: SignalInboundRouter;
+  /**
+   * Optional pre-fallback drain dispatcher. When present, the link
+   * routes every inbound `drain.deliver` frame through this router.
+   * Production wires this against the sidecar's multi-step deploy
+   * registry so a deployment-address drain flows into the supervisor's
+   * `drain`. Trivial deployments (and tests that do not exercise the
+   * drain surface) omit it; an absent router causes inbound drain
+   * frames to be logged-and-dropped so a misrouted delivery is
+   * observable rather than silent.
+   */
+  drainInboundRouter?: DrainInboundRouter;
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
   scheduleReconnect?: ReconnectScheduler;
@@ -230,6 +269,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     deployRouter,
     mailInboundRouter,
     signalInboundRouter,
+    drainInboundRouter,
     pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
     reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
     scheduleReconnect = defaultScheduleReconnect,
@@ -686,6 +726,22 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
+  async function handleDrainDeliver(frame: DrainDeliverFrame): Promise<void> {
+    if (drainInboundRouter === undefined) {
+      logger.warn`Received drain.deliver for ${frame.agentAddress} but no drainInboundRouter is wired; dropping`;
+      return;
+    }
+    try {
+      const routed = await drainInboundRouter.tryRoute(frame);
+      if (!routed) {
+        logger.warn`drain.deliver for ${frame.agentAddress} did not match any registered deployment; dropping`;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn`drain.deliver delivery failed for ${frame.agentAddress}: ${msg}`;
+    }
+  }
+
   async function pushWorkflowRunPack(opts: {
     agentAddress: string;
     repoId: RepoId;
@@ -827,6 +883,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         break;
       case "signal.deliver":
         await handleSignalDeliver(frame);
+        break;
+      case "drain.deliver":
+        await handleDrainDeliver(frame);
         break;
       case "repo.pack.ack":
         handlePackAck(frame);

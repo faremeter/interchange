@@ -33,6 +33,7 @@ import {
   type HubLink,
   type MailInboundRouter,
   type SignalInboundRouter,
+  type DrainInboundRouter,
   type ReconnectScheduler,
 } from "./ws/hub-link";
 
@@ -103,6 +104,14 @@ export type SidecarOrchestratorConfig = {
    * to `createHubLink`.
    */
   signalInboundRouter?: SignalInboundRouter;
+  /**
+   * Optional pre-fallback drain dispatcher the link consults on every
+   * inbound `drain.deliver` frame. Production wires this against the
+   * sidecar's multi-step deployment drain handler registry so a
+   * deployment-address drain flows into the supervisor's `drain`. The
+   * orchestrator forwards the binding unchanged to `createHubLink`.
+   */
+  drainInboundRouter?: DrainInboundRouter;
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
   scheduleReconnect?: ReconnectScheduler;
@@ -135,6 +144,7 @@ export function createSidecarOrchestrator(
     createDeployRouter,
     mailInboundRouter,
     signalInboundRouter,
+    drainInboundRouter,
     pingIntervalMs,
     reconnectDelayMs,
     scheduleReconnect,
@@ -205,6 +215,7 @@ export function createSidecarOrchestrator(
     deployRouter,
     ...(mailInboundRouter !== undefined ? { mailInboundRouter } : {}),
     ...(signalInboundRouter !== undefined ? { signalInboundRouter } : {}),
+    ...(drainInboundRouter !== undefined ? { drainInboundRouter } : {}),
     ...(pingIntervalMs !== undefined ? { pingIntervalMs } : {}),
     ...(reconnectDelayMs !== undefined ? { reconnectDelayMs } : {}),
     ...(scheduleReconnect !== undefined ? { scheduleReconnect } : {}),

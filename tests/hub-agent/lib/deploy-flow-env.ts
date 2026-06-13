@@ -1213,6 +1213,42 @@ export async function injectSignal(
   return { signalId };
 }
 
+/** Options for `initiateDrain`. */
+export type InitiateDrainOpts = {
+  /**
+   * Wire `deadlineMs` carried on the drain control frame. Defaults
+   * to the supervisor's own `DEFAULT_DRAIN_TIMEOUT_MS` (5_000) when
+   * omitted, mirroring the production wiring's policy default.
+   */
+  deadlineMs?: number;
+};
+
+/**
+ * Send a workflow-host drain control payload through the production
+ * hub -> sidecar -> supervisor -> workflow-process child pipeline. The
+ * hub router's `sendDrain` ships a `drain.deliver` wire frame to the
+ * sidecar holding the deployment; the sidecar's hub-link routes the
+ * frame into the deployment's supervisor, which forwards a `drain`
+ * control IPC payload to the workflow-process child and arms one
+ * `drainTimeout` accumulator per in-flight run. Cancel-mode in-flight
+ * steps abort on the child side as the controller signal flips;
+ * wait-mode steps continue. Each accumulator commits a signed
+ * `CancelRequested{origin: "supervisor-drain"}` against the
+ * workflow-run repo when the deadline expires.
+ */
+export function initiateDrain(
+  env: DeployFlowEnv,
+  deploymentId: string,
+  opts: InitiateDrainOpts = {},
+): void {
+  const handle = requireDeployment(env, deploymentId);
+  const deadlineMs = opts.deadlineMs ?? 5_000;
+  env.hub.router.sendDrain({
+    agentAddress: handle.mailAddress,
+    deadlineMs,
+  });
+}
+
 /**
  * Write a `processing/<receivedAt>-<messageId>.json` entry directly
  * into the deployment's workflow-run repo. The helper composes

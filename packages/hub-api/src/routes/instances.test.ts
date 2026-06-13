@@ -249,6 +249,12 @@ function createMockSidecarRouter(
     sendSyncRequest(_addr) {
       notImpl("sendSyncRequest");
     },
+    sendSignalDeliver(_opts) {
+      notImpl("sendSignalDeliver");
+    },
+    sendDrain(_opts) {
+      notImpl("sendDrain");
+    },
     subscribeAgent(_addr, _callback) {
       return notImpl("subscribeAgent");
     },

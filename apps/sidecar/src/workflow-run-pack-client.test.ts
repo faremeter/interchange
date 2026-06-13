@@ -4,6 +4,7 @@ import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
   createDeploymentAddressRegistry,
+  createMultistepDrainRouter,
   createMultistepMailRouter,
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
@@ -261,5 +262,96 @@ describe("createMultistepMailRouter", () => {
     router.tryRoute("dep@integration.interchange", new Uint8Array([7]));
     expect(first).toHaveLength(0);
     expect(second).toHaveLength(1);
+  });
+});
+
+describe("createMultistepDrainRouter", () => {
+  test("tryRoute resolves to false when no handler is registered", async () => {
+    const router = createMultistepDrainRouter();
+    const claimed = await router.tryRoute({
+      type: "drain.deliver",
+      agentAddress: "dep@integration.interchange",
+      deadlineMs: 1_000,
+    });
+    expect(claimed).toBe(false);
+  });
+
+  test("a registered handler receives the deadline and tryRoute resolves to true", async () => {
+    const router = createMultistepDrainRouter();
+    const received: { deadlineMs: number }[] = [];
+    router.register("dep@integration.interchange", async (args) => {
+      received.push({ deadlineMs: args.deadlineMs });
+    });
+    const claimed = await router.tryRoute({
+      type: "drain.deliver",
+      agentAddress: "dep@integration.interchange",
+      deadlineMs: 3_500,
+    });
+    expect(claimed).toBe(true);
+    expect(received).toEqual([{ deadlineMs: 3_500 }]);
+  });
+
+  test("registration is per-address; an unrelated address falls through", async () => {
+    const router = createMultistepDrainRouter();
+    const received: number[] = [];
+    router.register("dep-a@integration.interchange", async (args) => {
+      received.push(args.deadlineMs);
+    });
+    const claimed = await router.tryRoute({
+      type: "drain.deliver",
+      agentAddress: "dep-b@integration.interchange",
+      deadlineMs: 9_000,
+    });
+    expect(claimed).toBe(false);
+    expect(received).toHaveLength(0);
+  });
+
+  test("unregister removes the handler", async () => {
+    const router = createMultistepDrainRouter();
+    const received: number[] = [];
+    router.register("dep@integration.interchange", async (args) => {
+      received.push(args.deadlineMs);
+    });
+    router.unregister("dep@integration.interchange");
+    const claimed = await router.tryRoute({
+      type: "drain.deliver",
+      agentAddress: "dep@integration.interchange",
+      deadlineMs: 1_000,
+    });
+    expect(claimed).toBe(false);
+    expect(received).toHaveLength(0);
+  });
+
+  test("re-registering an address replaces the prior handler", async () => {
+    const router = createMultistepDrainRouter();
+    const first: number[] = [];
+    const second: number[] = [];
+    router.register("dep@integration.interchange", async (args) => {
+      first.push(args.deadlineMs);
+    });
+    router.register("dep@integration.interchange", async (args) => {
+      second.push(args.deadlineMs);
+    });
+    await router.tryRoute({
+      type: "drain.deliver",
+      agentAddress: "dep@integration.interchange",
+      deadlineMs: 4_200,
+    });
+    expect(first).toHaveLength(0);
+    expect(second).toEqual([4_200]);
+  });
+
+  test("handler rejection propagates through tryRoute", async () => {
+    const router = createMultistepDrainRouter();
+    router.register("dep@integration.interchange", async () => {
+      throw new Error("supervisor.drain failed");
+    });
+    await expect(
+      router.tryRoute({
+        type: "drain.deliver",
+        agentAddress: "dep@integration.interchange",
+        deadlineMs: 1_000,
+      }),
+    ).rejects.toThrow(/supervisor\.drain failed/);
   });
 });

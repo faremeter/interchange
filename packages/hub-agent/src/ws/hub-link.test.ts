@@ -1396,4 +1396,58 @@ describe("sidecar↔hub integration", () => {
       );
     }
   });
+
+  test("drainInboundRouter dispatches an inbound drain.deliver frame", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const deploymentAddress = "dep_drain-1@integration.interchange";
+    sessions.addresses.push(deploymentAddress);
+
+    const routed: { agentAddress: string; deadlineMs: number }[] = [];
+    const drainInboundRouter = {
+      async tryRoute(frame: {
+        agentAddress: string;
+        deadlineMs: number;
+      }): Promise<boolean> {
+        routed.push({
+          agentAddress: frame.agentAddress,
+          deadlineMs: frame.deadlineMs,
+        });
+        return true;
+      },
+    };
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-drain-router",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(sessions),
+      drainInboundRouter,
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getRoutableAddresses().includes(deploymentAddress),
+      );
+
+      env.router.sendDrain({
+        agentAddress: deploymentAddress,
+        deadlineMs: 4_321,
+      });
+
+      await waitFor(() => routed.length > 0);
+
+      expect(routed).toHaveLength(1);
+      expect(routed[0]?.agentAddress).toBe(deploymentAddress);
+      expect(routed[0]?.deadlineMs).toBe(4_321);
+    } finally {
+      client.close();
+      await waitFor(
+        () => !env.router.getConnectedSidecars().includes("sc-drain-router"),
+      );
+    }
+  });
 });

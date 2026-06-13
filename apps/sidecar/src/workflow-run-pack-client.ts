@@ -222,6 +222,64 @@ export function createMultistepSignalRouter(): MultistepSignalRouter {
 }
 
 /**
+ * Per-deployment drain handler the multi-step deploy router installs
+ * against the `MultistepDrainRouter` after a supervisor's `spawn`
+ * succeeds. The handler hands the drain opts off to the supervisor's
+ * `drain`, which sends a `drain` control IPC frame to the
+ * workflow-process child and arms one `drainTimeout` accumulator per
+ * in-flight run. Cancel-mode in-flight steps abort as the child's
+ * controller signal flips; wait-mode steps continue. Each accumulator
+ * commits a signed `CancelRequested{origin: "supervisor-drain"}`
+ * against the workflow-run repo when the deadline expires.
+ */
+export type MultistepDrainHandler = (args: {
+  deadlineMs: number;
+}) => Promise<void>;
+
+/**
+ * Per-deployment-address drain handler registry the sidecar hub-link
+ * consults on every inbound `drain.deliver` frame. The trivial deploy
+ * path never registers a handler. The multi-step deploy router
+ * registers a handler against the deployment's mail address after
+ * `wired.supervisor.spawn` succeeds; the handler dispatches into the
+ * supervisor's `drain`.
+ *
+ * The registry lives at the sidecar's host layer (not inside the
+ * workflow-host library) for the same boundary reason as
+ * `MultistepMailRouter` / `MultistepSignalRouter`: the routing decision
+ * is a concrete sidecar host concern, and the workflow-host package
+ * stays agnostic to which transport surface its supervisor handle
+ * rides on.
+ */
+export type MultistepDrainRouter = {
+  register(address: string, handler: MultistepDrainHandler): void;
+  unregister(address: string): void;
+  tryRoute(frame: {
+    type: "drain.deliver";
+    agentAddress: string;
+    deadlineMs: number;
+  }): Promise<boolean>;
+};
+
+export function createMultistepDrainRouter(): MultistepDrainRouter {
+  const handlers = new Map<string, MultistepDrainHandler>();
+  return {
+    register(address, handler) {
+      handlers.set(address, handler);
+    },
+    unregister(address) {
+      handlers.delete(address);
+    },
+    async tryRoute(frame) {
+      const handler = handlers.get(frame.agentAddress);
+      if (handler === undefined) return false;
+      await handler({ deadlineMs: frame.deadlineMs });
+      return true;
+    },
+  };
+}
+
+/**
  * Boot-edge facade around the substrate-shaped `RepoStore`. Forwards
  * every method to the underlying store; intercepts the
  * `writeTreePreservingPrefix` return path so a successful write

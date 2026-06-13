@@ -225,6 +225,33 @@ export const SignalDeliverFrame = type({
 export type SignalDeliverFrame = typeof SignalDeliverFrame.infer;
 
 /**
+ * Deliver a workflow-host drain control payload to a multi-step
+ * deployment's supervisor. The hub forwards the frame to the sidecar
+ * that hosts the deployment named by `agentAddress` (the
+ * deployment-level mail address). The sidecar's hub-link routes the
+ * frame into the matching supervisor's `drain`, which sends a `drain`
+ * control IPC frame to the workflow-process child and arms one
+ * `drainTimeout` accumulator per in-flight run. Cancel-mode in-flight
+ * steps abort on the child side as the controller's signal flips;
+ * wait-mode steps continue. Each accumulator commits a signed
+ * `CancelRequested{origin: "supervisor-drain"}` against the
+ * workflow-run repo through the supervisor's substrate when the
+ * deadline expires.
+ *
+ * `deadlineMs` is the wire-level policy hint the child echoes in its
+ * logs. The supervisor's accumulator is driven by its own bindings'
+ * `drainTimeoutMs` -- a per-deployment operator setting -- not by this
+ * value; the wire field exists so the child's log reflects the
+ * caller's intent.
+ */
+export const DrainDeliverFrame = type({
+  type: "'drain.deliver'",
+  agentAddress: "string",
+  deadlineMs: "number",
+});
+export type DrainDeliverFrame = typeof DrainDeliverFrame.infer;
+
+/**
  * Workflow projection carried on an `agent.deploy` frame for the
  * multi-step branch. Presence of the field at the deploy router is the
  * discriminator between the trivial-launch path (single-step,
@@ -713,7 +740,8 @@ export const HubFrame = MailInboundFrame.or(AgentDeployFrame)
   .or(PackAckFrame)
   .or(PackRejectFrame)
   .or(SyncRequestFrame)
-  .or(SignalDeliverFrame);
+  .or(SignalDeliverFrame)
+  .or(DrainDeliverFrame);
 export type HubFrame = typeof HubFrame.infer;
 
 /** Any frame on the wire, regardless of direction. */
