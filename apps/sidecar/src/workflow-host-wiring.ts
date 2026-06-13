@@ -8,6 +8,8 @@
 // implementation lives inside `@intx/workflow-host`, not here.
 
 import { createHash, createPublicKey, sign as nodeSign } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join as pathJoin } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { importPrivateKeyBytes } from "@intx/crypto-node";
@@ -600,6 +602,7 @@ export function createSidecarDeployRouter(deps: {
     });
 
     const definitionHash = computeWireDefinitionHash(projection.definition);
+
     // Per-deployment substrate-config keys the workflow-substrate-factory
     // validator requires (`SIDECAR_SUBSTRATE_CONFIG_KEYS` /
     // `SubstrateConfig` in `workflow-substrate-factory.ts`). The boot
@@ -642,6 +645,67 @@ export function createSidecarDeployRouter(deps: {
       WORKFLOW_RUN_REF: "refs/heads/main",
       [STEP_INFERENCE_SOURCES_ENV_KEY]: JSON.stringify(projection.sources),
     };
+
+    // Materialize the workflow asset on the sidecar's local substrate
+    // so the workflow-process child's `loadWorkflowDefinition` can read
+    // `workflow.json` out of the workflow-asset repo's working tree
+    // (`packages/workflow-host/src/child/run-child.ts`). The hub's
+    // orchestrator writes the asset to the hub's repo store; the
+    // sidecar's substrate is a separate data dir on disk, and nothing
+    // replicates between the two today.
+    //
+    // The frame inlines the validated `WorkflowDefinition` already
+    // (see `AgentDeployFrame.workflow.definition`), so the router has
+    // the bytes in scope. The destination path mirrors the bare
+    // RepoStore's `getRepoDir` for `{ kind: "workflow", id }`:
+    // `${SIDECAR_DATA_DIR}/assets/workflow/<id>/workflow.json`. The
+    // workflow-asset repo kind handler's `directoryPrefix` is
+    // `assets/workflow` (see `packages/hub-sessions/src/workflow-kind.ts`).
+    //
+    // The child reads via `fs.readFile`, not via a git ref resolution,
+    // so writing the bytes outside any git operation is sufficient.
+    const sidecarDataDir = substrateEnv.SIDECAR_DATA_DIR;
+    if (typeof sidecarDataDir !== "string" || sidecarDataDir.length === 0) {
+      throw new Error(
+        "sidecar deploy router: SIDECAR_DATA_DIR must be present in the multi-step substrate env for the multi-step branch; the workflow-process child resolves the workflow-asset repo dir against this data dir",
+      );
+    }
+    const workflowAssetPath = pathJoin(
+      sidecarDataDir,
+      "assets",
+      "workflow",
+      projection.definition.id,
+      "workflow.json",
+    );
+    const workflowAssetBytes = JSON.stringify(projection.definition, null, 2);
+    try {
+      await mkdir(dirname(workflowAssetPath), { recursive: true });
+      // Idempotent: only rewrite when the on-disk content differs from
+      // the projection. Treats a missing file as different.
+      let existing: string | null = null;
+      try {
+        existing = await readFile(workflowAssetPath, "utf8");
+      } catch (cause) {
+        if (
+          !(
+            cause instanceof Error &&
+            "code" in cause &&
+            (cause as { code: unknown }).code === "ENOENT"
+          )
+        ) {
+          throw cause;
+        }
+      }
+      if (existing !== workflowAssetBytes) {
+        await writeFile(workflowAssetPath, workflowAssetBytes, "utf8");
+      }
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      throw new Error(
+        `sidecar deploy router: failed to materialize workflow.json at ${workflowAssetPath}: ${reason}`,
+        { cause },
+      );
+    }
 
     const wired = createSidecarWorkflowSupervisor({
       transport: deps.transport,

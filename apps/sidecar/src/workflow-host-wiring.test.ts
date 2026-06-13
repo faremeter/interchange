@@ -726,6 +726,20 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const keyPair = await generateKeyPair();
     const tempBase = await createTempBaseDir("sidecar-multistep-");
     const repoStore = createSpawnTestRepoStore(tempBase);
+    // The deploy router's multi-step branch materializes
+    // `workflow.json` under `${SIDECAR_DATA_DIR}/assets/workflow/<id>/`
+    // before invoking the spawner. The test fixture defaults the data
+    // dir to a per-test mkdtemp so the wiring tests do not have to
+    // touch a real /tmp path; callers can override
+    // `SIDECAR_DATA_DIR` (and any other key) by passing
+    // `multistepSubstrateEnv`.
+    const defaultSubstrateEnv: Record<string, string> = {
+      SIDECAR_DATA_DIR: await createTempBaseDir("sidecar-multistep-data-"),
+    };
+    const mergedSubstrateEnv: Record<string, string> = {
+      ...defaultSubstrateEnv,
+      ...(opts.multistepSubstrateEnv ?? {}),
+    };
     const router = createSidecarDeployRouter({
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch never invokes provisionAgent; the stub throws if it does
       sessions: {
@@ -761,16 +775,14 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       ...(opts.multistepBinaryPath !== undefined
         ? { multistepBinaryPath: opts.multistepBinaryPath }
         : {}),
-      ...(opts.multistepSubstrateEnv !== undefined
-        ? { multistepSubstrateEnv: opts.multistepSubstrateEnv }
-        : {}),
+      multistepSubstrateEnv: mergedSubstrateEnv,
       ...(opts.publishWorkflowInferenceEvent !== undefined
         ? {
             publishWorkflowInferenceEvent: opts.publishWorkflowInferenceEvent,
           }
         : {}),
     });
-    return { router, tempBase, keyPair };
+    return { router, tempBase, keyPair, substrateEnv: mergedSubstrateEnv };
   }
 
   test("validates the projection, constructs SpawnOpts from the frame, drives spawn, and surfaces the supervisor's principal pubkey", async () => {
@@ -803,11 +815,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       return handle;
     };
 
+    const multiDataDir = await createTempBaseDir("sidecar-multi-data-");
     const { router, keyPair } = await buildMultistepFixture({
       spawner,
       multistepBinaryPath: "/fake/bin/multistep-workflow-child",
       multistepSubstrateEnv: {
-        SIDECAR_DATA_DIR: "/tmp/multi",
+        SIDECAR_DATA_DIR: multiDataDir,
       },
     });
 
@@ -838,7 +851,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const env = observedEnv;
     expect(observedBinary).toBe("/fake/bin/multistep-workflow-child");
     expect(env).toMatchObject({
-      SIDECAR_DATA_DIR: "/tmp/multi",
+      SIDECAR_DATA_DIR: multiDataDir,
       DEPLOYMENT_ID: "multi-example-com",
       MAILBOX_ADDRESS: "multi@example.com",
     });
@@ -1116,10 +1129,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       };
       return handle;
     };
+    const bootEdgeDataDir = await createTempBaseDir("sidecar-boot-edge-data-");
     const { router } = await buildMultistepFixture({
       spawner,
       multistepSubstrateEnv: {
-        SIDECAR_DATA_DIR: "/tmp/boot-edge-test",
+        SIDECAR_DATA_DIR: bootEdgeDataDir,
         HUB_WS_URL: "ws://hub.example/sidecar-boot",
         SIDECAR_ID: "sidecar-boot-1",
         SIDECAR_TOKEN: "boot-token-abc",
@@ -1139,7 +1153,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(observedEnv.HUB_WS_URL).toBe("ws://hub.example/sidecar-boot");
     expect(observedEnv.SIDECAR_ID).toBe("sidecar-boot-1");
     expect(observedEnv.SIDECAR_TOKEN).toBe("boot-token-abc");
-    expect(observedEnv.SIDECAR_DATA_DIR).toBe("/tmp/boot-edge-test");
+    expect(observedEnv.SIDECAR_DATA_DIR).toBe(bootEdgeDataDir);
     // Round out the spawn so the test exits cleanly.
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
@@ -1228,6 +1242,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         /* unused */
       },
       multistepSubprocessSpawner: spawner,
+      multistepSubstrateEnv: {
+        SIDECAR_DATA_DIR: await createTempBaseDir("sidecar-pack-push-data-"),
+      },
       multistepPushWorkflowRunPack: async ({ ref, commitSha, pack }) => {
         pushCalls.push({ ref, commitSha, packLen: pack.byteLength });
       },
