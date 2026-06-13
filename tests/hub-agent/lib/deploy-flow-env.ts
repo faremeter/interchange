@@ -1195,7 +1195,7 @@ export async function injectSignal(
   const handle = requireDeployment(env, deploymentId);
   const supervisorPrincipal: WorkflowRunSupervisorPrincipal = {
     kind: "supervisor",
-    deploymentId: handle.deploymentId,
+    deploymentId: handle.workflowRunRepoId.id,
   };
   const channel = createWorkflowHostSignalChannel({
     repoStore: env.hub.agentRepoStore.repoStore,
