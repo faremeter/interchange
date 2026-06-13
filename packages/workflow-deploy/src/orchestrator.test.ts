@@ -19,14 +19,18 @@ import {
 import {
   CapabilityApprovalDeniedError,
   createWorkflowDeployOrchestrator,
+  deriveDeploymentAddress,
+  deriveDeploymentAgentId,
   deriveStepAddress,
   deriveStepAgentId,
   deriveStepInstanceId,
+  MultiStepDeployHandoffMissingError,
   MultiStepDeploymentArgsMissingError,
   WorkflowDefinitionInvalidError,
   wrapHarnessAsTrivialAgent,
   type DeployContent,
   type LaunchSessionFn,
+  type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
 } from "./orchestrator";
 
@@ -184,6 +188,20 @@ function createRecordingLaunch(): {
   return { fn, launches };
 }
 
+type RecordedMultiStepDeploy = Parameters<SendMultiStepDeployFn>[0];
+
+function createRecordingMultiStepDeploy(publicKey = "ff".repeat(32)): {
+  fn: SendMultiStepDeployFn;
+  calls: RecordedMultiStepDeploy[];
+} {
+  const calls: RecordedMultiStepDeploy[] = [];
+  const fn: SendMultiStepDeployFn = async (params) => {
+    calls.push(params);
+    return { publicKey };
+  };
+  return { fn, calls };
+}
+
 describe("createWorkflowDeployOrchestrator", () => {
   describe("trivial branch", () => {
     test("preserves the existing agent address and launches once", async () => {
@@ -192,15 +210,17 @@ describe("createWorkflowDeployOrchestrator", () => {
       const directorRegistry = createDefaultDirectorRegistry();
       const workflowRepo = createRecordingWorkflowRepoWriter();
       const launch = createRecordingLaunch();
+      const multiStep = createRecordingMultiStepDeploy();
       const orchestrator = createWorkflowDeployOrchestrator({
         directorRegistry,
         workflowRepo,
         launchSession: launch.fn,
+        sendMultiStepDeploy: multiStep.fn,
       });
 
       const approvals = approvedGrantsForWorkflow(workflow, [agent]);
 
-      await orchestrator.deployWorkflow({
+      const result = await orchestrator.deployWorkflow({
         workflow,
         trivialBindings: {
           agentAddress: "ins_legacy-agent@integration.interchange",
@@ -222,6 +242,10 @@ describe("createWorkflowDeployOrchestrator", () => {
       expect(launched.instanceId).toBe("instance-legacy");
       expect(launched.config).toEqual(HARNESS_CONFIG_BASE);
       expect(launched.deployContent).toEqual(DEPLOY_CONTENT_BASE);
+      // Regression: the trivial branch does NOT invoke the multi-step
+      // deploy hand-off.
+      expect(multiStep.calls).toHaveLength(0);
+      expect(result).toEqual({ kind: "trivial" });
     });
 
     test("passes through toolPackagePins to the launch", async () => {
@@ -313,22 +337,25 @@ describe("createWorkflowDeployOrchestrator", () => {
       const directorRegistry = createDefaultDirectorRegistry();
       const workflowRepo = createRecordingWorkflowRepoWriter();
       const launch = createRecordingLaunch();
+      const multiStep = createRecordingMultiStepDeploy();
       const orchestrator = createWorkflowDeployOrchestrator({
         directorRegistry,
         workflowRepo,
         launchSession: launch.fn,
+        sendMultiStepDeploy: multiStep.fn,
       });
       const approvals = approvedGrantsForWorkflow(workflow, [
         planAgent.agent,
         executeAgent.agent,
       ]);
 
-      await orchestrator.deployWorkflow({
+      const result = await orchestrator.deployWorkflow({
         workflow,
         deploymentId: "dep_abc123",
         deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
+        hubPublicKey: "00".repeat(32),
         operatorApprovals: approvals,
       });
 
@@ -354,6 +381,137 @@ describe("createWorkflowDeployOrchestrator", () => {
       expect(executeLaunch.instanceId).toBe("ins_dep_abc123-execute");
       expect(executeLaunch.config.systemPrompt).toBe("you execute");
       expect(executeLaunch.deployContent.systemPrompt).toBe("you execute");
+
+      expect(multiStep.calls).toHaveLength(1);
+      const handoff = multiStep.calls[0];
+      if (handoff === undefined) throw new Error("missing handoff");
+      expect(handoff.agentAddress).toBe("ins_dep_abc123@workflow.interchange");
+      expect(handoff.agentId).toBe("ins_dep_abc123");
+      expect(handoff.hubPublicKey).toBe("00".repeat(32));
+      expect(handoff.definition).toBe(workflow);
+      expect(Object.keys(handoff.sources).sort()).toEqual(["execute", "plan"]);
+      const baseSource = HARNESS_CONFIG_BASE.sources[0];
+      if (baseSource === undefined) throw new Error("missing base source");
+      expect(handoff.sources.plan).toEqual(baseSource);
+      expect(handoff.sources.execute).toEqual(baseSource);
+      expect(result).toEqual({
+        kind: "multi-step",
+        publicKey: "ff".repeat(32),
+      });
+    });
+
+    test("calls sendMultiStepDeploy exactly once after the per-step launches", async () => {
+      const workflow = makeMultiStepWorkflow();
+      const planAgent = workflow.steps.plan;
+      const executeAgent = workflow.steps.execute;
+      if (planAgent?.kind !== "step" || executeAgent?.kind !== "step") {
+        throw new Error("expected both steps to be step primitives");
+      }
+      const directorRegistry = createDefaultDirectorRegistry();
+      const workflowRepo = createRecordingWorkflowRepoWriter();
+      const order: string[] = [];
+      const launch: LaunchSessionFn = async (params) => {
+        order.push(`launch:${params.agentId}`);
+      };
+      const multiStep: SendMultiStepDeployFn = async () => {
+        order.push("sendMultiStepDeploy");
+        return { publicKey: "ab".repeat(32) };
+      };
+      const orchestrator = createWorkflowDeployOrchestrator({
+        directorRegistry,
+        workflowRepo,
+        launchSession: launch,
+        sendMultiStepDeploy: multiStep,
+      });
+      const approvals = approvedGrantsForWorkflow(workflow, [
+        planAgent.agent,
+        executeAgent.agent,
+      ]);
+
+      await orchestrator.deployWorkflow({
+        workflow,
+        deploymentId: "dep_xy",
+        deploymentDomain: "workflow.interchange",
+        config: HARNESS_CONFIG_BASE,
+        deployContent: DEPLOY_CONTENT_BASE,
+        hubPublicKey: "00".repeat(32),
+        operatorApprovals: approvals,
+      });
+
+      // The hand-off fires exactly once and only after the per-step
+      // provisioning loop has finished.
+      expect(order).toEqual([
+        "launch:ins_dep_xy-plan",
+        "launch:ins_dep_xy-execute",
+        "sendMultiStepDeploy",
+      ]);
+    });
+
+    test("throws when hubPublicKey is missing on the multi-step branch", async () => {
+      const workflow = makeMultiStepWorkflow();
+      const planAgent = workflow.steps.plan;
+      const executeAgent = workflow.steps.execute;
+      if (planAgent?.kind !== "step" || executeAgent?.kind !== "step") {
+        throw new Error("expected step primitives");
+      }
+      const directorRegistry = createDefaultDirectorRegistry();
+      const workflowRepo = createRecordingWorkflowRepoWriter();
+      const launch = createRecordingLaunch();
+      const multiStep = createRecordingMultiStepDeploy();
+      const orchestrator = createWorkflowDeployOrchestrator({
+        directorRegistry,
+        workflowRepo,
+        launchSession: launch.fn,
+        sendMultiStepDeploy: multiStep.fn,
+      });
+      const approvals = approvedGrantsForWorkflow(workflow, [
+        planAgent.agent,
+        executeAgent.agent,
+      ]);
+
+      await expect(
+        orchestrator.deployWorkflow({
+          workflow,
+          deploymentId: "dep_abc123",
+          deploymentDomain: "workflow.interchange",
+          config: HARNESS_CONFIG_BASE,
+          deployContent: DEPLOY_CONTENT_BASE,
+          operatorApprovals: approvals,
+        }),
+      ).rejects.toBeInstanceOf(MultiStepDeploymentArgsMissingError);
+    });
+
+    test("throws when sendMultiStepDeploy dep is unwired", async () => {
+      const workflow = makeMultiStepWorkflow();
+      const planAgent = workflow.steps.plan;
+      const executeAgent = workflow.steps.execute;
+      if (planAgent?.kind !== "step" || executeAgent?.kind !== "step") {
+        throw new Error("expected step primitives");
+      }
+      const directorRegistry = createDefaultDirectorRegistry();
+      const workflowRepo = createRecordingWorkflowRepoWriter();
+      const launch = createRecordingLaunch();
+      const orchestrator = createWorkflowDeployOrchestrator({
+        directorRegistry,
+        workflowRepo,
+        launchSession: launch.fn,
+      });
+      const approvals = approvedGrantsForWorkflow(workflow, [
+        planAgent.agent,
+        executeAgent.agent,
+      ]);
+
+      await expect(
+        orchestrator.deployWorkflow({
+          workflow,
+          deploymentId: "dep_abc123",
+          deploymentDomain: "workflow.interchange",
+          config: HARNESS_CONFIG_BASE,
+          deployContent: DEPLOY_CONTENT_BASE,
+          hubPublicKey: "00".repeat(32),
+          operatorApprovals: approvals,
+        }),
+      ).rejects.toBeInstanceOf(MultiStepDeployHandoffMissingError);
     });
 
     test("throws when deploymentId is missing", async () => {
@@ -424,10 +582,12 @@ describe("createWorkflowDeployOrchestrator", () => {
       const directorRegistry = createDefaultDirectorRegistry();
       const workflowRepo = createRecordingWorkflowRepoWriter();
       const launch = createRecordingLaunch();
+      const multiStep = createRecordingMultiStepDeploy();
       const orchestrator = createWorkflowDeployOrchestrator({
         directorRegistry,
         workflowRepo,
         launchSession: launch.fn,
+        sendMultiStepDeploy: multiStep.fn,
       });
       const approvals = approvedGrantsForWorkflow(workflow, [agent]);
 
@@ -437,6 +597,7 @@ describe("createWorkflowDeployOrchestrator", () => {
         deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
+        hubPublicKey: "00".repeat(32),
         operatorApprovals: approvals,
       });
 
@@ -450,6 +611,70 @@ describe("createWorkflowDeployOrchestrator", () => {
       expect(launched.agentAddress).toBe(
         `ins_dep_xyz-${expectedStepId}@workflow.interchange`,
       );
+      expect(multiStep.calls).toHaveLength(1);
+    });
+
+    test("source-pin failure carries workflow.id and names the offending provider+model", async () => {
+      const workflow = makeMultiStepWorkflow();
+      const planAgent = workflow.steps.plan;
+      const executeAgent = workflow.steps.execute;
+      if (planAgent?.kind !== "step" || executeAgent?.kind !== "step") {
+        throw new Error("expected both steps to be step primitives");
+      }
+      // HarnessConfig lists `anthropic:mock-model`; agents prefer the
+      // same. Strip the source so neither the preferred nor the
+      // defaultSource resolves; the pin must reject with the
+      // workflow id and an error message that names the offending
+      // `(provider, model)`.
+      const configMissingSource: HarnessConfig = {
+        ...HARNESS_CONFIG_BASE,
+        sources: [],
+        defaultSource: "src-missing",
+      };
+      const directorRegistry = createDefaultDirectorRegistry();
+      const workflowRepo = createRecordingWorkflowRepoWriter();
+      const launch = createRecordingLaunch();
+      const multiStep = createRecordingMultiStepDeploy();
+      const orchestrator = createWorkflowDeployOrchestrator({
+        directorRegistry,
+        workflowRepo,
+        launchSession: launch.fn,
+        sendMultiStepDeploy: multiStep.fn,
+      });
+      const approvals = approvedGrantsForWorkflow(workflow, [
+        planAgent.agent,
+        executeAgent.agent,
+      ]);
+
+      let caught: unknown;
+      try {
+        await orchestrator.deployWorkflow({
+          workflow,
+          deploymentId: "dep_pinfail",
+          deploymentDomain: "workflow.interchange",
+          config: configMissingSource,
+          deployContent: DEPLOY_CONTENT_BASE,
+          hubPublicKey: "00".repeat(32),
+          operatorApprovals: approvals,
+        });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(WorkflowDefinitionInvalidError);
+      if (!(caught instanceof WorkflowDefinitionInvalidError)) {
+        throw new Error("unreachable");
+      }
+      expect(caught.workflowId).toBe(workflow.id);
+      const preferred = planAgent.agent.inference.sources[0];
+      if (preferred === undefined) {
+        throw new Error("missing preferred source");
+      }
+      expect(caught.message).toContain(preferred.provider);
+      expect(caught.message).toContain(preferred.model);
+      // Pin happens before any launch; the failed deploy must not have
+      // provisioned an agent-state repo at the sidecar.
+      expect(launch.launches).toHaveLength(0);
+      expect(multiStep.calls).toHaveLength(0);
     });
   });
 
@@ -726,5 +951,20 @@ describe("per-step address derivation", () => {
       deploymentDomain: "d",
     });
     expect(a).toBe(b);
+  });
+
+  test("deriveDeploymentAddress drops the per-step suffix", () => {
+    expect(
+      deriveDeploymentAddress({
+        deploymentId: "dep_abc",
+        deploymentDomain: "workflow.interchange",
+      }),
+    ).toBe("ins_dep_abc@workflow.interchange");
+  });
+
+  test("deriveDeploymentAgentId drops the per-step suffix", () => {
+    expect(deriveDeploymentAgentId({ deploymentId: "dep_abc" })).toBe(
+      "ins_dep_abc",
+    );
   });
 });

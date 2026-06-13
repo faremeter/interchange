@@ -47,9 +47,17 @@ function createMockRouter(): SidecarRouter & {
       calls.push({ method: "routeMail", args: [agentAddress, rawMessage] });
       return mock.routeMailResult;
     },
-    sendAgentDeploy: track(
-      "sendAgentDeploy",
-    ) as SidecarRouter["sendAgentDeploy"],
+    sendAgentDeploy: ((
+      agentAddress: string,
+      config: HarnessConfig,
+      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+    ) => {
+      calls.push({
+        method: "sendAgentDeploy",
+        args: [agentAddress, config, workflow],
+      });
+      return Promise.resolve({ publicKey: "mock-public-key" });
+    }) as SidecarRouter["sendAgentDeploy"],
     sendAgentUndeploy: track(
       "sendAgentUndeploy",
     ) as SidecarRouter["sendAgentUndeploy"],
@@ -1367,5 +1375,91 @@ describe("SessionService", () => {
         /both directly attached to the agent and selected by the tool-package resolver/,
       );
     }
+  });
+});
+
+describe("sendMultiStepDeployFrame", () => {
+  test("wires the workflow projection onto sendAgentDeploy", async () => {
+    const mockRouter = createMockRouter();
+    const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
+    mockRouter.sendAgentDeploy = ((
+      _agentAddress: string,
+      _config: HarnessConfig,
+      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+    ) => {
+      sentWorkflows.push(workflow);
+      return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
+    }) as SidecarRouter["sendAgentDeploy"];
+
+    const { sendMultiStepDeployFrame } = await import("./session-service");
+    const { defineWorkflow, step } = await import("@intx/workflow/definition");
+    const { defineAgent } = await import("@intx/agent");
+    const stubAgent = defineAgent({
+      id: "stub",
+      systemPrompt: "you stub",
+      tools: [],
+      capabilities: [],
+      inference: {
+        sources: [{ provider: "anthropic", model: "mock-model" }],
+      },
+    });
+    const definition = defineWorkflow({
+      id: "wf_multi",
+      trigger: { type: "manual" },
+      steps: {
+        plan: step({ agent: stubAgent, after: [] }),
+        execute: step({ agent: stubAgent, after: ["plan"] }),
+      },
+    });
+    const sources = {
+      plan: {
+        id: "src-plan",
+        provider: "anthropic",
+        baseURL: "https://api.example/anthropic",
+        apiKey: "secret-plan",
+        model: "mock-model",
+      },
+      execute: {
+        id: "src-execute",
+        provider: "anthropic",
+        baseURL: "https://api.example/anthropic",
+        apiKey: "secret-execute",
+        model: "mock-model",
+      },
+    };
+    const config: HarnessConfig = {
+      sessionId: "ses-multi",
+      agentId: "ins_dep_abc",
+      tenantId: "tenant-1",
+      principalId: "prin-multi",
+      agentAddress: "ins_dep_abc@workflow.interchange",
+      systemPrompt: "deployment-level",
+      tools: [],
+      grants: [],
+      sources: Object.values(sources),
+      defaultSource: "src-plan",
+    };
+
+    const result = await sendMultiStepDeployFrame({
+      sidecarRouter: mockRouter,
+      agentAddress: "ins_dep_abc@workflow.interchange",
+      config,
+      definition,
+      sources,
+    });
+
+    expect(result).toEqual({ publicKey: "ed25519-supervisor-pubkey" });
+    expect(sentWorkflows).toHaveLength(1);
+    const sent = sentWorkflows[0];
+    if (sent === undefined) throw new Error("missing workflow projection");
+    // The workflow field must structurally match the upstream
+    // AgentDeployFrame projection: { definition: { id, stepOrder, steps }, sources }.
+    expect(sent.definition.id).toBe("wf_multi");
+    expect(sent.definition.stepOrder).toEqual(["plan", "execute"]);
+    expect(Object.keys(sent.definition.steps).sort()).toEqual([
+      "execute",
+      "plan",
+    ]);
+    expect(sent.sources).toEqual(sources);
   });
 });

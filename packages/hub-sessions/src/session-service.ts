@@ -19,7 +19,11 @@ import {
   sessionAsset as sessionAssetTable,
   type SessionAssetSource,
 } from "@intx/db/schema";
-import type { CryptoProvider, HarnessConfig } from "@intx/types/runtime";
+import type {
+  CryptoProvider,
+  HarnessConfig,
+  InferenceSource,
+} from "@intx/types/runtime";
 import {
   type RegistryConfig,
   type RegistrySource,
@@ -33,13 +37,17 @@ import {
   ToolPackageManifest,
   type ToolPackagePin,
 } from "@intx/types/tool-packages";
-import { defineWorkflow } from "@intx/workflow/definition";
+import {
+  defineWorkflow,
+  type WorkflowDefinition,
+} from "@intx/workflow/definition";
 import {
   createWorkflowDeployOrchestrator,
   wrapHarnessAsTrivialAgent,
   type ApprovalSet,
   type DeployContent as OrchestratorDeployContent,
   type LaunchSessionFn,
+  type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
 
@@ -371,6 +379,42 @@ function bridgeOrchestratorDeployContent(
 }
 
 /**
+ * Wire the workflow-deploy orchestrator's `sendMultiStepDeploy`
+ * dependency against `SidecarRouter.sendAgentDeploy`. The router
+ * accepts an optional `workflow` projection on the deploy frame; the
+ * sidecar's deploy router uses field presence to discriminate the
+ * multi-step branch from the trivial branch. The supervisor public key
+ * returned by the sidecar's `agent.deploy.ack` is threaded back as the
+ * `MultiStepDeployResult.publicKey`.
+ *
+ * Exported so the co-located caller-site test can assert that the
+ * closure constructed in `launchSession` reaches the wire surface via
+ * `sendAgentDeploy` with a `workflow` field structurally matching the
+ * `AgentDeployFrame.workflow` schema.
+ */
+export async function sendMultiStepDeployFrame(args: {
+  sidecarRouter: SidecarRouter;
+  agentAddress: string;
+  config: HarnessConfig;
+  definition: WorkflowDefinition;
+  sources: Record<string, InferenceSource>;
+}): Promise<{ publicKey: string }> {
+  // The wire validator's projection types `stepOrder` as a mutable
+  // `string[]` while `WorkflowDefinition.stepOrder` is `readonly`. The
+  // wire serializer never mutates the array; the cast is structurally
+  // sound and pays the readonly-widen at the boundary.
+  const wireDefinition = {
+    id: args.definition.id,
+    stepOrder: [...args.definition.stepOrder],
+    steps: args.definition.steps as Record<string, unknown>,
+  };
+  return args.sidecarRouter.sendAgentDeploy(args.agentAddress, args.config, {
+    definition: wireDefinition,
+    sources: args.sources,
+  });
+}
+
+/**
  * No-op `WorkflowRepoWriter` used by the legacy `launchSession`
  * delegate. The workflow-deploy orchestrator writes a workflow repo
  * tree before per-step launch; the legacy agent-deploy path never
@@ -692,10 +736,20 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           : {}),
       });
 
+    const sendMultiStepDeployCallback: SendMultiStepDeployFn = (params) =>
+      sendMultiStepDeployFrame({
+        sidecarRouter,
+        agentAddress: params.agentAddress,
+        config: params.config,
+        definition: params.definition,
+        sources: params.sources,
+      });
+
     const orchestrator = createWorkflowDeployOrchestrator({
       directorRegistry: createDefaultDirectorRegistry(),
       workflowRepo: createNoopWorkflowRepoWriter(),
       launchSession: launchSessionCallback,
+      sendMultiStepDeploy: sendMultiStepDeployCallback,
     });
 
     await orchestrator.deployWorkflow({

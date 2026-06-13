@@ -35,7 +35,7 @@
 // =========================================================================
 
 import type { AgentDefinition, BaseEnv, DirectorRegistry } from "@intx/agent";
-import type { HarnessConfig } from "@intx/types/runtime";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import {
   STEP_ID_PATTERN,
@@ -83,6 +83,54 @@ export type LaunchSessionFn = (params: {
 }) => Promise<void>;
 
 /**
+ * Multi-step deploy hand-off. Called once after the per-step
+ * provisioning loop has completed; mirrors the wire shape the deploy
+ * router consumes (the `agent.deploy` frame's `workflow?` field). The
+ * caller-site closure constructs the frame and waits on the sidecar's
+ * `agent.deploy.ack`, surfacing the supervisor's principal public key
+ * back through the result.
+ *
+ * The orchestrator does not synthesize the deployment-level address;
+ * the caller passes the bus-registered address the sidecar's
+ * supervisor will accept on the frame's `agentAddress` field. The
+ * orchestrator computes `agentAddress` via `deriveDeploymentAddress`
+ * and `agentId` via `deriveDeploymentAgentId`.
+ *
+ * `sources` is keyed by step id (matching `definition.stepOrder`);
+ * every step id must have a matching entry, per the wire validator's
+ * narrow.
+ */
+export type SendMultiStepDeployFn = (params: {
+  agentAddress: string;
+  agentId: string;
+  config: HarnessConfig;
+  definition: WorkflowDefinition;
+  sources: Record<string, InferenceSource>;
+  hubPublicKey: string;
+}) => Promise<MultiStepDeployResult>;
+
+/**
+ * Result returned by `sendMultiStepDeploy`. Surfaces the sidecar
+ * supervisor's principal public key (hex-encoded Ed25519) from the
+ * `agent.deploy.ack` frame back through `deployWorkflow` so the
+ * orchestrator's caller can persist or verify the deployment's
+ * cryptographic identity.
+ */
+export interface MultiStepDeployResult {
+  readonly publicKey: string;
+}
+
+/**
+ * Result returned by `deployWorkflow`. The trivial branch returns
+ * `{ kind: "trivial" }`; the multi-step branch surfaces the supervisor
+ * public key collected from the sidecar's `agent.deploy.ack` so the
+ * caller can stash it alongside the deployment record.
+ */
+export type DeployWorkflowResult =
+  | { readonly kind: "trivial" }
+  | { readonly kind: "multi-step"; readonly publicKey: string };
+
+/**
  * Minimal interface for writing the workflow repo. The orchestrator
  * writes a single tree containing `workflow.json`,
  * `capability-declarations.json`, and `.gitignore`. The structural type
@@ -116,6 +164,19 @@ export interface WorkflowDeployOrchestratorDeps {
    * tracking stub.
    */
   readonly launchSession: LaunchSessionFn;
+  /**
+   * Fires the deployment-level `agent.deploy` frame that carries the
+   * workflow definition and per-step source pins to the sidecar. The
+   * multi-step branch calls this exactly once, after every per-step
+   * `agent-state` repo has been provisioned via `launchSession`. The
+   * trivial branch never calls it.
+   *
+   * Optional so existing callers that only exercise the trivial branch
+   * (e.g. the legacy agent-deploy passthrough) do not have to wire a
+   * stub. The multi-step branch fails fast with
+   * `MultiStepDeployHandoffMissingError` if the dep is absent.
+   */
+  readonly sendMultiStepDeploy?: SendMultiStepDeployFn;
 }
 
 export interface DeployWorkflowArgs {
@@ -169,10 +230,18 @@ export interface DeployWorkflowArgs {
    * step and missing source.
    */
   readonly operatorApprovals: ApprovalSet;
+  /**
+   * Hex-encoded hub Ed25519 public key the multi-step branch threads
+   * onto the `agent.deploy` frame so the sidecar can verify the
+   * deploy-tree commit signatures. Required when the multi-step branch
+   * is reached; ignored by the trivial branch (whose `launchSession`
+   * delegate already carries the hub key through its own wire surface).
+   */
+  readonly hubPublicKey?: string;
 }
 
 export interface WorkflowDeployOrchestrator {
-  deployWorkflow(args: DeployWorkflowArgs): Promise<void>;
+  deployWorkflow(args: DeployWorkflowArgs): Promise<DeployWorkflowResult>;
 }
 
 /**
@@ -201,6 +270,21 @@ export class MultiStepDeploymentArgsMissingError extends Error {
       `multi-step deploy requires ${missing}; supply both deploymentId and deploymentDomain (or pass trivialBindings for a single-step workflow)`,
     );
     this.name = "MultiStepDeploymentArgsMissingError";
+  }
+}
+
+/**
+ * Error thrown when the multi-step branch is reached but the
+ * `sendMultiStepDeploy` dependency was not wired. The trivial branch
+ * does not consult this dep, so the dep is optional on the deps record;
+ * callers that may take the multi-step branch must wire it.
+ */
+export class MultiStepDeployHandoffMissingError extends Error {
+  constructor() {
+    super(
+      "multi-step deploy requires sendMultiStepDeploy dep; wire it on the orchestrator's WorkflowDeployOrchestratorDeps record",
+    );
+    this.name = "MultiStepDeployHandoffMissingError";
   }
 }
 
@@ -247,10 +331,13 @@ function formatApprovalDeniedMessage(
 export function createWorkflowDeployOrchestrator(
   deps: WorkflowDeployOrchestratorDeps,
 ): WorkflowDeployOrchestrator {
-  const { directorRegistry, workflowRepo, launchSession } = deps;
+  const { directorRegistry, workflowRepo, launchSession, sendMultiStepDeploy } =
+    deps;
 
   return {
-    async deployWorkflow(args: DeployWorkflowArgs): Promise<void> {
+    async deployWorkflow(
+      args: DeployWorkflowArgs,
+    ): Promise<DeployWorkflowResult> {
       validateWorkflowDefinition(args.workflow);
 
       const walk = walkCapabilities(args.workflow, directorRegistry);
@@ -280,10 +367,15 @@ export function createWorkflowDeployOrchestrator(
             ? { toolPackagePins: args.toolPackagePins }
             : {}),
         });
-        return;
+        return { kind: "trivial" };
       }
 
-      await runMultiStepBranch({ args, launchSession });
+      const result = await runMultiStepBranch({
+        args,
+        launchSession,
+        sendMultiStepDeploy,
+      });
+      return { kind: "multi-step", publicKey: result.publicKey };
     },
   };
 }
@@ -308,8 +400,9 @@ function isTrivialDeploy(
 async function runMultiStepBranch(args: {
   args: DeployWorkflowArgs;
   launchSession: LaunchSessionFn;
-}): Promise<void> {
-  const { args: deploy, launchSession } = args;
+  sendMultiStepDeploy: SendMultiStepDeployFn | undefined;
+}): Promise<MultiStepDeployResult> {
+  const { args: deploy, launchSession, sendMultiStepDeploy } = args;
   const deploymentId = deploy.deploymentId;
   const deploymentDomain = deploy.deploymentDomain;
   if (deploymentId === undefined) {
@@ -318,6 +411,29 @@ async function runMultiStepBranch(args: {
   if (deploymentDomain === undefined) {
     throw new MultiStepDeploymentArgsMissingError("deploymentDomain");
   }
+  if (sendMultiStepDeploy === undefined) {
+    throw new MultiStepDeployHandoffMissingError();
+  }
+  if (deploy.hubPublicKey === undefined) {
+    throw new MultiStepDeploymentArgsMissingError("hubPublicKey");
+  }
+  // Pin every step's inference source before launching any session.
+  // Threading the pin pass ahead of the launch pass means a step whose
+  // source the operator never approved (or whose preferred provider+model
+  // is missing from HarnessConfig.sources) rejects the whole deploy
+  // before `launchSession` provisions an agent-state repo at the sidecar
+  // with no rollback. The pin is a pure function of the workflow + config
+  // so the up-front pass is safe to run before any side-effecting work.
+  type PreparedStep = {
+    stepId: string;
+    agentAddress: string;
+    agentId: string;
+    instanceId: string;
+    config: HarnessConfig;
+    deployContent: DeployContent;
+  };
+  const sources: Record<string, InferenceSource> = {};
+  const prepared: PreparedStep[] = [];
   for (const stepId of deploy.workflow.stepOrder) {
     const primitive = deploy.workflow.steps[stepId];
     if (primitive === undefined) {
@@ -327,6 +443,12 @@ async function runMultiStepBranch(args: {
       );
     }
     const stepAgent = extractAgent(primitive);
+    sources[stepId] = pickStepInferenceSource({
+      stepAgent,
+      stepId,
+      workflowId: deploy.workflow.id,
+      config: deploy.config,
+    });
     const agentAddress = deriveStepAddress({
       deploymentId,
       stepId,
@@ -334,7 +456,6 @@ async function runMultiStepBranch(args: {
     });
     const agentId = deriveStepAgentId({ deploymentId, stepId });
     const instanceId = deriveStepInstanceId({ deploymentId, stepId });
-
     const stepConfig: HarnessConfig = {
       ...deploy.config,
       agentAddress,
@@ -345,18 +466,89 @@ async function runMultiStepBranch(args: {
       stepAgent !== null
         ? { ...deploy.deployContent, systemPrompt: stepAgent.systemPrompt }
         : deploy.deployContent;
-
-    await launchSession({
+    prepared.push({
+      stepId,
       agentAddress,
       agentId,
       instanceId,
       config: stepConfig,
       deployContent: stepDeployContent,
+    });
+  }
+  for (const step of prepared) {
+    await launchSession({
+      agentAddress: step.agentAddress,
+      agentId: step.agentId,
+      instanceId: step.instanceId,
+      config: step.config,
+      deployContent: step.deployContent,
       ...(deploy.toolPackagePins !== undefined
         ? { toolPackagePins: deploy.toolPackagePins }
         : {}),
     });
   }
+
+  const deploymentAddress = deriveDeploymentAddress({
+    deploymentId,
+    deploymentDomain,
+  });
+  const deploymentAgentId = deriveDeploymentAgentId({ deploymentId });
+  const deploymentConfig: HarnessConfig = {
+    ...deploy.config,
+    agentAddress: deploymentAddress,
+    agentId: deploymentAgentId,
+  };
+  return sendMultiStepDeploy({
+    agentAddress: deploymentAddress,
+    agentId: deploymentAgentId,
+    config: deploymentConfig,
+    definition: deploy.workflow,
+    sources,
+    hubPublicKey: deploy.hubPublicKey,
+  });
+}
+
+/**
+ * Pick the per-step `InferenceSource` from the deploy's
+ * `HarnessConfig.sources`. The step's agent preferences (the workflow
+ * definition's `inference.sources[0].provider/model`) are the lookup
+ * key; the `HarnessConfig` carries the credentialed sources the
+ * supervisor needs. A step whose agent preference does not resolve
+ * against the deploy's `HarnessConfig.sources` falls back to the
+ * `defaultSource`. If no default is wired either, the function fails
+ * with `WorkflowDefinitionInvalidError`; defaulting silently here would
+ * paper over a deploy whose source-pinning the operator never
+ * approved.
+ */
+function pickStepInferenceSource(args: {
+  stepAgent: AgentDefinition<BaseEnv> | null;
+  stepId: string;
+  workflowId: string;
+  config: HarnessConfig;
+}): InferenceSource {
+  const preferred = args.stepAgent?.inference.sources[0];
+  if (preferred !== undefined) {
+    const match = args.config.sources.find(
+      (s) => s.provider === preferred.provider && s.model === preferred.model,
+    );
+    if (match !== undefined) return match;
+  }
+  const fallback = args.config.sources.find(
+    (s) => s.id === args.config.defaultSource,
+  );
+  if (fallback !== undefined) return fallback;
+  const preferredDesc =
+    preferred !== undefined
+      ? `agent preferred ${preferred.provider}:${preferred.model}`
+      : `the step's agent declared no preferred source`;
+  const fallbackDesc =
+    args.config.defaultSource !== undefined
+      ? `the deploy's defaultSource ${JSON.stringify(args.config.defaultSource)} does not resolve against HarnessConfig.sources`
+      : `the deploy carries no defaultSource to fall back on`;
+  throw new WorkflowDefinitionInvalidError(
+    args.workflowId,
+    `step ${args.stepId} has no inference source: ${preferredDesc} is missing from HarnessConfig.sources, and ${fallbackDesc}`,
+  );
 }
 
 /**
@@ -398,6 +590,32 @@ export function deriveStepInstanceId(args: {
   stepId: string;
 }): string {
   return `ins_${args.deploymentId}-${args.stepId}`;
+}
+
+/**
+ * Derive the deployment-level mail address the supervisor registers on
+ * the bus. The shape mirrors `deriveStepAddress` minus the per-step
+ * suffix; pure function of `(deploymentId, deploymentDomain)`.
+ *
+ * The supervisor uses this address as the inbound mail address for the
+ * deployment as a whole; per-step bindings carry their own
+ * derived-step addresses.
+ */
+export function deriveDeploymentAddress(args: {
+  deploymentId: string;
+  deploymentDomain: string;
+}): string {
+  return `ins_${args.deploymentId}@${args.deploymentDomain}`;
+}
+
+/**
+ * Derive the deployment-level agent id used on the `agent.deploy`
+ * frame's `agentId` field. Pure function of `(deploymentId)`.
+ */
+export function deriveDeploymentAgentId(args: {
+  deploymentId: string;
+}): string {
+  return `ins_${args.deploymentId}`;
 }
 
 /**

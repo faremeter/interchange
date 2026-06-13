@@ -12,6 +12,7 @@ import { hexDecode, hexEncode } from "@intx/types";
 import { type } from "arktype";
 import {
   SidecarFrame,
+  type AgentDeployFrame,
   type HubFrame,
   type PackPushFrame,
   type PackDoneFrame,
@@ -81,7 +82,24 @@ export type SidecarRouter = {
    * default the calling path uses.
    */
   getConnectorState(agentAddress: string): ConnectorThreadState | null;
-  sendAgentDeploy(agentAddress: string, config: HarnessConfig): Promise<void>;
+  /**
+   * Send an `agent.deploy` frame to the sidecar. When `workflow` is
+   * supplied, the frame carries the multi-step deploy projection
+   * (workflow definition plus per-step source pins); the sidecar's
+   * deploy router uses the field's presence to discriminate the
+   * multi-step branch from the trivial branch. Absent on every legacy
+   * agent-deploy.
+   *
+   * The returned promise resolves with the supervisor's principal
+   * public key (hex-encoded Ed25519) carried on `agent.deploy.ack`.
+   * The legacy callers that ignore the return value continue to work
+   * unchanged.
+   */
+  sendAgentDeploy(
+    agentAddress: string,
+    config: HarnessConfig,
+    workflow?: AgentDeployFrame["workflow"],
+  ): Promise<{ publicKey: string }>;
   sendAgentUndeploy(agentAddress: string, reason: string): Promise<void>;
   sendSessionStart(agentAddress: string): Promise<void>;
   sendSessionAbort(agentAddress: string, reason: AbortReason): Promise<void>;
@@ -1368,7 +1386,8 @@ export function createSidecarRouter(
   async function sendAgentDeploy(
     agentAddress: string,
     harnessConfig: HarnessConfig,
-  ): Promise<void> {
+    workflow?: AgentDeployFrame["workflow"],
+  ): Promise<{ publicKey: string }> {
     if (hubPublicKeyHex === undefined) {
       throw new Error("Hub signing key is required for agent deployment");
     }
@@ -1392,8 +1411,22 @@ export function createSidecarRouter(
     conn.agentAddresses.add(agentAddress);
     addressIndex.set(agentAddress, ws);
 
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<{ publicKey: string }>((resolve, reject) => {
+      // The deploy-ack handler does not currently thread the
+      // sidecar-reported public key back through the pending-deploy
+      // resolver; it only fires `agent.deploy.ack` listeners and then
+      // resolves the pending deploy. Capture the key via a one-shot
+      // listener so the return value carries it without a wire-shape
+      // change to `agent.deploy.ack`.
+      let capturedPublicKey: string | undefined;
+      const detachListener = events.on("agent.deploy.ack", (payload) => {
+        if (payload.agentAddress === agentAddress) {
+          capturedPublicKey = payload.publicKey;
+        }
+      });
+
       const timer = setTimeout(() => {
+        detachListener();
         pendingDeploys.delete(agentAddress);
         if (addressIndex.get(agentAddress) === ws) {
           conn.agentAddresses.delete(agentAddress);
@@ -1410,9 +1443,19 @@ export function createSidecarRouter(
         agentAddress,
         ws,
         resolve() {
-          resolve();
+          detachListener();
+          if (capturedPublicKey === undefined) {
+            reject(
+              new Error(
+                `Deploy of "${agentAddress}" resolved without an agent.deploy.ack publicKey payload`,
+              ),
+            );
+            return;
+          }
+          resolve({ publicKey: capturedPublicKey });
         },
         reject(error: string) {
+          detachListener();
           if (addressIndex.get(agentAddress) === ws) {
             conn.agentAddresses.delete(agentAddress);
             addressIndex.delete(agentAddress);
@@ -1428,6 +1471,7 @@ export function createSidecarRouter(
         agentId: harnessConfig.agentId,
         config: harnessConfig,
         hubPublicKey: hubPublicKeyHex,
+        ...(workflow !== undefined ? { workflow } : {}),
       });
     });
   }
