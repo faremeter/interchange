@@ -18,13 +18,39 @@
 import { describe, test, expect } from "bun:test";
 
 import type { Principal, RepoId, RepoStore } from "@intx/hub-sessions";
+import type { InferenceSource } from "@intx/types/runtime";
+import type { AuthorizeContext, StepInvokeRequest } from "@intx/workflow";
 import type { SubstrateFactoryEnv } from "@intx/workflow-host";
+import type { AgentDefinition, BaseEnv } from "@intx/agent";
 
 import {
+  createSidecarStepBuildEnv,
   createSidecarSubstrateFactory,
+  createStepInferenceSourceResolver,
+  parseStepInferenceSources,
   SIDECAR_SUBSTRATE_CONFIG_KEYS,
   type ChildHubPackSink,
 } from "./workflow-substrate-factory";
+
+const STEP_SOURCE_ONE: InferenceSource = {
+  id: "anthropic:claude-3-haiku",
+  provider: "anthropic",
+  baseURL: "https://api.anthropic.example",
+  apiKey: "key-one",
+  model: "claude-3-haiku",
+};
+const STEP_SOURCE_TWO: InferenceSource = {
+  id: "openai:gpt-4o-mini",
+  provider: "openai",
+  baseURL: "https://api.openai.example",
+  apiKey: "key-two",
+  model: "gpt-4o-mini",
+};
+
+const DEFAULT_STEP_SOURCES: Record<string, InferenceSource> = {
+  "step-1": STEP_SOURCE_ONE,
+  "step-2": STEP_SOURCE_TWO,
+};
 
 function makeSubstrateConfig(
   overrides: Record<string, string> = {},
@@ -40,6 +66,7 @@ function makeSubstrateConfig(
     HUB_WS_URL: "ws://hub.example/sidecar",
     SIDECAR_ID: "sidecar-1",
     SIDECAR_TOKEN: "tok-abc",
+    STEP_INFERENCE_SOURCES: JSON.stringify(DEFAULT_STEP_SOURCES),
   };
   const merged: Record<string, string> = { ...base };
   for (const [k, v] of Object.entries(overrides)) {
@@ -296,5 +323,159 @@ describe("createSidecarSubstrateFactory", () => {
         },
       ),
     ).rejects.toThrow(/hub link rejected pack/);
+  });
+
+  test("rejects at construction when STEP_INFERENCE_SOURCES is malformed JSON", async () => {
+    const recording = createRecordingBareStore();
+    const factory = createSidecarSubstrateFactory({
+      createBareRepoStore: () => recording.store,
+      createHubPackSink: () => ({
+        pushWorkflowRunPack: () => Promise.resolve(),
+      }),
+    });
+    await expect(
+      factory(
+        makeFactoryEnv({
+          STEP_INFERENCE_SOURCES: "{not-json",
+        }),
+      ),
+    ).rejects.toThrow(/STEP_INFERENCE_SOURCES is not valid JSON/);
+  });
+
+  test("rejects at construction when STEP_INFERENCE_SOURCES is empty", async () => {
+    const recording = createRecordingBareStore();
+    const factory = createSidecarSubstrateFactory({
+      createBareRepoStore: () => recording.store,
+      createHubPackSink: () => ({
+        pushWorkflowRunPack: () => Promise.resolve(),
+      }),
+    });
+    await expect(
+      factory(
+        makeFactoryEnv({
+          STEP_INFERENCE_SOURCES: "",
+        }),
+      ),
+    ).rejects.toThrow(/STEP_INFERENCE_SOURCES/);
+  });
+
+  test("rejects at construction when STEP_INFERENCE_SOURCES carries a malformed source entry", async () => {
+    const recording = createRecordingBareStore();
+    const factory = createSidecarSubstrateFactory({
+      createBareRepoStore: () => recording.store,
+      createHubPackSink: () => ({
+        pushWorkflowRunPack: () => Promise.resolve(),
+      }),
+    });
+    const broken = JSON.stringify({
+      "step-1": {
+        // missing required InferenceSource fields (provider, model, ...)
+        id: "broken",
+      },
+    });
+    await expect(
+      factory(
+        makeFactoryEnv({
+          STEP_INFERENCE_SOURCES: broken,
+        }),
+      ),
+    ).rejects.toThrow(/STEP_INFERENCE_SOURCES failed validation/);
+  });
+});
+
+describe("parseStepInferenceSources", () => {
+  test("parses and validates a well-formed source table", () => {
+    const raw = JSON.stringify(DEFAULT_STEP_SOURCES);
+    const parsed = parseStepInferenceSources(raw);
+    expect(parsed["step-1"]).toEqual(STEP_SOURCE_ONE);
+    expect(parsed["step-2"]).toEqual(STEP_SOURCE_TWO);
+  });
+
+  test("rejects malformed JSON with a structured error", () => {
+    expect(() => parseStepInferenceSources("{not-json")).toThrow(
+      /STEP_INFERENCE_SOURCES is not valid JSON/,
+    );
+  });
+
+  test("rejects a non-object JSON root", () => {
+    expect(() =>
+      parseStepInferenceSources(JSON.stringify(["not", "object"])),
+    ).toThrow(/STEP_INFERENCE_SOURCES failed validation/);
+  });
+
+  test("rejects entries missing required InferenceSource fields", () => {
+    const broken = JSON.stringify({ "step-1": { id: "x", provider: "p" } });
+    expect(() => parseStepInferenceSources(broken)).toThrow(
+      /STEP_INFERENCE_SOURCES failed validation/,
+    );
+  });
+});
+
+describe("createStepInferenceSourceResolver", () => {
+  test("returns the pinned source for each known stepId", () => {
+    const resolve = createStepInferenceSourceResolver(DEFAULT_STEP_SOURCES);
+    expect(resolve("step-1")).toEqual(STEP_SOURCE_ONE);
+    expect(resolve("step-2")).toEqual(STEP_SOURCE_TWO);
+  });
+
+  test("throws naming the missing stepId when absent from the table", () => {
+    const resolve = createStepInferenceSourceResolver(DEFAULT_STEP_SOURCES);
+    expect(() => resolve("step-missing")).toThrow(
+      /no InferenceSource pinned for stepId "step-missing"/,
+    );
+  });
+});
+
+describe("createSidecarStepBuildEnv", () => {
+  function makeReq(stepId: string | undefined): StepInvokeRequest {
+    const authzContext: AuthorizeContext =
+      stepId === undefined ? {} : { stepId, attempt: 1, runId: "run-1" };
+    return {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; buildEnv does not touch the agent definition
+      agent: {} as AgentDefinition<BaseEnv>,
+      input: "ignored",
+      authzContext,
+      signal: new AbortController().signal,
+    };
+  }
+
+  test("returns the per-step source for each stepId in the pinned table", async () => {
+    const buildEnv = createSidecarStepBuildEnv(DEFAULT_STEP_SOURCES);
+    const envOne = await buildEnv(makeReq("step-1"));
+    const envTwo = await buildEnv(makeReq("step-2"));
+    expect(envOne.source).toEqual(STEP_SOURCE_ONE);
+    expect(envTwo.source).toEqual(STEP_SOURCE_TWO);
+  });
+
+  test("throws naming the missing stepId when not in the table", async () => {
+    const buildEnv = createSidecarStepBuildEnv(DEFAULT_STEP_SOURCES);
+    await expect(buildEnv(makeReq("step-missing"))).rejects.toThrow(
+      /no InferenceSource pinned for stepId "step-missing"/,
+    );
+  });
+
+  test("throws when AuthorizeContext.stepId is absent", async () => {
+    const buildEnv = createSidecarStepBuildEnv(DEFAULT_STEP_SOURCES);
+    await expect(buildEnv(makeReq(undefined))).rejects.toThrow(
+      /AuthorizeContext\.stepId is required/,
+    );
+  });
+
+  test("non-source StepEnvBase slots are throwing stubs (storage, audit, directors)", async () => {
+    const buildEnv = createSidecarStepBuildEnv(DEFAULT_STEP_SOURCES);
+    const env = await buildEnv(makeReq("step-1"));
+    // The slots are typed objects whose every read trips the Proxy's
+    // throwing get-trap. We probe each slot via a property the
+    // contract actually carries so the access is well-typed.
+    expect(() => {
+      void env.storage.load;
+    }).toThrow(/storage slot is not wired/);
+    expect(() => {
+      void env.audit.commitAudit;
+    }).toThrow(/audit slot is not wired/);
+    expect(() => {
+      void env.directors.resolve;
+    }).toThrow(/directors slot is not wired/);
+    expect(env.workdir).toMatch(/__sidecar_workflow_child_workdir_not_wired__/);
   });
 });

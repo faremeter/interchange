@@ -21,8 +21,11 @@
 
 import { type } from "arktype";
 
+import type { AuditStore, ContextStore } from "@intx/types/runtime";
+import { InferenceSource } from "@intx/types/runtime";
 import { evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
+import type { DirectorRegistry } from "@intx/agent";
 import {
   createAgentRepoStore,
   type RepoId,
@@ -35,9 +38,11 @@ import {
   createWorkflowSpawnChild,
   createWorkflowStepInvoker,
   type RunWorkflowChildBindings,
+  type StepEnvBase,
   type SubstrateFactory,
   type SubstrateFactoryEnv,
 } from "@intx/workflow-host";
+import type { StepInvokeRequest } from "@intx/workflow";
 
 import {
   createDeploymentAddressRegistry,
@@ -71,6 +76,7 @@ export const SIDECAR_SUBSTRATE_CONFIG_KEYS = [
   "HUB_WS_URL",
   "SIDECAR_ID",
   "SIDECAR_TOKEN",
+  "STEP_INFERENCE_SOURCES",
 ] as const;
 
 const SubstrateConfig = type({
@@ -84,7 +90,72 @@ const SubstrateConfig = type({
   HUB_WS_URL: "string > 0",
   SIDECAR_ID: "string > 0",
   SIDECAR_TOKEN: "string > 0",
+  STEP_INFERENCE_SOURCES: "string > 0",
 }).onUndeclaredKey("ignore");
+
+/**
+ * Per-step `InferenceSource` table parsed from the spawn-time
+ * `STEP_INFERENCE_SOURCES` env entry. The deploy router serializes
+ * `frame.workflow.sources` (a `Record<stepId, InferenceSource>`) as
+ * JSON and threads it through the supervisor's `substrateEnv`; the
+ * factory parses and validates the table once at construction time
+ * and pins it for `buildEnv` lookups.
+ */
+export const StepInferenceSourceTable = type({
+  "[string]": InferenceSource,
+});
+export type StepInferenceSourceTable = typeof StepInferenceSourceTable.infer;
+
+/**
+ * Parse and validate the JSON-encoded `STEP_INFERENCE_SOURCES` entry
+ * the supervisor threaded through `substrateEnv`. A malformed JSON
+ * payload, a non-object root, or a value that does not match
+ * `Record<string, InferenceSource>` is rejected at the boundary with
+ * a structured error rather than being deferred to a deep-stack
+ * `buildEnv` failure.
+ */
+export function parseStepInferenceSources(
+  raw: string,
+): StepInferenceSourceTable {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(
+      `sidecar workflow-child substrate config: STEP_INFERENCE_SOURCES is not valid JSON: ${reason}`,
+    );
+  }
+  const validated = StepInferenceSourceTable(parsed);
+  if (validated instanceof type.errors) {
+    throw new Error(
+      `sidecar workflow-child substrate config: STEP_INFERENCE_SOURCES failed validation: ${validated.summary}`,
+    );
+  }
+  return validated;
+}
+
+/**
+ * Resolve the per-step `InferenceSource` pinned at factory
+ * construction. The supervisor's multi-step branch only invokes a
+ * step whose `stepId` appears in `frame.workflow.sources`; a lookup
+ * miss here is a programmer error in the supervisor, not a wire-side
+ * failure, and the resolver surfaces it with the missing `stepId`
+ * named.
+ */
+export function createStepInferenceSourceResolver(
+  table: StepInferenceSourceTable,
+): (stepId: string) => InferenceSource {
+  return (stepId: string): InferenceSource => {
+    const source = table[stepId];
+    if (source === undefined) {
+      throw new Error(
+        `sidecar workflow-child step invoker buildEnv: no InferenceSource pinned for stepId ${JSON.stringify(stepId)}; the supervisor must populate frame.workflow.sources for every stepOrder entry`,
+      );
+    }
+    return source;
+  };
+}
 
 function hexDecode(hex: string, name: string): Uint8Array {
   if (hex.length % 2 !== 0) {
@@ -172,6 +243,86 @@ function defaultCreateHubPackSink(): ChildHubPackSink {
 }
 
 /**
+ * Object-shaped `StepEnvBase` slot whose every access throws. The
+ * sidecar's substrate factory wires `source` from the pinned
+ * `STEP_INFERENCE_SOURCES` table; the remaining `StepEnvBase` slots
+ * (storage, audit, directors) are not yet populated by the factory.
+ * Returning a throwing-getter Proxy keeps the static `StepEnvBase`
+ * contract intact while surfacing a precise failure at the first
+ * downstream access — a step invocation that actually consumes one
+ * of these slots gets a structured "not wired" error naming the
+ * slot and the originating `stepId`.
+ */
+function throwingStepEnvSlot<T extends object>(
+  slot: string,
+  stepId: string,
+): T {
+  const trap = (prop: PropertyKey): never => {
+    throw new Error(
+      `sidecar workflow-child step invoker buildEnv: ${slot} slot is not wired (stepId=${JSON.stringify(stepId)}, access=${String(prop)}); the substrate factory does not yet supply per-step ${slot}`,
+    );
+  };
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- throwing Proxy stands in for a typed StepEnvBase slot until per-step storage/audit/directors land
+  return new Proxy({} as T, {
+    get(_target, prop) {
+      return trap(prop);
+    },
+    has(_target, prop) {
+      return trap(prop);
+    },
+    apply() {
+      return trap("apply");
+    },
+  });
+}
+
+/**
+ * Sentinel `workdir` path the agent's lock boundary uses. The
+ * substrate factory does not yet allocate a per-step workdir; a
+ * step invocation that reaches `BaseEnv.workdir` surfaces a loud
+ * `ENOENT` against this path rather than silently writing into an
+ * unrelated directory. The path is intentionally unusable so a
+ * silent default is impossible.
+ */
+function throwingStepEnvWorkdir(stepId: string): string {
+  return `/__sidecar_workflow_child_workdir_not_wired__/stepId=${stepId}`;
+}
+
+/**
+ * Build the step-invoker `buildEnv` callback the workflow-host's
+ * adapter consumes. Pulled out of `createSidecarSubstrateFactory` so
+ * source-resolution is observable without standing up the full
+ * substrate; the closure pins the parsed per-step source table once,
+ * derives the `stepId` from the runtime's `AuthorizeContext`, and
+ * populates `StepEnvBase.source` from the table. The other
+ * `StepEnvBase` slots are not yet supplied by the substrate factory
+ * and are filled with throwing-getter stubs so a step invocation
+ * that exercises them surfaces a precise failure rather than a
+ * silent default.
+ */
+export function createSidecarStepBuildEnv(
+  table: StepInferenceSourceTable,
+): (req: StepInvokeRequest) => Promise<StepEnvBase> {
+  const resolveStepInferenceSource = createStepInferenceSourceResolver(table);
+  return async (req: StepInvokeRequest): Promise<StepEnvBase> => {
+    const stepId = req.authzContext.stepId;
+    if (stepId === undefined) {
+      throw new Error(
+        "sidecar workflow-child step invoker buildEnv: AuthorizeContext.stepId is required for per-step InferenceSource resolution; the workflow runtime must populate stepId on every step-originated invocation",
+      );
+    }
+    const source = resolveStepInferenceSource(stepId);
+    return {
+      source,
+      storage: throwingStepEnvSlot<ContextStore>("storage", stepId),
+      workdir: throwingStepEnvWorkdir(stepId),
+      audit: throwingStepEnvSlot<AuditStore>("audit", stepId),
+      directors: throwingStepEnvSlot<DirectorRegistry>("directors", stepId),
+    };
+  };
+}
+
+/**
  * Build a `SubstrateFactory` closed over the supplied dependency
  * overrides. The production export `createSubstrate` is the
  * default-deps call; tests inject a recording `createHubPackSink` to
@@ -215,6 +366,11 @@ export function createSidecarSubstrateFactory(
         `sidecar workflow-child substrate config failed validation: ${validated.summary}`,
       );
     }
+
+    const stepInferenceSources = parseStepInferenceSources(
+      validated.STEP_INFERENCE_SOURCES,
+    );
+    const buildStepEnv = createSidecarStepBuildEnv(stepInferenceSources);
 
     const signingKey = {
       publicKey: hexDecode(
@@ -285,24 +441,7 @@ export function createSidecarSubstrateFactory(
           "sidecar workflow-child step invoker: workflow-typed authorize is wired by runWorkflowChild via createCredentialsBackedAuthorize; the adapter should not invoke this slot directly",
         );
       },
-      buildEnv: async (_req) => {
-        // The per-step inference source is carried by the deployed
-        // workflow definition's step entry, but the `agent.deploy`
-        // wire frame today does not yet surface a step-keyed source
-        // table to this layer. The multi-step deploy-frame extension
-        // is what lands the step-to-source plumbing; until then,
-        // any step invocation that actually reaches this builder
-        // surfaces a precise failure rather than a fabricated source.
-        //
-        // The substrate factory itself runs at child startup
-        // regardless of whether any step ever invokes; this
-        // callback only fires when the multi-step branch's
-        // `trigger.fire` arrives, which is gated behind the same
-        // unimplemented frame-extension.
-        throw new Error(
-          "sidecar workflow-child step invoker buildEnv: per-step InferenceSource resolution is not wired; the multi-step deploy frame extension lands the source-on-step plumbing",
-        );
-      },
+      buildEnv: buildStepEnv,
     });
 
     // Adapt the workflow-runtime `StepInvoker` shape onto the host's
