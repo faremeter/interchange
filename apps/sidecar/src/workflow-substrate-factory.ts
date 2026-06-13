@@ -41,7 +41,6 @@ import {
   createWorkflowRunRepoStore,
   createWorkflowHostSignalChannel,
   createWorkflowSpawnChild,
-  createWorkflowStepInvoker,
   type ChildPackPushBridge,
   type GrantEvaluator,
   type RunChildWorkflow,
@@ -650,14 +649,31 @@ export function createSidecarSubstrateFactory(
     await hostScheduler.start();
     const scheduler = adaptHostScheduler(hostScheduler);
 
-    const baseInvokeStep = createWorkflowStepInvoker({
-      workflowAuthorize: async () => {
-        throw new Error(
-          "sidecar workflow-child step invoker: workflow-typed authorize is wired by runWorkflowChild via createCredentialsBackedAuthorize; the adapter should not invoke this slot directly",
-        );
-      },
-      buildEnv: buildStepEnv,
-    });
+    // Per-step substrate slots (storage, audit, directors, workdir) the
+    // production `createWorkflowStepInvoker` adapter requires for a
+    // full agent harness are not yet wired by this factory; the
+    // throwing-Proxy stubs in `createSidecarStepBuildEnv` would surface
+    // immediately on every step invocation. Until those slots land, the
+    // factory installs a stub step invoker that mirrors the runlocal
+    // default body's spirit (`createDefaultStepInvoker` in
+    // `packages/workflow/src/runlocal/run-local.ts`): return a
+    // deterministic success output so the runtime body commits
+    // `StepCompleted` and schedules downstream primitives, without
+    // touching the agent harness's storage/audit/directors/workdir
+    // surface.
+    //
+    // `buildStepEnv` resolves the per-step `InferenceSource` from the
+    // pinned table; it is invoked here so a missing source-table entry
+    // (which is a deploy-router contract violation) surfaces at the
+    // step boundary rather than only on a downstream env-touch. The
+    // resolved source is intentionally unused by the stub; threading
+    // it into a real inference call is the next gap on the agent-
+    // harness wiring backlog.
+    const baseInvokeStep: StepInvoker = async (req) => {
+      const envBase = await buildStepEnv(req);
+      void envBase;
+      return { output: { reply: req.agent.id, turn: null } };
+    };
 
     // Adapt the workflow-runtime `StepInvoker` shape onto the host's
     // `ChildStepInvoker` shape. The wrapper today drops `onEvent` --
