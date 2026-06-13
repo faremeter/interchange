@@ -29,6 +29,10 @@ import {
   validateWorkflowProjection,
   type TrivialRunCell,
 } from "./workflow-host-wiring";
+import {
+  createMultistepMailRouter,
+  type MultistepMailRouter,
+} from "./workflow-run-pack-client";
 
 function createMinimalStubRepoStore(): RepoStore {
   const stub: Partial<RepoStore> = {
@@ -722,6 +726,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     ) => void;
     multistepBinaryPath?: string;
     multistepSubstrateEnv?: Record<string, string>;
+    multistepMailRouter?: MultistepMailRouter;
   }) {
     const transport = createInMemoryTransport();
     const keyPair = await generateKeyPair();
@@ -781,6 +786,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         ? {
             publishWorkflowInferenceEvent: opts.publishWorkflowInferenceEvent,
           }
+        : {}),
+      ...(opts.multistepMailRouter !== undefined
+        ? { multistepMailRouter: opts.multistepMailRouter }
         : {}),
     });
     return { router, tempBase, keyPair, substrateEnv: mergedSubstrateEnv };
@@ -900,6 +908,128 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // Use unused supervisorToChild to silence the linter.
     void supervisorToChild;
     void supervisorIpcKeyPair;
+  });
+
+  test("registers a multistepMailRouter handler against the deployment address once spawn succeeds", async () => {
+    // Drives the spawn handshake the same way the first multi-step
+    // test does, but injects a `multistepMailRouter` and asserts the
+    // deploy router registered a handler against the deployment's
+    // mail address by the time `deploy(frame)` resolves. The handler
+    // is what the sidecar hub-link's `mail.inbound` path dispatches
+    // through; without this registration, an inbound mail aimed at
+    // the deployment address falls into the legacy session path,
+    // which has no transport entry and no `sessions` row for the
+    // deployment address.
+    const childIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      const handle: SubprocessHandle = {
+        pid: 9123,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      return handle;
+    };
+
+    const mailRouter = createMultistepMailRouter();
+    const { router } = await buildMultistepFixture({
+      spawner,
+      multistepMailRouter: mailRouter,
+    });
+
+    const sources = defaultMultistepSources();
+    const definition = {
+      id: "wf-mail-router-test",
+      triggers: [{ type: "manual" }],
+      stepOrder: ["step-1", "step-2"],
+      steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+    };
+    const frame = makeMultistepFrame({ definition, sources });
+
+    const deployPromise = router.deploy(frame);
+
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+          return Promise.resolve();
+        },
+      },
+    });
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 9123,
+        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      },
+    });
+
+    await deployPromise;
+
+    // The handler must be installed against the deployment's mail
+    // address (`frame.agentAddress`), and tryRoute must claim it.
+    const claimed = mailRouter.tryRoute(
+      frame.agentAddress,
+      new Uint8Array([1, 2, 3]),
+    );
+    expect(claimed).toBe(true);
+
+    // Teardown.
+    void supervisorToChild;
+  });
+
+  test("does not register a multistepMailRouter handler if spawn rejects", async () => {
+    const mailRouter = createMultistepMailRouter();
+    const crashSpawner: SubprocessSpawner = () => {
+      throw new Error("ENOENT: binary missing");
+    };
+    const { router } = await buildMultistepFixture({
+      spawner: crashSpawner,
+      multistepMailRouter: mailRouter,
+    });
+
+    const frame = makeMultistepFrame({
+      definition: {
+        id: "wf-crash-noreg",
+        triggers: [{ type: "manual" }],
+        stepOrder: ["step-1"],
+        steps: { "step-1": { kind: "step" } },
+      },
+      sources: { "step-1": makeInferenceSource("step-1") },
+    });
+
+    await expect(router.deploy(frame)).rejects.toThrow(
+      /ENOENT: binary missing/,
+    );
+
+    expect(mailRouter.tryRoute(frame.agentAddress, new Uint8Array([1]))).toBe(
+      false,
+    );
   });
 
   test("a spawner that throws synchronously surfaces a structured rejection rather than hanging in starting", async () => {

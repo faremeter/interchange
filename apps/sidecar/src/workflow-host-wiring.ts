@@ -44,6 +44,8 @@ import type { InferenceEvent } from "@intx/types/runtime";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 import { STEP_ID_PATTERN } from "@intx/workflow";
 
+import type { MultistepMailRouter } from "./workflow-run-pack-client";
+
 const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
 
 /**
@@ -568,6 +570,22 @@ export function createSidecarDeployRouter(deps: {
     ref: string;
     commitSha: string;
   }) => Promise<void>;
+  /**
+   * Per-deployment-address mail handler registry the hub-link's
+   * `mail.inbound` path consults before falling back to the legacy
+   * session-routed delivery. The multi-step branch registers
+   * `wired.routeInbound` against the deployment's mail address once
+   * `supervisor.spawn` succeeds so inbound mail aimed at the
+   * deployment address flows into the supervisor's mail-bus
+   * subscription. The trivial branch never touches this registry --
+   * its mail path is the legacy session surface.
+   *
+   * Optional so tests that exercise the trivial branch (or the
+   * multi-step branch without an end-to-end mail loop) can omit the
+   * binding; an absent registry simply means multi-step inbound mail
+   * cannot route through the hub-link until the wiring is plumbed.
+   */
+  multistepMailRouter?: MultistepMailRouter;
 }): DeployRouter {
   const principalPublicKeyHex = derivePrincipalPublicKeyHex(
     deps.signingKeySeed,
@@ -754,6 +772,20 @@ export function createSidecarDeployRouter(deps: {
     // here. The router lets it surface; the link's deploy handler
     // converts the rejection into a structured failure frame.
     await wired.supervisor.spawn(spawnOpts);
+
+    // Bind the deployment's mail address to this supervisor's
+    // `routeInbound` so the sidecar's hub-link dispatches inbound
+    // mail for the deployment address into the supervisor's mail-bus
+    // subscription rather than the legacy session path. The legacy
+    // path is the wrong receiver for multi-step deployments: the
+    // deployment address is never registered on `transport` (no
+    // `startSession` runs against it) and there is no `sessions`
+    // entry to satisfy `commitInboundMail`. Registration happens
+    // after `spawn` succeeds so a spawn-time rejection leaves the
+    // registry untouched.
+    deps.multistepMailRouter?.register(frame.agentAddress, (message) => {
+      wired.routeInbound(message);
+    });
 
     return { publicKey: principalPublicKeyHex };
   }

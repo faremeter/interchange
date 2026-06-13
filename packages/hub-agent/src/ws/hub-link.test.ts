@@ -1277,4 +1277,123 @@ describe("sidecar↔hub integration", () => {
       reconnectEnv.server.stop(true);
     }
   });
+
+  test("mailInboundRouter claims an address and skips the legacy fallback", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    // The deployment address is what the hub routes mail to. The
+    // sidecar puts it on the register frame's `agentAddresses` list
+    // so the hub-side router accepts it as routable. Routing a
+    // mail.inbound for it goes through the link's switch case, which
+    // must consult mailInboundRouter first and -- on a `true` return
+    // -- skip transport.deliver and sessions.commitInboundMail.
+    const deploymentAddress = "dep_multistep-1@integration.interchange";
+    sessions.addresses.push(deploymentAddress);
+
+    const routed: { address: string; bytes: Uint8Array }[] = [];
+    const mailInboundRouter = {
+      tryRoute(address: string, message: Uint8Array): boolean {
+        routed.push({ address, bytes: message });
+        return true;
+      },
+    };
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-multistep-mail",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(sessions),
+      mailInboundRouter,
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getRoutableAddresses().includes(deploymentAddress),
+      );
+
+      const encoded = base64Encode(VALID_MESSAGE);
+      const accepted = env.router.routeMail(deploymentAddress, encoded);
+      expect(accepted).toBe(true);
+
+      await waitFor(() => routed.length > 0);
+
+      expect(routed).toHaveLength(1);
+      expect(routed[0]?.address).toBe(deploymentAddress);
+      expect(routed[0]?.bytes).toEqual(VALID_MESSAGE);
+
+      // Legacy fallback paths must not have been reached. The mock
+      // sessions tracks delivered messages and `commitInboundMail`
+      // returns a resolved promise without recording, so the sentinel
+      // we check is the transport-side delivery. The transport's
+      // `deliver` would throw because no address is registered, and
+      // the link's `deliverLocalMail` catches and logs that throw.
+      // The cleaner check: sessions.delivered stays empty. (Even if
+      // the mock's commitInboundMail did nothing, `deliverLocalMail`
+      // would attempt transport.deliver -- but the test transport has
+      // no registered mailbox for `deploymentAddress`, so that would
+      // surface as a logged warn rather than a delivery. Asserting
+      // sessions.delivered.length === 0 makes the no-fallback
+      // intent explicit.)
+      expect(sessions.delivered).toHaveLength(0);
+    } finally {
+      client.close();
+      await waitFor(
+        () => !env.router.getConnectedSidecars().includes("sc-multistep-mail"),
+      );
+    }
+  });
+
+  test("mailInboundRouter that returns false falls through to the legacy path", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const address = "agent-fallback@test.interchange";
+    sessions.addresses.push(address);
+    const { generateKeyPair, createNodeCrypto } = await import(
+      "@intx/crypto-node"
+    );
+    const kp = await generateKeyPair();
+    transport.register(address, createNodeCrypto(kp));
+
+    const consulted: string[] = [];
+    const mailInboundRouter = {
+      tryRoute(addr: string, _message: Uint8Array): boolean {
+        consulted.push(addr);
+        return false;
+      },
+    };
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-fallback-mail",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(sessions),
+      mailInboundRouter,
+    });
+
+    client.connect();
+    try {
+      await waitFor(() => env.router.getRoutableAddresses().includes(address));
+
+      const encoded = base64Encode(VALID_MESSAGE);
+      expect(env.router.routeMail(address, encoded)).toBe(true);
+
+      const agentTransport = transport.getTransportFor(address);
+      await waitFor(async () => {
+        const refs = await agentTransport.search("INBOX", {});
+        return refs.length > 0;
+      });
+
+      expect(consulted).toContain(address);
+    } finally {
+      client.close();
+      await waitFor(
+        () => !env.router.getConnectedSidecars().includes("sc-fallback-mail"),
+      );
+    }
+  });
 });

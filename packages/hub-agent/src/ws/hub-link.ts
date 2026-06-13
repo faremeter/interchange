@@ -85,6 +85,28 @@ export interface DeployRouter {
   deploy(frame: AgentDeployFrame): Promise<DeployRouterResult>;
 }
 
+/**
+ * Per-address mail handler registry the link consults on every
+ * `mail.inbound` frame before falling back to `transport.deliver` /
+ * `sessions.commitInboundMail`. Production wires this against the
+ * sidecar's `createMultistepMailRouter` so a multi-step deployment's
+ * supervisor receives the bytes through its mail-bus subscription.
+ * Trivial deploys never register a handler; their mail flows through
+ * the legacy session path unchanged. The shape lives on hub-agent so
+ * the link does not import the sidecar host's wiring module, and so
+ * tests can substitute a stub.
+ */
+export interface MailInboundRouter {
+  /**
+   * Attempt to dispatch `message` to a handler registered against
+   * `agentAddress`. Returns `true` if a handler claimed the message;
+   * `false` if no handler is registered. A `true` return causes the
+   * link to skip the legacy `transport.deliver` /
+   * `sessions.commitInboundMail` fallback entirely.
+   */
+  tryRoute(agentAddress: string, message: Uint8Array): boolean;
+}
+
 export type HubLinkConfig = {
   hubURL: string;
   sidecarId: string;
@@ -107,6 +129,18 @@ export type HubLinkConfig = {
    * multi-step decision; the link does not re-decide.
    */
   deployRouter: DeployRouter;
+  /**
+   * Optional pre-fallback mail dispatcher. When present, the link
+   * consults this router on every inbound `mail.inbound` frame; a
+   * `true` return takes the bytes off the legacy
+   * `transport.deliver` + `sessions.commitInboundMail` path entirely.
+   * Production wires this against the sidecar's multi-step deploy
+   * registry so a deployment-address inbound flows into the
+   * supervisor's mail-bus subscription. Trivial deployments (and
+   * tests that exercise the legacy path) omit it; an absent router
+   * is treated as "no handler ever claims" so behaviour is unchanged.
+   */
+  mailInboundRouter?: MailInboundRouter;
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
   scheduleReconnect?: ReconnectScheduler;
@@ -156,6 +190,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     sessions,
     keyStore,
     deployRouter,
+    mailInboundRouter,
     pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
     reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
     scheduleReconnect = defaultScheduleReconnect,
@@ -595,6 +630,22 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     switch (frame.type) {
       case "mail.inbound": {
         const rawBytes = base64Decode(frame.rawMessage);
+        // Multi-step deployments register the deployment-level mail
+        // address on `mailInboundRouter` once their supervisor spawns.
+        // For those addresses the legacy session path is not the right
+        // receiver -- the transport mailbox is never registered for the
+        // deployment address (no `startSession` ever runs against it),
+        // and there is no `sessions` entry to satisfy
+        // `commitInboundMail`. Routing through the registered handler
+        // delivers the bytes to the supervisor's mail-bus subscription,
+        // which is what the workflow-host's `awaitSignal` listens on.
+        // Trivial deployments do not register a handler; the fallback
+        // path is the legacy single-agent provisioning surface.
+        if (
+          mailInboundRouter?.tryRoute(frame.agentAddress, rawBytes) === true
+        ) {
+          break;
+        }
         deliverLocalMail(frame.agentAddress, rawBytes);
         void sessions.commitInboundMail(frame.agentAddress, rawBytes);
         break;

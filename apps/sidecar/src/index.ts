@@ -28,6 +28,7 @@ import {
 } from "./workflow-host-wiring";
 import {
   createDeploymentAddressRegistry,
+  createMultistepMailRouter,
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
@@ -144,6 +145,17 @@ const agentRepoStore = createAgentRepoStore({
 // agentAddress for hub-side routing.
 const deploymentAddressRegistry = createDeploymentAddressRegistry();
 
+// Per-deployment-address mail handler registry the hub-link consults
+// before falling back to the legacy `transport.deliver` /
+// `sessions.commitInboundMail` path. The deploy router's multi-step
+// branch registers `wired.routeInbound` against the deployment's mail
+// address once its supervisor spawns; the hub-link's `mail.inbound`
+// handler calls `tryRoute` first so an inbound deployment-address
+// message lands on the supervisor's mail-bus subscription instead of
+// the legacy session path (which has no `transport` registration and
+// no `sessions` entry for the deployment address).
+const multistepMailRouter = createMultistepMailRouter();
+
 const transport = createInMemoryTransport();
 
 // The pack-push client closes over the substrate (for `createPack`)
@@ -238,6 +250,7 @@ const orchestrator = createSidecarOrchestrator({
     },
     verifySSHSig: verifySSHSignature,
   },
+  mailInboundRouter: multistepMailRouter,
   createDeployRouter: ({ sessions, keyStore, onAgentEvent }) =>
     createSidecarDeployRouter({
       sessions,
@@ -249,6 +262,7 @@ const orchestrator = createSidecarOrchestrator({
       registerDeployment: ({ deploymentId, agentAddress }) => {
         deploymentAddressRegistry.record(deploymentId, agentAddress);
       },
+      multistepMailRouter,
       multistepSubstrateEnv,
       // The multi-step supervisor forwards `pack.push.request` upstream
       // control frames into this closure; the boot edge resolves them

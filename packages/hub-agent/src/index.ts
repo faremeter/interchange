@@ -34,6 +34,7 @@ export {
   type DeployRouterResult,
   type HubLink,
   type HubLinkConfig,
+  type MailInboundRouter,
   type ReconnectScheduler,
 } from "./ws/hub-link";
 export {

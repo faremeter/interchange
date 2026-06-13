@@ -104,6 +104,56 @@ export function createDeploymentAddressRegistry(): DeploymentAddressRegistry {
 }
 
 /**
+ * Handler the multi-step deploy router installs on the
+ * `MultistepMailRouter` after a supervisor's `spawn` succeeds. The
+ * handler hands a delivered inbound mail off to the per-deployment
+ * supervisor's `routeInbound`, which dispatches into the workflow-host
+ * mail-bus the multi-step child's `awaitSignal` subscribes against.
+ */
+export type MultistepMailHandler = (message: Uint8Array) => void;
+
+/**
+ * Per-deployment-address mail handler registry the sidecar hub-link
+ * consults before falling back to `transport.deliver` /
+ * `sessions.commitInboundMail`. The trivial deploy path never registers
+ * a handler -- its mail flows through the legacy session path. The
+ * multi-step deploy router registers a handler against the deployment's
+ * mail address after `wired.supervisor.spawn` succeeds, so an inbound
+ * `mail.inbound` frame for that address dispatches into the
+ * supervisor's mail-bus subscription rather than the
+ * never-provisioned-for-this-address transport mailbox.
+ *
+ * The registry is owned at the sidecar's host layer (not inside the
+ * workflow-host library) because the routing decision is between
+ * "legacy single-agent path" and "supervisor mail-bus path" -- two
+ * concrete sidecar host concerns. The workflow-host package stays
+ * agnostic to which transport surface its mail-bus rides on.
+ */
+export type MultistepMailRouter = {
+  register(address: string, handler: MultistepMailHandler): void;
+  unregister(address: string): void;
+  tryRoute(address: string, message: Uint8Array): boolean;
+};
+
+export function createMultistepMailRouter(): MultistepMailRouter {
+  const handlers = new Map<string, MultistepMailHandler>();
+  return {
+    register(address, handler) {
+      handlers.set(address, handler);
+    },
+    unregister(address) {
+      handlers.delete(address);
+    },
+    tryRoute(address, message) {
+      const handler = handlers.get(address);
+      if (handler === undefined) return false;
+      handler(message);
+      return true;
+    },
+  };
+}
+
+/**
  * Boot-edge facade around the substrate-shaped `RepoStore`. Forwards
  * every method to the underlying store; intercepts the
  * `writeTreePreservingPrefix` return path so a successful write

@@ -4,6 +4,7 @@ import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
   createDeploymentAddressRegistry,
+  createMultistepMailRouter,
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
@@ -198,5 +199,67 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
         },
       ),
     ).rejects.toThrow(/no agent address registered/);
+  });
+});
+
+describe("createMultistepMailRouter", () => {
+  test("tryRoute returns false when no handler is registered", () => {
+    const router = createMultistepMailRouter();
+    expect(
+      router.tryRoute("dep@integration.interchange", new Uint8Array([1])),
+    ).toBe(false);
+  });
+
+  test("a registered handler receives the inbound message and tryRoute returns true", () => {
+    const router = createMultistepMailRouter();
+    const received: Uint8Array[] = [];
+    router.register("dep@integration.interchange", (msg) => {
+      received.push(msg);
+    });
+    const message = new Uint8Array([1, 2, 3, 4]);
+    const claimed = router.tryRoute("dep@integration.interchange", message);
+    expect(claimed).toBe(true);
+    expect(received).toHaveLength(1);
+    expect(received[0]).toEqual(message);
+  });
+
+  test("registration is per-address; an unrelated address falls through", () => {
+    const router = createMultistepMailRouter();
+    const received: Uint8Array[] = [];
+    router.register("dep-a@integration.interchange", (msg) => {
+      received.push(msg);
+    });
+    expect(
+      router.tryRoute("dep-b@integration.interchange", new Uint8Array([9])),
+    ).toBe(false);
+    expect(received).toHaveLength(0);
+  });
+
+  test("unregister removes the handler", () => {
+    const router = createMultistepMailRouter();
+    const received: Uint8Array[] = [];
+    router.register("dep@integration.interchange", (msg) => {
+      received.push(msg);
+    });
+    router.unregister("dep@integration.interchange");
+    expect(
+      router.tryRoute("dep@integration.interchange", new Uint8Array([1])),
+    ).toBe(false);
+    expect(received).toHaveLength(0);
+  });
+
+  test("re-registering an address replaces the prior handler", () => {
+    const router = createMultistepMailRouter();
+    const first: Uint8Array[] = [];
+    const second: Uint8Array[] = [];
+    router.register("dep@integration.interchange", (msg) => {
+      first.push(msg);
+    });
+    router.register("dep@integration.interchange", (msg) => {
+      second.push(msg);
+    });
+    router.tryRoute("dep@integration.interchange", new Uint8Array([7]));
+    expect(first).toHaveLength(0);
+    expect(second).toHaveLength(1);
   });
 });

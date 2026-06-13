@@ -31,6 +31,7 @@ import {
   createHubLink,
   type DeployRouter,
   type HubLink,
+  type MailInboundRouter,
   type ReconnectScheduler,
 } from "./ws/hub-link";
 
@@ -83,6 +84,15 @@ export type SidecarOrchestratorConfig = {
    * returned router routes every `agent.deploy` frame on the link.
    */
   createDeployRouter: CreateDeployRouter;
+  /**
+   * Optional pre-fallback mail dispatcher the link consults on every
+   * inbound `mail.inbound` frame. Production wires this against the
+   * sidecar's multi-step deployment mail handler registry so a
+   * deployment-address inbound flows into the supervisor's mail-bus
+   * subscription instead of the legacy session path. The orchestrator
+   * forwards the binding unchanged to `createHubLink`.
+   */
+  mailInboundRouter?: MailInboundRouter;
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
   scheduleReconnect?: ReconnectScheduler;
@@ -113,6 +123,7 @@ export function createSidecarOrchestrator(
     createAgentCrypto,
     cryptoOps,
     createDeployRouter,
+    mailInboundRouter,
     pingIntervalMs,
     reconnectDelayMs,
     scheduleReconnect,
@@ -181,6 +192,7 @@ export function createSidecarOrchestrator(
     sessions,
     keyStore,
     deployRouter,
+    ...(mailInboundRouter !== undefined ? { mailInboundRouter } : {}),
     ...(pingIntervalMs !== undefined ? { pingIntervalMs } : {}),
     ...(reconnectDelayMs !== undefined ? { reconnectDelayMs } : {}),
     ...(scheduleReconnect !== undefined ? { scheduleReconnect } : {}),
