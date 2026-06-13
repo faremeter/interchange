@@ -12,18 +12,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join as pathJoin } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { type } from "arktype";
-
 import { importPrivateKeyBytes } from "@intx/crypto-node";
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
 import type {
-  Principal,
   RepoId,
   RepoStore,
   WorkflowRunSupervisorPrincipal,
 } from "@intx/hub-sessions";
-import { subscribeKind } from "@intx/hub-sessions";
 import type {
   AgentKeyStore,
   DeployRouter,
@@ -45,8 +41,6 @@ import {
   type SubprocessHandle,
   type SubprocessSpawner,
   type SupervisorRunEvent,
-  type TerminalEventSource,
-  type TerminalRunEvent,
   type TrivialLaunch,
   type WorkflowSupervisor,
 } from "@intx/workflow-host";
@@ -1067,112 +1061,6 @@ export async function driveTrivialRunChain(
 }
 
 /**
- * Substrate-event envelope shape the terminal-event source narrows on.
- * The workflow-run kind handler commits one event blob per terminal
- * transition under `runs/<runId>/events/<seq>.json`; the validator
- * mirrors the three terminal kinds. Non-terminal events at the same
- * path prefix are filtered out by `subscribeKind`'s `kinds` slot
- * before they reach this validator.
- */
-const TerminalEventEnvelope = type({
-  seq: "number >= 0",
-  type: "'RunCompleted' | 'RunFailed' | 'RunCancelled'",
-  at: "string",
-  "+": "ignore",
-});
-
-const TERMINAL_KINDS: readonly string[] = [
-  "RunCompleted",
-  "RunFailed",
-  "RunCancelled",
-];
-
-/**
- * Map a substrate-envelope projection into the supervisor's
- * `TerminalRunEvent` discriminated union. The envelope shape is the
- * audit-log on-disk form (`seq`, `type`, `at`, plus event-specific
- * fields); the supervisor consumes the workflow-vocabulary union, so
- * the mapping narrows `type` back into `kind`. `RunFailed` carries an
- * `error` field; missing or malformed `error` payloads surface as a
- * thrown protocol violation rather than a silently-empty message.
- */
-function envelopeToTerminalEvent(envelope: {
-  seq: number;
-  type: "RunCompleted" | "RunFailed" | "RunCancelled";
-  at: string;
-}): TerminalRunEvent {
-  if (envelope.type === "RunCompleted") {
-    return { kind: "RunCompleted", seq: envelope.seq, at: envelope.at };
-  }
-  if (envelope.type === "RunCancelled") {
-    return { kind: "RunCancelled", seq: envelope.seq, at: envelope.at };
-  }
-  return {
-    kind: "RunFailed",
-    seq: envelope.seq,
-    at: envelope.at,
-    error: { message: "" },
-  };
-}
-
-/**
- * Build a `TerminalEventSource` backed by `subscribeKind` against the
- * workflow-run repo's audit log. Each invocation opens a fresh
- * subscription (live, from `"head"`) filtered to the three terminal
- * kinds, narrows the substrate envelope through the local validator,
- * and yields one `TerminalRunEvent` per blob whose `runId` matches the
- * requested run. Mismatched runIds are skipped silently so a single
- * workflow-run repo can host many concurrent runs without leaking
- * cross-run events into a per-run watcher.
- */
-export function createSubscribeKindTerminalEventSource(deps: {
-  repoStore: RepoStore;
-  principal: Principal;
-  repoId: RepoId;
-  ref: string;
-}): TerminalEventSource {
-  return (runId: string) => ({
-    [Symbol.asyncIterator](): AsyncIterator<TerminalRunEvent> {
-      const abort = new AbortController();
-      const inner = subscribeKind(
-        deps.repoStore,
-        deps.principal,
-        deps.repoId,
-        deps.ref,
-        TerminalEventEnvelope,
-        {
-          signal: abort.signal,
-          from: "head",
-          kinds: TERMINAL_KINDS,
-        },
-      );
-      return {
-        async next(): Promise<IteratorResult<TerminalRunEvent>> {
-          while (true) {
-            const next = await inner.next();
-            if (next.done === true) return { value: undefined, done: true };
-            if (next.value.runId !== runId) continue;
-            return {
-              value: envelopeToTerminalEvent(next.value.event),
-              done: false,
-            };
-          }
-        },
-        async return(): Promise<IteratorResult<TerminalRunEvent>> {
-          abort.abort();
-          if (typeof inner.return === "function") {
-            await inner.return(undefined).catch(() => {
-              /* swallowed: best-effort finalisation. */
-            });
-          }
-          return { value: undefined, done: true };
-        },
-      };
-    },
-  });
-}
-
-/**
  * Logical mail-audit reference the supervisor stamps onto every
  * inbox/processing/consumed envelope for sidecar-hosted deployments.
  * The substrate does not dereference the value; it is a host-side
@@ -1211,12 +1099,6 @@ export function createSidecarWorkflowSupervisor(
     kind: "supervisor",
     deploymentId: opts.deploymentId,
   };
-  const terminalEventSource = createSubscribeKindTerminalEventSource({
-    repoStore: opts.repoStore,
-    principal: supervisorPrincipal,
-    repoId: opts.workflowRunRepoId,
-    ref: opts.workflowRunRef,
-  });
   const supervisor = createWorkflowSupervisor({
     repoStore: opts.repoStore,
     signAsPrincipal: (kind, payload) => {
@@ -1235,7 +1117,6 @@ export function createSidecarWorkflowSupervisor(
     readPrincipal: supervisorPrincipal,
     deriveStepAddress: opts.deriveStepAddress,
     trivialLaunch: opts.trivialLaunch,
-    terminalEventSource,
     deriveMailAuditRef: deriveSidecarMailAuditRef(opts.deploymentId),
     ...(opts.pushWorkflowRunPack !== undefined
       ? { pushWorkflowRunPack: opts.pushWorkflowRunPack }

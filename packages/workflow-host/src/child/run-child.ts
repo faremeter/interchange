@@ -64,6 +64,7 @@ import { createDefaultDirectorRegistry } from "@intx/agent";
 import type { AuthzCallResult } from "@intx/inference";
 
 import type {
+  RunResult,
   Scheduler,
   StepInvokeRequest,
   StepInvokeResult,
@@ -398,6 +399,21 @@ export async function runWorkflowChild(
 
   const drainController = createWorkflowHostDrainController({ definition });
 
+  // Construct the upstream control-channel sender up-front. The
+  // supervisor's `waitForReady` consumes the `ready` frame and the
+  // upstream-control pump consumes every subsequent upstream payload
+  // (`pack.push.request`, `terminal.event`, `recycle.request`) on the
+  // same iterator. Building the sender here lets the resume loop
+  // below attach a terminal-event emitter onto every resumed run's
+  // `complete` promise without re-deriving the sender lazily.
+  const upstreamSender =
+    opts.upstreamSender ??
+    createControlChannelSender({
+      privateKeySeed: childKeyPair.privateKey,
+      channelId: opts.env.channelId,
+      writer: opts.controlWriter,
+    });
+
   // Self-discovery before announcing `ready`. The runtime body must
   // see every in-flight run before the supervisor starts forwarding
   // `trigger.fired` frames; otherwise a fresh trigger could land
@@ -431,35 +447,29 @@ export async function runWorkflowChild(
     });
     // Fire-and-forget: the runtime body's `complete` settles when the
     // run reaches a terminal phase; the child's control-loop does not
-    // block on resumed runs.
-    void handle.complete.catch((cause) => {
-      logger.error`resumed run ${run.runId} failed: ${String(cause)}`;
-    });
+    // block on resumed runs. The supervisor's dispatch loop / drain
+    // accumulator subscribes to the resumed run's terminal via the
+    // `terminal.event` upstream frame the child emits below.
+    void handle.complete
+      .then((result) => emitTerminalEvent(upstreamSender, result))
+      .catch((cause) => {
+        logger.error`resumed run ${run.runId} failed: ${String(cause)}`;
+      });
     resumedRunIds.push(run.runId);
   }
 
   // `ready` rides over the control channel back to the supervisor.
   // The supervisor's `waitForReady` consumes it on its receive side.
-  // Re-use `createControlChannelSender` so the wire shape is the same
-  // as the downstream's; the supervisor's `receiveControlChannel`
-  // accepts both directions through one decoder. Upstream frames are
+  // The upstream sender is constructed above so the resume loop can
+  // attach a terminal-event emitter onto every resumed run's
+  // `complete` promise; the same sender lives behind the pack-push
+  // bridge the process wrapper builds (when the caller supplies one),
+  // so the upstream frame sequence is monotonic across `ready`,
+  // every `pack.push.request`, every `terminal.event`, and any
+  // future child-originated upstream payload. Upstream frames are
   // signed by the child's own private key; the `ready` payload
   // publishes the matching public half so the supervisor can verify
   // every subsequent upstream frame.
-  //
-  // When the caller (`runWorkflowChildFromProcessEnv`) supplies a
-  // pre-built upstream sender, reuse it -- the same sender lives
-  // behind the pack-push bridge the process wrapper builds, so the
-  // upstream frame sequence is monotonic across `ready`, every
-  // `pack.push.request`, and any future child-originated upstream
-  // payload.
-  const upstreamSender =
-    opts.upstreamSender ??
-    createControlChannelSender({
-      privateKeySeed: childKeyPair.privateKey,
-      channelId: opts.env.channelId,
-      writer: opts.controlWriter,
-    });
   await upstreamSender.send({
     type: "ready",
     data: {
@@ -496,6 +506,7 @@ export async function runWorkflowChild(
           clock,
           newId,
           eventSender,
+          upstreamSender,
           drainController,
           triggeredRunIds,
           ...(opts.packPushBridge !== undefined
@@ -545,6 +556,7 @@ async function handleControlPayload(
     clock: () => Date;
     newId: (prefix: string) => string;
     eventSender: ReturnType<typeof createEventChannelSender>;
+    upstreamSender: ControlChannelSender;
     drainController: DrainController;
     triggeredRunIds: string[];
     packPushBridge?: PackPushResponseSink;
@@ -571,9 +583,19 @@ async function handleControlPayload(
         runId: payload.data.runId,
         consumedMessageId: payload.data.messageId,
       });
-      void handle.complete.catch((cause) => {
-        logger.error`triggered run ${payload.data.runId} failed: ${String(cause)}`;
-      });
+      // Fan the run's terminal status back to the supervisor over the
+      // upstream control channel. The supervisor's dispatch loop and
+      // any armed drainTimeout accumulator subscribe through the
+      // per-cohort broadcaster the supervisor owns; the broadcaster
+      // settles when this frame lands. The runtime body commits the
+      // terminal event to the workflow-run substrate as part of the
+      // same lifecycle moment, so the on-disk audit chain and the
+      // peer notification originate from the same code path.
+      void handle.complete
+        .then((result) => emitTerminalEvent(ctx.upstreamSender, result))
+        .catch((cause) => {
+          logger.error`triggered run ${payload.data.runId} failed: ${String(cause)}`;
+        });
       ctx.triggeredRunIds.push(payload.data.runId);
       return false;
     }
@@ -707,6 +729,15 @@ async function handleControlPayload(
         "workflow-child received a `pack.push.request` frame on its inbound control channel; this is a child-only upstream payload",
       );
     }
+    case "terminal.event": {
+      // `terminal.event` is the child->supervisor terminal-run
+      // notification frame; receiving one on the child's downstream
+      // side is a protocol violation in the same shape as a downstream
+      // `ready` or `recycle.request`.
+      throw new Error(
+        "workflow-child received a `terminal.event` frame on its inbound control channel; this is a child-only upstream payload",
+      );
+    }
     case "pack.push.response": {
       // Route the response to the pack-push bridge if one is wired.
       // A response that lands without an active bridge means a stale
@@ -780,6 +811,91 @@ function buildRuntimeEnv(args: {
     newId: args.newId,
     drain: args.drainController,
   };
+}
+
+/**
+ * Mirror a run's terminal status back to the supervisor over the
+ * upstream control channel. Fired once per run from the resume and
+ * trigger.fire paths' `complete` continuation. The supervisor's
+ * per-cohort terminal broadcaster fans the event out to the dispatch
+ * loop and any armed drainTimeout accumulator subscribed for the
+ * runId.
+ *
+ * The mapping is total: every `terminalStatus` the runtime body
+ * surfaces corresponds to exactly one `kind` in the wire union. The
+ * `error.message` on `RunFailed` is taken from the last
+ * `RunFailed`/`StepFailed` event the runtime emitted; when the log
+ * does not carry one the supervisor's downstream consumers see an
+ * empty message rather than a thrown error (the wire shape requires
+ * the field).
+ *
+ * Errors flowing out of `upstreamSender.send` are logged but not
+ * rethrown -- the supervisor's dispatch loop is the authoritative
+ * settler for the dispatch entry through its cohort abort signal, so a
+ * lost terminal frame surfaces structurally as a wedged dispatch
+ * rather than a silent lifecycle failure.
+ */
+function emitTerminalEvent(
+  upstreamSender: ControlChannelSender,
+  result: RunResult,
+): Promise<void> {
+  const at = new Date().toISOString();
+  // Recover the terminal event blob from the committed event log so
+  // the wire frame's seq matches the on-disk audit-log entry. The
+  // runtime body commits the terminal event last; walking from the
+  // end finds it in one step without rebuilding the state machine.
+  let terminalEvent: (typeof result.events)[number] | null = null;
+  for (let i = result.events.length - 1; i >= 0; i -= 1) {
+    const candidate = result.events[i];
+    if (candidate === undefined) continue;
+    if (
+      candidate.kind === "RunCompleted" ||
+      candidate.kind === "RunFailed" ||
+      candidate.kind === "RunCancelled"
+    ) {
+      terminalEvent = candidate;
+      break;
+    }
+  }
+  const seq = terminalEvent?.seq ?? 0;
+  const eventAt = terminalEvent?.at ?? at;
+  let payload: Extract<ControlPayload, { type: "terminal.event" }>["data"];
+  if (result.terminalStatus === "completed") {
+    payload = {
+      runId: result.runId,
+      seq,
+      kind: "RunCompleted",
+      at: eventAt,
+    };
+  } else if (result.terminalStatus === "cancelled") {
+    payload = {
+      runId: result.runId,
+      seq,
+      kind: "RunCancelled",
+      at: eventAt,
+    };
+  } else {
+    const message =
+      terminalEvent !== null && terminalEvent.kind === "RunFailed"
+        ? terminalEvent.error.message
+        : "";
+    payload = {
+      runId: result.runId,
+      seq,
+      kind: "RunFailed",
+      at: eventAt,
+      error: { message },
+    };
+  }
+  return upstreamSender
+    .send({
+      type: "terminal.event",
+      data: payload,
+    })
+    .catch((cause) => {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.error`terminal.event upstream send failed for runId=${result.runId}: ${message}`;
+    });
 }
 
 /**

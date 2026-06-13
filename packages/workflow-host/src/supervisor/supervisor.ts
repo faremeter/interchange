@@ -97,6 +97,10 @@ import type {
   TerminalRunEvent,
   WorkflowSupervisorBindings,
 } from "./types";
+import {
+  createTerminalBroadcaster,
+  type TerminalBroadcaster,
+} from "./terminal-broadcaster";
 
 const logger = getLogger(["workflow-host", "supervisor"]);
 
@@ -499,6 +503,24 @@ export function createWorkflowSupervisor(
         });
         continue;
       }
+      if (payload.type === "terminal.event") {
+        // The workflow-process child mirrors every terminal-run commit
+        // over the control IPC. Fan it out to the cohort's broadcaster
+        // so the dispatch loop's `waitForRunTerminal` and any armed
+        // drainTimeout accumulator settle in step with the child's
+        // own substrate commit. The broadcaster is per-cohort: the
+        // active cohort's broadcaster lives on `state.terminalBroadcaster`
+        // for the spawn / recycling phases; outside those phases the
+        // notification has nowhere to land and is dropped.
+        const broadcaster = activeTerminalBroadcaster();
+        if (broadcaster === null) {
+          logger.warn`terminal.event received outside an active cohort; runId=${payload.data.runId} kind=${payload.data.kind} dropped`;
+          continue;
+        }
+        const event = terminalEventFromPayload(payload.data);
+        broadcaster.notify(payload.data.runId, event);
+        continue;
+      }
       logger.warn`workflow-process upstream control payload ignored: type=${payload.type}`;
     }
   }
@@ -596,6 +618,17 @@ export function createWorkflowSupervisor(
     return null;
   }
 
+  function activeTerminalBroadcaster(): TerminalBroadcaster | null {
+    if (
+      state.phase === "starting" ||
+      state.phase === "running" ||
+      state.phase === "recycling"
+    ) {
+      return state.terminalBroadcaster;
+    }
+    return null;
+  }
+
   async function wireChild(args: {
     channelId: string;
     hmacKey: Uint8Array;
@@ -681,7 +714,11 @@ export function createWorkflowSupervisor(
     // lifetime AND dispatch-loop lifetime; the abort fires on
     // shutdown and on every recycle's `installNewChild`. The
     // controller is minted unconditionally so the dispatch loop
-    // always has a cancellation source.
+    // always has a cancellation source. The cohort broadcaster
+    // matches the same lifetime: the supervisor's pumpUpstreamControl
+    // fans `terminal.event` upstream frames into it, and consumers
+    // (dispatch loop, drain accumulators) subscribe through its
+    // `source` accessor.
     state = {
       phase: "starting",
       handle,
@@ -692,6 +729,7 @@ export function createWorkflowSupervisor(
       mailUnsubscribe: null,
       credentialsSnapshot: null,
       terminalCohortAbort: new AbortController(),
+      terminalBroadcaster: createTerminalBroadcaster(),
       dispatchLoop: null,
     };
 
@@ -778,9 +816,11 @@ export function createWorkflowSupervisor(
         "supervisor: terminalCohortAbort missing after spawn handshake",
       );
     }
+    const startingPhaseBroadcaster = state.terminalBroadcaster;
     const dispatchLoop = runDispatchLoop(
       wired.wiring.controlSender,
       startingPhaseCohortAbort,
+      startingPhaseBroadcaster,
     );
     // Surface dispatch-loop failures via the logger; the loop's own
     // catch already swallows per-iteration faults, but a structural
@@ -800,6 +840,7 @@ export function createWorkflowSupervisor(
       mailUnsubscribe,
       credentialsSnapshot,
       terminalCohortAbort: startingPhaseCohortAbort,
+      terminalBroadcaster: startingPhaseBroadcaster,
       dispatchLoop,
     };
     // Kick the dispatch loop in case mail landed in the inbox
@@ -861,21 +902,19 @@ export function createWorkflowSupervisor(
   }
 
   /**
-   * Bind the supervisor's `terminalEventSource` binding to the active
-   * spawn cohort's `AbortController`. Each call mints an iterator that
-   * (a) pre-aborts immediately if the cohort has already been torn
-   * down, (b) returns the iterator if the cohort aborts mid-iteration,
-   * and (c) delegates element production to the binding's per-runId
-   * source. Returns `null` when no binding is configured; the
-   * accumulator factory's `terminalEventSource` slot is then left
-   * undefined and the accumulator settles on timeout only.
+   * Project the active cohort's terminal broadcaster as a
+   * `TerminalEventSource` the drainTimeout accumulator factory accepts.
+   * Wraps the broadcaster's `source` so the iterator settles with
+   * `done: true` on cohort abort -- without the abort wrap an
+   * accumulator armed mid-cohort would block on the broadcaster even
+   * after the supervisor has aborted the cohort.
    */
   function perCohortTerminalSource(
     cohortAbort: AbortController | null,
+    broadcaster: TerminalBroadcaster | null,
   ): TerminalEventSource | null {
-    const source = bindings.terminalEventSource;
-    if (source === undefined) return null;
     if (cohortAbort === null) return null;
+    if (broadcaster === null) return null;
     const signal = cohortAbort.signal;
     return (runId: string) => ({
       [Symbol.asyncIterator](): AsyncIterator<TerminalRunEvent> {
@@ -885,7 +924,7 @@ export function createWorkflowSupervisor(
             return: (value?: unknown) => Promise.resolve({ value, done: true }),
           };
         }
-        const inner = source(runId)[Symbol.asyncIterator]();
+        const inner = broadcaster.source(runId)[Symbol.asyncIterator]();
         let onAbort: (() => void) | null = null;
         const abortPromise = new Promise<{
           value: TerminalRunEvent | undefined;
@@ -971,8 +1010,15 @@ export function createWorkflowSupervisor(
   async function dispatchOne(
     sender: ControlChannelSender,
     cohortAbort: AbortController,
+    broadcaster: TerminalBroadcaster,
   ): Promise<boolean> {
     if (cohortAbort.signal.aborted) return false;
+    // Subscribe to the terminal broadcaster BEFORE forwarding the
+    // trigger.fire so a terminal event the child notifies between
+    // forward and subscribe cannot be missed. The broadcaster fires
+    // its listeners synchronously inside `notify`; with the subscribe
+    // ordered first the listener buffers the event until the
+    // dispatch loop's `iter.next()` consumes it.
     const dequeued = await inboxPrimitives.dequeueToProcessing(
       bindings.repoStore,
       inboxWritePrincipal,
@@ -981,12 +1027,15 @@ export function createWorkflowSupervisor(
     );
     if (dequeued === null) return false;
     const envelope = dequeued.envelope;
-    const runId = await forwardDispatchedEntry(
+    const runId = envelope.messageId;
+    const iterable = broadcaster.source(runId);
+    const iter = iterable[Symbol.asyncIterator]();
+    await forwardDispatchedEntry(
       sender,
       envelope.messageId,
       envelope.receivedAt,
     );
-    await waitForRunTerminal(runId, cohortAbort.signal);
+    await waitForRunTerminal(iter, cohortAbort.signal);
     inFlightRuns.delete(runId);
     if (cohortAbort.signal.aborted) {
       // The cohort tore down before the terminal event arrived (or
@@ -1014,28 +1063,16 @@ export function createWorkflowSupervisor(
   }
 
   /**
-   * Wait until the run's terminal event lands or the cohort aborts.
-   * When `terminalEventSource` is not bound the loop falls back to
-   * waiting on the cohort abort -- the supervisor library tests rely
-   * on this fallback to exercise the dispatch ordering without
-   * standing up a substrate-backed event watcher.
+   * Wait until the run's terminal event lands on the cohort
+   * broadcaster's iterator or the cohort aborts. The caller is
+   * responsible for minting the iterator before forwarding the
+   * `trigger.fire` so the listener is already armed when the child's
+   * upstream `terminal.event` frame arrives.
    */
   async function waitForRunTerminal(
-    runId: string,
+    iter: AsyncIterator<TerminalRunEvent>,
     abortSignal: AbortSignal,
   ): Promise<void> {
-    const source = bindings.terminalEventSource;
-    if (source === undefined) {
-      // Without a terminal-event source the dispatch loop has no
-      // signal to wait on. Resolve on the next microtask so the loop
-      // proceeds to `markConsumed`; this matches the pre-FIFO
-      // behaviour where the supervisor never gated on a run's
-      // terminal event. Cohort abort cancels the wait.
-      if (abortSignal.aborted) return;
-      await Promise.resolve();
-      return;
-    }
-    const iter = source(runId)[Symbol.asyncIterator]();
     let onAbort: (() => void) | null = null;
     const abortPromise = new Promise<{ done: true }>((resolve) => {
       if (abortSignal.aborted) {
@@ -1074,11 +1111,12 @@ export function createWorkflowSupervisor(
   async function runDispatchLoop(
     sender: ControlChannelSender,
     cohortAbort: AbortController,
+    broadcaster: TerminalBroadcaster,
   ): Promise<void> {
     while (!cohortAbort.signal.aborted) {
       let dispatched: boolean;
       try {
-        dispatched = await dispatchOne(sender, cohortAbort);
+        dispatched = await dispatchOne(sender, cohortAbort, broadcaster);
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
         logger.error`dispatch loop iteration failed: ${message}`;
@@ -1145,6 +1183,11 @@ export function createWorkflowSupervisor(
       prior.phase === "recycling"
     ) {
       prior.terminalCohortAbort.abort();
+      // Dispose the cohort broadcaster so any minted iterator settles
+      // with `done: true` -- the dispatch loop's `waitForRunTerminal`
+      // and any drainTimeout watcher unblock through the same shutdown
+      // path the cohort abort drives.
+      prior.terminalBroadcaster.dispose();
       // Wake the dispatch loop so its `dispatchWake` await settles
       // and the loop notices the cohort abort. Without the wake, the
       // loop's `Promise.race` would sit on the wake promise until
@@ -1234,7 +1277,10 @@ export function createWorkflowSupervisor(
     // body's cancellation cascade tears the run down without the
     // supervisor having to thread any per-run wiring beyond what the
     // accumulator already encapsulates.
-    const cohortSource = perCohortTerminalSource(state.terminalCohortAbort);
+    const cohortSource = perCohortTerminalSource(
+      state.terminalCohortAbort,
+      state.terminalBroadcaster,
+    );
     for (const runId of inFlightRuns) {
       if (drainAccumulators.has(runId)) continue;
       const accumulator = accumulatorFactory({
@@ -1298,6 +1344,7 @@ export function createWorkflowSupervisor(
       mailUnsubscribe: prior.mailUnsubscribe,
       credentialsSnapshot: prior.credentialsSnapshot,
       terminalCohortAbort: prior.terminalCohortAbort,
+      terminalBroadcaster: prior.terminalBroadcaster,
       dispatchLoop: null,
     };
     let attempt: RecycleAttempt;
@@ -1357,12 +1404,19 @@ export function createWorkflowSupervisor(
               accumulator.stop();
             }
             drainAccumulators.clear();
+            // Dispose the prior cohort's broadcaster so any minted
+            // iterator still held by the aborted dispatch loop or a
+            // stopped accumulator settles with `done: true`. The next
+            // cohort gets a fresh broadcaster wired below.
+            prior.terminalBroadcaster.dispose();
             // Mint a fresh cohort abort and start a new dispatch
             // loop against the new child's controlSender.
             const newCohortAbort = new AbortController();
+            const newBroadcaster = createTerminalBroadcaster();
             const newDispatchLoop = runDispatchLoop(
               wiring.controlSender,
               newCohortAbort,
+              newBroadcaster,
             );
             void newDispatchLoop.catch((cause) => {
               const message =
@@ -1381,6 +1435,7 @@ export function createWorkflowSupervisor(
               mailUnsubscribe: prior.mailUnsubscribe,
               credentialsSnapshot,
               terminalCohortAbort: newCohortAbort,
+              terminalBroadcaster: newBroadcaster,
               dispatchLoop: newDispatchLoop,
             };
             // Cache fresh spawn context with the updated spawnedAt
@@ -1528,6 +1583,15 @@ type ActiveState = {
    * the previous cohort cannot survive into the next.
    */
   terminalCohortAbort: AbortController;
+  /**
+   * Per-cohort terminal-run event broadcaster. The supervisor's
+   * upstream control pump fans `terminal.event` frames into this
+   * broadcaster; the dispatch loop and any armed drainTimeout
+   * accumulator subscribe through its `source` accessor. Lifetime
+   * matches `terminalCohortAbort`: shutdown / recycle dispose the
+   * broadcaster so every minted iterator settles with `done: true`.
+   */
+  terminalBroadcaster: TerminalBroadcaster;
   /**
    * Promise the dispatch loop's body resolves with on exit. The
    * `starting`-phase ActiveState carries `null` because the loop is
@@ -1687,6 +1751,41 @@ function parseMessageIdHeader(rawMessage: Uint8Array): string | null {
 
 function bytesToHex(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("hex");
+}
+
+/**
+ * Project the wire shape of a `terminal.event` upstream control frame
+ * into the workflow-vocabulary `TerminalRunEvent` discriminated union
+ * the supervisor's downstream consumers (dispatch loop, drainTimeout
+ * accumulators) reason about. The control-channel IPC validator
+ * narrows `kind` and `error` upstream; the supervisor preserves that
+ * narrowing here without re-validating.
+ */
+function terminalEventFromPayload(
+  data: Extract<ControlPayload, { type: "terminal.event" }>["data"],
+): TerminalRunEvent {
+  if (data.kind === "RunCompleted") {
+    return { kind: "RunCompleted", seq: data.seq, at: data.at };
+  }
+  if (data.kind === "RunCancelled") {
+    return { kind: "RunCancelled", seq: data.seq, at: data.at };
+  }
+  // The wire schema makes `error.message` required when `kind` is
+  // `RunFailed` (see control-channel `terminal.event` validator). A
+  // missing message here would mean the upstream validator was bypassed
+  // or the producer is non-conforming; surface that loudly rather than
+  // silently coercing to an empty string.
+  if (data.error === undefined || typeof data.error.message !== "string") {
+    throw new Error(
+      `terminalEventFromPayload: RunFailed payload missing required error.message (runId=${data.runId}, seq=${String(data.seq)})`,
+    );
+  }
+  return {
+    kind: "RunFailed",
+    seq: data.seq,
+    at: data.at,
+    error: { message: data.error.message },
+  };
 }
 
 /**

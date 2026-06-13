@@ -19,8 +19,6 @@ import {
   type SubprocessHandle,
   type SignedPayload,
   type SupervisorRunEvent,
-  type TerminalEventSource,
-  type TerminalRunEvent,
   type WorkflowSupervisorBindings,
 } from "./index";
 import {
@@ -33,7 +31,9 @@ import { commitCancelRequested } from "./cancel-signing";
 import {
   createControlChannelSender,
   createEventChannelSender,
+  ControlPayload,
   receiveControlChannel,
+  SignedEnvelope,
   generateHmacKey,
   generateChannelId,
   hexDecode,
@@ -41,6 +41,27 @@ import {
   type NdjsonReader,
   type NdjsonWriter,
 } from "../ipc/index";
+
+/**
+ * Parse the `runId` carried on each `trigger.fire` frame the
+ * supervisor wrote to the in-memory child control stream. Validates
+ * every signed envelope's payload through the canonical `ControlPayload`
+ * narrow so the helper does not need to `as`-cast at the boundary.
+ */
+function parseTriggerFireRunIds(lines: readonly string[]): string[] {
+  const ids: string[] = [];
+  for (const line of lines) {
+    if (!line.includes("trigger.fire")) continue;
+    const raw: unknown = JSON.parse(line);
+    const signed = SignedEnvelope(raw);
+    if (signed instanceof type.errors) continue;
+    const payload = ControlPayload(signed.envelope.payload);
+    if (payload instanceof type.errors) continue;
+    if (payload.type !== "trigger.fire") continue;
+    ids.push(payload.data.runId);
+  }
+  return ids;
+}
 
 const CancelRequestedBlob = type({
   type: "string",
@@ -1365,7 +1386,7 @@ describe("createWorkflowSupervisor", () => {
     expect(supervisor.getCredentialsSnapshot()).toBeNull();
   });
 
-  test("drain() threads the terminalEventSource binding into each accumulator's opts", async () => {
+  test("drain() threads the per-cohort terminal broadcaster into each accumulator's opts", async () => {
     const baseDir = await makeTempDir("supervisor-drain-terminal-source-");
     await seedStepGrants(
       baseDir,
@@ -1431,25 +1452,6 @@ describe("createWorkflowSupervisor", () => {
       return stub;
     };
 
-    const sourceCalls: string[] = [];
-    const terminalEventSource: TerminalEventSource = (runId) => {
-      sourceCalls.push(runId);
-      return {
-        [Symbol.asyncIterator](): AsyncIterator<TerminalRunEvent> {
-          return {
-            next(): Promise<IteratorResult<TerminalRunEvent>> {
-              return new Promise<IteratorResult<TerminalRunEvent>>(
-                () => undefined,
-              );
-            },
-            return(): Promise<IteratorResult<TerminalRunEvent>> {
-              return Promise.resolve({ value: undefined, done: true });
-            },
-          };
-        },
-      };
-    };
-
     const mailBus = createMockMailBus();
     const baseBindings = await buildBindings({
       baseDir,
@@ -1465,7 +1467,6 @@ describe("createWorkflowSupervisor", () => {
       ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
       drainTimeoutAccumulatorFactory: factory,
       drainTimeoutMs: 5_000,
-      terminalEventSource,
     };
     const supervisor = createWorkflowSupervisor(bindings);
 
@@ -1507,8 +1508,10 @@ describe("createWorkflowSupervisor", () => {
     await spawnPromise;
     await supervisor.drain({ deadlineMs: 5_000 });
 
-    // The factory was handed a terminalEventSource and the
-    // accumulator pulled a per-runId iterator from it.
+    // The supervisor's per-cohort terminal broadcaster always backs
+    // the accumulator's terminal-event source; the accumulator factory
+    // sees a non-undefined slot and can mint a per-runId iterator
+    // through it.
     expect(stubs).toHaveLength(1);
     const stub = stubs[0];
     if (stub === undefined) throw new Error("expected one stub accumulator");
@@ -1519,17 +1522,14 @@ describe("createWorkflowSupervisor", () => {
         "expected accumulator opts to carry a terminalEventSource",
       );
     }
-    // Calling the source factory itself walks through to the binding
-    // and records the runId on the recorder.
     const iterable = factorySource(stub.__opts.runId);
     const iter = iterable[Symbol.asyncIterator]();
-    expect(sourceCalls).toContain(stub.__opts.runId);
     await iter.return?.(undefined);
 
     await supervisor.shutdown();
   });
 
-  test("drain() omits terminalEventSource on the accumulator opts when no binding is configured", async () => {
+  test("drain() arms the broadcaster-backed accumulator source on the active cohort", async () => {
     const baseDir = await makeTempDir("supervisor-drain-no-term-source-");
     await seedStepGrants(
       baseDir,
@@ -1654,10 +1654,13 @@ describe("createWorkflowSupervisor", () => {
     expect(stubs).toHaveLength(1);
     const stub = stubs[0];
     if (stub === undefined) throw new Error("expected one stub accumulator");
-    // The no-op default leaves the accumulator on timer-only
-    // settlement: the supervisor passes no terminalEventSource through
-    // to the factory.
-    expect(stub.__opts.terminalEventSource).toBeUndefined();
+    // The supervisor owns the per-cohort terminal broadcaster; the
+    // accumulator factory always receives a non-undefined terminal
+    // source backed by the active cohort's broadcaster. There is no
+    // path through the supervisor today that leaves the accumulator
+    // on timer-only settlement -- the broadcaster supplants the
+    // pre-binding behaviour wholesale.
+    expect(stub.__opts.terminalEventSource).toBeDefined();
 
     await supervisor.shutdown();
   });
@@ -1895,7 +1898,6 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       messageId: string,
       rawMessage: Uint8Array,
     ) => { store: string; path: string };
-    terminalEventSource?: TerminalEventSource;
   }) {
     const baseDir = await makeTempDir(opts.label);
     await seedStepGrants(
@@ -1943,9 +1945,6 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       ...(opts.deriveMailAuditRef !== undefined
         ? { deriveMailAuditRef: opts.deriveMailAuditRef }
         : {}),
-      ...(opts.terminalEventSource !== undefined
-        ? { terminalEventSource: opts.terminalEventSource }
-        : {}),
     };
     const supervisor = createWorkflowSupervisor(bindings);
     const spawnPromise = supervisor.spawn({
@@ -1984,6 +1983,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       supervisor,
       mailBus,
       supervisorToChild,
+      childSender,
     };
   }
 
@@ -1997,22 +1997,29 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       "deployment-x@example.com",
       new TextEncoder().encode("audit-default-1"),
     );
-    // Wait for the enqueue to land in the in-memory inbox.
+    // Wait for the enqueue to land in the in-memory inbox. The
+    // dispatch loop may pull the entry into `processing` before the
+    // assertion fires (the loop dequeues immediately once the
+    // supervisor's spawn handshake completes), so the check covers
+    // every claim-check substate.
     const deadline = Date.now() + 500;
-    while (
-      Date.now() < deadline &&
-      inbox.snapshot("deployment-x@example.com").inbox.size === 0 &&
-      inbox.snapshot("deployment-x@example.com").consumed.size === 0
-    ) {
+    while (Date.now() < deadline) {
+      const snap = inbox.snapshot("deployment-x@example.com");
+      if (
+        snap.inbox.size > 0 ||
+        snap.processing.size > 0 ||
+        snap.consumed.size > 0
+      ) {
+        break;
+      }
       await new Promise((r) => setTimeout(r, 1));
     }
-    const consumed = [
-      ...inbox.snapshot("deployment-x@example.com").consumed.values(),
+    const snapshot = inbox.snapshot("deployment-x@example.com");
+    const all = [
+      ...snapshot.consumed.values(),
+      ...snapshot.processing.values(),
+      ...snapshot.inbox.values(),
     ];
-    const inboxEntries = [
-      ...inbox.snapshot("deployment-x@example.com").inbox.values(),
-    ];
-    const all = [...consumed, ...inboxEntries];
     expect(all.length).toBeGreaterThanOrEqual(1);
     const first = all[0];
     if (first === undefined) throw new Error("unreachable");
@@ -2046,9 +2053,11 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     if (observedEntry === undefined) throw new Error("unreachable");
     expect(observedEntry.len).toBe(payload.byteLength);
     expect(observedEntry.messageId.length).toBeGreaterThan(0);
+    const overrideSnapshot = inbox.snapshot("deployment-x@example.com");
     const allEntries = [
-      ...inbox.snapshot("deployment-x@example.com").inbox.values(),
-      ...inbox.snapshot("deployment-x@example.com").consumed.values(),
+      ...overrideSnapshot.inbox.values(),
+      ...overrideSnapshot.processing.values(),
+      ...overrideSnapshot.consumed.values(),
     ];
     expect(allEntries.length).toBeGreaterThanOrEqual(1);
     const first = allEntries[0];
@@ -2062,54 +2071,18 @@ describe("supervisor inbox FIFO dispatch loop", () => {
 
   test("two enqueued messages dispatch serially in FIFO order with terminal gating", async () => {
     const inbox = createMemoryInboxPrimitives();
-    // Per-runId terminal-event source the test controls so the
-    // dispatch loop sits on `waitForRunTerminal` until the test
-    // unblocks each run.
-    const gates = new Map<
-      string,
-      { resolve: () => void; promise: Promise<TerminalRunEvent> }
-    >();
-    function gateFor(runId: string) {
-      let entry = gates.get(runId);
-      if (entry === undefined) {
-        let resolver: (e: TerminalRunEvent) => void = () => undefined;
-        const promise = new Promise<TerminalRunEvent>((resolve) => {
-          resolver = resolve;
-        });
-        entry = {
-          resolve: () => resolver({ kind: "RunCompleted", seq: 0, at: "test" }),
-          promise,
-        };
-        gates.set(runId, entry);
-      }
-      return entry;
-    }
-    const terminalEventSource: TerminalEventSource = (runId: string) => ({
-      [Symbol.asyncIterator](): AsyncIterator<TerminalRunEvent> {
-        const gate = gateFor(runId);
-        let done = false;
-        return {
-          async next(): Promise<IteratorResult<TerminalRunEvent>> {
-            if (done) return { value: undefined, done: true };
-            const event = await gate.promise;
-            done = true;
-            return { value: event, done: false };
-          },
-          async return(): Promise<IteratorResult<TerminalRunEvent>> {
-            done = true;
-            return { value: undefined, done: true };
-          },
-        };
-      },
-    });
-    const { supervisor, mailBus, supervisorToChild } =
+    // The supervisor's per-cohort terminal broadcaster gates each
+    // dispatch on a `terminal.event` upstream control frame the test
+    // mints through the child IPC sender. Until the test sends the
+    // frame, the dispatch loop sits on `waitForRunTerminal` for the
+    // forwarded run.
+    const { supervisor, mailBus, supervisorToChild, childSender } =
       await buildFifoTestFixture({
         label: "fifo-serial-",
         inbox,
-        terminalEventSource,
       });
     // Two messages. With FIFO dispatch and terminal gating, exactly
-    // one trigger.fire lands per gate release.
+    // one trigger.fire lands per terminal.event the test sends.
     mailBus.deliver(
       "deployment-x@example.com",
       new TextEncoder().encode("serial-msg-A"),
@@ -2118,39 +2091,55 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       "deployment-x@example.com",
       new TextEncoder().encode("serial-msg-B"),
     );
+    // Helper that pulls the runId carried on the first/next
+    // trigger.fire frame the supervisor wrote to the child stream.
+    function triggerRunIds(): string[] {
+      return parseTriggerFireRunIds(supervisorToChild.flushed());
+    }
     // Wait for the first trigger.fire to land on the child stream.
     const deadlineOne = Date.now() + 500;
     while (Date.now() < deadlineOne) {
-      const flushed = supervisorToChild.flushed();
-      const triggerFires = flushed.filter((f) => f.includes("trigger.fire"));
-      if (triggerFires.length >= 1) break;
+      if (triggerRunIds().length >= 1) break;
       await new Promise((r) => setTimeout(r, 1));
     }
-    let triggerFires = supervisorToChild
-      .flushed()
-      .filter((f) => f.includes("trigger.fire"));
-    expect(triggerFires.length).toBe(1);
+    let firedIds = triggerRunIds();
+    expect(firedIds.length).toBe(1);
     // Release the first run's terminal event. The dispatch loop
     // proceeds to markConsumed and pulls the second message.
-    const firstRunId = [...gates.keys()][0];
+    const firstRunId = firedIds[0];
     if (firstRunId === undefined) throw new Error("first run not minted");
-    gateFor(firstRunId).resolve();
+    await childSender.send({
+      type: "terminal.event",
+      data: {
+        runId: firstRunId,
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
+    });
     const deadlineTwo = Date.now() + 500;
     while (Date.now() < deadlineTwo) {
-      const flushed = supervisorToChild.flushed();
-      triggerFires = flushed.filter((f) => f.includes("trigger.fire"));
-      if (triggerFires.length >= 2) break;
+      firedIds = triggerRunIds();
+      if (firedIds.length >= 2) break;
       await new Promise((r) => setTimeout(r, 1));
     }
-    expect(triggerFires.length).toBe(2);
+    expect(firedIds.length).toBe(2);
     // The first message must be `markConsumed` before the second is
     // dispatched -- check the in-memory state.
     const consumed = inbox.snapshot("deployment-x@example.com").consumed;
     expect(consumed.size).toBeGreaterThanOrEqual(1);
     // Release the second run so the loop completes its cycle.
-    const secondRunId = [...gates.keys()].find((id) => id !== firstRunId);
+    const secondRunId = firedIds.find((id) => id !== firstRunId);
     if (secondRunId !== undefined) {
-      gateFor(secondRunId).resolve();
+      await childSender.send({
+        type: "terminal.event",
+        data: {
+          runId: secondRunId,
+          seq: 0,
+          kind: "RunCompleted",
+          at: "test",
+        },
+      });
     }
     await supervisor.shutdown();
   });
@@ -2165,27 +2154,14 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       receivedAt: 1000,
       mailAuditRef: { store: "test", path: "test/orphan" },
     });
-    // Hold the run open with a terminal-event source that never
-    // resolves so the test can observe the dispatch loop's first
-    // dequeue without `markConsumed` racing the assertion.
-    const terminalEventSource: TerminalEventSource = () => ({
-      [Symbol.asyncIterator](): AsyncIterator<TerminalRunEvent> {
-        return {
-          next() {
-            return new Promise<IteratorResult<TerminalRunEvent>>(
-              () => undefined,
-            );
-          },
-          return(): Promise<IteratorResult<TerminalRunEvent>> {
-            return Promise.resolve({ value: undefined, done: true });
-          },
-        };
-      },
-    });
+    // The test never sends a `terminal.event` upstream control frame
+    // for the dispatched run, so the supervisor's per-cohort
+    // broadcaster never settles the dispatch loop. The loop sits on
+    // `waitForRunTerminal` after forwarding the trigger.fire, which
+    // is the observation point the assertions below pin.
     const { supervisor, supervisorToChild } = await buildFifoTestFixture({
       label: "fifo-replay-spawn-",
       inbox,
-      terminalEventSource,
     });
     // Wait for the dispatch loop to pull the recovered inbox entry
     // and send the trigger.fire. The terminal-event source above

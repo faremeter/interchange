@@ -40,18 +40,19 @@ export type TerminalRunEvent = RunCompleted | RunFailed | RunCancelled;
 
 /**
  * Per-runId terminal-event source the supervisor consumes to settle
- * armed drainTimeout accumulators when the run reaches a terminal
- * phase before the timeout fires. Each invocation returns an
+ * armed drainTimeout accumulators and the inbox dispatch loop when the
+ * run reaches a terminal phase. Each invocation returns an
  * `AsyncIterable` scoped to one `runId`; the consumer pulls until the
  * first terminal event arrives or the iterator is finalised (via
  * `return()` on the iterator, which the accumulator calls during
  * `stop`).
  *
- * The default (no binding) leaves accumulators on timer-only
- * settlement, which matches the pre-binding behaviour. The boot edge
- * supplies a `subscribeKind`-backed source for the production path so
- * the inbox FIFO integration (next task) can drive `markConsumed`
- * after each mail's run reaches terminal.
+ * The supervisor owns a per-cohort broadcaster that implements this
+ * shape against the `terminal.event` upstream control frames the
+ * workflow-process child emits when its runtime body settles a run.
+ * The accumulator and the dispatch loop borrow the broadcaster's
+ * subscribe surface; consumers therefore do not have to round-trip
+ * the workflow-run substrate from the supervisor's address space.
  */
 export type TerminalEventSource = (
   runId: string,
@@ -487,23 +488,6 @@ export interface WorkflowSupervisorBindings {
    */
   recyclePolicySetTimer?: (cb: () => void, ms: number) => unknown;
   recyclePolicyClearTimer?: (handle: unknown) => void;
-  /**
-   * Stream terminal events for a given runId. The supervisor's drain
-   * accumulators consume this to detect when in-flight runs settle
-   * ahead of the configured drainTimeout; the upcoming inbox FIFO
-   * integration will consume it to drive `markConsumed` after each
-   * mail's run reaches terminal.
-   *
-   * Default (no binding): drain accumulators settle on timeout only,
-   * matching the pre-binding behaviour. The boot edge supplies a
-   * `subscribeKind`-backed source for the production path.
-   *
-   * The source is per-runId rather than a long-lived parent stream so
-   * the iterator's lifetime stays tied to one child's run cohort. The
-   * supervisor mints fresh iterators after a recycle; it never spans
-   * a watcher across recycles.
-   */
-  terminalEventSource?: TerminalEventSource;
   /**
    * Optional hub-link surface the supervisor invokes when a child
    * sends a `pack.push.request` upstream control frame. The supervisor

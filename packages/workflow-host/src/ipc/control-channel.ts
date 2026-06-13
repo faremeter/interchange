@@ -215,6 +215,33 @@ export const ControlPayload = type(
         },
       ),
     },
+  })
+  .or({
+    // Child-initiated terminal-run notification. The workflow-process
+    // child emits this when one of its runs reaches a terminal phase
+    // (`RunCompleted`, `RunFailed`, `RunCancelled`) so the supervisor's
+    // dispatch loop and drain accumulators can settle without re-reading
+    // the workflow-run substrate from the supervisor process. The child
+    // commits the terminal event to its own substrate through the
+    // workflow-run pack-push pipeline; this frame is the peer-channel
+    // notification that mirrors the commit so the supervisor's
+    // in-process consumers do not have to round-trip the substrate.
+    //
+    // The `seq` mirrors the on-disk EventBase.seq the child assigned at
+    // commit time. The supervisor does not authoritatively verify the
+    // commit landed -- the pack-push response covers that contract --
+    // but the field is carried so a downstream consumer can correlate
+    // the notification with the substrate blob.
+    type: "'terminal.event'",
+    data: {
+      runId: "string > 0",
+      seq: "number >= 0",
+      kind: "'RunCompleted' | 'RunFailed' | 'RunCancelled'",
+      at: "string > 0",
+      "error?": {
+        message: "string",
+      },
+    },
   });
 
 export type ControlPayload = typeof ControlPayload.infer;

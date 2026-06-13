@@ -15,6 +15,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { type } from "arktype";
+
 import { generateKeyPair } from "@intx/crypto-node";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
@@ -25,18 +27,39 @@ import {
   type SignedPayload,
   type SubprocessHandle,
   type SubprocessSpawner,
-  type TerminalEventSource,
-  type TerminalRunEvent,
   type WorkflowSupervisorBindings,
 } from "./index";
 import { createRecyclePolicy, type RecyclePolicyBounds } from "./recycle";
 import { defaultStepRepoId, STEP_GRANTS_PATH } from "./credentials";
 import {
   createControlChannelSender,
+  ControlPayload,
+  SignedEnvelope,
   type FrameReader,
   type NdjsonReader,
   type NdjsonWriter,
 } from "../ipc/index";
+
+/**
+ * Parse the `runId` carried on each `trigger.fire` frame written to
+ * the in-memory child control stream. Validates every signed envelope
+ * through the canonical `ControlPayload` narrow so the helper does not
+ * need to `as`-cast at the boundary.
+ */
+function parseTriggerFireRunIds(lines: readonly string[]): string[] {
+  const ids: string[] = [];
+  for (const line of lines) {
+    if (!line.includes("trigger.fire")) continue;
+    const raw: unknown = JSON.parse(line);
+    const signed = SignedEnvelope(raw);
+    if (signed instanceof type.errors) continue;
+    const payload = ControlPayload(signed.envelope.payload);
+    if (payload instanceof type.errors) continue;
+    if (payload.type !== "trigger.fire") continue;
+    ids.push(payload.data.runId);
+  }
+  return ids;
+}
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -647,26 +670,55 @@ describe("supervisor recycle: mail buffered during the kill/respawn gap", () => 
     // the FIRST child's controlSender, not this one.
     expect(secondChild.supervisorToChild.flushed()).toEqual([]);
 
-    await driveReady(secondChild, ipcKeypair);
+    const secondChildSender = await driveReady(secondChild, ipcKeypair);
     const attempt = await recyclePromise;
     expect(attempt.origin).toBe("operator");
 
     // After ready, the new child's dispatch loop drains the inbox
     // claim-check queue in FIFO order. The loop processes runs
     // serially -- one `trigger.fire` per iteration, waiting for the
-    // run's terminal event before advancing. Without a configured
-    // `terminalEventSource` the loop falls back to a microtask wait,
-    // which still serializes per run. Poll until both messages have
-    // been forwarded.
-    const deadline = Date.now() + 1_000;
-    while (
-      secondChild.supervisorToChild.flushed().length < 2 &&
-      Date.now() < deadline
-    ) {
+    // run's terminal event before advancing. The supervisor's
+    // per-cohort broadcaster settles each dispatch on a `terminal.event`
+    // upstream frame from the child; the test drives that frame
+    // through the child's IPC sender so the second message lands on
+    // the same loop iteration after the first one closes out.
+    const flushedTriggerRunIds = (): string[] =>
+      parseTriggerFireRunIds(secondChild.supervisorToChild.flushed());
+    const firstDeadline = Date.now() + 1_000;
+    while (flushedTriggerRunIds().length < 1 && Date.now() < firstDeadline) {
       await new Promise((r) => setTimeout(r, 1));
     }
-    const flushed = secondChild.supervisorToChild.flushed();
-    expect(flushed.length).toBeGreaterThanOrEqual(2);
+    const firstRunIds = flushedTriggerRunIds();
+    expect(firstRunIds.length).toBeGreaterThanOrEqual(1);
+    const firstRunId = firstRunIds[0];
+    if (firstRunId === undefined) throw new Error("missing first runId");
+    await secondChildSender.send({
+      type: "terminal.event",
+      data: {
+        runId: firstRunId,
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
+    });
+    const secondDeadline = Date.now() + 1_000;
+    while (flushedTriggerRunIds().length < 2 && Date.now() < secondDeadline) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const allRunIds = flushedTriggerRunIds();
+    expect(allRunIds.length).toBeGreaterThanOrEqual(2);
+    const secondRunId = allRunIds.find((id) => id !== firstRunId);
+    if (secondRunId !== undefined) {
+      await secondChildSender.send({
+        type: "terminal.event",
+        data: {
+          runId: secondRunId,
+          seq: 0,
+          kind: "RunCompleted",
+          at: "test",
+        },
+      });
+    }
 
     await supervisor.shutdown();
   });
@@ -813,34 +865,12 @@ describe("supervisor recycle: channelId rotation on respawn", () => {
   });
 });
 
-describe("supervisor recycle: terminal-event watcher cohort", () => {
-  test("the previous cohort's watcher iterators are finalised on installNewChild", async () => {
+describe("supervisor recycle: terminal-event broadcaster cohort", () => {
+  test("the previous cohort's terminal broadcaster is disposed on installNewChild", async () => {
     const baseDir = await makeTempDir("recycle-cohort-");
     const ipcKeypair = await generateKeyPair();
     const mailBus = createMockMailBus();
     const tracker = createSpawnTracker({});
-
-    type ProducedIterator = {
-      returnCalled: boolean;
-    };
-    const produced: ProducedIterator[] = [];
-    const terminalEventSource: TerminalEventSource = () => ({
-      [Symbol.asyncIterator](): AsyncIterator<TerminalRunEvent> {
-        const iterTracker: ProducedIterator = { returnCalled: false };
-        produced.push(iterTracker);
-        return {
-          next() {
-            return new Promise<IteratorResult<TerminalRunEvent>>(
-              () => undefined,
-            );
-          },
-          return() {
-            iterTracker.returnCalled = true;
-            return Promise.resolve({ value: undefined, done: true } as const);
-          },
-        };
-      },
-    });
 
     await seedStepGrants(
       baseDir,
@@ -855,7 +885,6 @@ describe("supervisor recycle: terminal-event watcher cohort", () => {
     });
     const bindings: WorkflowSupervisorBindings = {
       ...baseBindings,
-      terminalEventSource,
     };
     const supervisor = createWorkflowSupervisor(bindings);
     const spawnPromise = supervisor.spawn({
@@ -872,20 +901,22 @@ describe("supervisor recycle: terminal-event watcher cohort", () => {
     await spawnPromise;
 
     // Deliver one mail so an in-flight run exists, then drain so the
-    // supervisor arms an accumulator -- which mints a terminal-event
-    // watcher under the active cohort controller.
+    // supervisor arms an accumulator. Each accumulator subscribes to
+    // the cohort's terminal broadcaster for its tracked runId.
     mailBus.deliver(
       "deployment-x@example.com",
       new TextEncoder().encode("cohort-pre-recycle"),
     );
     await new Promise((r) => setTimeout(r, 5));
     await supervisor.drain({ deadlineMs: 5_000 });
-    expect(produced.length).toBeGreaterThanOrEqual(1);
-    const preRecycleCount = produced.length;
 
-    // Recycle. The installNewChild path aborts the prior cohort and
-    // stops every armed accumulator, which fires `return()` on each
-    // watcher iterator.
+    // Recycle. The installNewChild path aborts the prior cohort,
+    // disposes the prior broadcaster (which settles every minted
+    // iterator with `done: true`), and stops every armed accumulator
+    // -- which fires `return()` on each watcher iterator. The
+    // observable invariant is structural: after the recycle returns,
+    // the supervisor accepts a fresh inbound mail and the new
+    // cohort's broadcaster handles its dispatch end-to-end.
     const recyclePromise = supervisor.recycle({ reason: "cohort-finalise" });
     while (tracker.children.length < 2) {
       await new Promise((r) => setTimeout(r, 1));
@@ -897,13 +928,25 @@ describe("supervisor recycle: terminal-event watcher cohort", () => {
     // Give the cohort abort microtask a chance to land.
     await new Promise((r) => setTimeout(r, 5));
 
-    // Every iterator minted before the recycle had its `return()`
-    // invoked.
-    for (let i = 0; i < preRecycleCount; i += 1) {
-      const entry = produced[i];
-      if (entry === undefined) throw new Error("missing produced entry");
-      expect(entry.returnCalled).toBe(true);
+    // The new cohort still operates: deliver a fresh mail and
+    // confirm the supervisor forwards a trigger.fire through the
+    // new child's controlSender. A wedged prior cohort would have
+    // left the dispatch loop blocked on the disposed broadcaster
+    // and the trigger.fire would never reach the new child's stream.
+    mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("cohort-post-recycle"),
+    );
+    const deadline = Date.now() + 1_000;
+    while (Date.now() < deadline) {
+      const flushed = second.supervisorToChild.flushed();
+      if (flushed.some((f) => f.includes("trigger.fire"))) break;
+      await new Promise((r) => setTimeout(r, 1));
     }
+    const triggerFires = second.supervisorToChild
+      .flushed()
+      .filter((f) => f.includes("trigger.fire"));
+    expect(triggerFires.length).toBeGreaterThanOrEqual(1);
 
     await supervisor.shutdown();
   });
