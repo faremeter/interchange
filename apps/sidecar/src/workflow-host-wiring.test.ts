@@ -1,19 +1,32 @@
 import { describe, test, expect } from "bun:test";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto-node";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
-import type {
-  CommitRunEventResult,
-  SubprocessSpawner,
-  SupervisorRunEvent,
+import {
+  createControlChannelSender,
+  type CommitRunEventResult,
+  type EventPayload,
+  type FrameReader,
+  type NdjsonReader,
+  type NdjsonWriter,
+  type SubprocessHandle,
+  type SubprocessSpawner,
+  type SupervisorRunEvent,
 } from "@intx/workflow-host";
 import type { InferenceEvent } from "@intx/types/runtime";
+import type { AgentDeployFrame } from "@intx/types/sidecar";
 
 import {
+  computeWireDefinitionHash,
   createSidecarDeployRouter,
   createSidecarWorkflowSupervisor,
   driveTrivialRunChain,
+  STEP_INFERENCE_SOURCES_ENV_KEY,
+  validateWorkflowProjection,
   type TrivialRunCell,
 } from "./workflow-host-wiring";
 
@@ -382,5 +395,699 @@ describe("createSidecarDeployRouter wires the InferenceEvent subscription to rec
       "StepCompleted",
       "RunCompleted",
     ]);
+  });
+});
+
+// --------------------------------------------------------------------
+// Multi-step branch tests
+// --------------------------------------------------------------------
+
+function createMemoryNdjsonStream() {
+  const buffer: string[] = [];
+  let waiter: (() => void) | null = null;
+  let done = false;
+  function wake() {
+    const w = waiter;
+    waiter = null;
+    if (w) w();
+  }
+  const reader: NdjsonReader = {
+    read(): AsyncIterableIterator<string> {
+      return (async function* () {
+        while (true) {
+          if (buffer.length > 0) {
+            const next = buffer.shift();
+            if (next === undefined) {
+              throw new Error("buffer shift returned undefined");
+            }
+            yield next;
+            continue;
+          }
+          if (done) return;
+          await new Promise<void>((resolve) => {
+            waiter = resolve;
+          });
+        }
+      })();
+    },
+  };
+  const writer: NdjsonWriter = {
+    write(line: string) {
+      buffer.push(line.replace(/\n$/, ""));
+      wake();
+      return Promise.resolve();
+    },
+  };
+  return {
+    writer,
+    reader,
+    inject(line: string) {
+      buffer.push(line.replace(/\n$/, ""));
+      wake();
+    },
+    flushed(): readonly string[] {
+      return buffer.slice();
+    },
+    close() {
+      done = true;
+      wake();
+    },
+  };
+}
+
+function createMemoryFrameStream() {
+  const buffer: Uint8Array[] = [];
+  let waiter: (() => void) | null = null;
+  let done = false;
+  function wake() {
+    const w = waiter;
+    waiter = null;
+    if (w) w();
+  }
+  const reader: FrameReader = {
+    read(): AsyncIterableIterator<Uint8Array> {
+      return (async function* () {
+        while (true) {
+          if (buffer.length > 0) {
+            const next = buffer.shift();
+            if (next === undefined) {
+              throw new Error("frame buffer shift returned undefined");
+            }
+            yield next;
+            continue;
+          }
+          if (done) return;
+          await new Promise<void>((resolve) => {
+            waiter = resolve;
+          });
+        }
+      })();
+    },
+  };
+  return {
+    reader,
+    inject(bytes: Uint8Array) {
+      buffer.push(bytes);
+      wake();
+    },
+    close() {
+      done = true;
+      wake();
+    },
+  };
+}
+
+function createTempBaseDir(prefix: string): Promise<string> {
+  return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+}
+
+/**
+ * Build a stub RepoStore whose `getRepoDir` resolves under the supplied
+ * tempBase. The multi-step branch's `assembleCredentialsSnapshot`
+ * reads `state/grants.json` from disk -- missing files are treated as
+ * empty grants, so a freshly-created tempBase produces an empty
+ * credentials snapshot which is what the wiring test wants.
+ */
+function createSpawnTestRepoStore(tempBase: string): RepoStore {
+  const stub: Partial<RepoStore> = {
+    getRepoDir(repoId: RepoId): string {
+      return path.join(tempBase, repoId.kind, repoId.id);
+    },
+    async writeTreePreservingPrefix(_p, _id, _ref, args) {
+      await args.merge(new Map());
+      return { commitSha: "stub-sha" };
+    },
+  };
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; only getRepoDir + writeTreePreservingPrefix exercised
+  return new Proxy(stub as RepoStore, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (value !== undefined) return value;
+      return () => {
+        throw new Error(
+          `stub RepoStore: ${String(prop)} not implemented for this test`,
+        );
+      };
+    },
+  });
+}
+
+type WorkflowProjection = NonNullable<AgentDeployFrame["workflow"]>;
+type InferenceSourceFixture = WorkflowProjection["sources"][string];
+
+type MultistepDeployArgs = {
+  sources: Record<string, InferenceSourceFixture>;
+  definition: {
+    id: string;
+    stepOrder: string[];
+    steps: Record<string, unknown>;
+  };
+};
+
+function makeInferenceSource(id: string): InferenceSourceFixture {
+  return {
+    id,
+    provider: "anthropic",
+    baseURL: "https://api.anthropic.com",
+    apiKey: `sk-${id}`,
+    model: "claude-3-5",
+  };
+}
+
+function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
+  return {
+    type: "agent.deploy",
+    agentAddress: "multi@example.com",
+    agentId: "multi-agent",
+    hubPublicKey: "hub-pk",
+    // The wire-side HarnessConfig has many required fields. The router
+    // never inspects `config` on the multi-step branch (only the
+    // trivial branch hands it to provisionAgent), so an opaque
+    // placeholder satisfies the surface contract for these tests.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch does not read config
+    config: {} as AgentDeployFrame["config"],
+    workflow: {
+      definition: args.definition,
+      sources: args.sources,
+    },
+  };
+}
+
+function defaultMultistepSources(): Record<string, InferenceSourceFixture> {
+  return {
+    "step-1": makeInferenceSource("step-1"),
+    "step-2": makeInferenceSource("step-2"),
+  };
+}
+
+describe("validateWorkflowProjection", () => {
+  test("rejects an empty stepOrder", () => {
+    expect(() =>
+      validateWorkflowProjection({
+        definition: { id: "w-1", stepOrder: [], steps: {} },
+        sources: {},
+      }),
+    ).toThrow(/stepOrder must be a non-empty array/);
+  });
+
+  test("rejects a stepId that violates STEP_ID_PATTERN", () => {
+    expect(() =>
+      validateWorkflowProjection({
+        definition: {
+          id: "w-1",
+          stepOrder: ["bad.step"],
+          steps: { "bad.step": {} },
+        },
+        sources: { "bad.step": {} },
+      }),
+    ).toThrow(/must match \^/);
+  });
+
+  test("rejects a missing sources entry for a stepOrder id", () => {
+    expect(() =>
+      validateWorkflowProjection({
+        definition: {
+          id: "w-1",
+          stepOrder: ["step-1"],
+          steps: { "step-1": {} },
+        },
+        sources: {},
+      }),
+    ).toThrow(/sources is missing entry/);
+  });
+
+  test("accepts a well-formed projection", () => {
+    expect(() =>
+      validateWorkflowProjection({
+        definition: {
+          id: "w-1",
+          stepOrder: ["step-1", "step-2"],
+          steps: { "step-1": {}, "step-2": {} },
+        },
+        sources: { "step-1": {}, "step-2": {} },
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe("computeWireDefinitionHash", () => {
+  test("is stable across key-ordering differences", () => {
+    const a = { id: "w-1", stepOrder: ["s1"], steps: { s1: { kind: "step" } } };
+    const b = { steps: { s1: { kind: "step" } }, stepOrder: ["s1"], id: "w-1" };
+    expect(computeWireDefinitionHash(a)).toBe(computeWireDefinitionHash(b));
+  });
+
+  test("differs across different definitions", () => {
+    const a = { id: "w-1", stepOrder: ["s1"], steps: { s1: {} } };
+    const b = { id: "w-2", stepOrder: ["s1"], steps: { s1: {} } };
+    expect(computeWireDefinitionHash(a)).not.toBe(computeWireDefinitionHash(b));
+  });
+});
+
+describe("createSidecarDeployRouter trivial-frame regression", () => {
+  test("a frame without `workflow` still drives the trivial provisioning path", async () => {
+    const transport = createInMemoryTransport();
+    const keyPair = await generateKeyPair();
+    const repoStore = createMinimalStubRepoStore();
+
+    let provisionAgentCalled = false;
+    let spawnerInvoked = false;
+
+    const router = createSidecarDeployRouter({
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; trivial branch exercises only provisionAgent + persistHubPublicKey
+      sessions: {
+        provisionAgent: async (_config: unknown) => {
+          provisionAgentCalled = true;
+          return {
+            publicKey: "pk-trivial-regression",
+            keyPair: {
+              publicKey: new Uint8Array(32),
+              privateKey: new Uint8Array(32),
+            },
+          };
+        },
+        persistHubPublicKey: async (_a: string, _h: string) => {
+          /* no-op */
+        },
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["sessions"],
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
+      keyStore: {
+        recordHubKey: (_a: string, _h: string) => {
+          /* no-op */
+        },
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["keyStore"],
+      onAgentEvent: () => () => {
+        /* unused in this test */
+      },
+      transport,
+      repoStore,
+      signingKeySeed: keyPair.privateKey,
+      registerDeployment: () => {
+        /* no-op */
+      },
+      multistepSubprocessSpawner: () => {
+        spawnerInvoked = true;
+        throw new Error("the trivial branch must not invoke the spawner");
+      },
+    });
+
+    const result = await router.deploy({
+      type: "agent.deploy",
+      agentAddress: "trivial-regression@example.com",
+      agentId: "trivial-agent",
+      hubPublicKey: "hub-pk",
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the trivial-launch closure passes config to the SessionManager mock above without inspecting it
+      config: {} as unknown as Parameters<
+        ReturnType<typeof createSidecarDeployRouter>["deploy"]
+      >[0]["config"],
+    });
+
+    expect(provisionAgentCalled).toBe(true);
+    expect(spawnerInvoked).toBe(false);
+    expect(result.publicKey).toBe("pk-trivial-regression");
+  });
+});
+
+describe("createSidecarDeployRouter multi-step branch", () => {
+  async function buildMultistepFixture(opts: {
+    spawner: SubprocessSpawner;
+    publishWorkflowInferenceEvent?: (
+      address: string,
+      event: EventPayload,
+    ) => void;
+    multistepBinaryPath?: string;
+    multistepSubstrateEnv?: Record<string, string>;
+  }) {
+    const transport = createInMemoryTransport();
+    const keyPair = await generateKeyPair();
+    const tempBase = await createTempBaseDir("sidecar-multistep-");
+    const repoStore = createSpawnTestRepoStore(tempBase);
+    const router = createSidecarDeployRouter({
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch never invokes provisionAgent; the stub throws if it does
+      sessions: {
+        provisionAgent: async () => {
+          throw new Error("multi-step branch must not invoke provisionAgent");
+        },
+        persistHubPublicKey: async () => {
+          throw new Error(
+            "multi-step branch must not invoke persistHubPublicKey",
+          );
+        },
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["sessions"],
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
+      keyStore: {
+        recordHubKey: () => {
+          throw new Error("multi-step branch must not invoke recordHubKey");
+        },
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["keyStore"],
+      onAgentEvent: () => () => {
+        /* unused in multi-step branch */
+      },
+      transport,
+      repoStore,
+      signingKeySeed: keyPair.privateKey,
+      registerDeployment: () => {
+        /* no-op */
+      },
+      multistepSubprocessSpawner: opts.spawner,
+      ...(opts.multistepBinaryPath !== undefined
+        ? { multistepBinaryPath: opts.multistepBinaryPath }
+        : {}),
+      ...(opts.multistepSubstrateEnv !== undefined
+        ? { multistepSubstrateEnv: opts.multistepSubstrateEnv }
+        : {}),
+      ...(opts.publishWorkflowInferenceEvent !== undefined
+        ? {
+            publishWorkflowInferenceEvent: opts.publishWorkflowInferenceEvent,
+          }
+        : {}),
+    });
+    return { router, tempBase, keyPair };
+  }
+
+  test("validates the projection, constructs SpawnOpts from the frame, drives spawn, and surfaces the supervisor's principal pubkey", async () => {
+    const supervisorIpcKeyPair = await generateKeyPair();
+    const childIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    let observedBinary: string | undefined;
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ binaryPath, env }) => {
+      observedBinary = binaryPath;
+      observedEnv = env;
+      const handle: SubprocessHandle = {
+        pid: 7321,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      return handle;
+    };
+
+    const { router, keyPair } = await buildMultistepFixture({
+      spawner,
+      multistepBinaryPath: "/fake/bin/multistep-workflow-child",
+      multistepSubstrateEnv: {
+        SIDECAR_DATA_DIR: "/tmp/multi",
+      },
+    });
+
+    // Hijack the supervisor's ipc keypair factory by routing through
+    // the test-construction surface: the router constructs the
+    // supervisor via createSidecarWorkflowSupervisor which does not
+    // expose ipcKeyPairFactory. The supervisor's default keypair is
+    // generated with generateKeyPair; the test signs the `ready` frame
+    // with whatever channelId the spawn-time env carries plus the
+    // child's keypair, and the supervisor accepts a bootstrap
+    // signature from any childPublicKey carried in the `ready` payload.
+
+    const sources = defaultMultistepSources();
+    const definition = {
+      id: "wf-router-test",
+      stepOrder: ["step-1", "step-2"],
+      steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+    };
+    const frame = makeMultistepFrame({ definition, sources });
+
+    const deployPromise = router.deploy(frame);
+
+    // Wait until the spawner has been invoked.
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+
+    const env = observedEnv;
+    expect(observedBinary).toBe("/fake/bin/multistep-workflow-child");
+    expect(env).toMatchObject({
+      SIDECAR_DATA_DIR: "/tmp/multi",
+      DEPLOYMENT_ID: "multi-example-com",
+      MAILBOX_ADDRESS: "multi@example.com",
+    });
+    expect(env.DEFINITION_HASH).toBe(computeWireDefinitionHash(definition));
+    expect(env[STEP_INFERENCE_SOURCES_ENV_KEY]).toBe(JSON.stringify(sources));
+    expect(env.IPC_CHANNEL_ID).toMatch(/^[0-9a-f]{32}$/);
+
+    // Drive the `ready` handshake.
+    const channelId = env.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+          return Promise.resolve();
+        },
+      },
+    });
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 7321,
+        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      },
+    });
+
+    const result = await deployPromise;
+    // The publicKey is the sidecar's principal public key (hex). The
+    // router derives it from the signing seed; the resulting hex is a
+    // 64-character lowercase string.
+    expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
+
+    // Sanity check: re-deriving the public key from the keypair lines
+    // up with the router's returned value.
+    expect(result.publicKey).toBe(
+      Buffer.from(keyPair.publicKey).toString("hex"),
+    );
+
+    // Teardown: kill the child so the spawn-time pumps unwind.
+    // Use unused supervisorToChild to silence the linter.
+    void supervisorToChild;
+    void supervisorIpcKeyPair;
+  });
+
+  test("a spawner that throws synchronously surfaces a structured rejection rather than hanging in starting", async () => {
+    // Simulates `Bun.spawn` failing to launch (binary missing,
+    // permissions error). The router must surface the rejection
+    // through `deploy(frame)` without leaving the supervisor wedged.
+    const crashSpawner: SubprocessSpawner = () => {
+      throw new Error("ENOENT: binary missing");
+    };
+
+    const { router } = await buildMultistepFixture({ spawner: crashSpawner });
+
+    const frame = makeMultistepFrame({
+      definition: {
+        id: "wf-crash",
+        stepOrder: ["step-1"],
+        steps: { "step-1": { kind: "step" } },
+      },
+      sources: {
+        "step-1": makeInferenceSource("step-1"),
+      },
+    });
+
+    await expect(router.deploy(frame)).rejects.toThrow(
+      /ENOENT: binary missing/,
+    );
+  });
+
+  test("rejects a malformed workflow projection at the router boundary before spawn fires", async () => {
+    let spawnerInvoked = false;
+    const spawner: SubprocessSpawner = () => {
+      spawnerInvoked = true;
+      throw new Error("spawner must not run for an invalid projection");
+    };
+
+    const { router } = await buildMultistepFixture({ spawner });
+
+    const frame = makeMultistepFrame({
+      definition: {
+        id: "wf-bad",
+        // stepOrder mentions a step that has no steps[] entry
+        stepOrder: ["step-1", "step-missing"],
+        steps: { "step-1": { kind: "step" } },
+      },
+      sources: {
+        "step-1": makeInferenceSource("step-1"),
+      },
+    });
+
+    await expect(router.deploy(frame)).rejects.toThrow(
+      /workflow\.definition\.steps is missing entry/,
+    );
+    expect(spawnerInvoked).toBe(false);
+  });
+
+  test("does not drop the first upstream control frame the child sends after ready", async () => {
+    // The supervisor's `pumpUpstreamControl` consumes the same
+    // control-receive iterator `waitForReady` initialised. A buggy
+    // `waitForReady` that finalised the iterator on `ready` would
+    // silently drop the next upstream frame; a correct handoff
+    // surfaces a `recycle.request` as a real supervisor.recycle()
+    // call, which the supervisor implements by spawning a new child
+    // via the injected subprocessSpawner. Counting spawner
+    // invocations is the cleanest observable: 1 means the upstream
+    // frame was dropped; >=2 means the pump consumed it.
+    //
+    // The mock spawner serves a fresh control/event pair per call so
+    // the recycle path's own ready handshake completes; the test's
+    // child sender signs `ready` once per spawn.
+    type SpawnFixture = {
+      supervisorToChild: ReturnType<typeof createMemoryNdjsonStream>;
+      childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>;
+      eventChildToSupervisor: ReturnType<typeof createMemoryFrameStream>;
+      env: Record<string, string>;
+      childIpcKeyPair: { privateKey: Uint8Array; publicKey: Uint8Array };
+    };
+    const spawns: SpawnFixture[] = [];
+    let resolveSpawnAdded: (() => void) | null = null;
+    const spawnAdded = (): Promise<void> =>
+      new Promise((resolve) => {
+        resolveSpawnAdded = resolve;
+      });
+    const spawner: SubprocessSpawner = ({ env }) => {
+      const supervisorToChild = createMemoryNdjsonStream();
+      const childToSupervisor = createMemoryNdjsonStream();
+      const eventChildToSupervisor = createMemoryFrameStream();
+      let resolveExit: ((code: number) => void) | undefined;
+      const exited = new Promise<number>((resolve) => {
+        resolveExit = resolve;
+      });
+      const handle: SubprocessHandle = {
+        pid: 4400 + spawns.length,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      // Capture the per-spawn streams synchronously so the test can
+      // drive the child side once the supervisor has wired the
+      // receiver.
+      const fixture: SpawnFixture = {
+        supervisorToChild,
+        childToSupervisor,
+        eventChildToSupervisor,
+        env,
+        // Mint a fresh child keypair per spawn; the supervisor's
+        // receiveControlChannel opens in bootstrap mode and pins on
+        // the per-spawn ready frame's `childPublicKey`.
+        childIpcKeyPair: {
+          publicKey: new Uint8Array(),
+          privateKey: new Uint8Array(),
+        },
+      };
+      spawns.push(fixture);
+      const r = resolveSpawnAdded;
+      resolveSpawnAdded = null;
+      if (r) r();
+      return handle;
+    };
+
+    const { router } = await buildMultistepFixture({ spawner });
+
+    const sources = defaultMultistepSources();
+    const definition = {
+      id: "wf-handoff",
+      stepOrder: ["step-1", "step-2"],
+      steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+    };
+    const frame = makeMultistepFrame({ definition, sources });
+
+    // Helper to drive the child side of one spawn fixture's ready
+    // handshake, optionally chaining an upstream `recycle.request`.
+    async function driveReady(
+      fixture: SpawnFixture,
+      opts: { sendRecycleRequest: boolean },
+    ): Promise<void> {
+      const channelId = fixture.env.IPC_CHANNEL_ID;
+      if (channelId === undefined) {
+        throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+      }
+      const childIpcKeyPair = await generateKeyPair();
+      fixture.childIpcKeyPair = childIpcKeyPair;
+      const childSender = createControlChannelSender({
+        privateKeySeed: childIpcKeyPair.privateKey,
+        channelId,
+        writer: {
+          write(line: string) {
+            fixture.childToSupervisor.inject(line);
+            return Promise.resolve();
+          },
+        },
+      });
+      await childSender.send({
+        type: "ready",
+        data: {
+          childPid: 4400 + spawns.length,
+          childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString(
+            "hex",
+          ),
+        },
+      });
+      if (opts.sendRecycleRequest) {
+        await childSender.send({
+          type: "recycle.request",
+          data: { reason: "iterator-handoff-test" },
+        });
+      }
+    }
+
+    const deployPromise = router.deploy(frame);
+
+    // Wait for the first spawn to land.
+    while (spawns.length === 0) {
+      await spawnAdded();
+    }
+    const first = spawns[0];
+    if (first === undefined) throw new Error("unreachable");
+    // Drive ready + immediate recycle.request on the first spawn.
+    await driveReady(first, { sendRecycleRequest: true });
+
+    // The initial deploy's spawn() resolves once `ready` lands. The
+    // supervisor's pump consumes the recycle.request and kicks off a
+    // recycle, which calls the spawner a second time.
+    await deployPromise;
+
+    // Wait for the recycle's respawn.
+    while (spawns.length < 2) {
+      await spawnAdded();
+    }
+    const second = spawns[1];
+    if (second === undefined) throw new Error("unreachable");
+    // Drive ready on the second (recycle's) spawn so the recycle path
+    // unwinds cleanly. We do not assert on this spawn's effects; the
+    // assertion below covers the iterator-handoff invariant.
+    await driveReady(second, { sendRecycleRequest: false });
+    // Allow the recycle path to settle its post-ready work.
+    await new Promise((r) => setTimeout(r, 25));
+
+    expect(spawns.length).toBeGreaterThanOrEqual(2);
   });
 });

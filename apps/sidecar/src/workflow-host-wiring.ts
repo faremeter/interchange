@@ -7,7 +7,7 @@
 // Any logic that would benefit a future alternative-sidecar
 // implementation lives inside `@intx/workflow-host`, not here.
 
-import { sign as nodeSign } from "node:crypto";
+import { createHash, createPublicKey, sign as nodeSign } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { importPrivateKeyBytes } from "@intx/crypto-node";
@@ -25,11 +25,13 @@ import {
   wrapHubTransportAsMailBus,
   type CredentialsSnapshot,
   type DeriveStepAddress,
+  type EventPayload,
   type FrameReader,
   type HubTransportMailBusAdapter,
   type NdjsonReader,
   type NdjsonWriter,
   type RecordRunEvent,
+  type SpawnOpts,
   type SubprocessHandle,
   type SubprocessSpawner,
   type SupervisorRunEvent,
@@ -37,6 +39,8 @@ import {
   type WorkflowSupervisor,
 } from "@intx/workflow-host";
 import type { InferenceEvent } from "@intx/types/runtime";
+import type { AgentDeployFrame } from "@intx/types/sidecar";
+import { STEP_ID_PATTERN } from "@intx/workflow";
 
 const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
 
@@ -316,6 +320,158 @@ export type SidecarWorkflowSupervisor = {
  */
 const TRIVIAL_STEP_ID = "trivial";
 
+/**
+ * Env key the multi-step branch uses to carry per-step inference source
+ * pins from `frame.workflow.sources` down to the workflow-process child.
+ * The substrate factory's `buildEnv` reads this and resolves a source
+ * per step at step invocation; the supervisor itself is opaque to the
+ * value (it is plumbed through `bindings.substrateEnv` verbatim).
+ *
+ * Listed here so the router and the future substrate-factory consumer
+ * spell the key the same way without a magic-string trip hazard.
+ */
+export const STEP_INFERENCE_SOURCES_ENV_KEY = "STEP_INFERENCE_SOURCES";
+
+/**
+ * Validate the wire-projected workflow definition at the deploy-router
+ * boundary. The arktype `AgentDeployFrame` validator at the wire edge
+ * already enforces the structural shape (`id`, `stepOrder`, `steps`,
+ * `sources` table covering every `stepOrder` entry). This function
+ * re-asserts the invariants the router relies on so a wire-edge change
+ * does not let a malformed projection slip into `supervisor.spawn()`
+ * silently:
+ *
+ *   - `definition.id` is a non-empty string.
+ *   - `definition.stepOrder` is non-empty and every entry matches
+ *     `STEP_ID_PATTERN` (so per-step mail-address derivation never
+ *     needs escaping at the substrate boundary).
+ *   - Every `stepOrder` entry has a corresponding `steps[id]` entry
+ *     (the wire shape lets `steps[id]` be `unknown`, but its presence
+ *     is required so the workflow-process child can resolve a step's
+ *     primitive at run time).
+ *   - Every `stepOrder` entry has a corresponding `sources[id]` entry
+ *     (the arktype narrow already enforces this; the re-check here
+ *     surfaces a structured error at the router rather than relying on
+ *     the wire validator alone).
+ *
+ * A rejection here surfaces as a thrown `Error` the link's deploy frame
+ * caller converts into a structured failure reply.
+ */
+export function validateWorkflowProjection(projection: {
+  definition: { id: unknown; stepOrder: unknown; steps: unknown };
+  sources: unknown;
+}): void {
+  const def = projection.definition;
+  if (typeof def.id !== "string" || def.id.length === 0) {
+    throw new Error(
+      "sidecar deploy router: workflow.definition.id must be a non-empty string",
+    );
+  }
+  if (!Array.isArray(def.stepOrder) || def.stepOrder.length === 0) {
+    throw new Error(
+      "sidecar deploy router: workflow.definition.stepOrder must be a non-empty array",
+    );
+  }
+  if (typeof def.steps !== "object" || def.steps === null) {
+    throw new Error(
+      "sidecar deploy router: workflow.definition.steps must be an object",
+    );
+  }
+  if (typeof projection.sources !== "object" || projection.sources === null) {
+    throw new Error(
+      "sidecar deploy router: workflow.sources must be an object",
+    );
+  }
+  const steps = def.steps;
+  const sources = projection.sources;
+  for (const stepId of def.stepOrder) {
+    if (typeof stepId !== "string" || stepId.length === 0) {
+      throw new Error(
+        "sidecar deploy router: workflow.definition.stepOrder entries must be non-empty strings",
+      );
+    }
+    if (!STEP_ID_PATTERN.test(stepId)) {
+      throw new Error(
+        `sidecar deploy router: stepId ${JSON.stringify(stepId)} must match ${STEP_ID_PATTERN.source}`,
+      );
+    }
+    if (!Object.prototype.hasOwnProperty.call(steps, stepId)) {
+      throw new Error(
+        `sidecar deploy router: workflow.definition.steps is missing entry for stepId ${JSON.stringify(stepId)}`,
+      );
+    }
+    if (!Object.prototype.hasOwnProperty.call(sources, stepId)) {
+      throw new Error(
+        `sidecar deploy router: workflow.sources is missing entry for stepId ${JSON.stringify(stepId)}`,
+      );
+    }
+  }
+}
+
+/**
+ * Project a value into a canonical JSON string with deterministically
+ * sorted object keys. Used at the router boundary to mint a stable
+ * content hash of the wire-projected workflow definition; the
+ * orchestrator's hand-off task computes the same hash from the same
+ * canonical form, so a downstream verifier comparing the two values
+ * sees byte equality.
+ *
+ * The shape mirrors the canonicalizer the runlocal repo-store uses
+ * for equality checks (`packages/workflow/src/runlocal/repo-store.ts`).
+ */
+function canonicalJsonStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJsonStringify).join(",")}]`;
+  }
+  const entries = Object.entries(value).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  return `{${entries
+    .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJsonStringify(v)}`)
+    .join(",")}}`;
+}
+
+/**
+ * Compute the deploy router's content hash for the wire-projected
+ * workflow definition. SHA-256 of the canonical JSON of the
+ * `WorkflowDefinition` projection, hex-encoded. The supervisor and the
+ * workflow-process child read the value out of the spawn-time env
+ * verbatim; it is the deployment's content-addressed handle.
+ *
+ * The router computes this locally so the multi-step branch does not
+ * round-trip the hub for a hash the orchestrator's hand-off task will
+ * also derive deterministically from the same canonical form.
+ */
+export function computeWireDefinitionHash(definition: unknown): string {
+  const canonical = canonicalJsonStringify(definition);
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
+}
+
+/**
+ * Derive the supervisor's principal public key from the sidecar's
+ * Ed25519 signing seed. The supervisor signs every workflow-run event
+ * with this key; the multi-step branch surfaces it to the link so the
+ * hub records the verifying key for the deployment's signed events.
+ */
+function derivePrincipalPublicKeyHex(signingKeySeed: Uint8Array): string {
+  const privateKey = importPrivateKeyBytes(signingKeySeed);
+  const publicKey = createPublicKey(privateKey);
+  // Node exports Ed25519 SPKI in DER; the raw 32-byte point is the
+  // last 32 bytes of the structure (RFC 8410). The export keeps this
+  // module independent of `exportPublicKeyBytes` from `@intx/crypto-node`,
+  // which is not part of the package's public surface.
+  const der = publicKey.export({ type: "spki", format: "der" });
+  if (der.length < 32) {
+    throw new Error(
+      `sidecar deploy router: unexpected SPKI DER length ${String(der.length)} for Ed25519 public key`,
+    );
+  }
+  return der.subarray(der.length - 32).toString("hex");
+}
+
 export function createSidecarDeployRouter(deps: {
   sessions: SessionManager;
   keyStore: AgentKeyStore;
@@ -335,9 +491,140 @@ export function createSidecarDeployRouter(deps: {
     deploymentId: string;
     agentAddress: string;
   }) => void;
+  /**
+   * Substrate-config env keys the multi-step branch propagates into
+   * the workflow-process child's spawn-time env (see
+   * `SIDECAR_SUBSTRATE_CONFIG_KEYS` in `workflow-substrate-factory.ts`).
+   * The router merges `STEP_INFERENCE_SOURCES` on top per multi-step
+   * frame. Defaults to an empty record so trivial-only deployments do
+   * not require the boot edge to thread substrate config through the
+   * router.
+   */
+  multistepSubstrateEnv?: Record<string, string>;
+  /**
+   * Subprocess spawner the multi-step branch hands to the supervisor.
+   * Defaults to the production `Bun.spawn`-backed
+   * `defaultSubprocessSpawner`; tests inject a deterministic mock.
+   * The trivial branch never invokes the spawner.
+   */
+  multistepSubprocessSpawner?: SubprocessSpawner;
+  /**
+   * Optional override for the resolved `bin/workflow-child` path the
+   * multi-step branch hands to the supervisor. Production wiring uses
+   * the package-local default; tests inject a sentinel value so the
+   * mock spawner can assert on it.
+   */
+  multistepBinaryPath?: string;
+  /**
+   * Callback the supervisor invokes for every verified InferenceEvent
+   * the workflow-process child publishes. The router threads the
+   * deployment's agent address through to the callback so a downstream
+   * fan-out can route events to per-agent listeners. Defaults to a
+   * no-op; production wiring supplies the event publisher.
+   */
+  publishWorkflowInferenceEvent?: (
+    agentAddress: string,
+    event: EventPayload,
+  ) => void;
+  /**
+   * Optional override for the multi-step branch's per-step mail-address
+   * derivation. Defaults to `${deploymentId}-${stepId}@<deploymentDomain>`
+   * derived from the frame's agent address. Tests inject a deterministic
+   * factory.
+   */
+  multistepDeriveStepAddress?: DeriveStepAddress;
 }): DeployRouter {
+  const principalPublicKeyHex = derivePrincipalPublicKeyHex(
+    deps.signingKeySeed,
+  );
+  const publishInferenceEvent =
+    deps.publishWorkflowInferenceEvent ??
+    ((_address: string, _event: EventPayload): void => {
+      /* no-op default: tests and production-without-a-publisher
+         deployments do not consume events. */
+    });
+  const multistepSubstrateEnv = deps.multistepSubstrateEnv ?? {};
+  const multistepSpawner =
+    deps.multistepSubprocessSpawner ?? defaultSubprocessSpawner;
+  const multistepDeriveStepAddress: DeriveStepAddress =
+    deps.multistepDeriveStepAddress ??
+    (({ deploymentId, stepId }) => `${deploymentId}-${stepId}`);
+
+  async function deployMultiStep(
+    frame: AgentDeployFrame,
+    projection: NonNullable<AgentDeployFrame["workflow"]>,
+  ): Promise<DeployRouterResult> {
+    // Boundary validation: a malformed projection is rejected at the
+    // router edge before the supervisor is constructed so the link
+    // surfaces a structured failure rather than a hung `starting`
+    // supervisor.
+    validateWorkflowProjection(projection);
+
+    const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
+    deps.registerDeployment({
+      deploymentId,
+      agentAddress: frame.agentAddress,
+    });
+
+    const definitionHash = computeWireDefinitionHash(projection.definition);
+    const substrateEnv: Record<string, string> = {
+      ...multistepSubstrateEnv,
+      [STEP_INFERENCE_SOURCES_ENV_KEY]: JSON.stringify(projection.sources),
+    };
+
+    const wired = createSidecarWorkflowSupervisor({
+      transport: deps.transport,
+      repoStore: deps.repoStore,
+      signingKeySeed: deps.signingKeySeed,
+      workflowRunRepoId: {
+        kind: "workflow-run",
+        id: deploymentId,
+      },
+      workflowRunRef: "refs/heads/main",
+      deploymentId,
+      deploymentMailAddress: frame.agentAddress,
+      deriveStepAddress: multistepDeriveStepAddress,
+      substrateEnv,
+      subprocessSpawner: multistepSpawner,
+      ...(deps.multistepBinaryPath !== undefined
+        ? { binaryPath: deps.multistepBinaryPath }
+        : {}),
+      // The multi-step branch never invokes trivialLaunch, but the
+      // supervisor's constructor requires the binding. Wire a sentinel
+      // that throws so a stray invocation surfaces loudly rather than
+      // silently succeeding.
+      trivialLaunch: () => {
+        throw new Error(
+          "sidecar deploy router: trivialLaunch invoked on the multi-step branch; this is a programming bug",
+        );
+      },
+    });
+
+    const stepOrder = [...projection.definition.stepOrder];
+    const spawnOpts: SpawnOpts = {
+      stepOrder,
+      definitionHash,
+      onInferenceEvent: (event) => {
+        publishInferenceEvent(frame.agentAddress, event);
+      },
+    };
+
+    // Surface spawn-time errors structurally: if the subprocess
+    // spawner crashes immediately (binary missing, env malformed,
+    // EXEC error) the supervisor's `wireChild` races the child's
+    // `exited` against `readyPromise` and the rejection propagates
+    // here. The router lets it surface; the link's deploy handler
+    // converts the rejection into a structured failure frame.
+    await wired.supervisor.spawn(spawnOpts);
+
+    return { publicKey: principalPublicKeyHex };
+  }
+
   return {
     async deploy(frame): Promise<DeployRouterResult> {
+      if (frame.workflow !== undefined) {
+        return await deployMultiStep(frame, frame.workflow);
+      }
       let publicKey: string | undefined;
       const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
       deps.registerDeployment({
