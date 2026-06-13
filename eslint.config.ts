@@ -65,7 +65,7 @@ export default defineConfig(
             "tests/workflow/*.ts",
             "tests/workflow-deploy/*.ts",
           ],
-          maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 26,
+          maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 27,
         },
         tsconfigRootDir: import.meta.dirname,
       },
