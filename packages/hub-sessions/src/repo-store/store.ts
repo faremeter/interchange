@@ -6,6 +6,7 @@ import {
   initRepo as storageInitRepo,
   createDeployPack,
   receivePackObjects,
+  collectReachableObjects,
   type CommitSigner,
 } from "@intx/storage-isogit";
 import { hasCode } from "@intx/types";
@@ -123,6 +124,59 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   // buffer, kind filter, and waiter callback so concurrent
   // subscribers do not interfere with each other.
   const subscribers = new Map<string, Set<SubscriberState>>();
+
+  // Per-repoId cache of "the ref whose tree currently matches the
+  // on-disk index". When the next writeTreeUnderLock call targets
+  // the same `(repoId, ref)` pair as the last successful commit, the
+  // index already mirrors that ref's tip and the resetIndexToRef
+  // pass is a no-op — skip it. The cache is invalidated on any
+  // commit, ref update, or pack receive that advances or replaces
+  // the ref.
+  const indexRefCache = new Map<string, string>();
+  function indexCacheKey(repoId: RepoId): string {
+    return `${repoId.kind}/${repoId.id}`;
+  }
+
+  // Per-commit reachable-object cache. createPack for a workflow-run
+  // ref walks the first-parent chain and unions every commit's
+  // reachable objects so the receiver gets the full history needed to
+  // validate per-commit transitions. Without this cache the walk
+  // recomputes the reachable set for every ancestor on every push, so
+  // a long-running deployment's createPack cost scales as O(N^2) in
+  // the number of commits.
+  const chainReachabilityCache = new Map<string, string[]>();
+
+  // Per-repoId cache of "every commit OID currently reachable from
+  // any branch or tag in the repo". The substrate uses this in
+  // `receivePack` to skip per-commit validation for commits the
+  // receiver already had before the pack arrived. Computing the set
+  // fresh on every receive scans every ref's parent chain — for a
+  // long-running workflow-run repo this scales with history depth.
+  // Caching it as a flat set and incrementally extending it on each
+  // ref update lets receivePack pay O(new commits) instead of
+  // O(history) per call. The cache is initialised lazily on first
+  // receivePack to avoid the cold-start scan for repos that only
+  // ever write via writeTree.
+  const existingCommitsCache = new Map<string, Set<string>>();
+
+  // Per-(repoId, ref) cache of "the commit OID createPack last packed
+  // into a workflow-run pack". After the first successful push lands
+  // a ref's tip on the receiver, every subsequent push only needs to
+  // carry the commits added since then — the parent chain older than
+  // this tip is already on the receiver, so re-shipping it wastes
+  // pack bytes and inflates `receivePack` time per push. The cache
+  // advances on every createPack call so the substrate's view of
+  // "what has been shipped" stays in sync with the wrapper's
+  // serialised push pipeline. A failed push leaves the cache pointing
+  // at the unshipped tip; the wrapper's bootstrap retry re-sends the
+  // same pack bytes and the cache stays consistent. The cache key is
+  // `${repoId.kind}/${repoId.id}/${ref}` so writes against different
+  // refs on the same repo (events vs the workflow-run ref) do not
+  // interfere.
+  const lastPackedTip = new Map<string, string>();
+  function lastPackedTipKey(repoId: RepoId, ref: string): string {
+    return `${repoId.kind}/${repoId.id}/${ref}`;
+  }
 
   function refKey(repoId: RepoId, ref: string): string {
     return `${repoId.kind}/${repoId.id}/${ref}`;
@@ -570,6 +624,230 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return { priorReadBlob, priorListDir };
   }
 
+  // Build the `(readBlob, listDir, topLevelTreePaths)` triple a kind
+  // handler's validatePush sees for the prospective tree of a given
+  // commit. Mirrors the tip-only closures the storage layer builds for
+  // its validateTree callback, except parameterised on the commit OID
+  // so the substrate can walk per-commit during a multi-commit pack.
+  async function buildCommitTreeClosures(
+    dir: string,
+    commitSha: string,
+  ): Promise<{
+    topLevelTreePaths: string[];
+    readBlob: (path: string) => Promise<Uint8Array>;
+    listDir: (path: string) => Promise<string[]>;
+  }> {
+    const { commit } = await git.readCommit({ fs, dir, oid: commitSha });
+    const { tree: rootTree } = await git.readTree({
+      fs,
+      dir,
+      oid: commit.tree,
+    });
+    const topLevelTreePaths = rootTree.map((e) => e.path);
+    const readBlob = async (relPath: string): Promise<Uint8Array> => {
+      const oid = await resolveTreeEntry(dir, commitSha, relPath, "blob");
+      if (oid === null) {
+        throw new Error(
+          `readBlob: path ${relPath} not found in commit ${commitSha} tree`,
+        );
+      }
+      const { blob } = await git.readBlob({ fs, dir, oid });
+      return blob;
+    };
+    const listDir = async (relPath: string): Promise<string[]> => {
+      if (relPath === "") return rootTree.map((e) => e.path);
+      const oid = await resolveTreeEntry(dir, commitSha, relPath, "tree");
+      if (oid === null) {
+        throw new Error(
+          `listDir: path ${relPath} is not a directory in commit ${commitSha} tree`,
+        );
+      }
+      const { tree } = await git.readTree({ fs, dir, oid });
+      return tree.map((e) => e.path);
+    };
+    return { topLevelTreePaths, readBlob, listDir };
+  }
+
+  // Enumerate every commit OID reachable from any branch or tag in
+  // the repo. The substrate uses this to define the set of "old"
+  // commits — anything reachable via an existing ref existed before
+  // the in-flight pack landed, so a pack-walk that reaches one of
+  // these has crossed the boundary between new and prior history.
+  // Returns an empty set when the repo's `.git` directory has no refs
+  // yet (a freshly-initialised repo with HEAD pointing at an unborn
+  // branch). Read failures bubble; a silent empty would let the walk
+  // re-validate commits the kind handler already accepted.
+  async function snapshotExistingCommits(dir: string): Promise<Set<string>> {
+    const out = new Set<string>();
+    const visit = async (start: string): Promise<void> => {
+      const stack: string[] = [start];
+      while (stack.length > 0) {
+        const oid = stack.pop();
+        if (oid === undefined) break;
+        if (out.has(oid)) continue;
+        let parsed: Awaited<ReturnType<typeof git.readCommit>>;
+        try {
+          parsed = await git.readCommit({ fs, dir, oid });
+        } catch (err) {
+          // A previously-received single-commit pack may leave the
+          // tip's `parent` field pointing at a SHA the receiver has
+          // never seen (the producer ships only the tip's tree, not
+          // its ancestor commits). That dangling parent is structural
+          // for this repo kind, not a corruption, so the walk stops
+          // at the missing node instead of erroring.
+          if (hasCode(err) && err.code === "NotFoundError") continue;
+          throw err;
+        }
+        out.add(oid);
+        for (const parent of parsed.commit.parent) {
+          if (!out.has(parent)) stack.push(parent);
+        }
+      }
+    };
+    const branches = await git.listBranches({ fs, dir });
+    for (const b of branches) {
+      const sha = await resolveRefSha(dir, `refs/heads/${b}`);
+      if (sha !== null) await visit(sha);
+    }
+    const tags = await git.listTags({ fs, dir });
+    for (const t of tags) {
+      const sha = await resolveRefSha(dir, `refs/tags/${t}`);
+      if (sha !== null) await visit(sha);
+    }
+    return out;
+  }
+
+  // Walk parent links from `tipSha` back to identify the new commits
+  // a pack just published, returning the chain in topological order —
+  // oldest new commit first, tip last. A commit is considered "new"
+  // when it is readable from the object store, was not present before
+  // the pack arrived (not in `existingCommits`), and does not match
+  // the CAS-pinned `expectedOldSha`. When the parent's commit object
+  // is not in the store at all — the common case for the deploy-pack
+  // shape `createDeployPack` produces, which packs only the tip's
+  // tree and not its ancestor commits — that absence is the
+  // boundary: history older than the readable commit is opaque from
+  // this pack's perspective, so the walker stops without pushing the
+  // unreadable parent.
+  //
+  // The walk chases the first parent only; multi-parent merge commits
+  // are not produced by any current writer of repo-store-managed
+  // kinds, so a multi-parent commit in a received pack is a
+  // structural defect the substrate refuses outright. Each returned
+  // commit is one the substrate must validate against its predecessor
+  // before the ref advances.
+  async function collectNewCommits(
+    dir: string,
+    tipSha: string,
+    expectedOldSha: string | null,
+    existingCommits: ReadonlySet<string>,
+  ): Promise<string[]> {
+    const chain: string[] = [];
+    let current: string = tipSha;
+    while (true) {
+      if (current === expectedOldSha) break;
+      if (existingCommits.has(current)) break;
+      let parsed: Awaited<ReturnType<typeof git.readCommit>>;
+      try {
+        parsed = await git.readCommit({ fs, dir, oid: current });
+      } catch (err) {
+        if (hasCode(err) && err.code === "NotFoundError") break;
+        throw err;
+      }
+      chain.push(current);
+      const parents = parsed.commit.parent;
+      if (parents.length === 0) break;
+      if (parents.length > 1) {
+        throw new Error(
+          `pack_walk_multi_parent: commit ${current} has ${String(parents.length)} parents; merge commits are not supported in repo-store packs`,
+        );
+      }
+      const next = parents[0];
+      if (next === undefined) throw new Error("unreachable");
+      current = next;
+    }
+    return chain.reverse();
+  }
+
+  // Reset the index so it bit-matches the tree at `ref`'s tip
+  // without re-materialising the working tree. The substrate uses
+  // the index — not the working tree — when it builds the next
+  // commit's tree via `git.commit({ref})`, so re-pointing index
+  // entries at the ref-tree's oids is correct and substantially
+  // cheaper than walking disk for every path. When the ref does not
+  // yet exist the index is cleared so the next staging pass starts
+  // from an empty repo state.
+  //
+  // isomorphic-git's index is a single repo-global structure shared
+  // across refs, and `git.add` mutates it in place; without this
+  // reset, every commit's tree is the union of `ref`'s tree and
+  // whatever was last staged for a different ref. The reset reads
+  // `ref` (the push target) rather than HEAD because HEAD may point
+  // at a different branch the repo was initialised on, so seeding
+  // from HEAD would mis-construct trees that target a named ref.
+  async function resetIndexToRef(dir: string, ref: string): Promise<void> {
+    let refSha: string | null;
+    try {
+      refSha = await git.resolveRef({ fs, dir, ref });
+    } catch (err) {
+      if (hasCode(err) && err.code === "NotFoundError") {
+        refSha = null;
+      } else {
+        throw err;
+      }
+    }
+    const indexFiles = new Set(await git.listFiles({ fs, dir }));
+    if (refSha === null) {
+      for (const filepath of indexFiles) {
+        try {
+          await git.remove({ fs, dir, filepath });
+        } catch (err) {
+          if (!hasCode(err) || err.code !== "NotFoundError") throw err;
+        }
+      }
+      return;
+    }
+    const refBlobs = await walkRefBlobs(dir, refSha);
+    for (const filepath of indexFiles) {
+      if (refBlobs.has(filepath)) continue;
+      try {
+        await git.remove({ fs, dir, filepath });
+      } catch (err) {
+        if (!hasCode(err) || err.code !== "NotFoundError") throw err;
+      }
+    }
+    for (const [filepath, oid] of refBlobs) {
+      await git.updateIndex({ fs, dir, filepath, oid, add: true });
+    }
+  }
+
+  // Walk every blob entry reachable from a commit's tree, returning
+  // a (filepath -> blob oid) map. Avoids the O(n^2) cost of pairing
+  // `git.listFiles` with per-file `resolveTreeEntry` calls — both of
+  // which walk the tree top-to-bottom — by doing a single recursive
+  // walk and emitting blob entries as we encounter them.
+  async function walkRefBlobs(
+    dir: string,
+    commitSha: string,
+  ): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    const { commit } = await git.readCommit({ fs, dir, oid: commitSha });
+    const recurse = async (treeOid: string, prefix: string): Promise<void> => {
+      const { tree } = await git.readTree({ fs, dir, oid: treeOid });
+      for (const entry of tree) {
+        const childPath =
+          prefix === "" ? entry.path : `${prefix}/${entry.path}`;
+        if (entry.type === "blob") {
+          out.set(childPath, entry.oid);
+        } else if (entry.type === "tree") {
+          await recurse(entry.oid, childPath);
+        }
+      }
+    };
+    await recurse(commit.tree, "");
+    return out;
+  }
+
   // Unlocked body of writeTree. The caller is responsible for
   // acquiring the per-repo lock before invoking this and for not
   // releasing it until the returned promise settles. Extracted so
@@ -585,6 +863,28 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     await storageInitRepo(dir, storageOptsFor(repoId, undefined));
 
     const handler = handlerFor(repoId);
+
+    // Reset the working tree and index to the target ref's tip so a
+    // commit to ref A does not pick up index state left behind by a
+    // prior commit to ref B. isomorphic-git's index is a single
+    // repo-global structure shared across refs, and `git.add` /
+    // `writeFileEntry` mutate it in place; without this reset, every
+    // commit's tree is the union of `ref`'s tree and whatever was last
+    // staged for a different ref. The reset reads `ref` (the push
+    // target) rather than HEAD: writes target a named ref, and HEAD
+    // may point at a different branch the repo was initialized on, so
+    // checking out HEAD would seed the new commit from the wrong tip.
+    //
+    // Skip the reset when the index cache says the on-disk index
+    // already mirrors `ref` — i.e. the previous commit on this repo
+    // also targeted this ref. The cache is invalidated on every
+    // successful commit so a write to a different ref always pays the
+    // reset cost on the next return.
+    const indexKey = indexCacheKey(repoId);
+    if (indexRefCache.get(indexKey) !== ref) {
+      await resetIndexToRef(dir, ref);
+      indexRefCache.set(indexKey, ref);
+    }
 
     // Snapshot the target ref's path set before the clearPrefix +
     // writeFileEntry pass mutates the index. A post-validation rollback
@@ -716,6 +1016,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       }),
     });
 
+    const cachedExisting = existingCommitsCache.get(indexCacheKey(repoId));
+    if (cachedExisting !== undefined) cachedExisting.add(commitSha);
     await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
     await emitRefUpdate(repoId, ref, oldSha, commitSha);
 
@@ -839,17 +1141,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       const handler = handlerFor(repoId);
       const transferId = crypto.randomUUID().replace(/-/g, "");
 
-      // Capture the ref's tip before receivePackObjects advances it.
-      // The CAS check inside receivePackObjects also reads the tip; we
-      // do the same read here so the prior-tree closures handed to the
-      // kind handler observe the same pre-image. Reading outside the
-      // CAS is safe because we hold the per-repo lock — no concurrent
-      // writer can advance the ref between this read and the call.
-      const priorCommitSha = expectedOldSha;
-      const { priorReadBlob, priorListDir } = buildPriorTreeClosures(
-        dir,
-        priorCommitSha,
-      );
+      const existingKey = indexCacheKey(repoId);
+      let existingCommits = existingCommitsCache.get(existingKey);
+      if (existingCommits === undefined) {
+        existingCommits = await snapshotExistingCommits(dir);
+        existingCommitsCache.set(existingKey, existingCommits);
+      }
+      const newCommitsFromPack: string[] = [];
 
       const oldSha = await receivePackObjects(
         dir,
@@ -858,25 +1156,84 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
         commitSha,
         transferId,
         expectedOldSha,
-        async (paths, readBlob, listDir) => {
-          const result = await handler.validatePush({
-            repoId,
-            ref,
-            principal,
-            topLevelTreePaths: paths,
-            readBlob,
-            listDir,
-            priorReadBlob,
-            priorListDir,
-          });
-          if (!result.ok) {
-            logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${result.reason}`;
-            return { ok: false, reason: result.reason };
+        // A pack may carry more than one new commit (e.g. supervisor
+        // bootstrap that batches enqueue + dequeue before the hub has
+        // the workflow-run repo bootstrapped). The kind handler's
+        // prior-tree closures must point at THAT commit's parent — not
+        // the ref's tip before the pack arrived — so an intra-pack
+        // transition (inbox in commit N, processing in commit N+1) is
+        // validated against the right pre-image. We walk the parent
+        // chain from tip back to the first commit already present in
+        // the pre-pack history, then call validatePush once per new
+        // commit in topological (oldest-first) order. A single-commit
+        // pack collapses to the same behaviour as the tip-only path.
+        async () => {
+          const newCommits = await collectNewCommits(
+            dir,
+            commitSha,
+            expectedOldSha,
+            existingCommits,
+          );
+          newCommitsFromPack.push(...newCommits);
+          for (const newCommit of newCommits) {
+            const { commit: parsed } = await git.readCommit({
+              fs,
+              dir,
+              oid: newCommit,
+            });
+            const parents = parsed.parent;
+            const declaredParent =
+              parents.length === 0 ? null : (parents[0] ?? null);
+            // The pack-walk shape `createDeployPack` ships includes
+            // only the tip commit's tree, so a new commit's `parent`
+            // field may reference a SHA the receiver does not have in
+            // its object store. When that happens the receiver treats
+            // the prior tree as empty — the same shape it uses for
+            // first-push (`expectedOldSha === null`). A handler that
+            // relies on prior bytes to enforce an append-only rule
+            // already accepts a missing prior entry, so the degraded
+            // view collapses cleanly into the no-prior path.
+            let parentSha: string | null = null;
+            if (declaredParent !== null) {
+              try {
+                await git.readCommit({ fs, dir, oid: declaredParent });
+                parentSha = declaredParent;
+              } catch (err) {
+                if (!hasCode(err) || err.code !== "NotFoundError") throw err;
+              }
+            }
+            const { priorReadBlob, priorListDir } = buildPriorTreeClosures(
+              dir,
+              parentSha,
+            );
+            const { topLevelTreePaths, readBlob, listDir } =
+              await buildCommitTreeClosures(dir, newCommit);
+            const result = await handler.validatePush({
+              repoId,
+              ref,
+              principal,
+              topLevelTreePaths,
+              readBlob,
+              listDir,
+              priorReadBlob,
+              priorListDir,
+            });
+            if (!result.ok) {
+              logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref} at commit ${newCommit}: ${result.reason}`;
+              return { ok: false, reason: result.reason };
+            }
           }
           return true;
         },
       );
 
+      // receivePack does not touch the index — it goes straight from
+      // pack bytes to ref pointer — so the index now points at
+      // whatever was last committed (possibly a different ref). The
+      // index cache must be cleared so the next writeTreeUnderLock
+      // resets the index against the chosen target ref.
+      indexRefCache.delete(indexCacheKey(repoId));
+      for (const sha of newCommitsFromPack) existingCommits.add(sha);
       await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
       await emitRefUpdate(repoId, ref, oldSha, commitSha);
     });
@@ -888,8 +1245,78 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     ref: string,
   ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }> {
     gateAccess(principal, repoId, ref, "createPack");
+    // `createDeployPack` packs only the tip commit + its tree, which
+    // covers the deploy-pack shape every other kind ships (the
+    // receiver starts from genesis and applies the tree wholesale).
+    // The workflow-run kind ships incrementally and the receiver
+    // (the hub) needs to validate per-commit transitions against the
+    // sender's prior tree, so the pack must carry the full parent
+    // chain from the supplied ref's tip. Walking the chain here keeps
+    // the kind-specific branching at the substrate boundary so the
+    // kind handler stays receive-side only.
+    if (repoId.kind === "workflow-run") {
+      const dir = repoDir(repoId);
+      const commitSha = await git.resolveRef({ fs, dir, ref });
+      const tipKey = lastPackedTipKey(repoId, ref);
+      const stopAt = lastPackedTip.get(tipKey) ?? null;
+      const oids = await collectChainReachableObjects(dir, commitSha, stopAt);
+      const result = await git.packObjects({
+        fs,
+        dir,
+        oids,
+        write: false,
+      });
+      if (result.packfile === undefined) {
+        throw new Error(
+          `packObjects returned no packfile for ref "${ref}" (${commitSha})`,
+        );
+      }
+      lastPackedTip.set(tipKey, commitSha);
+      return { pack: result.packfile, commitSha, ref };
+    }
     const { pack, commitSha } = await createDeployPack(repoDir(repoId), ref);
     return { pack, commitSha, ref };
+  }
+
+  // Collect every object OID reachable from `tipSha` and from every
+  // ancestor commit along its first-parent chain. Mirrors what the
+  // upload-pack layer's negotiated walker produces when the requester
+  // advertises no `haves` but is sized for the substrate's own use:
+  // a workflow-run pack push from the supervisor needs to carry every
+  // commit the hub does not yet have, and the substrate has no
+  // negotiation channel to ask the hub what it already has. The walk
+  // stops at the first parent whose commit object is not in the local
+  // store — that commit is by definition not part of the local
+  // supervisor's history and so cannot be a relevant ancestor.
+  async function collectChainReachableObjects(
+    dir: string,
+    tipSha: string,
+    stopAt: string | null,
+  ): Promise<string[]> {
+    const seen = new Set<string>();
+    let current: string | null = tipSha;
+    while (current !== null) {
+      if (current === stopAt) break;
+      let perCommit = chainReachabilityCache.get(current);
+      if (perCommit === undefined) {
+        perCommit = await collectReachableObjects(dir, current);
+        chainReachabilityCache.set(current, perCommit);
+      }
+      for (const o of perCommit) seen.add(o);
+      let parsed: Awaited<ReturnType<typeof git.readCommit>>;
+      try {
+        parsed = await git.readCommit({ fs, dir, oid: current });
+      } catch (err) {
+        if (hasCode(err) && err.code === "NotFoundError") break;
+        throw err;
+      }
+      const parents = parsed.commit.parent;
+      if (parents.length === 0) break;
+      const next = parents[0];
+      if (next === undefined) throw new Error("unreachable");
+      current = next;
+    }
+    return Array.from(seen);
   }
 
   async function resolveRef(

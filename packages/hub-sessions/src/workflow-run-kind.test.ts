@@ -2,7 +2,9 @@ import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import git from "isomorphic-git";
 import { generateKeyPair } from "@intx/crypto-node";
+import { collectReachableObjects } from "@intx/storage-isogit";
 import type { KeyPair } from "@intx/types/runtime";
 import {
   workflowRunKindHandler,
@@ -1690,5 +1692,113 @@ describe("workflowRunKindHandler.validatePush — claim-check intra-state atomic
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
     expect(r.reason).toMatch(/appears at multiple inbox positions/);
+  });
+});
+
+// Regression for per-commit-walk pack validation. A single pack
+// carrying [enqueue, dequeue] commits — produced by the supervisor's
+// first-mail bootstrap — must validate cleanly against a fresh target
+// repo. Before the substrate walked per-commit, both commits were
+// validated against the ref's pre-pack tip (here: just the genesis),
+// so the dequeue commit's "newly added" processing entry had no
+// matching prior inbox entry and tripped a path_violation. After the
+// fix the dequeue's prior tree is the enqueue commit's tree, so the
+// inbox→processing transition lands inside the validator's
+// well-formed branch.
+describe("workflow-run substrate — per-commit pack validation", () => {
+  test("single pack with enqueue + dequeue validates cleanly on a fresh target", async () => {
+    const sourceDataDir = await makeClaimCheckTempDir("wfr-percommit-src-");
+    const sourceStore = createRepoStore({
+      dataDir: sourceDataDir,
+      signingKey: claimCheckSigningKey,
+      handlers: { "workflow-run": workflowRunKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: `dep-${Math.random().toString(36).slice(2, 10)}`,
+    };
+    await sourceStore.initRepo(repoId);
+    const enqueueResult = await enqueueInbox(
+      sourceStore,
+      HUB_PRINCIPAL,
+      repoId,
+      {
+        address: ADDRESS,
+        messageId: "msg-1",
+        receivedAt: 100,
+        mailAuditRef: { store: "audit", path: "mail/msg-1" },
+      },
+    );
+    const dequeued = await dequeueToProcessing(
+      sourceStore,
+      HUB_PRINCIPAL,
+      repoId,
+      ADDRESS,
+    );
+    if (dequeued === null) {
+      throw new Error("expected dequeue to find the enqueued entry");
+    }
+
+    const ref = "refs/heads/events";
+    const sourceDir = sourceStore.getRepoDir(repoId);
+    const tipSha = await sourceStore.resolveRef(HUB_PRINCIPAL, repoId, ref);
+    if (tipSha === null) {
+      throw new Error("expected source ref to resolve");
+    }
+    // Build a pack carrying BOTH the enqueue and the dequeue commits.
+    // `collectReachableObjects` walks one commit's tree (not its
+    // ancestor commits), so to feed the per-commit walker on the
+    // target a pack with every parent it needs, also include the
+    // genesis commit `initRepo` produced -- both the enqueue and
+    // the dequeue commits chain back to it. Mirrors the supervisor
+    // bootstrap shape the per-commit walker has to handle.
+    const genesisSha = await git.resolveRef({
+      fs,
+      dir: sourceDir,
+      ref: "HEAD",
+    });
+    const enqueueObjects = await collectReachableObjects(
+      sourceDir,
+      enqueueResult.commitSha,
+    );
+    const dequeueObjects = await collectReachableObjects(
+      sourceDir,
+      dequeued.commitSha,
+    );
+    const genesisObjects = await collectReachableObjects(sourceDir, genesisSha);
+    const oids = Array.from(
+      new Set([...genesisObjects, ...enqueueObjects, ...dequeueObjects]),
+    );
+    const packResult = await git.packObjects({
+      fs,
+      dir: sourceDir,
+      oids,
+      write: false,
+    });
+    if (packResult.packfile === undefined) {
+      throw new Error("git.packObjects returned no packfile");
+    }
+    const pack = packResult.packfile;
+
+    const targetDataDir = await makeClaimCheckTempDir("wfr-percommit-tgt-");
+    const targetStore = createRepoStore({
+      dataDir: targetDataDir,
+      signingKey: claimCheckSigningKey,
+      handlers: { "workflow-run": workflowRunKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    await targetStore.initRepo(repoId);
+    await targetStore.receivePack(
+      HUB_PRINCIPAL,
+      repoId,
+      ref,
+      pack,
+      dequeued.commitSha,
+      null,
+    );
+
+    const targetTip = await targetStore.resolveRef(HUB_PRINCIPAL, repoId, ref);
+    expect(targetTip).toBe(dequeued.commitSha);
   });
 });
