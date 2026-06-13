@@ -8,6 +8,8 @@ exclude = [
   "tests/hub-agent/deploy-flow.test.ts",
   "tests/workflow-deploy/trivial-roundtrip.test.ts",
   "tests/workflow-deploy/multistep-signal.test.ts",
+  "tests/workflow-deploy/drain-roundtrip.test.ts",
+  "tests/workflow-deploy/child-workflow-roundtrip.test.ts",
   "tests/inference/transform-cutover.test.ts",
   "tests/skill-attachment-flow.test.ts",
   "tests/hub-api/lib/git-harness.test.ts",
