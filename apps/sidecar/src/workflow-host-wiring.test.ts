@@ -539,6 +539,7 @@ type MultistepDeployArgs = {
   sources: Record<string, InferenceSourceFixture>;
   definition: {
     id: string;
+    triggers: unknown[];
     stepOrder: string[];
     steps: Record<string, unknown>;
   };
@@ -836,6 +837,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const sources = defaultMultistepSources();
     const definition = {
       id: "wf-router-test",
+      triggers: [{ type: "manual" }],
       stepOrder: ["step-1", "step-2"],
       steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
     };
@@ -913,6 +915,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const frame = makeMultistepFrame({
       definition: {
         id: "wf-crash",
+        triggers: [{ type: "manual" }],
         stepOrder: ["step-1"],
         steps: { "step-1": { kind: "step" } },
       },
@@ -938,6 +941,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const frame = makeMultistepFrame({
       definition: {
         id: "wf-bad",
+        triggers: [{ type: "manual" }],
         // stepOrder mentions a step that has no steps[] entry
         stepOrder: ["step-1", "step-missing"],
         steps: { "step-1": { kind: "step" } },
@@ -1028,6 +1032,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const sources = defaultMultistepSources();
     const definition = {
       id: "wf-handoff",
+      triggers: [{ type: "manual" }],
       stepOrder: ["step-1", "step-2"],
       steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
     };
@@ -1142,6 +1147,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const sources = defaultMultistepSources();
     const definition = {
       id: "wf-boot-edge",
+      triggers: [{ type: "manual" }],
       stepOrder: ["step-1", "step-2"],
       steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
     };
@@ -1252,6 +1258,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const sources = defaultMultistepSources();
     const definition = {
       id: "wf-bridge-wiring",
+      triggers: [{ type: "manual" }],
       stepOrder: ["step-1", "step-2"],
       steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
     };

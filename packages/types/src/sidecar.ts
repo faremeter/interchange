@@ -205,10 +205,16 @@ export type MailInboundFrame = typeof MailInboundFrame.infer;
  * per-step source pins).
  *
  * `definition` is the wire projection of `WorkflowDefinition` from
- * `@intx/workflow`. The arktype validator enforces the shape the deploy
- * router and the sidecar's per-step env construction read directly
- * (`id`, `steps`, `stepOrder`); deeper validation of authoring-time
- * fields lives on the workflow definition surface, not on the wire.
+ * `@intx/workflow`. The arktype validator enforces the structural
+ * envelope the workflow-process child re-parses on the sidecar after
+ * materialization (`packages/hub-sessions/src/workflow-kind.ts`'s
+ * `workflowDefinitionEnvelopeSchema`): `id`, `triggers`, `steps`,
+ * `stepOrder`, optional `state`. The wire validator MUST require every
+ * field the envelope requires — the sidecar's deploy router serializes
+ * `projection.definition` verbatim into `workflow.json` and the child
+ * rejects a tree missing any envelope-required field. Deeper validation
+ * of authoring-time primitive shape lives on the workflow definition
+ * surface in `@intx/workflow`, not on the wire.
  *
  * `sources` pins one inference source per step in `definition.stepOrder`
  * so the workflow-process child can resolve inference at step invocation
@@ -218,9 +224,11 @@ export type MailInboundFrame = typeof MailInboundFrame.infer;
  */
 export const AgentDeployWorkflow = type({
   definition: type({
-    id: "string",
+    id: "string > 0",
+    triggers: "unknown[]",
     stepOrder: "string[]",
     steps: { "[string]": "unknown" },
+    "state?": "Record<string, unknown>",
     "+": "delete",
   }),
   sources: { "[string]": InferenceSource },

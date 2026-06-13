@@ -156,6 +156,7 @@ describe("AgentDeployFrame", () => {
       workflow: {
         definition: {
           id: "wf_demo",
+          triggers: [{ type: "manual" }],
           stepOrder: ["plan", "act"],
           steps: { plan: {}, act: {} },
         },
@@ -171,6 +172,7 @@ describe("AgentDeployFrame", () => {
       workflow: {
         definition: {
           id: "wf_demo",
+          triggers: [{ type: "manual" }],
           stepOrder: ["plan"],
           steps: { plan: {} },
         },
@@ -185,8 +187,28 @@ describe("AgentDeployFrame", () => {
       workflow: {
         definition: {
           id: "wf_demo",
+          triggers: [{ type: "manual" }],
           stepOrder: ["plan", "act"],
           steps: { plan: {}, act: {} },
+        },
+        sources: { plan: stepSource },
+      },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a frame whose workflow.definition is missing triggers", () => {
+    // The wire validator must require `triggers` because the sidecar
+    // deploy router serializes `definition` verbatim into
+    // `workflow.json` and the workflow-process child re-validates the
+    // envelope (`workflowDefinitionEnvelopeSchema`) which requires it.
+    const result = AgentDeployFrame({
+      ...trivialFrame,
+      workflow: {
+        definition: {
+          id: "wf_demo",
+          stepOrder: ["plan"],
+          steps: { plan: {} },
         },
         sources: { plan: stepSource },
       },

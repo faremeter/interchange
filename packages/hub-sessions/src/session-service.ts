@@ -399,14 +399,25 @@ export async function sendMultiStepDeployFrame(args: {
   definition: WorkflowDefinition;
   sources: Record<string, InferenceSource>;
 }): Promise<{ publicKey: string }> {
-  // The wire validator's projection types `stepOrder` as a mutable
-  // `string[]` while `WorkflowDefinition.stepOrder` is `readonly`. The
-  // wire serializer never mutates the array; the cast is structurally
-  // sound and pays the readonly-widen at the boundary.
+  // The wire validator's projection types `stepOrder` and `triggers`
+  // as mutable arrays while `WorkflowDefinition` declares them as
+  // `readonly`. The wire serializer never mutates the arrays; the
+  // shallow copies pay the readonly-widen at the boundary. Every
+  // field listed here must match the structural envelope the
+  // workflow-process child re-validates against on materialization
+  // (`workflowDefinitionEnvelopeSchema`): `id`, `triggers`, `steps`,
+  // `stepOrder`, optional `state`. The sidecar deploy router
+  // serializes this object verbatim into `workflow.json`; a missing
+  // envelope-required field here would round-trip into the child's
+  // envelope rejection on disk.
   const wireDefinition = {
     id: args.definition.id,
+    triggers: [...args.definition.triggers],
     stepOrder: [...args.definition.stepOrder],
     steps: args.definition.steps as Record<string, unknown>,
+    ...(args.definition.state !== undefined
+      ? { state: args.definition.state }
+      : {}),
   };
   return args.sidecarRouter.sendAgentDeploy(args.agentAddress, args.config, {
     definition: wireDefinition,
