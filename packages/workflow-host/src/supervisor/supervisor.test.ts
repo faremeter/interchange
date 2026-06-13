@@ -18,6 +18,8 @@ import {
   type SubprocessHandle,
   type SignedPayload,
   type SupervisorRunEvent,
+  type TerminalEventSource,
+  type TerminalRunEvent,
   type WorkflowSupervisorBindings,
 } from "./index";
 import {
@@ -581,6 +583,9 @@ describe("createWorkflowSupervisor", () => {
         },
         get escalated() {
           return false;
+        },
+        disposed() {
+          return Promise.resolve();
         },
       };
       stubs.push(stub);
@@ -1192,6 +1197,303 @@ describe("createWorkflowSupervisor", () => {
     // even though the event chain landed; observability and
     // process topology are independent surfaces.
     expect(supervisor.getCredentialsSnapshot()).toBeNull();
+  });
+
+  test("drain() threads the terminalEventSource binding into each accumulator's opts", async () => {
+    const baseDir = await makeTempDir("supervisor-drain-terminal-source-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const supervisorIpcKeyPair = await generateKeyPair();
+    const childIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      return {
+        pid: 7777,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+    };
+
+    type StubAccumulator = DrainTimeoutAccumulator & {
+      __opts: DrainTimeoutOpts;
+    };
+    const stubs: StubAccumulator[] = [];
+    const factory: DrainTimeoutAccumulatorFactory = (opts) => {
+      const stub: StubAccumulator = {
+        __opts: opts,
+        start() {
+          /* unused */
+        },
+        pause() {
+          /* unused */
+        },
+        resume() {
+          /* unused */
+        },
+        stop() {
+          /* unused */
+        },
+        accumulatedMs() {
+          return 0;
+        },
+        get escalated() {
+          return false;
+        },
+        disposed() {
+          return Promise.resolve();
+        },
+      };
+      stubs.push(stub);
+      return stub;
+    };
+
+    const sourceCalls: string[] = [];
+    const terminalEventSource: TerminalEventSource = (runId) => {
+      sourceCalls.push(runId);
+      return {
+        [Symbol.asyncIterator](): AsyncIterator<TerminalRunEvent> {
+          return {
+            next(): Promise<IteratorResult<TerminalRunEvent>> {
+              return new Promise<IteratorResult<TerminalRunEvent>>(
+                () => undefined,
+              );
+            },
+            return(): Promise<IteratorResult<TerminalRunEvent>> {
+              return Promise.resolve({ value: undefined, done: true });
+            },
+          };
+        },
+      };
+    };
+
+    const mailBus = createMockMailBus();
+    const baseBindings = await buildBindings({
+      baseDir,
+      spawner,
+      signSpy: () => ({
+        sig: new Uint8Array(64),
+        principalKind: "supervisor",
+      }),
+      mailBus,
+    });
+    const bindings: WorkflowSupervisorBindings = {
+      ...baseBindings,
+      ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
+      drainTimeoutAccumulatorFactory: factory,
+      drainTimeoutMs: 5_000,
+      terminalEventSource,
+    };
+    const supervisor = createWorkflowSupervisor(bindings);
+
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      onInferenceEvent: () => undefined,
+    });
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+        },
+      },
+    });
+    while (!mailBus.registered().includes("deployment-x@example.com")) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("term-msg-A"),
+    );
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 7777,
+        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      },
+    });
+    await spawnPromise;
+    await supervisor.drain({ deadlineMs: 5_000 });
+
+    // The factory was handed a terminalEventSource and the
+    // accumulator pulled a per-runId iterator from it.
+    expect(stubs).toHaveLength(1);
+    const stub = stubs[0];
+    if (stub === undefined) throw new Error("expected one stub accumulator");
+    expect(stub.__opts.terminalEventSource).toBeDefined();
+    const factorySource = stub.__opts.terminalEventSource;
+    if (factorySource === undefined) {
+      throw new Error(
+        "expected accumulator opts to carry a terminalEventSource",
+      );
+    }
+    // Calling the source factory itself walks through to the binding
+    // and records the runId on the recorder.
+    const iterable = factorySource(stub.__opts.runId);
+    const iter = iterable[Symbol.asyncIterator]();
+    expect(sourceCalls).toContain(stub.__opts.runId);
+    await iter.return?.(undefined);
+
+    await supervisor.shutdown();
+  });
+
+  test("drain() omits terminalEventSource on the accumulator opts when no binding is configured", async () => {
+    const baseDir = await makeTempDir("supervisor-drain-no-term-source-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const supervisorIpcKeyPair = await generateKeyPair();
+    const childIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      return {
+        pid: 6666,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+    };
+
+    type StubAccumulator = DrainTimeoutAccumulator & {
+      __opts: DrainTimeoutOpts;
+    };
+    const stubs: StubAccumulator[] = [];
+    const factory: DrainTimeoutAccumulatorFactory = (opts) => {
+      const stub: StubAccumulator = {
+        __opts: opts,
+        start() {
+          /* unused */
+        },
+        pause() {
+          /* unused */
+        },
+        resume() {
+          /* unused */
+        },
+        stop() {
+          /* unused */
+        },
+        accumulatedMs() {
+          return 0;
+        },
+        get escalated() {
+          return false;
+        },
+        disposed() {
+          return Promise.resolve();
+        },
+      };
+      stubs.push(stub);
+      return stub;
+    };
+
+    const mailBus = createMockMailBus();
+    const baseBindings = await buildBindings({
+      baseDir,
+      spawner,
+      signSpy: () => ({
+        sig: new Uint8Array(64),
+        principalKind: "supervisor",
+      }),
+      mailBus,
+    });
+    const bindings: WorkflowSupervisorBindings = {
+      ...baseBindings,
+      ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
+      drainTimeoutAccumulatorFactory: factory,
+      drainTimeoutMs: 5_000,
+    };
+    const supervisor = createWorkflowSupervisor(bindings);
+
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      onInferenceEvent: () => undefined,
+    });
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+        },
+      },
+    });
+    while (!mailBus.registered().includes("deployment-x@example.com")) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("no-term-msg"),
+    );
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 6666,
+        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      },
+    });
+    await spawnPromise;
+    await supervisor.drain({ deadlineMs: 5_000 });
+
+    expect(stubs).toHaveLength(1);
+    const stub = stubs[0];
+    if (stub === undefined) throw new Error("expected one stub accumulator");
+    // The no-op default leaves the accumulator on timer-only
+    // settlement: the supervisor passes no terminalEventSource through
+    // to the factory.
+    expect(stub.__opts.terminalEventSource).toBeUndefined();
+
+    await supervisor.shutdown();
   });
 
   test("deploy surfaces a trivialLaunch failure to the caller", async () => {

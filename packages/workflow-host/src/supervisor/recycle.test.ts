@@ -24,6 +24,8 @@ import {
   type SignedPayload,
   type SubprocessHandle,
   type SubprocessSpawner,
+  type TerminalEventSource,
+  type TerminalRunEvent,
   type WorkflowSupervisorBindings,
 } from "./index";
 import { createRecyclePolicy, type RecyclePolicyBounds } from "./recycle";
@@ -680,6 +682,102 @@ describe("supervisor recycle: channelId rotation on respawn", () => {
     expect(new Set(channelIds).size).toBe(channelIds.length);
     for (const id of channelIds) {
       expect(id).toMatch(/^[0-9a-f]{32}$/);
+    }
+
+    await supervisor.shutdown();
+  });
+});
+
+describe("supervisor recycle: terminal-event watcher cohort", () => {
+  test("the previous cohort's watcher iterators are finalised on installNewChild", async () => {
+    const baseDir = await makeTempDir("recycle-cohort-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker({});
+
+    type ProducedIterator = {
+      returnCalled: boolean;
+    };
+    const produced: ProducedIterator[] = [];
+    const terminalEventSource: TerminalEventSource = () => ({
+      [Symbol.asyncIterator](): AsyncIterator<TerminalRunEvent> {
+        const iterTracker: ProducedIterator = { returnCalled: false };
+        produced.push(iterTracker);
+        return {
+          next() {
+            return new Promise<IteratorResult<TerminalRunEvent>>(
+              () => undefined,
+            );
+          },
+          return() {
+            iterTracker.returnCalled = true;
+            return Promise.resolve({ value: undefined, done: true } as const);
+          },
+        };
+      },
+    });
+
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const baseBindings = await buildBindings({
+      baseDir,
+      spawner: tracker.spawner,
+      mailBus,
+      ipcKeypair,
+    });
+    const bindings: WorkflowSupervisorBindings = {
+      ...baseBindings,
+      terminalEventSource,
+    };
+    const supervisor = createWorkflowSupervisor(bindings);
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      onInferenceEvent: () => undefined,
+    });
+    while (tracker.children.length === 0) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    await driveReady(first, ipcKeypair);
+    await spawnPromise;
+
+    // Deliver one mail so an in-flight run exists, then drain so the
+    // supervisor arms an accumulator -- which mints a terminal-event
+    // watcher under the active cohort controller.
+    mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("cohort-pre-recycle"),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    await supervisor.drain({ deadlineMs: 5_000 });
+    expect(produced.length).toBeGreaterThanOrEqual(1);
+    const preRecycleCount = produced.length;
+
+    // Recycle. The installNewChild path aborts the prior cohort and
+    // stops every armed accumulator, which fires `return()` on each
+    // watcher iterator.
+    const recyclePromise = supervisor.recycle({ reason: "cohort-finalise" });
+    while (tracker.children.length < 2) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await recyclePromise;
+    // Give the cohort abort microtask a chance to land.
+    await new Promise((r) => setTimeout(r, 5));
+
+    // Every iterator minted before the recycle had its `return()`
+    // invoked.
+    for (let i = 0; i < preRecycleCount; i += 1) {
+      const entry = produced[i];
+      if (entry === undefined) throw new Error("missing produced entry");
+      expect(entry.returnCalled).toBe(true);
     }
 
     await supervisor.shutdown();

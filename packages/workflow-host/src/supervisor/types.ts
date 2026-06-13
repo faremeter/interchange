@@ -14,6 +14,7 @@ import type {
   RepoStore as SubstrateRepoStore,
 } from "@intx/hub-sessions";
 import type { InferenceSource } from "@intx/types/runtime";
+import type { RunCancelled, RunCompleted, RunFailed } from "@intx/workflow";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
 
 import type { FrameReader, NdjsonReader, NdjsonWriter } from "../ipc/index";
@@ -21,6 +22,34 @@ import type {
   CommitRunEventResult,
   SupervisorRunEvent,
 } from "./run-event-signing";
+
+/**
+ * Terminal workflow-run event the supervisor's drain accumulators
+ * consume to settle ahead of the drainTimeout deadline. The shape is
+ * the discriminated union of every terminal kind the workflow-run
+ * state machine emits; downstream wiring can switch on `kind` without
+ * having to import the workflow package directly.
+ */
+export type TerminalRunEvent = RunCompleted | RunFailed | RunCancelled;
+
+/**
+ * Per-runId terminal-event source the supervisor consumes to settle
+ * armed drainTimeout accumulators when the run reaches a terminal
+ * phase before the timeout fires. Each invocation returns an
+ * `AsyncIterable` scoped to one `runId`; the consumer pulls until the
+ * first terminal event arrives or the iterator is finalised (via
+ * `return()` on the iterator, which the accumulator calls during
+ * `stop`).
+ *
+ * The default (no binding) leaves accumulators on timer-only
+ * settlement, which matches the pre-binding behaviour. The boot edge
+ * supplies a `subscribeKind`-backed source for the production path so
+ * the inbox FIFO integration (next task) can drive `markConsumed`
+ * after each mail's run reaches terminal.
+ */
+export type TerminalEventSource = (
+  runId: string,
+) => AsyncIterable<TerminalRunEvent>;
 
 /**
  * Workflow-side principal kinds the supervisor signs on behalf of.
@@ -386,6 +415,23 @@ export interface WorkflowSupervisorBindings {
    */
   recyclePolicySetTimer?: (cb: () => void, ms: number) => unknown;
   recyclePolicyClearTimer?: (handle: unknown) => void;
+  /**
+   * Stream terminal events for a given runId. The supervisor's drain
+   * accumulators consume this to detect when in-flight runs settle
+   * ahead of the configured drainTimeout; the upcoming inbox FIFO
+   * integration will consume it to drive `markConsumed` after each
+   * mail's run reaches terminal.
+   *
+   * Default (no binding): drain accumulators settle on timeout only,
+   * matching the pre-binding behaviour. The boot edge supplies a
+   * `subscribeKind`-backed source for the production path.
+   *
+   * The source is per-runId rather than a long-lived parent stream so
+   * the iterator's lifetime stays tied to one child's run cohort. The
+   * supervisor mints fresh iterators after a recycle; it never spans
+   * a watcher across recycles.
+   */
+  terminalEventSource?: TerminalEventSource;
   /**
    * Optional hub-link surface the supervisor invokes when a child
    * sends a `pack.push.request` upstream control frame. The supervisor

@@ -30,7 +30,7 @@ import { getLogger } from "@intx/log";
 import type { CancelOrigin } from "@intx/workflow";
 
 import { commitCancelRequested } from "./cancel-signing";
-import type { PrincipalSigner } from "./types";
+import type { PrincipalSigner, TerminalEventSource } from "./types";
 import type {
   RepoId,
   RepoStore as SubstrateRepoStore,
@@ -88,6 +88,16 @@ export type DrainTimeoutOpts = {
    * `(handle) => clearTimeout(handle as ReturnType<typeof setTimeout>)`.
    */
   clearTimer: (handle: unknown) => void;
+  /**
+   * Optional per-runId terminal-event source the accumulator consumes
+   * to settle early when the tracked run reaches a terminal phase
+   * before the drainTimeout fires. When absent, the accumulator falls
+   * back to timer-only settlement (the pre-binding behaviour). The
+   * supervisor wires this against its `terminalEventSource` binding;
+   * the iterator is finalised via `return()` whenever the accumulator
+   * settles (terminal, timeout, or `stop()`).
+   */
+  terminalEventSource?: TerminalEventSource;
 };
 
 /**
@@ -126,6 +136,19 @@ export interface DrainTimeoutAccumulator {
   accumulatedMs(): number;
   /** Whether the accumulator has already escalated. */
   readonly escalated: boolean;
+  /**
+   * Resolves when every asynchronous resource the accumulator owns has
+   * been disposed: the escalation commit (if armed) has finished, and
+   * the per-runId terminal-event watcher (if armed) has had its
+   * iterator finalised. The supervisor awaits this in `shutdown` so a
+   * still-running watcher cannot fire a settle against a torn-down
+   * supervisor.
+   *
+   * Idempotent: calling `disposed()` multiple times returns the same
+   * promise. Resolves once `stop()` or the timer-driven escalation has
+   * run.
+   */
+  disposed(): Promise<void>;
 }
 
 type AccumulatorState =
@@ -159,6 +182,48 @@ export function createDrainTimeoutAccumulator(
   const reason = opts.reason ?? "drainTimeout expired";
   let state: AccumulatorState = { phase: "idle" };
   let escalated = false;
+  /**
+   * Active terminal-event iterator the accumulator is consuming for
+   * its tracked runId. Held so the dispose path can finalise it via
+   * `return()`. `null` when no source binding was supplied or the
+   * iterator has already been finalised.
+   */
+  let terminalIterator: AsyncIterator<unknown> | null = null;
+  /** Promise the per-runId terminal-watcher coroutine resolves into. */
+  let terminalWatcherDone: Promise<void> | null = null;
+  /** Latest pending escalation commit; awaited by `disposed()`. */
+  let escalationPending: Promise<void> | null = null;
+  let disposedPromise: Promise<void> | null = null;
+
+  function armTerminalWatcher(): void {
+    if (opts.terminalEventSource === undefined) return;
+    if (terminalIterator !== null) return;
+    const iterable = opts.terminalEventSource(opts.runId);
+    const iterator = iterable[Symbol.asyncIterator]();
+    terminalIterator = iterator;
+    terminalWatcherDone = (async () => {
+      try {
+        // The first terminal event the source yields is the signal to
+        // settle. The source pre-filters on runId, so any element it
+        // produces applies to the tracked run.
+        const next = await iterator.next();
+        if (next.done === true) return;
+        settleOnTerminal();
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.warn`terminal-event watcher for run ${opts.runId} threw: ${message}`;
+      }
+    })();
+  }
+
+  function settleOnTerminal(): void {
+    if (escalated) return;
+    if (state.phase === "stopped" || state.phase === "escalated") return;
+    if (state.phase === "running") {
+      opts.clearTimer(state.timer);
+    }
+    state = { phase: "stopped" };
+  }
 
   function remainingMs(): number {
     if (state.phase === "running") {
@@ -191,36 +256,59 @@ export function createDrainTimeoutAccumulator(
     };
   }
 
-  async function escalate(): Promise<void> {
+  function escalate(): void {
     if (escalated) return;
     escalated = true;
     if (state.phase === "running") {
       opts.clearTimer(state.timer);
     }
     state = { phase: "escalated" };
-    try {
-      const origin: CancelOrigin = "supervisor-drain";
-      await commitCancelRequested({
-        substrate: opts.substrate,
-        repoId: opts.repoId,
-        ref: opts.ref,
-        deploymentId: opts.deploymentId,
-        runId: opts.runId,
-        origin,
-        reason,
-        at: new Date().toISOString(),
-        signAsPrincipal: opts.signAsPrincipal,
+    // The terminal watcher's role ends when the deadline fires: the
+    // commit below races the on-disk CancelRequested against any
+    // natural terminal arrival, and either way the accumulator settles
+    // here. Finalising the iterator lets the producer free its
+    // resources.
+    finaliseTerminalWatcher();
+    const origin: CancelOrigin = "supervisor-drain";
+    escalationPending = commitCancelRequested({
+      substrate: opts.substrate,
+      repoId: opts.repoId,
+      ref: opts.ref,
+      deploymentId: opts.deploymentId,
+      runId: opts.runId,
+      origin,
+      reason,
+      at: new Date().toISOString(),
+      signAsPrincipal: opts.signAsPrincipal,
+    })
+      .then(() => undefined)
+      .catch((cause: unknown) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.error`drainTimeout escalation commit failed for run ${opts.runId}: ${message}`;
+        throw cause instanceof Error ? cause : new Error(message);
       });
-    } catch (cause) {
+  }
+
+  function finaliseTerminalWatcher(): void {
+    const iterator = terminalIterator;
+    if (iterator === null) return;
+    terminalIterator = null;
+    if (typeof iterator.return !== "function") return;
+    // Fire the iterator's `return()` so the producer side observes the
+    // cancel. The producer (`subscribeKind`-backed) wires its own
+    // `AbortSignal`; finalising the iterator surfaces as an abort
+    // through the substrate's `subscribe` primitive, which is the
+    // contract `subscribeKind` documents.
+    void iterator.return(undefined).catch((cause: unknown) => {
       const message = cause instanceof Error ? cause.message : String(cause);
-      logger.error`drainTimeout escalation commit failed for run ${opts.runId}: ${message}`;
-      throw cause;
-    }
+      logger.warn`terminal-event watcher return() for run ${opts.runId} threw: ${message}`;
+    });
   }
 
   return {
     start(): void {
       if (state.phase !== "idle") return;
+      armTerminalWatcher();
       arm(0);
     },
     pause(): void {
@@ -237,6 +325,7 @@ export function createDrainTimeoutAccumulator(
       if (state.phase === "running") {
         opts.clearTimer(state.timer);
       }
+      finaliseTerminalWatcher();
       if (state.phase === "escalated") return;
       state = { phase: "stopped" };
     },
@@ -245,6 +334,22 @@ export function createDrainTimeoutAccumulator(
     },
     get escalated(): boolean {
       return escalated;
+    },
+    disposed(): Promise<void> {
+      if (disposedPromise !== null) return disposedPromise;
+      disposedPromise = (async () => {
+        if (escalationPending !== null) {
+          await escalationPending.catch(() => {
+            /* error already logged in `escalate`. */
+          });
+        }
+        if (terminalWatcherDone !== null) {
+          await terminalWatcherDone.catch(() => {
+            /* error already logged in the watcher coroutine. */
+          });
+        }
+      })();
+      return disposedPromise;
     },
   };
 }

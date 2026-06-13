@@ -82,6 +82,8 @@ import type {
   RecordRunEvent,
   SubprocessHandle,
   SupervisorDeployFrame,
+  TerminalEventSource,
+  TerminalRunEvent,
   WorkflowSupervisorBindings,
 } from "./types";
 
@@ -622,6 +624,10 @@ export function createWorkflowSupervisor(
       onInferenceEvent: opts.onInferenceEvent,
       mailUnsubscribe: null,
       credentialsSnapshot: null,
+      terminalCohortAbort:
+        bindings.terminalEventSource !== undefined
+          ? new AbortController()
+          : null,
     };
 
     const credentialsSnapshot = await assembleCredentialsSnapshot({
@@ -672,6 +678,7 @@ export function createWorkflowSupervisor(
     // ordering matters: any inbound mail that landed during
     // `starting` must hit the child in arrival order before the
     // first post-ready message.
+    const startingPhaseCohortAbort = state.terminalCohortAbort;
     state = {
       phase: "running",
       handle,
@@ -681,6 +688,7 @@ export function createWorkflowSupervisor(
       onInferenceEvent: opts.onInferenceEvent,
       mailUnsubscribe,
       credentialsSnapshot,
+      terminalCohortAbort: startingPhaseCohortAbort,
     };
     while (mailBuffer.length > 0) {
       const message = mailBuffer.shift();
@@ -741,6 +749,82 @@ export function createWorkflowSupervisor(
   }
 
   /**
+   * Bind the supervisor's `terminalEventSource` binding to the active
+   * spawn cohort's `AbortController`. Each call mints an iterator that
+   * (a) pre-aborts immediately if the cohort has already been torn
+   * down, (b) returns the iterator if the cohort aborts mid-iteration,
+   * and (c) delegates element production to the binding's per-runId
+   * source. Returns `null` when no binding is configured; the
+   * accumulator factory's `terminalEventSource` slot is then left
+   * undefined and the accumulator settles on timeout only.
+   */
+  function perCohortTerminalSource(
+    cohortAbort: AbortController | null,
+  ): TerminalEventSource | null {
+    const source = bindings.terminalEventSource;
+    if (source === undefined) return null;
+    if (cohortAbort === null) return null;
+    const signal = cohortAbort.signal;
+    return (runId: string) => ({
+      [Symbol.asyncIterator](): AsyncIterator<TerminalRunEvent> {
+        if (signal.aborted) {
+          return {
+            next: () => Promise.resolve({ value: undefined, done: true }),
+            return: (value?: unknown) => Promise.resolve({ value, done: true }),
+          };
+        }
+        const inner = source(runId)[Symbol.asyncIterator]();
+        let onAbort: (() => void) | null = null;
+        const abortPromise = new Promise<{
+          value: TerminalRunEvent | undefined;
+          done: true;
+        }>((resolve) => {
+          onAbort = () => resolve({ value: undefined, done: true });
+          signal.addEventListener("abort", onAbort, { once: true });
+        });
+        function detach(): void {
+          if (onAbort !== null) {
+            signal.removeEventListener("abort", onAbort);
+            onAbort = null;
+          }
+        }
+        return {
+          async next(): Promise<IteratorResult<TerminalRunEvent>> {
+            if (signal.aborted) {
+              detach();
+              if (typeof inner.return === "function") {
+                await inner.return(undefined).catch(() => {
+                  /* swallowed: best-effort finalisation. */
+                });
+              }
+              return { value: undefined, done: true };
+            }
+            const result = await Promise.race([inner.next(), abortPromise]);
+            if (result.done === true) {
+              detach();
+              if (signal.aborted && typeof inner.return === "function") {
+                await inner.return(undefined).catch(() => {
+                  /* swallowed: best-effort finalisation. */
+                });
+              }
+            }
+            return result;
+          },
+          async return(): Promise<IteratorResult<TerminalRunEvent>> {
+            detach();
+            if (typeof inner.return === "function") {
+              await inner.return(undefined).catch(() => {
+                /* swallowed: best-effort finalisation. */
+              });
+            }
+            return { value: undefined, done: true };
+          },
+        };
+      },
+    });
+  }
+
+  /**
    * Forward an inbound message to the child and record its runId as
    * in-flight. The standalone `forwardMail` helper below owns the
    * wire-shape derivation; this wrapper closes over the
@@ -782,13 +866,32 @@ export function createWorkflowSupervisor(
     state = { phase: "stopping" };
     // Stop every armed drainTimeout accumulator before tearing the
     // child down. An accumulator left running would otherwise fire
-    // its `setTimeout` callback against a shutdown-mid-flight
-    // supervisor; the explicit `stop()` makes the lifecycle
-    // deterministic.
-    for (const accumulator of drainAccumulators.values()) {
+    // its `setTimeout` callback (or its terminal-event watcher's
+    // settle hook) against a shutdown-mid-flight supervisor; the
+    // explicit `stop()` makes the lifecycle deterministic.
+    const accumulatorsToDispose = [...drainAccumulators.values()];
+    for (const accumulator of accumulatorsToDispose) {
       accumulator.stop();
     }
     drainAccumulators.clear();
+    if (
+      (prior.phase === "starting" ||
+        prior.phase === "running" ||
+        prior.phase === "recycling") &&
+      prior.terminalCohortAbort !== null
+    ) {
+      prior.terminalCohortAbort.abort();
+    }
+    // Await every accumulator's `disposed()` so a pending escalation
+    // commit or terminal-event watcher coroutine cannot outlive the
+    // supervisor and fire against torn-down bindings.
+    await Promise.all(
+      accumulatorsToDispose.map((a) =>
+        a.disposed().catch(() => {
+          /* swallowed: each accumulator already logs its own failure. */
+        }),
+      ),
+    );
     if (recyclePolicy !== null) {
       recyclePolicy.stop();
       recyclePolicy = null;
@@ -852,6 +955,7 @@ export function createWorkflowSupervisor(
     // body's cancellation cascade tears the run down without the
     // supervisor having to thread any per-run wiring beyond what the
     // accumulator already encapsulates.
+    const cohortSource = perCohortTerminalSource(state.terminalCohortAbort);
     for (const runId of inFlightRuns) {
       if (drainAccumulators.has(runId)) continue;
       const accumulator = accumulatorFactory({
@@ -865,6 +969,7 @@ export function createWorkflowSupervisor(
         now: drainNow,
         setTimer: drainSetTimer,
         clearTimer: drainClearTimer,
+        ...(cohortSource !== null ? { terminalEventSource: cohortSource } : {}),
       });
       drainAccumulators.set(runId, accumulator);
       accumulator.start();
@@ -901,6 +1006,7 @@ export function createWorkflowSupervisor(
       onInferenceEvent: prior.onInferenceEvent,
       mailUnsubscribe: prior.mailUnsubscribe,
       credentialsSnapshot: prior.credentialsSnapshot,
+      terminalCohortAbort: prior.terminalCohortAbort,
     };
     let attempt: RecycleAttempt;
     try {
@@ -942,6 +1048,20 @@ export function createWorkflowSupervisor(
               wiring.handle.kill("SIGTERM");
               return;
             }
+            // Tear down the previous cohort's terminal-event
+            // watchers: abort the cohort controller and stop every
+            // armed accumulator. The accumulators were tracking runs
+            // that lived inside the killed child; the resumed child
+            // re-discovers any survivors and the next `drain()` mints
+            // fresh accumulators against the new cohort. Watcher
+            // lifetimes stay tied to one child's run cohort per the
+            // recycle contract.
+            const previousCohortAbort = prior.terminalCohortAbort;
+            if (previousCohortAbort !== null) previousCohortAbort.abort();
+            for (const accumulator of drainAccumulators.values()) {
+              accumulator.stop();
+            }
+            drainAccumulators.clear();
             // Transition back to running with the new wiring; the
             // mail subscription and registration are unchanged.
             state = {
@@ -953,6 +1073,10 @@ export function createWorkflowSupervisor(
               onInferenceEvent: priorContext.onInferenceEvent,
               mailUnsubscribe: prior.mailUnsubscribe,
               credentialsSnapshot,
+              terminalCohortAbort:
+                bindings.terminalEventSource !== undefined
+                  ? new AbortController()
+                  : null,
             };
             // Cache fresh spawn context with the updated spawnedAt
             // so the policy timer's uptime check resets on recycle.
@@ -1074,6 +1198,20 @@ type ActiveState = {
   onInferenceEvent: (event: EventPayload) => void;
   mailUnsubscribe: (() => void) | null;
   credentialsSnapshot: CredentialsSnapshot | null;
+  /**
+   * Per-spawn cohort abort controller for terminal-event watchers. Each
+   * watcher the supervisor mints inside `drain()` (via the accumulator)
+   * borrows this controller's signal; the watcher's iterator finalises
+   * when the controller aborts. `shutdownInternal` aborts the
+   * controller alongside `mailUnsubscribe`; `installNewChild` mints a
+   * fresh controller for the recycled cohort so a watcher minted in
+   * the previous cohort cannot survive into the next.
+   *
+   * `null` when the `terminalEventSource` binding is absent (test
+   * fixture default); accumulators in that case settle on timeout
+   * only.
+   */
+  terminalCohortAbort: AbortController | null;
 };
 
 type SpawnContext = {

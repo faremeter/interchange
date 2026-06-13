@@ -66,6 +66,8 @@ export {
   type SubprocessHandle,
   type SubprocessSpawner,
   type SupervisorDeployFrame,
+  type TerminalEventSource,
+  type TerminalRunEvent,
   type TriggerRecycleOpts,
   type TrivialLaunch,
   type TrivialLaunchBindings,

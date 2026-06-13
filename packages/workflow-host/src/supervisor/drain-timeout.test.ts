@@ -25,7 +25,11 @@ import os from "node:os";
 import path from "node:path";
 
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
-import type { SignedPayload } from "./types";
+import type {
+  SignedPayload,
+  TerminalEventSource,
+  TerminalRunEvent,
+} from "./types";
 
 import {
   createDrainTimeoutAccumulator,
@@ -392,5 +396,170 @@ describe("createDrainTimeoutAccumulator", () => {
     expect(eventPaths.every((p) => p.startsWith("runs/parent-run/"))).toBe(
       true,
     );
+  });
+
+  test("settles on terminal event before the timeout, suppressing the escalation commit", async () => {
+    const baseDir = await makeTempDir("drain-timeout-terminal-");
+    const writes: WriteCapture[] = [];
+    const substrate = createStubRepoStore({
+      baseDir,
+      onWrite: (cap) => writes.push(cap),
+    });
+    const signSpy = makeSignSpy();
+    const clock = createFakeClock();
+    const host = createFakeTimerHost();
+    let terminalResolve: ((event: TerminalRunEvent) => void) | undefined;
+    const terminalEventSource: TerminalEventSource = (runId) => {
+      expect(runId).toBe("run-terminal-1");
+      return {
+        async *[Symbol.asyncIterator](): AsyncGenerator<TerminalRunEvent> {
+          const event = await new Promise<TerminalRunEvent>((resolve) => {
+            terminalResolve = resolve;
+          });
+          yield event;
+        },
+      };
+    };
+    const accumulator = createDrainTimeoutAccumulator({
+      substrate,
+      repoId: REPO_ID,
+      ref: REF,
+      deploymentId: DEPLOYMENT_ID,
+      runId: "run-terminal-1",
+      signAsPrincipal: signSpy.signAsPrincipal,
+      drainTimeoutMs: 1_000,
+      now: clock.now,
+      setTimer: host.setTimer,
+      clearTimer: host.clearTimer,
+      terminalEventSource,
+    });
+    accumulator.start();
+    expect(host.pending().length).toBe(1);
+
+    // Run reaches terminal naturally before the timer fires.
+    if (terminalResolve === undefined) {
+      throw new Error("terminalEventSource iterator was not entered");
+    }
+    terminalResolve({
+      kind: "RunCompleted",
+      seq: 5,
+      at: "2026-01-01T00:00:00.000Z",
+    });
+    // The watcher coroutine runs as a microtask; wait one tick for it
+    // to land and the accumulator's settle path to disarm.
+    await new Promise<void>((r) => setTimeout(r, 5));
+
+    expect(accumulator.escalated).toBe(false);
+    accumulator.stop();
+    await accumulator.disposed();
+
+    // Even if the deadline elapses afterwards, the accumulator stays
+    // unescalated and no CancelRequested commit lands.
+    clock.advance(10_000);
+    await host.fireDue(clock);
+    expect(accumulator.escalated).toBe(false);
+    expect(signSpy.calls.length).toBe(0);
+    expect(writes.length).toBe(0);
+  });
+
+  test("timer-only timeout still escalates when the terminal-event source never yields", async () => {
+    const baseDir = await makeTempDir("drain-timeout-terminal-timeout-");
+    const writes: WriteCapture[] = [];
+    const substrate = createStubRepoStore({
+      baseDir,
+      onWrite: (cap) => writes.push(cap),
+    });
+    const signSpy = makeSignSpy();
+    const clock = createFakeClock();
+    const host = createFakeTimerHost();
+    let iteratorMinted = 0;
+    const terminalEventSource: TerminalEventSource = () => ({
+      [Symbol.asyncIterator](): AsyncIterator<TerminalRunEvent> {
+        iteratorMinted += 1;
+        let resolveNext:
+          | ((result: IteratorResult<TerminalRunEvent>) => void)
+          | null = null;
+        return {
+          next() {
+            return new Promise<IteratorResult<TerminalRunEvent>>((resolve) => {
+              resolveNext = resolve;
+            });
+          },
+          return() {
+            const done = { value: undefined, done: true } as const;
+            if (resolveNext !== null) {
+              resolveNext(done);
+              resolveNext = null;
+            }
+            return Promise.resolve(done);
+          },
+        };
+      },
+    });
+    const accumulator = createDrainTimeoutAccumulator({
+      substrate,
+      repoId: REPO_ID,
+      ref: REF,
+      deploymentId: DEPLOYMENT_ID,
+      runId: "run-timeout-1",
+      signAsPrincipal: signSpy.signAsPrincipal,
+      drainTimeoutMs: 1_000,
+      now: clock.now,
+      setTimer: host.setTimer,
+      clearTimer: host.clearTimer,
+      terminalEventSource,
+    });
+    accumulator.start();
+    expect(iteratorMinted).toBe(1);
+
+    clock.advance(1_000);
+    await host.fireDue(clock);
+    await accumulator.disposed();
+
+    expect(accumulator.escalated).toBe(true);
+    expect(signSpy.calls.length).toBe(1);
+    expect(writes.length).toBe(1);
+  });
+
+  test("stop() before any terminal event finalises the watcher iterator via return()", async () => {
+    const baseDir = await makeTempDir("drain-timeout-terminal-stop-");
+    const substrate = createStubRepoStore({ baseDir });
+    const signSpy = makeSignSpy();
+    const clock = createFakeClock();
+    const host = createFakeTimerHost();
+    let returnCalled = false;
+    const terminalEventSource: TerminalEventSource = () => ({
+      [Symbol.asyncIterator](): AsyncIterator<TerminalRunEvent> {
+        return {
+          next() {
+            return new Promise<IteratorResult<TerminalRunEvent>>(
+              () => undefined,
+            );
+          },
+          return() {
+            returnCalled = true;
+            return Promise.resolve({ value: undefined, done: true } as const);
+          },
+        };
+      },
+    });
+    const accumulator = createDrainTimeoutAccumulator({
+      substrate,
+      repoId: REPO_ID,
+      ref: REF,
+      deploymentId: DEPLOYMENT_ID,
+      runId: "run-stop-terminal-1",
+      signAsPrincipal: signSpy.signAsPrincipal,
+      drainTimeoutMs: 1_000,
+      now: clock.now,
+      setTimer: host.setTimer,
+      clearTimer: host.clearTimer,
+      terminalEventSource,
+    });
+    accumulator.start();
+    accumulator.stop();
+    // The iterator's return() is invoked as part of stop().
+    await new Promise<void>((r) => setTimeout(r, 5));
+    expect(returnCalled).toBe(true);
   });
 });

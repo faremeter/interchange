@@ -68,6 +68,8 @@ export type {
   SubprocessHandle,
   SubprocessSpawner,
   SupervisorDeployFrame,
+  TerminalEventSource,
+  TerminalRunEvent,
   TrivialLaunch,
   TrivialLaunchBindings,
   WorkflowSupervisorBindings,
