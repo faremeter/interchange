@@ -857,3 +857,118 @@ describe("Payload union disjointness", () => {
     expect(validated instanceof type.errors).toBe(true);
   });
 });
+
+describe("pack.push.request payload validation", () => {
+  test("accepts a well-formed pack.push.request", () => {
+    const payload = {
+      type: "pack.push.request",
+      data: {
+        pushId: "pp-1-abc",
+        agentAddress: "agent-1@example.com",
+        repoId: { kind: "workflow-run", id: "dep-1" },
+        ref: "refs/heads/main",
+        commitSha: "deadbeef",
+        packBase64: "AAEC",
+      },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a pack.push.request missing pushId", () => {
+    const payload = {
+      type: "pack.push.request",
+      data: {
+        agentAddress: "agent-1@example.com",
+        repoId: { kind: "workflow-run", id: "dep-1" },
+        ref: "refs/heads/main",
+        commitSha: "deadbeef",
+        packBase64: "AAEC",
+      },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a pack.push.request with non-string commitSha", () => {
+    const payload = {
+      type: "pack.push.request",
+      data: {
+        pushId: "pp-1",
+        agentAddress: "agent-1@example.com",
+        repoId: { kind: "workflow-run", id: "dep-1" },
+        ref: "refs/heads/main",
+        commitSha: 42,
+        packBase64: "AAEC",
+      },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a pack.push.request with a malformed repoId", () => {
+    const payload = {
+      type: "pack.push.request",
+      data: {
+        pushId: "pp-1",
+        agentAddress: "agent-1@example.com",
+        repoId: { kind: "workflow-run" },
+        ref: "refs/heads/main",
+        commitSha: "deadbeef",
+        packBase64: "AAEC",
+      },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(true);
+  });
+});
+
+describe("pack.push.response payload validation", () => {
+  test("accepts ok=true response", () => {
+    const payload = {
+      type: "pack.push.response",
+      data: {
+        pushId: "pp-1-abc",
+        result: { ok: true },
+      },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(false);
+  });
+
+  test("accepts ok=false response with a reason", () => {
+    const payload = {
+      type: "pack.push.response",
+      data: {
+        pushId: "pp-1-abc",
+        result: { ok: false, reason: "hub rejected" },
+      },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(false);
+  });
+
+  test("rejects ok=false without a reason", () => {
+    const payload = {
+      type: "pack.push.response",
+      data: {
+        pushId: "pp-1-abc",
+        result: { ok: false },
+      },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an unknown discriminator in result", () => {
+    const payload = {
+      type: "pack.push.response",
+      data: {
+        pushId: "pp-1-abc",
+        result: { ok: "maybe" },
+      },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(true);
+  });
+});

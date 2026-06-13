@@ -178,10 +178,34 @@ const wrappedRepoStore = createWorkflowRunPackPushingRepoStore({
   registry: deploymentAddressRegistry,
 });
 
+const hubWsUrl = requireEnv("HUB_WS_URL");
+const sidecarId = requireEnv("SIDECAR_ID");
+const sidecarToken = requireEnv("SIDECAR_TOKEN");
+
+// Multi-step substrate-config the deploy router threads into the
+// workflow-process child's spawn-time env. The child's substrate
+// factory consumes these via the typed `SubstrateConfig` validator so
+// the per-step pack-push wrap can identify the deployment's hub-side
+// trust anchors. Today the IPC bridge in `pack.push.request` carries
+// the pack; the WebSocket-connection keys are reserved for a future
+// child-local hub link without redoing the boot-edge wiring.
+const multistepSubstrateEnv: Record<string, string> = {
+  SIDECAR_DATA_DIR: dataDir,
+  SIDECAR_SIGNING_PUBLIC_KEY: Buffer.from(sidecarSigningKey.publicKey).toString(
+    "hex",
+  ),
+  SIDECAR_SIGNING_PRIVATE_KEY: Buffer.from(
+    sidecarSigningKey.privateKey,
+  ).toString("hex"),
+  HUB_WS_URL: hubWsUrl,
+  SIDECAR_ID: sidecarId,
+  SIDECAR_TOKEN: sidecarToken,
+};
+
 const orchestrator = createSidecarOrchestrator({
-  hubURL: requireEnv("HUB_WS_URL"),
-  sidecarId: requireEnv("SIDECAR_ID"),
-  token: requireEnv("SIDECAR_TOKEN"),
+  hubURL: hubWsUrl,
+  sidecarId,
+  token: sidecarToken,
   dataDir,
   transport,
   buildHarness: createDefaultHarnessBuilder({
@@ -208,6 +232,22 @@ const orchestrator = createSidecarOrchestrator({
       signingKeySeed: sidecarSigningKey.privateKey,
       registerDeployment: ({ deploymentId, agentAddress }) => {
         deploymentAddressRegistry.record(deploymentId, agentAddress);
+      },
+      multistepSubstrateEnv,
+      // The multi-step supervisor forwards `pack.push.request` upstream
+      // control frames into this closure; the boot edge resolves them
+      // through the same `HubLink.pushWorkflowRunPack` the
+      // trivial-path facade consults. The closure mirrors the lazy
+      // pattern used by `workflowRunPackClient` so a deploy that lands
+      // before the orchestrator's `hubLink` is bound surfaces a
+      // structured error rather than a `null` deref.
+      multistepPushWorkflowRunPack: (opts) => {
+        if (resolvedHubLink === null) {
+          throw new Error(
+            "sidecar boot: multi-step workflow-run pack push attempted before hub link was constructed",
+          );
+        }
+        return resolvedHubLink.pushWorkflowRunPack(opts);
       },
     }),
 });

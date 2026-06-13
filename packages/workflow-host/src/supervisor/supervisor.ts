@@ -40,9 +40,12 @@
 //   over the control IPC; the supervisor wraps it into a signed
 //   event without consulting the child for the signature.
 
+import { type } from "arktype";
+
 import { getLogger } from "@intx/log";
 
 import { generateKeyPair } from "@intx/crypto-node";
+import { RepoId } from "@intx/types/sidecar";
 import type { CancelOrigin } from "@intx/workflow";
 
 import {
@@ -391,8 +394,113 @@ export function createWorkflowSupervisor(
         });
         return;
       }
+      if (payload.type === "pack.push.request") {
+        // Run the push off the iterator's loop so the iterator can
+        // continue draining other upstream frames (and so the response
+        // ordering follows binding completion rather than blocking
+        // every other upstream frame behind the hub round-trip).
+        void handlePackPushRequest(payload.data).catch((cause) => {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.error`pack.push.request handler crashed: ${message}`;
+        });
+        continue;
+      }
       logger.warn`workflow-process upstream control payload ignored: type=${payload.type}`;
     }
+  }
+
+  async function handlePackPushRequest(
+    data: Extract<ControlPayload, { type: "pack.push.request" }>["data"],
+  ): Promise<void> {
+    const controlSender = activeControlSender();
+    if (controlSender === null) {
+      // The supervisor is no longer in a phase where it can reply.
+      // Dropping the push silently would corrupt the child's pending
+      // map; the child's IPC pump is by then in a teardown path
+      // alongside the supervisor's, so the dropped response is
+      // observable through the child's process exit.
+      logger.warn`pack.push.request received outside running phase; pushId=${data.pushId} dropped`;
+      return;
+    }
+    const binding = bindings.pushWorkflowRunPack;
+    if (binding === undefined) {
+      await controlSender.send({
+        type: "pack.push.response",
+        data: {
+          pushId: data.pushId,
+          result: {
+            ok: false,
+            reason:
+              "supervisor: pushWorkflowRunPack binding not configured on WorkflowSupervisorBindings",
+          },
+        },
+      });
+      return;
+    }
+    const validatedRepoId = RepoId(data.repoId);
+    if (validatedRepoId instanceof type.errors) {
+      // The IPC envelope already validated the structural shape, but
+      // the IPC schema keeps `kind` as a bare string so it does not
+      // depend on the `RepoKind` enum's value. Narrowing here turns a
+      // bogus kind into a protocol-violation crash rather than letting
+      // a malformed `repoId` reach the host's `HubLink`.
+      onChildCrash(
+        `pack.push.request repoId failed validation: ${validatedRepoId.summary}`,
+      );
+      return;
+    }
+    let pack: Uint8Array;
+    try {
+      pack = decodeBase64Pack(data.packBase64);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      // A malformed base64 payload is a child protocol violation; the
+      // supervisor's contract with the child is that the wire shape
+      // arrives well-formed (the IPC envelope already validated the
+      // typed shape). Crash the receiver so the child's process exit
+      // surfaces a structured failure rather than hanging on a
+      // never-resolved pending push.
+      onChildCrash(`pack.push.request packBase64 decode failed: ${message}`);
+      return;
+    }
+    try {
+      await binding({
+        agentAddress: data.agentAddress,
+        repoId: validatedRepoId,
+        pack,
+        ref: data.ref,
+        commitSha: data.commitSha,
+      });
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      await controlSender.send({
+        type: "pack.push.response",
+        data: {
+          pushId: data.pushId,
+          result: { ok: false, reason },
+        },
+      });
+      return;
+    }
+    await controlSender.send({
+      type: "pack.push.response",
+      data: {
+        pushId: data.pushId,
+        result: { ok: true },
+      },
+    });
+  }
+
+  function activeControlSender(): ControlChannelSender | null {
+    if (
+      state.phase === "starting" ||
+      state.phase === "running" ||
+      state.phase === "recycling"
+    ) {
+      return state.controlSender;
+    }
+    return null;
   }
 
   async function wireChild(args: {
@@ -998,4 +1106,21 @@ async function deriveMessageId(rawMessage: Uint8Array): Promise<string> {
 
 function bytesToHex(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("hex");
+}
+
+/**
+ * Decode the base64 form the child sent in `pack.push.request.data.packBase64`
+ * into the raw pack bytes the host's `pushWorkflowRunPack` binding
+ * consumes. Empty / malformed inputs throw so the supervisor's handler
+ * surfaces the failure as a protocol violation.
+ */
+function decodeBase64Pack(packBase64: string): Uint8Array {
+  if (packBase64.length === 0) {
+    throw new Error("packBase64 must be a non-empty string");
+  }
+  if (!/^[A-Za-z0-9+/=]+$/.test(packBase64)) {
+    throw new Error("packBase64 contains non-base64 characters");
+  }
+  const buf = Buffer.from(packBase64, "base64");
+  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 }

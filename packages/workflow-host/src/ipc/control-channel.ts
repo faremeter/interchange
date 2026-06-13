@@ -162,6 +162,59 @@ export const ControlPayload = type(
     data: {
       reason: "string",
     },
+  })
+  .or({
+    // Child-initiated workflow-run pack push request. The child cannot
+    // hold its own hub WebSocket because the hub-link surface binds to
+    // sidecar-main-process state (the deploy router, the session
+    // manager); the child therefore routes pack pushes back over the
+    // existing control IPC and the supervisor forwards via the
+    // host's `HubLink.pushWorkflowRunPack`. `pushId` correlates the
+    // matching upstream-supervisor `pack.push.response` so the child's
+    // pending-id map can resolve the awaiter. `packBase64` carries the
+    // pack bytes verbatim; the wire form is one NDJSON line per IPC
+    // frame, which Bun's pipes carry without a line-size cap below the
+    // pack sizes a workflow-run commit produces. A future variant that
+    // needs chunking can extend the union with `pack.push.chunk` and
+    // `pack.push.commit` without disturbing existing consumers.
+    type: "'pack.push.request'",
+    data: {
+      pushId: "string > 0",
+      agentAddress: "string > 0",
+      repoId: {
+        kind: "string",
+        id: "string > 0",
+      },
+      ref: "string > 0",
+      commitSha: "string > 0",
+      packBase64: "string > 0",
+    },
+  })
+  .or({
+    // Supervisor's reply to a child's `pack.push.request`. The
+    // `pushId` echoes the child's allocated correlation id so the
+    // child's pending-id map can resolve the awaiter. The `result`
+    // variant is a discriminated union so the typed handler at the
+    // child knows whether to resolve or reject. A failed push from
+    // the host's `HubLink.pushWorkflowRunPack` is surfaced as `{ ok:
+    // false, reason }`; the child's sink rejects with the reason, and
+    // the wrap's caller (the workflow-run commit path) surfaces it
+    // to the runtime body per defensive-coding -- the supervisor never
+    // swallows a hub-side rejection.
+    type: "'pack.push.response'",
+    data: {
+      pushId: "string > 0",
+      result: type(
+        {
+          ok: "true",
+        },
+        "|",
+        {
+          ok: "false",
+          reason: "string > 0",
+        },
+      ),
+    },
   });
 
 export type ControlPayload = typeof ControlPayload.infer;

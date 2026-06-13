@@ -1090,4 +1090,204 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     expect(spawns.length).toBeGreaterThanOrEqual(2);
   });
+
+  test("multistepSubstrateEnv carries HUB_WS_URL, SIDECAR_ID, SIDECAR_TOKEN through to the spawn-time env", async () => {
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      const handle: SubprocessHandle = {
+        pid: 7600,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      return handle;
+    };
+    const { router } = await buildMultistepFixture({
+      spawner,
+      multistepSubstrateEnv: {
+        SIDECAR_DATA_DIR: "/tmp/boot-edge-test",
+        HUB_WS_URL: "ws://hub.example/sidecar-boot",
+        SIDECAR_ID: "sidecar-boot-1",
+        SIDECAR_TOKEN: "boot-token-abc",
+      },
+    });
+    const sources = defaultMultistepSources();
+    const definition = {
+      id: "wf-boot-edge",
+      stepOrder: ["step-1", "step-2"],
+      steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+    };
+    const frame = makeMultistepFrame({ definition, sources });
+    const deployPromise = router.deploy(frame);
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(observedEnv.HUB_WS_URL).toBe("ws://hub.example/sidecar-boot");
+    expect(observedEnv.SIDECAR_ID).toBe("sidecar-boot-1");
+    expect(observedEnv.SIDECAR_TOKEN).toBe("boot-token-abc");
+    expect(observedEnv.SIDECAR_DATA_DIR).toBe("/tmp/boot-edge-test");
+    // Round out the spawn so the test exits cleanly.
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID missing from spawn env");
+    }
+    const childIpcKeyPair = await generateKeyPair();
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+          return Promise.resolve();
+        },
+      },
+    });
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 7600,
+        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      },
+    });
+    await deployPromise;
+  });
+
+  test("multistepPushWorkflowRunPack receives forwarded pack.push.request data via the supervisor binding", async () => {
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      const handle: SubprocessHandle = {
+        pid: 7700,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      return handle;
+    };
+    const pushCalls: { ref: string; commitSha: string; packLen: number }[] = [];
+    const transport = createInMemoryTransport();
+    const keyPair = await generateKeyPair();
+    const tempBase = await createTempBaseDir("sidecar-pack-push-wiring-");
+    const repoStore = createSpawnTestRepoStore(tempBase);
+    const router = createSidecarDeployRouter({
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- multi-step branch never invokes provisionAgent
+      sessions: {
+        provisionAgent: async () => {
+          throw new Error("multi-step branch must not invoke provisionAgent");
+        },
+        persistHubPublicKey: async () => {
+          throw new Error(
+            "multi-step branch must not invoke persistHubPublicKey",
+          );
+        },
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["sessions"],
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- multi-step branch never invokes recordHubKey
+      keyStore: {
+        recordHubKey: () => {
+          throw new Error("multi-step branch must not invoke recordHubKey");
+        },
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["keyStore"],
+      onAgentEvent: () => () => {
+        /* unused */
+      },
+      transport,
+      repoStore,
+      signingKeySeed: keyPair.privateKey,
+      registerDeployment: () => {
+        /* unused */
+      },
+      multistepSubprocessSpawner: spawner,
+      multistepPushWorkflowRunPack: async ({ ref, commitSha, pack }) => {
+        pushCalls.push({ ref, commitSha, packLen: pack.byteLength });
+      },
+    });
+    const sources = defaultMultistepSources();
+    const definition = {
+      id: "wf-bridge-wiring",
+      stepOrder: ["step-1", "step-2"],
+      steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+    };
+    const frame = makeMultistepFrame({ definition, sources });
+    const deployPromise = router.deploy(frame);
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID missing from spawn env");
+    }
+    const childIpcKeyPair = await generateKeyPair();
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+          return Promise.resolve();
+        },
+      },
+    });
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 7700,
+        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      },
+    });
+    await deployPromise;
+    const pack = new Uint8Array([42, 43, 44]);
+    await childSender.send({
+      type: "pack.push.request",
+      data: {
+        pushId: "wiring-1",
+        agentAddress: "multi@example.com",
+        repoId: { kind: "workflow-run", id: "multi-example-com" },
+        ref: "refs/heads/main",
+        commitSha: "wiring-sha",
+        packBase64: Buffer.from(pack).toString("base64"),
+      },
+    });
+    // Poll until the binding is invoked.
+    for (let i = 0; i < 200; i += 1) {
+      if (pushCalls.length > 0) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(pushCalls).toHaveLength(1);
+    const call = pushCalls[0];
+    if (call === undefined) throw new Error("no push call captured");
+    expect(call.ref).toBe("refs/heads/main");
+    expect(call.commitSha).toBe("wiring-sha");
+    expect(call.packLen).toBe(pack.byteLength);
+  });
 });

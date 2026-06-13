@@ -20,7 +20,10 @@ import { describe, test, expect } from "bun:test";
 import type { Principal, RepoId, RepoStore } from "@intx/hub-sessions";
 import type { InferenceSource } from "@intx/types/runtime";
 import type { AuthorizeContext, StepInvokeRequest } from "@intx/workflow";
-import type { SubstrateFactoryEnv } from "@intx/workflow-host";
+import type {
+  ChildPackPushBridge,
+  SubstrateFactoryEnv,
+} from "@intx/workflow-host";
 import type { AgentDefinition, BaseEnv } from "@intx/agent";
 
 import {
@@ -86,12 +89,35 @@ function makeSpawnEnv(): SubstrateFactoryEnv["spawn"] {
   };
 }
 
+/**
+ * Inert pack-push bridge stub for tests that do not exercise the IPC
+ * path. The factory threads `packPushBridge` into the hub-pack-sink
+ * builder; tests that supply their own `createHubPackSink` ignore the
+ * bridge value entirely. The pendingCount accessor returns `0` so
+ * assertions that walk the public surface see a defined value.
+ */
+function makeStubPackPushBridge(): ChildPackPushBridge {
+  return {
+    get pendingCount() {
+      return 0;
+    },
+    sendRequest: () => Promise.resolve(),
+    handleResponse: () => {
+      /* no-op stub */
+    },
+    cancelAll: () => {
+      /* no-op stub */
+    },
+  };
+}
+
 function makeFactoryEnv(
   configOverrides: Record<string, string> = {},
 ): SubstrateFactoryEnv {
   return {
     spawn: makeSpawnEnv(),
     substrateConfig: makeSubstrateConfig(configOverrides),
+    packPushBridge: makeStubPackPushBridge(),
   };
 }
 
@@ -269,6 +295,7 @@ describe("createSidecarSubstrateFactory", () => {
         ...makeSubstrateConfig(),
         HUB_WS_URL: "",
       },
+      packPushBridge: makeStubPackPushBridge(),
     };
     await expect(factory(env)).rejects.toThrow(/HUB_WS_URL/);
   });

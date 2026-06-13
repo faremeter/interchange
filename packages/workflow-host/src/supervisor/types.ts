@@ -10,6 +10,7 @@
 
 import type {
   Principal,
+  RepoId,
   RepoStore as SubstrateRepoStore,
 } from "@intx/hub-sessions";
 import type { InferenceSource } from "@intx/types/runtime";
@@ -385,4 +386,28 @@ export interface WorkflowSupervisorBindings {
    */
   recyclePolicySetTimer?: (cb: () => void, ms: number) => unknown;
   recyclePolicyClearTimer?: (handle: unknown) => void;
+  /**
+   * Optional hub-link surface the supervisor invokes when a child
+   * sends a `pack.push.request` upstream control frame. The supervisor
+   * forwards the validated request into this binding and replies with
+   * a `pack.push.response` frame carrying the binding's result. The
+   * binding is the supervisor's view of the host's `HubLink.pushWorkflowRunPack`
+   * surface; the workflow-host package does not depend on `@intx/hub-agent`
+   * so the binding is declared structurally rather than against the
+   * concrete `HubLink` type.
+   *
+   * The binding is optional: tests and host configurations that do
+   * not exercise the pack push path can omit it. A child that sends
+   * a `pack.push.request` to a supervisor whose binding is absent
+   * receives a structured `{ ok: false, reason }` response so the
+   * pack-push wrap's caller surfaces the failure rather than silently
+   * dropping the push.
+   */
+  pushWorkflowRunPack?: (opts: {
+    agentAddress: string;
+    repoId: RepoId;
+    pack: Uint8Array;
+    ref: string;
+    commitSha: string;
+  }) => Promise<void>;
 }

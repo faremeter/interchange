@@ -19,13 +19,22 @@ import fs from "node:fs";
 
 import { type } from "arktype";
 
+import { generateKeyPair } from "@intx/crypto-node";
+
 import { parseSpawnTimeEnv, type SpawnTimeEnv } from "./env-bootstrap";
 import {
+  createChildPackPushBridge,
   runWorkflowChild,
+  type ChildPackPushBridge,
   type RunWorkflowChildBindings,
   type RunWorkflowChildResult,
 } from "./run-child";
-import type { FrameWriter, NdjsonReader, NdjsonWriter } from "../ipc/index";
+import {
+  createControlChannelSender,
+  type FrameWriter,
+  type NdjsonReader,
+  type NdjsonWriter,
+} from "../ipc/index";
 
 /**
  * File descriptor the supervisor's `Bun.spawn` wires the
@@ -60,6 +69,17 @@ export interface SubstrateFactoryEnv {
    * its own required-key shape against this record at the boundary.
    */
   readonly substrateConfig: Readonly<Record<string, string>>;
+  /**
+   * Child-side IPC bridge over the upstream control channel for the
+   * workflow-run pack push surface. The substrate factory uses this
+   * to construct its `ChildHubPackSink` so the child does not have
+   * to open its own hub WebSocket. The bridge's `sendRequest` sends a
+   * `pack.push.request` upstream control frame; the supervisor's
+   * handler forwards via the host's `HubLink.pushWorkflowRunPack` and
+   * replies with a matching `pack.push.response` the bridge resolves
+   * the awaiter against.
+   */
+  readonly packPushBridge: ChildPackPushBridge;
 }
 
 /**
@@ -139,13 +159,34 @@ export async function runWorkflowChildFromProcessEnv(
   const controlReader = opts.controlReader ?? defaultControlReader();
   const controlWriter = opts.controlWriter ?? defaultControlWriter();
   const eventWriter = opts.eventWriter ?? defaultEventWriter();
-  const bindings = await factory({ spawn, substrateConfig });
+  // Mint the child's upstream-signing keypair here so the wrapper can
+  // construct the upstream sender before invoking the substrate
+  // factory: the factory consumes the sender via the pack-push bridge
+  // to build its `ChildHubPackSink`, and the same sender carries the
+  // `ready` frame `runWorkflowChild` emits.
+  const childKeyPair = await generateKeyPair();
+  const upstreamSender = createControlChannelSender({
+    privateKeySeed: childKeyPair.privateKey,
+    channelId: spawn.channelId,
+    writer: controlWriter,
+  });
+  const packPushBridge = createChildPackPushBridge({ upstreamSender });
+  const bindings = await factory({ spawn, substrateConfig, packPushBridge });
   return runWorkflowChild({
     env: spawn,
     controlReader,
     controlWriter,
     eventWriter,
-    bindings,
+    bindings: {
+      ...bindings,
+      // The child key pair is minted at this layer so the upstream
+      // sender and the `ready` frame's `childPublicKey` come from one
+      // keypair. Override the factory's path so `runWorkflowChild`
+      // does not re-mint a different key and break verification.
+      ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair),
+    },
+    upstreamSender,
+    packPushBridge,
   });
 }
 

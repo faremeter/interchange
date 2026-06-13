@@ -37,6 +37,7 @@ import {
   createWorkflowHostScheduler,
   createWorkflowSpawnChild,
   createWorkflowStepInvoker,
+  type ChildPackPushBridge,
   type RunWorkflowChildBindings,
   type StepEnvBase,
   type SubstrateFactory,
@@ -196,26 +197,28 @@ export type ChildHubPackSink = {
 
 /**
  * Dependency overrides accepted by `createSidecarSubstrateFactory`.
- * Production callers omit these to get the default-thrower hub sink;
- * tests inject a recording sink so the wrap behavior is observable
- * without standing up a WebSocket.
+ * Production callers omit these to get the IPC-bridge-backed hub
+ * sink; tests inject a recording sink so the wrap behavior is
+ * observable without driving a real supervisor.
  */
 export interface SidecarSubstrateFactoryDeps {
   /**
    * Construct the child's hub-link-equivalent for the workflow-run
-   * pack push surface. Receives the validated substrate config so an
-   * implementation can read `HUB_WS_URL`, `SIDECAR_ID`, and
-   * `SIDECAR_TOKEN` to open its own connection.
-   *
-   * The default returns a sink whose `pushWorkflowRunPack` throws so
-   * any production deploy that reaches a workflow-run commit before
-   * the child-side hub WebSocket is wired surfaces a structured
-   * failure rather than silently dropping the push.
+   * pack push surface. Receives the validated substrate config and
+   * the workflow-host's pack-push bridge. The default implementation
+   * routes every `pushWorkflowRunPack` call over the bridge as a
+   * `pack.push.request` upstream control frame; the supervisor's
+   * peer handler forwards into the host's `HubLink.pushWorkflowRunPack`
+   * and replies with `pack.push.response`. The substrate config's
+   * `HUB_WS_URL`, `SIDECAR_ID`, and `SIDECAR_TOKEN` are reserved for
+   * a future variant that opens a child-local hub WebSocket directly;
+   * the IPC bridge does not consume them today.
    */
   createHubPackSink?: (config: {
     hubWsUrl: string;
     sidecarId: string;
     sidecarToken: string;
+    packPushBridge: ChildPackPushBridge;
   }) => ChildHubPackSink;
   /**
    * Override the bare-store constructor. Production callers omit this
@@ -230,14 +233,31 @@ export interface SidecarSubstrateFactoryDeps {
   }) => RepoStore;
 }
 
-function defaultCreateHubPackSink(): ChildHubPackSink {
+/**
+ * Default IPC-bridge-backed `ChildHubPackSink`. The sink delegates
+ * every call to the workflow-host's `ChildPackPushBridge`, which mints
+ * a `pushId`, sends a `pack.push.request` upstream control frame, and
+ * resolves the awaiter once the supervisor's matching
+ * `pack.push.response` lands on the downstream control receiver.
+ *
+ * The child's view of the hub is therefore entirely virtual: there is
+ * no hub WebSocket in the child's address space, only the upstream
+ * IPC sender. A wire-side failure on the host (a hub link rejection
+ * or transport error) surfaces here as a rejected `pushWorkflowRunPack`
+ * call carrying the supervisor's structured reason.
+ */
+function defaultCreateHubPackSink(deps: {
+  packPushBridge: ChildPackPushBridge;
+}): ChildHubPackSink {
   return {
-    pushWorkflowRunPack(): Promise<void> {
-      return Promise.reject(
-        new Error(
-          "sidecar workflow-child hub pack sink: child-side hub WebSocket is not wired; the multi-step deploy path's workflow-run pack push cannot reach the hub until the child binary constructs a real `pushWorkflowRunPack` implementation from HUB_WS_URL / SIDECAR_ID / SIDECAR_TOKEN",
-        ),
-      );
+    async pushWorkflowRunPack({ agentAddress, repoId, pack, ref, commitSha }) {
+      await deps.packPushBridge.sendRequest({
+        agentAddress,
+        repoId: { kind: repoId.kind, id: repoId.id },
+        pack,
+        ref,
+        commitSha,
+      });
     },
   };
 }
@@ -353,7 +373,9 @@ export function createSidecarSubstrateFactory(
   deps: SidecarSubstrateFactoryDeps = {},
 ): SubstrateFactory {
   const createHubPackSink =
-    deps.createHubPackSink ?? (() => defaultCreateHubPackSink());
+    deps.createHubPackSink ??
+    ((config) =>
+      defaultCreateHubPackSink({ packPushBridge: config.packPushBridge }));
   const createBareRepoStore =
     deps.createBareRepoStore ??
     (({ dataDir, signingKey }) =>
@@ -409,6 +431,7 @@ export function createSidecarSubstrateFactory(
       hubWsUrl: validated.HUB_WS_URL,
       sidecarId: validated.SIDECAR_ID,
       sidecarToken: validated.SIDECAR_TOKEN,
+      packPushBridge: env.packPushBridge,
     });
     const packClient: WorkflowRunPackClient = createWorkflowRunPackClient({
       substrate: bareStore,
