@@ -52,6 +52,7 @@ import {
   replayProcessingToInbox as defaultReplayProcessingToInbox,
   type Principal,
   type WorkflowRunSupervisorPrincipal,
+  type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
 import { RepoId } from "@intx/types/sidecar";
 import type { CancelOrigin } from "@intx/workflow";
@@ -279,6 +280,22 @@ export type RecycleOpts = {
 };
 
 /**
+ * Raised when a `pendingMerges` entry or a
+ * `markConsumedCompletionWaiters` waiter is rejected because the
+ * cohort it was registered against has been aborted (cohort transition
+ * during a recycle, or a supervisor shutdown). Callers awaiting the
+ * resolved value receive an instance of this error so the failure mode
+ * is recognisable from a generic substrate-merge or markConsumed
+ * failure.
+ */
+export class MergeAbortedError extends Error {
+  constructor(reason: string) {
+    super(`supervisor cohort aborted before completion: ${reason}`);
+    this.name = "MergeAbortedError";
+  }
+}
+
+/**
  * Construct a per-deployment supervisor. All host-specific
  * dependencies are pulled in via `bindings`; nothing in the
  * supervisor reaches into `process.env` or a singleton.
@@ -491,16 +508,25 @@ export function createWorkflowSupervisor(
         });
         return;
       }
-      if (payload.type === "pack.push.request") {
-        // Run the push off the iterator's loop so the iterator can
-        // continue draining other upstream frames (and so the response
-        // ordering follows binding completion rather than blocking
-        // every other upstream frame behind the hub round-trip).
-        void handlePackPushRequest(payload.data).catch((cause) => {
+      if (payload.type === "substrate.write.request") {
+        // Run the write off the iterator's loop so the iterator can
+        // continue draining other upstream frames (notably the
+        // substrate.merge.response that resolves the merge round-trip
+        // for this very write -- if the loop were blocked here, the
+        // merge response could not be consumed and the write would
+        // deadlock).
+        void handleSubstrateWriteRequest(payload.data).catch((cause) => {
           const message =
             cause instanceof Error ? cause.message : String(cause);
-          logger.error`pack.push.request handler crashed: ${message}`;
+          logger.error`substrate.write.request handler crashed: ${message}`;
         });
+        continue;
+      }
+      if (payload.type === "substrate.merge.response") {
+        // Resume the pending merge round-trip with the child's
+        // response. The handler resolves a per-write awaiter inside
+        // the substrate write handler's merge callback.
+        resolveMergeResponse(payload.data);
         continue;
       }
       if (payload.type === "terminal.event") {
@@ -525,86 +551,367 @@ export function createWorkflowSupervisor(
     }
   }
 
-  async function handlePackPushRequest(
-    data: Extract<ControlPayload, { type: "pack.push.request" }>["data"],
+  // Pending merge round-trips keyed by the child's `requestId`. The
+  // substrate-write handler installs an entry under each `requestId`
+  // before emitting `substrate.merge.request` upstream; the matching
+  // `substrate.merge.response` resolves the awaiter so the supervisor's
+  // merge callback continues. The entry stays alive only across one
+  // merge round-trip; the substrate may invoke the callback multiple
+  // times per write (per-repo lock retry semantics), so a fresh
+  // requestId-scoped allocator-per-merge-call is used.
+  type PendingMerge = {
+    resolve: (
+      result:
+        | { ok: true; files: Record<string, string | Uint8Array> }
+        | { ok: false; reason: string },
+    ) => void;
+  };
+  const pendingMerges = new Map<string, PendingMerge>();
+
+  /**
+   * Reject every pending merge round-trip and every
+   * `markConsumed` completion waiter. Invoked on cohort transitions
+   * (shutdown, recycle's `installNewChild`) so closures awaiting these
+   * promises do not outlive the cohort that armed them. Without this,
+   * a `handleSubstrateWriteRequest` mid-merge or a dispatch-loop
+   * caller awaiting `markConsumed` would sit on a resolver that the
+   * dying control channel will never invoke.
+   */
+  function rejectCohortAwaiters(reason: string): void {
+    for (const [requestId, entry] of pendingMerges) {
+      pendingMerges.delete(requestId);
+      entry.resolve({ ok: false, reason: `cohort aborted: ${reason}` });
+    }
+    for (const [runId, waiter] of markConsumedCompletionWaiters.entries()) {
+      markConsumedCompletionWaiters.delete(runId);
+      waiter.reject(
+        new MergeAbortedError(`markConsumed waiter (${runId}): ${reason}`),
+      );
+    }
+  }
+
+  function resolveMergeResponse(
+    data: Extract<ControlPayload, { type: "substrate.merge.response" }>["data"],
+  ): void {
+    const entry = pendingMerges.get(data.requestId);
+    if (entry === undefined) {
+      logger.warn`substrate.merge.response landed with no pending entry; requestId=${data.requestId} dropped`;
+      return;
+    }
+    pendingMerges.delete(data.requestId);
+    if (data.result.ok) {
+      const files: Record<string, string | Uint8Array> = {};
+      for (const file of data.result.files) {
+        files[file.path] = base64ToBytes(file.contentBase64);
+      }
+      entry.resolve({ ok: true, files });
+      return;
+    }
+    entry.resolve({ ok: false, reason: data.result.reason });
+  }
+
+  async function handleSubstrateWriteRequest(
+    data: Extract<ControlPayload, { type: "substrate.write.request" }>["data"],
   ): Promise<void> {
     const controlSender = activeControlSender();
     if (controlSender === null) {
-      // The supervisor is no longer in a phase where it can reply.
-      // Dropping the push silently would corrupt the child's pending
-      // map; the child's IPC pump is by then in a teardown path
-      // alongside the supervisor's, so the dropped response is
-      // observable through the child's process exit.
-      logger.warn`pack.push.request received outside running phase; pushId=${data.pushId} dropped`;
+      logger.warn`substrate.write.request received outside running phase; requestId=${data.requestId} dropped`;
       return;
     }
-    const binding = bindings.pushWorkflowRunPack;
-    if (binding === undefined) {
+    const validatedRepoId = RepoId(data.repoId);
+    if (validatedRepoId instanceof type.errors) {
+      onChildCrash(
+        `substrate.write.request repoId failed validation: ${validatedRepoId.summary}`,
+      );
+      return;
+    }
+    // The child proxies workflow-run writes; an inbound request for a
+    // different repo kind is a protocol violation. The supervisor owns
+    // the write contract for the workflow-run repo specifically.
+    if (validatedRepoId.kind !== "workflow-run") {
       await controlSender.send({
-        type: "pack.push.response",
+        type: "substrate.write.response",
         data: {
-          pushId: data.pushId,
+          requestId: data.requestId,
           result: {
             ok: false,
-            reason:
-              "supervisor: pushWorkflowRunPack binding not configured on WorkflowSupervisorBindings",
+            reason: `supervisor substrate.write.request: repoId.kind must be "workflow-run", got ${JSON.stringify(validatedRepoId.kind)}`,
           },
         },
       });
       return;
     }
-    const validatedRepoId = RepoId(data.repoId);
-    if (validatedRepoId instanceof type.errors) {
-      // The IPC envelope already validated the structural shape, but
-      // the IPC schema keeps `kind` as a bare string so it does not
-      // depend on the `RepoKind` enum's value. Narrowing here turns a
-      // bogus kind into a protocol-violation crash rather than letting
-      // a malformed `repoId` reach the host's `HubLink`.
-      onChildCrash(
-        `pack.push.request repoId failed validation: ${validatedRepoId.summary}`,
+    // The substrate principal authoring the proxied write is the
+    // `workflow-process` principal scoped to this supervisor's
+    // deployment. The child has no write authority of its own (it
+    // holds no private key on the host process), but the workflow-run
+    // kind handler is the authority that accepts the
+    // `workflow-process` principal for `runs/<runId>/` writes
+    // (including the origin-specific CancelRequested checks that pin
+    // `self` to `workflow-process`). Authoring proxied writes under
+    // this kind preserves the on-disk audit semantics the original
+    // child-direct-write path produced; the only architectural change
+    // is which process owns the substrate write contract.
+    const writePrincipal: WorkflowRunWorkflowProcessPrincipal = {
+      kind: "workflow-process",
+      deploymentId: bindings.deploymentId,
+    };
+    // Capture the prospective files from each merge round-trip so
+    // the post-commit inspection below can detect terminal-event
+    // writes and synchronously trigger the dispatch loop's
+    // markConsumed before the substrate.write.response unblocks the
+    // child. Holding the response gates the child's
+    // runtime-body progress on the inbox transition landing,
+    // closing the window where a downstream consumer observes
+    // RunCompleted ahead of the matching consumed/ entry on this
+    // supervisor (the cross-process hub-pack ordering is still
+    // racy, but the local supervisor's state is self-consistent
+    // at the response boundary).
+    let lastMergedFiles: Record<string, string | Uint8Array> | null = null;
+    try {
+      const { commitSha } = await bindings.repoStore.writeTreePreservingPrefix(
+        writePrincipal,
+        validatedRepoId,
+        data.ref,
+        {
+          preservePrefix: data.preservePrefix,
+          message: data.message,
+          merge: async (existing) => {
+            const sender = activeControlSender();
+            if (sender === null) {
+              throw new Error(
+                "supervisor substrate.write.request: control channel unavailable for merge round-trip",
+              );
+            }
+            const result = await new Promise<
+              | { ok: true; files: Record<string, string | Uint8Array> }
+              | { ok: false; reason: string }
+            >((resolve) => {
+              pendingMerges.set(data.requestId, { resolve });
+              const wireExisting: {
+                path: string;
+                contentBase64: string;
+              }[] = [];
+              for (const [path, bytes] of existing) {
+                wireExisting.push({
+                  path,
+                  contentBase64: bytesToBase64(bytes),
+                });
+              }
+              void sender
+                .send({
+                  type: "substrate.merge.request",
+                  data: {
+                    requestId: data.requestId,
+                    existing: wireExisting,
+                  },
+                })
+                .catch((cause) => {
+                  pendingMerges.delete(data.requestId);
+                  const reason =
+                    cause instanceof Error ? cause.message : String(cause);
+                  resolve({
+                    ok: false,
+                    reason: `supervisor substrate.merge.request send failed: ${reason}`,
+                  });
+                });
+            });
+            if (!result.ok) {
+              throw new Error(
+                `supervisor substrate.write.request: child merge failed: ${result.reason}`,
+              );
+            }
+            lastMergedFiles = result.files;
+            return result.files;
+          },
+        },
       );
-      return;
-    }
-    let pack: Uint8Array;
-    try {
-      pack = decodeBase64Pack(data.packBase64);
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      // A malformed base64 payload is a child protocol violation; the
-      // supervisor's contract with the child is that the wire shape
-      // arrives well-formed (the IPC envelope already validated the
-      // typed shape). Crash the receiver so the child's process exit
-      // surfaces a structured failure rather than hanging on a
-      // never-resolved pending push.
-      onChildCrash(`pack.push.request packBase64 decode failed: ${message}`);
-      return;
-    }
-    try {
-      await binding({
-        agentAddress: data.agentAddress,
-        repoId: validatedRepoId,
-        pack,
-        ref: data.ref,
-        commitSha: data.commitSha,
+      if (lastMergedFiles !== null) {
+        await synchronouslyDispatchTerminalWrite(
+          data.preservePrefix,
+          lastMergedFiles,
+        );
+      }
+      await controlSender.send({
+        type: "substrate.write.response",
+        data: {
+          requestId: data.requestId,
+          result: { ok: true, commitSha },
+        },
       });
     } catch (cause) {
+      // Clean up any merge awaiter that the substrate may not have
+      // reached (e.g. the write threw before invoking the merge
+      // callback at all, leaving the map empty -- safe), and the
+      // common case where the write reached merge but then threw
+      // downstream (the awaiter is already resolved by the merge
+      // reply path, so the delete here is a no-op).
+      pendingMerges.delete(data.requestId);
       const reason = cause instanceof Error ? cause.message : String(cause);
       await controlSender.send({
-        type: "pack.push.response",
+        type: "substrate.write.response",
         data: {
-          pushId: data.pushId,
+          requestId: data.requestId,
           result: { ok: false, reason },
         },
       });
+    }
+  }
+
+  // Per-runId synchronization between the substrate-write handler
+  // and the dispatch loop's `markConsumed`. The handler arms a
+  // waiter when it commits a terminal-event blob and waits for the
+  // dispatch loop to fire `resolveMarkConsumedWaiter(runId)` before
+  // sending the substrate.write.response back to the child.
+  const markConsumedCompletionWaiters = new Map<
+    string,
+    { resolve: () => void; reject: (err: Error) => void }
+  >();
+
+  function resolveMarkConsumedWaiter(runId: string): void {
+    const waiter = markConsumedCompletionWaiters.get(runId);
+    if (waiter === undefined) return;
+    markConsumedCompletionWaiters.delete(runId);
+    waiter.resolve();
+  }
+
+  // Regex matching `runs/<runId>/events/<seq>.json` paths the proxy
+  // write writes for workflow events.
+  const RUN_EVENT_PATH_RE = /^runs\/([^/]+)\/events\/[0-9]+\.json$/;
+  const TERMINAL_EVENT_TYPES = new Set([
+    "RunCompleted",
+    "RunFailed",
+    "RunCancelled",
+  ]);
+
+  /**
+   * If the supplied merged-files set contains a terminal event blob
+   * for any runId in the active processing/ set, wait for the
+   * dispatch loop's markConsumed to settle before sending the
+   * substrate.write.response. The notification path is the
+   * `notifyMarkConsumed` hook the dispatch loop fires at the end of
+   * dispatchOne; the wait here is per-runId so multiple runs can
+   * proceed concurrently if a future dispatch loop ever processes
+   * more than one mail in parallel.
+   */
+  async function synchronouslyDispatchTerminalWrite(
+    preservePrefix: string,
+    mergedFiles: Record<string, string | Uint8Array>,
+  ): Promise<void> {
+    // The preservePrefix shape for run-event writes is
+    // `runs/<runId>/events/`; the substrate accepts any prefix that
+    // ends with `/`, so a write whose prefix does not match the
+    // runs/-events shape is not a terminal-event write and we
+    // short-circuit.
+    if (!preservePrefix.startsWith("runs/")) return;
+    let runId: string | null = null;
+    let isTerminal = false;
+    for (const [path, content] of Object.entries(mergedFiles)) {
+      const match = RUN_EVENT_PATH_RE.exec(path);
+      if (match === null) continue;
+      const fromPath = match[1];
+      if (fromPath === undefined) continue;
+      const bytes =
+        typeof content === "string"
+          ? new TextEncoder().encode(content)
+          : content;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(new TextDecoder().decode(bytes));
+      } catch {
+        continue;
+      }
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        !("type" in parsed)
+      ) {
+        continue;
+      }
+      const t = (parsed as { type?: unknown }).type;
+      if (typeof t !== "string") continue;
+      if (TERMINAL_EVENT_TYPES.has(t)) {
+        runId = fromPath;
+        isTerminal = true;
+      }
+    }
+    if (!isTerminal || runId === null) return;
+    if (!inFlightRuns.has(runId)) {
       return;
     }
-    await controlSender.send({
-      type: "pack.push.response",
-      data: {
-        pushId: data.pushId,
-        result: { ok: true },
-      },
+    const completed = new Promise<void>((resolve, reject) => {
+      markConsumedCompletionWaiters.set(runId, { resolve, reject });
     });
+    const broadcaster = activeTerminalBroadcaster();
+    if (broadcaster !== null) {
+      const synthetic = synthesizeTerminalEvent(mergedFiles, runId);
+      if (synthetic !== null) {
+        broadcaster.notify(runId, synthetic);
+      }
+    }
+    await completed;
+  }
+
+  function synthesizeTerminalEvent(
+    files: Record<string, string | Uint8Array>,
+    runId: string,
+  ): TerminalRunEvent | null {
+    for (const [path, content] of Object.entries(files)) {
+      const match = RUN_EVENT_PATH_RE.exec(path);
+      if (match === null) continue;
+      if (match[1] !== runId) continue;
+      const bytes =
+        typeof content === "string"
+          ? new TextEncoder().encode(content)
+          : content;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(new TextDecoder().decode(bytes));
+      } catch {
+        continue;
+      }
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        !("type" in parsed) ||
+        !("seq" in parsed)
+      ) {
+        continue;
+      }
+      const body = parsed as {
+        type?: unknown;
+        seq?: unknown;
+        at?: unknown;
+        error?: { message?: unknown };
+      };
+      if (typeof body.seq !== "number") continue;
+      const at =
+        typeof body.at === "string" ? body.at : new Date().toISOString();
+      if (body.type === "RunCompleted") {
+        return { kind: "RunCompleted", seq: body.seq, at };
+      }
+      if (body.type === "RunCancelled") {
+        return { kind: "RunCancelled", seq: body.seq, at };
+      }
+      if (body.type === "RunFailed") {
+        // The wire schema makes `error.message` required when the event
+        // type is `RunFailed`. A blob that doesn't carry one is a
+        // contract violation upstream of the supervisor; coercing it
+        // to an empty string would silently hide the producer bug.
+        if (typeof body.error?.message !== "string") {
+          throw new Error(
+            `synthesizeTerminalEvent: RunFailed blob at ${path} missing required error.message`,
+          );
+        }
+        return {
+          kind: "RunFailed",
+          seq: body.seq,
+          at,
+          error: { message: body.error.message },
+        };
+      }
+    }
+    return null;
   }
 
   function activeControlSender(): ControlChannelSender | null {
@@ -1041,6 +1348,7 @@ export function createWorkflowSupervisor(
       // The cohort tore down before the terminal event arrived (or
       // alongside it). Skip `markConsumed` so the recycle path's
       // drain-side replay can reclaim the processing entry.
+      resolveMarkConsumedWaiter(runId);
       return false;
     }
     try {
@@ -1059,6 +1367,7 @@ export function createWorkflowSupervisor(
       const message = cause instanceof Error ? cause.message : String(cause);
       logger.error`markConsumed failed for run ${runId}: ${message}`;
     }
+    resolveMarkConsumedWaiter(runId);
     return true;
   }
 
@@ -1183,6 +1492,13 @@ export function createWorkflowSupervisor(
       prior.phase === "recycling"
     ) {
       prior.terminalCohortAbort.abort();
+      // Reject every pending merge round-trip and markConsumed waiter
+      // so handler closures awaiting them (including fire-and-forget
+      // `handleSubstrateWriteRequest` instances) cannot outlive the
+      // dying cohort. Without this, the `await new Promise` inside
+      // each handler would sit forever on a resolver the dying control
+      // channel will never invoke.
+      rejectCohortAwaiters("shutdown");
       // Dispose the cohort broadcaster so any minted iterator settles
       // with `done: true` -- the dispatch loop's `waitForRunTerminal`
       // and any drainTimeout watcher unblock through the same shutdown
@@ -1404,6 +1720,12 @@ export function createWorkflowSupervisor(
               accumulator.stop();
             }
             drainAccumulators.clear();
+            // Reject every pending merge round-trip and markConsumed
+            // waiter registered against the dying cohort so handler
+            // closures cannot survive the kill/respawn gap. The new
+            // child will re-issue substrate writes through fresh
+            // handlers under the new cohort's channel.
+            rejectCohortAwaiters("recycle");
             // Dispose the prior cohort's broadcaster so any minted
             // iterator still held by the aborted dispatch loop or a
             // stopped accumulator settles with `done: true`. The next
@@ -1788,19 +2110,10 @@ function terminalEventFromPayload(
   };
 }
 
-/**
- * Decode the base64 form the child sent in `pack.push.request.data.packBase64`
- * into the raw pack bytes the host's `pushWorkflowRunPack` binding
- * consumes. Empty / malformed inputs throw so the supervisor's handler
- * surfaces the failure as a protocol violation.
- */
-function decodeBase64Pack(packBase64: string): Uint8Array {
-  if (packBase64.length === 0) {
-    throw new Error("packBase64 must be a non-empty string");
-  }
-  if (!/^[A-Za-z0-9+/=]+$/.test(packBase64)) {
-    throw new Error("packBase64 contains non-base64 characters");
-  }
-  const buf = Buffer.from(packBase64, "base64");
-  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+function bytesToBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64");
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  return new Uint8Array(Buffer.from(value, "base64"));
 }

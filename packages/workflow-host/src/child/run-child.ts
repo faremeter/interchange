@@ -314,27 +314,32 @@ export interface RunWorkflowChildOpts {
    */
   upstreamSender?: ControlChannelSender;
   /**
-   * Optional pack-push bridge whose `handleResponse` the child's
-   * control loop invokes when a `pack.push.response` frame lands.
-   * When omitted, an inbound `pack.push.response` frame is logged at
-   * warn-level and dropped -- the wire shape is well-formed but
-   * nobody on the child side asked for it. The pre-built bridge is
-   * the path the process-shaped wrapper takes so the substrate
-   * factory's `ChildHubPackSink` can resolve against it.
+   * Optional substrate-write bridge whose `handleMergeRequest` and
+   * `handleWriteResponse` the child's control loop invokes when the
+   * matching downstream frames land. When omitted, inbound
+   * `substrate.merge.request` / `substrate.write.response` frames are
+   * logged at warn-level and dropped -- the wire shapes are
+   * well-formed but nobody on the child side asked for them. The
+   * pre-built bridge is the path the process-shaped wrapper takes so
+   * the substrate factory's proxy `RepoStore` can resolve writes
+   * against it.
    */
-  packPushBridge?: PackPushResponseSink;
+  substrateWriteBridge?: SubstrateWriteResponseSink;
 }
 
 /**
- * Narrow interface the child's control loop calls when a
- * `pack.push.response` frame arrives, plus the `cancelAll` shutdown
+ * Narrow interface the child's control loop calls when downstream
+ * substrate-write frames arrive, plus the `cancelAll` shutdown
  * surface the loop invokes on any exit path. Decouples the loop from
- * the bridge's `sendRequest` side so a test can drop in a recording
- * sink without standing up the full bridge.
+ * the bridge's `submit` side so a test can drop in a recording sink
+ * without standing up the full bridge.
  */
-export interface PackPushResponseSink {
-  handleResponse(
-    data: Extract<ControlPayload, { type: "pack.push.response" }>["data"],
+export interface SubstrateWriteResponseSink {
+  handleMergeRequest(
+    data: Extract<ControlPayload, { type: "substrate.merge.request" }>["data"],
+  ): void;
+  handleWriteResponse(
+    data: Extract<ControlPayload, { type: "substrate.write.response" }>["data"],
   ): void;
   cancelAll(reason: string): void;
 }
@@ -509,25 +514,25 @@ export async function runWorkflowChild(
           upstreamSender,
           drainController,
           triggeredRunIds,
-          ...(opts.packPushBridge !== undefined
-            ? { packPushBridge: opts.packPushBridge }
+          ...(opts.substrateWriteBridge !== undefined
+            ? { substrateWriteBridge: opts.substrateWriteBridge }
             : {}),
         })
       ) {
         // shutdown received; the shutdown case already cancelled any
-        // pending pack pushes before returning true.
+        // pending substrate writes before returning true.
         break;
       }
     }
   } finally {
     // Any exit path -- clean (iterator end), dirty (thrown error),
     // shutdown (already cancelled, repeat is a no-op on an empty map)
-    // -- cancels every still-pending pack push so the substrate write
-    // that fired the push surfaces a structured rejection rather than
-    // awaiting indefinitely on a control channel the supervisor has
-    // already torn down.
-    if (opts.packPushBridge !== undefined) {
-      opts.packPushBridge.cancelAll("workflow-child control loop exited");
+    // -- cancels every still-pending substrate write so the runtime
+    // call site that fired the write surfaces a structured rejection
+    // rather than awaiting indefinitely on a control channel the
+    // supervisor has already torn down.
+    if (opts.substrateWriteBridge !== undefined) {
+      opts.substrateWriteBridge.cancelAll("workflow-child control loop exited");
     }
   }
 
@@ -559,7 +564,7 @@ async function handleControlPayload(
     upstreamSender: ControlChannelSender;
     drainController: DrainController;
     triggeredRunIds: string[];
-    packPushBridge?: PackPushResponseSink;
+    substrateWriteBridge?: SubstrateWriteResponseSink;
   },
 ): Promise<boolean> {
   switch (payload.type) {
@@ -695,8 +700,8 @@ async function handleControlPayload(
     }
     case "shutdown": {
       logger.info`workflow-child shutdown requested (${payload.data.reason})`;
-      if (ctx.packPushBridge !== undefined) {
-        ctx.packPushBridge.cancelAll("workflow-child shutdown requested");
+      if (ctx.substrateWriteBridge !== undefined) {
+        ctx.substrateWriteBridge.cancelAll("workflow-child shutdown requested");
       }
       return true;
     }
@@ -720,13 +725,21 @@ async function handleControlPayload(
         "workflow-child received a `recycle.request` frame on its inbound control channel; this is a child-only upstream payload",
       );
     }
-    case "pack.push.request": {
-      // `pack.push.request` is the child->supervisor pack-push path;
-      // receiving one on the child's downstream side is a protocol
-      // violation in the same shape as a downstream `ready` or
-      // `recycle.request`.
+    case "substrate.write.request": {
+      // `substrate.write.request` is the child->supervisor proxied
+      // write path; receiving one on the child's downstream side is a
+      // protocol violation in the same shape as a downstream `ready`.
       throw new Error(
-        "workflow-child received a `pack.push.request` frame on its inbound control channel; this is a child-only upstream payload",
+        "workflow-child received a `substrate.write.request` frame on its inbound control channel; this is a child-only upstream payload",
+      );
+    }
+    case "substrate.merge.response": {
+      // `substrate.merge.response` is the child->supervisor merge
+      // result frame; receiving one on the child's downstream side is
+      // a protocol violation in the same shape as a downstream
+      // `ready`.
+      throw new Error(
+        "workflow-child received a `substrate.merge.response` frame on its inbound control channel; this is a child-only upstream payload",
       );
     }
     case "terminal.event": {
@@ -738,17 +751,28 @@ async function handleControlPayload(
         "workflow-child received a `terminal.event` frame on its inbound control channel; this is a child-only upstream payload",
       );
     }
-    case "pack.push.response": {
-      // Route the response to the pack-push bridge if one is wired.
-      // A response that lands without an active bridge means a stale
-      // upstream frame for which no awaiter exists; log and drop
-      // rather than throwing so the runtime keeps progressing on the
-      // legitimate frames around it.
-      if (ctx.packPushBridge === undefined) {
-        logger.warn`workflow-child pack.push.response received without a bridge wired; pushId=${payload.data.pushId} dropped`;
+    case "substrate.merge.request": {
+      // Route the request to the substrate-write bridge if one is
+      // wired. A request that lands without an active bridge means a
+      // stale supervisor frame for which no awaiter exists; log and
+      // drop rather than throwing so the runtime keeps progressing.
+      if (ctx.substrateWriteBridge === undefined) {
+        logger.warn`workflow-child substrate.merge.request received without a bridge wired; requestId=${payload.data.requestId} dropped`;
         return false;
       }
-      ctx.packPushBridge.handleResponse(payload.data);
+      ctx.substrateWriteBridge.handleMergeRequest(payload.data);
+      return false;
+    }
+    case "substrate.write.response": {
+      // Route the response to the substrate-write bridge if one is
+      // wired. A response that lands without an active bridge means a
+      // stale supervisor frame for which no awaiter exists; log and
+      // drop rather than throwing so the runtime keeps progressing.
+      if (ctx.substrateWriteBridge === undefined) {
+        logger.warn`workflow-child substrate.write.response received without a bridge wired; requestId=${payload.data.requestId} dropped`;
+        return false;
+      }
+      ctx.substrateWriteBridge.handleWriteResponse(payload.data);
       return false;
     }
   }
@@ -956,156 +980,3 @@ function defaultNewId(prefix: string): string {
 
 /** Re-export the hash helper so callers can verify the snapshot's pin. */
 export { hashGrants };
-
-/**
- * Result the child's pack-push bridge resolves with for one pack push
- * call. The discriminator mirrors the wire-side
- * `pack.push.response.data.result` shape so a host adapter can pass it
- * through to its sink contract without an intermediate translation.
- */
-export type PackPushResult = { ok: true } | { ok: false; reason: string };
-
-/**
- * Arguments the bridge takes per pack push. The shape mirrors
- * `pack.push.request.data` but with the pack as raw bytes; the bridge
- * itself owns the base64 encoding the wire format requires.
- */
-export interface PackPushRequest {
-  agentAddress: string;
-  repoId: { kind: string; id: string };
-  pack: Uint8Array;
-  ref: string;
-  commitSha: string;
-}
-
-/**
- * Public surface of the child's pack-push bridge. `sendRequest` mints
- * a `pushId`, emits the upstream frame, and resolves once the
- * supervisor's response lands. The same object's `handleResponse` is
- * the receiver-side hook the child's control loop invokes when a
- * `pack.push.response` frame arrives. `pendingCount` is a test
- * affordance for asserting on the pending map without interleaving
- * timing.
- */
-export interface ChildPackPushBridge extends PackPushResponseSink {
-  sendRequest(req: PackPushRequest): Promise<void>;
-  readonly pendingCount: number;
-  /**
-   * Reject every pending push with a structured error and clear the
-   * pending map. Wired into the child's clean-and-dirty exit paths so
-   * a supervisor crash, control-channel drop, or in-flight shutdown
-   * does not leak an awaiter on the substrate write that fired the
-   * push. The reason rides verbatim into the rejection message so the
-   * upstream caller (the workflow-run commit path) can surface a
-   * meaningful failure rather than waiting forever.
-   */
-  cancelAll(reason: string): void;
-}
-
-export interface CreateChildPackPushBridgeOpts {
-  upstreamSender: ControlChannelSender;
-  /**
-   * Optional `pushId` allocator. Production wires a per-instance
-   * monotonic counter combined with a random suffix; tests inject a
-   * deterministic factory so the upstream frame's `pushId` is
-   * predictable.
-   */
-  allocatePushId?: () => string;
-}
-
-/**
- * Construct the child-side pack-push bridge over the supplied upstream
- * sender. Pending pushes live in a map keyed by `pushId`; the map is
- * the only shared state between `sendRequest` and `handleResponse`.
- *
- * Reject behavior:
- *   - A `{ ok: false, reason }` response rejects the pending awaiter
- *     with the supplied reason; the host's sink surfaces the error to
- *     the workflow-run commit path per defensive-coding.
- *   - A `handleResponse` for an unknown `pushId` is dropped after a
- *     logged warning -- a stale supervisor reply landing after the
- *     awaiter is gone would otherwise reject a `Promise.resolve()`d
- *     awaiter; today the map's entries live for the lifetime of the
- *     call so a miss here is a programming bug worth surfacing in the
- *     warning channel.
- */
-export function createChildPackPushBridge(
-  opts: CreateChildPackPushBridgeOpts,
-): ChildPackPushBridge {
-  type PendingEntry = {
-    resolve: () => void;
-    reject: (err: Error) => void;
-  };
-  const pending = new Map<string, PendingEntry>();
-  const allocate = opts.allocatePushId ?? defaultPushIdAllocator();
-
-  return {
-    get pendingCount() {
-      return pending.size;
-    },
-    async sendRequest(req: PackPushRequest): Promise<void> {
-      const pushId = allocate();
-      const packBase64 = Buffer.from(req.pack).toString("base64");
-      const resultPromise = new Promise<void>((resolve, reject) => {
-        pending.set(pushId, { resolve, reject });
-      });
-      try {
-        await opts.upstreamSender.send({
-          type: "pack.push.request",
-          data: {
-            pushId,
-            agentAddress: req.agentAddress,
-            repoId: { kind: req.repoId.kind, id: req.repoId.id },
-            ref: req.ref,
-            commitSha: req.commitSha,
-            packBase64,
-          },
-        });
-      } catch (cause) {
-        pending.delete(pushId);
-        const message = cause instanceof Error ? cause.message : String(cause);
-        throw new Error(
-          `workflow-child pack push: upstream send failed for pushId ${pushId}: ${message}`,
-          { cause },
-        );
-      }
-      return resultPromise;
-    },
-    handleResponse(data) {
-      const entry = pending.get(data.pushId);
-      if (entry === undefined) {
-        logger.warn`workflow-child pack.push.response landed with no pending entry; pushId=${data.pushId} dropped`;
-        return;
-      }
-      pending.delete(data.pushId);
-      if (data.result.ok) {
-        entry.resolve();
-        return;
-      }
-      entry.reject(
-        new Error(
-          `workflow-child pack push (pushId=${data.pushId}) rejected by supervisor: ${data.result.reason}`,
-        ),
-      );
-    },
-    cancelAll(reason: string) {
-      for (const [pushId, entry] of pending) {
-        entry.reject(
-          new Error(
-            `workflow-child pack push (pushId=${pushId}) cancelled: ${reason}`,
-          ),
-        );
-      }
-      pending.clear();
-    },
-  };
-}
-
-function defaultPushIdAllocator(): () => string {
-  let counter = 0;
-  return () => {
-    counter += 1;
-    const rand = Math.random().toString(36).slice(2, 10);
-    return `pp-${String(counter)}-${rand}`;
-  };
-}

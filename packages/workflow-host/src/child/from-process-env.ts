@@ -23,12 +23,14 @@ import { generateKeyPair } from "@intx/crypto-node";
 
 import { parseSpawnTimeEnv, type SpawnTimeEnv } from "./env-bootstrap";
 import {
-  createChildPackPushBridge,
   runWorkflowChild,
-  type ChildPackPushBridge,
   type RunWorkflowChildBindings,
   type RunWorkflowChildResult,
 } from "./run-child";
+import {
+  createChildSubstrateWriteBridge,
+  type ChildSubstrateWriteBridge,
+} from "./substrate-write-bridge";
 import {
   createControlChannelSender,
   type FrameWriter,
@@ -71,15 +73,20 @@ export interface SubstrateFactoryEnv {
   readonly substrateConfig: Readonly<Record<string, string>>;
   /**
    * Child-side IPC bridge over the upstream control channel for the
-   * workflow-run pack push surface. The substrate factory uses this
-   * to construct its `ChildHubPackSink` so the child does not have
-   * to open its own hub WebSocket. The bridge's `sendRequest` sends a
-   * `pack.push.request` upstream control frame; the supervisor's
-   * handler forwards via the host's `HubLink.pushWorkflowRunPack` and
-   * replies with a matching `pack.push.response` the bridge resolves
-   * the awaiter against.
+   * workflow-run substrate-write surface. The substrate factory uses
+   * this to construct its proxy `RepoStore`, whose
+   * `writeTreePreservingPrefix` forwards over IPC into the
+   * supervisor's substrate. The bridge's `submit` sends a
+   * `substrate.write.request` upstream control frame; the supervisor
+   * runs its own underlying `writeTreePreservingPrefix` (which fires
+   * the boot-edge pack-push wrap on success) and replies with a
+   * matching `substrate.write.response` the bridge resolves the
+   * awaiter against. The supervisor's merge callback runs as a
+   * `substrate.merge.request` / `substrate.merge.response` pair so
+   * the child's per-write merge closure stays in the child's address
+   * space.
    */
-  readonly packPushBridge: ChildPackPushBridge;
+  readonly substrateWriteBridge: ChildSubstrateWriteBridge;
 }
 
 /**
@@ -170,8 +177,14 @@ export async function runWorkflowChildFromProcessEnv(
     channelId: spawn.channelId,
     writer: controlWriter,
   });
-  const packPushBridge = createChildPackPushBridge({ upstreamSender });
-  const bindings = await factory({ spawn, substrateConfig, packPushBridge });
+  const substrateWriteBridge = createChildSubstrateWriteBridge({
+    upstreamSender,
+  });
+  const bindings = await factory({
+    spawn,
+    substrateConfig,
+    substrateWriteBridge,
+  });
   return runWorkflowChild({
     env: spawn,
     controlReader,
@@ -186,7 +199,7 @@ export async function runWorkflowChildFromProcessEnv(
       ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair),
     },
     upstreamSender,
-    packPushBridge,
+    substrateWriteBridge,
   });
 }
 

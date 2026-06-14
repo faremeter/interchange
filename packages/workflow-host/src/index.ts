@@ -126,22 +126,21 @@ export {
 
 export {
   EVENT_CHANNEL_FD,
-  createChildPackPushBridge,
+  createChildSubstrateWriteBridge,
   createCredentialsBackedAuthorize,
+  createProxyWorkflowRunRepoStore,
   discoverInFlightRuns,
   parseSpawnTimeEnv,
   runWorkflowChild,
   runWorkflowChildFromProcessEnv,
-  type ChildPackPushBridge,
-  type CreateChildPackPushBridgeOpts,
+  type ChildSubstrateWriteBridge,
+  type CreateChildSubstrateWriteBridgeOpts,
+  type CreateProxyWorkflowRunRepoStoreOpts,
   type CredentialsSnapshotRef,
   type DiscoverRunsOpts,
   type DiscoveredRun,
   type DrainController,
   type GrantEvaluator,
-  type PackPushRequest,
-  type PackPushResponseSink,
-  type PackPushResult,
   type RunWorkflowChildBindings,
   type RunWorkflowChildFromProcessEnvOpts,
   type RunWorkflowChildOpts,
@@ -149,6 +148,8 @@ export {
   type SpawnTimeEnv,
   type SubstrateFactory,
   type SubstrateFactoryEnv,
+  type SubstrateWriteRequest,
+  type SubstrateWriteResponseSink,
 } from "./child/index";
 
 export {

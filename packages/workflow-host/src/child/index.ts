@@ -1,21 +1,28 @@
 export {
-  createChildPackPushBridge,
   createCredentialsBackedAuthorize,
   hashGrants,
   runWorkflowChild,
-  type ChildPackPushBridge,
   type ChildStepInvoker,
-  type CreateChildPackPushBridgeOpts,
   type CredentialsSnapshotRef,
   type DrainController,
   type GrantEvaluator,
-  type PackPushRequest,
-  type PackPushResponseSink,
-  type PackPushResult,
   type RunWorkflowChildBindings,
   type RunWorkflowChildOpts,
   type RunWorkflowChildResult,
+  type SubstrateWriteResponseSink,
 } from "./run-child";
+
+export {
+  createChildSubstrateWriteBridge,
+  type ChildSubstrateWriteBridge,
+  type CreateChildSubstrateWriteBridgeOpts,
+  type SubstrateWriteRequest,
+} from "./substrate-write-bridge";
+
+export {
+  createProxyWorkflowRunRepoStore,
+  type CreateProxyWorkflowRunRepoStoreOpts,
+} from "./proxy-repo-store";
 
 export { parseSpawnTimeEnv, type SpawnTimeEnv } from "./env-bootstrap";
 

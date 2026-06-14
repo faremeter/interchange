@@ -858,64 +858,45 @@ describe("Payload union disjointness", () => {
   });
 });
 
-describe("pack.push.request payload validation", () => {
-  test("accepts a well-formed pack.push.request", () => {
+describe("substrate.write.request payload validation", () => {
+  test("accepts a well-formed substrate.write.request", () => {
     const payload = {
-      type: "pack.push.request",
+      type: "substrate.write.request",
       data: {
-        pushId: "pp-1-abc",
-        agentAddress: "agent-1@example.com",
+        requestId: "sw-1-abc",
         repoId: { kind: "workflow-run", id: "dep-1" },
         ref: "refs/heads/main",
-        commitSha: "deadbeef",
-        packBase64: "AAEC",
+        preservePrefix: "runs/run-1/events/",
+        message: "append event",
       },
     };
     const validated = ControlPayload(payload);
     expect(validated instanceof type.errors).toBe(false);
   });
 
-  test("rejects a pack.push.request missing pushId", () => {
+  test("rejects a substrate.write.request missing requestId", () => {
     const payload = {
-      type: "pack.push.request",
+      type: "substrate.write.request",
       data: {
-        agentAddress: "agent-1@example.com",
         repoId: { kind: "workflow-run", id: "dep-1" },
         ref: "refs/heads/main",
-        commitSha: "deadbeef",
-        packBase64: "AAEC",
+        preservePrefix: "runs/run-1/events/",
+        message: "append event",
       },
     };
     const validated = ControlPayload(payload);
     expect(validated instanceof type.errors).toBe(true);
   });
 
-  test("rejects a pack.push.request with non-string commitSha", () => {
+  test("rejects a substrate.write.request with a malformed repoId", () => {
     const payload = {
-      type: "pack.push.request",
+      type: "substrate.write.request",
       data: {
-        pushId: "pp-1",
-        agentAddress: "agent-1@example.com",
-        repoId: { kind: "workflow-run", id: "dep-1" },
-        ref: "refs/heads/main",
-        commitSha: 42,
-        packBase64: "AAEC",
-      },
-    };
-    const validated = ControlPayload(payload);
-    expect(validated instanceof type.errors).toBe(true);
-  });
-
-  test("rejects a pack.push.request with a malformed repoId", () => {
-    const payload = {
-      type: "pack.push.request",
-      data: {
-        pushId: "pp-1",
-        agentAddress: "agent-1@example.com",
+        requestId: "sw-1",
         repoId: { kind: "workflow-run" },
         ref: "refs/heads/main",
-        commitSha: "deadbeef",
-        packBase64: "AAEC",
+        preservePrefix: "runs/run-1/events/",
+        message: "append event",
       },
     };
     const validated = ControlPayload(payload);
@@ -923,50 +904,97 @@ describe("pack.push.request payload validation", () => {
   });
 });
 
-describe("pack.push.response payload validation", () => {
-  test("accepts ok=true response", () => {
+describe("substrate.merge.request payload validation", () => {
+  test("accepts a well-formed substrate.merge.request", () => {
     const payload = {
-      type: "pack.push.response",
+      type: "substrate.merge.request",
       data: {
-        pushId: "pp-1-abc",
-        result: { ok: true },
+        requestId: "sw-1-abc",
+        existing: [
+          {
+            path: "runs/run-1/events/1.json",
+            contentBase64: "eyJzZXEiOjF9",
+          },
+        ],
       },
     };
     const validated = ControlPayload(payload);
     expect(validated instanceof type.errors).toBe(false);
   });
 
-  test("accepts ok=false response with a reason", () => {
+  test("accepts an empty existing array", () => {
     const payload = {
-      type: "pack.push.response",
+      type: "substrate.merge.request",
+      data: { requestId: "sw-1-abc", existing: [] },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(false);
+  });
+});
+
+describe("substrate.merge.response payload validation", () => {
+  test("accepts ok=true response with files", () => {
+    const payload = {
+      type: "substrate.merge.response",
       data: {
-        pushId: "pp-1-abc",
-        result: { ok: false, reason: "hub rejected" },
+        requestId: "sw-1-abc",
+        result: {
+          ok: true,
+          files: [
+            {
+              path: "runs/run-1/events/1.json",
+              contentBase64: "eyJzZXEiOjF9",
+            },
+          ],
+        },
       },
     };
     const validated = ControlPayload(payload);
     expect(validated instanceof type.errors).toBe(false);
   });
 
-  test("rejects ok=false without a reason", () => {
+  test("accepts ok=false response with reason", () => {
     const payload = {
-      type: "pack.push.response",
+      type: "substrate.merge.response",
       data: {
-        pushId: "pp-1-abc",
-        result: { ok: false },
+        requestId: "sw-1-abc",
+        result: { ok: false, reason: "merge failed" },
       },
     };
     const validated = ControlPayload(payload);
-    expect(validated instanceof type.errors).toBe(true);
+    expect(validated instanceof type.errors).toBe(false);
+  });
+});
+
+describe("substrate.write.response payload validation", () => {
+  test("accepts ok=true response with commitSha", () => {
+    const payload = {
+      type: "substrate.write.response",
+      data: {
+        requestId: "sw-1-abc",
+        result: { ok: true, commitSha: "deadbeef" },
+      },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(false);
   });
 
-  test("rejects an unknown discriminator in result", () => {
+  test("accepts ok=false response with reason", () => {
     const payload = {
-      type: "pack.push.response",
+      type: "substrate.write.response",
       data: {
-        pushId: "pp-1-abc",
-        result: { ok: "maybe" },
+        requestId: "sw-1-abc",
+        result: { ok: false, reason: "substrate rejected" },
       },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(false);
+  });
+
+  test("rejects ok=true without a commitSha", () => {
+    const payload = {
+      type: "substrate.write.response",
+      data: { requestId: "sw-1-abc", result: { ok: true } },
     };
     const validated = ControlPayload(payload);
     expect(validated instanceof type.errors).toBe(true);

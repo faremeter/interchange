@@ -295,22 +295,6 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   subprocessSpawner?: SubprocessSpawner;
   /** Override the `bin/workflow-child` path. */
   binaryPath?: string;
-  /**
-   * Optional pack-push surface the supervisor invokes when the child
-   * sends a `pack.push.request` upstream control frame. Production
-   * wires this against the boot edge's existing `HubLink.pushWorkflowRunPack`
-   * closure so the multi-step child's commits reach the hub through
-   * the sidecar's single outbound WebSocket. Tests omit it (an absent
-   * binding surfaces `{ ok: false, reason }` on every push attempt) or
-   * inject a recording stub.
-   */
-  pushWorkflowRunPack?: (opts: {
-    agentAddress: string;
-    repoId: RepoId;
-    pack: Uint8Array;
-    ref: string;
-    commitSha: string;
-  }) => Promise<void>;
 };
 
 export type SidecarWorkflowSupervisor = {
@@ -562,23 +546,6 @@ export function createSidecarDeployRouter(deps: {
    */
   multistepDeriveStepAddress?: DeriveStepAddress;
   /**
-   * Pack-push surface the multi-step branch hands to every per-deployment
-   * supervisor it constructs. The boot edge closes this over the
-   * existing `HubLink.pushWorkflowRunPack` so the workflow-process
-   * child's `pack.push.request` upstream control frames reach the
-   * hub through the sidecar's single outbound WebSocket. Tests that
-   * do not exercise the pack push path may omit it; an absent binding
-   * surfaces a structured `{ ok: false, reason }` response on every
-   * push attempt.
-   */
-  multistepPushWorkflowRunPack?: (opts: {
-    agentAddress: string;
-    repoId: RepoId;
-    pack: Uint8Array;
-    ref: string;
-    commitSha: string;
-  }) => Promise<void>;
-  /**
    * Per-deployment-address mail handler registry the hub-link's
    * `mail.inbound` path consults before falling back to the legacy
    * session-routed delivery. The multi-step branch registers
@@ -784,9 +751,6 @@ export function createSidecarDeployRouter(deps: {
       subprocessSpawner: multistepSpawner,
       ...(deps.multistepBinaryPath !== undefined
         ? { binaryPath: deps.multistepBinaryPath }
-        : {}),
-      ...(deps.multistepPushWorkflowRunPack !== undefined
-        ? { pushWorkflowRunPack: deps.multistepPushWorkflowRunPack }
         : {}),
       // The multi-step branch never invokes trivialLaunch, but the
       // supervisor's constructor requires the binding. Wire a sentinel
@@ -1118,9 +1082,6 @@ export function createSidecarWorkflowSupervisor(
     deriveStepAddress: opts.deriveStepAddress,
     trivialLaunch: opts.trivialLaunch,
     deriveMailAuditRef: deriveSidecarMailAuditRef(opts.deploymentId),
-    ...(opts.pushWorkflowRunPack !== undefined
-      ? { pushWorkflowRunPack: opts.pushWorkflowRunPack }
-      : {}),
   });
   return {
     supervisor,

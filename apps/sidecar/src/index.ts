@@ -292,21 +292,6 @@ const orchestrator = createSidecarOrchestrator({
       multistepSignalRouter,
       multistepDrainRouter,
       multistepSubstrateEnv,
-      // The multi-step supervisor forwards `pack.push.request` upstream
-      // control frames into this closure; the boot edge resolves them
-      // through the same `HubLink.pushWorkflowRunPack` the
-      // trivial-path facade consults. The closure mirrors the lazy
-      // pattern used by `workflowRunPackClient` so a deploy that lands
-      // before the orchestrator's `hubLink` is bound surfaces a
-      // structured error rather than a `null` deref.
-      multistepPushWorkflowRunPack: (opts) => {
-        if (resolvedHubLink === null) {
-          throw new Error(
-            "sidecar boot: multi-step workflow-run pack push attempted before hub link was constructed",
-          );
-        }
-        return resolvedHubLink.pushWorkflowRunPack(opts);
-      },
     }),
 });
 

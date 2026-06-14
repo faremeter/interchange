@@ -11,13 +11,16 @@
 // factory does not read `process.env` itself; the binary owns the
 // only crossing of that boundary.
 //
-// The substrate's `RepoStore` is wrapped via
-// `createWorkflowRunPackPushingRepoStore` so a successful workflow-run
-// `writeTreePreservingPrefix` in the child fires a pack push back to
-// the hub. The wrap mirrors the boot-edge facade in
-// `apps/sidecar/src/index.ts`; the child-side registry is a
-// single-entry map keyed by the deployment's workflow-run repo id.
-// Non-`workflow-run` writes flow through unchanged.
+// Single-writer architecture: the workflow-run repo's ref has exactly
+// one writer at a time -- the supervisor. The child opens a bare
+// `createAgentRepoStore` against the shared on-disk data dir for
+// read-only operations (`getRepoDir`, `subscribe`, `resolveRef`,
+// etc.) and exposes a proxy `RepoStore` whose
+// `writeTreePreservingPrefix` forwards every write over the control
+// IPC into the supervisor's substrate. The supervisor's substrate is
+// wrapped with the boot-edge pack-push facade, so the hub push fires
+// as part of the supervisor's normal write path -- the child does
+// not open its own pack-push pipeline.
 
 import { type } from "arktype";
 
@@ -36,12 +39,12 @@ import {
 } from "@intx/hub-sessions";
 import {
   adaptHostScheduler,
+  createProxyWorkflowRunRepoStore,
   createWorkflowHostScheduler,
   createWorkflowRunBlobSubstrate,
   createWorkflowRunRepoStore,
   createWorkflowHostSignalChannel,
   createWorkflowSpawnChild,
-  type ChildPackPushBridge,
   type GrantEvaluator,
   type RunChildWorkflow,
   type RunWorkflowChildBindings,
@@ -60,12 +63,13 @@ import {
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 
-import {
-  createDeploymentAddressRegistry,
-  createWorkflowRunPackClient,
-  createWorkflowRunPackPushingRepoStore,
-  type WorkflowRunPackClient,
-} from "./workflow-run-pack-client";
+// The child does not construct a workflow-run pack-push pipeline of
+// its own. The supervisor owns the workflow-run repo's write
+// contract; the supervisor's substrate is wrapped at the sidecar's
+// boot edge with the pack-pushing facade so any successful workflow-
+// run write fires the hub push automatically. The child's proxy
+// `RepoStore` forwards `writeTreePreservingPrefix` over IPC into the
+// supervisor's wrapped substrate.
 
 /**
  * Required substrate-config keys the sidecar's binary forwards into
@@ -191,90 +195,27 @@ function hexDecode(hex: string, name: string): Uint8Array {
 }
 
 /**
- * Narrow surface of `HubLink.pushWorkflowRunPack` the substrate
- * factory needs. Lifting the dependency to this shape (instead of a
- * full `HubLink`) keeps the child process from needing to construct
- * the orchestrator-side WebSocket lifecycle that the boot edge owns.
- * Production wiring in the child supplies an implementation backed by
- * a hub WebSocket opened from `HUB_WS_URL` / `SIDECAR_ID` /
- * `SIDECAR_TOKEN`; until that surface lands, the default thrower
- * makes a missed wiring loud at the first workflow-run write.
- */
-export type ChildHubPackSink = {
-  pushWorkflowRunPack(opts: {
-    agentAddress: string;
-    repoId: RepoId;
-    pack: Uint8Array;
-    ref: string;
-    commitSha: string;
-  }): Promise<void>;
-};
-
-/**
  * Dependency overrides accepted by `createSidecarSubstrateFactory`.
- * Production callers omit these to get the IPC-bridge-backed hub
- * sink; tests inject a recording sink so the wrap behavior is
- * observable without driving a real supervisor.
+ * Production callers omit these to get the default-disk-backed bare
+ * store and the IPC-bridge-backed substrate proxy; tests inject an
+ * in-memory bare store and/or an explicit substrate-write bridge.
  */
 export interface SidecarSubstrateFactoryDeps {
   /**
-   * Construct the child's hub-link-equivalent for the workflow-run
-   * pack push surface. Receives the validated substrate config and
-   * the workflow-host's pack-push bridge. The default implementation
-   * routes every `pushWorkflowRunPack` call over the bridge as a
-   * `pack.push.request` upstream control frame; the supervisor's
-   * peer handler forwards into the host's `HubLink.pushWorkflowRunPack`
-   * and replies with `pack.push.response`. The substrate config's
-   * `HUB_WS_URL`, `SIDECAR_ID`, and `SIDECAR_TOKEN` are reserved for
-   * a future variant that opens a child-local hub WebSocket directly;
-   * the IPC bridge does not consume them today.
-   */
-  createHubPackSink?: (config: {
-    hubWsUrl: string;
-    sidecarId: string;
-    sidecarToken: string;
-    packPushBridge: ChildPackPushBridge;
-  }) => ChildHubPackSink;
-  /**
    * Override the bare-store constructor. Production callers omit this
    * to get the `createAgentRepoStore`-backed `RepoStore` against
-   * `SIDECAR_DATA_DIR`; tests inject an in-memory recording stub so
-   * the wrap can be exercised without standing up an on-disk
-   * substrate.
+   * `SIDECAR_DATA_DIR`; tests inject an in-memory recording stub.
+   *
+   * The bare store backs the child's read-only operations
+   * (`getRepoDir`, `subscribe`, `resolveRef`, `listRefs`,
+   * `resolveHead`, `createPack`). The child's workflow-run writes do
+   * NOT flow through this store; the proxy `RepoStore` forwards them
+   * over IPC into the supervisor's substrate.
    */
   createBareRepoStore?: (config: {
     dataDir: string;
     signingKey: { publicKey: Uint8Array; privateKey: Uint8Array };
   }) => RepoStore;
-}
-
-/**
- * Default IPC-bridge-backed `ChildHubPackSink`. The sink delegates
- * every call to the workflow-host's `ChildPackPushBridge`, which mints
- * a `pushId`, sends a `pack.push.request` upstream control frame, and
- * resolves the awaiter once the supervisor's matching
- * `pack.push.response` lands on the downstream control receiver.
- *
- * The child's view of the hub is therefore entirely virtual: there is
- * no hub WebSocket in the child's address space, only the upstream
- * IPC sender. A wire-side failure on the host (a hub link rejection
- * or transport error) surfaces here as a rejected `pushWorkflowRunPack`
- * call carrying the supervisor's structured reason.
- */
-function defaultCreateHubPackSink(deps: {
-  packPushBridge: ChildPackPushBridge;
-}): ChildHubPackSink {
-  return {
-    async pushWorkflowRunPack({ agentAddress, repoId, pack, ref, commitSha }) {
-      await deps.packPushBridge.sendRequest({
-        agentAddress,
-        repoId: { kind: repoId.kind, id: repoId.id },
-        pack,
-        ref,
-        commitSha,
-      });
-    },
-  };
 }
 
 /**
@@ -553,37 +494,33 @@ function defaultNewId(prefix: string): string {
 /**
  * Build a `SubstrateFactory` closed over the supplied dependency
  * overrides. The production export `createSubstrate` is the
- * default-deps call; tests inject a recording `createHubPackSink` to
- * observe the wrap behavior end-to-end without standing up a hub
- * WebSocket.
+ * default-deps call.
  *
  * Construction order:
  *   1. Narrow the `substrateConfig` record against the typed schema.
  *      A missing or empty key already threw inside the helper; this
  *      pass enforces the exact shape the factory consumes.
- *   2. Open the substrate-shaped `RepoStore` via
- *      `createAgentRepoStore` against the sidecar's data dir and
- *      Ed25519 keypair.
- *   3. Construct the child-side `WorkflowRunPackClient` against the
- *      bare `RepoStore` and the dep-supplied hub sink, build a
- *      single-entry `DeploymentAddressRegistry`
- *      (`workflowRunRepoId.id -> deploymentMailAddress`), and wrap the
- *      store via `createWorkflowRunPackPushingRepoStore` so a
- *      successful workflow-run write fires the pack push hook.
- *   4. Start the host-process scheduler singleton against the wrapped
+ *   2. Open a bare `RepoStore` via `createAgentRepoStore` against the
+ *      sidecar's data dir and Ed25519 keypair. This store backs the
+ *      child's read-only operations against the workflow-run repo;
+ *      the on-disk repo is shared with the supervisor's substrate so
+ *      reads see whatever the supervisor has committed.
+ *   3. Construct a proxy `RepoStore` whose
+ *      `writeTreePreservingPrefix` forwards over the upstream control
+ *      channel via the substrate-write bridge. The supervisor's
+ *      handler runs its own substrate's `writeTreePreservingPrefix`
+ *      (wrapped at the boot edge with the pack-push facade) under the
+ *      per-repo lock and replies with the resulting `commitSha`.
+ *   4. Start the host-process scheduler singleton against the proxy
  *      substrate, then adapt it to the runtime's `Scheduler` shape.
  *   5. Construct the production `invokeStep` and `spawnChild`
  *      adapters.
  *   6. Return the `RunWorkflowChildBindings` the runtime body
- *      consumes, with the wrapped store in the `substrate` slot.
+ *      consumes, with the proxy store in the `substrate` slot.
  */
 export function createSidecarSubstrateFactory(
   deps: SidecarSubstrateFactoryDeps = {},
 ): SubstrateFactory {
-  const createHubPackSink =
-    deps.createHubPackSink ??
-    ((config) =>
-      defaultCreateHubPackSink({ packPushBridge: config.packPushBridge }));
   const createBareRepoStore =
     deps.createBareRepoStore ??
     (({ dataDir, signingKey }) =>
@@ -631,29 +568,15 @@ export function createSidecarSubstrateFactory(
       deploymentId: env.spawn.deploymentId,
     };
 
-    // Child-side pack-push wrap. The registry maps the deployment's
-    // workflow-run repo id back to the agent address the hub uses to
-    // route the outbound pack; the child only ever serves one
-    // deployment, so the registry is a single-entry constant.
-    const hubPackSink = createHubPackSink({
-      hubWsUrl: validated.HUB_WS_URL,
-      sidecarId: validated.SIDECAR_ID,
-      sidecarToken: validated.SIDECAR_TOKEN,
-      packPushBridge: env.packPushBridge,
-    });
-    const packClient: WorkflowRunPackClient = createWorkflowRunPackClient({
-      substrate: bareStore,
-      hubLink: { pushWorkflowRunPack: hubPackSink.pushWorkflowRunPack },
-    });
-    const deploymentAddressRegistry = createDeploymentAddressRegistry();
-    deploymentAddressRegistry.record(
-      workflowRunRepoId.id,
-      env.spawn.mailboxAddress,
-    );
-    const substrate: RepoStore = createWorkflowRunPackPushingRepoStore({
-      underlying: bareStore,
-      packClient,
-      registry: deploymentAddressRegistry,
+    // Proxy substrate: writes are forwarded over IPC into the
+    // supervisor's substrate; reads consult the bare on-disk store.
+    // The supervisor is the sole writer of the workflow-run ref so
+    // the child's writes never race against the supervisor's
+    // claim-check writes (inbox / processing / consumed).
+    const substrate: RepoStore = createProxyWorkflowRunRepoStore({
+      bareStore,
+      bridge: env.substrateWriteBridge,
+      workflowRunRepoId,
     });
 
     const hostScheduler = createWorkflowHostScheduler({

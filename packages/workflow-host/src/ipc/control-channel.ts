@@ -164,49 +164,87 @@ export const ControlPayload = type(
     },
   })
   .or({
-    // Child-initiated workflow-run pack push request. The child cannot
-    // hold its own hub WebSocket because the hub-link surface binds to
-    // sidecar-main-process state (the deploy router, the session
-    // manager); the child therefore routes pack pushes back over the
-    // existing control IPC and the supervisor forwards via the
-    // host's `HubLink.pushWorkflowRunPack`. `pushId` correlates the
-    // matching upstream-supervisor `pack.push.response` so the child's
-    // pending-id map can resolve the awaiter. `packBase64` carries the
-    // pack bytes verbatim; the wire form is one NDJSON line per IPC
-    // frame, which Bun's pipes carry without a line-size cap below the
-    // pack sizes a workflow-run commit produces. A future variant that
-    // needs chunking can extend the union with `pack.push.chunk` and
-    // `pack.push.commit` without disturbing existing consumers.
-    type: "'pack.push.request'",
+    // Child-initiated `writeTreePreservingPrefix` request. The child
+    // does not hold a substrate write authority for the workflow-run
+    // repo (single-writer at the ref tip belongs to the supervisor);
+    // its workflow-run substrate proxy forwards every write through
+    // this frame. The supervisor receives the request, runs its own
+    // wrapped `writeTreePreservingPrefix`, and reaches back to the
+    // child for the merge bytes via `substrate.merge.request` so the
+    // child's merge closure (which knows about seq computation,
+    // duplicate detection, etc.) keeps producing the prospective tree.
+    // The supervisor resolves the child's awaiter with
+    // `substrate.write.response`.
+    type: "'substrate.write.request'",
     data: {
-      pushId: "string > 0",
-      agentAddress: "string > 0",
+      requestId: "string > 0",
       repoId: {
         kind: "string",
         id: "string > 0",
       },
       ref: "string > 0",
-      commitSha: "string > 0",
-      packBase64: "string > 0",
+      preservePrefix: "string > 0",
+      message: "string > 0",
     },
   })
   .or({
-    // Supervisor's reply to a child's `pack.push.request`. The
-    // `pushId` echoes the child's allocated correlation id so the
-    // child's pending-id map can resolve the awaiter. The `result`
-    // variant is a discriminated union so the typed handler at the
-    // child knows whether to resolve or reject. A failed push from
-    // the host's `HubLink.pushWorkflowRunPack` is surfaced as `{ ok:
-    // false, reason }`; the child's sink rejects with the reason, and
-    // the wrap's caller (the workflow-run commit path) surfaces it
-    // to the runtime body per defensive-coding -- the supervisor never
-    // swallows a hub-side rejection.
-    type: "'pack.push.response'",
+    // Supervisor-initiated request for the child's merge bytes. Fired
+    // from inside the supervisor's `writeTreePreservingPrefix` merge
+    // callback while the per-repo lock is held; the child receives the
+    // existing prefix entries (base64-encoded bytes), invokes its merge
+    // closure, and replies with the prospective tree on
+    // `substrate.merge.response`. Carrying the entries inline preserves
+    // the lock window: the supervisor blocks inside the merge callback
+    // until the response lands.
+    type: "'substrate.merge.request'",
     data: {
-      pushId: "string > 0",
+      requestId: "string > 0",
+      existing: type({
+        path: "string > 0",
+        contentBase64: "string",
+      }).array(),
+    },
+  })
+  .or({
+    // Child's merge result. `requestId` correlates with the
+    // `substrate.write.request` that started the write; the supervisor
+    // resumes its merge callback with the supplied entries (or
+    // propagates the structured failure).
+    type: "'substrate.merge.response'",
+    data: {
+      requestId: "string > 0",
       result: type(
         {
           ok: "true",
+          files: type({
+            path: "string > 0",
+            contentBase64: "string",
+          }).array(),
+        },
+        "|",
+        {
+          ok: "false",
+          reason: "string > 0",
+        },
+      ),
+    },
+  })
+  .or({
+    // Supervisor's terminal reply to a child's `substrate.write.request`.
+    // The `requestId` echoes the child's allocated correlation id so
+    // the child's pending-id map resolves the awaiter. A successful
+    // write surfaces `commitSha`; the child's proxy returns that to its
+    // caller. A failed write (substrate rejection, validatePush
+    // violation, the supervisor's pack-push wrap's downstream
+    // `HubLink.pushWorkflowRunPack` rejection) surfaces a structured
+    // `{ ok: false, reason }` the child's proxy rethrows.
+    type: "'substrate.write.response'",
+    data: {
+      requestId: "string > 0",
+      result: type(
+        {
+          ok: "true",
+          commitSha: "string > 0",
         },
         "|",
         {
