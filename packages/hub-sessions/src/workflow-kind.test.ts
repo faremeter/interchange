@@ -1,4 +1,11 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import git from "isomorphic-git";
+import { generateKeyPair } from "@intx/crypto-node";
+import { collectReachableObjects } from "@intx/storage-isogit";
+import type { KeyPair } from "@intx/types/runtime";
 import {
   workflowKindHandler,
   workflowAuthorize,
@@ -6,7 +13,13 @@ import {
   CAPABILITY_DECLARATIONS_JSON_PATH,
   WORKFLOW_GITIGNORE_PATH,
 } from "./workflow-kind";
-import type { Principal, RepoId } from "./repo-store";
+import { createRepoStore } from "./repo-store";
+import type {
+  KindHandler,
+  Principal,
+  RepoId,
+  ValidatePushResult,
+} from "./repo-store";
 
 const REF = "refs/heads/main";
 
@@ -565,5 +578,173 @@ describe("workflowAuthorize", () => {
     expect(r.allowed).toBe(false);
     if (r.allowed) throw new Error("unreachable");
     expect(r.reason).toMatch(/unknown principal kind/);
+  });
+});
+
+// The substrate's `receivePack` walks every new commit in the pack and
+// invokes the kind handler's `validatePush` once per commit, so a tree
+// that violates the workflow allowlist on an intermediate commit must
+// reject the pack even when the tip is valid. The workflow handler
+// does not consult prior closures — every commit's tree is judged on
+// its own top-level paths. This regression pins that behaviour: the
+// per-commit walk catches an intermediate-state violation at the
+// offending commit, not by accidentally being lenient at the tip.
+describe("workflow per-commit pack walk", () => {
+  const tempDirs: string[] = [];
+  let signingKey: KeyPair;
+
+  beforeAll(async () => {
+    signingKey = await generateKeyPair();
+  });
+
+  afterAll(async () => {
+    for (const d of tempDirs.splice(0)) {
+      await fs.promises
+        .rm(d, { recursive: true, force: true })
+        .catch(() => undefined);
+    }
+  });
+
+  async function makeTempDir(prefix: string): Promise<string> {
+    const d = await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix));
+    tempDirs.push(d);
+    return d;
+  }
+
+  const permissiveHandler: KindHandler = {
+    kind: "workflow",
+    directoryPrefix: "assets/workflow",
+    validatePush(): ValidatePushResult {
+      return { ok: true };
+    },
+    onRefUpdated() {
+      /* no-op */
+    },
+  };
+
+  const PRINCIPAL: Principal = { kind: "hub" };
+  // Push to a non-genesis ref so the source's `initRepo` genesis (on
+  // `refs/heads/main`) does not collide with the test's pack target.
+  // The workflow handler does not gate validation on ref name.
+  const REF = "refs/heads/deploy";
+
+  test("rejects a multi-commit pack whose second commit adds a disallowed top-level path", async () => {
+    const sourceDataDir = await makeTempDir("workflow-percommit-src-");
+    const sourceStore = createRepoStore({
+      dataDir: sourceDataDir,
+      signingKey,
+      handlers: { workflow: permissiveHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    const repoId: RepoId = {
+      kind: "workflow",
+      id: `wf-${Math.random().toString(36).slice(2, 10)}`,
+    };
+    await sourceStore.initRepo(repoId);
+
+    const validWorkflow = JSON.stringify({
+      id: "my-workflow",
+      triggers: [{ type: "manual" }],
+      steps: { first: { kind: "step", id: "first" } },
+      stepOrder: ["first"],
+    });
+
+    const { commitSha: firstSha } = await sourceStore.writeTree(
+      PRINCIPAL,
+      repoId,
+      REF,
+      {
+        files: { [WORKFLOW_JSON_PATH]: validWorkflow },
+        message: "valid workflow envelope",
+      },
+    );
+    const { commitSha: secondSha } = await sourceStore.writeTree(
+      PRINCIPAL,
+      repoId,
+      REF,
+      {
+        files: {
+          [WORKFLOW_JSON_PATH]: validWorkflow,
+          "stray-file.txt": "not in the workflow allowlist",
+        },
+        message: "intermediate violation: stray top-level path",
+      },
+    );
+
+    const sourceDir = sourceStore.getRepoDir(repoId);
+    const firstObjects = await collectReachableObjects(sourceDir, firstSha);
+    const secondObjects = await collectReachableObjects(sourceDir, secondSha);
+    const oids = Array.from(new Set([...firstObjects, ...secondObjects]));
+    const packResult = await git.packObjects({
+      fs,
+      dir: sourceDir,
+      oids,
+      write: false,
+    });
+    if (packResult.packfile === undefined) {
+      throw new Error("git.packObjects returned no packfile");
+    }
+    const pack = packResult.packfile;
+
+    const targetDataDir = await makeTempDir("workflow-percommit-tgt-");
+    const targetStore = createRepoStore({
+      dataDir: targetDataDir,
+      signingKey,
+      handlers: { workflow: workflowKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    await targetStore.initRepo(repoId);
+
+    await expect(
+      targetStore.receivePack(PRINCIPAL, repoId, REF, pack, secondSha, null),
+    ).rejects.toThrow(
+      /path_violation:.*unexpected top-level entry "stray-file\.txt"/,
+    );
+
+    const resolvedAfter = await targetStore.resolveRef(PRINCIPAL, repoId, REF);
+    expect(resolvedAfter).toBeNull();
+  });
+
+  test("the same violation at the tip of a single-commit pack also rejects", async () => {
+    const sourceDataDir = await makeTempDir("workflow-tiponly-src-");
+    const sourceStore = createRepoStore({
+      dataDir: sourceDataDir,
+      signingKey,
+      handlers: { workflow: permissiveHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    const repoId: RepoId = {
+      kind: "workflow",
+      id: `wf-${Math.random().toString(36).slice(2, 10)}`,
+    };
+    await sourceStore.initRepo(repoId);
+    const validWorkflow = JSON.stringify({
+      id: "my-workflow",
+      triggers: [{ type: "manual" }],
+      steps: { first: { kind: "step", id: "first" } },
+      stepOrder: ["first"],
+    });
+    const { commitSha } = await sourceStore.writeTree(PRINCIPAL, repoId, REF, {
+      files: {
+        [WORKFLOW_JSON_PATH]: validWorkflow,
+        "stray-file.txt": "tip-only violation",
+      },
+      message: "tip violates the workflow allowlist",
+    });
+    const { pack } = await sourceStore.createPack(PRINCIPAL, repoId, REF);
+
+    const targetDataDir = await makeTempDir("workflow-tiponly-tgt-");
+    const targetStore = createRepoStore({
+      dataDir: targetDataDir,
+      signingKey,
+      handlers: { workflow: workflowKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    await targetStore.initRepo(repoId);
+    await expect(
+      targetStore.receivePack(PRINCIPAL, repoId, REF, pack, commitSha, null),
+    ).rejects.toThrow(
+      /path_violation:.*unexpected top-level entry "stray-file\.txt"/,
+    );
   });
 });

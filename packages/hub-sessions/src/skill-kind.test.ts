@@ -1,4 +1,11 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import git from "isomorphic-git";
+import { generateKeyPair } from "@intx/crypto-node";
+import { collectReachableObjects } from "@intx/storage-isogit";
+import type { KeyPair } from "@intx/types/runtime";
 import {
   skillKindHandler,
   skillFrontmatterSchema,
@@ -6,7 +13,13 @@ import {
   getSkillIndex,
   type SkillIndexEntry,
 } from "./skill-kind";
-import type { Principal, RepoId } from "./repo-store";
+import { createRepoStore } from "./repo-store";
+import type {
+  KindHandler,
+  Principal,
+  RepoId,
+  ValidatePushResult,
+} from "./repo-store";
 import { type } from "arktype";
 
 const REF = "refs/heads/main";
@@ -668,5 +681,163 @@ describe("skillAuthorize", () => {
       "receivePack",
     );
     expect(r.allowed).toBe(true);
+  });
+});
+
+// The substrate's `receivePack` walks every new commit in the pack and
+// invokes the kind handler's `validatePush` once per commit, so a tree
+// that violates the skill envelope (e.g. missing SKILL.md, malformed
+// frontmatter) on an intermediate commit must reject the pack even
+// when the tip is valid. The skill handler does not consult prior
+// closures — each commit's tree is judged on its own per-subdir
+// SKILL.md content. This regression pins that behaviour: the
+// per-commit walk catches an intermediate-state violation at the
+// offending commit, not by accidentally being lenient at the tip.
+describe("skill per-commit pack walk", () => {
+  const tempDirs: string[] = [];
+  let signingKey: KeyPair;
+
+  beforeAll(async () => {
+    signingKey = await generateKeyPair();
+  });
+
+  afterAll(async () => {
+    for (const d of tempDirs.splice(0)) {
+      await fs.promises
+        .rm(d, { recursive: true, force: true })
+        .catch(() => undefined);
+    }
+  });
+
+  async function makeTempDir(prefix: string): Promise<string> {
+    const d = await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix));
+    tempDirs.push(d);
+    return d;
+  }
+
+  const permissiveHandler: KindHandler = {
+    kind: "skill",
+    directoryPrefix: "assets/skill",
+    validatePush(): ValidatePushResult {
+      return { ok: true };
+    },
+    onRefUpdated() {
+      /* no-op */
+    },
+  };
+
+  const PRINCIPAL: Principal = { kind: "hub" };
+  // The skill handler does not gate validation on ref name; the
+  // genesis-collision concern that motivates a non-`main` ref in the
+  // workflow per-commit test applies here too.
+  const REF = "refs/heads/deploy";
+
+  test("rejects a multi-commit pack whose second commit adds a malformed skill subdir", async () => {
+    const sourceDataDir = await makeTempDir("skill-percommit-src-");
+    const sourceStore = createRepoStore({
+      dataDir: sourceDataDir,
+      signingKey,
+      handlers: { skill: permissiveHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    const repoId: RepoId = {
+      kind: "skill",
+      id: `sk-${Math.random().toString(36).slice(2, 10)}`,
+    };
+    await sourceStore.initRepo(repoId);
+
+    const validGreet = [
+      "---",
+      `name: "greet"`,
+      `description: "Greets."`,
+      "---",
+    ].join("\n");
+    const malformedBroken = "no frontmatter here, just body bytes";
+
+    const { commitSha: firstSha } = await sourceStore.writeTree(
+      PRINCIPAL,
+      repoId,
+      REF,
+      {
+        files: { "greet/SKILL.md": validGreet },
+        message: "valid single-skill tree",
+      },
+    );
+    const { commitSha: secondSha } = await sourceStore.writeTree(
+      PRINCIPAL,
+      repoId,
+      REF,
+      {
+        files: {
+          "greet/SKILL.md": validGreet,
+          "broken/SKILL.md": malformedBroken,
+        },
+        message: "intermediate violation: malformed SKILL.md",
+      },
+    );
+
+    const sourceDir = sourceStore.getRepoDir(repoId);
+    const firstObjects = await collectReachableObjects(sourceDir, firstSha);
+    const secondObjects = await collectReachableObjects(sourceDir, secondSha);
+    const oids = Array.from(new Set([...firstObjects, ...secondObjects]));
+    const packResult = await git.packObjects({
+      fs,
+      dir: sourceDir,
+      oids,
+      write: false,
+    });
+    if (packResult.packfile === undefined) {
+      throw new Error("git.packObjects returned no packfile");
+    }
+    const pack = packResult.packfile;
+
+    const targetDataDir = await makeTempDir("skill-percommit-tgt-");
+    const targetStore = createRepoStore({
+      dataDir: targetDataDir,
+      signingKey,
+      handlers: { skill: skillKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    await targetStore.initRepo(repoId);
+
+    await expect(
+      targetStore.receivePack(PRINCIPAL, repoId, REF, pack, secondSha, null),
+    ).rejects.toThrow(/path_violation:.*skill broken frontmatter parse failed/);
+
+    const resolvedAfter = await targetStore.resolveRef(PRINCIPAL, repoId, REF);
+    expect(resolvedAfter).toBeNull();
+    expect(getSkillIndex(repoId.id, REF)).toEqual([]);
+  });
+
+  test("the same violation at the tip of a single-commit pack also rejects", async () => {
+    const sourceDataDir = await makeTempDir("skill-tiponly-src-");
+    const sourceStore = createRepoStore({
+      dataDir: sourceDataDir,
+      signingKey,
+      handlers: { skill: permissiveHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    const repoId: RepoId = {
+      kind: "skill",
+      id: `sk-${Math.random().toString(36).slice(2, 10)}`,
+    };
+    await sourceStore.initRepo(repoId);
+    const { commitSha } = await sourceStore.writeTree(PRINCIPAL, repoId, REF, {
+      files: { "broken/SKILL.md": "no frontmatter here" },
+      message: "tip violates the skill envelope",
+    });
+    const { pack } = await sourceStore.createPack(PRINCIPAL, repoId, REF);
+
+    const targetDataDir = await makeTempDir("skill-tiponly-tgt-");
+    const targetStore = createRepoStore({
+      dataDir: targetDataDir,
+      signingKey,
+      handlers: { skill: skillKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    await targetStore.initRepo(repoId);
+    await expect(
+      targetStore.receivePack(PRINCIPAL, repoId, REF, pack, commitSha, null),
+    ).rejects.toThrow(/path_violation:.*skill broken frontmatter parse failed/);
   });
 });

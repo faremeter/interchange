@@ -1,10 +1,23 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import git from "isomorphic-git";
+import { generateKeyPair } from "@intx/crypto-node";
+import { collectReachableObjects } from "@intx/storage-isogit";
+import type { KeyPair } from "@intx/types/runtime";
 import {
   agentStateAuthorize,
   agentStateKindHandler,
   AGENT_STATE_DEPLOY_REF,
 } from "./agent-state-kind";
-import type { Principal, RepoId } from "./repo-store";
+import { createRepoStore } from "./repo-store";
+import type {
+  KindHandler,
+  Principal,
+  RepoId,
+  ValidatePushResult,
+} from "./repo-store";
 
 describe("agentStateKindHandler metadata", () => {
   test("declares the agent-state kind and agents directory prefix", () => {
@@ -243,5 +256,182 @@ describe("agentStateAuthorize", () => {
       "receivePack",
     );
     expect(r.allowed).toBe(true);
+  });
+});
+
+// The substrate's `receivePack` walks every new commit in the pack and
+// invokes the kind handler's `validatePush` once per commit, so a tree
+// that violates the kind's allowlist on an intermediate commit must
+// reject the pack even when the tip's tree happens to be valid. The
+// agent-state handler does not consult prior closures — every commit's
+// tree is judged on its own top-level paths. This regression pins that
+// behaviour: the per-commit walk catches an intermediate-state
+// violation at the offending commit, not by accidentally being lenient
+// at the tip.
+describe("agent-state per-commit pack walk", () => {
+  const tempDirs: string[] = [];
+  let signingKey: KeyPair;
+
+  beforeAll(async () => {
+    signingKey = await generateKeyPair();
+  });
+
+  afterAll(async () => {
+    for (const d of tempDirs.splice(0)) {
+      await fs.promises
+        .rm(d, { recursive: true, force: true })
+        .catch(() => undefined);
+    }
+  });
+
+  async function makeTempDir(prefix: string): Promise<string> {
+    const d = await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix));
+    tempDirs.push(d);
+    return d;
+  }
+
+  const permissiveHandler: KindHandler = {
+    kind: "agent-state",
+    directoryPrefix: "agents",
+    validatePush(): ValidatePushResult {
+      return { ok: true };
+    },
+    onRefUpdated() {
+      /* no-op */
+    },
+  };
+
+  const PRINCIPAL: Principal = { kind: "hub" };
+  const STATE_REF = "refs/heads/state";
+
+  test("rejects a multi-commit pack whose second commit adds a disallowed top-level path", async () => {
+    const sourceDataDir = await makeTempDir("agent-state-percommit-src-");
+    const sourceStore = createRepoStore({
+      dataDir: sourceDataDir,
+      signingKey,
+      handlers: { "agent-state": permissiveHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    const repoId: RepoId = {
+      kind: "agent-state",
+      id: `agent-${Math.random().toString(36).slice(2, 10)}`,
+    };
+    await sourceStore.initRepo(repoId);
+
+    const { commitSha: firstSha } = await sourceStore.writeTree(
+      PRINCIPAL,
+      repoId,
+      STATE_REF,
+      {
+        files: { "manifest.jsonl": '{"turn":0}\n' },
+        message: "valid state-bearing tree",
+      },
+    );
+    const { commitSha: secondSha } = await sourceStore.writeTree(
+      PRINCIPAL,
+      repoId,
+      STATE_REF,
+      {
+        files: { "forbidden.txt": "not in the agent-state allowlist" },
+        message: "intermediate violation: stray top-level path",
+      },
+    );
+
+    const sourceDir = sourceStore.getRepoDir(repoId);
+    const firstObjects = await collectReachableObjects(sourceDir, firstSha);
+    const secondObjects = await collectReachableObjects(sourceDir, secondSha);
+    const oids = Array.from(new Set([...firstObjects, ...secondObjects]));
+    const packResult = await git.packObjects({
+      fs,
+      dir: sourceDir,
+      oids,
+      write: false,
+    });
+    if (packResult.packfile === undefined) {
+      throw new Error("git.packObjects returned no packfile");
+    }
+    const pack = packResult.packfile;
+
+    const targetDataDir = await makeTempDir("agent-state-percommit-tgt-");
+    const targetStore = createRepoStore({
+      dataDir: targetDataDir,
+      signingKey,
+      handlers: { "agent-state": agentStateKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    await targetStore.initRepo(repoId);
+
+    await expect(
+      targetStore.receivePack(
+        PRINCIPAL,
+        repoId,
+        STATE_REF,
+        pack,
+        secondSha,
+        null,
+      ),
+    ).rejects.toThrow(
+      /path_violation:.*tree contains disallowed top-level path: forbidden\.txt/,
+    );
+
+    // The rejected pack must leave the ref unset; a future legitimate
+    // push must not observe a half-applied state.
+    const resolvedAfter = await targetStore.resolveRef(
+      PRINCIPAL,
+      repoId,
+      STATE_REF,
+    );
+    expect(resolvedAfter).toBeNull();
+  });
+
+  test("the same violation at the tip of a single-commit pack also rejects", async () => {
+    // Sanity check: the per-commit walk catches the same kind-handler
+    // verdict the tip-only walk would have caught when the violation
+    // lives at the tip. Without this the multi-commit test above
+    // could in principle pass via some pack-walk-specific path that
+    // never reached the kind handler at all.
+    const sourceDataDir = await makeTempDir("agent-state-tiponly-src-");
+    const sourceStore = createRepoStore({
+      dataDir: sourceDataDir,
+      signingKey,
+      handlers: { "agent-state": permissiveHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    const repoId: RepoId = {
+      kind: "agent-state",
+      id: `agent-${Math.random().toString(36).slice(2, 10)}`,
+    };
+    await sourceStore.initRepo(repoId);
+    const { commitSha } = await sourceStore.writeTree(
+      PRINCIPAL,
+      repoId,
+      STATE_REF,
+      {
+        files: { "forbidden.txt": "tip-only violation" },
+        message: "tip violates the agent-state allowlist",
+      },
+    );
+    const { pack } = await sourceStore.createPack(PRINCIPAL, repoId, STATE_REF);
+
+    const targetDataDir = await makeTempDir("agent-state-tiponly-tgt-");
+    const targetStore = createRepoStore({
+      dataDir: targetDataDir,
+      signingKey,
+      handlers: { "agent-state": agentStateKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    await targetStore.initRepo(repoId);
+    await expect(
+      targetStore.receivePack(
+        PRINCIPAL,
+        repoId,
+        STATE_REF,
+        pack,
+        commitSha,
+        null,
+      ),
+    ).rejects.toThrow(
+      /path_violation:.*tree contains disallowed top-level path: forbidden\.txt/,
+    );
   });
 });

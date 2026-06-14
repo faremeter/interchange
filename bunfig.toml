@@ -12,6 +12,7 @@ exclude = [
   "tests/workflow-deploy/child-workflow-roundtrip.test.ts",
   "tests/workflow-deploy/unresolvable-director.test.ts",
   "tests/workflow-deploy/fifo-mail.test.ts",
+  "tests/workflow-deploy/mail-edge-cases.test.ts",
   "tests/inference/transform-cutover.test.ts",
   "tests/skill-attachment-flow.test.ts",
   "tests/hub-api/lib/git-harness.test.ts",

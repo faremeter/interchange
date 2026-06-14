@@ -1450,4 +1450,176 @@ describe("sidecar↔hub integration", () => {
       );
     }
   });
+
+  // The hub-link's `pushWorkflowRunPack` retries the FIRST push to a
+  // never-bootstrapped `(repoId, ref)` once on failure, absorbing the
+  // hub-side `initRepo` CAS race. The retry guard is a Set keyed by
+  // `(repoId, ref)`; the per-(repoId, ref) queue serializes pushes so
+  // a second-from-this-sender push only fires after the first has
+  // settled. Without the queue, two concurrent first-pushes from a
+  // single sender could each observe `workflowRunPackBootstrapped.has`
+  // as `false` and each fire its own bootstrap retry — a spurious
+  // double retry the queue+flag combination is supposed to prevent.
+  // This test pins the queue+retry interaction so a future change to
+  // the bootstrap-retry surface cannot quietly introduce that
+  // spurious retry.
+  test("two concurrent first-pushes to the same (repoId, ref) fire exactly one bootstrap retry", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+
+    // Fail the very first workflow-run pack push so the hub-link
+    // observes a rejection on its first send and exercises the
+    // bootstrap-retry arm. Every subsequent push (the retry, the
+    // second concurrent push) succeeds.
+    let receiveCount = 0;
+    const receiveRecord: {
+      transferIds: string[];
+    } = { transferIds: [] };
+    const wfrRouter = createSidecarRouter({
+      requestTimeoutMs: 5000,
+      hubPublicKey: "a".repeat(64),
+      lookups: {
+        async receiveWorkflowRunPack(_repoId, _pack, _ref, _commitSha) {
+          receiveCount += 1;
+          if (receiveCount === 1) {
+            // Mirror the hub's wire-level translation of an
+            // `initRepo` non-fast-forward race: surface a `corrupt`
+            // rejection so the sender's bootstrap arm runs once.
+            return { accepted: false, reason: "corrupt" };
+          }
+          return { accepted: true };
+        },
+      },
+    });
+
+    const wfrApp = new Hono();
+    wfrApp.get(
+      "/ws",
+      upgradeWebSocket((_c) => {
+        let handle: WsHandle;
+        return {
+          onOpen(_evt, ws) {
+            handle = {
+              send(data: string) {
+                ws.send(data);
+              },
+              close() {
+                ws.close();
+              },
+            };
+            wfrRouter.handleOpen(handle);
+          },
+          onMessage(evt, _ws) {
+            if (typeof evt.data === "string") {
+              // Capture every inbound `repo.pack.done` frame so the
+              // test can assert how many sends the link actually
+              // issued — one per (initial-attempt | retry | second
+              // push). A spurious second retry adds a fourth entry.
+              try {
+                const parsed: unknown = JSON.parse(evt.data);
+                if (
+                  typeof parsed === "object" &&
+                  parsed !== null &&
+                  "type" in parsed &&
+                  parsed.type === "repo.pack.done" &&
+                  "transferId" in parsed &&
+                  typeof parsed.transferId === "string"
+                ) {
+                  receiveRecord.transferIds.push(parsed.transferId);
+                }
+              } catch {
+                /* not a JSON frame — ignore */
+              }
+              wfrRouter.handleMessage(handle, evt.data);
+            }
+          },
+          onClose(_evt, _ws) {
+            wfrRouter.handleClose(handle);
+          },
+        };
+      }),
+    );
+
+    const wfrServer = Bun.serve({
+      fetch: wfrApp.fetch,
+      websocket,
+      port: 0,
+    });
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${wfrServer.port}/ws`,
+      sidecarId: "sc-wfr-bootstrap-race",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(sessions),
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        wfrRouter.getConnectedSidecars().includes("sc-wfr-bootstrap-race"),
+      );
+
+      // Deploy an agent so the sender's outbound pack frames carry a
+      // routable address; otherwise the hub drops the push as
+      // "unrouted agent" before it ever reaches `receiveWorkflowRunPack`.
+      const agentAddress = "race-agent@test.interchange";
+      await wfrRouter.sendAgentDeploy(agentAddress, TEST_CONFIG);
+      await waitFor(() =>
+        wfrRouter.getRoutableAddresses().includes(agentAddress),
+      );
+
+      const repoId = {
+        kind: "workflow-run",
+        id: "dep-bootstrap-race",
+      } as const;
+      const ref = "refs/heads/events";
+      const commitSha = "a".repeat(40);
+      const pack = new Uint8Array([1, 2, 3, 4, 5]);
+
+      // Kick both pushes off in the same tick so they both observe the
+      // queue's pre-A state and B genuinely chains through A's
+      // promise.
+      const pushA = client.pushWorkflowRunPack({
+        agentAddress,
+        repoId,
+        pack,
+        ref,
+        commitSha,
+      });
+      const pushB = client.pushWorkflowRunPack({
+        agentAddress,
+        repoId,
+        pack,
+        ref,
+        commitSha,
+      });
+
+      // Both pushes must resolve cleanly. If the bootstrap-retry path
+      // double-fired, the second push's send would reuse a
+      // transferId from a still-pending transfer and reject before
+      // the hub ever responded.
+      await Promise.all([pushA, pushB]);
+
+      // The hub sees exactly three packs:
+      //   1. A's first attempt — rejected with `corrupt`.
+      //   2. A's bootstrap retry — accepted.
+      //   3. B's single attempt — accepted (the flag is already set).
+      // A spurious second retry would push the count to 4.
+      expect(receiveCount).toBe(3);
+      expect(receiveRecord.transferIds).toHaveLength(3);
+      // Each send mints a fresh transferId; the queue+retry must not
+      // collapse the two pushes into a shared in-flight id.
+      const uniqueTransferIds = new Set(receiveRecord.transferIds);
+      expect(uniqueTransferIds.size).toBe(3);
+    } finally {
+      client.close();
+      await waitFor(
+        () =>
+          !wfrRouter.getConnectedSidecars().includes("sc-wfr-bootstrap-race"),
+      );
+      wfrServer.stop(true);
+    }
+  });
 });

@@ -106,6 +106,22 @@ import {
 const logger = getLogger(["workflow-host", "supervisor"]);
 
 /**
+ * Default watchdog timeout for the supervisor's
+ * `synchronouslyDispatchTerminalWrite`. The handler holds the
+ * `substrate.write.response` back to the child until the dispatch
+ * loop's `markConsumed` settles for the matching terminal event; an
+ * unbounded wait would chain into a child / runtime / dispatch loop
+ * deadlock if `markConsumed` never armed (bug in the dispatch loop, a
+ * torn-down cohort, a stalled inbox primitive). 30s sits between the
+ * recycle path's `DEFAULT_KILL_TIMEOUT_MS` (5s, a hard process-level
+ * kill cap) and `DEFAULT_DRAIN_TIMEOUT_MS` (60s, the per-deployment
+ * drain budget) -- generous enough to absorb a slow legitimate
+ * markConsumed, tight enough to surface a real deadlock long before
+ * the drainTimeout would otherwise mask it.
+ */
+export const DEFAULT_TERMINAL_WRITE_WATCHDOG_MS = 30_000;
+
+/**
  * Public surface returned by `createWorkflowSupervisor`. Each method
  * advances the supervisor through one lifecycle transition; the
  * supervisor's internal state is encapsulated.
@@ -339,6 +355,8 @@ export function createWorkflowSupervisor(
       }
     });
   const drainTimeoutMs = bindings.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
+  const terminalWriteWatchdogMs =
+    bindings.terminalWriteWatchdogMs ?? DEFAULT_TERMINAL_WRITE_WATCHDOG_MS;
   const inboxPrimitives: InboxPrimitives = bindings.inboxPrimitives ?? {
     enqueueInbox: defaultEnqueueInbox,
     dequeueToProcessing: defaultDequeueToProcessing,
@@ -727,10 +745,20 @@ export function createWorkflowSupervisor(
         },
       );
       if (lastMergedFiles !== null) {
-        await synchronouslyDispatchTerminalWrite(
+        const watchdog = await synchronouslyDispatchTerminalWrite(
           data.preservePrefix,
           lastMergedFiles,
         );
+        if (!watchdog.ok) {
+          await controlSender.send({
+            type: "substrate.write.response",
+            data: {
+              requestId: data.requestId,
+              result: { ok: false, reason: watchdog.reason },
+            },
+          });
+          return;
+        }
       }
       await controlSender.send({
         type: "substrate.write.response",
@@ -775,8 +803,17 @@ export function createWorkflowSupervisor(
     waiter.resolve();
   }
 
-  // Regex matching `runs/<runId>/events/<seq>.json` paths the proxy
-  // write writes for workflow events.
+  // Path-shape sniff. The terminal-write detection couples to the
+  // workflow-run substrate's on-disk run-event path shape
+  // (`runs/<runId>/events/<seq>.json`); the cleaner design is a
+  // typed terminal signal the workflow-run kind handler emits at
+  // commit time, but the handler does not surface that signal
+  // today and the regex matches exactly one well-formed shape the
+  // substrate is already responsible for emitting. If the substrate
+  // ever rearranges that layout, the sniff silently stops firing
+  // and the dispatch-loop sync degrades to "send response
+  // immediately" -- the cross-package contract holds today but is
+  // load-bearing.
   const RUN_EVENT_PATH_RE = /^runs\/([^/]+)\/events\/[0-9]+\.json$/;
   const TERMINAL_EVENT_TYPES = new Set([
     "RunCompleted",
@@ -793,17 +830,25 @@ export function createWorkflowSupervisor(
    * dispatchOne; the wait here is per-runId so multiple runs can
    * proceed concurrently if a future dispatch loop ever processes
    * more than one mail in parallel.
+   *
+   * A watchdog timeout (`terminalWriteWatchdogMs`) caps the wait so a
+   * never-arming markConsumed (a bug in the dispatch loop, a torn-down
+   * cohort, a stalled inbox primitive) does not deadlock the child's
+   * write -- and therefore the runtime body, and therefore the dispatch
+   * loop. On expiry the waiter is force-released and a structured
+   * failure propagates back to the child as
+   * `{ ok: false, reason: "terminal-write watchdog timeout: ..." }`.
    */
   async function synchronouslyDispatchTerminalWrite(
     preservePrefix: string,
     mergedFiles: Record<string, string | Uint8Array>,
-  ): Promise<void> {
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
     // The preservePrefix shape for run-event writes is
     // `runs/<runId>/events/`; the substrate accepts any prefix that
     // ends with `/`, so a write whose prefix does not match the
     // runs/-events shape is not a terminal-event write and we
     // short-circuit.
-    if (!preservePrefix.startsWith("runs/")) return;
+    if (!preservePrefix.startsWith("runs/")) return { ok: true };
     let runId: string | null = null;
     let isTerminal = false;
     for (const [path, content] of Object.entries(mergedFiles)) {
@@ -835,21 +880,48 @@ export function createWorkflowSupervisor(
         isTerminal = true;
       }
     }
-    if (!isTerminal || runId === null) return;
+    if (!isTerminal || runId === null) return { ok: true };
     if (!inFlightRuns.has(runId)) {
-      return;
+      return { ok: true };
     }
+    const waiterRunId = runId;
     const completed = new Promise<void>((resolve, reject) => {
-      markConsumedCompletionWaiters.set(runId, { resolve, reject });
+      markConsumedCompletionWaiters.set(waiterRunId, { resolve, reject });
     });
     const broadcaster = activeTerminalBroadcaster();
     if (broadcaster !== null) {
-      const synthetic = synthesizeTerminalEvent(mergedFiles, runId);
+      const synthetic = synthesizeTerminalEvent(mergedFiles, waiterRunId);
       if (synthetic !== null) {
-        broadcaster.notify(runId, synthetic);
+        broadcaster.notify(waiterRunId, synthetic);
       }
     }
-    await completed;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const watchdog = new Promise<{ ok: false; reason: string }>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        timeoutHandle = null;
+        // Force-release the waiter so the dispatch loop's eventual
+        // resolve does not strand a dangling map entry, then surface
+        // the structured failure to the caller. The reason text is
+        // logged through the package logger so the watchdog is not
+        // silent on the host side.
+        const stillPending =
+          markConsumedCompletionWaiters.get(waiterRunId) !== undefined;
+        if (stillPending) {
+          markConsumedCompletionWaiters.delete(waiterRunId);
+        }
+        const reason = `terminal-write watchdog timeout: markConsumed for runId=${waiterRunId} did not settle within ${String(terminalWriteWatchdogMs)}ms`;
+        logger.error`${reason}`;
+        resolve({ ok: false, reason });
+      }, terminalWriteWatchdogMs);
+    });
+    const result = await Promise.race([
+      completed.then(() => ({ ok: true }) as const),
+      watchdog,
+    ]);
+    if (timeoutHandle !== null) {
+      clearTimeout(timeoutHandle);
+    }
+    return result;
   }
 
   function synthesizeTerminalEvent(

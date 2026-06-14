@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 import { generateKeyPair } from "@intx/crypto-node";
+import { collectReachableObjects } from "@intx/storage-isogit";
 import type { KeyPair } from "@intx/types/runtime";
 import { createRepoStore } from "./store";
 import type {
@@ -1626,5 +1627,119 @@ describe("RepoStore", () => {
         from: "head",
       }),
     ).toThrow(/^authorize_denied/);
+  });
+
+  // The per-commit walk's parent traversal asserts every commit has at
+  // most one parent so an intermediate-state validation always reads
+  // against the single ancestor's tree. No kind handler today produces
+  // merge commits; the assert exists to catch any future writer that
+  // accidentally does. This test pins the assertion shape so a future
+  // change to receivePack cannot quietly start accepting multi-parent
+  // commits — under the new behaviour the pack-walk would have no
+  // canonical "the predecessor" to consult, and every kind handler that
+  // depended on a single-parent chain would silently drift.
+  test("receivePack rejects a pack carrying a merge commit with pack_walk_multi_parent", async () => {
+    const sourceDir = await makeTempDir("repo-store-merge-source-");
+    const sourceHandler = createTestHandler({
+      allowTopLevelPaths: () => true,
+    });
+    const sourceStore = createRepoStore({
+      dataDir: sourceDir,
+      signingKey,
+      handlers: { "agent-state": sourceHandler },
+      authorize: allowAll,
+    });
+    const { commitSha: parentA } = await sourceStore.writeTree(
+      principal,
+      repoId,
+      "refs/heads/parent-a",
+      { files: { "deploy/a.md": "branch-a content" }, message: "branch a" },
+    );
+    const { commitSha: parentB } = await sourceStore.writeTree(
+      principal,
+      repoId,
+      "refs/heads/parent-b",
+      { files: { "deploy/b.md": "branch-b content" }, message: "branch b" },
+    );
+
+    const sourceRepoDir = sourceStore.getRepoDir(repoId);
+    const { commit: parentACommit } = await git.readCommit({
+      fs,
+      dir: sourceRepoDir,
+      oid: parentA,
+    });
+    // Author the merge directly through isomorphic-git so the substrate
+    // never sees a multi-parent commit on the source side. The merge
+    // reuses one parent's tree wholesale because the per-commit walk
+    // only inspects the parent chain — the tree content is incidental
+    // to the assertion being pinned here.
+    const mergeSha = await git.commit({
+      fs,
+      dir: sourceRepoDir,
+      ref: "refs/heads/merge",
+      message: "synthetic merge of parent-a and parent-b",
+      author: { name: "test", email: "test@example.com" },
+      parent: [parentA, parentB],
+      tree: parentACommit.tree,
+    });
+
+    const reachableFromMerge = await collectReachableObjects(
+      sourceRepoDir,
+      mergeSha,
+    );
+    const reachableFromB = await collectReachableObjects(
+      sourceRepoDir,
+      parentB,
+    );
+    const oids = Array.from(
+      new Set([...reachableFromMerge, ...reachableFromB]),
+    );
+    const packResult = await git.packObjects({
+      fs,
+      dir: sourceRepoDir,
+      oids,
+      write: false,
+    });
+    if (packResult.packfile === undefined) {
+      throw new Error("git.packObjects returned no packfile");
+    }
+    const pack = packResult.packfile;
+
+    const targetDir = await makeTempDir("repo-store-merge-target-");
+    const targetHandler = createTestHandler({
+      allowTopLevelPaths: () => true,
+    });
+    const targetStore = createRepoStore({
+      dataDir: targetDir,
+      signingKey,
+      handlers: { "agent-state": targetHandler },
+      authorize: allowAll,
+    });
+    await targetStore.initRepo(repoId);
+
+    await expect(
+      targetStore.receivePack(
+        principal,
+        repoId,
+        "refs/heads/merge",
+        pack,
+        mergeSha,
+        null,
+      ),
+    ).rejects.toThrow(
+      new RegExp(
+        `pack_walk_multi_parent: commit ${mergeSha} has 2 parents; merge commits are not supported in repo-store packs`,
+      ),
+    );
+
+    // The rejected pack must leave the ref unset so a retry sees a
+    // pristine target.
+    const resolved = await targetStore.resolveRef(
+      principal,
+      repoId,
+      "refs/heads/merge",
+    );
+    expect(resolved).toBeNull();
+    expect(targetHandler.onRefUpdatedCalls).toHaveLength(0);
   });
 });
