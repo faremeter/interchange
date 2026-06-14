@@ -283,13 +283,51 @@ export function createMultistepDrainRouter(): MultistepDrainRouter {
  * Boot-edge facade around the substrate-shaped `RepoStore`. Forwards
  * every method to the underlying store; intercepts the
  * `writeTreePreservingPrefix` return path so a successful write
- * against a `workflow-run` repo fires the workflow-run pack push.
+ * against a `workflow-run` repo schedules a workflow-run pack push.
  * Writes against any other `repoId.kind` (today, only `agent-state`
- * via the deploy-applier path) flow through unchanged. The hook is
- * fire-and-await: the original `writeTreePreservingPrefix` Promise
- * does not resolve until the hub has acked the push, so a
- * downstream `recordRunEvent` does not observe a fast-forward against
- * a not-yet-shipped commit.
+ * via the deploy-applier path) flow through unchanged.
+ *
+ * Pack-push coalescing: the facade returns from
+ * `writeTreePreservingPrefix` as soon as the LOCAL commit lands and
+ * schedules an asynchronous pack push for `(repoId.id, ref)`. At
+ * most one push per (repoId, ref) is in flight at a time. Writes
+ * that arrive while a push is in flight are NOT enqueued as
+ * additional pushes; instead they mark the slot as "dirty", and the
+ * loop runs one more push after the current one settles. This means
+ * a burst of N writes against the same ref produces at most 2
+ * pushes (the one already running when the burst starts, plus one
+ * more for everything that arrived during it), rather than N
+ * serial round-trips' worth of hub-ack latency. The push body
+ * captures the current local ref tip at the moment it runs, so the
+ * single pack it builds covers every commit landed since the prior
+ * shipped tip -- the substrate's incremental `createPack` already
+ * walks the chain from the prior `lastPackedTip` forward, so the
+ * receiver still sees every commit transition.
+ *
+ * Single-writer + FIFO correctness: the underlying substrate
+ * serialises local writes via `withRepoLock`, so commits land on
+ * disk in submission order. The hub's `receivePack` validates each
+ * commit's parent against its existing-commits set; as long as the
+ * pack carries the full chain from prior shipped tip to current
+ * tip (which `createPack` does for `workflow-run` repos), every
+ * intermediate commit is validated by the receiver. Coalescing
+ * multiple local commits into one network push therefore preserves
+ * the receive-time CAS invariant while collapsing N hub round-trips
+ * into 1.
+ *
+ * Failure surfacing: a failed push latches its error on the
+ * per-(repoId, ref) slot's `lastError` field. The next call to
+ * `writeTreePreservingPrefix` on that (repoId, ref) re-throws the
+ * latched error before doing its own work, keeping failures loud
+ * rather than swallowed by the fire-and-forget pipeline. The
+ * defensive-coding rule says errors must surface; this is how they
+ * surface from a coalescing writer.
+ *
+ * Flush: callers that need a hub-visible barrier (shutdown,
+ * integration tests that read hub-side state) call
+ * `flushWorkflowRunPushes(repoId, ref)` to await the per-(repoId,
+ * ref) slot to drain (both the in-flight push and any follow-up
+ * triggered by writes that arrived during it).
  */
 export type WorkflowRunPackPushingRepoStoreOpts = {
   underlying: RepoStore;
@@ -297,11 +335,134 @@ export type WorkflowRunPackPushingRepoStoreOpts = {
   registry: DeploymentAddressRegistry;
 };
 
+/**
+ * The wrapped store plus a side-channel API for waiting on the
+ * per-(repoId.id, ref) pack-push pipeline to drain. The `RepoStore`
+ * shape is unchanged so call sites that consume `RepoStore` keep
+ * working; `flushWorkflowRunPushes` is opt-in for code that
+ * genuinely needs hub-side visibility (shutdown, integration tests,
+ * end-to-end benchmarks). Call sites that don't need it pay zero
+ * cost.
+ */
+export type WorkflowRunPackPushingRepoStore = RepoStore & {
+  /**
+   * Await the pack-push pipeline for `(repoId.id, ref)` to drain.
+   * Resolves once no push is in flight and no follow-up push is
+   * pending; rejects if the most recent push failed (the same
+   * latched error the next `writeTreePreservingPrefix` call would
+   * surface).
+   */
+  flushWorkflowRunPushes: (repoId: RepoId, ref: string) => Promise<void>;
+};
+
 export function createWorkflowRunPackPushingRepoStore(
   opts: WorkflowRunPackPushingRepoStoreOpts,
-): RepoStore {
+): WorkflowRunPackPushingRepoStore {
   const { underlying, packClient, registry } = opts;
-  const wrapped: RepoStore = {
+
+  type Slot = {
+    agentAddress: string;
+    inFlight: Promise<void> | null;
+    dirty: boolean;
+    lastError: Error | null;
+    settled: (() => void)[];
+  };
+  const slots = new Map<string, Slot>();
+  function slotKey(repoId: RepoId, ref: string): string {
+    return `${repoId.kind}/${repoId.id}/${ref}`;
+  }
+
+  function notifySettled(slot: Slot): void {
+    const callbacks = slot.settled;
+    slot.settled = [];
+    for (const cb of callbacks) cb();
+  }
+
+  function startLoop(slot: Slot, repoId: RepoId, ref: string): void {
+    if (slot.inFlight !== null) return;
+    slot.inFlight = (async () => {
+      while (slot.dirty) {
+        slot.dirty = false;
+        try {
+          await packClient.push({
+            agentAddress: slot.agentAddress,
+            repoId,
+            ref,
+          });
+          slot.lastError = null;
+        } catch (cause) {
+          const msg = cause instanceof Error ? cause.message : String(cause);
+          logger.warn`workflow-run pack push failed for deployment ${repoId.id} (${slot.agentAddress}): ${msg}`;
+          slot.lastError =
+            cause instanceof Error ? cause : new Error(String(cause));
+        }
+      }
+      slot.inFlight = null;
+      notifySettled(slot);
+    })();
+  }
+
+  function schedulePush(
+    agentAddress: string,
+    repoId: RepoId,
+    ref: string,
+  ): void {
+    const key = slotKey(repoId, ref);
+    let slot = slots.get(key);
+    if (slot === undefined) {
+      slot = {
+        agentAddress,
+        inFlight: null,
+        dirty: false,
+        lastError: null,
+        settled: [],
+      };
+      slots.set(key, slot);
+    } else {
+      // The agentAddress is derived from a stable per-deployment
+      // mapping; refreshing it on every call keeps the slot in sync
+      // if the registry ever re-resolves the same deploymentId to
+      // a different address (today it does not, but the contract is
+      // "look up at push time", not "cache forever").
+      slot.agentAddress = agentAddress;
+    }
+    slot.dirty = true;
+    startLoop(slot, repoId, ref);
+  }
+
+  function takeLatchedError(repoId: RepoId, ref: string): Error | null {
+    const slot = slots.get(slotKey(repoId, ref));
+    if (slot === undefined) return null;
+    const err = slot.lastError;
+    if (err !== null) slot.lastError = null;
+    return err;
+  }
+
+  async function flushWorkflowRunPushes(
+    repoId: RepoId,
+    ref: string,
+  ): Promise<void> {
+    const slot = slots.get(slotKey(repoId, ref));
+    if (slot === undefined) return;
+    if (slot.inFlight === null && !slot.dirty) {
+      if (slot.lastError !== null) {
+        const err = slot.lastError;
+        slot.lastError = null;
+        throw err;
+      }
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      slot.settled.push(resolve);
+    });
+    if (slot.lastError !== null) {
+      const err = slot.lastError;
+      slot.lastError = null;
+      throw err;
+    }
+  }
+
+  const wrapped: WorkflowRunPackPushingRepoStore = {
     initRepo: underlying.initRepo.bind(underlying),
     writeTree: underlying.writeTree.bind(underlying),
     receivePack: underlying.receivePack.bind(underlying),
@@ -311,7 +472,14 @@ export function createWorkflowRunPackPushingRepoStore(
     resolveHead: underlying.resolveHead.bind(underlying),
     getRepoDir: underlying.getRepoDir.bind(underlying),
     subscribe: underlying.subscribe.bind(underlying),
+    flushWorkflowRunPushes,
     async writeTreePreservingPrefix(principal, repoId, ref, args) {
+      if (repoId.kind === "workflow-run") {
+        const latched = takeLatchedError(repoId, ref);
+        if (latched !== null) {
+          throw latched;
+        }
+      }
       const result = await underlying.writeTreePreservingPrefix(
         principal,
         repoId,
@@ -327,13 +495,7 @@ export function createWorkflowRunPackPushingRepoStore(
           `workflow-run pack push: no agent address registered for deployment ${repoId.id}; the deploy router must record the mapping before the supervisor commits run events`,
         );
       }
-      try {
-        await packClient.push({ agentAddress, repoId, ref });
-      } catch (cause) {
-        const msg = cause instanceof Error ? cause.message : String(cause);
-        logger.warn`workflow-run pack push failed for deployment ${repoId.id} (${agentAddress}): ${msg}`;
-        throw cause;
-      }
+      schedulePush(agentAddress, repoId, ref);
       return result;
     },
   };
