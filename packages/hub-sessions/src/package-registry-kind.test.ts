@@ -1,15 +1,25 @@
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import os from "node:os";
 import path from "node:path";
-import { promises as fsp } from "node:fs";
+import nodeFs, { promises as fsp } from "node:fs";
 import * as tar from "tar";
+import git from "isomorphic-git";
+import { generateKeyPair } from "@intx/crypto-node";
+import { collectReachableObjects } from "@intx/storage-isogit";
+import type { KeyPair } from "@intx/types/runtime";
 
 import {
   packageRegistryKindHandler,
   asTarballEntry,
   validateTarballPackageJSON,
 } from "./package-registry-kind";
-import type { Principal, RepoId } from "./repo-store";
+import { createRepoStore } from "./repo-store";
+import type {
+  KindHandler,
+  RepoId,
+  Principal,
+  ValidatePushResult,
+} from "./repo-store";
 
 const REF = "refs/heads/main";
 
@@ -375,5 +385,273 @@ describe("packageRegistryKindHandler.validatePush", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected reject");
     expect(result.reason).toContain("tarballs");
+  });
+});
+
+// The substrate's `receivePack` walks every new commit in the pack and
+// invokes the kind handler's `validatePush` once per commit, so a tree
+// that violates the package-registry allowlist on an intermediate
+// commit must reject the pack even when the tip is valid. The
+// package-registry handler does not consult prior closures — each
+// commit's tree is judged on its own top-level paths and per-tarball
+// shape. This regression pins that behaviour: the per-commit walk
+// catches an intermediate-state violation at the offending commit,
+// not by accidentally being lenient at the tip.
+describe("package-registry per-commit pack walk", () => {
+  const tempDirsForStore: string[] = [];
+  let signingKey: KeyPair;
+
+  beforeAll(async () => {
+    signingKey = await generateKeyPair();
+  });
+
+  afterAll(async () => {
+    for (const d of tempDirsForStore.splice(0)) {
+      await fsp.rm(d, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  async function makeTempDir(prefix: string): Promise<string> {
+    const d = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
+    tempDirsForStore.push(d);
+    return d;
+  }
+
+  const permissiveHandler: KindHandler = {
+    kind: "package-registry",
+    directoryPrefix: "assets/package-registry",
+    validatePush(): ValidatePushResult {
+      return { ok: true };
+    },
+    onRefUpdated() {
+      /* no-op */
+    },
+  };
+
+  const PRINCIPAL: Principal = { kind: "hub" };
+  // The handler does not gate validation on ref name; pick a non-`main`
+  // ref so the source's `initRepo` genesis (on `refs/heads/main`) does
+  // not collide with the test's pack target.
+  const REGISTRY_REF = "refs/heads/deploy";
+
+  test("rejects a multi-commit pack whose second commit adds a disallowed top-level path", async () => {
+    const sourceDataDir = await makeTempDir("pkg-reg-percommit-src-");
+    const sourceStore = createRepoStore({
+      dataDir: sourceDataDir,
+      signingKey,
+      handlers: { "package-registry": permissiveHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    const repoId: RepoId = {
+      kind: "package-registry",
+      id: `pkr-${Math.random().toString(36).slice(2, 10)}`,
+    };
+    await sourceStore.initRepo(repoId);
+
+    // Seed the first commit with a valid tarball under `tarballs/` so
+    // the kind handler's per-commit walk has a `tarballs` subtree to
+    // enumerate. Without one, `buildCommitTreeClosures.listDir`
+    // throws on a missing `tarballs/` directory and the handler's
+    // catch arm reports the underlying listDir failure rather than
+    // the top-level-entry violation we are pinning here.
+    const seedTarball = await makeTarball({
+      name: "seed-pkg",
+      version: "1.0.0",
+    });
+    const { commitSha: firstSha } = await sourceStore.writeTree(
+      PRINCIPAL,
+      repoId,
+      REGISTRY_REF,
+      {
+        files: {
+          ".gitignore": "node_modules\n",
+          "tarballs/seed-pkg-1.0.0.tgz": seedTarball,
+        },
+        message: "valid single-tarball registry",
+      },
+    );
+    const { commitSha: secondSha } = await sourceStore.writeTree(
+      PRINCIPAL,
+      repoId,
+      REGISTRY_REF,
+      {
+        files: {
+          ".gitignore": "node_modules\n",
+          "tarballs/seed-pkg-1.0.0.tgz": seedTarball,
+          "stray.json": "{}",
+        },
+        message: "intermediate violation: stray top-level path",
+      },
+    );
+
+    const sourceDir = sourceStore.getRepoDir(repoId);
+    const firstObjects = await collectReachableObjects(sourceDir, firstSha);
+    const secondObjects = await collectReachableObjects(sourceDir, secondSha);
+    const oids = Array.from(new Set([...firstObjects, ...secondObjects]));
+    const packResult = await git.packObjects({
+      fs: nodeFs,
+      dir: sourceDir,
+      oids,
+      write: false,
+    });
+    if (packResult.packfile === undefined) {
+      throw new Error("git.packObjects returned no packfile");
+    }
+    const pack = packResult.packfile;
+
+    const targetDataDir = await makeTempDir("pkg-reg-percommit-tgt-");
+    const targetStore = createRepoStore({
+      dataDir: targetDataDir,
+      signingKey,
+      handlers: { "package-registry": packageRegistryKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    await targetStore.initRepo(repoId);
+
+    await expect(
+      targetStore.receivePack(
+        PRINCIPAL,
+        repoId,
+        REGISTRY_REF,
+        pack,
+        secondSha,
+        null,
+      ),
+    ).rejects.toThrow(
+      /path_violation:.*unexpected top-level entry "stray\.json"/,
+    );
+
+    const resolvedAfter = await targetStore.resolveRef(
+      PRINCIPAL,
+      repoId,
+      REGISTRY_REF,
+    );
+    expect(resolvedAfter).toBeNull();
+  });
+
+  test("the same violation at the tip of a single-commit pack also rejects", async () => {
+    const sourceDataDir = await makeTempDir("pkg-reg-tiponly-src-");
+    const sourceStore = createRepoStore({
+      dataDir: sourceDataDir,
+      signingKey,
+      handlers: { "package-registry": permissiveHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    const repoId: RepoId = {
+      kind: "package-registry",
+      id: `pkr-${Math.random().toString(36).slice(2, 10)}`,
+    };
+    await sourceStore.initRepo(repoId);
+    // Pair the violating top-level entry with a valid tarballs subtree
+    // so the handler's allowlist for-loop catches `stray.json` before
+    // it falls through to the listDir("tarballs") path. Otherwise the
+    // missing `tarballs/` entry trips `buildCommitTreeClosures.listDir`
+    // first and the rejection reason describes the listDir failure
+    // rather than the allowlist violation.
+    const seedTarball = await makeTarball({
+      name: "seed-pkg",
+      version: "1.0.0",
+    });
+    const { commitSha } = await sourceStore.writeTree(
+      PRINCIPAL,
+      repoId,
+      REGISTRY_REF,
+      {
+        files: {
+          "tarballs/seed-pkg-1.0.0.tgz": seedTarball,
+          "stray.json": "{}",
+        },
+        message: "tip violates the package-registry allowlist",
+      },
+    );
+    const { pack } = await sourceStore.createPack(
+      PRINCIPAL,
+      repoId,
+      REGISTRY_REF,
+    );
+
+    const targetDataDir = await makeTempDir("pkg-reg-tiponly-tgt-");
+    const targetStore = createRepoStore({
+      dataDir: targetDataDir,
+      signingKey,
+      handlers: { "package-registry": packageRegistryKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    await targetStore.initRepo(repoId);
+    await expect(
+      targetStore.receivePack(
+        PRINCIPAL,
+        repoId,
+        REGISTRY_REF,
+        pack,
+        commitSha,
+        null,
+      ),
+    ).rejects.toThrow(
+      /path_violation:.*unexpected top-level entry "stray\.json"/,
+    );
+  });
+
+  test("accepts a pack whose tree omits the tarballs subtree entirely", async () => {
+    // The substrate's `buildCommitTreeClosures.listDir` throws on an
+    // absent path (the error has no `code: "NotFoundError"` — it is a
+    // plain `new Error("listDir: path tarballs is not a directory ...")`).
+    // The handler must gate the `listDir("tarballs")` call on
+    // `topLevelTreePaths.includes("tarballs")` so a tree without a
+    // `tarballs/` subtree (e.g. the genesis tree, which only writes
+    // `.gitignore`) validates cleanly. Without the gate the handler's
+    // catch arm reports "failed to list tarballs subtree" and the push
+    // is rejected even though no tarball-allowlist violation exists.
+    const sourceDataDir = await makeTempDir("pkg-reg-notarballs-src-");
+    const sourceStore = createRepoStore({
+      dataDir: sourceDataDir,
+      signingKey,
+      handlers: { "package-registry": permissiveHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    const repoId: RepoId = {
+      kind: "package-registry",
+      id: `pkr-${Math.random().toString(36).slice(2, 10)}`,
+    };
+    await sourceStore.initRepo(repoId);
+    const { commitSha } = await sourceStore.writeTree(
+      PRINCIPAL,
+      repoId,
+      REGISTRY_REF,
+      {
+        files: {
+          ".gitignore": "node_modules\n",
+        },
+        message: "registry without tarballs subtree",
+      },
+    );
+    const { pack } = await sourceStore.createPack(
+      PRINCIPAL,
+      repoId,
+      REGISTRY_REF,
+    );
+
+    const targetDataDir = await makeTempDir("pkg-reg-notarballs-tgt-");
+    const targetStore = createRepoStore({
+      dataDir: targetDataDir,
+      signingKey,
+      handlers: { "package-registry": packageRegistryKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    await targetStore.initRepo(repoId);
+    await targetStore.receivePack(
+      PRINCIPAL,
+      repoId,
+      REGISTRY_REF,
+      pack,
+      commitSha,
+      null,
+    );
+    const resolvedAfter = await targetStore.resolveRef(
+      PRINCIPAL,
+      repoId,
+      REGISTRY_REF,
+    );
+    expect(resolvedAfter).toBe(commitSha);
   });
 });

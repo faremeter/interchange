@@ -15,7 +15,6 @@
 
 import { getLogger } from "@intx/log";
 import { extractTarballPackageJSON } from "@intx/tool-packaging";
-import { hasCode } from "@intx/types";
 import type { PackageJSON } from "@intx/types/package-json";
 
 import {
@@ -174,20 +173,28 @@ export const packageRegistryKindHandler: KindHandler = {
 
     // Enumerate every entry under `tarballs/`, validate the filename
     // shape, then open each tarball and validate its package.json.
+    // Gate on `topLevelTreePaths` so a tree without a `tarballs/`
+    // subtree (the genesis commit, or any push that simply does not
+    // include tarballs yet) skips the enumeration: the substrate's
+    // `buildCommitTreeClosures.listDir` throws a plain `Error` on an
+    // absent path rather than something we can distinguish from a
+    // transport fault, so "is the subtree there at all" is answered
+    // at the handler from the top-level enumeration the substrate
+    // already supplies, not from a probe call.
     let tarballChildren: string[];
-    try {
-      tarballChildren = await listDir("tarballs");
-    } catch (err) {
-      // Only "the tarballs subtree is absent" is a legitimate fall-
-      // through case (genesis tree, or an upload that dropped the
-      // prefix). Any other listDir failure — EACCES, EIO, transient
-      // transport faults, malformed-tree errors — must surface as a
-      // push rejection rather than be collapsed into "no tarballs to
-      // validate," which would silently let a push through whose
-      // tarballs subtree could not be enumerated.
-      if (hasCode(err) && err.code === "NotFoundError") {
-        tarballChildren = [];
-      } else {
+    if (!topLevelTreePaths.includes("tarballs")) {
+      tarballChildren = [];
+    } else {
+      try {
+        tarballChildren = await listDir("tarballs");
+      } catch (err) {
+        // The top-level enumeration already told us `tarballs` is
+        // present, so any failure here is a real listDir fault
+        // (EACCES, EIO, malformed-tree, transient transport) — not
+        // "the subtree is absent." Surface it as a push rejection
+        // rather than collapsing it into "no tarballs to validate,"
+        // which would silently let a push through whose tarballs
+        // subtree could not be enumerated.
         return {
           ok: false,
           reason: `failed to list tarballs subtree: ${err instanceof Error ? err.message : String(err)}`,
