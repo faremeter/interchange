@@ -1690,6 +1690,93 @@ describe("createWorkflowSupervisor", () => {
       }),
     ).rejects.toThrow(/provisionAgent failed in test/);
   });
+
+  test("drain() is a no-op when the supervisor is idle (no spawn has run)", async () => {
+    // Pins the defensive contract for an inbound drain.deliver frame
+    // that lands while the supervisor has no in-flight runs to escalate
+    // (e.g. the deployment's only run already reached a terminal
+    // state). `drain` returns silently in `idle`/`stopping`/`stopped`,
+    // does not throw, does not forward a `drain` control frame to a
+    // dead child, and does not arm any accumulators. This is the
+    // contract higher-level host shutdown sequences depend on -- they
+    // call `drain` unconditionally without sniffing the phase.
+    const baseDir = await makeTempDir("supervisor-drain-idle-");
+    const accumulatorInvocations: DrainTimeoutOpts[] = [];
+    const accumulatorFactory: DrainTimeoutAccumulatorFactory = (opts) => {
+      accumulatorInvocations.push(opts);
+      const stub: DrainTimeoutAccumulator = {
+        start() {
+          /* unused */
+        },
+        pause() {
+          /* unused */
+        },
+        resume() {
+          /* unused */
+        },
+        stop() {
+          /* unused */
+        },
+        accumulatedMs() {
+          return 0;
+        },
+        get escalated() {
+          return false;
+        },
+        disposed() {
+          return Promise.resolve();
+        },
+      };
+      return stub;
+    };
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: () => {
+        throw new Error("spawner must not be invoked on the idle drain path");
+      },
+      signSpy: () => ({
+        sig: new Uint8Array(64),
+        principalKind: "supervisor",
+      }),
+      mailBus: createMockMailBus(),
+    });
+    const supervisor = createWorkflowSupervisor({
+      ...bindings,
+      drainTimeoutAccumulatorFactory: accumulatorFactory,
+    });
+    await supervisor.drain({ deadlineMs: 5_000 });
+    expect(accumulatorInvocations).toHaveLength(0);
+  });
+
+  test("deliverSignal() rejects when the supervisor is idle (no spawn has run)", async () => {
+    // Pins the defensive contract for an inbound signal.deliver frame
+    // landing against a supervisor that is not in `starting`/`running`/
+    // `recycling`. The supervisor throws so the router's
+    // `tryRoute` rejection propagates up to the hub-link's
+    // `handleSignalDeliver`, which logs and drops without crashing the
+    // sidecar or contaminating sibling deployments.
+    const baseDir = await makeTempDir("supervisor-deliver-signal-idle-");
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: () => {
+        throw new Error("spawner must not be invoked on the idle signal path");
+      },
+      signSpy: () => ({
+        sig: new Uint8Array(64),
+        principalKind: "supervisor",
+      }),
+      mailBus: createMockMailBus(),
+    });
+    const supervisor = createWorkflowSupervisor(bindings);
+    await expect(
+      supervisor.deliverSignal({
+        runId: "run-stale",
+        signalName: "approve",
+        signalId: "sig-stale",
+        payload: null,
+      }),
+    ).rejects.toThrow(/deliverSignal called in phase idle/);
+  });
 });
 
 describe("assembleCredentialsSnapshot", () => {

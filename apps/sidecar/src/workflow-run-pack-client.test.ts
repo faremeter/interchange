@@ -6,6 +6,7 @@ import {
   createDeploymentAddressRegistry,
   createMultistepDrainRouter,
   createMultistepMailRouter,
+  createMultistepSignalRouter,
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
@@ -533,5 +534,175 @@ describe("createMultistepDrainRouter", () => {
         deadlineMs: 1_000,
       }),
     ).rejects.toThrow(/supervisor\.drain failed/);
+  });
+
+  test("drain.deliver for a never-registered deployment id drops cleanly without throwing", async () => {
+    // Pins the defensive contract for an inbound drain.deliver frame
+    // that names a deploymentId the sidecar's supervisor never spawned
+    // (e.g. an in-flight frame outracing the deploy ack, or a hub-side
+    // stale-state retry). The router must not throw; the hub-link's
+    // handleDrainDeliver then logs and drops, leaving sibling
+    // deployments unaffected.
+    const router = createMultistepDrainRouter();
+    router.register("dep-known@integration.interchange", async () => {
+      throw new Error("known handler must not be invoked");
+    });
+    const claimed = await router.tryRoute({
+      type: "drain.deliver",
+      agentAddress: "dep-unknown@integration.interchange",
+      deadlineMs: 1_000,
+    });
+    expect(claimed).toBe(false);
+  });
+});
+
+describe("createMultistepSignalRouter", () => {
+  test("tryRoute resolves to false when no handler is registered", async () => {
+    const router = createMultistepSignalRouter();
+    const claimed = await router.tryRoute({
+      type: "signal.deliver",
+      agentAddress: "dep@integration.interchange",
+      runId: "run-1",
+      signalName: "approve",
+      signalId: "sig-1",
+      payload: { ok: true },
+    });
+    expect(claimed).toBe(false);
+  });
+
+  test("a registered handler receives the signal and tryRoute resolves to true", async () => {
+    const router = createMultistepSignalRouter();
+    const received: {
+      runId: string;
+      signalName: string;
+      signalId: string;
+      payload: unknown;
+    }[] = [];
+    router.register("dep@integration.interchange", async (args) => {
+      received.push(args);
+    });
+    const claimed = await router.tryRoute({
+      type: "signal.deliver",
+      agentAddress: "dep@integration.interchange",
+      runId: "run-42",
+      signalName: "approve",
+      signalId: "sig-42",
+      payload: { ok: true },
+    });
+    expect(claimed).toBe(true);
+    expect(received).toEqual([
+      {
+        runId: "run-42",
+        signalName: "approve",
+        signalId: "sig-42",
+        payload: { ok: true },
+      },
+    ]);
+  });
+
+  test("registration is per-address; an unrelated address falls through", async () => {
+    const router = createMultistepSignalRouter();
+    const received: string[] = [];
+    router.register("dep-a@integration.interchange", async (args) => {
+      received.push(args.signalId);
+    });
+    const claimed = await router.tryRoute({
+      type: "signal.deliver",
+      agentAddress: "dep-b@integration.interchange",
+      runId: "run-1",
+      signalName: "approve",
+      signalId: "sig-1",
+      payload: null,
+    });
+    expect(claimed).toBe(false);
+    expect(received).toHaveLength(0);
+  });
+
+  test("unregister removes the handler", async () => {
+    const router = createMultistepSignalRouter();
+    const received: string[] = [];
+    router.register("dep@integration.interchange", async (args) => {
+      received.push(args.signalId);
+    });
+    router.unregister("dep@integration.interchange");
+    const claimed = await router.tryRoute({
+      type: "signal.deliver",
+      agentAddress: "dep@integration.interchange",
+      runId: "run-1",
+      signalName: "approve",
+      signalId: "sig-1",
+      payload: null,
+    });
+    expect(claimed).toBe(false);
+    expect(received).toHaveLength(0);
+  });
+
+  test("re-registering an address replaces the prior handler", async () => {
+    // Pins the contract that drives the "stale-cohort signal" edge
+    // case. A signal frame in flight while the deploy router re-binds
+    // the deployment address (the only legitimate path that swaps the
+    // handler today) must route to the most-recently-registered
+    // handler; the prior cohort's handler is unreachable once
+    // replaced. The router does not carry a cohortId on the wire, so
+    // "live registration wins" is the contract that captures the
+    // intent.
+    const router = createMultistepSignalRouter();
+    const first: string[] = [];
+    const second: string[] = [];
+    router.register("dep@integration.interchange", async (args) => {
+      first.push(args.signalId);
+    });
+    router.register("dep@integration.interchange", async (args) => {
+      second.push(args.signalId);
+    });
+    await router.tryRoute({
+      type: "signal.deliver",
+      agentAddress: "dep@integration.interchange",
+      runId: "run-1",
+      signalName: "approve",
+      signalId: "sig-late",
+      payload: null,
+    });
+    expect(first).toHaveLength(0);
+    expect(second).toEqual(["sig-late"]);
+  });
+
+  test("handler rejection propagates through tryRoute", async () => {
+    const router = createMultistepSignalRouter();
+    router.register("dep@integration.interchange", async () => {
+      throw new Error("supervisor.deliverSignal failed");
+    });
+    await expect(
+      router.tryRoute({
+        type: "signal.deliver",
+        agentAddress: "dep@integration.interchange",
+        runId: "run-1",
+        signalName: "approve",
+        signalId: "sig-1",
+        payload: null,
+      }),
+    ).rejects.toThrow(/supervisor\.deliverSignal failed/);
+  });
+
+  test("signal.deliver for a never-registered deployment id drops cleanly without throwing", async () => {
+    // Pins the defensive contract for an inbound signal.deliver frame
+    // that names a deploymentId the sidecar's supervisor never spawned
+    // (e.g. an in-flight frame outracing the deploy ack, or a hub-side
+    // stale-state retry). The router must not throw; the hub-link's
+    // handleSignalDeliver then logs and drops, leaving sibling
+    // deployments unaffected.
+    const router = createMultistepSignalRouter();
+    router.register("dep-known@integration.interchange", async () => {
+      throw new Error("known handler must not be invoked");
+    });
+    const claimed = await router.tryRoute({
+      type: "signal.deliver",
+      agentAddress: "dep-unknown@integration.interchange",
+      runId: "run-1",
+      signalName: "approve",
+      signalId: "sig-1",
+      payload: null,
+    });
+    expect(claimed).toBe(false);
   });
 });
