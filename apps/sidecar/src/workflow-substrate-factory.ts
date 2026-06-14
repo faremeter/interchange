@@ -330,6 +330,18 @@ export interface SidecarRunChildDeps {
   workflowRunRepoId: RepoId;
   /** Workflow-run ref the child reads/writes against. */
   workflowRunRef: string;
+  /**
+   * Deploy ref the child env's recursive `spawnChild` resolves
+   * grandchild `definitionRef`s against. The runtime body's
+   * `runChildWorkflow` was designed for arbitrary depth; the child's
+   * env's `spawnChild` slot must itself be a `createWorkflowSpawnChild`
+   * adapter against this deploy ref so a grandchild spawn resolves
+   * the grandchild's `workflow.json` from the workflow asset substrate
+   * the same way the parent's spawn does. The sub-namespace scoping
+   * (`runs/<runId>/...`) continues to work because each rung's
+   * runtime env routes through `runId`-keyed substrate adapters.
+   */
+  workflowDefinitionRef: string;
   /** Principal the child presents on every substrate operation. */
   principal: Principal;
   /** Host-process scheduler singleton; shared with the parent. */
@@ -398,7 +410,22 @@ export function createSidecarRunChild(
     principal: deps.principal,
     ref: deps.workflowRunRef,
   });
-  return async ({ definition, childRunId, input, signal }) => {
+  // Self-referential `RunChildWorkflow` so a child env's recursive
+  // `spawnChild` (built via `createWorkflowSpawnChild` below) can route
+  // grandchild spawns back through the same adapter. Each invocation
+  // builds a per-runId env that itself wires a `spawnChild` slot whose
+  // `runChild` is this same `runChild` constant -- the recursion bottoms
+  // out when a rung's `WorkflowDefinition` has no `childWorkflow`
+  // primitive. Sub-namespace scoping continues to hold at every depth
+  // because `childRunId` flows verbatim into the per-rung
+  // `blobs`/`signalChannel`/`runtimeRun` calls, keeping every rung's
+  // events under `runs/<runId>/...` of the parent's workflow-run repo.
+  const runChild: RunChildWorkflow = async ({
+    definition,
+    childRunId,
+    input,
+    signal,
+  }) => {
     const blobs = createWorkflowRunBlobSubstrate({
       substrate: deps.substrate,
       repoId: deps.workflowRunRepoId,
@@ -434,6 +461,18 @@ export function createSidecarRunChild(
       );
     };
     const drain = createNoopDrainController(definition);
+    // Recursive `spawnChild`: a grandchild's `definitionRef` is resolved
+    // against the workflow-asset substrate the parent's spawn used, and
+    // the resolved `WorkflowDefinition` flows back into this same
+    // `runChild` callback. The runtime body's `runChildWorkflow`
+    // contract is depth-agnostic; the wiring here makes the sidecar's
+    // adapter depth-agnostic too.
+    const spawnChild = createWorkflowSpawnChild({
+      substrate: deps.substrate,
+      principal: deps.principal,
+      deployRef: deps.workflowDefinitionRef,
+      runChild,
+    });
     const env: WorkflowRuntimeEnv = {
       repoStore,
       scheduler: deps.scheduler,
@@ -442,16 +481,7 @@ export function createSidecarRunChild(
       directors,
       authorize,
       invokeStep: deps.invokeStep,
-      // The child's own `env.spawnChild` is intentionally throwing:
-      // recursive in-process recursion (child spawning a grandchild)
-      // is not in scope for this commit. A future wiring that
-      // recursively threads `createSidecarRunChild` through the child
-      // env can replace this slot.
-      spawnChild: async () => {
-        throw new Error(
-          "sidecar runChild spawnChild: nested in-process recursion (child spawning grandchild) is not wired; the child's child-workflow primitive should not be invoked until the recursive wiring lands",
-        );
-      },
+      spawnChild,
       clock,
       newId,
       drain,
@@ -479,6 +509,7 @@ export function createSidecarRunChild(
       await signalChannel.stop();
     }
   };
+  return runChild;
 }
 
 function defaultClock(): Date {
@@ -669,6 +700,7 @@ export function createSidecarSubstrateFactory(
       substrate,
       workflowRunRepoId,
       workflowRunRef: validated.WORKFLOW_RUN_REF,
+      workflowDefinitionRef: validated.WORKFLOW_DEFINITION_REF,
       principal,
       scheduler,
       invokeStep: childInvokeStep,
