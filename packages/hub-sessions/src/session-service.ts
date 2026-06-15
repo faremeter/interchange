@@ -324,21 +324,31 @@ function resolveMountPath(row: AgentAssetWithAsset): string {
 
 /**
  * Compute the operator-approval set the workflow-deploy orchestrator
- * needs for a trivial-wrap deploy. The wrapped agent has no tool
- * factories, capabilities, or director ref (see
- * `wrapHarnessAsTrivialAgent`), so the only grant shapes the
- * capability walk surfaces are the per-source inference grants, the
- * default-director grant, and the trigger-derived mail grants. The
- * approval set covers exactly those shapes; the legacy agent-deploy
- * path has already authorized the deployment in toto, and re-running
- * deploy through the workflow surface must not synthesize a fresh
- * approval prompt for grants the legacy path implicitly approved.
+ * needs for a trivial-wrap deploy. The wrapped agent carries no
+ * capability list and no director ref (see `wrapHarnessAsTrivialAgent`),
+ * but `HarnessConfig.tools` projects onto the synthesized agent's
+ * `toolFactories` so the walk emits `tool:<name>` grants the gate
+ * checks. The approval set mirrors that projection: every tool the
+ * `HarnessConfig` already names gets the matching `tool:` approval,
+ * the per-source inference grants land alongside the default-director
+ * grant, and the trigger-derived mail grants close the set out.
+ *
+ * The legacy agent-deploy path has already authorized the deployment
+ * in toto -- the harness's `tools` array is the operator-supplied
+ * surface the hub ships to the sidecar -- and re-running deploy
+ * through the workflow surface must not synthesize a fresh approval
+ * prompt for grants the legacy path implicitly approved. The shape
+ * here keeps the gate honest (an unapproved tool fails the deploy)
+ * while the legacy passthrough remains bit-for-bit on the wire.
  */
 function buildTrivialApprovalSet(args: {
   agentAddress: string;
   config: HarnessConfig;
 }): ApprovalSet {
   const approvals = new Set<string>();
+  for (const tool of args.config.tools) {
+    approvals.add(`tool:${tool.name}`);
+  }
   for (const source of args.config.sources) {
     approvals.add(`inference.source:${source.provider}:${source.model}`);
   }

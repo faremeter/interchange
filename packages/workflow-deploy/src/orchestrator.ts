@@ -34,8 +34,17 @@
 //
 // =========================================================================
 
-import type { AgentDefinition, BaseEnv, DirectorRegistry } from "@intx/agent";
-import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import type {
+  AgentDefinition,
+  AnnotatedToolFactory,
+  BaseEnv,
+  DirectorRegistry,
+} from "@intx/agent";
+import type {
+  HarnessConfig,
+  InferenceSource,
+  ToolDefinition,
+} from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import {
   STEP_ID_PATTERN,
@@ -710,10 +719,19 @@ function serializeWalk(walk: CapabilityWalkResult): unknown {
  * round-trip claim: the legacy deploy-flow exposes `HarnessConfig` plus
  * `DeployContent`, and `SessionService.launchSession` collapses onto
  * `deployWorkflow` by synthesizing a single-step workflow from those
- * two values via this function. The synthesized agent carries no tool factories, no
- * director ref, and no capabilities at the type level; the deploy tree
- * itself (`deployContent.systemPrompt`, the harness's `tools` and
- * `grants` arrays) is the source of truth for runtime behaviour.
+ * two values via this function. The deploy tree itself
+ * (`deployContent.systemPrompt`, the harness's `tools` and `grants`
+ * arrays) is the source of truth for runtime behaviour; the wrap
+ * synthesizes only the surfaces the capability walk needs to gate the
+ * deploy against the operator-approval set.
+ *
+ * The walk inspects `agent.toolFactories[i].id` to emit `tool:<id>`
+ * grants. The wrap projects each `HarnessConfig.tools[i].name` onto a
+ * synthesized `AnnotatedToolFactory` whose `id` matches; the factory
+ * function itself is never invoked on the walk path. Skipping this
+ * projection would let the gate admit every trivial deploy regardless
+ * of what `HarnessConfig.tools` named, breaking the uniformity claim's
+ * substance at the approval layer.
  */
 export function wrapHarnessAsTrivialAgent(args: {
   config: HarnessConfig;
@@ -723,13 +741,45 @@ export function wrapHarnessAsTrivialAgent(args: {
     provider: source.provider,
     model: source.model,
   }));
+  const toolFactories = args.config.tools.map(synthesizeWalkToolFactory);
   return {
     id: args.config.agentId,
     systemPrompt: args.deployContent.systemPrompt,
-    toolFactories: [],
+    toolFactories,
     capabilities: [],
     inference: {
       sources: inferenceSources,
     },
   };
+}
+
+/**
+ * Synthesize an `AnnotatedToolFactory` from a wire-shaped
+ * `ToolDefinition`. The factory's `id` mirrors the tool's `name` so the
+ * capability walk emits a `tool:<name>` grant the operator-approval
+ * gate can deny. The factory function itself is never invoked on the
+ * walk path; the wrap never participates in agent instantiation. If a
+ * future caller mistakes this synthesized factory for a real one and
+ * invokes it, the throw surfaces the misuse loudly rather than silently
+ * fabricating a tool bundle.
+ *
+ * `validateNamespacedId` (the constructor `defineTool` runs) is
+ * deliberately skipped: `HarnessConfig.tools[i].name` is the existing
+ * wire shape downstream consumers gate against, and re-validating it
+ * here would diverge the trivial-wrap's surface from what the harness
+ * actually loads. The walk and the gate only consult `.id`, so a bare
+ * name still produces a stable grant string.
+ */
+function synthesizeWalkToolFactory(
+  tool: ToolDefinition,
+): AnnotatedToolFactory<BaseEnv> {
+  const factory = (_env: BaseEnv): never => {
+    throw new Error(
+      `wrapHarnessAsTrivialAgent synthesized tool factory for ${JSON.stringify(tool.name)} is walk-only; do not instantiate the trivial-wrap agent`,
+    );
+  };
+  return Object.assign(factory, {
+    id: tool.name,
+    requires: Object.freeze([]) as readonly string[],
+  });
 }
