@@ -508,6 +508,7 @@ export function createWorkflowSupervisor(
    */
   async function pumpUpstreamControl(
     iter: AsyncGenerator<ControlPayload, void, void>,
+    cohortBroadcaster: TerminalBroadcaster,
   ): Promise<void> {
     for await (const payload of iter) {
       if (payload.type === "recycle.request") {
@@ -549,20 +550,22 @@ export function createWorkflowSupervisor(
       }
       if (payload.type === "terminal.event") {
         // The workflow-process child mirrors every terminal-run commit
-        // over the control IPC. Fan it out to the cohort's broadcaster
-        // so the dispatch loop's `waitForRunTerminal` and any armed
-        // drainTimeout accumulator settle in step with the child's
-        // own substrate commit. The broadcaster is per-cohort: the
-        // active cohort's broadcaster lives on `state.terminalBroadcaster`
-        // for the spawn / recycling phases; outside those phases the
-        // notification has nowhere to land and is dropped.
-        const broadcaster = activeTerminalBroadcaster();
-        if (broadcaster === null) {
-          logger.warn`terminal.event received outside an active cohort; runId=${payload.data.runId} kind=${payload.data.kind} dropped`;
-          continue;
-        }
+        // over the control IPC. Fan it out to the COHORT'S broadcaster
+        // -- captured at pump-start time, not resolved dynamically
+        // against the supervisor's current `state`. The pump is one-
+        // to-one with its cohort's `controlIncoming` iterator: a
+        // buffered `terminal.event` the OLD child emitted before kill
+        // landed must NEVER route to the NEW cohort's broadcaster.
+        // Without this binding, a stale OLD-cohort frame for a runId
+        // the NEW cohort happens to be dispatching under the same id
+        // (the normal recycle/replay case) would falsely settle the
+        // NEW cohort's `waitForRunTerminal` and commit `markConsumed`
+        // on a run still in flight. The broadcaster's own `dispose()`
+        // on cohort teardown turns post-dispose notify into a no-op,
+        // so a stale frame dequeued after the cohort was torn down
+        // drops cleanly without leaking into any successor cohort.
         const event = terminalEventFromPayload(payload.data);
-        broadcaster.notify(payload.data.runId, event);
+        cohortBroadcaster.notify(payload.data.runId, event);
         continue;
       }
       logger.warn`workflow-process upstream control payload ignored: type=${payload.type}`;
@@ -1252,8 +1255,15 @@ export function createWorkflowSupervisor(
     // child's `recycle.request` (and any future upstream variant) as
     // it arrives. The pump exits when the iterator ends, which
     // happens when the child closes its end of the control channel
-    // -- either on shutdown or on recycle's `kill` step.
-    void pumpUpstreamControl(wired.controlIncoming).catch((cause) => {
+    // -- either on shutdown or on recycle's `kill` step. The pump
+    // closes over the cohort's broadcaster captured at pump-start
+    // time so a `terminal.event` frame the iterator dequeues after a
+    // recycle has minted a new cohort routes to THIS cohort's (now
+    // disposed) broadcaster, not the successor's.
+    void pumpUpstreamControl(
+      wired.controlIncoming,
+      startingPhaseBroadcaster,
+    ).catch((cause) => {
       const message = cause instanceof Error ? cause.message : String(cause);
       logger.error`upstream control pump failed: ${message}`;
     });
@@ -1886,12 +1896,20 @@ export function createWorkflowSupervisor(
             };
             // Re-arm the upstream control pump on the new wiring's
             // iterator. The old wiring's iterator ended when the
-            // recycle path killed the predecessor handle.
-            void pumpUpstreamControl(controlIncoming).catch((cause) => {
-              const message =
-                cause instanceof Error ? cause.message : String(cause);
-              logger.error`upstream control pump (post-recycle) failed: ${message}`;
-            });
+            // recycle path killed the predecessor handle. The new
+            // pump closes over the NEW cohort's broadcaster so a
+            // `terminal.event` arriving on the new iterator routes
+            // to the new cohort's listeners; the prior cohort's pump
+            // (still draining its own iterator) closed over the
+            // prior cohort's broadcaster and is unaffected by this
+            // wiring swap.
+            void pumpUpstreamControl(controlIncoming, newBroadcaster).catch(
+              (cause) => {
+                const message =
+                  cause instanceof Error ? cause.message : String(cause);
+                logger.error`upstream control pump (post-recycle) failed: ${message}`;
+              },
+            );
             // Kick the new dispatch loop so it picks up any inbox
             // entries the previous cohort's replayProcessingToInbox
             // just moved back.
