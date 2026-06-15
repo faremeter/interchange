@@ -448,6 +448,7 @@ async function runMultiStepBranch(args: {
       stepId,
       workflowId: deploy.workflow.id,
       config: deploy.config,
+      operatorApprovals: deploy.operatorApprovals,
     });
     const agentAddress = deriveStepAddress({
       deploymentId,
@@ -510,44 +511,53 @@ async function runMultiStepBranch(args: {
 
 /**
  * Pick the per-step `InferenceSource` from the deploy's
- * `HarnessConfig.sources`. The step's agent preferences (the workflow
- * definition's `inference.sources[0].provider/model`) are the lookup
- * key; the `HarnessConfig` carries the credentialed sources the
- * supervisor needs. A step whose agent preference does not resolve
- * against the deploy's `HarnessConfig.sources` falls back to the
- * `defaultSource`. If no default is wired either, the function fails
- * with `WorkflowDefinitionInvalidError`; defaulting silently here would
- * paper over a deploy whose source-pinning the operator never
- * approved.
+ * `HarnessConfig.sources`, cross-checked against the operator-approved
+ * grant set.
+ *
+ * The capability walk emits `inference.source:<provider>:<model>`
+ * grants only for the (provider, model) pairs the agent declared. The
+ * pinning pass here can otherwise resolve a source the walk never
+ * surfaced -- the `HarnessConfig.defaultSource` fallback path for an
+ * agent whose preference is unresolvable, or the same fallback for a
+ * non-agent step (sleep, gate, awaitSignal, ...) whose primitive
+ * carries no preference at all. In both cases the orchestrator must
+ * refuse to pin a `(provider, model)` the operator never approved;
+ * silently shipping an unapproved source would defeat the capability-
+ * walk gate the deploy just passed.
  */
 function pickStepInferenceSource(args: {
   stepAgent: AgentDefinition<BaseEnv> | null;
   stepId: string;
   workflowId: string;
   config: HarnessConfig;
+  operatorApprovals: ApprovalSet;
 }): InferenceSource {
+  const isApproved = (source: InferenceSource) =>
+    args.operatorApprovals.has(
+      `inference.source:${source.provider}:${source.model}`,
+    );
   const preferred = args.stepAgent?.inference.sources[0];
   if (preferred !== undefined) {
     const match = args.config.sources.find(
       (s) => s.provider === preferred.provider && s.model === preferred.model,
     );
-    if (match !== undefined) return match;
+    if (match !== undefined && isApproved(match)) return match;
   }
   const fallback = args.config.sources.find(
     (s) => s.id === args.config.defaultSource,
   );
-  if (fallback !== undefined) return fallback;
+  if (fallback !== undefined && isApproved(fallback)) return fallback;
   const preferredDesc =
     preferred !== undefined
       ? `agent preferred ${preferred.provider}:${preferred.model}`
       : `the step's agent declared no preferred source`;
   const fallbackDesc =
     args.config.defaultSource !== undefined
-      ? `the deploy's defaultSource ${JSON.stringify(args.config.defaultSource)} does not resolve against HarnessConfig.sources`
+      ? `the deploy's defaultSource ${JSON.stringify(args.config.defaultSource)} does not resolve to an operator-approved source`
       : `the deploy carries no defaultSource to fall back on`;
   throw new WorkflowDefinitionInvalidError(
     args.workflowId,
-    `step ${args.stepId} has no inference source: ${preferredDesc} is missing from HarnessConfig.sources, and ${fallbackDesc}`,
+    `step ${args.stepId} has no approved inference source: ${preferredDesc} is either missing from HarnessConfig.sources or not in the operator-approved grant set, and ${fallbackDesc}`,
   );
 }
 
