@@ -686,9 +686,47 @@ describe("createWorkflowSupervisor", () => {
     expect(supervisor.getCredentialsSnapshot()).not.toBeNull();
 
     // The buffered mail was forwarded as `trigger.fire` frames into
-    // the supervisor-to-child stream after `ready` landed.
-    const forwarded = supervisorToChild.flushed();
-    expect(forwarded.length).toBeGreaterThanOrEqual(2);
+    // the supervisor-to-child stream after `ready` landed. The FIFO
+    // claim-check pipeline serializes dispatch on each run's terminal
+    // event -- the dispatch loop sits on `waitForRunTerminal` after
+    // the first forward, so the test drives m1's terminal event back
+    // to release the loop and observe m2's forward.
+    const waitForTriggerFires = async (n: number): Promise<string[]> => {
+      const deadline = Date.now() + 500;
+      while (Date.now() < deadline) {
+        const ids = parseTriggerFireRunIds(supervisorToChild.flushed());
+        if (ids.length >= n) return ids;
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      return parseTriggerFireRunIds(supervisorToChild.flushed());
+    };
+    const firstFired = await waitForTriggerFires(1);
+    expect(firstFired.length).toBeGreaterThanOrEqual(1);
+    const firstRunId = firstFired[0];
+    if (firstRunId === undefined) throw new Error("first runId missing");
+    await childSender.send({
+      type: "terminal.event",
+      data: {
+        runId: firstRunId,
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
+    });
+    const fired = await waitForTriggerFires(2);
+    expect(fired.length).toBeGreaterThanOrEqual(2);
+    const secondRunId = fired.find((id) => id !== firstRunId);
+    if (secondRunId !== undefined) {
+      await childSender.send({
+        type: "terminal.event",
+        data: {
+          runId: secondRunId,
+          seq: 0,
+          kind: "RunCompleted",
+          at: "test",
+        },
+      });
+    }
 
     await supervisor.shutdown();
     expect(killed).toBe(true);
@@ -843,18 +881,32 @@ describe("createWorkflowSupervisor", () => {
     // No accumulators armed yet -- drain has not been called.
     expect(stubs).toHaveLength(0);
 
+    // Wait for the dispatch loop to dequeue the first buffered mail
+    // and forward its `trigger.fire`. The H-S1 contract gates the
+    // dispatch loop's first iteration on the spawn-time replayDone;
+    // without polling for the forwarded frame the test would call
+    // `drain()` while `inFlightRuns` is still empty and no
+    // accumulator would arm.
+    const triggerFireDeadline = Date.now() + 500;
+    while (Date.now() < triggerFireDeadline) {
+      const ids = parseTriggerFireRunIds(supervisorToChild.flushed());
+      if (ids.length >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(
+      parseTriggerFireRunIds(supervisorToChild.flushed()).length,
+    ).toBeGreaterThanOrEqual(1);
+
     await supervisor.drain({ deadlineMs: 7_500 });
 
     // The supervisor's `drain` control frame landed on the
-    // supervisor-to-child stream. Two frames preceded it
-    // (`trigger.fire` per buffered message); the last frame is the
-    // drain payload.
+    // supervisor-to-child stream alongside the buffered-mail
+    // `trigger.fire` frames. The FIFO claim-check pipeline keeps the
+    // dispatch loop running concurrently with `drain()`, so a fresh
+    // `trigger.fire` can land before or after the drain frame; find
+    // the drain frame by payload type rather than indexing the tail.
     const forwarded = supervisorToChild.flushed();
-    expect(forwarded.length).toBeGreaterThanOrEqual(3);
-    const drainFrameRaw = forwarded[forwarded.length - 1];
-    if (drainFrameRaw === undefined) {
-      throw new Error("no frames observed on supervisor-to-child stream");
-    }
+    expect(forwarded.length).toBeGreaterThanOrEqual(2);
     const SignedFrame = type({
       envelope: {
         seq: "number",
@@ -867,12 +919,14 @@ describe("createWorkflowSupervisor", () => {
       },
       "+": "ignore",
     });
-    const drainFrame = SignedFrame(JSON.parse(drainFrameRaw));
-    if (drainFrame instanceof type.errors) {
-      throw new Error(
-        `drain frame failed envelope shape check: ${drainFrame.summary}`,
-      );
-    }
+    const drainFrame = (() => {
+      for (const line of forwarded) {
+        const parsed = SignedFrame(JSON.parse(line));
+        if (parsed instanceof type.errors) continue;
+        if (parsed.envelope.payload.type === "drain") return parsed;
+      }
+      throw new Error("no drain frame observed on supervisor-to-child stream");
+    })();
     expect(drainFrame.envelope.payload).toMatchObject({
       type: "drain",
       data: { deadlineMs: 7_500 },
@@ -1031,6 +1085,20 @@ describe("createWorkflowSupervisor", () => {
       },
     });
     await spawnPromise;
+
+    // Wait for the dispatch loop to forward the buffered mail's
+    // `trigger.fire` so the run is in `inFlightRuns` when `drain()`
+    // arms its accumulator. With the H-S1 replayDone gate the first
+    // dispatch is no longer synchronous with `await spawnPromise`.
+    const triggerFireDeadline = Date.now() + 500;
+    while (Date.now() < triggerFireDeadline) {
+      const ids = parseTriggerFireRunIds(supervisorToChild.flushed());
+      if (ids.length >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(
+      parseTriggerFireRunIds(supervisorToChild.flushed()).length,
+    ).toBeGreaterThanOrEqual(1);
 
     await supervisor.drain({ deadlineMs: 1_000 });
     expect(timers.size).toBe(1);
@@ -1506,6 +1574,19 @@ describe("createWorkflowSupervisor", () => {
       },
     });
     await spawnPromise;
+    // Wait for the dispatch loop to forward the buffered mail's
+    // `trigger.fire` so the run is in `inFlightRuns` when `drain()`
+    // arms its accumulator. The H-S1 replayDone gate moves the first
+    // dispatch off the `await spawnPromise` critical path.
+    const triggerFireDeadline = Date.now() + 500;
+    while (Date.now() < triggerFireDeadline) {
+      const ids = parseTriggerFireRunIds(supervisorToChild.flushed());
+      if (ids.length >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(
+      parseTriggerFireRunIds(supervisorToChild.flushed()).length,
+    ).toBeGreaterThanOrEqual(1);
     await supervisor.drain({ deadlineMs: 5_000 });
 
     // The supervisor's per-cohort terminal broadcaster always backs
@@ -1649,6 +1730,19 @@ describe("createWorkflowSupervisor", () => {
       },
     });
     await spawnPromise;
+    // Wait for the dispatch loop to forward the buffered mail's
+    // `trigger.fire` so the run is in `inFlightRuns` when `drain()`
+    // arms its accumulator. The H-S1 replayDone gate moves the first
+    // dispatch off the `await spawnPromise` critical path.
+    const triggerFireDeadline = Date.now() + 500;
+    while (Date.now() < triggerFireDeadline) {
+      const ids = parseTriggerFireRunIds(supervisorToChild.flushed());
+      if (ids.length >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(
+      parseTriggerFireRunIds(supervisorToChild.flushed()).length,
+    ).toBeGreaterThanOrEqual(1);
     await supervisor.drain({ deadlineMs: 5_000 });
 
     expect(stubs).toHaveLength(1);

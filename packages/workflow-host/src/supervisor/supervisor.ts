@@ -1110,6 +1110,7 @@ export function createWorkflowSupervisor(
       terminalCohortAbort: new AbortController(),
       terminalBroadcaster: createTerminalBroadcaster(),
       dispatchLoop: null,
+      replayDone: null,
     };
 
     const credentialsSnapshot = await assembleCredentialsSnapshot({
@@ -1125,15 +1126,17 @@ export function createWorkflowSupervisor(
     state.credentialsSnapshot = credentialsSnapshot;
 
     // Replay any orphaned `processing/` entries back to `inbox/`
-    // BEFORE the mail subscription fires. A crash mid-dispatch in a
-    // prior supervisor incarnation can leave an entry in
+    // BEFORE the dispatch loop's first dequeue. A crash mid-dispatch
+    // in a prior supervisor incarnation can leave an entry in
     // `processing/` with no owner; the FIFO contract requires the
     // entry move back to `inbox/` so the next dispatch picks it up
     // in its original arrival position. The replay runs off the
     // spawn critical path (the substrate write may roundtrip through
-    // the pack-pushing wrap and a slow hub) and the dispatch loop's
-    // first iteration awaits the result via `wakeDispatch` so the
-    // replay's completion is observable before any dispatch lands.
+    // the pack-pushing wrap and a slow hub), but `runDispatchLoop`
+    // takes the promise as an argument and awaits it before its
+    // first `dequeueToProcessing` so a fresh inbound mail that lands
+    // during the replay window cannot ship ahead of the orphan once
+    // the replay completes.
     const replayDone = inboxPrimitives
       .replayProcessingToInbox(
         bindings.repoStore,
@@ -1148,9 +1151,12 @@ export function createWorkflowSupervisor(
         const message = cause instanceof Error ? cause.message : String(cause);
         logger.warn`replayProcessingToInbox on spawn failed: ${message}`;
       });
-    // Hold the replay promise so `shutdownInternal` can await its
-    // settlement before tearing the bindings down.
-    void replayDone;
+    // Hold the replay promise on the active-state record so
+    // `shutdownInternal` awaits its settlement before tearing the
+    // bindings down. A shutdown that lands while the replay is in
+    // flight would otherwise leave the substrate write pending past
+    // the supervisor's exit.
+    state.replayDone = replayDone;
 
     bindings.mailBus.registerAddress(bindings.deploymentMailAddress);
     const mailUnsubscribe = bindings.mailBus.subscribeMailForAddress(
@@ -1200,6 +1206,7 @@ export function createWorkflowSupervisor(
       wired.wiring.controlSender,
       startingPhaseCohortAbort,
       startingPhaseBroadcaster,
+      replayDone,
     );
     // Surface dispatch-loop failures via the logger; the loop's own
     // catch already swallows per-iteration faults, but a structural
@@ -1221,6 +1228,7 @@ export function createWorkflowSupervisor(
       terminalCohortAbort: startingPhaseCohortAbort,
       terminalBroadcaster: startingPhaseBroadcaster,
       dispatchLoop,
+      replayDone,
     };
     // Kick the dispatch loop in case mail landed in the inbox
     // before the loop's first `await dispatchWake`. A wake against a
@@ -1488,12 +1496,26 @@ export function createWorkflowSupervisor(
    * iteration drains one inbox entry through the FIFO claim-check
    * pipeline. The loop is restarted by `installNewChild` after a
    * recycle and torn down by `shutdownInternal` and on cohort abort.
+   *
+   * `replayGate` is the promise the spawn-time
+   * `replayProcessingToInbox` settles on. The loop awaits it before
+   * its first `dequeueToProcessing`: a fresh `mail.inbound` that
+   * enqueues during the replay window must not ship ahead of an
+   * orphaned `processing/` entry the replay is still moving back to
+   * `inbox/`. The gate is `null` for the recycle path's restart,
+   * where `triggerRecycle` already awaited its own replay before
+   * calling `installNewChild`.
    */
   async function runDispatchLoop(
     sender: ControlChannelSender,
     cohortAbort: AbortController,
     broadcaster: TerminalBroadcaster,
+    replayGate: Promise<void> | null,
   ): Promise<void> {
+    if (replayGate !== null) {
+      await replayGate;
+      if (cohortAbort.signal.aborted) return;
+    }
     while (!cohortAbort.signal.aborted) {
       let dispatched: boolean;
       try {
@@ -1600,6 +1622,24 @@ export function createWorkflowSupervisor(
         /* swallowed: dispatch-loop failures are surfaced by the
            loop's own logger; the shutdown path only waits for the
            loop's last iteration to settle. */
+      });
+    }
+    if (
+      (prior.phase === "starting" ||
+        prior.phase === "running" ||
+        prior.phase === "recycling") &&
+      prior.replayDone !== null
+    ) {
+      // Await the spawn-time replayProcessingToInbox before tearing
+      // the bindings down. The replay's substrate write
+      // (`processing/` -> `inbox/` rename via a tree commit) must
+      // settle before the supervisor's exit; without the await the
+      // substrate I/O outlives the supervisor and a subsequent boot
+      // can observe a partially-applied replay.
+      await prior.replayDone.catch(() => {
+        /* swallowed: the replay's own catch already surfaces the
+           failure to the supervisor's warn channel; the shutdown
+           path only waits for the substrate write to settle. */
       });
     }
     if (recyclePolicy !== null) {
@@ -1734,6 +1774,7 @@ export function createWorkflowSupervisor(
       terminalCohortAbort: prior.terminalCohortAbort,
       terminalBroadcaster: prior.terminalBroadcaster,
       dispatchLoop: null,
+      replayDone: null,
     };
     let attempt: RecycleAttempt;
     try {
@@ -1811,6 +1852,7 @@ export function createWorkflowSupervisor(
               wiring.controlSender,
               newCohortAbort,
               newBroadcaster,
+              null,
             );
             void newDispatchLoop.catch((cause) => {
               const message =
@@ -1831,6 +1873,7 @@ export function createWorkflowSupervisor(
               terminalCohortAbort: newCohortAbort,
               terminalBroadcaster: newBroadcaster,
               dispatchLoop: newDispatchLoop,
+              replayDone: null,
             };
             // Cache fresh spawn context with the updated spawnedAt
             // so the policy timer's uptime check resets on recycle.
@@ -1996,6 +2039,19 @@ type ActiveState = {
    * settles before the supervisor tears the bindings down.
    */
   dispatchLoop: Promise<void> | null;
+  /**
+   * Settles when the spawn-time `replayProcessingToInbox` resolves
+   * (or rejects, swallowed via the supervisor's warn log). Tracked
+   * on the active-state record so `shutdownInternal` awaits the
+   * replay's substrate write before tearing the bindings down. The
+   * dispatch loop borrows the same promise as its first-iteration
+   * gate, so any inbound mail that enqueues during the replay
+   * window cannot dispatch ahead of an orphaned `processing/`
+   * entry. The recycle-path ActiveState carries `null` because
+   * `triggerRecycle` awaits its own replay inline before
+   * `installNewChild` transitions back to `running`.
+   */
+  replayDone: Promise<void> | null;
 };
 
 type SpawnContext = {
