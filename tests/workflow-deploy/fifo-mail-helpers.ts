@@ -12,8 +12,6 @@
 // to pay on every `make test`. Both files reference these helpers so
 // the split does not duplicate the walk logic.
 
-import git from "isomorphic-git";
-
 import type { RepoId } from "@intx/hub-sessions";
 
 import {
@@ -181,8 +179,3 @@ export async function waitForConsumedEntries(
     await new Promise((r) => setTimeout(r, 50));
   }
 }
-
-// `git` is imported above so downstream files don't need to. Re-export
-// in case a consumer wants to drive isomorphic-git directly off the
-// same module rather than re-importing.
-export { git };
