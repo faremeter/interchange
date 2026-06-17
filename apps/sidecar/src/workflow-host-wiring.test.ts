@@ -721,6 +721,93 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
     expect(spawnerInvoked).toBe(false);
     expect(result.publicKey).toBe("pk-trivial-regression");
   });
+
+  test("two distinct agent addresses whose deriveTrivialDeploymentId slugs collide are rejected at the second deploy", async () => {
+    // `deriveTrivialDeploymentId` substitutes every disallowed
+    // character with `-`, so two agent addresses that differ only in
+    // disallowed characters collapse to the same slug. The slug IS
+    // the workflow-run repoId, so a silent collision would let the
+    // second deploy overwrite the first deploy's repo state. The
+    // slug-claims map rejects the second deploy at the router edge.
+    const transport = createInMemoryTransport();
+    const keyPair = await generateKeyPair();
+    const repoStore = createMinimalStubRepoStore();
+    const router = createSidecarDeployRouter({
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; trivial branch exercises only provisionAgent + persistHubPublicKey
+      sessions: {
+        provisionAgent: async (_config: unknown) => ({
+          publicKey: "pk-slug-collision",
+          keyPair: {
+            publicKey: new Uint8Array(32),
+            privateKey: new Uint8Array(32),
+          },
+        }),
+        persistHubPublicKey: async (_a: string, _h: string) => {
+          /* no-op */
+        },
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["sessions"],
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
+      keyStore: {
+        recordHubKey: (_a: string, _h: string) => {
+          /* no-op */
+        },
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["keyStore"],
+      onAgentEvent: () => () => {
+        /* unused in this test */
+      },
+      transport,
+      repoStore,
+      signingKeySeed: keyPair.privateKey,
+      registerDeployment: () => {
+        /* no-op */
+      },
+      unregisterDeployment: () => {
+        /* no-op */
+      },
+      multistepSubprocessSpawner: () => {
+        throw new Error("the trivial branch must not invoke the spawner");
+      },
+    });
+
+    // `agent@a.b.com` and `agent!a!b!com` both project to
+    // `agent-a-b-com` under the slug derivation.
+    const first = await router.deploy({
+      type: "agent.deploy",
+      agentAddress: "agent@a.b.com",
+      agentId: "agent-id-1",
+      hubPublicKey: "hub-pk",
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the trivial-launch closure forwards config opaquely
+      config: {} as unknown as Parameters<
+        ReturnType<typeof createSidecarDeployRouter>["deploy"]
+      >[0]["config"],
+    });
+    expect(first.publicKey).toBe("pk-slug-collision");
+
+    let caught: unknown;
+    try {
+      await router.deploy({
+        type: "agent.deploy",
+        agentAddress: "agent!a!b!com",
+        agentId: "agent-id-2",
+        hubPublicKey: "hub-pk",
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- forwarded opaquely
+        config: {} as unknown as Parameters<
+          ReturnType<typeof createSidecarDeployRouter>["deploy"]
+        >[0]["config"],
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught instanceof Error && caught.message).toMatch(
+      /deriveTrivialDeploymentId collision/,
+    );
+    expect(caught instanceof Error && caught.message).toMatch(/agent-a-b-com/);
+  });
 });
 
 describe("createSidecarDeployRouter multi-step branch", () => {

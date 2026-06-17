@@ -638,6 +638,31 @@ export function createSidecarDeployRouter(deps: {
   // deploys and the undeploy hook's lookup is a no-op for them.
   const activeSupervisors = new Map<string, SidecarWorkflowSupervisor>();
 
+  // Slug-collision tracking. `deriveTrivialDeploymentId` substitutes
+  // disallowed characters with `-`, which is deterministic but lossy:
+  // two distinct agent addresses can collapse to the same slug, and
+  // a collision would let the second deploy silently overwrite the
+  // first deploy's workflow-run repo state (the slug IS the repoId).
+  // This map records the first-claimer; a subsequent deploy that
+  // produces the same slug from a different address is rejected at
+  // the router before any supervisor or repo state is touched.
+  const slugClaims = new Map<string, string>();
+
+  function claimSlug(deploymentId: string, agentAddress: string): void {
+    const existing = slugClaims.get(deploymentId);
+    if (existing !== undefined && existing !== agentAddress) {
+      throw new Error(
+        `deriveTrivialDeploymentId collision: agent addresses ${JSON.stringify(existing)} and ${JSON.stringify(agentAddress)} both project to deploymentId ${JSON.stringify(deploymentId)}`,
+      );
+    }
+    slugClaims.set(deploymentId, agentAddress);
+  }
+
+  function releaseSlug(deploymentId: string, agentAddress: string): void {
+    const existing = slugClaims.get(deploymentId);
+    if (existing === agentAddress) slugClaims.delete(deploymentId);
+  }
+
   async function deployMultiStep(
     frame: AgentDeployFrame,
     projection: NonNullable<AgentDeployFrame["workflow"]>,
@@ -649,6 +674,7 @@ export function createSidecarDeployRouter(deps: {
     validateWorkflowProjection(projection);
 
     const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
+    claimSlug(deploymentId, frame.agentAddress);
 
     const definitionHash = computeWireDefinitionHash(projection.definition);
 
@@ -868,6 +894,7 @@ export function createSidecarDeployRouter(deps: {
       }
       let publicKey: string | undefined;
       const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
+      claimSlug(deploymentId, frame.agentAddress);
       const wired = createSidecarWorkflowSupervisor({
         transport: deps.transport,
         repoStore: deps.repoStore,
@@ -991,6 +1018,7 @@ export function createSidecarDeployRouter(deps: {
         activeSupervisors.delete(frame.agentAddress);
         await wired.supervisor.shutdown();
       }
+      releaseSlug(deploymentId, frame.agentAddress);
       deps.unregisterDeployment({
         deploymentId,
         agentAddress: frame.agentAddress,
