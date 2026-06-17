@@ -709,7 +709,9 @@ Two locations are used for tests:
 
 - **Integration-shaped tests**: `tests/<package-name>/`. Tests that target a package's behavior but need the `@intx/inference-testing` harness, span multiple packages, or spawn real servers and subprocesses live here. Co-locating harness-driven tests in `packages/<name>/src/` would force the package to depend on `@intx/inference-testing`, creating a workspace dependency cycle (because the harness depends on the package). The `tests/` tree breaks that cycle. Tests spanning multiple packages live under `tests/<primary-target-package>/`; the "primary target" is whatever package's behavior the test is asserting, with the other packages as setup dependencies.
 
-Tests that are not parallel-safe (e.g. spawn servers, perform real `isomorphic-git` operations against `os.tmpdir()`) are excluded per-file via the `[test].exclude` list in `bunfig.toml`. That list is a flat enumeration of individual files, not a directory convention; each entry is an explicit marker that the file cannot run in the main parallel pass. The `test` script in the root `package.json` reruns those files in a second `bun test` invocation after the main suite.
+Tests that are not parallel-safe (spawn servers, perform real `isomorphic-git` operations against `os.tmpdir()`, or otherwise need extended timeouts) run in a second pass after the fast unit suite. The split is enforced via the `test` script in the root `package.json`, which invokes `bun test` twice with explicit positional arguments: the first pass enumerates fast unit dirs at the default 5s timeout; the second pass enumerates the slow integration files with `--timeout 60000`. Bun's `[test].pathIgnorePatterns` field is documented but non-functional in bun 1.2.22; positive enumeration via positional args is the only mechanism that works.
+
+Especially slow tests (e.g. the FIFO mail load case) live in their own files and run via a dedicated `test:load` script with an even longer timeout, so `make test` stays fast for routine iteration. The load script runs separately in CI.
 
 ---
 
