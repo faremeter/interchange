@@ -522,7 +522,7 @@ export async function startHub(
 export type SidecarHandle = {
   proc: Subprocess;
   dataDir: string;
-  /** Rolling stderr buffer; capped at 50 chunks. */
+  /** Rolling stderr buffer; capped at 500 chunks. */
   stderr: readonly string[];
 };
 
@@ -576,7 +576,17 @@ export async function startSidecarSubprocess(opts: {
       const { done, value } = await reader.read();
       if (done) break;
       stderr.push(decoder.decode(value));
-      if (stderr.length > 50) stderr.shift();
+      if (stderr.length > 500) stderr.shift();
+    }
+  })();
+  void (async () => {
+    const reader = proc.stdout.getReader();
+    const decoder = new TextDecoder();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      stderr.push(decoder.decode(value));
+      if (stderr.length > 500) stderr.shift();
     }
   })();
 
@@ -658,7 +668,7 @@ export async function startDeployFlowEnv(
   const sidecarDiagnostics = (): string => {
     const parts: string[] = [];
     if (sidecar.stderr.length > 0) {
-      parts.push(`sidecar stderr:\n${sidecar.stderr.slice(-20).join("")}`);
+      parts.push(`sidecar stderr:\n${sidecar.stderr.slice(-300).join("")}`);
     }
     const failures = hub.statePackReceiveFailures;
     if (failures.length > 0) {
