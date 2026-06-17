@@ -1685,16 +1685,42 @@ export function createWorkflowSupervisor(
   }
 
   async function drain(opts: DrainOpts): Promise<void> {
+    await drainImpl(opts, { fromRecycle: false });
+  }
+
+  /**
+   * Internal drain implementation. The `fromRecycle` flag admits the
+   * `recycling` phase for the recycle path's drain step (which runs
+   * BEFORE `abortPriorCohort` and `kill`, against the still-live
+   * controlSender). External callers leave it `false`, so a stray
+   * drain that lands during the kill/respawn gap is dropped silently
+   * at the public surface rather than writing into a controlSender
+   * that `triggerRecycle` is about to tear down.
+   *
+   * The asymmetry with `deliverSignal`, which throws on `recycling`,
+   * is intentional: `drain()` is documented as best-effort no-op for
+   * `idle`/`stopping`/`stopped` so the host shutdown sequence can
+   * call it unconditionally without sniffing the phase; tightening
+   * `recycling` to a throw would break that contract for callers
+   * that interleave drain and shutdown. The dropped frame surfaces
+   * in operator logs only; callers that need a guaranteed-delivered
+   * drain should consult the supervisor's phase first.
+   */
+  async function drainImpl(
+    opts: DrainOpts,
+    ctx: { fromRecycle: boolean },
+  ): Promise<void> {
     // Drain is meaningful only when a workflow-process child is up;
     // calling it from `idle`/`stopping`/`stopped` is a no-op so the
     // higher-level host shutdown sequence can call drain
     // unconditionally without sniffing the phase. The recycle path
-    // calls drain from `recycling` -- the kill/respawn gap is the
-    // window where the existing controlSender is still live.
+    // calls drain via `drainImpl({}, { fromRecycle: true })` and
+    // admits `recycling` because the drain step runs against a
+    // still-live controlSender before the kill lands.
     if (
       state.phase !== "running" &&
       state.phase !== "starting" &&
-      state.phase !== "recycling"
+      !(ctx.fromRecycle && state.phase === "recycling")
     ) {
       return;
     }
@@ -1801,9 +1827,14 @@ export function createWorkflowSupervisor(
             eventPump: prior.eventPump,
           },
           drain: async (deadlineMs) => {
-            // The recycle path's drain step uses the same drain
-            // primitive an operator drain command would use.
-            await drain({ deadlineMs });
+            // The recycle path's drain step shares the drain
+            // primitive but bypasses the public surface's `recycling`
+            // rejection so the still-live controlSender (this step
+            // runs BEFORE abortPriorCohort + kill) receives the
+            // frame. The public `drain()` rejects `recycling` for
+            // external callers because the kill/respawn gap can
+            // leave the controlSender dying.
+            await drainImpl({ deadlineMs }, { fromRecycle: true });
           },
           replayProcessingToInbox: async () => {
             await inboxPrimitives.replayProcessingToInbox(

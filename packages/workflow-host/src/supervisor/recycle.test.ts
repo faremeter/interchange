@@ -1182,3 +1182,79 @@ describe("supervisor recycle: shutdown during the kill/respawn gap", () => {
     await supervisor.shutdown();
   });
 });
+
+describe("supervisor recycle: external drain phase guard", () => {
+  test("external drain() during the recycling window is a silent no-op and does not write to the dying controlSender", async () => {
+    // The window: between `triggerRecycle`'s kill step and
+    // `installNewChild`, the supervisor still reports `recycling` but
+    // `state.controlSender` references a sender whose pipe is being
+    // torn down. The recycle path's OWN drain step (the kill-prep
+    // call) runs BEFORE kill so its sender is alive; an EXTERNAL
+    // drain that lands later in the window can silently lose its
+    // frame. The public surface admits only `running` / `starting`
+    // for external callers; the recycle path bypasses through the
+    // internal `drainImpl` helper.
+    const baseDir = await makeTempDir("recycle-drain-guard-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker({});
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: tracker.spawner,
+      mailBus,
+      ipcKeypair,
+    });
+    const supervisor = createWorkflowSupervisor(bindings);
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-drain-guard",
+      onInferenceEvent: () => undefined,
+    });
+    while (tracker.children.length === 0) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    await driveReady(first, ipcKeypair);
+    await spawnPromise;
+
+    // Kick the recycle. The recycle path's drain step writes one
+    // drain frame onto the first child's controlSender (this is the
+    // kill-prep drain). triggerRecycle then runs replay -> abort ->
+    // kill -> spawn -> waitForReady; the second child has not been
+    // driven to `ready` yet, so the supervisor parks in `recycling`.
+    const recyclePromise = supervisor.recycle({ reason: "drain-guard-test" });
+    while (tracker.children.length < 2) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+
+    // Snapshot how many drain frames the recycle path's drain step
+    // wrote. The exact count depends on the recycle's drain
+    // contract, but any external drain during the parked window
+    // must NOT add to it.
+    function countDrainFrames(
+      stream: ReturnType<typeof createMemoryNdjsonStream>,
+    ): number {
+      return stream.flushed().filter((line) => line.includes("drain")).length;
+    }
+    const drainFramesBefore = countDrainFrames(first.supervisorToChild);
+
+    // External drain landing in the parked window. Must silently
+    // no-op rather than write into the dying controlSender; the
+    // public surface rejects `recycling` for non-recycle callers.
+    await supervisor.drain({ deadlineMs: 60_000 });
+
+    expect(countDrainFrames(first.supervisorToChild)).toBe(drainFramesBefore);
+    // The second child's stream must not have received a drain
+    // either -- the new cohort's wiring is not yet installed.
+    expect(countDrainFrames(second.supervisorToChild)).toBe(0);
+
+    // Drive the second child's ready so the recycle settles and
+    // shutdown is clean.
+    await driveReady(second, ipcKeypair);
+    await recyclePromise;
+    await supervisor.shutdown();
+  });
+});
