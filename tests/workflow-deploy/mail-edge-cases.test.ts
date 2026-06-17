@@ -74,6 +74,7 @@ import {
   readClaimCheckDir,
   readWorkflowRunEvents,
   startDeployFlowEnv,
+  waitFor,
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
@@ -165,14 +166,25 @@ describe("mail-handling edge cases", () => {
       .filter((v): v is string => v !== undefined);
     expect(consumedRunIds).toContain(expectedRunId);
 
+    // Snapshot the sidecar diagnostics buffer before firing the
+    // duplicate so the log-substring wait below can scope its match
+    // to events that arrive AFTER the second routeRaw call.
+    const diagBeforeDuplicate = env.sidecarDiagnostics();
     routeRaw(env, ctx.deploymentMailAddress, raw);
 
-    // Wait for the supervisor's `.catch` log + drop to settle.
-    // The dispatch loop is otherwise idle, so we cannot observe a
-    // positive "duplicate was dropped" signal; we settle a beat
-    // then re-read the consumed/ subtree and the runs/ tree to
-    // confirm no second run materialised.
-    await new Promise((r) => setTimeout(r, 500));
+    // The duplicate must produce the supervisor's `enqueueInbox
+    // failed` log line carrying one of the `claim_check_already_*`
+    // reasons. This is the positive signal the test pins instead of
+    // sleeping a fixed beat and re-reading the substrate.
+    await waitFor(
+      () => {
+        const fresh = env
+          .sidecarDiagnostics()
+          .slice(diagBeforeDuplicate.length);
+        return /enqueueInbox failed:.*claim_check_already_/.test(fresh);
+      },
+      { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
+    );
 
     const consumedAfter = await readClaimCheckDir(
       env,
@@ -279,13 +291,22 @@ describe("mail-handling edge cases", () => {
     // with `claim_check_already_consumed`; `onMailMessage` swallows
     // the rejection. The dedup index stays at one entry; no second
     // run materialises.
+    const diagBeforeDuplicate = env.sidecarDiagnostics();
     routeRaw(env, ctx.deploymentMailAddress, raw2);
 
-    // Settle for the supervisor's `.catch` log to run. The dispatch
-    // loop has no work to do; the substrate write did not happen,
-    // so there is no positive observable beyond "things stayed the
-    // same".
-    await new Promise((r) => setTimeout(r, 500));
+    // Wait for the supervisor's `enqueueInbox failed` log line that
+    // carries the `claim_check_already_*` reason; pinning on the
+    // positive log signal beats sleeping a fixed beat and re-reading
+    // the substrate hoping nothing changed.
+    await waitFor(
+      () => {
+        const fresh = env
+          .sidecarDiagnostics()
+          .slice(diagBeforeDuplicate.length);
+        return /enqueueInbox failed:.*claim_check_already_/.test(fresh);
+      },
+      { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
+    );
 
     const consumedAfter = await readClaimCheckDir(
       env,
