@@ -638,10 +638,6 @@ export function createSidecarDeployRouter(deps: {
     validateWorkflowProjection(projection);
 
     const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
-    deps.registerDeployment({
-      deploymentId,
-      agentAddress: frame.agentAddress,
-    });
 
     const definitionHash = computeWireDefinitionHash(projection.definition);
 
@@ -834,6 +830,18 @@ export function createSidecarDeployRouter(deps: {
       await wired.supervisor.drain({ deadlineMs: args.deadlineMs });
     });
 
+    // Register the deployment-address mapping last so a failure in any
+    // earlier step (asset materialization, supervisor.spawn) leaves the
+    // boot-edge `DeploymentAddressRegistry` untouched. The link's
+    // `handleAgentDeploy` catches a rejection here and surfaces
+    // `agent.error` without invoking the undeploy hook; a partial
+    // registration would persist a `(deploymentId -> agentAddress)`
+    // entry for a deployment that never finished standing up.
+    deps.registerDeployment({
+      deploymentId,
+      agentAddress: frame.agentAddress,
+    });
+
     return { publicKey: principalPublicKeyHex };
   }
 
@@ -844,10 +852,6 @@ export function createSidecarDeployRouter(deps: {
       }
       let publicKey: string | undefined;
       const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
-      deps.registerDeployment({
-        deploymentId,
-        agentAddress: frame.agentAddress,
-      });
       const wired = createSidecarWorkflowSupervisor({
         transport: deps.transport,
         repoStore: deps.repoStore,
@@ -924,6 +928,18 @@ export function createSidecarDeployRouter(deps: {
           "sidecar deploy router: trivialLaunch did not surface a public key",
         );
       }
+      // Register the deployment-address mapping last so a failure in
+      // `supervisor.deploy` (e.g. the host-supplied `trivialLaunch`
+      // callback's `provisionAgent` throwing) leaves the boot-edge
+      // `DeploymentAddressRegistry` untouched. The link's
+      // `handleAgentDeploy` catches a rejection here and surfaces
+      // `agent.error` without invoking the undeploy hook; a partial
+      // registration would persist a `(deploymentId -> agentAddress)`
+      // entry for a deployment that never finished standing up.
+      deps.registerDeployment({
+        deploymentId,
+        agentAddress: frame.agentAddress,
+      });
       return { publicKey };
     },
     async undeploy(frame): Promise<void> {
