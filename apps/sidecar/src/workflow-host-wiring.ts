@@ -346,28 +346,35 @@ export const STEP_INFERENCE_SOURCES_ENV_KEY = "STEP_INFERENCE_SOURCES";
 
 /**
  * Validate the wire-projected workflow definition at the deploy-router
- * boundary. The arktype `AgentDeployFrame` validator at the wire edge
- * already enforces the structural shape (`id`, `stepOrder`, `steps`,
- * `sources` table covering every `stepOrder` entry). This function
- * re-asserts the invariants the router relies on so a wire-edge change
- * does not let a malformed projection slip into `supervisor.spawn()`
- * silently:
+ * boundary. The arktype `AgentDeployFrame` validator enforces the
+ * wire shape (`id` is non-empty, `stepOrder` is `string[]`, `steps`
+ * is an object, `sources` covers every `stepOrder` entry); this
+ * function takes `unknown`-typed inputs so it can also gate callers
+ * that bypass the wire boundary, and it enforces the invariants the
+ * router and the downstream supervisor rely on:
  *
- *   - `definition.id` is a non-empty string.
- *   - `definition.stepOrder` is non-empty and every entry matches
- *     `STEP_ID_PATTERN` (so per-step mail-address derivation never
- *     needs escaping at the substrate boundary).
- *   - Every `stepOrder` entry has a corresponding `steps[id]` entry
- *     (the wire shape lets `steps[id]` be `unknown`, but its presence
- *     is required so the workflow-process child can resolve a step's
- *     primitive at run time).
- *   - Every `stepOrder` entry has a corresponding `sources[id]` entry
- *     (the arktype narrow already enforces this; the re-check here
- *     surfaces a structured error at the router rather than relying on
- *     the wire validator alone).
+ *   - `definition.id` is a non-empty string. The arktype shape
+ *     already enforces this on the wire; the re-check here protects
+ *     bypass callers and keeps the failure shape consistent with the
+ *     other invariants this function owns.
+ *   - `definition.stepOrder` is non-empty. The wire shape admits
+ *     `[]`; a zero-step workflow has no semantics here.
+ *   - Every `stepOrder` entry matches `STEP_ID_PATTERN` so per-step
+ *     mail-address derivation never needs escaping at the substrate
+ *     boundary.
+ *   - Every `stepOrder` entry has a corresponding `steps[id]` entry.
+ *     The wire shape lets `steps[id]` be `unknown` and lets the
+ *     entry be absent; presence is required so the workflow-process
+ *     child can resolve each step's primitive at run time.
+ *   - Every `stepOrder` entry has a corresponding `sources[id]`
+ *     entry. The arktype narrow already enforces this; the re-check
+ *     here surfaces a structured router-side error instead of an
+ *     arktype validation failure at the wire boundary, which keeps
+ *     the failure shape consistent with the rest of the validations
+ *     this function owns.
  *
- * A rejection here surfaces as a thrown `Error` the link's deploy frame
- * caller converts into a structured failure reply.
+ * A rejection here surfaces as a thrown `Error` the link's deploy
+ * frame caller converts into a structured failure reply.
  */
 export function validateWorkflowProjection(projection: {
   definition: { id: unknown; stepOrder: unknown; steps: unknown };
