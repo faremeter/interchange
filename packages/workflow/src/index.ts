@@ -7,6 +7,7 @@ export * from "./state-machine/index";
 export * from "./definition/index";
 export {
   runtimeRun,
+  RuntimeResumeUnsupportedError,
   createNoopDrainController,
   resolveDrainBehavior,
   type BlobSubstrate,

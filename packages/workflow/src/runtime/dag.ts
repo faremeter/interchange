@@ -22,16 +22,17 @@ export function nextSchedulable(
   // the constraint here keeps the scheduler in step with the
   // transition function's view of what is legal.
   //
-  // `state.steps.has(stepId)` also skips steps in `awaiting-signal`
-  // and `awaiting-timer`. That is intentional for the in-process
-  // runner: resuming a mid-await primitive needs the signal channel
-  // rehydrated and the timer re-armed, which a single-shot
-  // in-process runner does not do. A durable production runtime
-  // resuming the same log either has the supervisor commit signals
-  // and timers on the workflow process's behalf, or extends this
-  // function and makes the primitive runners idempotent against
-  // already-committed `StepStarted` / `SignalAwaited` events. The
-  // choice is shaped by the production substrate.
+  // `state.steps.has(stepId)` skips steps in `awaiting-signal`,
+  // `awaiting-timer`, and `in-flight`. The in-process runtime body
+  // has no surface for re-arming those primitives on resume; a seed
+  // log that lands a step in any of those phases is rejected up
+  // front by `runtimeRun` with `RuntimeResumeUnsupportedError`. A
+  // durable production runtime resuming the same log either has the
+  // supervisor commit signals and timers on the workflow process's
+  // behalf, or extends this function and makes the primitive runners
+  // idempotent against already-committed `StepStarted` /
+  // `SignalAwaited` events. The choice is shaped by the production
+  // substrate; the in-process body declines instead of stalling.
   if (state.phase !== "running") {
     return [];
   }

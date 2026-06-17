@@ -29,6 +29,7 @@ import {
 } from "./commit-chain";
 import type { RunResult, WorkflowRun, WorkflowRuntimeEnv } from "./env";
 import { shouldAbortForDrain } from "./drain";
+import { RuntimeResumeUnsupportedError } from "./errors";
 import {
   isTerminalRunPhase,
   resumeFromLog,
@@ -42,10 +43,22 @@ export interface RuntimeRunOptions {
   runId?: string;
   /**
    * Pre-existing event log to resume from. The runtime re-applies the
-   * log via `resumeFromLog` and continues from the resulting state;
-   * unfired timers, awaiting signals, and uncancelled children are
-   * re-armed on the resume side. When omitted, the runtime starts
-   * fresh from `emptyState(runId)` and emits `RunStarted` itself.
+   * log via `resumeFromLog` and continues from the resulting state.
+   *
+   * Resume is supported for seed logs that are either
+   * complete-or-cancelled or aligned on step boundaries -- every
+   * non-terminal entry in `state.steps` must be schedulable by the
+   * DAG's `nextSchedulable` set (i.e. the seed log stopped between
+   * step boundaries, not mid-primitive). Seed logs whose tail leaves
+   * a step `awaiting-signal`, `awaiting-timer`, mid-`map`, or
+   * otherwise `in-flight` are unsupported: the in-process runtime
+   * has no surface for re-arming the signal channel, the timer
+   * scheduler entry, or the inner-map iteration state from the log
+   * alone. `runtimeRun` rejects such seed logs with
+   * `RuntimeResumeUnsupportedError` rather than stalling.
+   *
+   * When omitted, the runtime starts fresh from `emptyState(runId)`
+   * and emits `RunStarted` itself.
    */
   resumeFromEvents?: readonly WorkflowEvent[];
 }
@@ -56,12 +69,24 @@ export interface RuntimeRunOptions {
  * child-process entry point.
  *
  * Resume contract: when `options.resumeFromEvents` is supplied, the
- * caller must pass an env whose `BlobSubstrate` either holds the
- * blob: refs the seed log references, or is durable enough that the
- * refs are resolvable by the same substrate that minted them. The
- * `runLocal` in-memory substrate is `ephemeral` and starts empty per
- * instance; resume against a fresh one with a seed log that contains
- * blob: refs fails fast with a targeted error.
+ * seed log must satisfy two constraints:
+ *
+ *   1. The env's `BlobSubstrate` either holds the blob: refs the seed
+ *      log references, or is durable enough that the refs are
+ *      resolvable by the same substrate that minted them. The
+ *      `runLocal` in-memory substrate is `ephemeral` and starts empty
+ *      per instance; resume against a fresh one with a seed log that
+ *      contains blob: refs fails fast with a targeted error.
+ *   2. The seed log is either complete-or-cancelled or aligned on
+ *      step boundaries -- mid-step resume (a step left
+ *      `awaiting-signal`, `awaiting-timer`, mid-`map`, or otherwise
+ *      `in-flight`) is unsupported. The runtime body has no surface
+ *      for re-arming the signal channel, the timer scheduler entry,
+ *      or the inner-map iteration state from the log alone. Such
+ *      seed logs surface as `RuntimeResumeUnsupportedError`; the
+ *      host (supervisor) owns the recovery decision (crash and let
+ *      a fresh deploy pick up the live log, re-inject the awaited
+ *      signal, etc).
  */
 export function runtimeRun(
   definition: WorkflowDefinition,
@@ -204,6 +229,32 @@ async function executeRunBody(
       continue;
     }
     await env.repoStore.append(runId, event);
+  }
+
+  // Reject seed logs that leave any step in a non-terminal phase the
+  // runtime body cannot re-arm. The DAG's `nextSchedulable` skips any
+  // step that already appears in `state.steps` (the safe-runner needs
+  // a fresh `StepStarted` to advance one), so a step left
+  // `in-flight`, `awaiting-signal`, or `awaiting-timer` would stall
+  // the main loop with no schedulable primitive. Surface the
+  // limitation honestly rather than dressing it up as a generic
+  // stall: the host decides whether to crash, alert, or recover via
+  // redeploy. Cancellation paths are exempt -- the cleanup branch
+  // owns settling steps whose phase is `cancelling`.
+  if (initialEvents.length > 0 && state.phase === "running") {
+    for (const [stepId, stepState] of state.steps) {
+      if (
+        stepState.phase === "in-flight" ||
+        stepState.phase === "awaiting-signal" ||
+        stepState.phase === "awaiting-timer"
+      ) {
+        throw new RuntimeResumeUnsupportedError(
+          stepId,
+          stepState.phase,
+          `seed log tail leaves step ${stepId} in phase ${stepState.phase} with no schedulable primitive on the DAG`,
+        );
+      }
+    }
   }
 
   // Issue RunStarted only if the state machine has not seen it.

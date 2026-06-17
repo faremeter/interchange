@@ -15,6 +15,8 @@ export type {
 
 export { runtimeRun, type RuntimeRunOptions } from "./run";
 
+export { RuntimeResumeUnsupportedError } from "./errors";
+
 export {
   createNoopDrainController,
   resolveDrainBehavior,
