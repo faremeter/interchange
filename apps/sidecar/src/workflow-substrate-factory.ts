@@ -393,7 +393,24 @@ export interface SidecarRunChildDeps {
   principal: Principal;
   /** Host-process scheduler singleton; shared with the parent. */
   scheduler: Scheduler;
-  /** Step invoker the child runtime delegates per-step invocations to. */
+  /**
+   * Step invoker the child runtime delegates per-step invocations to.
+   *
+   * The in-process child runs a WorkflowDefinition whose stepIds are
+   * disjoint from the parent's. The parent's
+   * `STEP_INFERENCE_SOURCES`-pinned `buildStepEnv` knows only the
+   * parent's stepIds and throws on any other id; routing the child's
+   * step invocations through that closure surfaces a misleading
+   * "no InferenceSource pinned" error for every child step. Callers
+   * therefore supply a SEPARATE invokeStep for the child that does
+   * not consult the parent's pinned source table. The substrate
+   * factory's default wires a stub that mirrors the parent's stub
+   * step output (`{ output: { reply: req.agent.id, turn: null } }`)
+   * without resolving any per-step InferenceSource -- threading the
+   * child's WorkflowDefinition-derived sources into a real inference
+   * call is on the same agent-harness wiring backlog as the parent's
+   * stub.
+   */
   invokeStep: StepInvoker;
   /** Director registry the child runtime uses; defaults to the canonical built-ins. */
   directors?: DirectorRegistry;
@@ -675,6 +692,18 @@ export function createSidecarSubstrateFactory(
       return { output: { reply: req.agent.id, turn: null } };
     };
 
+    // Child-runtime step invoker. The in-process `runChild` (see
+    // `createSidecarRunChild` below) runs a separate WorkflowDefinition
+    // whose stepIds are disjoint from the parent's, so the parent's
+    // `STEP_INFERENCE_SOURCES`-driven `buildStepEnv` would throw on
+    // every child stepId ("no InferenceSource pinned"). The child
+    // invoker mirrors the parent stub's success output without
+    // consulting the parent's pinned source table; threading the
+    // child's WorkflowDefinition-derived sources into a real inference
+    // call is on the same backlog as the parent's stub.
+    const childInvokeStep: StepInvoker = (req) =>
+      Promise.resolve({ output: { reply: req.agent.id, turn: null } });
+
     // Adapt the workflow-runtime `StepInvoker` shape onto the host's
     // `ChildStepInvoker` shape. The wrapper today drops `onEvent` --
     // the production step-invoker adapter does not yet thread an
@@ -719,7 +748,7 @@ export function createSidecarSubstrateFactory(
       workflowRunRef: validated.WORKFLOW_RUN_REF,
       principal,
       scheduler,
-      invokeStep: baseInvokeStep,
+      invokeStep: childInvokeStep,
     });
 
     const spawnChild = createWorkflowSpawnChild({
