@@ -63,7 +63,6 @@ export default defineConfig(
             "tests/agent-rich-tool/*.ts",
             "tests/agent-structured-payload/*.ts",
             "tests/workflow/*.ts",
-            "tests/workflow-deploy/*.ts",
           ],
           maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 40,
         },

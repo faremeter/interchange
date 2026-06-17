@@ -49,6 +49,7 @@
     { "path": "tests/hub-agent" },
     { "path": "tests/hub-api" },
     { "path": "tests/tool-packaging" },
+    { "path": "tests/workflow-deploy" },
     { "path": "bin" }
   ]
 }

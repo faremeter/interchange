@@ -61,6 +61,7 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
+import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "multistep-signal-1";
@@ -164,9 +165,7 @@ describe("multi-step workflow round-trip with signal-await", () => {
         agentId: orchestratorParams.agentId,
         instanceId: orchestratorParams.instanceId,
         config: orchestratorParams.config,
-        deployContent: deployContent as Parameters<
-          typeof env.hub.sessionService.launchSession
-        >[0]["deployContent"],
+        deployContent: toLaunchDeployContent(deployContent),
         ...(orchestratorParams.toolPackagePins !== undefined
           ? { toolPackagePins: orchestratorParams.toolPackagePins }
           : {}),
@@ -183,7 +182,6 @@ describe("multi-step workflow round-trip with signal-await", () => {
           id: params.definition.id,
           triggers: [...params.definition.triggers],
           stepOrder: [...params.definition.stepOrder],
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the wire validator carries the WorkflowDefinition steps record as Record<string, unknown>; the orchestrator emits the typed primitive union shape that satisfies the wire schema
           steps: params.definition.steps as Record<string, unknown>,
           ...(params.definition.state !== undefined
             ? { state: params.definition.state }
