@@ -682,12 +682,19 @@ export function createSidecarDeployRouter(deps: {
 
     const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
     claimSlug(deploymentId, frame.agentAddress);
-    // Release the slug if any step between here and `registerDeployment`
-    // throws. Without this finally, a spawn-time crash or any
-    // `createSidecarWorkflowSupervisor` failure leaves the slug
-    // claimed forever (the undeploy hook -- the only other
-    // releaseSlug caller -- never fires for failed deploys).
+    // Release every piece of partial state if any step between here
+    // and `registerDeployment` throws. The undeploy hook -- the only
+    // other release caller -- never fires for failed deploys, so
+    // without this finally the slug, the freshly-spawned
+    // workflow-process child, the `activeSupervisors` entry, and the
+    // three multistep router registrations would all leak. The
+    // ordering inside the finally is the reverse of the success-path
+    // registration order so each release runs against state the
+    // success path has already established.
     let claimedSlugSucceeded = false;
+    let wiredForUnwind: SidecarWorkflowSupervisor | undefined;
+    let supervisorRegistered = false;
+    let routersRegistered = false;
     try {
       const definitionHash = computeWireDefinitionHash(projection.definition);
 
@@ -796,6 +803,11 @@ export function createSidecarDeployRouter(deps: {
       }
 
       const wired = createSidecarWorkflowSupervisor({
+        // Hold the constructed supervisor in the outer scope so the
+        // failure-path finally can `shutdown()` it; assignment
+        // happens immediately so even a synchronous throw inside
+        // the closure's call sites below is covered.
+        // (See the wiredForUnwind declaration above the try.)
         transport: deps.transport,
         repoStore: deps.repoStore,
         signingKeySeed: deps.signingKeySeed,
@@ -843,7 +855,11 @@ export function createSidecarDeployRouter(deps: {
       // registry untouched so the undeploy hook does not chase a
       // supervisor that never owned a child.
       await wired.supervisor.spawn(spawnOpts);
+      // Child process is live after `spawn` resolves; the failure
+      // unwind needs the supervisor handle from here on.
+      wiredForUnwind = wired;
       activeSupervisors.set(frame.agentAddress, wired);
+      supervisorRegistered = true;
 
       // Bind the deployment's mail address to this supervisor's
       // `routeInbound` so the sidecar's hub-link dispatches inbound
@@ -884,6 +900,7 @@ export function createSidecarDeployRouter(deps: {
       deps.multistepDrainRouter?.register(frame.agentAddress, async (args) => {
         await wired.supervisor.drain({ deadlineMs: args.deadlineMs });
       });
+      routersRegistered = true;
 
       // Register the deployment-address mapping last so a failure in any
       // earlier step (asset materialization, supervisor.spawn) leaves the
@@ -901,6 +918,24 @@ export function createSidecarDeployRouter(deps: {
       return { publicKey: principalPublicKeyHex };
     } finally {
       if (!claimedSlugSucceeded) {
+        // Unwind in reverse registration order so each step undoes
+        // state the success path has confirmed; ordering matches
+        // the `undeploy` hook for consistency.
+        if (routersRegistered) {
+          deps.multistepMailRouter?.unregister(frame.agentAddress);
+          deps.multistepSignalRouter?.unregister(frame.agentAddress);
+          deps.multistepDrainRouter?.unregister(frame.agentAddress);
+        }
+        if (supervisorRegistered) {
+          activeSupervisors.delete(frame.agentAddress);
+        }
+        if (wiredForUnwind !== undefined) {
+          await wiredForUnwind.supervisor.shutdown().catch((cause) => {
+            const message =
+              cause instanceof Error ? cause.message : String(cause);
+            logger.warn`multi-step deploy unwind: supervisor.shutdown failed: ${message}`;
+          });
+        }
         releaseSlug(deploymentId, frame.agentAddress);
       }
     }
