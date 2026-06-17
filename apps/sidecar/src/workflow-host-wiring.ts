@@ -627,6 +627,17 @@ export function createSidecarDeployRouter(deps: {
     deps.multistepDeriveStepAddress ??
     (({ deploymentId, stepId }) => `${deploymentId}-${stepId}`);
 
+  // Per-deployment supervisor tracking. The multi-step branch
+  // constructs one `SidecarWorkflowSupervisor` per `agent.deploy`
+  // frame; the supervisor owns the workflow-process child, its IPC
+  // pipes, and its event-channel fd. The undeploy hook consults this
+  // map to call `supervisor.shutdown()` so the child's lifetime ends
+  // with the deployment. The trivial branch never spawns a child --
+  // its supervisor is constructed and immediately dropped after the
+  // deploy callback runs -- so no entry is recorded for trivial
+  // deploys and the undeploy hook's lookup is a no-op for them.
+  const activeSupervisors = new Map<string, SidecarWorkflowSupervisor>();
+
   async function deployMultiStep(
     frame: AgentDeployFrame,
     projection: NonNullable<AgentDeployFrame["workflow"]>,
@@ -787,8 +798,13 @@ export function createSidecarDeployRouter(deps: {
     // EXEC error) the supervisor's `wireChild` races the child's
     // `exited` against `readyPromise` and the rejection propagates
     // here. The router lets it surface; the link's deploy handler
-    // converts the rejection into a structured failure frame.
+    // converts the rejection into a structured failure frame. The
+    // supervisor is registered against the deployment address only
+    // after spawn succeeds; a spawn-time rejection leaves the
+    // registry untouched so the undeploy hook does not chase a
+    // supervisor that never owned a child.
     await wired.supervisor.spawn(spawnOpts);
+    activeSupervisors.set(frame.agentAddress, wired);
 
     // Bind the deployment's mail address to this supervisor's
     // `routeInbound` so the sidecar's hub-link dispatches inbound
@@ -951,10 +967,30 @@ export function createSidecarDeployRouter(deps: {
       // idempotent and safe to invoke for both branches even though
       // the trivial branch never registers against the multi-step
       // routers; those calls are no-ops when no handler is registered.
+      //
+      // Routers come down BEFORE the supervisor's `shutdown()` so any
+      // hub-side frame racing the undeploy is dropped at the router
+      // boundary rather than dispatched into a supervisor that is in
+      // the middle of tearing its child down. The pattern is: drop
+      // racing frames first, then unwind the underlying resource.
       const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
       deps.multistepMailRouter?.unregister(frame.agentAddress);
       deps.multistepSignalRouter?.unregister(frame.agentAddress);
       deps.multistepDrainRouter?.unregister(frame.agentAddress);
+      // Shut the per-deployment supervisor down so the workflow-process
+      // child, its IPC pipes, and its event-channel fd are released.
+      // The supervisor's `shutdown()` is idempotent (returns early when
+      // the supervisor is already in `idle`/`stopped`) and handles the
+      // kill + `exited` await internally. The map entry is removed
+      // before the await so a subsequent re-deploy on the same address
+      // cannot observe a stale handle even if `shutdown()` rejects.
+      // Trivial deploys never enter the map, so this lookup is a no-op
+      // for the trivial branch.
+      const wired = activeSupervisors.get(frame.agentAddress);
+      if (wired !== undefined) {
+        activeSupervisors.delete(frame.agentAddress);
+        await wired.supervisor.shutdown();
+      }
       deps.unregisterDeployment({
         deploymentId,
         agentAddress: frame.agentAddress,
