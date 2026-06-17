@@ -961,7 +961,32 @@ async function validateClaimCheckSubtree(
     };
   }
 
-  for (const [segment, bucket] of enumerated.perAddress) {
+  const emptyBucket = (decodedAddress: string) => ({
+    decodedAddress,
+    inbox: [] as ClaimCheckBlob[],
+    processing: [] as ClaimCheckBlob[],
+    consumed: [] as ClaimCheckBlob[],
+  });
+  // Iterate the UNION of prospective and prior address segments so a
+  // prospective tree that wipes an address subtree entirely still
+  // runs the prior-retention checks against that segment's
+  // prior-tree consumed/processing entries.
+  const allSegments = new Set<string>([
+    ...enumerated.perAddress.keys(),
+    ...priorEnumerated.perAddress.keys(),
+  ]);
+  for (const segment of allSegments) {
+    const priorBucket = priorEnumerated.perAddress.get(segment);
+    const prospectiveBucketForSegment = enumerated.perAddress.get(segment);
+    const decodedAddress =
+      prospectiveBucketForSegment?.decodedAddress ??
+      priorBucket?.decodedAddress;
+    if (decodedAddress === undefined) {
+      throw new Error(
+        `validateClaimCheckSubtree: segment ${JSON.stringify(segment)} appeared in the union of prospective and prior segments but neither bucket carries a decoded address`,
+      );
+    }
+    const bucket = prospectiveBucketForSegment ?? emptyBucket(decodedAddress);
     // Per-messageId atomicity: each messageId may appear at most
     // once across inbox/processing/consumed combined. The check
     // keys on (messageId, kind, filename) so two inbox entries with
@@ -1023,7 +1048,55 @@ async function validateClaimCheckSubtree(
       if (!immutability.ok) return immutability;
     }
 
-    const priorBucket = priorEnumerated.perAddress.get(segment);
+    const prospectiveConsumedPaths = new Set<string>(
+      bucket.consumed.map((e) => e.blobPath),
+    );
+    const prospectiveProcessingPaths = new Set<string>(
+      bucket.processing.map((e) => e.blobPath),
+    );
+    const prospectiveInboxByFilename = new Map<string, ClaimCheckBlob>();
+    for (const e of bucket.inbox) prospectiveInboxByFilename.set(e.filename, e);
+    const prospectiveConsumedByMessageId = new Map<string, ClaimCheckBlob>();
+    for (const e of bucket.consumed)
+      prospectiveConsumedByMessageId.set(e.messageIdFromFilename, e);
+
+    // Append-only / immutability extended to the deletion direction:
+    // walk every entry the prior tree carried under
+    // `consumed/` and `processing/` and reject any prior path that
+    // does not reappear in the prospective tree, with a per-kind
+    // allowance for legitimate transitions (processing entries may
+    // drop in the same commit they transition to consumed or replay
+    // back to inbox). Without this walk, a prospective tree that
+    // simply omits a prior entry slips past the prospective-tree
+    // iteration the by-presence checks above perform.
+    if (priorBucket !== undefined) {
+      for (const e of priorBucket.consumed) {
+        if (prospectiveConsumedPaths.has(e.blobPath)) continue;
+        return {
+          ok: false,
+          reason: `consumed ${e.blobPath} present in the prior tree is missing from the prospective tree; consumed entries are immutable once written`,
+        };
+      }
+      for (const e of priorBucket.processing) {
+        if (prospectiveProcessingPaths.has(e.blobPath)) continue;
+        // A processing entry may legitimately disappear in two
+        // shapes: (1) markConsumed wrote a matching consumed entry
+        // keyed by the same messageId, or (2) replayProcessingToInbox
+        // moved the entry back to inbox preserving the
+        // `<receivedAt>-<messageId>.json` filename. Anything else is
+        // an in-flight loss.
+        const consumedMatch = prospectiveConsumedByMessageId.get(
+          e.messageIdFromFilename,
+        );
+        const inboxMatch = prospectiveInboxByFilename.get(e.filename);
+        if (consumedMatch !== undefined || inboxMatch !== undefined) continue;
+        return {
+          ok: false,
+          reason: `processing ${e.blobPath} present in the prior tree is missing from the prospective tree without a matching consumed or inbox transition; in-flight processing entries cannot be silently dropped`,
+        };
+      }
+    }
+
     const priorInboxByFilename = new Map<string, ClaimCheckBlob>();
     const priorProcessingByMessageId = new Map<string, ClaimCheckBlob>();
     if (priorBucket !== undefined) {
@@ -1143,7 +1216,16 @@ export const workflowRunKindHandler: KindHandler = {
       }
     }
 
-    if (topLevelTreePaths.includes(WORKFLOW_RUN_ADDRESSES_PREFIX)) {
+    const priorTopLevels = await priorListDir("");
+    const addressesPresent =
+      topLevelTreePaths.includes(WORKFLOW_RUN_ADDRESSES_PREFIX) ||
+      priorTopLevels.includes(WORKFLOW_RUN_ADDRESSES_PREFIX);
+    if (addressesPresent) {
+      // Enter claim-check validation when the prospective OR prior
+      // tree carries an `addresses/` subtree. A prospective tree that
+      // omits `addresses/` while the prior tree had consumed or
+      // processing entries must still go through the subtree walk so
+      // those prior entries' deletion-direction invariants fire.
       const claimCheck = await validateClaimCheckSubtree(
         listDir,
         readBlob,
@@ -1156,11 +1238,15 @@ export const workflowRunKindHandler: KindHandler = {
       }
     }
 
-    if (!topLevelTreePaths.includes(WORKFLOW_RUN_RUNS_PREFIX)) {
-      // A workflow-run repo without any `runs/` directory is a
-      // genesis state for the events subtree — `.gitignore`-only or
-      // claim-check-only trees are accepted so the asset routes'
-      // init can land before any run has produced an event.
+    const runsPresent =
+      topLevelTreePaths.includes(WORKFLOW_RUN_RUNS_PREFIX) ||
+      priorTopLevels.includes(WORKFLOW_RUN_RUNS_PREFIX);
+    if (!runsPresent) {
+      // A workflow-run repo without any `runs/` directory in either
+      // the prior or the prospective tree is a genesis state for the
+      // events subtree — `.gitignore`-only or claim-check-only trees
+      // are accepted so the asset routes' init can land before any
+      // run has produced an event.
       return { ok: true };
     }
 
@@ -1240,6 +1326,51 @@ export const workflowRunKindHandler: KindHandler = {
         logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${immutability.reason}`;
         return immutability;
       }
+    }
+
+    // Append-only / immutability extended to the deletion direction
+    // for the runs subtree. The prospective-tree walks above only
+    // see paths PRESENT in the prospective tree; a prospective tree
+    // that omits a prior `runs/<runId>/events/<seq>.json` or
+    // `runs/<runId>/blobs/<sha>` slips past those iterations
+    // entirely. Enumerate the prior tree's runs subtree under the
+    // same shapes and reject any prior path that does not reappear.
+    const priorEnumerated = await enumerateEventBlobs(priorListDir);
+    if (!priorEnumerated.ok) {
+      return {
+        ok: false,
+        reason: `prior tree's runs subtree is structurally invalid: ${priorEnumerated.reason}`,
+      };
+    }
+    const prospectiveEventPaths = new Set<string>();
+    for (const entries of enumerated.runs.values()) {
+      for (const e of entries) prospectiveEventPaths.add(e.blobPath);
+    }
+    for (const entries of priorEnumerated.runs.values()) {
+      for (const e of entries) {
+        if (prospectiveEventPaths.has(e.blobPath)) continue;
+        return {
+          ok: false,
+          reason: `event ${e.blobPath} present in the prior tree is missing from the prospective tree; event blobs are append-only`,
+        };
+      }
+    }
+    const priorBlobsEnumerated = await enumerateRunBlobs(priorListDir);
+    if (!priorBlobsEnumerated.ok) {
+      return {
+        ok: false,
+        reason: `prior tree's blobs subtree is structurally invalid: ${priorBlobsEnumerated.reason}`,
+      };
+    }
+    const prospectiveBlobPaths = new Set<string>(
+      blobsEnumerated.blobs.map((b) => b.blobPath),
+    );
+    for (const b of priorBlobsEnumerated.blobs) {
+      if (prospectiveBlobPaths.has(b.blobPath)) continue;
+      return {
+        ok: false,
+        reason: `blob ${b.blobPath} present in the prior tree is missing from the prospective tree; blob entries are immutable once written`,
+      };
     }
 
     return { ok: true };

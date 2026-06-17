@@ -1217,15 +1217,26 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
             const parents = parsed.parent;
             const declaredParent =
               parents.length === 0 ? null : (parents[0] ?? null);
-            // The pack-walk shape `createDeployPack` ships includes
-            // only the tip commit's tree, so a new commit's `parent`
-            // field may reference a SHA the receiver does not have in
-            // its object store. When that happens the receiver treats
-            // the prior tree as empty — the same shape it uses for
-            // first-push (`expectedOldSha === null`). A handler that
-            // relies on prior bytes to enforce an append-only rule
-            // already accepts a missing prior entry, so the degraded
-            // view collapses cleanly into the no-prior path.
+            // When the commit declares a parent the receiver does not
+            // have in its object store, the substrate cannot
+            // reconstruct the prior tree the kind handler would
+            // validate against. For kinds whose handler reads prior
+            // bytes to enforce append-only invariants (workflow-run),
+            // silently degrading to "empty prior" lets a path in the
+            // new commit that overwrites an immutable prior-tree
+            // entry slip through unchecked — append-only enforcement
+            // accepts a brand-new path, not a path that contradicts
+            // an entry the handler cannot read. The workflow-run
+            // `createPack` above ships the full parent chain, so this
+            // branch is unreachable on the production pack-push path
+            // for that kind; a producer that does ship an incomplete
+            // chain is rejected outright.
+            //
+            // Other kinds ship deploy-shape packs (tip commit + tree
+            // only) as their normal flow and their handlers do not
+            // read prior bytes, so a dangling parent there is
+            // structurally normal and the substrate continues to
+            // collapse to the no-prior path.
             let parentSha: string | null = null;
             if (declaredParent !== null) {
               try {
@@ -1233,6 +1244,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
                 parentSha = declaredParent;
               } catch (err) {
                 if (!hasCode(err) || err.code !== "NotFoundError") throw err;
+                if (repoId.kind === "workflow-run") {
+                  throw new Error(
+                    `pack_walk_dangling_parent: commit ${newCommit} declares parent ${declaredParent} which is neither in the receiver's store nor in the pack`,
+                  );
+                }
               }
             }
             const { priorReadBlob, priorListDir } = buildPriorTreeClosures(

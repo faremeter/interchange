@@ -1742,4 +1742,115 @@ describe("RepoStore", () => {
     expect(resolved).toBeNull();
     expect(targetHandler.onRefUpdatedCalls).toHaveLength(0);
   });
+
+  // A workflow-run pack whose oldest new commit declares a parent
+  // SHA the receiver does not have in its object store — and that
+  // the pack itself does not carry — leaves the substrate with no
+  // way to reconstruct the prior tree the kind handler validates
+  // append-only invariants against. Silently collapsing to "no
+  // prior" is unsafe: a handler enforcing append-only against a
+  // missing prior entry accepts only a genuinely new path; a path
+  // that contradicts a prior-tree entry the handler cannot read
+  // would slip through unchecked. The substrate refuses workflow-run
+  // packs with a dangling parent outright; the production
+  // workflow-run `createPack` ships the full parent chain, so the
+  // branch is unreachable on the production path.
+  //
+  // The substrate keeps the silent-degrade behavior for other kinds
+  // (e.g. agent-state) whose deploy-shape packs intentionally omit
+  // the parent chain and whose handlers do not read prior bytes;
+  // gating the rejection on `repoId.kind === "workflow-run"` is what
+  // keeps the agent-state state-push flow working through the same
+  // substrate primitive.
+  test("receivePack rejects a workflow-run pack with a dangling parent", async () => {
+    const wfRepoId: RepoId = { kind: "workflow-run", id: "subject" };
+    // Permissive test handler stamped as the workflow-run kind so
+    // the substrate's kind-aware dangling-parent check fires without
+    // pulling in the real workflow-run handler.
+    const permissiveWorkflowRun = (): TestHandler => {
+      const onRefUpdatedCalls: RefUpdateRecord[] = [];
+      return {
+        kind: "workflow-run",
+        directoryPrefix: "workflow-runs-under-test",
+        validatePush(): ValidatePushResult {
+          return { ok: true };
+        },
+        onRefUpdated(args) {
+          onRefUpdatedCalls.push(args);
+        },
+        onRefUpdatedCalls,
+      };
+    };
+
+    const sourceDir = await makeTempDir("repo-store-dangling-source-");
+    const sourceStore = createRepoStore({
+      dataDir: sourceDir,
+      signingKey,
+      handlers: { "workflow-run": permissiveWorkflowRun() },
+      authorize: allowAll,
+    });
+
+    // Build three commits on the source so the third commit's parent
+    // is the second commit. The synthesised pack below carries the
+    // third commit's reachable objects with the second commit object
+    // deliberately excluded, so the third commit's `parent` field
+    // references a SHA the receiver cannot resolve.
+    await sourceStore.writeTree(principal, wfRepoId, REF, {
+      files: { "runs/r1/events/0.json": "v1" },
+      message: "v1",
+    });
+    const { commitSha: secondSha } = await sourceStore.writeTree(
+      principal,
+      wfRepoId,
+      REF,
+      { files: { "runs/r1/events/1.json": "v2" }, message: "v2" },
+    );
+    const { commitSha: thirdSha } = await sourceStore.writeTree(
+      principal,
+      wfRepoId,
+      REF,
+      { files: { "runs/r1/events/2.json": "v3" }, message: "v3" },
+    );
+
+    const sourceRepoDir = sourceStore.getRepoDir(wfRepoId);
+    const reachableFromThird = await collectReachableObjects(
+      sourceRepoDir,
+      thirdSha,
+    );
+    const oids = reachableFromThird.filter((oid) => oid !== secondSha);
+    const packResult = await git.packObjects({
+      fs,
+      dir: sourceRepoDir,
+      oids,
+      write: false,
+    });
+    if (packResult.packfile === undefined) {
+      throw new Error("git.packObjects returned no packfile");
+    }
+    const pack = packResult.packfile;
+
+    const targetDir = await makeTempDir("repo-store-dangling-target-");
+    const targetHandler = permissiveWorkflowRun();
+    const targetStore = createRepoStore({
+      dataDir: targetDir,
+      signingKey,
+      handlers: { "workflow-run": targetHandler },
+      authorize: allowAll,
+    });
+    await targetStore.initRepo(wfRepoId);
+
+    await expect(
+      targetStore.receivePack(principal, wfRepoId, REF, pack, thirdSha, null),
+    ).rejects.toThrow(
+      new RegExp(
+        `pack_walk_dangling_parent: commit ${thirdSha} declares parent ${secondSha} which is neither in the receiver's store nor in the pack`,
+      ),
+    );
+
+    // The rejected pack must leave the ref unset so a retry sees a
+    // pristine target.
+    const resolved = await targetStore.resolveRef(principal, wfRepoId, REF);
+    expect(resolved).toBeNull();
+    expect(targetHandler.onRefUpdatedCalls).toHaveLength(0);
+  });
 });
