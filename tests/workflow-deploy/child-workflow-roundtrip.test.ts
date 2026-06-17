@@ -294,7 +294,6 @@ describe("parent -> child workflow round-trip", () => {
       workflowRunRepoId: parentWorkflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
       mailAddress: parentMailAddress,
-      supervisor: null,
     });
 
     expect(env.hub.router.getRoutableAddresses()).toContain(parentMailAddress);
@@ -694,7 +693,6 @@ describe("parent -> child workflow round-trip", () => {
       workflowRunRepoId: parentWorkflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
       mailAddress: parentMailAddress,
-      supervisor: null,
     });
 
     expect(env.hub.router.getRoutableAddresses()).toContain(parentMailAddress);
@@ -1040,7 +1038,6 @@ describe("parent -> child workflow round-trip", () => {
       workflowRunRepoId: parentWorkflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
       mailAddress: parentMailAddress,
-      supervisor: null,
     });
 
     expect(env.hub.router.getRoutableAddresses()).toContain(parentMailAddress);

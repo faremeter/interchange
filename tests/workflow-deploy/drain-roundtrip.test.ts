@@ -253,7 +253,6 @@ describe("drain round-trip", () => {
       workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
       mailAddress: deploymentMailAddress,
-      supervisor: null,
     });
 
     expect(env.hub.router.getRoutableAddresses()).toContain(

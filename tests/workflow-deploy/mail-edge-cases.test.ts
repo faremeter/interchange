@@ -461,7 +461,6 @@ async function deployEdgeWorkflow(
     workflowRunRepoId,
     workflowRunRef: WORKFLOW_RUN_REF,
     mailAddress: deploymentMailAddress,
-    supervisor: null,
   });
 
   if (!env.hub.router.getRoutableAddresses().includes(deploymentMailAddress)) {

@@ -318,7 +318,6 @@ describe("FIFO mail-trigger serialization", () => {
       workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
       mailAddress: deploymentMailAddress,
-      supervisor: null,
     });
 
     expect(env.hub.router.getRoutableAddresses()).toContain(
@@ -692,7 +691,6 @@ describe("FIFO mail-trigger serialization", () => {
       workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
       mailAddress: deploymentMailAddress,
-      supervisor: null,
     });
 
     expect(env.hub.router.getRoutableAddresses()).toContain(
