@@ -1157,11 +1157,18 @@ describe("supervisor recycle: shutdown during the kill/respawn gap", () => {
       throw new Error("tracker.children[1] missing");
     }
 
-    // Concurrent shutdown. The supervisor flips state to "stopping"
-    // before `triggerRecycle`'s `waitForReady` has resolved. The
-    // shutdown path then awaits the prior-cohort settlement and
-    // reaches `stopped` regardless of the in-flight recycle.
+    // Concurrent shutdown. `shutdownInternal` synchronously flips
+    // `state.phase` to "stopping" at its head (supervisor.ts L1583
+    // at the time of writing). Yield a microtask so the synchronous
+    // prelude is guaranteed to have run before we drive the second
+    // child's ready -- without this yield, `installNewChild` could
+    // race `state.phase` and fire while phase is still "recycling",
+    // making the test pass by coincidence rather than by the guard
+    // catching the actual race window the fix targets.
     const shutdownPromise = supervisor.shutdown();
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
 
     // Release the second child's ready frame so `triggerRecycle`
     // proceeds past `waitForReady` and calls `installNewChild`.
