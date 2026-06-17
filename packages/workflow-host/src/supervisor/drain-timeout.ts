@@ -210,6 +210,14 @@ export function createDrainTimeoutAccumulator(
         if (next.done === true) return;
         settleOnTerminal();
       } catch (cause) {
+        // The iterator's failure does not need an explicit
+        // escalation: the outer `setTimer`-based deadline keeps
+        // ticking against the same `state.phase === "running"` slot
+        // and fires `escalate()` if no terminal event arrives. The
+        // warn here surfaces the iterator failure to operator logs
+        // so a persistent broken event source is visible; the
+        // accumulator's contract is preserved by the timer's
+        // fall-through.
         const message = cause instanceof Error ? cause.message : String(cause);
         logger.warn`terminal-event watcher for run ${opts.runId} threw: ${message}`;
       }
