@@ -9,6 +9,7 @@ import {
   workflowRunKindHandler,
   WORKFLOW_RUN_GITIGNORE_PATH,
 } from "./workflow-run-kind";
+import { workflowKindHandler, WORKFLOW_JSON_PATH } from "./workflow-kind";
 import type { Principal } from "./repo-store";
 
 const REF = "refs/heads/events";
@@ -68,6 +69,19 @@ async function validateRun(
     listDir: makeListDir(prospective),
     priorReadBlob: makePriorReadBlob(prior),
     priorListDir: makeListDir(prior),
+  });
+}
+
+async function validateWorkflow(prospective: Record<string, string>) {
+  return workflowKindHandler.validatePush({
+    repoId: { kind: "workflow", id: "wf-1" },
+    ref: "refs/heads/main",
+    principal: HUB,
+    topLevelTreePaths: topLevels(prospective),
+    readBlob: makeReadBlob(prospective),
+    listDir: makeListDir(prospective),
+    priorReadBlob: async () => null,
+    priorListDir: async () => [],
   });
 }
 
@@ -206,5 +220,81 @@ describe("workflow-run single-event drop in a multi-event run (regression)", () 
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
     expect(r.reason).toContain("runs/r1/events/1.json");
+  });
+});
+describe("workflow-run inbox deletion is rejected (regression)", () => {
+  test("rejects dropping a prior inbox entry without a corresponding processing/consumed transition", async () => {
+    const ADDR_SEG = "addr-x";
+    const inboxBody = JSON.stringify({
+      messageId: "msg-1",
+      receivedAt: 100,
+      address: ADDR_SEG,
+      mailAuditRef: { store: "audit", path: "mail/msg-1" },
+    });
+    const prior = {
+      [`addresses/${ADDR_SEG}/inbox/100-msg-1.json`]: inboxBody,
+    };
+    const prospective = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+    };
+    const r = await validateRun(prospective, prior);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toContain("inbox");
+    expect(r.reason).toContain("100-msg-1.json");
+  });
+
+  test("accepts a prior inbox entry transitioning to processing at the same filename", async () => {
+    const ADDR_SEG = "addr-x";
+    const body = JSON.stringify({
+      messageId: "msg-1",
+      receivedAt: 100,
+      address: ADDR_SEG,
+      mailAuditRef: { store: "audit", path: "mail/msg-1" },
+    });
+    const prior = {
+      [`addresses/${ADDR_SEG}/inbox/100-msg-1.json`]: body,
+    };
+    const prospective = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`addresses/${ADDR_SEG}/processing/100-msg-1.json`]: body,
+    };
+    const r = await validateRun(prospective, prior);
+    expect(r.ok).toBe(true);
+  });
+});
+
+describe("workflow.json steps-as-array rejection (regression)", () => {
+  test("rejects workflow.json whose steps field is a JSON array", async () => {
+    const wfJson = JSON.stringify({
+      id: "wf-1",
+      triggers: [],
+      steps: [{ name: "step1" }, { name: "step2" }],
+      stepOrder: ["step1", "step2"],
+    });
+    const r = await validateWorkflow({
+      [WORKFLOW_JSON_PATH]: wfJson,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toContain(WORKFLOW_JSON_PATH);
+    expect(r.reason).toMatch(/array|object/);
+  });
+
+  test("rejects workflow.json whose state field is a JSON array", async () => {
+    const wfJson = JSON.stringify({
+      id: "wf-1",
+      triggers: [],
+      steps: { s1: { name: "s1" } },
+      stepOrder: ["s1"],
+      state: [],
+    });
+    const r = await validateWorkflow({
+      [WORKFLOW_JSON_PATH]: wfJson,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toContain(WORKFLOW_JSON_PATH);
+    expect(r.reason).toMatch(/array|object/);
   });
 });

@@ -74,6 +74,10 @@ async function validate(
 
 describe("workflow-run validatePush: deletion-bypass surface", () => {
   test("rejects a prospective tree that DROPS an event blob present in the prior tree", async () => {
+    // Drop the tail event from the prior tree. The contiguity check
+    // owned by validatePush passes (prospective is 0..0 starting at 0);
+    // the deletion-walk against the prior tree is the rejection lane
+    // this test pins.
     const prior = {
       "runs/r1/events/0.json": JSON.stringify({ seq: 0, type: "RunStarted" }),
       "runs/r1/events/1.json": JSON.stringify({
@@ -82,15 +86,12 @@ describe("workflow-run validatePush: deletion-bypass surface", () => {
       }),
     };
     const prospective = {
-      "runs/r1/events/1.json": JSON.stringify({
-        seq: 1,
-        type: "StepCompleted",
-      }),
+      "runs/r1/events/0.json": JSON.stringify({ seq: 0, type: "RunStarted" }),
     };
     const r = await validate(prospective, prior);
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
-    expect(r.reason).toContain("runs/r1/events/0.json");
+    expect(r.reason).toContain("runs/r1/events/1.json");
     expect(r.reason).toMatch(/append-only|prior tree/i);
   });
 

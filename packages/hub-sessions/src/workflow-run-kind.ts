@@ -1055,7 +1055,14 @@ async function validateClaimCheckSubtree(
       bucket.processing.map((e) => e.blobPath),
     );
     const prospectiveInboxByFilename = new Map<string, ClaimCheckBlob>();
-    for (const e of bucket.inbox) prospectiveInboxByFilename.set(e.filename, e);
+    const prospectiveInboxPaths = new Set<string>();
+    for (const e of bucket.inbox) {
+      prospectiveInboxByFilename.set(e.filename, e);
+      prospectiveInboxPaths.add(e.blobPath);
+    }
+    const prospectiveProcessingByFilename = new Map<string, ClaimCheckBlob>();
+    for (const e of bucket.processing)
+      prospectiveProcessingByFilename.set(e.filename, e);
     const prospectiveConsumedByMessageId = new Map<string, ClaimCheckBlob>();
     for (const e of bucket.consumed)
       prospectiveConsumedByMessageId.set(e.messageIdFromFilename, e);
@@ -1093,6 +1100,24 @@ async function validateClaimCheckSubtree(
         return {
           ok: false,
           reason: `processing ${e.blobPath} present in the prior tree is missing from the prospective tree without a matching consumed or inbox transition; in-flight processing entries cannot be silently dropped`,
+        };
+      }
+      for (const e of priorBucket.inbox) {
+        if (prospectiveInboxPaths.has(e.blobPath)) continue;
+        // A prior inbox entry may legitimately disappear when it
+        // transitions to processing (same `<receivedAt>-<messageId>`
+        // filename) or directly to consumed (matching messageId).
+        // Anything else is an inbound-mail loss — the FIFO claim-check
+        // contract requires the entry to reappear somewhere.
+        const processingMatch = prospectiveProcessingByFilename.get(e.filename);
+        const consumedMatch = prospectiveConsumedByMessageId.get(
+          e.messageIdFromFilename,
+        );
+        if (processingMatch !== undefined || consumedMatch !== undefined)
+          continue;
+        return {
+          ok: false,
+          reason: `inbox ${e.blobPath} present in the prior tree is missing from the prospective tree without a matching processing or consumed transition; pending inbox entries cannot be silently dropped`,
         };
       }
     }

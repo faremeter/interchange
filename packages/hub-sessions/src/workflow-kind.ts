@@ -65,12 +65,26 @@ const ALLOWED_TOP_LEVEL = new Set<string>([
  * could not possibly hydrate into a `WorkflowDefinition` never reaches
  * the deploy ref.
  */
+const StepsObject = type("Record<string, unknown>").narrow((value, ctx) => {
+  if (Array.isArray(value)) {
+    return ctx.mustBe("a JSON object, not an array");
+  }
+  return true;
+});
+
+const StateObject = type("Record<string, unknown>").narrow((value, ctx) => {
+  if (Array.isArray(value)) {
+    return ctx.mustBe("a JSON object, not an array");
+  }
+  return true;
+});
+
 export const workflowDefinitionEnvelopeSchema = type({
   id: "string > 0",
   triggers: "unknown[]",
-  steps: "Record<string, unknown>",
+  steps: StepsObject,
   stepOrder: "string[]",
-  "state?": "Record<string, unknown>",
+  "state?": StateObject,
 }).onUndeclaredKey("ignore");
 
 /**
