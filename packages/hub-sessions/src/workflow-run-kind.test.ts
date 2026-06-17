@@ -79,7 +79,11 @@ function eventBody(
 
 const HUB_PRINCIPAL: Principal = { kind: "hub" };
 const SUPERVISOR_PRINCIPAL: Principal = { kind: "supervisor" };
-const WORKFLOW_PROCESS_PRINCIPAL: Principal = { kind: "workflow-process" };
+const WORKFLOW_PROCESS_PRINCIPAL_SHAPE = {
+  kind: "workflow-process",
+  deploymentId: "test-deployment",
+};
+const WORKFLOW_PROCESS_PRINCIPAL: Principal = WORKFLOW_PROCESS_PRINCIPAL_SHAPE;
 const noPriorBlob = async (): Promise<Uint8Array | null> => null;
 const noPriorDir = async (): Promise<string[]> => [];
 

@@ -1230,7 +1230,18 @@ async function enforceWorkflowProcessPathScope(
 ): Promise<ValidatePushResult> {
   if (principal.kind !== "workflow-process") return { ok: true };
   const parsed = WorkflowProcessPrincipal(principal);
-  if (parsed instanceof type.errors) return { ok: true };
+  if (parsed instanceof type.errors) {
+    // `workflowRunAuthorize` already rejects malformed
+    // `workflow-process` principals at `gateAccess`, so this branch is
+    // unreachable when the substrate is wired against the real
+    // authorize callback. Fail closed so a future wiring that supplies
+    // a permissive authorize (e.g. test substrates using `allowAll`)
+    // cannot silently bypass the path-scope enforcement below.
+    return {
+      ok: false,
+      reason: `workflow-process principal is malformed: ${parsed.summary}`,
+    };
+  }
   if (topLevelTreePaths.includes(WORKFLOW_RUN_ADDRESSES_PREFIX)) {
     return {
       ok: false,

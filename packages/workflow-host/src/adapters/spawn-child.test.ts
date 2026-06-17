@@ -435,7 +435,11 @@ describe("workflow-host SpawnChildWorkflow adapter - sub-namespace scoping", () 
       message: "genesis",
     });
 
-    const workflowRunPrincipal: Principal = { kind: "workflow-process" };
+    const workflowRunPrincipalShape = {
+      kind: "workflow-process",
+      deploymentId: "test-deployment",
+    };
+    const workflowRunPrincipal: Principal = workflowRunPrincipalShape;
     // First, seed the parent's RunStarted under runs/<parentRunId>/.
     const parentAdapter = createWorkflowRunRepoStore({
       substrate: runSubstrate,
