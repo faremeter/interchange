@@ -86,6 +86,18 @@ function resolvePath(
           selector,
         );
       }
+      // An out-of-range index silently returning `undefined` is the
+      // same failure mode the key branch guards against with `in`:
+      // the runtime would feed `undefined` to a step or to a
+      // subsequent path segment as though the array author had
+      // supplied a hole. Surface the path so the author can see
+      // which index missed.
+      if (segment.index < 0 || segment.index >= cursor.length) {
+        throw new SelectorError(
+          `index [${String(segment.index)}] out of range (length ${String(cursor.length)}) in path ${path}`,
+          selector,
+        );
+      }
       cursor = cursor[segment.index];
     } else {
       if (cursor === null || cursor === undefined) {
