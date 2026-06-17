@@ -117,6 +117,27 @@ export type SidecarRouter = {
     options?: SendPackOptions,
   ): Promise<void>;
   sendSyncRequest(agentAddress: string): void;
+  /**
+   * Deliver a workflow-run signal to the sidecar that hosts the named
+   * deployment-level mail address. The sidecar's hub-link routes the
+   * frame through its `signalInboundRouter` into the deployment's
+   * supervisor, which sends a `signal.deliver` control IPC frame to
+   * the workflow-process child. The child commits the resulting
+   * `SignalReceived` event through its own substrate -- the single
+   * writer of the workflow-run repo on the sidecar side -- so the
+   * pack-push pipeline that propagates the commit to the hub never
+   * sees a concurrent writer at the same ref.
+   *
+   * Throws when no sidecar is registered for `agentAddress`; the
+   * caller is responsible for ensuring the deployment is live.
+   */
+  sendSignalDeliver(opts: {
+    agentAddress: string;
+    runId: string;
+    signalName: string;
+    signalId: string;
+    payload: unknown;
+  }): void;
 
   subscribeAgent(
     agentAddress: string,
@@ -1687,6 +1708,35 @@ export function createSidecarRouter(
     });
   }
 
+  function sendSignalDeliver(opts: {
+    agentAddress: string;
+    runId: string;
+    signalName: string;
+    signalId: string;
+    payload: unknown;
+  }): void {
+    const ws = addressIndex.get(opts.agentAddress);
+    if (ws === undefined) {
+      throw new Error(
+        `No sidecar connected for deployment "${opts.agentAddress}"`,
+      );
+    }
+    const conn = connections.get(ws);
+    if (conn === undefined) {
+      throw new Error(
+        `No sidecar connected for deployment "${opts.agentAddress}"`,
+      );
+    }
+    conn.send({
+      type: "signal.deliver",
+      agentAddress: opts.agentAddress,
+      runId: opts.runId,
+      signalName: opts.signalName,
+      signalId: opts.signalId,
+      payload: opts.payload,
+    });
+  }
+
   return {
     handleOpen,
     handleMessage,
@@ -1700,6 +1750,7 @@ export function createSidecarRouter(
     sendSourcesUpdate,
     sendPack,
     sendSyncRequest,
+    sendSignalDeliver,
     subscribeAgent,
     dispatchAgentEvent: dispatchToSubscribers,
     getConnectedSidecars,

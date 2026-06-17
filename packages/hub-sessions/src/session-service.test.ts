@@ -89,6 +89,11 @@ function createMockRouter(): SidecarRouter & {
     sendSyncRequest: track(
       "sendSyncRequest",
     ) as SidecarRouter["sendSyncRequest"],
+    sendSignalDeliver: ((
+      opts: Parameters<SidecarRouter["sendSignalDeliver"]>[0],
+    ) => {
+      calls.push({ method: "sendSignalDeliver", args: [opts] });
+    }) as SidecarRouter["sendSignalDeliver"],
     subscribeAgent: (() => () => undefined) as SidecarRouter["subscribeAgent"],
     dispatchAgentEvent: () => undefined,
     getConnectedSidecars: () => [],

@@ -60,7 +60,6 @@ import {
   type SidecarRouter,
   type SessionService,
   type WorkflowRunHubPrincipal,
-  type WorkflowRunSupervisorPrincipal,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { hexEncode } from "@intx/types";
@@ -71,11 +70,10 @@ import {
   type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
 import { createDefaultDirectorRegistry } from "@intx/agent";
-import { createWorkflowHostSignalChannel } from "@intx/workflow-host";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { ApprovalSet } from "@intx/workflow-deploy";
-import { emptyState, type WorkflowDefinition } from "@intx/workflow";
+import type { WorkflowDefinition } from "@intx/workflow";
 import { deriveTrivialDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 
 export const AGENT_ADDRESS = "ins_test-agent@integration.interchange";
@@ -1178,12 +1176,23 @@ export async function fireMailTrigger(
 }
 
 /**
- * Commit a `SignalReceived` event into the deployment's workflow-run
- * repo via the production signal-channel `deliver` path. The state
- * reader passed to the channel returns a fresh empty `RunState`; the
- * production `deliver` flow does not consult the reader (it only
- * reads `unconsumedSignals`/`observedSignalIds` from `awaitNext`),
- * so the helper does not need to thread a live runtime state.
+ * Deliver a workflow-run signal through the production hub →
+ * sidecar → supervisor → workflow-process child pipeline. The hub
+ * router's `sendSignalDeliver` ships a `signal.deliver` wire frame to
+ * the sidecar holding the deployment; the sidecar's hub-link routes
+ * the frame into the deployment's supervisor, which forwards a
+ * `signal.deliver` control IPC payload to the workflow-process child.
+ * The child commits the resulting `SignalReceived` event through its
+ * own substrate -- the single writer of the workflow-run repo on the
+ * sidecar side -- so the workflow-run pack-push pipeline that
+ * propagates the commit to the hub never sees a concurrent writer at
+ * the workflow-run ref. The host-side substrate write the previous
+ * implementation performed is the race the wire path eliminates by
+ * construction.
+ *
+ * The returned `signalId` is the value the producer minted; the
+ * workflow-run state machine's `observedSignalIds` dedup key matches
+ * against this value.
  */
 export async function injectSignal(
   env: DeployFlowEnv,
@@ -1193,28 +1202,15 @@ export async function injectSignal(
   payload: unknown,
 ): Promise<{ signalId: string }> {
   const handle = requireDeployment(env, deploymentId);
-  const supervisorPrincipal: WorkflowRunSupervisorPrincipal = {
-    kind: "supervisor",
-    deploymentId: handle.workflowRunRepoId.id,
-  };
-  const channel = createWorkflowHostSignalChannel({
-    repoStore: env.hub.agentRepoStore.repoStore,
-    principal: supervisorPrincipal,
-    repoId: handle.workflowRunRepoId,
-    ref: handle.workflowRunRef,
+  const signalId = `sig_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  env.hub.router.sendSignalDeliver({
+    agentAddress: handle.mailAddress,
     runId,
-    readState: () => emptyState(runId),
-    newId: () =>
-      `sig_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-    clock: () => new Date(),
+    signalName,
+    signalId,
+    payload,
   });
-  try {
-    const signalId = `sig_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    await channel.deliver(signalName, payload, signalId);
-    return { signalId };
-  } finally {
-    await channel.stop();
-  }
+  return { signalId };
 }
 
 /**

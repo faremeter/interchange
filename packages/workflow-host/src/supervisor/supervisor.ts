@@ -167,6 +167,20 @@ export interface WorkflowSupervisor {
    */
   recycle(opts: RecycleOpts): Promise<RecycleAttempt>;
   /**
+   * Deliver a workflow-run signal to the child by sending a
+   * `signal.deliver` control IPC frame. The child commits the
+   * resulting `SignalReceived` event through its own substrate, which
+   * keeps the workflow-run repo's single-writer invariant intact -- the
+   * child is the only writer of `runs/<runId>/events/` on the sidecar
+   * side, and the pack-push pipeline propagates the commit to the hub
+   * without racing against a concurrent host-side write.
+   *
+   * Throws when the supervisor is not in a phase where it can address
+   * the child (idle / stopping / stopped); the caller is responsible
+   * for serializing delivery against `spawn` completion.
+   */
+  deliverSignal(opts: DeliverSignalOpts): Promise<void>;
+  /**
    * Current snapshot of the credentials pushed to the child. Surfaced
    * so the host can audit the per-step contentHash without
    * round-tripping the substrate. Returns `null` before spawn.
@@ -219,6 +233,21 @@ export type DrainOpts = {
    * into the supervisor's bindings, not a per-call argument.
    */
   deadlineMs: number;
+};
+
+export type DeliverSignalOpts = {
+  /** Run the signal targets. The child rejects a delivery whose runId is unknown. */
+  runId: string;
+  /** Signal name the run's `awaitSignal` step matches against. */
+  signalName: string;
+  /**
+   * Producer-supplied dedup id. The workflow-run state machine
+   * rejects duplicate deliveries via `observedSignalIds`; callers
+   * mint a fresh value per call.
+   */
+  signalId: string;
+  /** Opaque signal payload the awaiter resolves with. */
+  payload: unknown;
 };
 
 export type RecycleOpts = {
@@ -980,6 +1009,36 @@ export function createWorkflowSupervisor(
     return attempt;
   }
 
+  async function deliverSignal(opts: DeliverSignalOpts): Promise<void> {
+    // The supervisor is the single producer of `signal.deliver` control
+    // IPC frames. Routing every signal delivery through the same child
+    // makes the workflow-process the single writer of `runs/<runId>/events/`
+    // on the sidecar side; the pack-push pipeline that propagates the
+    // commit to the hub never observes a concurrent writer at the
+    // same ref.
+    //
+    // `recycling` is rejected: during recycle, `state.controlSender`
+    // still points at the dying child's sender, so a `signal.deliver`
+    // either buffers behind the SIGTERM (best case) or writes into a
+    // closed pipe and is silently lost (worst case). Rejecting here
+    // surfaces the race to the caller so they can retry after the
+    // recycle completes.
+    if (state.phase !== "running" && state.phase !== "starting") {
+      throw new Error(
+        `supervisor: deliverSignal called in phase ${state.phase}; expected starting/running`,
+      );
+    }
+    await state.controlSender.send({
+      type: "signal.deliver",
+      data: {
+        runId: opts.runId,
+        signalName: opts.signalName,
+        signalId: opts.signalId,
+        payload: opts.payload,
+      },
+    });
+  }
+
   function getCredentialsSnapshot(): CredentialsSnapshot | null {
     if (state.phase === "starting" || state.phase === "running") {
       return state.credentialsSnapshot;
@@ -994,6 +1053,7 @@ export function createWorkflowSupervisor(
     shutdown,
     drain,
     recycle,
+    deliverSignal,
     getCredentialsSnapshot,
   };
 }

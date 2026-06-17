@@ -2,6 +2,7 @@ export {
   createWorkflowSupervisor,
   type CancelCommitInfo,
   type CancelRequestOpts,
+  type DeliverSignalOpts,
   type DrainOpts,
   type RecycleOpts,
   type SpawnOpts,

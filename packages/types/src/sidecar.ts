@@ -198,6 +198,33 @@ export const MailInboundFrame = type({
 export type MailInboundFrame = typeof MailInboundFrame.infer;
 
 /**
+ * Deliver a workflow-run signal to a multi-step deployment's
+ * supervisor. The hub forwards the frame to the sidecar that hosts the
+ * deployment named by `agentAddress` (the deployment-level mail
+ * address). The sidecar's hub-link routes the frame into the matching
+ * supervisor's `deliverSignal`, which sends a `signal.deliver` control
+ * IPC frame to the workflow-process child. The child commits the
+ * `SignalReceived` event through its own substrate -- the single
+ * writer of the workflow-run repo on the sidecar side -- so the
+ * pack-push pipeline that propagates the commit to the hub never sees
+ * a concurrent writer at the same ref.
+ *
+ * `signalId` is supplied by the producer so the workflow-run state
+ * machine's dedup index (`observedSignalIds`) rejects a duplicate
+ * delivery cleanly; a fresh value per call is the producer's
+ * responsibility.
+ */
+export const SignalDeliverFrame = type({
+  type: "'signal.deliver'",
+  agentAddress: "string",
+  runId: "string",
+  signalName: "string",
+  signalId: "string",
+  payload: "unknown",
+});
+export type SignalDeliverFrame = typeof SignalDeliverFrame.infer;
+
+/**
  * Workflow projection carried on an `agent.deploy` frame for the
  * multi-step branch. Presence of the field at the deploy router is the
  * discriminator between the trivial-launch path (single-step,
@@ -685,7 +712,8 @@ export const HubFrame = MailInboundFrame.or(AgentDeployFrame)
   .or(PackDoneFrame)
   .or(PackAckFrame)
   .or(PackRejectFrame)
-  .or(SyncRequestFrame);
+  .or(SyncRequestFrame)
+  .or(SignalDeliverFrame);
 export type HubFrame = typeof HubFrame.infer;
 
 /** Any frame on the wire, regardless of direction. */

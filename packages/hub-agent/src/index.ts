@@ -35,6 +35,7 @@ export {
   type HubLink,
   type HubLinkConfig,
   type MailInboundRouter,
+  type SignalInboundRouter,
   type ReconnectScheduler,
 } from "./ws/hub-link";
 export {

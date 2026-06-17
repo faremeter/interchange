@@ -121,37 +121,22 @@ describe("deploy-flow-env helpers smoke tests", () => {
     expect(events).toEqual([]);
   });
 
-  test("injectSignal commits a SignalReceived blob that readWorkflowRunEvents surfaces", async () => {
-    const before = await readWorkflowRunEvents(env, DEPLOYMENT_ID, "run-2");
-    expect(before).toEqual([]);
-
-    const { signalId } = await injectSignal(
-      env,
-      DEPLOYMENT_ID,
-      "run-2",
-      "operator.ack",
-      { ok: true },
-    );
+  test("injectSignal routes the wire frame through the hub router to the deployment sidecar", async () => {
+    // The helper now drives the production hub -> sidecar ->
+    // supervisor -> workflow-process pipeline rather than writing a
+    // SignalReceived blob directly to the hub substrate. Routing the
+    // signal through the child preserves the workflow-run repo's
+    // single-writer invariant on the sidecar side -- without it, a
+    // host-side substrate write would race against the next pack push
+    // from the child and surface `non_fast_forward` on the hub. The
+    // smoke env has no sidecar registered against the deployment
+    // address, so the helper surfaces the routing error verbatim.
+    await expect(
+      injectSignal(env, DEPLOYMENT_ID, "run-2", "operator.ack", { ok: true }),
+    ).rejects.toThrow(/No sidecar connected/);
 
     const after = await readWorkflowRunEvents(env, DEPLOYMENT_ID, "run-2");
-    expect(after.length).toBe(1);
-    const first = after[0];
-    if (first === undefined) throw new Error("unreachable");
-    expect(first.seq).toBe(0);
-    expect(first.type).toBe("SignalReceived");
-    const data = first.body["data"];
-    expect(data).toBeDefined();
-    if (typeof data !== "object" || data === null) {
-      throw new Error("unreachable");
-    }
-    // The signal-channel writes `data` as a JSON object; the kind
-    // handler's `validatePush` rejects non-object payloads at write
-    // time. Narrowing with `in` keeps the reader off any unsafe cast.
-    expect("signalName" in data).toBe(true);
-    expect("signalId" in data).toBe(true);
-    const record: Record<string, unknown> = { ...data };
-    expect(record["signalName"]).toBe("operator.ack");
-    expect(record["signalId"]).toBe(signalId);
+    expect(after).toEqual([]);
   });
 
   test("waitForWorkflowRunComplete throws on timeout when no terminal event lands", async () => {

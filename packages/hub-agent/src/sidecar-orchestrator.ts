@@ -32,6 +32,7 @@ import {
   type DeployRouter,
   type HubLink,
   type MailInboundRouter,
+  type SignalInboundRouter,
   type ReconnectScheduler,
 } from "./ws/hub-link";
 
@@ -93,6 +94,15 @@ export type SidecarOrchestratorConfig = {
    * forwards the binding unchanged to `createHubLink`.
    */
   mailInboundRouter?: MailInboundRouter;
+  /**
+   * Optional pre-fallback signal dispatcher the link consults on every
+   * inbound `signal.deliver` frame. Production wires this against the
+   * sidecar's multi-step deployment signal handler registry so a
+   * deployment-address signal flows into the supervisor's
+   * `deliverSignal`. The orchestrator forwards the binding unchanged
+   * to `createHubLink`.
+   */
+  signalInboundRouter?: SignalInboundRouter;
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
   scheduleReconnect?: ReconnectScheduler;
@@ -124,6 +134,7 @@ export function createSidecarOrchestrator(
     cryptoOps,
     createDeployRouter,
     mailInboundRouter,
+    signalInboundRouter,
     pingIntervalMs,
     reconnectDelayMs,
     scheduleReconnect,
@@ -193,6 +204,7 @@ export function createSidecarOrchestrator(
     keyStore,
     deployRouter,
     ...(mailInboundRouter !== undefined ? { mailInboundRouter } : {}),
+    ...(signalInboundRouter !== undefined ? { signalInboundRouter } : {}),
     ...(pingIntervalMs !== undefined ? { pingIntervalMs } : {}),
     ...(reconnectDelayMs !== undefined ? { reconnectDelayMs } : {}),
     ...(scheduleReconnect !== undefined ? { scheduleReconnect } : {}),

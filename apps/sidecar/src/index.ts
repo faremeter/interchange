@@ -29,6 +29,7 @@ import {
 import {
   createDeploymentAddressRegistry,
   createMultistepMailRouter,
+  createMultistepSignalRouter,
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
@@ -156,6 +157,16 @@ const deploymentAddressRegistry = createDeploymentAddressRegistry();
 // no `sessions` entry for the deployment address).
 const multistepMailRouter = createMultistepMailRouter();
 
+// Per-deployment-address signal handler registry the hub-link consults
+// on every inbound `signal.deliver` frame. The multi-step deploy
+// router registers a handler against the deployment's mail address
+// once its supervisor spawns; the handler forwards the signal into the
+// supervisor's `deliverSignal`, which sends a `signal.deliver` control
+// IPC frame to the workflow-process child. The child commits the
+// resulting `SignalReceived` event through its own substrate -- the
+// single writer of the workflow-run repo on the sidecar side.
+const multistepSignalRouter = createMultistepSignalRouter();
+
 const transport = createInMemoryTransport();
 
 // The pack-push client closes over the substrate (for `createPack`)
@@ -251,6 +262,7 @@ const orchestrator = createSidecarOrchestrator({
     verifySSHSig: verifySSHSignature,
   },
   mailInboundRouter: multistepMailRouter,
+  signalInboundRouter: multistepSignalRouter,
   createDeployRouter: ({ sessions, keyStore, onAgentEvent }) =>
     createSidecarDeployRouter({
       sessions,
@@ -263,6 +275,7 @@ const orchestrator = createSidecarOrchestrator({
         deploymentAddressRegistry.record(deploymentId, agentAddress);
       },
       multistepMailRouter,
+      multistepSignalRouter,
       multistepSubstrateEnv,
       // The multi-step supervisor forwards `pack.push.request` upstream
       // control frames into this closure; the boot edge resolves them

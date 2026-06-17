@@ -43,6 +43,7 @@ export {
   type CommitRunEventResult,
   type CredentialsSnapshot,
   type CredentialsSnapshotStep,
+  type DeliverSignalOpts,
   type DeriveStepAddress,
   type DrainOpts,
   type DrainTimeoutAccumulator,

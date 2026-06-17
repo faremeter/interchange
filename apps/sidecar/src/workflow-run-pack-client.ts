@@ -154,6 +154,74 @@ export function createMultistepMailRouter(): MultistepMailRouter {
 }
 
 /**
+ * Per-deployment signal-delivery handler the multi-step deploy router
+ * installs against the `MultistepSignalRouter` after a supervisor's
+ * `spawn` succeeds. The handler hands the signal off to the supervisor's
+ * `deliverSignal`, which sends a `signal.deliver` control IPC frame to
+ * the workflow-process child. Routing every workflow-run signal through
+ * the child keeps the workflow-run repo's single-writer invariant
+ * intact -- the child is the only writer of `runs/<runId>/events/` on
+ * the sidecar side, so the pack-push pipeline that propagates the
+ * commit to the hub never races against a concurrent host-side write.
+ */
+export type MultistepSignalHandler = (args: {
+  runId: string;
+  signalName: string;
+  signalId: string;
+  payload: unknown;
+}) => Promise<void>;
+
+/**
+ * Per-deployment-address signal handler registry the sidecar hub-link
+ * consults on every inbound `signal.deliver` frame. The trivial deploy
+ * path never registers a handler. The multi-step deploy router
+ * registers a handler against the deployment's mail address after
+ * `wired.supervisor.spawn` succeeds; the handler dispatches the signal
+ * into the supervisor's `deliverSignal`.
+ *
+ * The registry lives at the sidecar's host layer (not inside the
+ * workflow-host library) for the same boundary reason as
+ * `MultistepMailRouter`: the routing decision is a concrete sidecar
+ * host concern, and the workflow-host package stays agnostic to which
+ * transport surface its supervisor handle rides on.
+ */
+export type MultistepSignalRouter = {
+  register(address: string, handler: MultistepSignalHandler): void;
+  unregister(address: string): void;
+  tryRoute(frame: {
+    type: "signal.deliver";
+    agentAddress: string;
+    runId: string;
+    signalName: string;
+    signalId: string;
+    payload: unknown;
+  }): Promise<boolean>;
+};
+
+export function createMultistepSignalRouter(): MultistepSignalRouter {
+  const handlers = new Map<string, MultistepSignalHandler>();
+  return {
+    register(address, handler) {
+      handlers.set(address, handler);
+    },
+    unregister(address) {
+      handlers.delete(address);
+    },
+    async tryRoute(frame) {
+      const handler = handlers.get(frame.agentAddress);
+      if (handler === undefined) return false;
+      await handler({
+        runId: frame.runId,
+        signalName: frame.signalName,
+        signalId: frame.signalId,
+        payload: frame.payload,
+      });
+      return true;
+    },
+  };
+}
+
+/**
  * Boot-edge facade around the substrate-shaped `RepoStore`. Forwards
  * every method to the underlying store; intercepts the
  * `writeTreePreservingPrefix` return path so a successful write

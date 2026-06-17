@@ -44,7 +44,10 @@ import type { InferenceEvent } from "@intx/types/runtime";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 import { STEP_ID_PATTERN } from "@intx/workflow";
 
-import type { MultistepMailRouter } from "./workflow-run-pack-client";
+import type {
+  MultistepMailRouter,
+  MultistepSignalRouter,
+} from "./workflow-run-pack-client";
 
 const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
 
@@ -586,6 +589,23 @@ export function createSidecarDeployRouter(deps: {
    * cannot route through the hub-link until the wiring is plumbed.
    */
   multistepMailRouter?: MultistepMailRouter;
+  /**
+   * Per-deployment-address signal handler registry the sidecar
+   * hub-link's `signal.deliver` path consults. The multi-step branch
+   * registers `wired.supervisor.deliverSignal` against the deployment's
+   * mail address once `supervisor.spawn` succeeds so a hub-side
+   * `signal.deliver` frame flows into the workflow-process child via
+   * the IPC's `signal.deliver` payload. The child commits the
+   * resulting `SignalReceived` event through its own substrate,
+   * preserving the workflow-run repo's single-writer invariant on the
+   * sidecar side.
+   *
+   * Optional so tests that exercise the trivial branch (or the
+   * multi-step branch without an end-to-end signal loop) can omit the
+   * binding; an absent registry means hub-side signals cannot route
+   * through the hub-link until the wiring is plumbed.
+   */
+  multistepSignalRouter?: MultistepSignalRouter;
 }): DeployRouter {
   const principalPublicKeyHex = derivePrincipalPublicKeyHex(
     deps.signingKeySeed,
@@ -785,6 +805,21 @@ export function createSidecarDeployRouter(deps: {
     // registry untouched.
     deps.multistepMailRouter?.register(frame.agentAddress, (message) => {
       wired.routeInbound(message);
+    });
+    // Register the signal-delivery handler against the deployment
+    // address so a hub-side `signal.deliver` frame dispatches through
+    // the supervisor's `deliverSignal`, which forwards a control IPC
+    // `signal.deliver` to the workflow-process child. The child writes
+    // the resulting `SignalReceived` event through its own substrate;
+    // the workflow-run pack-push pipeline then propagates the commit
+    // to the hub with no concurrent writer at the workflow-run ref.
+    deps.multistepSignalRouter?.register(frame.agentAddress, async (args) => {
+      await wired.supervisor.deliverSignal({
+        runId: args.runId,
+        signalName: args.signalName,
+        signalId: args.signalId,
+        payload: args.payload,
+      });
     });
 
     return { publicKey: principalPublicKeyHex };

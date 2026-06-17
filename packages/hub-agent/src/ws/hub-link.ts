@@ -26,6 +26,7 @@ import {
   type PackAckFrame,
   type PackRejectFrame,
   type RepoId,
+  type SignalDeliverFrame,
   type SyncRequestFrame,
   type DeployApplyErrorFrame,
 } from "@intx/types/sidecar";
@@ -107,6 +108,32 @@ export interface MailInboundRouter {
   tryRoute(agentAddress: string, message: Uint8Array): boolean;
 }
 
+/**
+ * Per-deployment-address signal handler registry the link consults on
+ * every inbound `signal.deliver` frame. Production wires this against
+ * the sidecar's multi-step deploy registry so the frame flows into the
+ * deployment's supervisor (which forwards `signal.deliver` over the
+ * control IPC to the workflow-process child). Trivial deployments do
+ * not register a handler; the link logs and drops a frame whose
+ * `agentAddress` is unknown so the wire surface fails loudly rather
+ * than silently absorbing a misrouted delivery.
+ *
+ * The shape lives on hub-agent so the link does not import the sidecar
+ * host's wiring module, and so tests can substitute a stub.
+ */
+export interface SignalInboundRouter {
+  /**
+   * Attempt to dispatch `frame` to the supervisor registered against
+   * `frame.agentAddress`. Returns a promise that resolves to `true`
+   * when a handler accepted the frame, `false` when no handler is
+   * registered; the promise rejects when the handler is registered but
+   * the supervisor's `deliverSignal` itself throws. The link surfaces
+   * a rejection through a logged warning -- a structured failure-reply
+   * frame for signals does not exist on the wire today.
+   */
+  tryRoute(frame: SignalDeliverFrame): Promise<boolean>;
+}
+
 export type HubLinkConfig = {
   hubURL: string;
   sidecarId: string;
@@ -141,6 +168,17 @@ export type HubLinkConfig = {
    * is treated as "no handler ever claims" so behaviour is unchanged.
    */
   mailInboundRouter?: MailInboundRouter;
+  /**
+   * Optional pre-fallback signal dispatcher. When present, the link
+   * routes every inbound `signal.deliver` frame through this router.
+   * Production wires this against the sidecar's multi-step deploy
+   * registry so a deployment-address signal flows into the
+   * supervisor's `deliverSignal`. Trivial deployments (and tests that
+   * do not exercise the signal-delivery surface) omit it; an absent
+   * router causes inbound signal frames to be logged-and-dropped so a
+   * misrouted delivery is observable rather than silent.
+   */
+  signalInboundRouter?: SignalInboundRouter;
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
   scheduleReconnect?: ReconnectScheduler;
@@ -191,6 +229,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     keyStore,
     deployRouter,
     mailInboundRouter,
+    signalInboundRouter,
     pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
     reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
     scheduleReconnect = defaultScheduleReconnect,
@@ -631,6 +670,22 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
+  async function handleSignalDeliver(frame: SignalDeliverFrame): Promise<void> {
+    if (signalInboundRouter === undefined) {
+      logger.warn`Received signal.deliver for ${frame.agentAddress} but no signalInboundRouter is wired; dropping`;
+      return;
+    }
+    try {
+      const routed = await signalInboundRouter.tryRoute(frame);
+      if (!routed) {
+        logger.warn`signal.deliver for ${frame.agentAddress} did not match any registered deployment; dropping`;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn`signal.deliver delivery failed for ${frame.agentAddress}: ${msg}`;
+    }
+  }
+
   async function pushWorkflowRunPack(opts: {
     agentAddress: string;
     repoId: RepoId;
@@ -769,6 +824,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         break;
       case "sync.request":
         void handleSyncRequest(frame);
+        break;
+      case "signal.deliver":
+        await handleSignalDeliver(frame);
         break;
       case "repo.pack.ack":
         handlePackAck(frame);
