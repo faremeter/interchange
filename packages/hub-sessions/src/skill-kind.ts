@@ -171,14 +171,36 @@ async function parseSkillEntry(
 async function buildSkillIndex(
   topLevelTreePaths: string[],
   readBlob: (path: string) => Promise<Uint8Array>,
+  listDir: (path: string) => Promise<string[]>,
 ): Promise<
   { ok: true; entries: SkillIndexEntry[] } | { ok: false; reason: string }
 > {
   const entries: SkillIndexEntry[] = [];
   // Sort so the index ordering is deterministic across reads.
-  const subdirs = [...topLevelTreePaths].sort();
-  for (const subdir of subdirs) {
-    const outcome = await parseSkillEntry(subdir, readBlob);
+  const candidates = [...topLevelTreePaths].sort();
+  for (const candidate of candidates) {
+    // Skill subdirectories are arbitrarily named (`<skill-name>/`), so
+    // there is no enumerable allowlist of names the way the workflow,
+    // package-registry, and agent-state handlers use. The structural
+    // distinction is tree-vs-blob: a top-level tree entry is a skill
+    // subdir, a top-level blob (e.g. `.gitignore` seeded by the
+    // genesis init) is not.
+    //
+    // Probe via `listDir`. The substrate's two implementations
+    // disagree on the not-a-tree signal — the receivePack closures
+    // throw, the writeTree closures return an empty array — so this
+    // probe accepts either signal as "not a directory" and skips the
+    // entry. Git does not store empty trees, so an empty `listDir`
+    // result is equivalent to "this name is not a directory in the
+    // prospective tree".
+    let children: string[];
+    try {
+      children = await listDir(candidate);
+    } catch {
+      continue;
+    }
+    if (children.length === 0) continue;
+    const outcome = await parseSkillEntry(candidate, readBlob);
     if (!outcome.ok) {
       return { ok: false, reason: outcome.reason };
     }
@@ -195,6 +217,7 @@ export const skillKindHandler: KindHandler = {
     ref,
     topLevelTreePaths,
     readBlob,
+    listDir,
   }): Promise<ValidatePushResult> {
     // Drop any staged entry from a previous attempt first. The
     // substrate calls validatePush before advancing the ref, so a prior
@@ -205,7 +228,7 @@ export const skillKindHandler: KindHandler = {
     const key = cacheKey(repoId.id, ref);
     pendingIndex.delete(key);
 
-    const result = await buildSkillIndex(topLevelTreePaths, readBlob);
+    const result = await buildSkillIndex(topLevelTreePaths, readBlob, listDir);
     if (!result.ok) {
       logger.debug`skill validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${result.reason}`;
       return { ok: false, reason: result.reason };

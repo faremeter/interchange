@@ -262,12 +262,19 @@ describe("skillKindHandler.validatePush", () => {
 
   test("rejects when SKILL.md is missing from a skill subdirectory", async () => {
     const repoId = uniqueRepoId("missing");
+    // The subdir must be a real directory in the tree (`listDir` does
+    // not throw on it) for the handler to treat it as a skill
+    // candidate. Seed an unrelated file so `greet/` is a tree, not a
+    // blob, but still lacks the required `greet/SKILL.md`.
+    const files = {
+      "greet/README.md": "no SKILL.md here",
+    };
     const result = await skillKindHandler.validatePush({
       repoId,
       ref: REF,
       topLevelTreePaths: ["greet"],
-      readBlob: makeReadBlob({}),
-      listDir: makeListDir({}),
+      readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
       principal: HUB_PRINCIPAL,
       priorReadBlob: noPriorBlob,
       priorListDir: noPriorDir,
@@ -448,6 +455,69 @@ describe("skillKindHandler.validatePush", () => {
       priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
+  });
+
+  test("skips non-directory top-level entries (e.g. .gitignore from genesis init)", async () => {
+    const repoId = uniqueRepoId("nondir");
+    const files = {
+      ".gitignore": "node_modules\n",
+      "greet/SKILL.md": skillMd({
+        name: "greet",
+        description: "Greets the user.",
+      }),
+    };
+    const result = await skillKindHandler.validatePush({
+      repoId,
+      ref: REF,
+      topLevelTreePaths: [".gitignore", "greet"],
+      readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
+    });
+    expect(result.ok).toBe(true);
+
+    await skillKindHandler.onRefUpdated({
+      repoId,
+      ref: REF,
+      oldSha: null,
+      newSha: "feedface",
+    });
+
+    const entries = getSkillIndex(repoId.id, REF);
+    expect(entries).toHaveLength(1);
+    const entry = entries[0];
+    if (entry === undefined) throw new Error("unreachable");
+    expect(entry.name).toBe("greet");
+    expect(entry.workspaceSubpath).toBe("greet/");
+  });
+
+  test("skips a top-level .gitignore even when it is the only entry", async () => {
+    const repoId = uniqueRepoId("onlygitignore");
+    const files = {
+      ".gitignore": "node_modules\n",
+    };
+    const result = await skillKindHandler.validatePush({
+      repoId,
+      ref: REF,
+      topLevelTreePaths: [".gitignore"],
+      readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
+    });
+    expect(result.ok).toBe(true);
+
+    await skillKindHandler.onRefUpdated({
+      repoId,
+      ref: REF,
+      oldSha: null,
+      newSha: "babecafe",
+    });
+
+    expect(getSkillIndex(repoId.id, REF)).toEqual([]);
   });
 
   test("validatePush rejection does not populate the skill index after a subsequent onRefUpdated would be skipped", async () => {
