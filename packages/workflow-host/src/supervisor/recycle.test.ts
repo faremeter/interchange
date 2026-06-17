@@ -1244,7 +1244,16 @@ describe("supervisor recycle: external drain phase guard", () => {
     function countDrainFrames(
       stream: ReturnType<typeof createMemoryNdjsonStream>,
     ): number {
-      return stream.flushed().filter((line) => line.includes("drain")).length;
+      let count = 0;
+      for (const line of stream.flushed()) {
+        const raw: unknown = JSON.parse(line);
+        const signed = SignedEnvelope(raw);
+        if (signed instanceof type.errors) continue;
+        const payload = ControlPayload(signed.envelope.payload);
+        if (payload instanceof type.errors) continue;
+        if (payload.type === "drain") count += 1;
+      }
+      return count;
     }
     const drainFramesBefore = countDrainFrames(first.supervisorToChild);
 

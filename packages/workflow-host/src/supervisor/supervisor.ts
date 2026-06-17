@@ -1852,11 +1852,11 @@ export function createWorkflowSupervisor(
           drain: async (deadlineMs) => {
             // The recycle path's drain step shares the drain
             // primitive but bypasses the public surface's `recycling`
-            // rejection so the still-live controlSender (this step
-            // runs BEFORE abortPriorCohort + kill) receives the
-            // frame. The public `drain()` rejects `recycling` for
-            // external callers because the kill/respawn gap can
-            // leave the controlSender dying.
+            // silent-no-op so the still-live controlSender (this
+            // step runs BEFORE abortPriorCohort + kill) receives the
+            // frame. The public `drain()` silently no-ops on
+            // `recycling` for external callers because the
+            // kill/respawn gap can leave the controlSender dying.
             await drainImpl({ deadlineMs }, { fromRecycle: true });
           },
           replayProcessingToInbox: async () => {
@@ -1899,13 +1899,15 @@ export function createWorkflowSupervisor(
               // rejection, and the upstream control iterator's
               // exit would never be observed.
               wiring.handle.kill("SIGTERM");
-              void wiring.eventPump.catch(() => {
-                /* swallowed: the new child is being torn down; the
-                   pump's failure has nowhere meaningful to surface. */
+              void wiring.eventPump.catch((cause: unknown) => {
+                const message =
+                  cause instanceof Error ? cause.message : String(cause);
+                logger.warn`orphan-cohort eventPump failed during phase-guard teardown: ${message}`;
               });
-              void controlIncoming.return(undefined).catch(() => {
-                /* swallowed: same rationale as the eventPump catch
-                     above; the orphan's iterator is being released. */
+              void controlIncoming.return(undefined).catch((cause: unknown) => {
+                const message =
+                  cause instanceof Error ? cause.message : String(cause);
+                logger.warn`orphan-cohort controlIncoming.return failed during phase-guard teardown: ${message}`;
               });
               return;
             }
