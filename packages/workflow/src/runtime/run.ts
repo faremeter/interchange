@@ -219,7 +219,22 @@ async function executeRunBody(
         ? { consumedMessageId: options.consumedMessageId }
         : {}),
     };
-    state = await commit(env, runId, event);
+    try {
+      state = await commit(env, runId, event);
+    } catch (cause) {
+      // A `cancel("self", ...)` racing the very first `RunStarted`
+      // commit can land `CancelRequested` first (legal from `pending`
+      // since the state-machine admits early-lifecycle cancellation).
+      // The chain then reloads, sees phase=cancelling, and rejects
+      // `RunStarted` with `code: "phase"`. Reload and proceed to the
+      // main loop, which routes through the cancellation cleanup
+      // branch and emits `RunCancelled`.
+      if (cause instanceof TransitionError && cause.code === "phase") {
+        state = await reloadState(env, runId);
+      } else {
+        throw cause;
+      }
+    }
   }
 
   const inFlight = new Set<string>();
@@ -595,6 +610,16 @@ async function runPrimitiveSafe(
     let state = await reloadState(env, runId);
     const stepState = state.steps.get(primitive.id);
     if (!stepState) {
+      // The step never reached `StepStarted`. If the run is being
+      // cancelled (or already cancelled/terminal), the body's cleanup
+      // path owns the terminal events; emitting synthetic step events
+      // here would be rejected by the state machine because
+      // `StepStarted` requires `running`. Surface the original cause
+      // so the awaiter sees a coherent failure shape, but leave the
+      // log untouched.
+      if (state.phase === "cancelling" || isTerminalRunPhase(state.phase)) {
+        throw cause;
+      }
       // No StepStarted was committed (e.g., the input-materialization
       // selector threw before runStep emitted StepStarted). Emit a
       // synthetic StepStarted + StepFailed so the scheduler sees the

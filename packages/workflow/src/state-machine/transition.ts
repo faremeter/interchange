@@ -463,7 +463,14 @@ function handleCancelRequested(state: RunState, e: CancelRequested): RunState {
   if (state.phase === "cancelling") {
     return { ...state, lastSeq: e.seq };
   }
-  if (state.phase !== "running") {
+  // CancelRequested is legal from `pending` (the early-lifecycle
+  // window where the runtime has not yet committed `RunStarted`) and
+  // from `running`. In both cases the run transitions to `cancelling`
+  // and the runtime body's cleanup path emits `RunCancelled`. The
+  // pending-side admission lets a caller cancel a run synchronously
+  // after `runtimeRun` returns without racing the body's first
+  // `RunStarted` commit.
+  if (state.phase !== "running" && state.phase !== "pending") {
     throw new TransitionError(
       "phase",
       `CancelRequested in phase ${state.phase}`,

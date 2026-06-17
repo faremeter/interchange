@@ -45,8 +45,13 @@ export async function commit(
     await prev.catch(() => undefined);
     const fresh = await reloadState(env, runId);
     const adjustedEvent: WorkflowEvent = { ...event, seq: fresh.lastSeq + 1 };
+    // Validate the transition before appending so a state-machine
+    // rejection leaves the log clean. A subsequent commit on the same
+    // chain reads back a coherent log instead of a stray event the
+    // transition function refuses to replay.
+    const nextState = applyEvent(fresh, adjustedEvent);
     await env.repoStore.append(runId, adjustedEvent);
-    return applyEvent(fresh, adjustedEvent);
+    return nextState;
   })();
   commitChains.set(runId, next);
   return next;
