@@ -808,6 +808,230 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
     );
     expect(caught instanceof Error && caught.message).toMatch(/agent-a-b-com/);
   });
+
+  test("re-deploying the same address is a no-op claim and succeeds", async () => {
+    // The slug-claims map records the FIRST claimer's agent
+    // address; a second claim from the SAME address must not
+    // throw. Otherwise idempotent re-deploys would be rejected as
+    // self-collisions.
+    const transport = createInMemoryTransport();
+    const keyPair = await generateKeyPair();
+    const repoStore = createMinimalStubRepoStore();
+    let provisionCount = 0;
+    const router = createSidecarDeployRouter({
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
+      sessions: {
+        provisionAgent: async (_config: unknown) => {
+          provisionCount += 1;
+          return {
+            publicKey: `pk-redeploy-${String(provisionCount)}`,
+            keyPair: {
+              publicKey: new Uint8Array(32),
+              privateKey: new Uint8Array(32),
+            },
+          };
+        },
+        persistHubPublicKey: async (_a: string, _h: string) => undefined,
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["sessions"],
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
+      keyStore: {
+        recordHubKey: (_a: string, _h: string) => undefined,
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["keyStore"],
+      onAgentEvent: () => () => undefined,
+      transport,
+      repoStore,
+      signingKeySeed: keyPair.privateKey,
+      registerDeployment: () => undefined,
+      unregisterDeployment: () => undefined,
+      multistepSubprocessSpawner: () => {
+        throw new Error("trivial branch must not invoke the spawner");
+      },
+    });
+
+    const first = await router.deploy({
+      type: "agent.deploy",
+      agentAddress: "redeploy@example.com",
+      agentId: "redeploy-1",
+      hubPublicKey: "hub-pk",
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- forwarded opaquely
+      config: {} as unknown as Parameters<
+        ReturnType<typeof createSidecarDeployRouter>["deploy"]
+      >[0]["config"],
+    });
+    const second = await router.deploy({
+      type: "agent.deploy",
+      agentAddress: "redeploy@example.com",
+      agentId: "redeploy-2",
+      hubPublicKey: "hub-pk",
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- forwarded opaquely
+      config: {} as unknown as Parameters<
+        ReturnType<typeof createSidecarDeployRouter>["deploy"]
+      >[0]["config"],
+    });
+    expect(first.publicKey).toBe("pk-redeploy-1");
+    expect(second.publicKey).toBe("pk-redeploy-2");
+  });
+
+  test("a failed deploy releases the slug so a subsequent deploy on the same address succeeds", async () => {
+    // Without the release-on-failure guard, the first deploy's
+    // `claimSlug` would leak after `provisionAgent` throws, and
+    // every subsequent retry on the same address would be rejected
+    // as a phantom collision.
+    const transport = createInMemoryTransport();
+    const keyPair = await generateKeyPair();
+    const repoStore = createMinimalStubRepoStore();
+    let provisionCount = 0;
+    const router = createSidecarDeployRouter({
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
+      sessions: {
+        provisionAgent: async (_config: unknown) => {
+          provisionCount += 1;
+          if (provisionCount === 1) {
+            throw new Error("provision failed (synthetic)");
+          }
+          return {
+            publicKey: "pk-after-retry",
+            keyPair: {
+              publicKey: new Uint8Array(32),
+              privateKey: new Uint8Array(32),
+            },
+          };
+        },
+        persistHubPublicKey: async (_a: string, _h: string) => undefined,
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["sessions"],
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
+      keyStore: {
+        recordHubKey: (_a: string, _h: string) => undefined,
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["keyStore"],
+      onAgentEvent: () => () => undefined,
+      transport,
+      repoStore,
+      signingKeySeed: keyPair.privateKey,
+      registerDeployment: () => undefined,
+      unregisterDeployment: () => undefined,
+      multistepSubprocessSpawner: () => {
+        throw new Error("trivial branch must not invoke the spawner");
+      },
+    });
+
+    let firstCaught: unknown;
+    try {
+      await router.deploy({
+        type: "agent.deploy",
+        agentAddress: "retry@example.com",
+        agentId: "retry-1",
+        hubPublicKey: "hub-pk",
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- forwarded opaquely
+        config: {} as unknown as Parameters<
+          ReturnType<typeof createSidecarDeployRouter>["deploy"]
+        >[0]["config"],
+      });
+    } catch (err) {
+      firstCaught = err;
+    }
+    expect(firstCaught).toBeInstanceOf(Error);
+    expect(firstCaught instanceof Error && firstCaught.message).toMatch(
+      /provision failed \(synthetic\)/,
+    );
+
+    // Retry on the SAME address must succeed -- if the slug were
+    // leaked, this would throw `deriveTrivialDeploymentId collision`.
+    const retry = await router.deploy({
+      type: "agent.deploy",
+      agentAddress: "retry@example.com",
+      agentId: "retry-2",
+      hubPublicKey: "hub-pk",
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- forwarded opaquely
+      config: {} as unknown as Parameters<
+        ReturnType<typeof createSidecarDeployRouter>["deploy"]
+      >[0]["config"],
+    });
+    expect(retry.publicKey).toBe("pk-after-retry");
+  });
+
+  test("undeploy releases the slug so a different-address deploy on the same slug succeeds", async () => {
+    // After deploy -> undeploy on `release@a.b.com` (slug
+    // `release-a-b-com`), a fresh deploy on `release!a!b!com`
+    // (same slug) must be accepted. Without `releaseSlug` running
+    // on undeploy, the slug would stay claimed and the second
+    // deploy would surface a phantom collision.
+    const transport = createInMemoryTransport();
+    const keyPair = await generateKeyPair();
+    const repoStore = createMinimalStubRepoStore();
+    let provisionCount = 0;
+    const router = createSidecarDeployRouter({
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
+      sessions: {
+        provisionAgent: async (_config: unknown) => {
+          provisionCount += 1;
+          return {
+            publicKey: `pk-release-${String(provisionCount)}`,
+            keyPair: {
+              publicKey: new Uint8Array(32),
+              privateKey: new Uint8Array(32),
+            },
+          };
+        },
+        persistHubPublicKey: async (_a: string, _h: string) => undefined,
+        destroySession: async (_a: string, _r: string) => undefined,
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["sessions"],
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
+      keyStore: {
+        recordHubKey: (_a: string, _h: string) => undefined,
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["keyStore"],
+      onAgentEvent: () => () => undefined,
+      transport,
+      repoStore,
+      signingKeySeed: keyPair.privateKey,
+      registerDeployment: () => undefined,
+      unregisterDeployment: () => undefined,
+      multistepSubprocessSpawner: () => {
+        throw new Error("trivial branch must not invoke the spawner");
+      },
+    });
+
+    await router.deploy({
+      type: "agent.deploy",
+      agentAddress: "release@a.b.com",
+      agentId: "release-1",
+      hubPublicKey: "hub-pk",
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- forwarded opaquely
+      config: {} as unknown as Parameters<
+        ReturnType<typeof createSidecarDeployRouter>["deploy"]
+      >[0]["config"],
+    });
+    if (router.undeploy === undefined) {
+      throw new Error("router.undeploy is required for this test");
+    }
+    await router.undeploy({
+      type: "agent.undeploy",
+      agentAddress: "release@a.b.com",
+      reason: "test",
+    });
+    const reclaimed = await router.deploy({
+      type: "agent.deploy",
+      agentAddress: "release!a!b!com",
+      agentId: "release-2",
+      hubPublicKey: "hub-pk",
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- forwarded opaquely
+      config: {} as unknown as Parameters<
+        ReturnType<typeof createSidecarDeployRouter>["deploy"]
+      >[0]["config"],
+    });
+    expect(reclaimed.publicKey).toBe("pk-release-2");
+  });
 });
 
 describe("createSidecarDeployRouter multi-step branch", () => {
