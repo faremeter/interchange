@@ -617,6 +617,22 @@ async function handleControlPayload(
       // ad-hoc signal channel scoped to this runId keeps the
       // control-loop free of per-run signal-channel bookkeeping
       // while still routing through the canonical writer path.
+      //
+      // The deliver path writes through `writeTreePreservingPrefix`,
+      // which the sidecar's substrate factory wraps with a pack-push
+      // hook. The hook emits a `pack.push.request` on the upstream
+      // control channel and awaits the supervisor's matching
+      // `pack.push.response` on the same downstream stream this
+      // iterator pulls from. Awaiting the deliver inline blocks the
+      // iterator from pulling the response that resolves the deliver
+      // -- a deadlock observed end-to-end with the workflow-run
+      // pack-pushing wrapper. Fire the deliver off the loop so the
+      // iterator continues pumping `pack.push.response` (and any other
+      // downstream payload) while the deliver settles in the
+      // background. A commit failure surfaces via the logger; the
+      // runtime body's `signalChannel.awaitNext` peer either resolves
+      // (deliver landed) or remains pending until a subsequent
+      // delivery.
       const transientSignalChannel = createWorkflowHostSignalChannel({
         repoStore: ctx.bindings.substrate,
         principal: ctx.bindings.principal,
@@ -627,15 +643,20 @@ async function handleControlPayload(
         newId: () => ctx.newId("sig"),
         clock: ctx.clock,
       });
-      try {
-        await transientSignalChannel.deliver(
-          payload.data.signalName,
-          payload.data.payload,
-          payload.data.signalId,
-        );
-      } finally {
-        await transientSignalChannel.stop();
-      }
+      void (async () => {
+        try {
+          await transientSignalChannel.deliver(
+            payload.data.signalName,
+            payload.data.payload,
+            payload.data.signalId,
+          );
+        } catch (cause) {
+          const reason = cause instanceof Error ? cause.message : String(cause);
+          logger.warn`signal.deliver commit failed runId=${payload.data.runId} signalName=${payload.data.signalName}: ${reason}`;
+        } finally {
+          await transientSignalChannel.stop();
+        }
+      })();
       return false;
     }
     case "drain": {

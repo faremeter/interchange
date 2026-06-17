@@ -37,16 +37,20 @@ import type { RunState, SignalChannel } from "@intx/workflow";
  * Substrate-shape envelope for the `SignalReceived` event blob
  * committed to `runs/<runId>/events/<seq>.json`. The validator covers
  * the single event type the signal channel both reads (live tail) and
- * writes (deliver). Non-signal blobs at the same path prefix do not
- * match the kinds filter inside `subscribeKind`.
+ * writes (deliver). Fields ride at the top level so the shape is
+ * symmetric with the runtime body's append shape -- a downstream
+ * reader that hydrates the envelope as a state-machine `WorkflowEvent`
+ * sees `signalName`/`signalId`/`payload` regardless of whether the
+ * commit came from the signal channel's `deliver` or the runtime
+ * body's `commit` of a SignalReceived after `awaitNext`. Non-signal
+ * blobs at the same path prefix do not match the kinds filter inside
+ * `subscribeKind`.
  */
 export const SignalReceivedEnvelope = type({
   type: "'SignalReceived'",
-  data: {
-    signalName: "string",
-    signalId: "string",
-    payload: "unknown",
-  },
+  signalName: "string",
+  signalId: "string",
+  payload: "unknown",
 });
 export type SignalReceivedEnvelope = typeof SignalReceivedEnvelope.infer;
 
@@ -144,7 +148,7 @@ export function createWorkflowHostSignalChannel(
   ): boolean {
     if (entry.runId !== opts.runId) return false;
     if (entry.event.type !== "SignalReceived") return false;
-    return entry.event.data.signalName === name;
+    return entry.event.signalName === name;
   }
 
   function shiftAwaiter(name: string): Awaiter | null {
@@ -200,7 +204,7 @@ export function createWorkflowHostSignalChannel(
           if (stopped) break;
           if (!matchesAwaiter(entry, name)) continue;
           const observed = opts.readState().observedSignalIds;
-          if (observed.has(entry.event.data.signalId)) continue;
+          if (observed.has(entry.event.signalId)) continue;
           const next = shiftAwaiter(name);
           if (next === null) {
             // No awaiter left -- the queue was drained between the
@@ -217,14 +221,14 @@ export function createWorkflowHostSignalChannel(
             // subscription instead of joining a dead one.
             teardown();
             next.resolve({
-              payload: entry.event.data.payload,
-              signalId: entry.event.data.signalId,
+              payload: entry.event.payload,
+              signalId: entry.event.signalId,
             });
             return;
           }
           next.resolve({
-            payload: entry.event.data.payload,
-            signalId: entry.event.data.signalId,
+            payload: entry.event.payload,
+            signalId: entry.event.signalId,
           });
         }
       } finally {
@@ -300,7 +304,9 @@ export function createWorkflowHostSignalChannel(
             out[`${prefix}${String(nextSeq)}.json`] = JSON.stringify({
               type: "SignalReceived",
               seq: nextSeq,
-              data: { signalName: name, signalId: id, payload },
+              signalName: name,
+              signalId: id,
+              payload,
               at,
             });
             return out;
@@ -379,9 +385,8 @@ function isMatchingSignalId(parsed: unknown, signalId: string): boolean {
   if (typeof parsed !== "object" || parsed === null) return false;
   const obj = parsed as {
     type?: unknown;
-    data?: { signalId?: unknown };
+    signalId?: unknown;
   };
   if (obj.type !== "SignalReceived") return false;
-  if (obj.data === undefined) return false;
-  return obj.data.signalId === signalId;
+  return obj.signalId === signalId;
 }
