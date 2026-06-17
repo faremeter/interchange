@@ -14,10 +14,10 @@
 // runs through the dedicated `bun run test:load` script instead;
 // CI invokes that separately. The cost stems from `validatePush`'s
 // O(total-events) enumeration on the receive side (see
-// `packages/hub-sessions/src/workflow-run-kind/`); INTR-194 tracks
-// the OID-equality short-circuit that makes the per-write cost
-// constant. Once INTR-194 lands the load test can fold back into
-// the default integration enumeration.
+// `packages/hub-sessions/src/workflow-run-kind/`); a tracked
+// follow-up shorts the byte-equality check on OID equality, which
+// will make the per-write cost constant. Once that lands the load
+// test can fold back into the default integration enumeration.
 //
 // The runtime-coverage rationale matches the 3-mail case: the
 // supervisor's FIFO inbox dispatch loop is the only place these
@@ -70,7 +70,8 @@ const WORKFLOW_RUN_REF = "refs/heads/main";
 //
 // The floor of 50 was the target for true sustained-pressure
 // coverage; the current `LOAD_MAIL_COUNT` setting is the
-// CI-tractable approximation until INTR-194 lands.
+// CI-tractable approximation until the validatePush short-circuit
+// the comment below names lands.
 // This test fires `LOAD_MAIL_COUNT` mails in quick succession,
 // asserts every one lands in consumed/, and asserts the consumed
 // envelopes' arrival timestamps are non-decreasing across the
@@ -112,7 +113,7 @@ const WORKFLOW_RUN_REF = "refs/heads/main";
 // the task scope holds out of reach. `LOAD_MAIL_COUNT` therefore
 // stays at 15 (5x the 3-mail baseline), CI-tractable, and the
 // validatePush O(N) finding is the production-readiness follow-up
-// the test comment now pins (INTR-194).
+// the test comment names above.
 const LOAD_MAIL_COUNT = 15;
 const LOAD_MESSAGE_IDS: readonly string[] = Array.from(
   { length: LOAD_MAIL_COUNT },

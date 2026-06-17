@@ -102,7 +102,7 @@ const MESSAGE_IDS: readonly string[] = [
 // survives ~15 concurrent enqueues). The load case is held out of
 // `make test`'s default run because per-mail wall-clock is currently
 // dominated by `validatePush`'s O(N) enumeration on the receive side
-// (tracked as INTR-194); it runs via `bun run test:load` instead.
+// (tracked separately); it runs via `bun run test:load` instead.
 
 let env: DeployFlowEnv;
 
