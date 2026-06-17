@@ -348,6 +348,206 @@ describe("drain round-trip", () => {
     if (signalAwaitedBody === undefined) throw new Error("unreachable");
     expect(signalAwaitedBody["signalName"]).toBe("never-arrives");
   }, 30_000);
+
+  test("drain on a wait-mode awaitSignal keeps the step running until drainTimeout escalates", async () => {
+    // Companion to the cancel-mode test. The supervisor's
+    // drainTimeout accumulator only matters when the step is wait-mode:
+    // wait-mode steps don't abort on the drain signal flip; instead the
+    // per-run accumulator escalates after the policy's drainTimeoutMs
+    // and commits a signed `CancelRequested{origin: supervisor-drain}`
+    // event. The cancel-mode test never reaches the escalation path
+    // because step1 aborts the moment the drain signal flips. A
+    // regression that escalated wait-mode the moment drain fired (or
+    // never escalated at all) would slip through the cancel-mode
+    // assertion suite.
+    const waitDeploymentId = "drain-roundtrip-wait-1";
+    const agent1 = defineAgent({
+      id: "agent-wait-step1",
+      systemPrompt: "You are the first step agent in the wait companion.",
+      tools: [],
+      capabilities: [],
+      inference: {
+        sources: [{ provider: "anthropic", model: "mock-model" }],
+      },
+    });
+    const deploymentMailAddress = deriveDeploymentAddress({
+      deploymentId: waitDeploymentId,
+      deploymentDomain: DEPLOYMENT_DOMAIN,
+    });
+    const workflow: WorkflowDefinition = defineWorkflow({
+      id: `wf_${waitDeploymentId}`,
+      trigger: { type: "mail", to: deploymentMailAddress },
+      steps: {
+        step1: step({ agent: agent1 }),
+        gate: awaitSignal({
+          name: "never-arrives",
+          after: ["step1"],
+          drainBehavior: "wait",
+        }),
+      },
+    });
+    const config: HarnessConfig = {
+      sessionId: SESSION_ID,
+      agentId: `ins_${waitDeploymentId}`,
+      tenantId: "tenant-1",
+      principalId: "prin_integration-1",
+      agentAddress: deploymentMailAddress,
+      systemPrompt: "Fallback prompt (overridden per step by orchestrator)",
+      tools: [],
+      grants: [],
+      sources: [
+        {
+          id: "anthropic:mock-model",
+          provider: "anthropic",
+          baseURL: `http://localhost:${env.inference.server.port}`,
+          apiKey: "sk-mock",
+          model: "mock-model",
+        },
+      ],
+      defaultSource: "anthropic:mock-model",
+    };
+    const operatorApprovals: ApprovalSet = new Set<string>([
+      "inference.source:anthropic:mock-model",
+      "director:@intx/agent/default",
+      `mail.address:${deploymentMailAddress}`,
+      `mail.send:${DEPLOYMENT_DOMAIN}`,
+    ]);
+    const launchSession: LaunchSessionFn = async (orchestratorParams) => {
+      const deployContent = orchestratorParams.deployContent;
+      await env.hub.sessionService.launchSession({
+        agentAddress: orchestratorParams.agentAddress,
+        agentId: orchestratorParams.agentId,
+        instanceId: orchestratorParams.instanceId,
+        config: orchestratorParams.config,
+        deployContent: deployContent as Parameters<
+          typeof env.hub.sessionService.launchSession
+        >[0]["deployContent"],
+        ...(orchestratorParams.toolPackagePins !== undefined
+          ? { toolPackagePins: orchestratorParams.toolPackagePins }
+          : {}),
+      });
+    };
+    const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
+      env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
+        definition: {
+          id: params.definition.id,
+          triggers: [...params.definition.triggers],
+          stepOrder: [...params.definition.stepOrder],
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the wire validator carries WorkflowDefinition steps as Record<string, unknown>; the orchestrator emits the typed primitive union shape that satisfies the wire schema
+          steps: params.definition.steps as Record<string, unknown>,
+          ...(params.definition.state !== undefined
+            ? { state: params.definition.state }
+            : {}),
+        },
+        sources: params.sources,
+      });
+    const workflowRepo: WorkflowRepoWriter = {
+      async writeWorkflowRepo(args) {
+        const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
+        const principal: WorkflowRunHubPrincipal = { kind: "hub" };
+        const files: Record<string, string> = {};
+        for (const [k, v] of args.files) {
+          files[k] = v;
+        }
+        await env.hub.agentRepoStore.repoStore.writeTree(
+          principal,
+          repoId,
+          DEFAULT_ASSET_REF,
+          {
+            files,
+            message: `drain-roundtrip wait test: write workflow repo ${args.workflowRepoId}`,
+          },
+        );
+      },
+    };
+    const orchestrator = createWorkflowDeployOrchestrator({
+      directorRegistry: createDefaultDirectorRegistry(),
+      workflowRepo,
+      launchSession,
+      sendMultiStepDeploy,
+    });
+    const result = await orchestrator.deployWorkflow({
+      workflow,
+      config,
+      deployContent: { systemPrompt: config.systemPrompt },
+      operatorApprovals,
+      deploymentId: waitDeploymentId,
+      deploymentDomain: DEPLOYMENT_DOMAIN,
+      hubPublicKey: "00".repeat(32),
+    });
+    expect(result.kind).toBe("multi-step");
+
+    const workflowRunRepoId: RepoId = {
+      kind: "workflow-run",
+      id: deriveTrivialDeploymentId(deploymentMailAddress),
+    };
+    env.registerDeployment({
+      deploymentId: waitDeploymentId,
+      workflowDefinition: workflow,
+      workflowRunRepoId,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      mailAddress: deploymentMailAddress,
+    });
+
+    await fireMailTrigger(env, deploymentMailAddress, {
+      messageId: "<drain-roundtrip-wait-1@integration.interchange>",
+    });
+    await waitFor(
+      async () => {
+        const events = await readWorkflowRunEventsForAnyRun(
+          env,
+          waitDeploymentId,
+          workflowRunRepoId,
+        );
+        return events.some(
+          (e) =>
+            e.type === "SignalAwaited" &&
+            e.body["signalName"] === "never-arrives",
+        );
+      },
+      { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+    );
+    const runId = await findActiveRunId(env, workflowRunRepoId);
+
+    // Snapshot the event log shape BEFORE issuing the drain so the
+    // immediate-after assertion below distinguishes wait-mode (no
+    // change for a window) from cancel-mode (StepFailed lands within
+    // milliseconds of the drain signal flip).
+    const eventsBeforeDrain = await readWorkflowRunEvents(
+      env,
+      waitDeploymentId,
+      runId,
+    );
+    const typesBefore = eventsBeforeDrain.map((e) => e.type);
+    expect(typesBefore).toContain("SignalAwaited");
+    expect(typesBefore).not.toContain("StepFailed");
+
+    initiateDrain(env, waitDeploymentId, { deadlineMs: DRAIN_DEADLINE_MS });
+
+    // Wait-mode contract: the gate must keep waiting for the
+    // drainTimeoutMs window the policy allows. The cancel-mode test
+    // observes StepFailed within ~hundreds of milliseconds because
+    // the awaitSignal aborts on the local controller; wait-mode
+    // ignores the controller flip and stays in SignalAwaited until
+    // either the signal arrives or the supervisor's drainTimeout
+    // accumulator escalates with a signed CancelRequested. With
+    // never-arrives the signal path can't fire, and the
+    // drainTimeoutMs policy default is 5_000ms; sleeping 2_500ms
+    // is well inside the wait window. A regression that aborted
+    // wait-mode immediately on drain would commit StepFailed in
+    // this window and fail the assertion below.
+    await new Promise((r) => setTimeout(r, 2_500));
+    const eventsDuringWait = await readWorkflowRunEvents(
+      env,
+      waitDeploymentId,
+      runId,
+    );
+    const typesDuring = eventsDuringWait.map((e) => e.type);
+    expect(typesDuring).not.toContain("StepFailed");
+    expect(typesDuring).not.toContain("RunFailed");
+    expect(typesDuring).not.toContain("RunCompleted");
+    expect(typesDuring).not.toContain("RunCancelled");
+  }, 30_000);
 });
 
 /**
