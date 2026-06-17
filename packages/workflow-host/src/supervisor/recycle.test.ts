@@ -1104,3 +1104,81 @@ describe("supervisor recycle: drain-side processing replay", () => {
     await supervisor.shutdown();
   });
 });
+
+describe("supervisor recycle: shutdown during the kill/respawn gap", () => {
+  test("a shutdown landing while triggerRecycle awaits the new child's ready kills the new wiring and leaves no orphan", async () => {
+    // The race: `installNewChild` writes `state = { phase: "running",
+    // ... }` unconditionally. If `shutdown()` lands during the gap
+    // between `subprocessSpawner` (which returns a live handle) and
+    // `installNewChild` (which would register that handle on
+    // `state`), the supervisor's state has been flipped to
+    // `stopping`/`stopped` -- but the late `installNewChild` write
+    // clobbers it back to `running` and leaves the freshly spawned
+    // child running, orphaned. The fix is a phase guard at
+    // `installNewChild` that kills the new wiring when the
+    // supervisor is no longer in `recycling`.
+    const baseDir = await makeTempDir("recycle-shutdown-gap-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker({});
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: tracker.spawner,
+      mailBus,
+      ipcKeypair,
+    });
+    const supervisor = createWorkflowSupervisor(bindings);
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-shutdown-race",
+      onInferenceEvent: () => undefined,
+    });
+    while (tracker.children.length === 0) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const first = tracker.children[0];
+    if (first === undefined) {
+      throw new Error("tracker.children[0] missing");
+    }
+    await driveReady(first, ipcKeypair);
+    await spawnPromise;
+
+    // Start the recycle. `triggerRecycle` runs drain -> replay ->
+    // abortPriorCohort -> kill (the first child gets SIGTERM) ->
+    // subprocessSpawner (the second child handle materialises) ->
+    // `await waitForReady`. The second child's ready frame is NOT
+    // driven yet, so the recycle parks.
+    const recyclePromise = supervisor.recycle({ reason: "race-test" });
+    while (tracker.children.length < 2) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const second = tracker.children[1];
+    if (second === undefined) {
+      throw new Error("tracker.children[1] missing");
+    }
+
+    // Concurrent shutdown. The supervisor flips state to "stopping"
+    // before `triggerRecycle`'s `waitForReady` has resolved. The
+    // shutdown path then awaits the prior-cohort settlement and
+    // reaches `stopped` regardless of the in-flight recycle.
+    const shutdownPromise = supervisor.shutdown();
+
+    // Release the second child's ready frame so `triggerRecycle`
+    // proceeds past `waitForReady` and calls `installNewChild`.
+    // Without the phase guard, `installNewChild` clobbers
+    // `state.phase` back to `running` and the second child stays
+    // alive. With the guard, `installNewChild` observes the
+    // shutdown-flipped phase and kills the new wiring.
+    await driveReady(second, ipcKeypair);
+
+    await Promise.allSettled([recyclePromise, shutdownPromise]);
+
+    // The orphan child must have been killed. Without the guard,
+    // `second.killSignals` is empty (the new child stays alive
+    // under a stopped supervisor).
+    expect(second.killSignals).toContain("SIGTERM");
+
+    // A subsequent shutdown is a no-op -- phase is already stopped.
+    await supervisor.shutdown();
+  });
+});
