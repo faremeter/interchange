@@ -1,5 +1,4 @@
 export {
-  TimerEventEnvelope,
   createWorkflowHostScheduler,
   type SchedulerHandle,
   type SchedulerOpts,

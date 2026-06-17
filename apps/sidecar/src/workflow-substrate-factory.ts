@@ -121,10 +121,10 @@ const SubstrateConfig = type({
  * factory parses and validates the table once at construction time
  * and pins it for `buildEnv` lookups.
  */
-export const StepInferenceSourceTable = type({
+const StepInferenceSourceTable = type({
   "[string]": InferenceSource,
 });
-export type StepInferenceSourceTable = typeof StepInferenceSourceTable.infer;
+type StepInferenceSourceTable = typeof StepInferenceSourceTable.infer;
 
 /**
  * Parse and validate the JSON-encoded `STEP_INFERENCE_SOURCES` entry
@@ -134,9 +134,7 @@ export type StepInferenceSourceTable = typeof StepInferenceSourceTable.infer;
  * a structured error rather than being deferred to a deep-stack
  * `buildEnv` failure.
  */
-export function parseStepInferenceSources(
-  raw: string,
-): StepInferenceSourceTable {
+function parseStepInferenceSources(raw: string): StepInferenceSourceTable {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -163,7 +161,7 @@ export function parseStepInferenceSources(
  * failure, and the resolver surfaces it with the missing `stepId`
  * named.
  */
-export function createStepInferenceSourceResolver(
+function createStepInferenceSourceResolver(
   table: StepInferenceSourceTable,
 ): (stepId: string) => InferenceSource {
   return (stepId: string): InferenceSource => {
@@ -200,7 +198,7 @@ function hexDecode(hex: string, name: string): Uint8Array {
  * store and the IPC-bridge-backed substrate proxy; tests inject an
  * in-memory bare store and/or an explicit substrate-write bridge.
  */
-export interface SidecarSubstrateFactoryDeps {
+interface SidecarSubstrateFactoryDeps {
   /**
    * Override the bare-store constructor. Production callers omit this
    * to get the `createAgentRepoStore`-backed `RepoStore` against
@@ -276,7 +274,7 @@ function throwingStepEnvWorkdir(stepId: string): string {
  * that exercises them surfaces a precise failure rather than a
  * silent default.
  */
-export function createSidecarStepBuildEnv(
+function createSidecarStepBuildEnv(
   table: StepInferenceSourceTable,
 ): (req: StepInvokeRequest) => Promise<StepEnvBase> {
   const resolveStepInferenceSource = createStepInferenceSourceResolver(table);
@@ -323,7 +321,7 @@ export function createSidecarStepBuildEnv(
  * principal scoped to the parent's deploymentId) is reused verbatim
  * because the child runs under the same supervisor authority.
  */
-export interface SidecarRunChildDeps {
+interface SidecarRunChildDeps {
   /** Wrapped workflow-run substrate (the factory's `substrate`). */
   substrate: RepoStore;
   /** Workflow-run repo identifying the parent's deployment. */

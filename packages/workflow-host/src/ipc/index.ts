@@ -140,8 +140,6 @@
 
 export {
   ControlPayload,
-  CredentialsSnapshotPayload,
-  CredentialsSnapshotStepPayload,
   createControlChannelSender,
   receiveControlChannel,
   type ControlChannelSender,

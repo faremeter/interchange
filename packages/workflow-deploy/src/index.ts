@@ -27,10 +27,8 @@ export {
 export {
   createWorkflowDeployOrchestrator,
   deriveDeploymentAddress,
-  deriveDeploymentAgentId,
   deriveStepAddress,
   deriveStepAgentId,
-  deriveStepInstanceId,
   wrapHarnessAsTrivialAgent,
   CapabilityApprovalDeniedError,
   MultiStepDeployHandoffMissingError,
