@@ -398,30 +398,42 @@ async function executeRunBody(
   // requires every run reach a terminal event; the runtime body owns
   // emitting one.
   if (state.phase === "cancelling") {
-    state = await reloadState(env, runId);
-    state = await emitChildCancelCascade(env, runId, state);
-    const cancelled: WorkflowEvent = {
-      kind: "RunCancelled",
-      seq: state.lastSeq + 1,
-      at: env.clock().toISOString(),
-    };
-    state = await commit(env, runId, cancelled);
+    state = await settleCancelling(env, runId);
   } else if (state.phase === "running") {
-    if (hasFailedStep(state)) {
-      const failed: WorkflowEvent = {
-        kind: "RunFailed",
-        seq: state.lastSeq + 1,
-        at: env.clock().toISOString(),
-        error: { message: "one or more steps failed" },
-      };
-      state = await commit(env, runId, failed);
-    } else {
-      const completed: WorkflowEvent = {
-        kind: "RunCompleted",
-        seq: state.lastSeq + 1,
-        at: env.clock().toISOString(),
-      };
-      state = await commit(env, runId, completed);
+    const terminal: WorkflowEvent = hasFailedStep(state)
+      ? {
+          kind: "RunFailed",
+          seq: state.lastSeq + 1,
+          at: env.clock().toISOString(),
+          error: { message: "one or more steps failed" },
+        }
+      : {
+          kind: "RunCompleted",
+          seq: state.lastSeq + 1,
+          at: env.clock().toISOString(),
+        };
+    try {
+      state = await commit(env, runId, terminal);
+    } catch (cause) {
+      // A `cancel()` racing the post-loop terminal commit can land
+      // `CancelRequested` first (legal from `phase=running`). The
+      // chain then reloads, sees phase=cancelling, and rejects the
+      // RunCompleted/RunFailed commit with `code: "phase"`. The
+      // structurally identical race for the initial RunStarted commit
+      // is handled at the top of executeRunBody (C5); this is its
+      // post-loop sibling (C-B). Reload, confirm the live phase is
+      // cancelling (or already terminal), and route through the
+      // cancelling cleanup branch so the run settles as `cancelled`.
+      if (cause instanceof TransitionError && cause.code === "phase") {
+        state = await reloadState(env, runId);
+        if (state.phase === "cancelling") {
+          state = await settleCancelling(env, runId);
+        } else if (!isTerminalRunPhase(state.phase)) {
+          throw cause;
+        }
+      } else {
+        throw cause;
+      }
     }
   }
 
@@ -461,6 +473,27 @@ function canonicalEventJSON(value: unknown): string {
     .filter(([, v]) => v !== undefined)
     .sort(([l], [r]) => (l < r ? -1 : l > r ? 1 : 0));
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalEventJSON(v)}`).join(",")}}`;
+}
+
+/**
+ * Run the post-loop cancellation cleanup: reload, cascade
+ * `ChildCancelRequested` to any live children, and commit
+ * `RunCancelled`. Shared between the natural cancelling exit and the
+ * post-loop catch that absorbs a phase rejection on the terminal
+ * commit when a concurrent cancel won the chain race.
+ */
+async function settleCancelling(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+): Promise<ReturnType<typeof resumeFromLog>> {
+  let state = await reloadState(env, runId);
+  state = await emitChildCancelCascade(env, runId, state);
+  const cancelled: WorkflowEvent = {
+    kind: "RunCancelled",
+    seq: state.lastSeq + 1,
+    at: env.clock().toISOString(),
+  };
+  return commit(env, runId, cancelled);
 }
 
 /**
