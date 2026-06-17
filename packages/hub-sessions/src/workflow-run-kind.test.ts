@@ -790,6 +790,40 @@ describe("workflowRunAuthorize — workflow-process principal", () => {
   });
 });
 
+describe("workflowRunKindHandler.validatePush — workflow-process path-scope fail-closed", () => {
+  // The production substrate is wired against `workflowRunAuthorize`,
+  // which rejects malformed workflow-process principals at
+  // `gateAccess` BEFORE `validatePush` runs. A substrate wired with a
+  // permissive authorize (e.g. test harnesses using `allowAll`) can
+  // let a malformed principal reach `validatePush`; the path-scope
+  // helper must fail closed there instead of silently waving the
+  // principal through, since the runId scoping below depends on the
+  // parsed principal carrying a valid `deploymentId`.
+  test("a malformed workflow-process principal reaching validatePush rejects with a structured reason", async () => {
+    const principal: Principal = { kind: "workflow-process" };
+    const events = {
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+        { consumedMessageId: "msg-1" },
+      ),
+    };
+    const result = await workflowRunKindHandler.validatePush({
+      repoId: uniqueRepoId("wfr"),
+      ref: REF,
+      principal,
+      topLevelTreePaths: topLevels(events),
+      readBlob: makeReadBlob(events),
+      listDir: makeListDir(events),
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toMatch(/workflow-process principal is malformed/);
+  });
+});
+
 describe("workflowRunAuthorize — supervisor principal", () => {
   const REPO: RepoId = { kind: "workflow-run", id: "dep-1" };
 
