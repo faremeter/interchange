@@ -708,17 +708,22 @@ async function runStep(
     // detects the missing step state and emits a synthetic
     // StepStarted+StepFailed so the scheduler sees the step as
     // terminal instead of busy-looping.
-    const input =
+    const rawInput =
       step.input !== undefined ? evaluate(step.input, selectorCtx) : null;
+    // Canonicalize `undefined` to `null` once here so the audit blob
+    // and the invoker see the same value. The substrate rejects
+    // non-serializable values; an input that resolved to `undefined`
+    // (e.g. the default-input convention's `trigger.payload` against
+    // a caller that did not supply one) is stored as `null` so the
+    // audit ref stays round-trippable, and the invoker observes the
+    // same `null` so an audit reader cannot diverge from the agent's
+    // actual input.
+    const input = rawInput === undefined ? null : rawInput;
     if (!stepStartedEmitted) {
-      // The substrate rejects non-serializable values; an input that
-      // resolved to `undefined` (e.g. the default-input convention's
-      // `trigger.payload` against a caller that did not supply one)
-      // is stored as `null` so the audit ref stays round-trippable.
       const { ref: inputRef } = await env.blobs.recordOutput(
         `${step.id}.input`,
         attempt,
-        input ?? null,
+        input,
       );
       let state = await reloadState(env, runId);
       const started: WorkflowEvent = {
