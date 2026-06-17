@@ -1185,6 +1185,50 @@ function checkCancelOriginPrincipal(
   return { ok: true };
 }
 
+/**
+ * Path-scoping for the `workflow-process` principal. A workflow-process
+ * proxies writes for the workflow-run repo's `runs/<runId>/` subtree
+ * only; the supervisor owns the `addresses/...` claim-check subtree.
+ * If the principal carries a `runId`, every prospective `runs/<X>/`
+ * subtree must use `X === principal.runId`. A workflow-process that
+ * touches the `addresses/...` subtree is rejected outright so the
+ * single-writer contract on inbox/processing/consumed holds at the
+ * substrate boundary.
+ *
+ * The check only fires for `workflow-process` principals; `hub` and
+ * `supervisor` have broader write authority by design.
+ */
+async function enforceWorkflowProcessPathScope(
+  principal: Principal,
+  topLevelTreePaths: readonly string[],
+  listDir: (path: string) => Promise<string[]>,
+): Promise<ValidatePushResult> {
+  if (principal.kind !== "workflow-process") return { ok: true };
+  const parsed = WorkflowProcessPrincipal(principal);
+  if (parsed instanceof type.errors) return { ok: true };
+  if (topLevelTreePaths.includes(WORKFLOW_RUN_ADDRESSES_PREFIX)) {
+    return {
+      ok: false,
+      reason: `workflow-process principal may not write under ${WORKFLOW_RUN_ADDRESSES_PREFIX}/; the supervisor owns the claim-check subtree`,
+    };
+  }
+  if (
+    parsed.runId !== undefined &&
+    topLevelTreePaths.includes(WORKFLOW_RUN_RUNS_PREFIX)
+  ) {
+    const runIds = await listDir(WORKFLOW_RUN_RUNS_PREFIX);
+    for (const runId of runIds) {
+      if (runId !== parsed.runId) {
+        return {
+          ok: false,
+          reason: `workflow-process principal scoped to runId ${JSON.stringify(parsed.runId)} may not write under ${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/`,
+        };
+      }
+    }
+  }
+  return { ok: true };
+}
+
 export const workflowRunKindHandler: KindHandler = {
   kind: "workflow-run",
   directoryPrefix: "workflow-runs",
@@ -1214,6 +1258,16 @@ export const workflowRunKindHandler: KindHandler = {
           reason: `unexpected top-level entry ${JSON.stringify(entry)}; allowed: "${WORKFLOW_RUN_RUNS_PREFIX}", "${WORKFLOW_RUN_ADDRESSES_PREFIX}", "${WORKFLOW_RUN_GITIGNORE_PATH}"`,
         };
       }
+    }
+
+    const scopingCheck = await enforceWorkflowProcessPathScope(
+      principal,
+      topLevelTreePaths,
+      listDir,
+    );
+    if (!scopingCheck.ok) {
+      logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${scopingCheck.reason}`;
+      return scopingCheck;
     }
 
     const priorTopLevels = await priorListDir("");
