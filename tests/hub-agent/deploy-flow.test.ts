@@ -40,9 +40,137 @@ import {
 } from "./lib/deploy-flow-env";
 
 let env: DeployFlowEnv;
+let setupInferenceRequestIndex: number;
+let setupAgentEventsBeforeMessage: number;
 
+// The downstream tests (send-message side-effect assertions,
+// sync-request, endSession) each depend on prior lifecycle stages
+// having run. Bun runs tests within a `describe` in source order, so
+// the chain works when the file runs end-to-end, but `bun test -t
+// <name>` would skip the prerequisite stages and a filtered run of
+// `sync request` would fail with `No sidecar connected for agent` or
+// `tree must include at least one state-bearing top-level entry`.
+// Running the prerequisite stages here -- launchSession AND the first
+// message routing, both of which populate the state the sync test
+// then asserts against -- codifies the preconditions once so each
+// individual test can run on its own under a `-t` filter. The tests
+// below assert against the state these setup steps produced.
 beforeAll(async () => {
   env = await startDeployFlowEnv();
+
+  const config: HarnessConfig = {
+    sessionId: SESSION_ID,
+    agentId: AGENT_ID,
+    tenantId: "tenant-1",
+    principalId: "prin_integration-1",
+    agentAddress: AGENT_ADDRESS,
+    systemPrompt: "Fallback prompt (should be overridden by deploy tree)",
+    tools: [],
+    grants: [],
+    sources: [
+      {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${env.inference.server.port}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      },
+    ],
+    defaultSource: "anthropic:mock-model",
+  };
+
+  await env.hub.sessionService.launchSession({
+    agentAddress: AGENT_ADDRESS,
+    agentId: AGENT_ID,
+    instanceId: AGENT_ID,
+    config,
+    deployContent: {
+      systemPrompt: "You are an integration test agent.",
+    },
+    // The hub is wired with a `workspace-builtins` package-registry
+    // asset containing a synthetic `@intx/tools-mail@0.1.2` tarball;
+    // pinning here exercises the resolver → asset-pack fan-out →
+    // sidecar loader path end-to-end. The model-facing tool surfaces
+    // in the message test below as
+    // `@intx/tools-mail/sidecar-bundle:mail_send`.
+    toolPackagePins: [{ name: "@intx/tools-mail", version: "0.1.2" }],
+  });
+
+  // Record the indices before the setup message lands so the
+  // message-side-effect test can locate the resulting inference
+  // request and the inference.start event by absolute position
+  // rather than by delta-from-an-earlier-mutation.
+  setupInferenceRequestIndex = env.inference.requests.length;
+  setupAgentEventsBeforeMessage = env.hub.agentEvents.length;
+
+  const messageKeyPair = await generateKeyPair();
+  const messageCrypto = createNodeCrypto(messageKeyPair);
+  const messageHeaders: MessageHeaders = {
+    from: "user@integration.interchange",
+    to: [AGENT_ADDRESS],
+    cc: undefined,
+    date: new Date(),
+    messageId: "<test-msg-1@integration.interchange>",
+    subject: undefined,
+    inReplyTo: undefined,
+    references: undefined,
+    mimeVersion: "1.0",
+    interchangeType: "conversation.message",
+    interchangeCorrelationId: undefined,
+    interchangeTenantId: undefined,
+    interchangeAgentId: undefined,
+    interchangeSessionId: SESSION_ID,
+    interchangeOfferingId: undefined,
+    interchangeSchemaVersion: undefined,
+    traceparent: undefined,
+    tracestate: undefined,
+  };
+  const messageSignedContent = assembleSignedContent({
+    kind: "conversation",
+    text: "Hello.",
+  });
+  const messageSignature = await createDetachedSignatureFromProvider(
+    messageSignedContent,
+    messageCrypto,
+  );
+  const messageRaw = assembleMessage(
+    messageHeaders,
+    messageSignedContent,
+    messageSignature,
+  );
+  env.hub.router.routeMail(
+    AGENT_ADDRESS,
+    Buffer.from(messageRaw).toString("base64"),
+  );
+
+  // Wait for the FULL message lifecycle to land so the downstream
+  // sync test sees populated agent state on disk. The inference
+  // request arriving is not enough -- it only signals the reactor
+  // dispatched -- so we also wait for the `message.run.ended`
+  // event, which fires after the reactor's context-store write
+  // completes. Without this, the sync test races the state file
+  // appearing on disk and the supervisor pushes an empty pack
+  // (rejected by the kind handler with `tree must include at
+  // least one state-bearing top-level entry`).
+  function setupHasEventType(event: unknown, type: string): boolean {
+    return (
+      typeof event === "object" &&
+      event !== null &&
+      "type" in event &&
+      event.type === type
+    );
+  }
+  await waitFor(
+    () => env.inference.requests.length > setupInferenceRequestIndex,
+    { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+  );
+  await waitFor(
+    () =>
+      env.hub.agentEvents
+        .slice(setupAgentEventsBeforeMessage)
+        .some((e) => setupHasEventType(e.event, "message.run.ended")),
+    { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+  );
 });
 
 afterAll(async () => {
@@ -55,42 +183,9 @@ describe("deploy flow integration", () => {
   });
 
   test("launchSession writes, packs, provisions, delivers, and starts", async () => {
-    const config: HarnessConfig = {
-      sessionId: SESSION_ID,
-      agentId: AGENT_ID,
-      tenantId: "tenant-1",
-      principalId: "prin_integration-1",
-      agentAddress: AGENT_ADDRESS,
-      systemPrompt: "Fallback prompt (should be overridden by deploy tree)",
-      tools: [],
-      grants: [],
-      sources: [
-        {
-          id: "anthropic:mock-model",
-          provider: "anthropic",
-          baseURL: `http://localhost:${env.inference.server.port}`,
-          apiKey: "sk-mock",
-          model: "mock-model",
-        },
-      ],
-      defaultSource: "anthropic:mock-model",
-    };
-
-    await env.hub.sessionService.launchSession({
-      agentAddress: AGENT_ADDRESS,
-      agentId: AGENT_ID,
-      instanceId: AGENT_ID,
-      config,
-      deployContent: {
-        systemPrompt: "You are an integration test agent.",
-      },
-      // The hub is wired with a `workspace-builtins` package-registry
-      // asset containing a synthetic `@intx/tools-mail@0.1.2` tarball;
-      // pinning here exercises the resolver → asset-pack fan-out →
-      // sidecar loader path end-to-end. The model-facing tool surfaces
-      // below as `@intx/tools-mail/sidecar-bundle:mail_send`.
-      toolPackagePins: [{ name: "@intx/tools-mail", version: "0.1.2" }],
-    });
+    // The launchSession call lives in `beforeAll` so the downstream
+    // lifecycle tests can run under a `-t` filter; this test asserts
+    // the side effects the call produced.
 
     // The deploy ack should have arrived (provision phase completed).
     const publicKey = env.hub.deployAcks.get(AGENT_ADDRESS);
@@ -126,48 +221,11 @@ describe("deploy flow integration", () => {
   });
 
   test("send message and inference receives the asset-backed mail tool", async () => {
-    const requestsBefore = env.inference.requests.length;
-    const eventsBefore = env.hub.agentEvents.length;
-
-    const keyPair = await generateKeyPair();
-    const crypto = createNodeCrypto(keyPair);
-    const headers: MessageHeaders = {
-      from: "user@integration.interchange",
-      to: [AGENT_ADDRESS],
-      cc: undefined,
-      date: new Date(),
-      messageId: "<test-msg-1@integration.interchange>",
-      subject: undefined,
-      inReplyTo: undefined,
-      references: undefined,
-      mimeVersion: "1.0",
-      interchangeType: "conversation.message",
-      interchangeCorrelationId: undefined,
-      interchangeTenantId: undefined,
-      interchangeAgentId: undefined,
-      interchangeSessionId: SESSION_ID,
-      interchangeOfferingId: undefined,
-      interchangeSchemaVersion: undefined,
-      traceparent: undefined,
-      tracestate: undefined,
-    };
-    const signedContent = assembleSignedContent({
-      kind: "conversation",
-      text: "Hello.",
-    });
-    const signature = await createDetachedSignatureFromProvider(
-      signedContent,
-      crypto,
-    );
-    const rawMessage = assembleMessage(headers, signedContent, signature);
-    const base64 = Buffer.from(rawMessage).toString("base64");
-    env.hub.router.routeMail(AGENT_ADDRESS, base64);
-
-    await waitFor(() => env.inference.requests.length > requestsBefore, {
-      diagnostics: env.sidecarDiagnostics,
-    });
-
-    const req = env.inference.requests[requestsBefore];
+    // The setup message landed in `beforeAll`; this test asserts the
+    // resulting inference request and event chain. Reading by the
+    // recorded indices keeps the assertions correct regardless of
+    // whether prior tests in the suite also bumped the counters.
+    const req = env.inference.requests[setupInferenceRequestIndex];
     if (req === undefined) throw new Error("unreachable");
     const tools = req.tools ?? [];
     const toolNames = tools.map((t) => t.name);
@@ -178,10 +236,11 @@ describe("deploy flow integration", () => {
     // to yield the qualified tool name the model sees.
     expect(toolNames).toContain("@intx/tools-mail/sidecar-bundle:mail_send");
 
-    // reactor.start may or may not have arrived before eventsBefore was
-    // captured (it depends on how fast contextStore.load() resolves), so
-    // wait until we see an inference.start event rather than assuming
-    // it is the very first new event.
+    // reactor.start may or may not have arrived before
+    // `setupAgentEventsBeforeMessage` was captured (it depends on how
+    // fast contextStore.load() resolves), so wait until we see an
+    // inference.start event rather than assuming it is the very first
+    // new event.
     function hasEventType(
       event: unknown,
       type: string,
@@ -197,13 +256,13 @@ describe("deploy flow integration", () => {
     await waitFor(
       () =>
         env.hub.agentEvents
-          .slice(eventsBefore)
+          .slice(setupAgentEventsBeforeMessage)
           .some((e) => hasEventType(e.event, "inference.start")),
       { diagnostics: env.sidecarDiagnostics },
     );
 
     const inferenceStartEvent = env.hub.agentEvents
-      .slice(eventsBefore)
+      .slice(setupAgentEventsBeforeMessage)
       .find((e) => hasEventType(e.event, "inference.start"));
     if (inferenceStartEvent === undefined) throw new Error("unreachable");
     expect(inferenceStartEvent.addr).toBe(AGENT_ADDRESS);
@@ -214,7 +273,12 @@ describe("deploy flow integration", () => {
     const packCountBefore = env.hub.statePacks.length;
     env.hub.router.sendSyncRequest(AGENT_ADDRESS);
 
+    // 30s headroom: the state-pack push travels the
+    // sidecar -> hub pack-push pipeline and the default
+    // `waitFor` 10s budget flaked ~10% of runs on busier
+    // machines.
     await waitFor(() => env.hub.statePacks.length > packCountBefore, {
+      timeoutMs: 30_000,
       diagnostics: env.sidecarDiagnostics,
     });
 
