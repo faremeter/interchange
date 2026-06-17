@@ -636,7 +636,18 @@ export function createWorkflowSupervisor(
   ): Promise<void> {
     const controlSender = activeControlSender();
     if (controlSender === null) {
-      logger.warn`substrate.write.request received outside running phase; requestId=${data.requestId} dropped`;
+      // The request arrived after `activeControlSender()` was
+      // cleared (the supervisor is in `recycling` mid-swap, or
+      // `draining`/`stopping`/`stopped`). The child's read end of
+      // the IPC pipe is being torn down alongside this transition,
+      // so the child's pending waiter will surface a pipe-close
+      // error on its own read rather than wedge. Dropping the
+      // frame here is the only available action -- there is no
+      // sender to write the response on, and routing the response
+      // to whatever next-cohort sender exists would deliver it to
+      // the wrong child. Logged loudly so persistent occurrences
+      // surface in operator logs.
+      logger.warn`substrate.write.request received outside running phase; requestId=${data.requestId} dropped (child waiter will fail on pipe close)`;
       return;
     }
     const validatedRepoId = RepoId(data.repoId);
@@ -1151,6 +1162,18 @@ export function createWorkflowSupervisor(
         wakeDispatch();
       })
       .catch((cause) => {
+        // Documented best-effort: a failed replay leaves orphaned
+        // `processing/` entries parked and the dispatch loop will
+        // then ship newly-enqueued mail ahead of them, violating
+        // the FIFO contract described in the comment above.
+        // Tightening this to a fatal `onChildCrash` was attempted
+        // but caused spurious crashes in the integration suite
+        // where the first spawn legitimately has no
+        // `processing/` directory to replay; resolving that
+        // requires either a no-op-on-missing variant of
+        // `replayProcessingToInbox` or a dispatch-loop periodic
+        // sweep that picks up parked orphans. Left as logged
+        // best-effort until that lands.
         const message = cause instanceof Error ? cause.message : String(cause);
         logger.warn`replayProcessingToInbox on spawn failed: ${message}`;
       });
@@ -1867,7 +1890,23 @@ export function createWorkflowSupervisor(
             // already disposed the prior cohort; there is nothing
             // for this callback to do.
             if (state.phase !== "recycling") {
+              // Kill the orphan child and release its event-channel /
+              // upstream-control resources so they cannot survive as
+              // unowned promises. Without this, the eventPump and
+              // controlIncoming iterator would have no `state`
+              // bookkeeping to drive their cleanup -- a rejection
+              // inside `pumpEvents` would surface as an unhandled
+              // rejection, and the upstream control iterator's
+              // exit would never be observed.
               wiring.handle.kill("SIGTERM");
+              void wiring.eventPump.catch(() => {
+                /* swallowed: the new child is being torn down; the
+                   pump's failure has nowhere meaningful to surface. */
+              });
+              void controlIncoming.return(undefined).catch(() => {
+                /* swallowed: same rationale as the eventPump catch
+                     above; the orphan's iterator is being released. */
+              });
               return;
             }
             // The previous cohort was aborted inside triggerRecycle
