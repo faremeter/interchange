@@ -426,6 +426,24 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       }
     }
 
+    // Prune `workflowRunPackBootstrapped` entries recorded under this
+    // address so a future workflow-run-repo reset for the same
+    // `(kind, id, ref)` triple re-runs the bootstrap-retry arm. Without
+    // the prune the flag survives across the deployment's lifetime,
+    // grows unbounded over the link's lifetime, and a hub-side rotation
+    // / disaster-recovery reset surfaces as a `non_fast_forward` on the
+    // first post-reset push (the link skips the retry on the stale
+    // flag).
+    const bootstrapped = workflowRunPackBootstrappedByAddress.get(
+      frame.agentAddress,
+    );
+    if (bootstrapped !== undefined) {
+      for (const key of bootstrapped) {
+        workflowRunPackBootstrapped.delete(key);
+      }
+      workflowRunPackBootstrappedByAddress.delete(frame.agentAddress);
+    }
+
     // Stop the harness first.
     try {
       await sessions.destroySession(frame.agentAddress);
@@ -699,6 +717,19 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   // surfaces verbatim once the repo has been bootstrapped.
   const workflowRunPackBootstrapped = new Set<string>();
   const workflowRunPackQueues = new Map<string, Promise<void>>();
+  // Reverse index: agentAddress -> bootstrap keys recorded under that
+  // address. `handleAgentUndeploy` consults this to prune
+  // `workflowRunPackBootstrapped` entries owned by the just-undeployed
+  // deployment so a future workflow-run-repo reset for the same
+  // `(kind, id, ref)` triple re-runs the bootstrap-retry arm instead of
+  // skipping it on the stale flag and failing with `non_fast_forward`.
+  // Indexed by `agentAddress` (not `deploymentId`) because the link
+  // does not own the address->deploymentId derivation -- the sidecar's
+  // deploy router does. Every workflow-run push the link sees carries
+  // the originating address explicitly, so the index closes the gap
+  // structurally without leaking the derivation across the package
+  // boundary.
+  const workflowRunPackBootstrappedByAddress = new Map<string, Set<string>>();
   function workflowRunPackKey(repoId: RepoId, ref: string): string {
     return `${repoId.kind}:${repoId.id}:${ref}`;
   }
@@ -810,6 +841,14 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         await sendOnce();
       }
       workflowRunPackBootstrapped.add(key);
+      let perAddress = workflowRunPackBootstrappedByAddress.get(
+        opts.agentAddress,
+      );
+      if (perAddress === undefined) {
+        perAddress = new Set<string>();
+        workflowRunPackBootstrappedByAddress.set(opts.agentAddress, perAddress);
+      }
+      perAddress.add(key);
     }
 
     // Serialize pushes per (repoId, ref). The hub's `receiveWorkflowRunPack`
