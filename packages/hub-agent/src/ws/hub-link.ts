@@ -85,6 +85,16 @@ export type DeployRouterResult = {
  */
 export interface DeployRouter {
   deploy(frame: AgentDeployFrame): Promise<DeployRouterResult>;
+  /**
+   * Symmetric teardown for `deploy`. The link invokes this when an
+   * `agent.undeploy` frame lands so the router can release any
+   * per-deployment registrations the deploy path installed
+   * (`MultistepMailRouter`, `MultistepSignalRouter`,
+   * `MultistepDrainRouter`, `DeploymentAddressRegistry`). Optional
+   * so test routers and the inline trivial test fixture can omit
+   * the implementation.
+   */
+  undeploy?: (frame: AgentUndeployFrame) => Promise<void>;
 }
 
 /**
@@ -397,6 +407,24 @@ export function createHubLink(config: HubLinkConfig): HubLink {
 
   async function handleAgentUndeploy(frame: AgentUndeployFrame): Promise<void> {
     let statePushed = false;
+
+    // Release per-deployment routing state the deploy router installed
+    // for this address (multi-step mail/signal/drain handlers and the
+    // deployment-address mapping) before the session tears down. With
+    // the registrations released, any in-flight `signal.deliver` /
+    // `drain.deliver` / `mail.inbound` frame that lands during teardown
+    // is rejected by the router rather than dispatched into a
+    // soon-to-be-orphaned supervisor handler. Trivial-deploy routers
+    // (and test stubs) omit the hook; an absent hook means there was
+    // nothing to release.
+    if (deployRouter.undeploy !== undefined) {
+      try {
+        await deployRouter.undeploy(frame);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn`Deploy router undeploy hook failed for ${frame.agentAddress}: ${msg}`;
+      }
+    }
 
     // Stop the harness first.
     try {

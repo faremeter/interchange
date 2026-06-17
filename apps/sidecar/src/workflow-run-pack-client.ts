@@ -89,6 +89,7 @@ export function createWorkflowRunPackClient(
 export type DeploymentAddressRegistry = {
   record(deploymentId: string, agentAddress: string): void;
   resolve(deploymentId: string): string | null;
+  unregister(deploymentId: string): void;
 };
 
 export function createDeploymentAddressRegistry(): DeploymentAddressRegistry {
@@ -99,6 +100,9 @@ export function createDeploymentAddressRegistry(): DeploymentAddressRegistry {
     },
     resolve(deploymentId) {
       return table.get(deploymentId) ?? null;
+    },
+    unregister(deploymentId) {
+      table.delete(deploymentId);
     },
   };
 }

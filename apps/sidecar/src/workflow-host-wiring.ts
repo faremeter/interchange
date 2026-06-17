@@ -504,6 +504,20 @@ export function createSidecarDeployRouter(deps: {
     agentAddress: string;
   }) => void;
   /**
+   * Symmetric removal hook for `registerDeployment`. Fires from the
+   * link's `agent.undeploy` path so the boot edge's
+   * `DeploymentAddressRegistry` drops the mapping when the deployment
+   * is torn down. A subsequent stale `writeTreePreservingPrefix`
+   * against the dead deployment's workflow-run ref surfaces
+   * structurally (`registry.resolve` returns `null`) rather than
+   * silently resolving to the prior address. Tests that do not
+   * exercise the pack push path may pass a no-op.
+   */
+  unregisterDeployment: (entry: {
+    deploymentId: string;
+    agentAddress: string;
+  }) => void;
+  /**
    * Substrate-config env keys the multi-step branch propagates into
    * the workflow-process child's spawn-time env (see
    * `SIDECAR_SUBSTRATE_CONFIG_KEYS` in `workflow-substrate-factory.ts`).
@@ -911,6 +925,24 @@ export function createSidecarDeployRouter(deps: {
         );
       }
       return { publicKey };
+    },
+    async undeploy(frame): Promise<void> {
+      // Symmetric teardown for `deploy`: release the per-deployment
+      // routing state both branches install so a stale `signal.deliver`
+      // / `drain.deliver` / `mail.inbound` aimed at the dead deployment
+      // address is rejected by the router rather than dispatched into
+      // an orphan supervisor handler. The unregister calls are
+      // idempotent and safe to invoke for both branches even though
+      // the trivial branch never registers against the multi-step
+      // routers; those calls are no-ops when no handler is registered.
+      const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
+      deps.multistepMailRouter?.unregister(frame.agentAddress);
+      deps.multistepSignalRouter?.unregister(frame.agentAddress);
+      deps.multistepDrainRouter?.unregister(frame.agentAddress);
+      deps.unregisterDeployment({
+        deploymentId,
+        agentAddress: frame.agentAddress,
+      });
     },
   };
 }

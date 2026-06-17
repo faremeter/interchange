@@ -348,6 +348,9 @@ describe("createSidecarDeployRouter wires the InferenceEvent subscription to rec
       registerDeployment: () => {
         /* the in-test repoStore is a stub; the pack-push facade is exercised separately */
       },
+      unregisterDeployment: () => {
+        /* no-op for parity with registerDeployment in this stub */
+      },
     });
 
     const result = await router.deploy({
@@ -694,6 +697,9 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       registerDeployment: () => {
         /* no-op */
       },
+      unregisterDeployment: () => {
+        /* no-op */
+      },
       multistepSubprocessSpawner: () => {
         spawnerInvoked = true;
         throw new Error("the trivial branch must not invoke the spawner");
@@ -775,6 +781,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       repoStore,
       signingKeySeed: keyPair.privateKey,
       registerDeployment: () => {
+        /* no-op */
+      },
+      unregisterDeployment: () => {
         /* no-op */
       },
       multistepSubprocessSpawner: opts.spawner,

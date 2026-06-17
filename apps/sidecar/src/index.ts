@@ -288,6 +288,9 @@ const orchestrator = createSidecarOrchestrator({
       registerDeployment: ({ deploymentId, agentAddress }) => {
         deploymentAddressRegistry.record(deploymentId, agentAddress);
       },
+      unregisterDeployment: ({ deploymentId }) => {
+        deploymentAddressRegistry.unregister(deploymentId);
+      },
       multistepMailRouter,
       multistepSignalRouter,
       multistepDrainRouter,
