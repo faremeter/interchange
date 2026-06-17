@@ -461,10 +461,10 @@ describe("parent -> child workflow round-trip", () => {
   test("parent -> child -> grandchild recursion at depth 2", async () => {
     // Recursion-depth coverage. The case above tests parent -> 1
     // child; the runtime's in-process `runChildWorkflow` is designed
-    // for arbitrary depth, but the
-    // sub-namespace scoping (parent/child/grandchild runs all coexist
-    // under `runs/<runId>/` in the same workflow-run repo) has only
-    // been exercised at depth 1.
+    // for arbitrary depth, but the sub-namespace scoping
+    // (parent/child/grandchild runs all coexist under
+    // `runs/<runId>/` in the same workflow-run repo) has only been
+    // exercised at depth 1.
     const grandchildAgent = defineAgent({
       id: "agent-grandchild-step",
       systemPrompt: "You are the grandchild workflow's step agent.",

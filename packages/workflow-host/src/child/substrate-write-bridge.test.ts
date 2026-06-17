@@ -3,8 +3,7 @@
 // The `substrate.write` / `substrate.merge` IPC layer has happy-path
 // coverage; this file pins the failure-mode behaviour the bridge has
 // to survive: the supervisor dropping mid-write (IPC channel close),
-// a
-// malformed `substrate.merge.response` landing with a stale or
+// a malformed `substrate.merge.response` landing with a stale or
 // unknown `requestId`, and the cleanup semantics the bridge's
 // `cancelAll` provides on teardown.
 //

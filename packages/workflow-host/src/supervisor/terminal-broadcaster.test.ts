@@ -3,9 +3,9 @@
 // The recycle suite pins iterator finalisation on cohort teardown
 // but does NOT pin the actual race where a terminal event from the
 // old cohort arrives during the new cohort's spawn. The supervisor
-// wires one
-// broadcaster per spawn cohort and the previous cohort's broadcaster
-// is disposed when the new cohort takes over. The tests below
+// wires one broadcaster per spawn cohort and the previous cohort's
+// broadcaster is disposed when the new cohort takes over. The tests
+// below
 // exercise the broadcaster's notify/dispose surface directly so the
 // cross-cohort isolation is observable without standing up the full
 // supervisor.
