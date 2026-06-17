@@ -1,6 +1,6 @@
 // Supervisor-level coverage for the substrate.write IPC layer.
 //
-// Three concerns greybeard's pre-PR review flagged are pinned here:
+// Three review concerns are pinned here:
 //
 //   1. The terminal-write watchdog timeout. The supervisor holds the
 //      `substrate.write.response` back to the child until the

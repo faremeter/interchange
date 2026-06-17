@@ -336,12 +336,12 @@ export interface InboxPrimitives {
 }
 
 /**
- * Constructor arguments for `createWorkflowSupervisor`. The shape
- * is greybeard's Q1 (a) call: one `RepoStore` handle plus a
- * `signAsPrincipal` callback that mints signatures on demand per
- * principal, rather than pre-minting per-principal `RepoStore` views.
- * Every write-site is explicit about which principal it claims to
- * be, and the supervisor never holds a private key in plaintext.
+ * Constructor arguments for `createWorkflowSupervisor`. One
+ * `RepoStore` handle plus a `signAsPrincipal` callback that mints
+ * signatures on demand per principal, rather than pre-minting
+ * per-principal `RepoStore` views. Every write-site is explicit
+ * about which principal it claims to be, and the supervisor never
+ * holds a private key in plaintext.
  */
 export interface WorkflowSupervisorBindings {
   /** Substrate handle the supervisor reads grants from and commits events to. */

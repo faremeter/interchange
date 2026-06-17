@@ -190,8 +190,8 @@ export type HubLinkConfig = {
    * supplies a router that calls `supervisor.deploy(frame)` on a
    * freshly-constructed workflow-host supervisor whose
    * `trivialLaunch` closes over `SessionManager.provisionAgent`.
-   * The supervisor (greybeard's Option Z) owns the trivial vs
-   * multi-step decision; the link does not re-decide.
+   * The supervisor owns the trivial vs multi-step decision; the
+   * link does not re-decide.
    */
   deployRouter: DeployRouter;
   /**
@@ -368,8 +368,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       // owns the agent.deploy framing decision -- trivial vs
       // multi-step -- and returns the deploy public key the link
       // folds into the outbound ack. The link itself does not
-      // re-decide; greybeard's Option Z places routing on the
-      // supervisor side of the seam.
+      // re-decide; routing lives on the supervisor side of the seam.
       const result = await deployRouter.deploy(frame);
       send({
         type: "agent.deploy.ack",

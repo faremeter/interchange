@@ -459,9 +459,9 @@ describe("parent -> child workflow round-trip", () => {
   // continues to hold at every depth because each rung's runtime env
   // keys substrate operations on its own `runId`.
   test("parent -> child -> grandchild recursion at depth 2", async () => {
-    // Greybeard's pre-PR coverage gap on recursion depth. The existing
-    // case above tests parent -> 1 child; the runtime's in-process
-    // `runChildWorkflow` is designed for arbitrary depth, but the
+    // Recursion-depth coverage. The case above tests parent -> 1
+    // child; the runtime's in-process `runChildWorkflow` is designed
+    // for arbitrary depth, but the
     // sub-namespace scoping (parent/child/grandchild runs all coexist
     // under `runs/<runId>/` in the same workflow-run repo) has only
     // been exercised at depth 1.
@@ -812,9 +812,9 @@ describe("parent -> child workflow round-trip", () => {
   });
 
   test(`parent -> ${String(SIBLINGS_CHILD_COUNT)} siblings via stepOrder`, async () => {
-    // Greybeard's pre-PR coverage gap on sibling-fanout. The runtime
-    // resolves dependency-graph order via stepOrder; the parent must
-    // record one ChildSpawned + one ChildCompleted per sibling and
+    // Sibling-fanout coverage. The runtime resolves
+    // dependency-graph order via stepOrder; the parent must record
+    // one ChildSpawned + one ChildCompleted per sibling and
     // reach RunCompleted with every sibling's run materialised under
     // a distinct `runs/<childRunId>/` sub-namespace.
     const parentStepAgent = defineAgent({

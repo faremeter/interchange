@@ -1,9 +1,9 @@
 // Unit coverage for the per-cohort terminal-run broadcaster.
 //
-// Greybeard's pre-PR review noted that the recycle test only pinned
-// iterator finalisation on cohort teardown -- it did NOT pin the
-// actual race where a terminal event from the old cohort arrives
-// during the new cohort's spawn. The supervisor wires one
+// The recycle suite pins iterator finalisation on cohort teardown
+// but does NOT pin the actual race where a terminal event from the
+// old cohort arrives during the new cohort's spawn. The supervisor
+// wires one
 // broadcaster per spawn cohort and the previous cohort's broadcaster
 // is disposed when the new cohort takes over. The tests below
 // exercise the broadcaster's notify/dispose surface directly so the
@@ -32,7 +32,7 @@ describe("terminal-broadcaster: in-flight event from disposed cohort", () => {
     // Two cohorts, simulating the recycle path's installNewChild. The
     // supervisor mints cohort A's broadcaster on spawn; the recycle
     // path disposes cohort A and mints cohort B on installNewChild.
-    // The race greybeard flagged: an upstream `terminal.event` frame
+    // The race: an upstream `terminal.event` frame
     // from cohort A's child arrives during cohort B's spawn-time
     // wiring. The supervisor's notify path routes the event through
     // whichever broadcaster is `active` at that moment; the
@@ -60,8 +60,8 @@ describe("terminal-broadcaster: in-flight event from disposed cohort", () => {
     // which is now cohort B's. But the broadcaster the event was
     // intended for is A's (disposed). A defensive notify against A
     // must be a no-op; a notify against B for an event that did not
-    // originate from B must NOT settle B's listener (the race
-    // greybeard flagged: cross-cohort leak).
+    // originate from B must NOT settle B's listener (the
+    // cross-cohort leak).
     //
     // The broadcaster's contract: notify after dispose is a no-op.
     expect(() => a.notify("run-x", COMPLETED)).not.toThrow();
@@ -134,7 +134,7 @@ describe("terminal-broadcaster: in-flight event from disposed cohort", () => {
 
 describe("terminal-broadcaster: per-cohort isolation under concurrent dispose", () => {
   test("cohort A's terminal events do not appear on cohort B's iterators even when notify and dispose interleave", async () => {
-    // This is the strongest version of greybeard's race: the cohort A
+    // This is the strongest version of the race: the cohort A
     // child's terminal event arrives at the supervisor BEFORE the
     // cohort A broadcaster has been disposed, AND the dispatch loop
     // for cohort B has already subscribed to cohort B's broadcaster

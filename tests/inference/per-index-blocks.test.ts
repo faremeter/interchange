@@ -447,8 +447,8 @@ describe("runInference — per-index protocol violations", () => {
 
 // A small synthetic verifier that the harness's tool_use marker in
 // the per-index map resolves to the right ContentBlock at assembly
-// time. This locks in greybeard's "keep tool_use markers separate
-// from the openToolCalls state machine" design.
+// time. This locks in the design where tool_use markers stay
+// separate from the openToolCalls state machine.
 describe("runInference — OpenAI tool_call slot/blockIndex resolution", () => {
   // Regression: an OpenAI tool_call whose `tcDelta.index` is non-zero
   // and non-contiguous (a single tool call at slot 3, or sparse

@@ -1,8 +1,8 @@
 // Mail-handling edge-case integration test.
 //
-// Greybeard's pre-PR coverage gap on mail-flow corner cases. The
-// supervisor's `deriveMessageId` derivation is the load-bearing identity
-// the FIFO inbox, dedup index, and run-id mint all depend on. The
+// Coverage for mail-flow corner cases. The supervisor's
+// `deriveMessageId` derivation is the load-bearing identity the
+// FIFO inbox, dedup index, and run-id mint all depend on. The
 // existing FIFO test pins the happy path on well-formed RFC 2822
 // Message-Id headers; this file pins three documented-but-untested
 // shapes:

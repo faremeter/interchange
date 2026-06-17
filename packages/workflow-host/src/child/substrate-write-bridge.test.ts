@@ -1,9 +1,9 @@
 // Failure-mode coverage for the child-side substrate-write bridge.
 //
-// Greybeard's pre-PR review flagged that the new `substrate.write` /
-// `substrate.merge` IPC layer has happy-path coverage but no
-// pinned-behaviour tests against the failure modes the bridge has to
-// survive: the supervisor dropping mid-write (IPC channel close), a
+// The `substrate.write` / `substrate.merge` IPC layer has happy-path
+// coverage; this file pins the failure-mode behaviour the bridge has
+// to survive: the supervisor dropping mid-write (IPC channel close),
+// a
 // malformed `substrate.merge.response` landing with a stale or
 // unknown `requestId`, and the cleanup semantics the bridge's
 // `cancelAll` provides on teardown.
