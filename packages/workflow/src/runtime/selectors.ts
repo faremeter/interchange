@@ -100,6 +100,18 @@ function resolvePath(
           selector,
         );
       }
+      // Distinguish a missing key from a key whose value is `null` or
+      // `undefined`. `in` checks the key's presence on the object;
+      // bracket-indexing alone would silently return `undefined` for
+      // a typo and let the runtime feed `undefined` into a step as
+      // though no input were supplied. Surface the missing key with a
+      // path so the author can spot the typo.
+      if (!(segment.key in cursor)) {
+        throw new SelectorError(
+          `missing key ${segment.key} in path ${path}`,
+          selector,
+        );
+      }
       cursor = cursor[segment.key];
     }
   }

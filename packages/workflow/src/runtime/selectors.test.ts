@@ -50,6 +50,20 @@ describe("evaluate", () => {
     );
   });
 
+  test("from on a missing leaf key throws", () => {
+    expect(() => evaluate({ from: "trigger.payload.tasksss" }, ctx)).toThrow(
+      SelectorError,
+    );
+  });
+
+  test("from on a leaf key whose value is null returns null", () => {
+    const nullCtx: SelectorContext = {
+      trigger: { payload: { goal: null } },
+      steps: {},
+    };
+    expect(evaluate({ from: "trigger.payload.goal" }, nullCtx)).toBeNull();
+  });
+
   test("project requires the source to be an object", () => {
     expect(() =>
       evaluate(
