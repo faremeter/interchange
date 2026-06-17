@@ -912,38 +912,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       await writeFileEntry(dir, relPath, contents);
     }
 
-    const topLevelTreePaths = Array.from(
-      new Set(
-        Object.keys(content.files).map((p) => {
-          const slash = p.indexOf("/");
-          return slash === -1 ? p : p.substring(0, slash);
-        }),
-      ),
-    );
-    const readBlob = async (relPath: string): Promise<Uint8Array> => {
-      const entry = content.files[relPath];
-      if (entry === undefined) {
-        throw new Error(
-          `readBlob: path ${relPath} not present in tree content`,
-        );
-      }
-      if (typeof entry === "string") {
-        return new TextEncoder().encode(entry);
-      }
-      return entry;
-    };
-    const listDir = async (dirPath: string): Promise<string[]> => {
-      const prefix = dirPath === "" ? "" : `${dirPath}/`;
-      const names = new Set<string>();
-      for (const p of Object.keys(content.files)) {
-        if (prefix !== "" && !p.startsWith(prefix)) continue;
-        const rest = p.slice(prefix.length);
-        if (rest.length === 0) continue;
-        const slash = rest.indexOf("/");
-        names.add(slash === -1 ? rest : rest.substring(0, slash));
-      }
-      return Array.from(names);
-    };
     // The prior tree is whatever the ref points at the moment
     // validatePush runs — i.e. the parent of the commit we are about
     // to produce. `refPaths` above was snapshotted from the same
@@ -953,6 +921,71 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       dir,
       priorCommitSha,
     );
+
+    // The prospective tree is the actual commit `git.commit` will
+    // produce: the prior tree, minus paths cleared by `clearPrefix`,
+    // unioned with paths newly staged via `writeFileEntry`. The
+    // closures handed to validatePush must reflect that union — not
+    // just `content.files` — so a kind handler that walks the prior
+    // tree (workflow-run's append-only event check) can see every
+    // path the commit will carry. Building the closures from
+    // `content.files` alone would advertise only the writer's
+    // explicitly-staged paths, hiding prior-tree paths the writer
+    // did not touch and tripping prior-vs-prospective comparisons
+    // that the substrate does not actually delete.
+    const clearedPrefix = content.clearPrefix;
+    const survivingPriorPaths: string[] = [];
+    for (const p of refPaths) {
+      if (clearedPrefix !== undefined && p.startsWith(clearedPrefix)) continue;
+      if (Object.prototype.hasOwnProperty.call(content.files, p)) continue;
+      survivingPriorPaths.push(p);
+    }
+    const prospectivePaths = new Set<string>([
+      ...Object.keys(content.files),
+      ...survivingPriorPaths,
+    ]);
+    const survivingPriorPathSet = new Set(survivingPriorPaths);
+    const topLevelTreePaths = Array.from(
+      new Set(
+        Array.from(prospectivePaths, (p) => {
+          const slash = p.indexOf("/");
+          return slash === -1 ? p : p.substring(0, slash);
+        }),
+      ),
+    );
+    const readBlob = async (relPath: string): Promise<Uint8Array> => {
+      const entry = content.files[relPath];
+      if (entry !== undefined) {
+        if (typeof entry === "string") {
+          return new TextEncoder().encode(entry);
+        }
+        return entry;
+      }
+      if (survivingPriorPathSet.has(relPath)) {
+        const blob = await priorReadBlob(relPath);
+        if (blob === null) {
+          throw new Error(
+            `readBlob: path ${relPath} listed in prior tree but unreadable from prior commit ${String(priorCommitSha)}`,
+          );
+        }
+        return blob;
+      }
+      throw new Error(
+        `readBlob: path ${relPath} not present in prospective tree`,
+      );
+    };
+    const listDir = async (dirPath: string): Promise<string[]> => {
+      const prefix = dirPath === "" ? "" : `${dirPath}/`;
+      const names = new Set<string>();
+      for (const p of prospectivePaths) {
+        if (prefix !== "" && !p.startsWith(prefix)) continue;
+        const rest = p.slice(prefix.length);
+        if (rest.length === 0) continue;
+        const slash = rest.indexOf("/");
+        names.add(slash === -1 ? rest : rest.substring(0, slash));
+      }
+      return Array.from(names);
+    };
     const validation = await handler.validatePush({
       repoId,
       ref,
