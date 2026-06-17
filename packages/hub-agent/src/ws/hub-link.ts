@@ -864,9 +864,23 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         // which is what the workflow-host's `awaitSignal` listens on.
         // Trivial deployments do not register a handler; the fallback
         // path is the legacy single-agent provisioning surface.
-        if (
-          mailInboundRouter?.tryRoute(frame.agentAddress, rawBytes) === true
-        ) {
+        //
+        // Guard the router call with try/catch so a throwing handler
+        // does not reject this `handleMessage` promise and wedge the
+        // per-connection `messageQueue` chain. A rejected chain would
+        // silently drop every subsequent frame -- including the
+        // heartbeat `pong` -- and stall the link. Logging-and-dropping
+        // mirrors the `signal.deliver` / `drain.deliver` arms.
+        let routed = false;
+        if (mailInboundRouter !== undefined) {
+          try {
+            routed = mailInboundRouter.tryRoute(frame.agentAddress, rawBytes);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.warn`mail.inbound router threw for ${frame.agentAddress}: ${msg}`;
+          }
+        }
+        if (routed) {
           break;
         }
         deliverLocalMail(frame.agentAddress, rawBytes);
@@ -1016,7 +1030,22 @@ export function createHubLink(config: HubLinkConfig): HubLink {
 
     ws.addEventListener("message", (event) => {
       if (typeof event.data === "string") {
-        messageQueue = messageQueue.then(() => handleMessage(event.data));
+        // Attach a tail `.catch` to the chained handler so any
+        // unhandled throw inside `handleMessage` is observed and
+        // surfaces as a logged warning rather than rejecting the
+        // shared `messageQueue` chain. A rejected chain wedges every
+        // subsequent `messageQueue.then(...)` -- including the
+        // heartbeat `pong` path -- and silently stalls the link.
+        // Per-arm guards (mail/signal/drain) are the primary defence;
+        // this catch is the belt-and-braces guarantee that no future
+        // unguarded arm can wedge the link.
+        const data = event.data;
+        messageQueue = messageQueue.then(() =>
+          handleMessage(data).catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.warn`Unhandled error in handleMessage: ${msg}`;
+          }),
+        );
       }
     });
 
