@@ -923,4 +923,144 @@ describe("substrate-write cohort abort cleanup", () => {
 
     await shutdownPromise;
   });
+
+  test("a markConsumed waiter mid-await is rejected through MergeAbortedError when the supervisor shuts down", async () => {
+    // Companion to the test above. The HIGH cleanup also covers
+    // `markConsumedCompletionWaiters`, which the supervisor populates
+    // when a substrate.write.request lands a terminal-event blob: the
+    // post-merge `synchronouslyDispatchTerminalWrite` path notifies
+    // the broadcaster and then awaits a per-runId completion promise
+    // that the dispatch loop's `markConsumed` would normally resolve.
+    // If the cohort tears down while a waiter is mid-await, the
+    // resolver the dispatch loop would have called never fires; the
+    // HIGH cleanup must reject the waiter via MergeAbortedError so
+    // the awaiting handler closure unblocks and the
+    // substrate.write.response surfaces the abort to the child.
+    const blockMarkConsumed = new Promise<void>(() => {
+      /* never resolve: lets the markConsumed completion waiter sit
+         in `markConsumedCompletionWaiters` for shutdown to find */
+    });
+    const harness = await bootSupervisor({
+      prefix: "supv-cohort-abort-mc-",
+      invokeMerge: true,
+      inboxOpts: { blockMarkConsumed },
+    });
+
+    // Drive a trigger.fire so the supervisor adds the runId to
+    // `inFlightRuns` (a precondition for the waiter registration).
+    harness.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("cohort-abort-mc-msg"),
+    );
+    const triggerDeadline = Date.now() + 2_000;
+    let runId: string | null = null;
+    while (runId === null && Date.now() < triggerDeadline) {
+      const triggers = readPayloadsOfType(
+        harness.supervisorToChild.flushed(),
+        "trigger.fire",
+      );
+      if (triggers.length > 0) {
+        const first = triggers[0];
+        if (first !== undefined) runId = first.data.runId;
+      }
+      if (runId === null) await new Promise((r) => setTimeout(r, 1));
+    }
+    if (runId === null) {
+      throw new Error("supervisor did not forward trigger.fire in time");
+    }
+
+    // Drive a terminal-event write through the substrate-write IPC.
+    // The supervisor's `synchronouslyDispatchTerminalWrite` enters the
+    // `await completed` line after registering the waiter; the
+    // blockMarkConsumed stub guarantees `markConsumed` cannot resolve
+    // it, so the await sits in the map for shutdown to find.
+    const requestId = "cohort-abort-mc-req-1";
+    await harness.childSender.send({
+      type: "substrate.write.request",
+      data: {
+        requestId,
+        repoId: { kind: "workflow-run", id: "deployment-x" },
+        ref: "refs/heads/main",
+        preservePrefix: `runs/${runId}/events/`,
+        message: "terminal-event write that will be aborted",
+      },
+    });
+    const mergeDeadline = Date.now() + 2_000;
+    let mergeRequestSeen = false;
+    while (!mergeRequestSeen && Date.now() < mergeDeadline) {
+      const merges = readPayloadsOfType(
+        harness.supervisorToChild.flushed(),
+        "substrate.merge.request",
+      );
+      if (merges.some((m) => m.data.requestId === requestId)) {
+        mergeRequestSeen = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(mergeRequestSeen).toBe(true);
+
+    // Satisfy the merge round-trip with a real terminal-event blob.
+    // The supervisor's post-merge synthesizeTerminalEvent path runs,
+    // notifies the broadcaster, and parks on the markConsumed
+    // completion waiter (which blockMarkConsumed will never resolve).
+    const terminalBlob = JSON.stringify({
+      type: "RunCompleted",
+      seq: 0,
+      runId,
+      at: "test",
+      signature: { principalKind: "workflow-process", sig: "00" },
+    });
+    await harness.childSender.send({
+      type: "substrate.merge.response",
+      data: {
+        requestId,
+        result: {
+          ok: true,
+          files: [
+            {
+              path: `runs/${runId}/events/0.json`,
+              contentBase64: Buffer.from(terminalBlob).toString("base64"),
+            },
+          ],
+        },
+      },
+    });
+
+    // Shutdown. `rejectCohortAwaiters` iterates the waiter map and
+    // calls reject(MergeAbortedError) on every entry; the awaiting
+    // handler's catch surfaces the rejection as a
+    // substrate.write.response with the abort reason.
+    const shutdownPromise = harness.supervisor.shutdown();
+
+    const responseDeadline = Date.now() + 5_000;
+    let abortResponse: {
+      requestId: string;
+      result: { ok: boolean; reason?: string };
+    } | null = null;
+    while (abortResponse === null && Date.now() < responseDeadline) {
+      const responses = readPayloadsOfType(
+        harness.supervisorToChild.flushed(),
+        "substrate.write.response",
+      );
+      const matched = responses.find((r) => r.data.requestId === requestId);
+      if (matched !== undefined) {
+        abortResponse = {
+          requestId: matched.data.requestId,
+          result: matched.data.result,
+        };
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    if (abortResponse === null) {
+      throw new Error(
+        "supervisor did not surface a cohort-aborted substrate.write.response for the markConsumed waiter in time",
+      );
+    }
+    expect(abortResponse.result.ok).toBe(false);
+    expect(abortResponse.result.reason).toMatch(/cohort aborted|markConsumed/);
+
+    await shutdownPromise;
+  });
 });

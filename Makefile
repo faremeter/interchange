@@ -11,6 +11,9 @@ lint: FORCE
 test: FORCE
 	bun run test
 
+test-load: FORCE
+	bun run test:load
+
 format: FORCE
 	bun run format
 
@@ -34,5 +37,5 @@ clean:
 
 include .env-checked
 
-.PHONY: all build lint test format docs clean builtins publish-builtins
+.PHONY: all build lint test test-load format docs clean builtins publish-builtins
 FORCE:

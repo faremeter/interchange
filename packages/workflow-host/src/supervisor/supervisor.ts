@@ -1952,7 +1952,6 @@ export function createWorkflowSupervisor(
       // recycle failure and can redeploy.
       const message = cause instanceof Error ? cause.message : String(cause);
       logger.error`recycle failed; tearing supervisor down: ${message}`;
-      recycleInProgress = false;
       await shutdownInternal({
         reason: `recycle failed: ${message}`,
       }).catch((shutdownCause) => {

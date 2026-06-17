@@ -531,11 +531,18 @@ describe("drain round-trip", () => {
     // ignores the controller flip and stays in SignalAwaited until
     // either the signal arrives or the supervisor's drainTimeout
     // accumulator escalates with a signed CancelRequested. With
-    // never-arrives the signal path can't fire, and the
-    // drainTimeoutMs policy default is 5_000ms; sleeping 2_500ms
-    // is well inside the wait window. A regression that aborted
-    // wait-mode immediately on drain would commit StepFailed in
-    // this window and fail the assertion below.
+    // never-arrives the signal path can't fire. The supervisor's
+    // drainTimeoutMs policy default is DEFAULT_DRAIN_TIMEOUT_MS
+    // (60_000ms); sleeping 2_500ms is well inside the wait window.
+    // A regression that aborted wait-mode on the drain signal flip
+    // (within hundreds of milliseconds, the cancel-mode shape)
+    // would commit StepFailed in this window and fail the
+    // assertion below. A subtler regression that aborted
+    // wait-mode anywhere between ~hundreds of ms and 2.5s would
+    // also fail; a regression that aborted somewhere between 2.5s
+    // and 60s would slip past this test -- the load-bearing
+    // assertion is the cancel-mode shape, not partial-window
+    // misbehaviour.
     await new Promise((r) => setTimeout(r, 2_500));
     const eventsDuringWait = await readWorkflowRunEvents(
       env,

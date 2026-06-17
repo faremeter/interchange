@@ -630,6 +630,76 @@ describe("supervisor recycle: failure after the cohort handoff", () => {
   });
 });
 
+describe("supervisor recycle: deliverSignal phase guard", () => {
+  test("deliverSignal during the recycling window rejects rather than writing to the dying cohort's controlSender", async () => {
+    // M2: during `recycling`, the supervisor's `state.controlSender`
+    // still references the dying child's sender; a signal forwarded
+    // there either buffers behind the impending SIGTERM (best case)
+    // or writes into a closed pipe and is silently lost (worst case).
+    // The phase guard on `deliverSignal` rejects any caller that
+    // tries to land a signal during this window so the race surfaces
+    // to the operator rather than dropping the signal on the floor.
+    const baseDir = await makeTempDir("recycle-deliver-signal-guard-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker({});
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: tracker.spawner,
+      mailBus,
+      ipcKeypair,
+    });
+    const supervisor = createWorkflowSupervisor(bindings);
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      onInferenceEvent: () => undefined,
+    });
+    while (tracker.children.length === 0) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    await driveReady(first, ipcKeypair);
+    await spawnPromise;
+
+    // Kick the recycle. Wait for the second spawn to happen (so the
+    // supervisor's state has transitioned to `recycling`) but do NOT
+    // drive its ready frame -- triggerRecycle hangs on `waitForReady`,
+    // leaving the supervisor in `recycling` for the deliverSignal
+    // call to observe.
+    const recyclePromise = supervisor.recycle({ reason: "guard-test" });
+    while (tracker.children.length < 2) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+
+    let caught: unknown;
+    try {
+      await supervisor.deliverSignal({
+        runId: "run-during-recycle",
+        signalName: "test",
+        signalId: "sig_test",
+        payload: {},
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught instanceof Error && caught.message).toMatch(
+      /deliverSignal called in phase recycling/,
+    );
+
+    // Drive the second child's ready so the recycle settles and
+    // shutdown is clean. The signal rejection above is what the test
+    // pins; the recycle flow itself is covered by the broader suite.
+    await driveReady(second, ipcKeypair);
+    await recyclePromise;
+    await supervisor.shutdown();
+  });
+});
+
 describe("supervisor recycle: mail buffered during the kill/respawn gap", () => {
   test("inbound mail during the gap drains into the new child after ready", async () => {
     const baseDir = await makeTempDir("recycle-mail-buffer-");
@@ -1031,98 +1101,6 @@ describe("supervisor recycle: drain-side processing replay", () => {
     expect(replayIdx).toBeGreaterThanOrEqual(0);
     expect(killIdx).toBeGreaterThanOrEqual(0);
     expect(replayIdx).toBeLessThan(killIdx);
-    await supervisor.shutdown();
-  });
-
-  test("triggerRecycle invokes abortPriorCohort callback between replay and kill", async () => {
-    // Pin the M1 ordering: the supervisor's abortPriorCohort callback
-    // must fire after `replayProcessingToInbox` settles and before
-    // `kill` drops the child. Aborting up-front (the pre-M1 shape)
-    // would starve drain accumulators of live terminal events and
-    // force every recycle to pay the full drainTimeout budget. The
-    // callback fires inside triggerRecycle (not in the supervisor
-    // wrapper) so we wrap the supervisor's bindings's recycle
-    // dispatch with a tracker that records the abort timing via
-    // the dispatch loop's wake-up signal: the dispatch loop reacts
-    // to the cohort abort by exiting, which the test observes by
-    // confirming a fresh mail dispatched immediately after the
-    // recycle reaches the NEW child rather than the dying one.
-    const baseDir = await makeTempDir("recycle-abort-order-");
-    const ipcKeypair = await generateKeyPair();
-    const mailBus = createMockMailBus();
-    const tracker = createSpawnTracker({});
-    const calls: string[] = [];
-    const recordingInbox: InboxPrimitives = {
-      ...createMemoryInboxPrimitives(),
-      async replayProcessingToInbox(_store, _principal, _repoId, _address) {
-        calls.push("replayProcessingToInbox");
-        return { commitSha: "memory", replayedKeys: [] };
-      },
-    };
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
-    const bindings = await buildBindings({
-      baseDir,
-      spawner: tracker.spawner,
-      mailBus,
-      ipcKeypair,
-      inboxPrimitives: recordingInbox,
-    });
-    const wrappedSpawner: SubprocessSpawner = (args) => {
-      const handle = tracker.spawner(args);
-      const originalKillFn = handle.kill;
-      return {
-        ...handle,
-        kill: (signal?: number | string) => {
-          calls.push("kill");
-          originalKillFn(signal);
-        },
-      };
-    };
-    const bindingsWithSpawner: WorkflowSupervisorBindings = {
-      ...bindings,
-      subprocessSpawner: wrappedSpawner,
-    };
-    const supervisor = createWorkflowSupervisor(bindingsWithSpawner);
-    const spawnPromise = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "def-hash-abc",
-      onInferenceEvent: () => undefined,
-    });
-    while (tracker.children.length === 0) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
-    const first = tracker.children[0];
-    if (first === undefined) throw new Error("first child missing");
-    await driveReady(first, ipcKeypair);
-    await spawnPromise;
-    calls.length = 0;
-
-    const recyclePromise = supervisor.recycle({ reason: "abort-order" });
-    while (tracker.children.length < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
-    const second = tracker.children[1];
-    if (second === undefined) throw new Error("second child missing");
-    await driveReady(second, ipcKeypair);
-    await recyclePromise;
-
-    // The replay-then-kill chain pins the partial ordering. The
-    // cohort abort fires between them per the M1 fix; we cannot
-    // observe it directly without exposing internals, but a
-    // regression that re-ordered abort to before replay would
-    // also be visible: the prior dispatch loop would exit
-    // immediately, the drain step would synthesize {done:true},
-    // and the recycle attempt would surface different timing
-    // characteristics (covered by the broader recycle suite).
-    const replayIdx = calls.indexOf("replayProcessingToInbox");
-    const killIdx = calls.indexOf("kill");
-    expect(replayIdx).toBeGreaterThanOrEqual(0);
-    expect(killIdx).toBeGreaterThan(replayIdx);
-
     await supervisor.shutdown();
   });
 });
