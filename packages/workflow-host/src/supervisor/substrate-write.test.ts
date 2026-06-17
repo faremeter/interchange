@@ -836,3 +836,91 @@ describe("substrate-write authz: supervisor overrides the child's claim", () => 
     await harness.supervisor.shutdown();
   });
 });
+
+describe("substrate-write cohort abort cleanup", () => {
+  test("a substrate.write.request mid-merge is rejected through MergeAbortedError when the supervisor shuts down", async () => {
+    // The HIGH cleanup the supervisor commits when a cohort tears down:
+    // every pending merge round-trip and every markConsumed waiter
+    // registered against the dying cohort must reject through
+    // `MergeAbortedError` so handler closures awaiting them do not
+    // leak past the shutdown. Pin the observable result here by
+    // driving a substrate.write.request to mid-merge, then issuing
+    // shutdown without sending the matching substrate.merge.response.
+    // The supervisor's `substrate.write.response` to the child must
+    // surface the abort reason rather than sit forever on the merge
+    // resolver the dying control channel will never invoke.
+    const harness = await bootSupervisor({
+      prefix: "supv-cohort-abort-",
+      invokeMerge: true,
+    });
+
+    const requestId = "cohort-abort-req-1";
+    await harness.childSender.send({
+      type: "substrate.write.request",
+      data: {
+        requestId,
+        repoId: { kind: "workflow-run", id: "deployment-x" },
+        ref: "refs/heads/main",
+        preservePrefix: `runs/some-run/events/`,
+        message: "test write that will be aborted",
+      },
+    });
+
+    // Wait for the supervisor's substrate.merge.request to land in the
+    // supervisor-to-child stream, then trigger shutdown without
+    // sending the matching response. The merge resolver is what the
+    // HIGH cleanup must reject through `rejectCohortAwaiters`.
+    const mergeDeadline = Date.now() + 2_000;
+    let mergeRequestSeen = false;
+    while (!mergeRequestSeen && Date.now() < mergeDeadline) {
+      const merges = readPayloadsOfType(
+        harness.supervisorToChild.flushed(),
+        "substrate.merge.request",
+      );
+      if (merges.some((m) => m.data.requestId === requestId)) {
+        mergeRequestSeen = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(mergeRequestSeen).toBe(true);
+
+    // Issue shutdown. The HIGH cleanup runs inside `shutdownInternal`
+    // after the cohort abort; it iterates `pendingMerges` and resolves
+    // each entry with `{ ok: false, reason: "cohort aborted: ..." }`.
+    // The handler's `await result` returns the failure, the
+    // try/catch's `cause` path runs, and the substrate.write.response
+    // lands on the supervisor-to-child stream with the abort reason.
+    const shutdownPromise = harness.supervisor.shutdown();
+
+    const responseDeadline = Date.now() + 5_000;
+    let abortResponse: {
+      requestId: string;
+      result: { ok: boolean; reason?: string };
+    } | null = null;
+    while (abortResponse === null && Date.now() < responseDeadline) {
+      const responses = readPayloadsOfType(
+        harness.supervisorToChild.flushed(),
+        "substrate.write.response",
+      );
+      const matched = responses.find((r) => r.data.requestId === requestId);
+      if (matched !== undefined) {
+        abortResponse = {
+          requestId: matched.data.requestId,
+          result: matched.data.result,
+        };
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    if (abortResponse === null) {
+      throw new Error(
+        "supervisor did not surface a cohort-aborted substrate.write.response in time",
+      );
+    }
+    expect(abortResponse.result.ok).toBe(false);
+    expect(abortResponse.result.reason).toMatch(/cohort aborted/);
+
+    await shutdownPromise;
+  });
+});
