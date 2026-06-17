@@ -141,3 +141,70 @@ describe("workflow-run principal-vs-path scoping (regression)", () => {
     expect(r.ok).toBe(true);
   });
 });
+describe("workflow-run sequence contiguity (regression)", () => {
+  test("rejects a tree with seq gaps (0.json + 2.json, no 1.json)", async () => {
+    const prospective = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      "runs/r1/events/0.json": JSON.stringify({ seq: 0, type: "RunStarted" }),
+      "runs/r1/events/2.json": JSON.stringify({
+        seq: 2,
+        type: "StepCompleted",
+      }),
+    };
+    const r = await validateRun(prospective, {});
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toContain("runs/r1/events");
+    expect(r.reason).toMatch(/seq|contiguous|gap/);
+  });
+
+  test("rejects events with a gap in the middle (1,3 skipping 2)", async () => {
+    const prospective = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      "runs/r1/events/1.json": JSON.stringify({ seq: 1, type: "RunStarted" }),
+      "runs/r1/events/3.json": JSON.stringify({
+        seq: 3,
+        type: "StepCompleted",
+      }),
+    };
+    const r = await validateRun(prospective, {});
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toContain("runs/r1/events");
+    expect(r.reason).toContain("2.json");
+  });
+
+  test("accepts a single event whose seq is not 0 (the runtime starts at seq=1)", async () => {
+    const prospective = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      "runs/r1/events/1.json": JSON.stringify({ seq: 1, type: "RunStarted" }),
+    };
+    const r = await validateRun(prospective, {});
+    expect(r.ok).toBe(true);
+  });
+});
+
+describe("workflow-run single-event drop in a multi-event run (regression)", () => {
+  test("rejects dropping only the middle event in a multi-event run", async () => {
+    const prior = {
+      "runs/r1/events/0.json": JSON.stringify({ seq: 0, type: "RunStarted" }),
+      "runs/r1/events/1.json": JSON.stringify({ seq: 1, type: "StepStarted" }),
+      "runs/r1/events/2.json": JSON.stringify({
+        seq: 2,
+        type: "StepCompleted",
+      }),
+    };
+    const prospective = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      "runs/r1/events/0.json": JSON.stringify({ seq: 0, type: "RunStarted" }),
+      "runs/r1/events/2.json": JSON.stringify({
+        seq: 2,
+        type: "StepCompleted",
+      }),
+    };
+    const r = await validateRun(prospective, prior);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toContain("runs/r1/events/1.json");
+  });
+});

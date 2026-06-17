@@ -1317,6 +1317,30 @@ export const workflowRunKindHandler: KindHandler = {
           reason: `run ${runId} has an empty events directory`,
         };
       }
+      // Sequence contiguity: per-run events must run contiguously
+      // through the tip from whatever seq the first entry uses. Without
+      // this, a downstream consumer that iterates the log by seq would
+      // skip past a gap silently. `entries` is sorted by filenameSeq
+      // above. The first seq is not pinned to 0 because the runtime
+      // body's emptyState carries `lastSeq = 0` and emits its first
+      // event at `seq = lastSeq + 1 = 1`, while the supervisor's
+      // self-signed CancelRequested path lands seq=0 against an empty
+      // events tree.
+      const firstEntry = entries[0];
+      if (firstEntry === undefined) throw new Error("unreachable");
+      const baseSeq = firstEntry.filenameSeq;
+      for (let i = 0; i < entries.length; i++) {
+        const e = entries[i];
+        if (e === undefined) throw new Error("unreachable");
+        const expectedSeq = baseSeq + i;
+        if (e.filenameSeq !== expectedSeq) {
+          const expectedPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_EVENTS_DIR}/${String(expectedSeq)}.json`;
+          return {
+            ok: false,
+            reason: `run ${runId} events have a sequence gap: ${expectedPath} is missing (next observed is ${e.blobPath})`,
+          };
+        }
+      }
       let terminalSeq: number | null = null;
       let terminalType: string | null = null;
       for (const entry of entries) {
