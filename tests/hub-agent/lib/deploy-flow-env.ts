@@ -1308,3 +1308,128 @@ export async function simulateProcessingCrash(
     );
   }
 }
+
+/**
+ * Enumerate the run ids present under `runs/` in the deployment's
+ * workflow-run repo's `refs/heads/main`. Returns an empty array when
+ * the repo has not been initialised yet (no on-disk repoDir, no ref,
+ * or no `runs/` tree); a corrupt repo, a present-but-malformed tree,
+ * or any other unexpected isomorphic-git error propagates so the
+ * caller sees the failure rather than treating it as "no runs yet".
+ */
+export async function listRunIds(
+  env: DeployFlowEnv,
+  workflowRunRepoId: RepoId,
+): Promise<string[]> {
+  let repoDir: string;
+  try {
+    repoDir = env.hub.agentRepoStore.repoStore.getRepoDir(workflowRunRepoId);
+  } catch {
+    return [];
+  }
+  let oid: string;
+  try {
+    oid = await git.resolveRef({
+      fs,
+      dir: repoDir,
+      ref: "refs/heads/main",
+    });
+  } catch (cause) {
+    if (
+      cause instanceof git.Errors.NotFoundError ||
+      (cause instanceof Error && /ENOENT|not found/i.test(cause.message))
+    ) {
+      return [];
+    }
+    throw cause;
+  }
+  let tree: Awaited<ReturnType<typeof git.readTree>>;
+  try {
+    tree = await git.readTree({ fs, dir: repoDir, oid, filepath: "runs" });
+  } catch (cause) {
+    if (cause instanceof git.Errors.NotFoundError) return [];
+    throw cause;
+  }
+  return tree.tree
+    .filter((entry) => entry.type === "tree")
+    .map((entry) => entry.path);
+}
+
+/**
+ * Read every blob under a specific claim-check sub-directory of the
+ * deployment's workflow-run repo, against `refs/heads/events` (the
+ * workflow-run substrate's claim-check ref). Returns an empty array
+ * when the repo, ref, address subtree, or chosen sub-directory has
+ * not been initialised yet; other isomorphic-git failures propagate.
+ */
+export async function readClaimCheckDir(
+  env: DeployFlowEnv,
+  workflowRunRepoId: RepoId,
+  address: string,
+  subdir: "inbox" | "processing" | "consumed",
+): Promise<{ filename: string; bytes: Uint8Array }[]> {
+  let repoDir: string;
+  try {
+    repoDir = env.hub.agentRepoStore.repoStore.getRepoDir(workflowRunRepoId);
+  } catch {
+    return [];
+  }
+  let oid: string;
+  try {
+    oid = await git.resolveRef({
+      fs,
+      dir: repoDir,
+      ref: "refs/heads/events",
+    });
+  } catch (cause) {
+    if (
+      cause instanceof git.Errors.NotFoundError ||
+      (cause instanceof Error && /ENOENT|not found/i.test(cause.message))
+    ) {
+      return [];
+    }
+    throw cause;
+  }
+  const filepath = `addresses/${encodeURIComponent(address)}/${subdir}`;
+  let tree: Awaited<ReturnType<typeof git.readTree>>;
+  try {
+    tree = await git.readTree({ fs, dir: repoDir, oid, filepath });
+  } catch (cause) {
+    if (cause instanceof git.Errors.NotFoundError) return [];
+    throw cause;
+  }
+  const out: { filename: string; bytes: Uint8Array }[] = [];
+  for (const entry of tree.tree) {
+    if (entry.type !== "blob") continue;
+    const blob = await git.readBlob({ fs, dir: repoDir, oid: entry.oid });
+    out.push({ filename: entry.path, bytes: blob.blob });
+  }
+  return out;
+}
+
+/**
+ * Poll until at least one run id is present under `runs/` and return
+ * the first one found, or throw on timeout. Used by integration tests
+ * that don't know the runId upfront because the supervisor mints it.
+ */
+export async function waitForFirstRunId(
+  env: DeployFlowEnv,
+  workflowRunRepoId: RepoId,
+  opts: { timeoutMs?: number; diagnostics?: () => string } = {},
+): Promise<string> {
+  const { timeoutMs = 10_000, diagnostics } = opts;
+  const start = Date.now();
+  for (;;) {
+    const ids = await listRunIds(env, workflowRunRepoId);
+    const first = ids[0];
+    if (first !== undefined) return first;
+    if (Date.now() - start > timeoutMs) {
+      const diag = diagnostics?.();
+      const ctx = diag ? `\n${diag}` : "";
+      throw new Error(
+        `waitForFirstRunId timed out after ${String(timeoutMs)}ms for ${workflowRunRepoId.id}${ctx}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}

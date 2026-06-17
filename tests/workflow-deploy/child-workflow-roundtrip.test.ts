@@ -20,8 +20,6 @@
 // This file does not modify the pre-landed `deploy-flow-env` fixture.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import git from "isomorphic-git";
 
 import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import type { HarnessConfig } from "@intx/types/runtime";
@@ -50,6 +48,7 @@ import {
   readWorkflowRunEvents,
   startDeployFlowEnv,
   waitFor,
+  waitForFirstRunId,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
 
@@ -1138,52 +1137,3 @@ describe("parent -> child workflow round-trip", () => {
     }
   });
 });
-
-/**
- * Poll the deployment's workflow-run repo for the first `runs/<runId>/`
- * entry the supervisor lands. The supervisor mints the runId from the
- * inbound mail bytes, so the test does not know it up front.
- */
-async function waitForFirstRunId(
-  env: DeployFlowEnv,
-  workflowRunRepoId: RepoId,
-  opts: { timeoutMs?: number; diagnostics?: () => string } = {},
-): Promise<string> {
-  const { timeoutMs = 10_000, diagnostics } = opts;
-  const start = Date.now();
-  for (;;) {
-    let repoDir: string;
-    try {
-      repoDir = env.hub.agentRepoStore.repoStore.getRepoDir(workflowRunRepoId);
-    } catch {
-      repoDir = "";
-    }
-    if (repoDir.length > 0) {
-      try {
-        const oid = await git.resolveRef({
-          fs,
-          dir: repoDir,
-          ref: "refs/heads/main",
-        });
-        const tree = await git.readTree({
-          fs,
-          dir: repoDir,
-          oid,
-          filepath: "runs",
-        });
-        const first = tree.tree.find((entry) => entry.type === "tree");
-        if (first !== undefined) return first.path;
-      } catch {
-        /* ref/tree not present yet */
-      }
-    }
-    if (Date.now() - start > timeoutMs) {
-      const diag = diagnostics?.();
-      const ctx = diag ? `\n${diag}` : "";
-      throw new Error(
-        `waitForFirstRunId timed out after ${String(timeoutMs)}ms for ${workflowRunRepoId.id}${ctx}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
-}

@@ -66,6 +66,7 @@ import {
   SIDECAR_ID,
   fireMailTrigger,
   initiateDrain,
+  listRunIds,
   readWorkflowRunEvents,
   startDeployFlowEnv,
   waitFor,
@@ -383,36 +384,4 @@ async function findActiveRunId(
     );
   }
   return head;
-}
-
-async function listRunIds(
-  env: DeployFlowEnv,
-  workflowRunRepoId: RepoId,
-): Promise<string[]> {
-  const fs = await import("node:fs");
-  const git = (await import("isomorphic-git")).default;
-  let repoDir: string;
-  try {
-    repoDir = env.hub.agentRepoStore.repoStore.getRepoDir(workflowRunRepoId);
-  } catch {
-    return [];
-  }
-  try {
-    const oid = await git.resolveRef({
-      fs,
-      dir: repoDir,
-      ref: "refs/heads/main",
-    });
-    const tree = await git.readTree({
-      fs,
-      dir: repoDir,
-      oid,
-      filepath: "runs",
-    });
-    return tree.tree
-      .filter((entry) => entry.type === "tree")
-      .map((entry) => entry.path);
-  } catch {
-    return [];
-  }
 }

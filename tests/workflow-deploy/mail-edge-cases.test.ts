@@ -50,10 +50,7 @@
 // supervisor's `onMailMessage` consumes; the wire transport
 // preserves bytes verbatim.
 
-import fs from "node:fs";
-
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import git from "isomorphic-git";
 
 import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import type { HarnessConfig } from "@intx/types/runtime";
@@ -73,6 +70,8 @@ import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
 import {
   SESSION_ID,
   SIDECAR_ID,
+  listRunIds,
+  readClaimCheckDir,
   readWorkflowRunEvents,
   startDeployFlowEnv,
   waitForWorkflowRunComplete,
@@ -531,35 +530,6 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
  * List every `runs/<runId>/` subdirectory on the deployment's
  * workflow-run repo's main ref. Mirrors the FIFO test's helper.
  */
-async function listRunIds(
-  env: DeployFlowEnv,
-  workflowRunRepoId: RepoId,
-): Promise<string[]> {
-  let repoDir: string;
-  try {
-    repoDir = env.hub.agentRepoStore.repoStore.getRepoDir(workflowRunRepoId);
-  } catch {
-    return [];
-  }
-  try {
-    const oid = await git.resolveRef({
-      fs,
-      dir: repoDir,
-      ref: WORKFLOW_RUN_REF,
-    });
-    const tree = await git.readTree({
-      fs,
-      dir: repoDir,
-      oid,
-      filepath: "runs",
-    });
-    return tree.tree
-      .filter((entry) => entry.type === "tree")
-      .map((entry) => entry.path);
-  } catch {
-    return [];
-  }
-}
 
 /**
  * Poll the deployment's `consumed/` subtree until the expected
@@ -597,47 +567,4 @@ async function waitForConsumedFilename(
     }
     await new Promise((r) => setTimeout(r, 50));
   }
-}
-
-/**
- * Read every blob under `addresses/<urlEncoded(address)>/<subdir>/`
- * on the workflow-run repo's claim-check ref. Returns `[]` when the
- * ref or subtree is not yet present.
- */
-async function readClaimCheckDir(
-  env: DeployFlowEnv,
-  workflowRunRepoId: RepoId,
-  address: string,
-  subdir: "inbox" | "processing" | "consumed",
-): Promise<{ filename: string; bytes: Uint8Array }[]> {
-  let repoDir: string;
-  try {
-    repoDir = env.hub.agentRepoStore.repoStore.getRepoDir(workflowRunRepoId);
-  } catch {
-    return [];
-  }
-  let oid: string;
-  try {
-    oid = await git.resolveRef({
-      fs,
-      dir: repoDir,
-      ref: "refs/heads/events",
-    });
-  } catch {
-    return [];
-  }
-  const filepath = `addresses/${encodeURIComponent(address)}/${subdir}`;
-  let tree: Awaited<ReturnType<typeof git.readTree>>;
-  try {
-    tree = await git.readTree({ fs, dir: repoDir, oid, filepath });
-  } catch {
-    return [];
-  }
-  const out: { filename: string; bytes: Uint8Array }[] = [];
-  for (const entry of tree.tree) {
-    if (entry.type !== "blob") continue;
-    const blob = await git.readBlob({ fs, dir: repoDir, oid: entry.oid });
-    out.push({ filename: entry.path, bytes: blob.blob });
-  }
-  return out;
 }

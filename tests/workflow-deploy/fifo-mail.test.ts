@@ -54,10 +54,7 @@
 // The pre-landed `deploy-flow-env` fixture supplies every helper this
 // file consumes; this file does not modify the fixture.
 
-import fs from "node:fs";
-
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import git from "isomorphic-git";
 
 import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import type { HarnessConfig } from "@intx/types/runtime";
@@ -78,6 +75,8 @@ import {
   SESSION_ID,
   SIDECAR_ID,
   fireMailTrigger,
+  listRunIds,
+  readClaimCheckDir,
   readWorkflowRunEvents,
   startDeployFlowEnv,
   waitForWorkflowRunComplete,
@@ -88,7 +87,6 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "fifo-mail-1";
 const DEPLOYMENT_ID_LOAD = "fifo-mail-load-1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
-const CLAIM_CHECK_REF = "refs/heads/events";
 
 const MESSAGE_IDS: readonly string[] = [
   "<fifo-mail-1@integration.interchange>",
@@ -898,41 +896,6 @@ async function waitForRunsByMessageIds(
 }
 
 /**
- * List all `runs/<runId>/` subdirectories on the deployment's
- * workflow-run repo's main ref. Mirrors the helper shape the other
- * Phase I integration tests use.
- */
-async function listRunIds(
-  env: DeployFlowEnv,
-  workflowRunRepoId: RepoId,
-): Promise<string[]> {
-  let repoDir: string;
-  try {
-    repoDir = env.hub.agentRepoStore.repoStore.getRepoDir(workflowRunRepoId);
-  } catch {
-    return [];
-  }
-  try {
-    const oid = await git.resolveRef({
-      fs,
-      dir: repoDir,
-      ref: WORKFLOW_RUN_REF,
-    });
-    const tree = await git.readTree({
-      fs,
-      dir: repoDir,
-      oid,
-      filepath: "runs",
-    });
-    return tree.tree
-      .filter((entry) => entry.type === "tree")
-      .map((entry) => entry.path);
-  } catch {
-    return [];
-  }
-}
-
-/**
  * Read the `consumed/` dedup index for the deployment's mail
  * address on the workflow-run repo's claim-check ref
  * (`refs/heads/events`). Returns one entry per consumed message in
@@ -1010,49 +973,4 @@ async function waitForConsumedEntries(
     }
     await new Promise((r) => setTimeout(r, 50));
   }
-}
-
-/**
- * Read every entry in
- * `addresses/<urlEncoded(address)>/<subdir>/` on the workflow-run
- * repo's claim-check ref. Returns `[]` when the ref or subtree does
- * not exist (a legitimate empty state for inbox/ and processing/
- * after every dispatch lands in consumed/).
- */
-async function readClaimCheckDir(
-  env: DeployFlowEnv,
-  workflowRunRepoId: RepoId,
-  address: string,
-  subdir: "inbox" | "processing" | "consumed",
-): Promise<{ filename: string; bytes: Uint8Array }[]> {
-  let repoDir: string;
-  try {
-    repoDir = env.hub.agentRepoStore.repoStore.getRepoDir(workflowRunRepoId);
-  } catch {
-    return [];
-  }
-  let oid: string;
-  try {
-    oid = await git.resolveRef({
-      fs,
-      dir: repoDir,
-      ref: CLAIM_CHECK_REF,
-    });
-  } catch {
-    return [];
-  }
-  const filepath = `addresses/${encodeURIComponent(address)}/${subdir}`;
-  let tree: Awaited<ReturnType<typeof git.readTree>>;
-  try {
-    tree = await git.readTree({ fs, dir: repoDir, oid, filepath });
-  } catch {
-    return [];
-  }
-  const out: { filename: string; bytes: Uint8Array }[] = [];
-  for (const entry of tree.tree) {
-    if (entry.type !== "blob") continue;
-    const blob = await git.readBlob({ fs, dir: repoDir, oid: entry.oid });
-    out.push({ filename: entry.path, bytes: blob.blob });
-  }
-  return out;
 }
