@@ -188,6 +188,14 @@ export interface RecycleContext {
    */
   readonly replayProcessingToInbox: () => Promise<void>;
   /**
+   * Abort the prior cohort's terminal source and wake the dispatch
+   * loop so it exits before the kill step lands. Invoked AFTER drain
+   * and replay settle and BEFORE the kill -- earlier would starve the
+   * drain step's accumulators of live terminal events; later would
+   * race the kill against the dispatch loop's next iteration.
+   */
+  readonly abortPriorCohort: () => void;
+  /**
    * Onward sink the supervisor uses to install the new child wiring
    * once the freshly-spawned child has emitted `ready` and the
    * credentialsSnapshot has been re-assembled.
@@ -274,6 +282,15 @@ export async function triggerRecycle(
     const message = cause instanceof Error ? cause.message : String(cause);
     logger.warn`recycle: replayProcessingToInbox before kill failed: ${message}`;
   }
+
+  // Abort the prior cohort here -- after drain and replay have run
+  // against a live cohort, before the kill drops the child. Aborting
+  // up front (in the supervisor wrapper) would starve drain
+  // accumulators of live terminal events and force every recycle to
+  // pay the full drainTimeout budget. Aborting after the kill would
+  // race the dispatch loop's next iteration against the
+  // controlSender that is about to disappear.
+  ctx.abortPriorCohort();
 
   // Step 2: kill. SIGTERM first; if the child does not exit within
   // `killTimeoutMs`, the handle's hard kill lands. The injected

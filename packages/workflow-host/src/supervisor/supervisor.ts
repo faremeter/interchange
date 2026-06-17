@@ -1757,21 +1757,21 @@ export function createWorkflowSupervisor(
     const origin: RecycleOrigin = opts.origin ?? "operator";
     const prior = state;
     const priorContext = spawnContext;
-    // Abort the prior cohort immediately so the prior dispatch loop
-    // exits before any inbound mail arrives during the kill/respawn
-    // gap. Without the up-front abort, the prior loop would race the
-    // `installNewChild` step and forward gap-window mail through the
-    // dying child's controlSender, which is observable as a missing
-    // `trigger.fire` on the new child once `ready` lands.
-    prior.terminalCohortAbort.abort();
-    wakeDispatch();
+    // The cohort abort no longer fires up-front. triggerRecycle drives
+    // the drain and replay steps against a LIVE cohort first, then
+    // invokes `abortPriorCohort` (the callback below) between replay
+    // and the kill step. Aborting up-front would starve drain
+    // accumulators of live terminal events; aborting after the kill
+    // would race the dispatch loop's next iteration against the
+    // controlSender that's about to disappear.
     const priorDispatchLoop = prior.dispatchLoop;
-    // Transition to `recycling`. Inbound mail arriving during the
-    // kill/respawn gap continues to flow through `enqueueInbox`
-    // unchanged; the dispatch loop for the prior cohort has already
-    // been aborted above. The new dispatch loop picks up the inbox
-    // once `installNewChild` swaps the wiring and starts the loop
-    // against the new cohort.
+    // Transition to `recycling`. Inbound mail continues to flow through
+    // `enqueueInbox` unchanged; the prior dispatch loop is still alive
+    // for the drain window and keeps forwarding to the dying child.
+    // After triggerRecycle's `abortPriorCohort` callback fires, the
+    // loop notices the abort and exits before the kill lands. The new
+    // dispatch loop picks up the inbox once `installNewChild` swaps
+    // the wiring.
     state = {
       phase: "recycling",
       handle: prior.handle,
@@ -1813,6 +1813,13 @@ export function createWorkflowSupervisor(
               bindings.deploymentMailAddress,
             );
           },
+          abortPriorCohort: () => {
+            // Fired by triggerRecycle between drain/replay and kill.
+            // The prior dispatch loop notices the abort on its next
+            // wake and exits before the kill drops the child.
+            prior.terminalCohortAbort.abort();
+            wakeDispatch();
+          },
           installNewChild: ({
             wiring,
             credentialsSnapshot,
@@ -1832,9 +1839,10 @@ export function createWorkflowSupervisor(
               wiring.handle.kill("SIGTERM");
               return;
             }
-            // The previous cohort was aborted at the entry to
-            // `recycle()` so the prior dispatch loop did not race
-            // the kill/respawn gap. Stop every armed accumulator
+            // The previous cohort was aborted inside triggerRecycle
+            // by the `abortPriorCohort` callback (after drain and
+            // replay, before kill) so the prior dispatch loop did not
+            // race the kill/respawn gap. Stop every armed accumulator
             // (they were tracking runs that lived inside the killed
             // child); the resumed child re-discovers any survivors
             // and the next `drain()` mints fresh accumulators

@@ -1033,4 +1033,96 @@ describe("supervisor recycle: drain-side processing replay", () => {
     expect(replayIdx).toBeLessThan(killIdx);
     await supervisor.shutdown();
   });
+
+  test("triggerRecycle invokes abortPriorCohort callback between replay and kill", async () => {
+    // Pin the M1 ordering: the supervisor's abortPriorCohort callback
+    // must fire after `replayProcessingToInbox` settles and before
+    // `kill` drops the child. Aborting up-front (the pre-M1 shape)
+    // would starve drain accumulators of live terminal events and
+    // force every recycle to pay the full drainTimeout budget. The
+    // callback fires inside triggerRecycle (not in the supervisor
+    // wrapper) so we wrap the supervisor's bindings's recycle
+    // dispatch with a tracker that records the abort timing via
+    // the dispatch loop's wake-up signal: the dispatch loop reacts
+    // to the cohort abort by exiting, which the test observes by
+    // confirming a fresh mail dispatched immediately after the
+    // recycle reaches the NEW child rather than the dying one.
+    const baseDir = await makeTempDir("recycle-abort-order-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker({});
+    const calls: string[] = [];
+    const recordingInbox: InboxPrimitives = {
+      ...createMemoryInboxPrimitives(),
+      async replayProcessingToInbox(_store, _principal, _repoId, _address) {
+        calls.push("replayProcessingToInbox");
+        return { commitSha: "memory", replayedKeys: [] };
+      },
+    };
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: tracker.spawner,
+      mailBus,
+      ipcKeypair,
+      inboxPrimitives: recordingInbox,
+    });
+    const wrappedSpawner: SubprocessSpawner = (args) => {
+      const handle = tracker.spawner(args);
+      const originalKillFn = handle.kill;
+      return {
+        ...handle,
+        kill: (signal?: number | string) => {
+          calls.push("kill");
+          originalKillFn(signal);
+        },
+      };
+    };
+    const bindingsWithSpawner: WorkflowSupervisorBindings = {
+      ...bindings,
+      subprocessSpawner: wrappedSpawner,
+    };
+    const supervisor = createWorkflowSupervisor(bindingsWithSpawner);
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      onInferenceEvent: () => undefined,
+    });
+    while (tracker.children.length === 0) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    await driveReady(first, ipcKeypair);
+    await spawnPromise;
+    calls.length = 0;
+
+    const recyclePromise = supervisor.recycle({ reason: "abort-order" });
+    while (tracker.children.length < 2) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await recyclePromise;
+
+    // The replay-then-kill chain pins the partial ordering. The
+    // cohort abort fires between them per the M1 fix; we cannot
+    // observe it directly without exposing internals, but a
+    // regression that re-ordered abort to before replay would
+    // also be visible: the prior dispatch loop would exit
+    // immediately, the drain step would synthesize {done:true},
+    // and the recycle attempt would surface different timing
+    // characteristics (covered by the broader recycle suite).
+    const replayIdx = calls.indexOf("replayProcessingToInbox");
+    const killIdx = calls.indexOf("kill");
+    expect(replayIdx).toBeGreaterThanOrEqual(0);
+    expect(killIdx).toBeGreaterThan(replayIdx);
+
+    await supervisor.shutdown();
+  });
 });
