@@ -34,6 +34,7 @@ import {
   GrantRequirement,
   SendMessage,
   MailResponse,
+  AttachmentErrorResponse,
   InferenceTurnResponse,
   ErrorResponse,
   formatAgentAddress,
@@ -1420,9 +1421,10 @@ export function createInstanceRoutes({
           },
         },
         400: {
-          description: "Validation error",
+          description:
+            "Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.",
           content: {
-            "application/json": { schema: resolver(ErrorResponse) },
+            "application/json": { schema: resolver(AttachmentErrorResponse) },
           },
         },
         404: {
@@ -1433,6 +1435,12 @@ export function createInstanceRoutes({
         },
         409: {
           description: "Instance not running",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
+        413: {
+          description: "Request body exceeds the maximum allowed size",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },

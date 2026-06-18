@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
-import { SendMessage } from "./sessions";
+import { SendMessage, AttachmentError } from "./sessions";
 
 const okData = Buffer.from("hello world").toString("base64");
 
@@ -56,6 +56,50 @@ describe("SendMessage attachments schema", () => {
     const result = SendMessage({
       content: "x",
       attachments: [{ mimeType: "image/png", data: okData, type: "image" }],
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+});
+
+describe("AttachmentError schema", () => {
+  test("accepts each structured error variant", () => {
+    const variants = [
+      {
+        code: "oversize_attachment",
+        message: "too big",
+        attachmentIndex: 0,
+        byteLength: 99,
+        limitBytes: 10,
+      },
+      {
+        code: "disallowed_mime_type",
+        message: "nope",
+        attachmentIndex: 1,
+        mimeType: "image/tiff",
+      },
+      { code: "malformed_base64", message: "bad", attachmentIndex: 2 },
+      {
+        code: "oversize_total",
+        message: "too much",
+        totalBytes: 99,
+        limitBytes: 30,
+      },
+    ];
+    for (const variant of variants) {
+      expect(AttachmentError(variant) instanceof type.errors).toBe(false);
+    }
+  });
+
+  test("rejects an unknown code", () => {
+    const result = AttachmentError({ code: "nope", message: "x" });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a variant missing its structured fields", () => {
+    const result = AttachmentError({
+      code: "oversize_attachment",
+      message: "x",
+      attachmentIndex: 0,
     });
     expect(result instanceof type.errors).toBe(true);
   });
