@@ -5,6 +5,7 @@ export * from "./principals";
 export * from "./roles";
 export * from "./grants";
 export * from "./agents";
+export * from "./attachments";
 export * from "./sessions";
 export * from "./approvals";
 export * from "./wallets";
