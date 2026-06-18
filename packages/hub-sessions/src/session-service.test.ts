@@ -4,7 +4,12 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import * as tar from "tar";
-import type { CryptoProvider, HarnessConfig } from "@intx/types/runtime";
+import type {
+  CryptoProvider,
+  HarnessConfig,
+  MessageAttachment,
+} from "@intx/types/runtime";
+import { extractAttachments } from "@intx/mime";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { AgentAssetWithAsset, AssetService } from "./asset-service";
 import type { Principal, RepoId, RepoStore } from "./repo-store";
@@ -572,6 +577,40 @@ describe("SessionService", () => {
     expect(decoded).toContain(
       "References: <root@test.local> <prev@test.local>",
     );
+  });
+
+  test("sendUserMessage threads attachments into the signed envelope", async () => {
+    const service = createSessionService({
+      sidecarRouter: router,
+      agentRepoStore: repoStore,
+    });
+
+    const attachments: MessageAttachment[] = [
+      {
+        name: "shot.png",
+        contentType: "image/png",
+        data: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      },
+    ];
+
+    await service.sendUserMessage(userMessageParams({ attachments }));
+
+    const call = router.calls.find((c) => c.method === "routeMail");
+    if (call === undefined) throw new Error("unreachable");
+    const rawArg = call.args[1];
+    if (typeof rawArg !== "string") throw new Error("expected string arg");
+    const raw = new Uint8Array(Buffer.from(rawArg, "base64"));
+
+    const extracted = extractAttachments(raw);
+    expect(extracted).toHaveLength(1);
+    const got = extracted[0];
+    const orig = attachments[0];
+    if (got === undefined || orig === undefined) {
+      throw new Error("unreachable");
+    }
+    expect(got.name).toBe("shot.png");
+    expect(got.contentType).toBe("image/png");
+    expect(Array.from(got.data)).toEqual(Array.from(orig.data));
   });
 
   test("sendUserMessage throws when agent is unreachable", async () => {

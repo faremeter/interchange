@@ -23,6 +23,7 @@ import type {
   CryptoProvider,
   HarnessConfig,
   InferenceSource,
+  MessageAttachment,
 } from "@intx/types/runtime";
 import {
   type RegistryConfig,
@@ -137,6 +138,7 @@ export type UserMessageParams = {
   messageId: string;
   date: Date;
   content: string;
+  attachments?: MessageAttachment[];
   inReplyTo?: string;
   references?: string[];
   sessionId: string;
@@ -1111,6 +1113,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       messageId,
       date,
       content,
+      attachments,
       inReplyTo,
       references,
       sessionId,
@@ -1142,6 +1145,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     const signedContent = assembleSignedContent({
       kind: "conversation",
       text: content,
+      ...(attachments !== undefined ? { attachments } : {}),
     });
     const signature = await createDetachedSignatureFromProvider(
       signedContent,
