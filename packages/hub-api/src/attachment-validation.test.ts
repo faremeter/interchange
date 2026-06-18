@@ -69,6 +69,20 @@ describe("validateAttachments", () => {
     });
   });
 
+  test("rejects a name with header-unsafe characters", () => {
+    const result = validateAttachments(
+      [
+        { mimeType: "image/png", data: b64([1]) },
+        { mimeType: "image/png", data: b64([2]), name: 'a"b.png' },
+      ],
+      policy,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "invalid_attachment_name", attachmentIndex: 1 },
+    });
+  });
+
   test("rejects malformed base64 with the offending index", () => {
     const result = validateAttachments(
       [{ mimeType: "image/png", data: "@@not-base64@@" }],

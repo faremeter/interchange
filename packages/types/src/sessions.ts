@@ -102,6 +102,11 @@ export const AttachmentError = type({
     mimeType: "string",
   })
   .or({
+    code: "'invalid_attachment_name'",
+    message: "string",
+    attachmentIndex: "number",
+  })
+  .or({
     code: "'malformed_base64'",
     message: "string",
     attachmentIndex: "number",

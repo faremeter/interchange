@@ -920,6 +920,28 @@ describe("POST /agents/instances/:instanceId/mail attachments", () => {
     });
   });
 
+  test("an unsafe filename yields a structured 400, not a 502", async () => {
+    const { service, captured } = captureAttachmentSend();
+    const app = createTestApp({
+      grants: [makeMailGrant()],
+      sessionService: service,
+    });
+
+    const data = Buffer.from(new Uint8Array([1, 2, 3])).toString("base64");
+    const res = await postMailWith(app, [
+      { mimeType: "image/png", data, name: 'a"b.png' },
+    ]);
+
+    // Rejected at the boundary before the message is ever assembled, so the
+    // client sees a 400 with the structured code rather than a 502 from the
+    // MIME assembler's header-safety guard.
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: { code: "invalid_attachment_name", attachmentIndex: 0 },
+    });
+    expect(captured).toHaveLength(0);
+  });
+
   test("oversize attachment wins over total, reporting the offending index", async () => {
     const { service } = captureAttachmentSend();
     const app = createTestApp({

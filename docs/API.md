@@ -1129,7 +1129,7 @@ Source: packages/types/src/assets.ts
 Source: packages/types/src/assets.ts
 
 ### AttachmentErrorResponse
-`{ error: { attachmentIndex: number, byteLength: number, code: "oversize_attachment", limitBytes: number, message: string } | { attachmentIndex: number, code: "disallowed_mime_type", message: string, mimeType: string } | { attachmentIndex: number, code: "malformed_base64", message: string } | { code: "oversize_total", limitBytes: number, message: string, totalBytes: number } }`
+`{ error: { attachmentIndex: number, byteLength: number, code: "oversize_attachment", limitBytes: number, message: string } | { attachmentIndex: number, code: "disallowed_mime_type", message: string, mimeType: string } | { attachmentIndex: number, code: "invalid_attachment_name", message: string } | { attachmentIndex: number, code: "malformed_base64", message: string } | { code: "oversize_total", limitBytes: number, message: string, totalBytes: number } }`
 Source: packages/types/src/sessions.ts
 
 ### BranchInfo
