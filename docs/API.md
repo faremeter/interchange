@@ -651,9 +651,10 @@ Persists the user message as a mail record and dispatches it to the running agen
 Body: SendMessage
 
 201: MailResponse -- Mail sent
-400: ErrorResponse -- Validation error
+400: AttachmentErrorResponse -- Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
 404: ErrorResponse -- Instance not found
 409: ErrorResponse -- Instance not running
+413: ErrorResponse -- Request body exceeds the maximum allowed size
 502: ErrorResponse -- Sidecar unavailable
 
 ### GET /api/tenants/:tenantId/agents/instances/:instanceId/mail
@@ -1126,6 +1127,10 @@ Source: packages/types/src/assets.ts
 ### AssetWithOriginResponse
 `{ createdAt: string, creatorPrincipalId: string | null, displayName: string | null, id: string, kind: string, name: string, origin: { direct: boolean, tenantId: string }, tenantId: string, updatedAt: string }`
 Source: packages/types/src/assets.ts
+
+### AttachmentErrorResponse
+`{ error: { attachmentIndex: number, byteLength: number, code: "oversize_attachment", limitBytes: number, message: string } | { attachmentIndex: number, code: "disallowed_mime_type", message: string, mimeType: string } | { attachmentIndex: number, code: "malformed_base64", message: string } | { code: "oversize_total", limitBytes: number, message: string, totalBytes: number } }`
+Source: packages/types/src/sessions.ts
 
 ### BranchInfo
 `{ name: string, isCurrent?: boolean, lastCommitAt?: string | null, lastCommitMessage?: string | null, lastCommitRef?: string | null }`

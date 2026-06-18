@@ -3,6 +3,7 @@ import {
   isAllowedMimeType,
   PER_ATTACHMENT_LIMIT_BYTES,
   PER_MESSAGE_TOTAL_LIMIT_BYTES,
+  type AttachmentError,
 } from "@intx/types";
 import type { MessageAttachment } from "@intx/types/runtime";
 
@@ -34,34 +35,15 @@ export const DEFAULT_ATTACHMENT_POLICY: AttachmentPolicy = {
   perMessageTotalLimitBytes: PER_MESSAGE_TOTAL_LIMIT_BYTES,
 };
 
-// Each error carries `code` plus structured fields so clients can act on the
-// code without string-parsing, and a human-readable `message` matching the
-// shape of every other error this route returns.
-export type AttachmentValidationError =
-  | {
-      code: "oversize_attachment";
-      message: string;
-      attachmentIndex: number;
-      byteLength: number;
-      limitBytes: number;
-    }
-  | {
-      code: "disallowed_mime_type";
-      message: string;
-      attachmentIndex: number;
-      mimeType: string;
-    }
-  | { code: "malformed_base64"; message: string; attachmentIndex: number }
-  | {
-      code: "oversize_total";
-      message: string;
-      totalBytes: number;
-      limitBytes: number;
-    };
+// The error shape is the wire contract `AttachmentError` from @intx/types:
+// a machine-actionable `code`, the fields needed to locate the rejection,
+// and a human-readable `message`. Defining it once in @intx/types lets the
+// route document the structured 400 in its OpenAPI surface.
+export type AttachmentValidationError = AttachmentError;
 
 export type AttachmentValidationResult =
   | { ok: true; attachments: MessageAttachment[] }
-  | { ok: false; error: AttachmentValidationError };
+  | { ok: false; error: AttachmentError };
 
 function decode(data: string): Uint8Array | null {
   try {
