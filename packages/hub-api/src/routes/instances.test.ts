@@ -1,9 +1,17 @@
 import { describe, test, expect } from "bun:test";
 
 import { createInMemoryGrantStore } from "@intx/authz";
+import {
+  assembleSignedContent,
+  assembleMessage,
+  type MessageHeaders,
+} from "@intx/mime";
 import type { GrantRule } from "@intx/types/authz";
 import type { SessionStatus } from "@intx/types";
-import type { ConnectorThreadState } from "@intx/types/runtime";
+import type {
+  ConnectorThreadState,
+  MessageAttachment,
+} from "@intx/types/runtime";
 
 import { createApp } from "../app";
 import {
@@ -766,6 +774,187 @@ describe("POST /agents/instances/:instanceId/mail", () => {
     expect(captured).toHaveLength(1);
     expect(captured[0]?.inReplyTo).toBe(`<prior-1@${testTenant.domain}>`);
     expect(captured[0]?.references).toEqual([`<prior-1@${testTenant.domain}>`]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /:instanceId/mail — attachment validation
+// ---------------------------------------------------------------------------
+
+describe("POST /agents/instances/:instanceId/mail attachments", () => {
+  function makeMailGrant(): GrantRule {
+    return makeGrant({ resource: "instance:*", action: "write" });
+  }
+
+  // A session service whose sendUserMessage assembles a real conversation
+  // MIME from the params, so the route's response echoes the parsed
+  // attachment metadata exactly as production does.
+  function captureAttachmentSend(): {
+    service: SessionService;
+    captured: (MessageAttachment[] | undefined)[];
+  } {
+    const captured: (MessageAttachment[] | undefined)[] = [];
+    const service: SessionService = {
+      launchSession() {
+        throw new Error("not implemented");
+      },
+      endSession() {
+        throw new Error("not implemented");
+      },
+      sendUserMessage(params) {
+        captured.push(params.attachments);
+        const content = assembleSignedContent({
+          kind: "conversation",
+          text: params.content,
+          ...(params.attachments !== undefined
+            ? { attachments: params.attachments }
+            : {}),
+        });
+        const headers: MessageHeaders = {
+          from: params.from,
+          to: [params.agentAddress],
+          cc: undefined,
+          date: params.date,
+          messageId: params.messageId,
+          subject: undefined,
+          inReplyTo: params.inReplyTo,
+          references: params.references,
+          mimeVersion: "1.0",
+          interchangeType: "conversation.message",
+          interchangeCorrelationId: undefined,
+          interchangeTenantId: params.tenantId,
+          interchangeAgentId: undefined,
+          interchangeSessionId: params.sessionId,
+          interchangeOfferingId: undefined,
+          interchangeSchemaVersion: undefined,
+          traceparent: undefined,
+          tracestate: undefined,
+        };
+        const raw = assembleMessage(
+          headers,
+          content,
+          new TextEncoder().encode("FAKE-SIG"),
+        );
+        return Promise.resolve(raw);
+      },
+    };
+    return { service, captured };
+  }
+
+  function postMailWith(
+    app: ReturnType<typeof createTestApp>,
+    attachments: unknown[],
+  ) {
+    return app.request(`${instanceURL()}/mail`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "hello agent", attachments }),
+    });
+  }
+
+  test("valid attachment is decoded, forwarded, and echoed in the response", async () => {
+    const { service, captured } = captureAttachmentSend();
+    const app = createTestApp({
+      grants: [makeMailGrant()],
+      sessionService: service,
+    });
+
+    const data = Buffer.from(
+      new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]),
+    ).toString("base64");
+    const res = await postMailWith(app, [
+      { mimeType: "image/png", data, name: "shot.png" },
+    ]);
+
+    expect(res.status).toBe(201);
+    expect(captured).toEqual([
+      [
+        {
+          name: "shot.png",
+          contentType: "image/png",
+          data: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]),
+        },
+      ],
+    ]);
+
+    const json = await res.json();
+    expect(json).toMatchObject({
+      attachments: [{ name: "shot.png", type: "image/png" }],
+    });
+  });
+
+  test("disallowed mimeType yields structured disallowed_mime_type", async () => {
+    const { service } = captureAttachmentSend();
+    const app = createTestApp({
+      grants: [makeMailGrant()],
+      sessionService: service,
+    });
+
+    const data = Buffer.from(new Uint8Array([1, 2, 3])).toString("base64");
+    const res = await postMailWith(app, [{ mimeType: "image/tiff", data }]);
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: {
+        code: "disallowed_mime_type",
+        attachmentIndex: 0,
+        mimeType: "image/tiff",
+      },
+    });
+  });
+
+  test("malformed base64 yields structured malformed_base64", async () => {
+    const { service } = captureAttachmentSend();
+    const app = createTestApp({
+      grants: [makeMailGrant()],
+      sessionService: service,
+    });
+
+    const res = await postMailWith(app, [
+      { mimeType: "image/png", data: "@@@not-valid-base64@@@" },
+    ]);
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: { code: "malformed_base64", attachmentIndex: 0 },
+    });
+  });
+
+  test("oversize attachment wins over total, reporting the offending index", async () => {
+    const { service } = captureAttachmentSend();
+    const app = createTestApp({
+      grants: [makeMailGrant()],
+      sessionService: service,
+    });
+
+    const small = Buffer.from(new Uint8Array([1, 2, 3])).toString("base64");
+    const oversize = Buffer.alloc(11 * 1024 * 1024, 0x61).toString("base64");
+    const res = await postMailWith(app, [
+      { mimeType: "image/png", data: small },
+      { mimeType: "image/png", data: oversize },
+      { mimeType: "image/png", data: small },
+    ]);
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: { code: "oversize_attachment", attachmentIndex: 1 },
+    });
+  });
+
+  test("auth runs before attachment validation", async () => {
+    const { service, captured } = captureAttachmentSend();
+    const app = createTestApp({
+      grants: [],
+      sessionService: service,
+    });
+
+    // A disallowed attachment would be a 400 if validation ran first; with
+    // no write grant the route must reject with its auth failure instead.
+    const data = Buffer.from(new Uint8Array([1, 2, 3])).toString("base64");
+    const res = await postMailWith(app, [{ mimeType: "image/tiff", data }]);
+
+    expect(res.status).toBe(403);
+    expect(captured).toHaveLength(0);
   });
 });
 

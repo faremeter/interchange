@@ -1,5 +1,6 @@
 import { eq, and, inArray, asc } from "drizzle-orm";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import { streamSSE } from "hono/streaming";
 import { type } from "arktype";
@@ -47,6 +48,7 @@ import {
   type SidecarRouter,
 } from "@intx/hub-sessions";
 import { formatOffering } from "./offerings";
+import { validateAttachments } from "../attachment-validation";
 
 import type { TenantEnv } from "../context";
 import { idResource } from "../middleware/grant";
@@ -63,6 +65,13 @@ import {
 
 const CredentialRequirements = CredentialRequirement.array();
 const GrantRequirements = GrantRequirement.array();
+
+// DoS guard on the mail route body. Sized above the legitimate ceiling
+// (the 30 MB per-message attachment cap is ~40 MB once base64-encoded,
+// plus JSON and text overhead) so over-business-cap requests are rejected
+// by the handler with a structured error, while genuine garbage is
+// rejected here before the JSON parser allocates a giant string.
+const MAX_MAIL_BODY_BYTES = 44 * 1024 * 1024;
 
 const ModelConfig = type({
   defaultModel: "string",
@@ -1436,12 +1445,35 @@ export function createInstanceRoutes({
         },
       },
     }),
+    bodyLimit({
+      maxSize: MAX_MAIL_BODY_BYTES,
+      onError: (c) =>
+        c.json(
+          {
+            error: {
+              code: "payload_too_large",
+              message: "Request body exceeds the maximum allowed size",
+            },
+          },
+          413,
+        ),
+    }),
     validator("json", SendMessage),
     async (c) => {
       const tenant = c.get("tenant");
       const principal = c.get("principal");
       const instanceId = c.req.param("instanceId");
       const body = c.req.valid("json");
+
+      // Decode and validate attachments at the boundary, emitting ordered,
+      // per-index structured errors. The effective policy defaults to the
+      // system-level allowlist and limits; a future per-agent/per-workflow
+      // lookup substitutes a narrowed policy here.
+      const attachmentResult = validateAttachments(body.attachments ?? []);
+      if (!attachmentResult.ok) {
+        return c.json({ error: attachmentResult.error }, 400);
+      }
+      const messageAttachments = attachmentResult.attachments;
 
       const row = await db.query.agentInstance.findFirst({
         where: and(
@@ -1543,6 +1575,9 @@ export function createInstanceRoutes({
           messageId: mimeMessageId,
           date: now,
           content: body.content,
+          ...(messageAttachments.length > 0
+            ? { attachments: messageAttachments }
+            : {}),
           ...(inReplyTo !== undefined ? { inReplyTo } : {}),
           ...(references !== undefined && references.length > 0
             ? { references }
