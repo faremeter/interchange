@@ -1,8 +1,42 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- test refs[0]! always follows expect(refs.length) checks */
 import { describe, test, expect } from "bun:test";
 import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
+import {
+  assembleSignedContent,
+  assembleMessage,
+  createDetachedSignatureFromProvider,
+  generateMessageId,
+  type MessageHeaders,
+} from "@intx/mime";
 import { createInMemoryTransport } from "./index";
-import type { MailboxEvent, MessageRef } from "@intx/types/runtime";
+import type {
+  MailboxEvent,
+  MessageRef,
+  MessageAttachment,
+} from "@intx/types/runtime";
+
+function conversationHeaders(): MessageHeaders {
+  return {
+    from: "alpha@test.interchange",
+    to: ["beta@test.interchange"],
+    cc: undefined,
+    date: new Date("2026-01-15T12:00:00Z"),
+    messageId: generateMessageId("alpha@test.interchange"),
+    subject: undefined,
+    inReplyTo: undefined,
+    references: undefined,
+    mimeVersion: "1.0",
+    interchangeType: "conversation.message",
+    interchangeCorrelationId: undefined,
+    interchangeTenantId: undefined,
+    interchangeAgentId: undefined,
+    interchangeSessionId: undefined,
+    interchangeOfferingId: undefined,
+    interchangeSchemaVersion: undefined,
+    traceparent: undefined,
+    tracestate: undefined,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -282,6 +316,88 @@ describe("fetchFull", () => {
     expect(msg.payload).toBeDefined();
     expect(msg.payload!.type).toBe("offering.request");
     expect(msg.payload!.body["offeringId"]).toBe("code-review");
+  });
+
+  test("fetchFull populates attachments for a conversation message", async () => {
+    const { transport, betaTransport, cryptoA } = await createTestTransport();
+
+    const attachments: MessageAttachment[] = [
+      {
+        name: "shot.png",
+        contentType: "image/png",
+        data: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      },
+    ];
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text: "with image",
+      attachments,
+    });
+    const sig = await createDetachedSignatureFromProvider(content, cryptoA);
+    const raw = assembleMessage(conversationHeaders(), content, sig);
+
+    transport.deliver("beta@test.interchange", raw);
+    const refs = await betaTransport.search("INBOX", {});
+    expect(refs).toHaveLength(1);
+
+    const msg = await betaTransport.fetchFull(refs[0]!);
+    expect(msg.signatureStatus).toBe("valid");
+    expect(msg.content).toBe("with image");
+    expect(msg.attachments).toHaveLength(1);
+    const got = msg.attachments![0]!;
+    const orig = attachments[0]!;
+    expect(got.name).toBe("shot.png");
+    expect(got.contentType).toBe("image/png");
+    expect(Array.from(got.data)).toEqual(Array.from(orig.data));
+  });
+
+  test("fetchFull surfaces a malformed attachment instead of dropping it", async () => {
+    const { transport, betaTransport, cryptoA } = await createTestTransport();
+
+    const boundary = "mixed_bad_b64";
+    const badContent = new TextEncoder().encode(
+      `Content-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n` +
+        `--${boundary}\r\n` +
+        `Content-Type: text/plain; charset=utf-8\r\n` +
+        `Content-Transfer-Encoding: 7bit\r\n\r\n` +
+        `hi\r\n` +
+        `--${boundary}\r\n` +
+        `Content-Type: image/png\r\n` +
+        `Content-Transfer-Encoding: base64\r\n` +
+        `Content-Disposition: attachment; filename="bad.png"\r\n\r\n` +
+        `@@@not-valid-base64@@@\r\n` +
+        `--${boundary}--\r\n`,
+    );
+    const sig = await createDetachedSignatureFromProvider(badContent, cryptoA);
+    const raw = assembleMessage(conversationHeaders(), badContent, sig);
+
+    transport.deliver("beta@test.interchange", raw);
+    const refs = await betaTransport.search("INBOX", {});
+    expect(refs).toHaveLength(1);
+
+    await expect(betaTransport.fetchFull(refs[0]!)).rejects.toThrow();
+  });
+
+  test("fetchFull reads a bare text/plain signed conversation body", async () => {
+    // A plain signed email (no multipart/mixed wrapper) is a valid
+    // conversation message; fetchFull must read its body, not drop it.
+    const { transport, betaTransport, cryptoA } = await createTestTransport();
+
+    const bareContent = new TextEncoder().encode(
+      `Content-Type: text/plain; charset=utf-8\r\n` +
+        `Content-Transfer-Encoding: 7bit\r\n\r\n` +
+        `plain signed body`,
+    );
+    const sig = await createDetachedSignatureFromProvider(bareContent, cryptoA);
+    const raw = assembleMessage(conversationHeaders(), bareContent, sig);
+
+    transport.deliver("beta@test.interchange", raw);
+    const refs = await betaTransport.search("INBOX", {});
+    expect(refs).toHaveLength(1);
+
+    const msg = await betaTransport.fetchFull(refs[0]!);
+    expect(msg.content).toBe("plain signed body");
+    expect(msg.attachments).toBeUndefined();
   });
 
   test("fetchHeaders returns parsed headers", async () => {

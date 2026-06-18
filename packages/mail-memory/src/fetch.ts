@@ -18,6 +18,7 @@ import {
   extractBoundary,
   parseMultipart,
   extractPartByPath,
+  extractAttachments,
 } from "@intx/mime";
 import { buildMessageHeaders } from "./headers";
 import { verifyDetachedSignature } from "@intx/crypto-node";
@@ -119,12 +120,29 @@ export async function fetchFull(
 
   try {
     if (isConversation) {
-      const part1Bytes = extractPartByPath(msg.raw, "1");
-      const part1 = parseMimePart(part1Bytes);
-      result.content = new TextDecoder("utf-8", { fatal: false }).decode(
-        part1.body,
-      );
+      const part1 = parseMimePart(extractPartByPath(msg.raw, "1"));
+      const part1Mime = part1.contentType.split(";")[0]!.trim().toLowerCase();
+      if (part1Mime.startsWith("multipart/")) {
+        // Conversation shape: multipart/mixed with the text body at 1.1.
+        const textPart = parseMimePart(extractPartByPath(msg.raw, "1.1"));
+        result.content = new TextDecoder("utf-8", { fatal: false }).decode(
+          textPart.body,
+        );
+      } else {
+        // A conversation message is "literally a signed email", so a sender
+        // (e.g. a plain mail client) may sign a bare text/plain part with no
+        // multipart/mixed wrapper. This branch reads that body directly. Our
+        // own assembler always emits multipart/mixed; without this branch a
+        // bare text/plain message would fail the 1.1 lookup and silently lose
+        // its content to the catch below.
+        result.content = new TextDecoder("utf-8", { fatal: false }).decode(
+          part1.body,
+        );
+      }
     } else {
+      // Structured messages carry their JSON payload at 1.1. Attachments on
+      // structured messages are intentionally not parsed: they have no
+      // producer today, so parsing them would handle a shape nobody sends.
       const part11Bytes = extractPartByPath(msg.raw, "1.1");
       const part11 = parseMimePart(part11Bytes);
       const jsonText = new TextDecoder("utf-8", { fatal: false }).decode(
@@ -138,6 +156,15 @@ export async function fetchFull(
     }
   } catch {
     // If we can't parse the content, return what we have with the signature status.
+  }
+
+  // Attachment parsing is deliberately outside the catch above: a malformed
+  // attachment must surface as a thrown error, not be silently dropped.
+  if (isConversation) {
+    const attachments = extractAttachments(msg.raw);
+    if (attachments.length > 0) {
+      result.attachments = attachments;
+    }
   }
 
   return result;
