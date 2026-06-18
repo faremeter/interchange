@@ -16,6 +16,7 @@ import type {
   credential,
   gitToken,
   grant,
+  modelProvider,
   oauthClient,
   offering,
   provider,
@@ -57,6 +58,14 @@ const SidecarStatusValidator = type.enumerated(...sidecarStatuses);
 
 const gitTokenKinds = ["pat", "svc"] as const;
 export const GitTokenKindValidator = type.enumerated(...gitTokenKinds);
+
+const modelProviderPlugins = [
+  "anthropic",
+  "openai",
+  "openai-compatible",
+  "google-genai",
+] as const;
+const ModelProviderPluginValidator = type.enumerated(...modelProviderPlugins);
 
 const turnPartTypes = [
   "text",
@@ -133,6 +142,13 @@ export function parseProviderRow(row: typeof provider.$inferSelect) {
   return {
     ...row,
     metadata: row.metadata !== null ? JSONObject.assert(row.metadata) : null,
+  };
+}
+
+export function parseModelProviderRow(row: typeof modelProvider.$inferSelect) {
+  return {
+    ...row,
+    plugin: ModelProviderPluginValidator.assert(row.plugin),
   };
 }
 
