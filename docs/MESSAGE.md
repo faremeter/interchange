@@ -686,6 +686,8 @@ Returns on error: `{ error: string, code: string }`. Error codes: `not_found` (m
 
 **mail.threads** — Get conversation threads.
 
+> **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, and `mail_wait`. The specification below records the intended design; an agent cannot call `mail.threads` yet.
+
 Parameters:
 
 - `mailbox`: mailbox to thread (default: `INBOX`)
@@ -695,6 +697,8 @@ Parameters:
 Returns: array of thread trees, each with message summaries and child threads.
 
 **mail.flag** — Set or clear flags on a message.
+
+> **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, and `mail_wait`. The specification below records the intended design; an agent cannot call `mail.flag` yet.
 
 Parameters:
 
@@ -707,6 +711,8 @@ Returns: `{ ok: true }`
 Returns on error: `{ error: string, code: string }`. Error codes: `not_found`, `invalid_flag` (flag name not permitted by server).
 
 **mail.move** — Move a message to a different mailbox.
+
+> **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, and `mail_wait`. The specification below records the intended design; an agent cannot call `mail.move` yet.
 
 Parameters:
 
@@ -739,6 +745,8 @@ Offering tools are convenience wrappers over the message transport for the commo
 
 **offering.invoke** — Invoke an offering on another agent.
 
+> **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, and `mail_wait`. The specification below records the intended design; an agent cannot call `offering.invoke` yet.
+
 Parameters:
 
 - `to`: target agent address
@@ -752,6 +760,8 @@ Returns: `{ messageId: string, status: "pending", correlationId: string }`
 Returns on error: `{ error: string, code: string }`. Error codes: `invalid_address`, `send_failed`.
 
 **offering.discover** — Query another agent's available offerings.
+
+> **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, and `mail_wait`. The specification below records the intended design; an agent cannot call `offering.discover` yet.
 
 Parameters:
 
