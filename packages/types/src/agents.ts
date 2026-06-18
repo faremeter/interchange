@@ -34,15 +34,21 @@ const Effect = type.enumerated(...grantEffects);
 export const CredentialRequirement = type({
   providerName: "string",
   "scopes?": "string[]",
-  source: CredentialSourceType,
+  source: CredentialSourceType.describe(
+    "Whose credential satisfies this requirement at launch: `tenant` (a credential owned by the tenant), `creator` (the definition author's), or `invoker` (whoever launched the agent).",
+  ),
   "name?": "string",
 });
 
 export const GrantRequirement = type({
   resource: "string",
   action: "string",
-  "effect?": Effect,
-  source: GrantSourceType,
+  "effect?": Effect.describe(
+    "Effect to assign the materialized grant: `allow`, `deny`, or `ask`. Defaults to `allow` when omitted.",
+  ),
+  source: GrantSourceType.describe(
+    "Whose authority the grant is resolved against at launch: `creator` (the definition author) or `invoker` (whoever launched the agent). The requirement is only satisfied if that party actually holds the requested capability.",
+  ),
   "conditions?": "Record<string, unknown> | null",
 });
 
@@ -91,7 +97,9 @@ export const AgentResponse = type({
   "initialState?": "Record<string, unknown>",
   "modelConfig?": "Record<string, unknown>",
   currentVersion: "string",
-  status: AgentDefinitionStatusType,
+  status: AgentDefinitionStatusType.describe(
+    "Lifecycle state of the agent definition: `deployed` (a launchable version is active) or `stopped` (deactivated, no new instances launch).",
+  ),
   "capabilities?": "Record<string, unknown>",
   "credentialRequirements?": CredentialRequirement.array(),
   "grantRequirements?": GrantRequirement.array(),
@@ -123,7 +131,9 @@ export const AgentInstanceResponse = type({
   agentName: "string",
   tenantId: "string",
   address: "string",
-  status: AgentInstanceStatusType,
+  status: AgentInstanceStatusType.describe(
+    "Lifecycle state of this running instance: `deployed` (provisioned on a sidecar, not yet started), `running` (started and serving), `updating` (rolling to a new definition version), `error` (launch or runtime failure), or `stopped` (undeployed).",
+  ),
   "publicKey?": "string | null",
   "kernelId?": "string | null",
   "sidecarId?": "string | null",
