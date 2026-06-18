@@ -11,6 +11,7 @@ export * from "./assets";
 export * from "./agent-assets";
 export * from "./wallets";
 export * from "./offerings";
+export * from "./catalog";
 export * from "./sidecar";
 export * from "./sessions";
 export * from "./instances";
