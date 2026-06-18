@@ -50,6 +50,27 @@ The example files contain working dev defaults for most values. The only value y
 | `.env.migrate` | Migration database credentials (DDL user)                                       |
 | `.env.sidecar` | Sidecar overrides: hub URL, sidecar ID, data directory (optional, has defaults) |
 
+### Optional Environment Overrides
+
+Beyond the values above, several operator-facing variables are read by
+code and have working defaults. All are optional; set them only to
+override the default behavior. They are commented out in the example
+files next to the matching service config.
+
+| Variable                             | Read by                                      | Default                             | Purpose                                                                                                                |
+| ------------------------------------ | -------------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `HUB_ADMIN_EMAIL`                    | `bin/dev.ts`, `bin/publish-tool-packages.ts` | `alice@example.com`                 | Admin identity `bin/dev.ts` uses to publish the seed tool packages.                                                    |
+| `HUB_ADMIN_PASSWORD`                 | `bin/dev.ts`, `bin/publish-tool-packages.ts` | `password123`                       | Password for that admin identity.                                                                                      |
+| `HUB_TENANT_SLUG`                    | `bin/dev.ts`                                 | `acme`                              | Tenant the seed tool packages are published into.                                                                      |
+| `HUB_TENANT_NAME`                    | `bin/dev.ts`                                 | `Acme Corp`                         | Display name for that tenant.                                                                                          |
+| `HUB_URL`                            | `bin/seed.ts`                                | `http://localhost:3000`             | Base URL `bin/seed.ts` targets when seeding via the hub API.                                                           |
+| `HUB_MAX_TARBALL_BYTES`              | hub (`apps/hub`)                             | 10 MiB                              | Per-tarball cap for tool packages uploaded to the package registry.                                                    |
+| `PG_SCHEMA`                          | hub (`apps/hub`)                             | unset                               | Pins the hub to a postgres schema. Integration-test-only; leave unset normally.                                        |
+| `SIDECAR_CACHE_DIR`                  | sidecar (`apps/sidecar`)                     | `<SIDECAR_DATA_DIR>/cache/tarballs` | Directory for the tool-package tarball cache.                                                                          |
+| `SIDECAR_CACHE_MAX_BYTES`            | sidecar (`apps/sidecar`)                     | 10 GiB                              | Maximum total size of the tarball cache.                                                                               |
+| `SIDECAR_REGISTRY_MAX_TARBALL_BYTES` | sidecar (`apps/sidecar`)                     | 10 MiB                              | Per-tarball cap enforced when pulling from upstream tool registries.                                                   |
+| `SIDECAR_TOOL_REGISTRIES`            | sidecar (`apps/sidecar`)                     | public npmjs                        | JSON array of `{name, url, auth?}` tool registries. Unset the variable to use npmjs; do not set it to an empty string. |
+
 ### Database Users
 
 The system uses two PostgreSQL users:

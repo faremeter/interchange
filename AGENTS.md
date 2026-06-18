@@ -18,10 +18,13 @@ Read `DEV.md` for the full development guide. The essentials:
 ### Running the Stack
 
 ```bash
+bun install
 bin/db-reset && bun bin/dev.ts --seed
 ```
 
-This is the single command to get a clean, running system with seed data. It drops and recreates the database, runs migrations, grants permissions, starts all services (hub, sidecar, admin UI), and seeds test data.
+`bun install` materializes the workspace symlinks under `node_modules/@intx/`;
+without it `make build` fails with `TS2307: Cannot find module '@intx/...'`.
+The remaining command gets a clean, running system with seed data. It drops and recreates the database, runs migrations, grants permissions, starts all services (hub, sidecar, admin UI), and seeds test data.
 
 - Hub: `http://localhost:3000`
 - Admin UI: `http://localhost:5173`
