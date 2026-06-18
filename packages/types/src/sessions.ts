@@ -28,13 +28,21 @@ export const SessionStatus = type({
 });
 export type SessionStatus = typeof SessionStatus.infer;
 
+// The schema validates structure only: a required mimeType, a required
+// string `data` carrying base64-encoded bytes, an optional name, and no
+// other keys. base64 validity, the MIME allowlist, and size limits are
+// enforced at the route boundary so it can emit ordered, per-index
+// structured errors (malformed_base64, disallowed_mime_type, oversize_*)
+// that an all-or-nothing schema validator cannot produce.
 export const SendMessage = type({
   content: "string",
   "attachments?": type({
-    type: "string",
-    url: "string",
-    "mimeType?": "string",
-  }).array(),
+    mimeType: "string",
+    data: "string",
+    "name?": "string",
+  })
+    .onUndeclaredKey("reject")
+    .array(),
 });
 
 export const MailResponse = type({

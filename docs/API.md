@@ -1277,7 +1277,7 @@ Source: packages/types/src/roles.ts
 Source: packages/types/src/agents.ts
 
 ### SendMessage
-`{ content: string, attachments?: { type: string, url: string, mimeType?: string }[] }`
+`{ content: string, attachments?: { data: string, mimeType: string, name?: string, + (undeclared): reject }[] }`
 Source: packages/types/src/sessions.ts
 
 ### SessionSummary
