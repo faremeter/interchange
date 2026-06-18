@@ -35,3 +35,12 @@ pull in the shapes they need:
 - `@intx/types/sidecar` — hub-sidecar WebSocket wire frames.
 - `@intx/types/grant-wire` — grant-update wire frames pushed from
   the hub to the sidecar.
+- `@intx/types/tool-packages` — schemas for the tool-package
+  distribution path: pin shapes (`ToolPackagePin`,
+  `ToolPackagePinArray`, `ToolPackagePinName`), source variants
+  (`ToolPackageAssetSource`, `ToolPackageRegistrySource`,
+  `ToolPackageSource`), and the deploy-pack manifest
+  (`ToolPackageManifestEntry`, `ToolPackageManifest`).
+- `@intx/types/package-json` — the `PackageJSON` validator for the
+  subset of `package.json` fields the asset substrate and tool-package
+  builders read, including the `interchange.tools` extension.

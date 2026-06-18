@@ -47,3 +47,26 @@ if (result.effect !== "allow") throw new Error("forbidden");
 `allow`, `deny`, `ask`, or `null` when no grant matches. Callers
 translate `null` into a refusal (HTTP 403, tool-call block) because
 evaluation is fail-closed.
+
+## Surface
+
+- `authorize` — collect grants from a `GrantStore` and resolve a
+  principal/tenant/resource/action query to an `AuthzResult`.
+- `evaluateGrants` — the core resolution logic operating on a supplied
+  `GrantRule[]` rather than a store, so it can be driven with synthetic
+  grant lists. `authorize` is a thin wrapper that collects grants and
+  delegates here.
+- `timeWindowEvaluator` — a `ConditionEvaluator` for time-of-day
+  windows. Register it under the `time_window` key in a
+  `ConditionRegistry` to gate grants on `{ after, before, timezone }`;
+  cross-midnight windows are supported.
+- `evaluateConditions` — run a grant's `conditions` object against a
+  `ConditionRegistry`.
+- `createInMemoryGrantStore` — a `GrantStore` backed by an in-memory
+  grant list for tests and single-process deployments.
+- `matchPattern`, `patternSpecificity`, `grantSpecificity` — the
+  colon-segmented wildcard matcher and the specificity scoring used to
+  pick the winning grant.
+- Types: `AuthzResult`, `ConditionContext`, `ConditionEvaluator`,
+  `ConditionRegistry`, `Effect`, `GrantRule`, `GrantStore`,
+  `MatchedGrant`.
