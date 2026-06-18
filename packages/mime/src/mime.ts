@@ -3,7 +3,8 @@
  * MIME byte construction and parsing for Interchange messages.
  *
  * Implements exactly two message shapes per MESSAGE.md:
- *   1. Conversation: text/plain in multipart/signed
+ *   1. Conversation: multipart/mixed (text/plain plus zero or more
+ *      attachment parts) in multipart/signed
  *   2. Structured: application/vnd.interchange+json in multipart/mixed in multipart/signed
  *
  * Produces real RFC 2822 / RFC 2046 / RFC 3156 bytes. The signed content
@@ -19,6 +20,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { base64Decode, base64Encode } from "@intx/types";
+import type { MessageAttachment } from "@intx/types/runtime";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -48,6 +51,7 @@ export type MessageHeaders = {
 export type ConversationContent = {
   kind: "conversation";
   text: string;
+  attachments?: MessageAttachment[];
 };
 
 export type StructuredContent = {
@@ -326,21 +330,82 @@ function serializeMessageHeaders(
 // ---------------------------------------------------------------------------
 
 /**
- * Assemble the signed content for a conversation message (text/plain).
+ * Reject values that would break out of a MIME header. CR/LF in a header
+ * value is a header-injection vector; a double quote breaks the quoted
+ * `filename="..."` / `name="..."` forms the parser relies on. The MIME
+ * layer owns header well-formedness, so it fails loudly here rather than
+ * emitting a corrupt envelope.
+ */
+function assertHeaderSafe(value: string, field: string): void {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(
+      `${field} must not contain CR or LF: ${JSON.stringify(value)}`,
+    );
+  }
+  if (value.includes('"')) {
+    throw new Error(
+      `${field} must not contain a double quote: ${JSON.stringify(value)}`,
+    );
+  }
+}
+
+/**
+ * Encode bytes as base64, wrapped at 76 columns per RFC 2045. Returns the
+ * empty string for empty input.
+ */
+function base64Lines(bytes: Uint8Array): string {
+  const b64 = base64Encode(bytes);
+  const lines: string[] = [];
+  for (let i = 0; i < b64.length; i += 76) {
+    lines.push(b64.slice(i, i + 76));
+  }
+  return lines.join(CRLF);
+}
+
+/**
+ * Assemble the signed content for a conversation message.
+ *
+ * The shape is always multipart/mixed: one text/plain part (BODY[1.1])
+ * followed by zero or more binary attachment parts (BODY[1.2..N]). The
+ * shape is unconditional — there is no bare text/plain branch — so the
+ * writer, the parser, and the signed-bytes contract have one form each.
  *
  * This is the exact bytes that will be hashed for the PGP/MIME signature.
- * Content-Transfer-Encoding: 7bit (conversation messages are ASCII).
  */
-function assembleConversationSignedPart(text: string): Uint8Array {
-  // Canonicalize: CRLF line endings, strip trailing whitespace per line.
+function assembleConversationSignedPart(
+  text: string,
+  attachments: readonly MessageAttachment[] = [],
+): Uint8Array {
+  const boundary = generateBoundary();
+
+  // Canonicalize the text part: CRLF line endings, strip trailing
+  // whitespace per line.
   const lines = text.split(/\r\n|\r|\n/);
   const canonLines = lines.map((l) => l.replace(/[ \t]+$/, ""));
   const canonical = canonLines.join(CRLF);
 
-  const partHeaders =
-    `Content-Type: text/plain; charset=utf-8${CRLF}` +
-    `Content-Transfer-Encoding: 7bit${CRLF}`;
-  const body = `${partHeaders}${CRLF}${canonical}`;
+  let body = `Content-Type: multipart/mixed; boundary="${boundary}"${CRLF}${CRLF}`;
+
+  // Text part (BODY[1.1])
+  body += `--${boundary}${CRLF}`;
+  body += `Content-Type: text/plain; charset=utf-8${CRLF}`;
+  body += `Content-Transfer-Encoding: 7bit${CRLF}`;
+  body += `${CRLF}`;
+  body += `${canonical}${CRLF}`;
+
+  // Attachment parts (BODY[1.2..N])
+  for (const att of attachments) {
+    assertHeaderSafe(att.contentType, "attachment contentType");
+    assertHeaderSafe(att.name, "attachment name");
+    body += `--${boundary}${CRLF}`;
+    body += `Content-Type: ${att.contentType}${CRLF}`;
+    body += `Content-Transfer-Encoding: base64${CRLF}`;
+    body += `Content-Disposition: attachment; filename="${att.name}"${CRLF}`;
+    body += `${CRLF}`;
+    body += `${base64Lines(att.data)}${CRLF}`;
+  }
+
+  body += `--${boundary}--${CRLF}`;
   return new TextEncoder().encode(body);
 }
 
@@ -462,7 +527,7 @@ export function assembleSignedContent(
   content: ConversationContent | StructuredContent,
 ): Uint8Array {
   if (content.kind === "conversation") {
-    return assembleConversationSignedPart(content.text);
+    return assembleConversationSignedPart(content.text, content.attachments);
   }
   return assembleStructuredSignedPart(content.json, content.summary);
 }
@@ -987,4 +1052,90 @@ export function parseMailToEmail(raw: Uint8Array, mailId: string): JMAPEmail {
     attachments: ctx.attachments,
     headers: interchangeHeaders,
   };
+}
+
+/**
+ * Decode a MIME part body into raw bytes, honoring Content-Transfer-Encoding.
+ *
+ * Unlike `decodeBodyBytes` (which produces a JMAP string value), this returns
+ * the actual bytes for reconstructing a `MessageAttachment`. A malformed
+ * base64 body surfaces as a thrown error rather than a silent best-effort
+ * decode — attachment integrity is load-bearing.
+ */
+function decodeAttachmentBytes(
+  body: Uint8Array,
+  headers: Map<string, string>,
+): Uint8Array {
+  const cte = (headers.get("content-transfer-encoding") ?? "7bit")
+    .trim()
+    .toLowerCase();
+
+  if (cte === "base64") {
+    const raw = new TextDecoder("utf-8", { fatal: false }).decode(body);
+    return base64Decode(raw.replace(/\s+/g, ""));
+  }
+
+  if (cte === "quoted-printable") {
+    const raw = new TextDecoder("utf-8", { fatal: false }).decode(body);
+    const decoded = decodeQuotedPrintable(raw);
+    const out = new Uint8Array(decoded.length);
+    for (let i = 0; i < decoded.length; i++) {
+      out[i] = decoded.charCodeAt(i);
+    }
+    return out;
+  }
+
+  if (cte === "7bit" || cte === "8bit" || cte === "binary") {
+    return body;
+  }
+
+  throw new Error(
+    `decodeAttachmentBytes: unsupported content-transfer-encoding "${cte}"`,
+  );
+}
+
+/**
+ * Extract conversation attachments from raw message bytes as
+ * `MessageAttachment[]` with decoded payloads.
+ *
+ * The conversation signed content is a multipart/mixed whose first part is
+ * the text body and whose remaining attachment parts (Content-Disposition:
+ * attachment) carry the binary payloads. Returns an empty array for any
+ * shape without attachment parts — a bare text/plain signed part, a
+ * non-multipart/signed message, or a multipart/mixed with only the text
+ * part — so callers can use it unconditionally.
+ *
+ * Counterpart to `assembleConversationSignedPart`: assemble then extract
+ * round-trips a `MessageAttachment[]`.
+ */
+export function extractAttachments(raw: Uint8Array): MessageAttachment[] {
+  const { headers, bodyOffset } = parseHeaderSection(raw);
+  const body = raw.slice(bodyOffset);
+  const mime = extractContentTypeMime(headers.get("content-type") ?? "");
+
+  if (mime !== "multipart/signed") return [];
+  const outerBoundary = extractBoundary(headers.get("content-type") ?? "");
+  if (outerBoundary === undefined) return [];
+
+  const contentPart = parseMultipart(body, outerBoundary)[0];
+  if (contentPart === undefined) return [];
+
+  const signed = parseMimePart(contentPart);
+  if (!extractContentTypeMime(signed.contentType).startsWith("multipart/")) {
+    return [];
+  }
+  const innerBoundary = extractBoundary(signed.contentType);
+  if (innerBoundary === undefined) return [];
+
+  const attachments: MessageAttachment[] = [];
+  for (const subPartBytes of parseMultipart(signed.body, innerBoundary)) {
+    const subPart = parseMimePart(subPartBytes);
+    if (!isAttachmentPart(subPart.contentType, subPart.headers)) continue;
+    attachments.push({
+      name: extractFilename(subPart.headers) ?? "attachment",
+      contentType: extractContentTypeMime(subPart.contentType),
+      data: decodeAttachmentBytes(subPart.body, subPart.headers),
+    });
+  }
+  return attachments;
 }

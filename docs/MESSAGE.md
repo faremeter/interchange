@@ -28,13 +28,17 @@ Every Interchange message is a PGP/MIME signed (RFC 3156) multipart message. The
 
 The outer layer is always `multipart/signed` per RFC 3156. The signed content is the first part; the detached PGP signature is the second part, computed after canonicalization (trailing whitespace removed, line endings normalized to CRLF, content constrained to 7-bit).
 
-The signed content varies by message type. Conversation messages use `text/plain` directly — they are just signed emails, readable by any mail client. Structured messages (offerings, payments, approvals, system) use `multipart/mixed` with an `application/vnd.interchange+json` part carrying machine-readable data.
+The signed content varies by message type. Conversation messages use `multipart/mixed` with a `text/plain` part plus zero or more attachment parts — they are still ordinary signed emails (a mail client renders the single `text/plain` part the same as a bare body). Structured messages (offerings, payments, approvals, system) use `multipart/mixed` with an `application/vnd.interchange+json` part carrying machine-readable data.
 
 **Conversation messages:**
 
+The shape is `multipart/mixed` unconditionally — every conversation message has the same structure regardless of attachment count.
+
 ```
 multipart/signed; protocol="application/pgp-signature"; micalg=pgp-sha512
-├── text/plain                              [the message]
+├── multipart/mixed
+│   ├── text/plain                          [the message]
+│   └── [attachment parts] (zero or more)   [images, audio, video, documents]
 └── application/pgp-signature               [Ed25519 detached signature]
 ```
 
@@ -49,7 +53,7 @@ multipart/signed; protocol="application/pgp-signature"; micalg=pgp-sha512
 └── application/pgp-signature               [Ed25519 detached signature]
 ```
 
-The `Interchange-Type` header determines which shape to expect. Conversation types (`conversation.message`, `conversation.join`, `conversation.leave`) use the plain text form. All other types use the structured form.
+The `Interchange-Type` header determines which shape to expect. Conversation types (`conversation.message`, `conversation.join`, `conversation.leave`) use the conversation form (text in part `1.1`). All other types use the structured form.
 
 ### Part Addressing
 
@@ -57,10 +61,12 @@ IMAP FETCH addresses MIME parts by position using dot-separated numeric paths (R
 
 **Conversation messages:**
 
-| IMAP Part | Content                         |
-| --------- | ------------------------------- |
-| `1`       | The `text/plain` message body   |
-| `2`       | The `application/pgp-signature` |
+| IMAP Part | Content                                       |
+| --------- | --------------------------------------------- |
+| `1`       | The `multipart/mixed` payload (all sub-parts) |
+| `1.1`     | The `text/plain` message body                 |
+| `1.2+`    | Attachments (if present)                      |
+| `2`       | The `application/pgp-signature`               |
 
 **Structured messages:**
 
@@ -72,7 +78,7 @@ IMAP FETCH addresses MIME parts by position using dot-separated numeric paths (R
 | `1.3+`    | Attachments (if present)                      |
 | `2`       | The `application/pgp-signature`               |
 
-For conversation messages, `BODY[1]` fetches the text. For structured messages, `BODY[1.1]` fetches just the JSON payload without downloading attachments. In both cases, `BODY[2]` fetches the signature for verification.
+For conversation messages, `BODY[1.1]` fetches the text without downloading attachments. For structured messages, `BODY[1.1]` fetches just the JSON payload. In both cases, `BODY[2]` fetches the signature for verification.
 
 ### Headers
 
@@ -119,7 +125,7 @@ Interchange headers use the `Interchange-` prefix. RFC 6648 deprecated the `X-` 
 
 ### Payload Types
 
-The `Interchange-Type` header identifies every message's type for routing without body parsing. Conversation types use `text/plain` bodies. All other types use `application/vnd.interchange+json` with a JSON object whose `type` field matches the header value.
+The `Interchange-Type` header identifies every message's type for routing without body parsing. Conversation types carry their text in the `text/plain` part of a `multipart/mixed` body. All other types use `application/vnd.interchange+json` with a JSON object whose `type` field matches the header value.
 
 **Conversation messages:**
 
@@ -168,7 +174,7 @@ Each structured payload type has a defined JSON schema. The schema version is ca
 
 ### Payload Structure
 
-Conversation messages (`conversation.message`, `conversation.join`, `conversation.leave`) have `text/plain` bodies. No JSON envelope, no schema. The message is the text.
+Conversation messages (`conversation.message`, `conversation.join`, `conversation.leave`) carry the text in the `text/plain` part of a `multipart/mixed` body, optionally followed by binary attachment parts. No JSON envelope, no schema for the text — the message is the text, and any attachments ride alongside it as standard MIME parts.
 
 Structured messages use `application/vnd.interchange+json` with a common envelope:
 
@@ -318,7 +324,7 @@ Every outbound message is signed with the sending agent's Ed25519 private key. T
 
 ### Signing Process
 
-1. The signed content is assembled — `text/plain` for conversation messages, `multipart/mixed` for structured messages
+1. The signed content is assembled — `multipart/mixed` for both conversation and structured messages
 2. Content is canonicalized: CRLF line endings, trailing whitespace removed, 7-bit encoding applied (base64 for binary parts, quoted-printable for 8-bit text)
 3. The payload is hashed (SHA-512, as required by Ed25519's internal construction)
 4. The hash is signed with the agent's Ed25519 private key
@@ -414,14 +420,14 @@ HEADER Interchange-Correlation-ID abc123 HEADER Interchange-Type offering.respon
 
 IMAP FETCH with section specifiers enables retrieving specific parts of a message without downloading the entire thing. This is critical for messages with large attachments.
 
-| Fetch specifier                                               | What it retrieves                                                                |
-| ------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `BODY[HEADER]`                                                | All message headers                                                              |
-| `BODY[HEADER.FIELDS (From To Subject Date Interchange-Type)]` | Specific headers only                                                            |
-| `BODY[1]`                                                     | Signed content (`text/plain` for conversation, `multipart/mixed` for structured) |
-| `BODY[1.1]`                                                   | The `application/vnd.interchange+json` payload (structured messages only)        |
-| `BODY[2]`                                                     | The PGP signature                                                                |
-| `BODYSTRUCTURE`                                               | MIME structure metadata (types, sizes, part hierarchy) without any content       |
+| Fetch specifier                                               | What it retrieves                                                                               |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `BODY[HEADER]`                                                | All message headers                                                                             |
+| `BODY[HEADER.FIELDS (From To Subject Date Interchange-Type)]` | Specific headers only                                                                           |
+| `BODY[1]`                                                     | Signed content (`multipart/mixed` for both conversation and structured)                         |
+| `BODY[1.1]`                                                   | The `text/plain` body (conversation) or `application/vnd.interchange+json` payload (structured) |
+| `BODY[2]`                                                     | The PGP signature                                                                               |
+| `BODYSTRUCTURE`                                               | MIME structure metadata (types, sizes, part hierarchy) without any content                      |
 
 The `BODYSTRUCTURE` fetch is particularly useful. It returns the MIME tree structure — content types, sizes, dispositions, parameters — for every part of the message without transferring any content. An agent can examine the structure to decide which parts to fetch.
 
@@ -561,7 +567,7 @@ fetchFull(ref: MessageRef): Promise<InboundMessage>
 
 `fetchStructure` retrieves the MIME tree metadata (IMAP `BODYSTRUCTURE`): content types, sizes, dispositions, parameters for every part. No content transferred.
 
-`fetchPart` retrieves a single MIME part by dot-separated path (IMAP `BODY.PEEK[path]`). Used to fetch just the JSON payload (`1.1`) or just an attachment (`1.3`) without downloading the entire message.
+`fetchPart` retrieves a single MIME part by dot-separated path (IMAP `BODY.PEEK[path]`). Used to fetch just the text or JSON payload (`1.1`) or just an attachment (`1.2+`) without downloading the entire message.
 
 `fetchFull` retrieves the complete message, parses the MIME structure, verifies the PGP signature, and returns a fully parsed `InboundMessage` with structured payload, headers, and attachments. The returned `InboundMessage` includes a `signatureStatus` field: `"valid"` (signature verified against sender's public key), `"invalid"` (signature check failed — tampering or wrong key), `"unknown"` (public key not available for verification), or `"missing"` (message was not signed). The harness decides policy based on this field — cross-tenant messages with `"invalid"` or `"missing"` status should be rejected; intra-tenant messages may be accepted with reduced trust depending on tenant policy.
 
