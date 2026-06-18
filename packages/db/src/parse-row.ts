@@ -1,10 +1,12 @@
 import { type } from "arktype";
 
 import {
+  Capability,
   CredentialRequirement,
   GrantRequirement,
   grantEffects,
   grantOrigins,
+  ModelProviderPlugin,
   sidecarStatuses,
 } from "@intx/types";
 import { RepoAction } from "@intx/types/sidecar";
@@ -16,6 +18,7 @@ import type {
   credential,
   gitToken,
   grant,
+  modelOffering,
   modelProvider,
   oauthClient,
   offering,
@@ -58,14 +61,6 @@ const SidecarStatusValidator = type.enumerated(...sidecarStatuses);
 
 const gitTokenKinds = ["pat", "svc"] as const;
 export const GitTokenKindValidator = type.enumerated(...gitTokenKinds);
-
-const modelProviderPlugins = [
-  "anthropic",
-  "openai",
-  "openai-compatible",
-  "google-genai",
-] as const;
-const ModelProviderPluginValidator = type.enumerated(...modelProviderPlugins);
 
 const turnPartTypes = [
   "text",
@@ -148,7 +143,14 @@ export function parseProviderRow(row: typeof provider.$inferSelect) {
 export function parseModelProviderRow(row: typeof modelProvider.$inferSelect) {
   return {
     ...row,
-    plugin: ModelProviderPluginValidator.assert(row.plugin),
+    plugin: ModelProviderPlugin.assert(row.plugin),
+  };
+}
+
+export function parseModelOfferingRow(row: typeof modelOffering.$inferSelect) {
+  return {
+    ...row,
+    capabilities: Capability.array().assert(row.capabilities),
   };
 }
 

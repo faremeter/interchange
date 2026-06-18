@@ -2,8 +2,13 @@ import { describe, expect, test } from "bun:test";
 
 import { RepoAction } from "@intx/types/sidecar";
 
-import { GitTokenKindValidator, parseGitTokenRow } from "./parse-row";
-import type { gitToken } from "./schema";
+import {
+  GitTokenKindValidator,
+  parseGitTokenRow,
+  parseModelOfferingRow,
+  parseModelProviderRow,
+} from "./parse-row";
+import type { gitToken, modelOffering, modelProvider } from "./schema";
 
 type GitTokenRow = typeof gitToken.$inferSelect;
 
@@ -109,5 +114,72 @@ describe("parseGitTokenRow", () => {
     const row = makeRow({ actions: [] });
     const parsed = parseGitTokenRow(row);
     expect(parsed.actions).toEqual([]);
+  });
+});
+
+type ModelProviderRow = typeof modelProvider.$inferSelect;
+
+function makeProviderRow(
+  overrides: Partial<ModelProviderRow> = {},
+): ModelProviderRow {
+  const now = new Date();
+  return {
+    id: "mpv_0123456789abcdef",
+    tenantId: "ten_root",
+    name: "Anthropic direct",
+    plugin: "anthropic",
+    baseURL: "https://api.anthropic.com",
+    credentialId: "cred_anthropic",
+    walletId: null,
+    disabled: false,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+describe("parseModelProviderRow", () => {
+  test("accepts a known plugin", () => {
+    const parsed = parseModelProviderRow(makeProviderRow());
+    expect(parsed.plugin).toBe("anthropic");
+  });
+});
+
+type ModelOfferingRow = typeof modelOffering.$inferSelect;
+
+function makeOfferingRow(
+  overrides: Partial<ModelOfferingRow> = {},
+): ModelOfferingRow {
+  const now = new Date();
+  return {
+    id: "mof_0123456789abcdef",
+    tenantId: "ten_root",
+    modelId: "mdl_opus",
+    providerId: "mpv_anthropic",
+    priority: 0,
+    deploymentTags: [],
+    capabilities: ["vision", "tool-use"],
+    disabled: false,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+describe("parseModelOfferingRow", () => {
+  test("accepts curated capabilities", () => {
+    const parsed = parseModelOfferingRow(makeOfferingRow());
+    expect(parsed.capabilities).toEqual(["vision", "tool-use"]);
+  });
+
+  test("accepts an empty capabilities array", () => {
+    const parsed = parseModelOfferingRow(makeOfferingRow({ capabilities: [] }));
+    expect(parsed.capabilities).toEqual([]);
+  });
+
+  test("rejects a non-curated capability", () => {
+    expect(() =>
+      parseModelOfferingRow(makeOfferingRow({ capabilities: ["telepathy"] })),
+    ).toThrow();
   });
 });

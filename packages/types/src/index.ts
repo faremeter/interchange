@@ -15,6 +15,7 @@ export * from "./credentials";
 export * from "./assets";
 export * from "./offerings";
 export * from "./models";
+export * from "./catalog";
 export * from "./observability";
 export * from "./agent-address";
 export * from "./agent-data";

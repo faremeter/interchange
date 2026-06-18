@@ -1291,10 +1291,10 @@ Source: packages/types/src/sessions.ts
 Source: packages/types/src/observability.ts
 
 ### ModelInfo
-`{ id: string, name: string, providerId: string, capabilities?: string[], description?: string | null, limits?: { context?: number, output?: number }, pricing?: { cacheRead?: string, cacheWrite?: string, input?: string, output?: string } }`
+`{ id: string, name: string, providerId: string, capabilities?: ("audio-input" | "extended-thinking" | "long-context" | "prompt-caching" | "structured-output" | "tool-use" | "vision")[], description?: string | null, limits?: { context?: number, output?: number }, pricing?: { cacheRead?: string, cacheWrite?: string, input?: string, output?: string, perAudio?: string, perImage?: string, perRequest?: string, thinking?: string } }`
 Source: packages/types/src/models.ts
 
-**capabilities**: Capability tags advertised for the model (for example streaming, tool use, or vision support), as reported by the provider.
+**capabilities**: Curated platform capability tags advertised for the model (for example vision, tool-use, or long-context).
 
 ### OAuthClientResponse
 `{ createdAt: string, id: string, name: string, providerId: string, tenantId: string, updatedAt: string, defaultScopes?: string[] | null, metadata?: { [string]: unknown } | null, redirectUris?: string[] | null }`
