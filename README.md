@@ -110,9 +110,11 @@ Two halves, sharing one set of type definitions in
 
 ## The impatient path
 
-Run the full stack with seed data:
+Install workspace dependencies, then run the full stack with seed
+data:
 
 ```bash
+bun install
 bin/db-reset && bun bin/dev.ts --seed
 ```
 
