@@ -17,8 +17,10 @@ import {
   extractBoundary,
   extractPartByPath,
   parseMailToEmail,
+  extractAttachments,
   type MessageHeaders,
 } from "./index";
+import type { MessageAttachment } from "@intx/types/runtime";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -159,12 +161,13 @@ describe("formatRFC2822Date", () => {
 // ---------------------------------------------------------------------------
 
 describe("assembleSignedContent", () => {
-  test("conversation produces text/plain with CRLF", () => {
+  test("conversation wraps text/plain in multipart/mixed with CRLF", () => {
     const bytes = assembleSignedContent({
       kind: "conversation",
       text: "Hello\nWorld",
     });
     const text = dec.decode(bytes);
+    expect(text).toContain("Content-Type: multipart/mixed;");
     expect(text).toContain("Content-Type: text/plain; charset=utf-8\r\n");
     expect(text).toContain("Content-Transfer-Encoding: 7bit\r\n");
     expect(text).toContain("\r\nHello\r\nWorld");
@@ -179,13 +182,17 @@ describe("assembleSignedContent", () => {
     expect(text).toContain("\r\n  leading\r\nindented");
   });
 
-  test("conversation with empty text produces headers only", () => {
+  test("conversation with empty text produces an empty text part", () => {
     const bytes = assembleSignedContent({
       kind: "conversation",
       text: "",
     });
     const text = dec.decode(bytes);
-    expect(text).toMatch(/Content-Transfer-Encoding: 7bit\r\n\r\n$/);
+    expect(text).toContain("Content-Type: multipart/mixed;");
+    // text/plain part headers, blank line, empty body CRLF, then a boundary
+    expect(text).toMatch(
+      /Content-Type: text\/plain; charset=utf-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\n\r\n--/,
+    );
   });
 
   test("conversation normalizes CRLF input without doubling", () => {
@@ -935,9 +942,16 @@ describe("assemble then parse round-trip", () => {
     );
     expect(valid).toBe(true);
 
+    // The signed content is multipart/mixed; the text lives at part 1.1.
     const parsed = parseMimePart(signedPart);
-    expect(parsed.contentType).toContain("text/plain");
-    expect(dec.decode(parsed.body)).toContain("Hello from the round-trip test");
+    expect(parsed.contentType).toContain("multipart/mixed");
+    const innerBoundary = defined(extractBoundary(parsed.contentType));
+    const innerParts = parseMultipart(parsed.body, innerBoundary);
+    const textPart = parseMimePart(defined(innerParts[0]));
+    expect(textPart.contentType).toContain("text/plain");
+    expect(dec.decode(textPart.body)).toContain(
+      "Hello from the round-trip test",
+    );
   });
 
   test("structured message survives assemble/parse cycle", async () => {
@@ -974,5 +988,160 @@ describe("assemble then parse round-trip", () => {
 
     const summaryPart = parseMimePart(defined(innerParts[1]));
     expect(dec.decode(summaryPart.body)).toContain("Deploying to prod");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Conversation attachments: assemble → extract round-trip
+// ---------------------------------------------------------------------------
+
+describe("conversation attachments round-trip", () => {
+  const attachments: MessageAttachment[] = [
+    {
+      name: "shot.png",
+      contentType: "image/png",
+      data: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    },
+    {
+      name: "clip.mp4",
+      contentType: "video/mp4",
+      data: new Uint8Array([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]),
+    },
+    {
+      name: "voice.mp3",
+      contentType: "audio/mpeg",
+      data: new Uint8Array([0xff, 0xfb, 0x90, 0x00, 0x11]),
+    },
+    {
+      name: "report.pdf",
+      contentType: "application/pdf",
+      data: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]),
+    },
+  ];
+
+  function buildConversation(
+    text: string,
+    atts: MessageAttachment[] | undefined,
+  ): Uint8Array {
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text,
+      ...(atts !== undefined ? { attachments: atts } : {}),
+    });
+    return assembleMessage(
+      makeHeaders({ interchangeType: "conversation.message" }),
+      content,
+      enc.encode("FAKE-SIGNATURE"),
+    );
+  }
+
+  test("assemble then extract reconstructs one attachment of each block variant", () => {
+    const msg = buildConversation("see attached", attachments);
+    const extracted = extractAttachments(msg);
+    expect(extracted).toHaveLength(attachments.length);
+    for (let i = 0; i < attachments.length; i++) {
+      const orig = defined(attachments[i]);
+      const got = defined(extracted[i]);
+      expect(got.name).toBe(orig.name);
+      expect(got.contentType).toBe(orig.contentType);
+      expect(Array.from(got.data)).toEqual(Array.from(orig.data));
+    }
+  });
+
+  test("no-attachments conversation round-trips with zero attachment parts", () => {
+    const msg = buildConversation("just text", undefined);
+    expect(extractAttachments(msg)).toHaveLength(0);
+  });
+
+  test("image-only conversation (empty text) round-trips the attachment", () => {
+    const onlyImage = defined(attachments[0]);
+    const msg = buildConversation("", [onlyImage]);
+    const extracted = extractAttachments(msg);
+    expect(extracted).toHaveLength(1);
+    expect(defined(extracted[0]).contentType).toBe("image/png");
+    expect(Array.from(defined(extracted[0]).data)).toEqual(
+      Array.from(onlyImage.data),
+    );
+  });
+
+  test("parseMailToEmail surfaces conversation attachment metadata", () => {
+    const pdf = defined(attachments[3]);
+    const msg = buildConversation("hi", [pdf]);
+    const email = parseMailToEmail(msg, "sml_conv_att");
+    expect(email.attachments).toHaveLength(1);
+    expect(defined(email.attachments[0]).name).toBe("report.pdf");
+    expect(defined(email.attachments[0]).type).toBe("application/pdf");
+  });
+
+  test("a text/plain document attachment is distinguished from the body text", () => {
+    // The trickiest case: a text/plain attachment shares its content type
+    // with the conversation body part, so the two are told apart only by
+    // Content-Disposition. The body must not be read as an attachment, and
+    // the attachment must not be lost.
+    const doc: MessageAttachment = {
+      name: "notes.txt",
+      contentType: "text/plain",
+      data: enc.encode("attached document contents"),
+    };
+    const msg = buildConversation("the conversation body", [doc]);
+
+    const extracted = extractAttachments(msg);
+    expect(extracted).toHaveLength(1);
+    expect(defined(extracted[0]).name).toBe("notes.txt");
+    expect(defined(extracted[0]).contentType).toBe("text/plain");
+    expect(dec.decode(defined(extracted[0]).data)).toBe(
+      "attached document contents",
+    );
+
+    const email = parseMailToEmail(msg, "sml_txt_doc");
+    expect(email.attachments).toHaveLength(1);
+    expect(defined(email.attachments[0]).name).toBe("notes.txt");
+    expect(defined(email.attachments[0]).type).toBe("text/plain");
+  });
+
+  test("conversation message with attachments produces a verifiable signature", async () => {
+    const kp = await generateKeyPair();
+    const provider = createNodeCrypto(kp);
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text: "signed with an image",
+      attachments: [defined(attachments[0])],
+    });
+    const sig = await createDetachedSignatureFromProvider(content, provider);
+    const msg = assembleMessage(
+      makeHeaders({ interchangeType: "conversation.message" }),
+      content,
+      sig,
+    );
+
+    const { headers, bodyOffset } = parseHeaderSection(msg);
+    const boundary = defined(
+      extractBoundary(defined(headers.get("content-type"))),
+    );
+    const parts = parseMultipart(msg.slice(bodyOffset), boundary);
+    const signedPart = defined(parts[0]);
+    const sigPart = parseMimePart(defined(parts[1]));
+    const valid = await verifyDetachedSignature(
+      signedPart,
+      sigPart.body,
+      provider.getPublicKey(),
+    );
+    expect(valid).toBe(true);
+  });
+
+  test("rejects an attachment name containing CRLF (header injection)", () => {
+    expect(() =>
+      assembleSignedContent({
+        kind: "conversation",
+        text: "x",
+        attachments: [
+          {
+            name: "evil\r\nContent-Type: text/html",
+            contentType: "image/png",
+            data: new Uint8Array([1, 2, 3]),
+          },
+        ],
+      }),
+    ).toThrow();
   });
 });

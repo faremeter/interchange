@@ -10,6 +10,7 @@ export {
   extractBoundary,
   extractPartByPath,
   parseMailToEmail,
+  extractAttachments,
 } from "./mime";
 
 export type {
