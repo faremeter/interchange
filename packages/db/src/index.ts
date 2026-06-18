@@ -22,6 +22,18 @@ export {
   type AssetWithOrigin,
 } from "./asset-resolution";
 export {
+  listVisibleModels,
+  listVisibleProviders,
+  listVisibleOfferings,
+  type ModelRow,
+  type ModelProviderRow,
+  type ModelOfferingRow,
+  type Origin,
+  type VisibleModel,
+  type VisibleProvider,
+  type ResolvedOffering,
+} from "./catalog-resolution";
+export {
   parseAgentRow,
   parseAgentVersionRow,
   parseGrantRow,
