@@ -5,10 +5,16 @@ import { MatchedGrant, grantEffects } from "./grants";
 const Effect = type.enumerated(...grantEffects);
 
 export const AuditAuthz = type({
-  effect: Effect.or("null"),
-  "resolvedBy?": MatchedGrant.or("null"),
+  effect: Effect.or("null").describe(
+    "The authorization outcome the runtime resolved for this tool call: `allow`, `deny`, or `ask`, or `null` when no grant matched.",
+  ),
+  "resolvedBy?": MatchedGrant.or("null").describe(
+    "The single grant whose effect determined the outcome (the most specific match), or `null` when nothing matched.",
+  ),
   matchingGrants: MatchedGrant.array(),
-  blocked: "boolean",
+  blocked: type("boolean").describe(
+    "True when the runtime prevented the tool call from executing because authorization did not resolve to `allow`.",
+  ),
   "blockReason?": "string",
 });
 export type AuditAuthz = typeof AuditAuthz.infer;

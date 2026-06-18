@@ -26,11 +26,17 @@ const UpdatableStatus = type.enumerated(...updatablePrincipalStatuses);
 export const PrincipalResponse = type({
   id: "string",
   tenantId: "string",
-  kind: Kind,
-  refId: "string",
+  kind: Kind.describe(
+    "Whether this principal represents a `user` (a human account) or an `agent`.",
+  ),
+  refId: type("string").describe(
+    "Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, or the agent id when `kind` is `agent`. Unique per tenant and kind.",
+  ),
   displayName: "string",
   "email?": "string",
-  status: Status,
+  status: Status.describe(
+    "Account state of the principal: `active`, `suspended`, `invited` (membership pending acceptance), or `deactivated`.",
+  ),
   roles: type({
     id: "string",
     name: "string",
@@ -40,7 +46,9 @@ export const PrincipalResponse = type({
 });
 
 export const UpdatePrincipal = type({
-  status: UpdatableStatus,
+  status: UpdatableStatus.describe(
+    "New account state for the principal. Only `active`, `suspended`, and `deactivated` are settable; `invited` is reached only through the invitation flow.",
+  ),
 });
 
 export const InviteMember = type({

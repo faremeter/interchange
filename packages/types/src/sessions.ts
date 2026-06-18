@@ -14,7 +14,9 @@ export const SessionResponse = type({
   tenantId: "string",
   agentId: "string",
   principalId: "string",
-  status: "'idle' | 'ending' | 'ended'",
+  status: type("'idle' | 'ending' | 'ended'").describe(
+    "Persisted lifecycle state of the session: `idle` (open, awaiting work), `ending` (teardown in progress), or `ended` (closed).",
+  ),
   createdAt: "string",
   updatedAt: "string",
   "lastActivityAt?": "string | null",
@@ -24,7 +26,9 @@ export const SessionResponse = type({
 // internally and does not surface retry state to the hub, so the retry
 // variant is omitted until the event protocol supports it.
 export const SessionStatus = type({
-  status: "'idle' | 'busy' | 'waiting_approval'",
+  status: type("'idle' | 'busy' | 'waiting_approval'").describe(
+    "Runtime operational state of an active session, distinct from its persisted lifecycle state: `idle` (ready), `busy` (processing a turn), or `waiting_approval` (blocked on an interactive approval before a tool call can proceed).",
+  ),
 });
 export type SessionStatus = typeof SessionStatus.infer;
 
@@ -51,8 +55,12 @@ export const MailResponse = type({
     "Internal session channel identifier, not a user-facing session resource.",
   ),
   instanceId: "string | null",
-  direction: "'inbound' | 'outbound'",
-  status: "'pending' | 'delivered'",
+  direction: type("'inbound' | 'outbound'").describe(
+    "Whether the message was sent to the agent (`inbound`) or emitted by the agent (`outbound`).",
+  ),
+  status: type("'pending' | 'delivered'").describe(
+    "Delivery state of the mail: `pending` (accepted, not yet dispatched to the running agent) or `delivered`.",
+  ),
   receivedAt: "string",
   from: type({
     name: "string | null",

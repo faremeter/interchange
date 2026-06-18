@@ -1097,11 +1097,14 @@ Source: packages/types/src/agents.ts
 `{ address: string, agentId: string, agentName: string, createdAt: string, id: string, status: "deployed" | "error" | "running" | "stopped" | "updating", tenantId: string, updatedAt: string, endedAt?: string | null, kernelId?: string | null, publicKey?: string | null, sidecarId?: string | null }`
 Source: packages/types/src/agents.ts
 
+**status**: Lifecycle state of this running instance: `deployed` (provisioned on a sidecar, not yet started), `running` (started and serving), `updating` (rolling to a new definition version), `error` (launch or runtime failure), or `stopped` (undeployed).
+
 ### AgentResponse
 `{ createdAt: string, creatorPrincipalId: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, toolPackages: { name: /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/, version: string }[], updatedAt: string, capabilities?: { [string]: unknown }, contextConfig?: { [string]: unknown }, credentialRequirements?: { providerName: string, source: "creator" | "invoker" | "tenant", name?: string, scopes?: string[] }[], description?: string | null, grantRequirements?: { action: string, resource: string, source: "creator" | "invoker", conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], initialState?: { [string]: unknown }, modelConfig?: { [string]: unknown }, roles?: { id: string, name: string }[], systemPrompt?: string | null }`
 Source: packages/types/src/agents.ts
 
 **creatorPrincipalId**: Identifies the definition author's principal (definitions have no principalId of their own). Used for resolving creator-sourced grant and credential requirements.
+**status**: Lifecycle state of the agent definition: `deployed` (a launchable version is active) or `stopped` (deactivated, no new instances launch).
 **toolPackages**: Tool packages this definition pins. Always present; an empty array means the definition pins no packages (the agent runs with whatever non-tool-package factories the sidecar harness ships).
 
 ### ApprovalResponse
@@ -1124,9 +1127,14 @@ Source: packages/types/src/approvals.ts
 `{ createdAt: string, creatorPrincipalId: string | null, displayName: string | null, id: string, kind: string, name: string, tenantId: string, updatedAt: string }`
 Source: packages/types/src/assets.ts
 
+**kind**: Category of the asset, used together with `name` to address it. The (kind, name) pair is what callers resolve against, and it is unique within a tenant.
+
 ### AssetWithOriginResponse
 `{ createdAt: string, creatorPrincipalId: string | null, displayName: string | null, id: string, kind: string, name: string, origin: { direct: boolean, tenantId: string }, tenantId: string, updatedAt: string }`
 Source: packages/types/src/assets.ts
+
+**kind**: Category of the asset, used together with `name` to address it. The (kind, name) pair is what callers resolve against, and it is unique within a tenant.
+**origin**: Which tenant in the hierarchy this asset row came from, distinguishing locally-defined assets from inherited ones.
 
 ### AttachmentErrorResponse
 `{ error: { attachmentIndex: number, byteLength: number, code: "oversize_attachment", limitBytes: number, message: string } | { attachmentIndex: number, code: "disallowed_mime_type", message: string, mimeType: string } | { attachmentIndex: number, code: "invalid_attachment_name", message: string } | { attachmentIndex: number, code: "malformed_base64", message: string } | { code: "oversize_total", limitBytes: number, message: string, totalBytes: number } }`
@@ -1157,6 +1165,10 @@ Source: packages/types/src/agents.ts
 `{ name: string, providerId: string, secret: string, type: "api_key" | "certificate" | "oauth_token" | "other", description?: string, expiresAt?: string, metadata?: { [string]: unknown }, oauthClientId?: string, principalId?: string, refreshSecret?: string, scopes?: string[] }`
 Source: packages/types/src/credentials.ts
 
+**type**: Kind of secret material this credential holds: `api_key`, `oauth_token`, `certificate`, or `other`. Determines how `secret` (and `refreshSecret` for OAuth) is interpreted when the credential is used.
+**metadata**: Free-form provider- or integration-specific data attached to the credential. Not interpreted by the hub.
+**scopes**: Permissions granted to this credential by the provider (for example OAuth scopes). Informational on the credential record; the provider is the authority on what the secret can actually do.
+
 ### CreateFederationTrust
 `{ direction: "bilateral" | "inbound" | "outbound", targetTenantId: string }`
 Source: packages/types/src/tenants.ts
@@ -1165,9 +1177,17 @@ Source: packages/types/src/tenants.ts
 `{ action: string, effect: "allow" | "ask" | "deny", origin: "creator" | "invoker" | "role" | "system", resource: string, conditions?: { [string]: unknown } | null, expiresAt?: string | null, principalId?: string | null, roleId?: string | null }`
 Source: packages/types/src/grants.ts
 
+**effect**: Outcome when this grant is the one resolved for a request: `allow` permits the action, `deny` blocks it, `ask` requires interactive approval before proceeding. When several grants match, the most specific wins, and at equal specificity the strongest effect wins (`deny` over `ask` over `allow`).
+**origin**: Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the agent definition author), or `invoker` (delegated by whoever launched the agent). Origin is provenance only; it does not affect evaluation precedence.
+**conditions**: Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A grant with conditions is skipped (fails closed) when no registry is available to evaluate them.
+
 ### CreateOAuthClient
 `{ clientId: string, clientSecret: string, name: string, providerId: string, defaultScopes?: string[], metadata?: { [string]: unknown }, redirectUris?: string[] }`
 Source: packages/types/src/oauth-clients.ts
+
+**defaultScopes**: Scopes requested by default when initiating an authorization flow with this client.
+**metadata**: Free-form client-specific configuration not covered by the typed fields. Not interpreted by the hub.
+**redirectUris**: Allowed OAuth redirect URIs for this client. The authorization callback must match one of these.
 
 ### CreateOffering
 `{ agentId: string, name: string, description?: string, pricing?: { base?: { amount: string, currency: string }, bounds?: { max?: string, min?: string }, methods?: string[], negotiable?: boolean }, schema?: { [string]: unknown } }`
@@ -1176,6 +1196,10 @@ Source: packages/types/src/offerings.ts
 ### CreateProvider
 `{ name: string, plugin: string, authorizationUrl?: string, metadata?: { [string]: unknown }, scopes?: string[], tokenUrl?: string, userInfoUrl?: string }`
 Source: packages/types/src/providers.ts
+
+**plugin**: Identifier of the integration this provider drives (for example the inference backend). Used to dispatch to the matching plugin and as the prefix when forming fully-qualified model ids (`plugin:model`).
+**metadata**: Free-form provider-specific configuration not covered by the typed fields. Not interpreted by the hub.
+**scopes**: OAuth scopes associated with this provider integration.
 
 ### CreateRole
 `{ name: string, description?: string }`
@@ -1195,9 +1219,17 @@ Source: packages/types/src/tenants.ts
 `{ backendType: "credits" | "crypto" | "fiat", currency: string, name: string, config?: { [string]: unknown } }`
 Source: packages/types/src/wallets.ts
 
+**backendType**: Settlement backend the wallet is denominated in: `crypto` (on-chain assets), `fiat` (national currency), or `credits` (internal accounting units). Determines how balances and transactions are settled.
+**config**: Backend-specific configuration for the wallet (for example chain or account details for a `crypto` backend). Shape depends on `backendType`; not interpreted by the hub.
+
 ### CredentialResponse
 `{ createdAt: string, id: string, name: string, providerId: string, status: "active" | "error" | "expired" | "revoked", tenantId: string, type: "api_key" | "certificate" | "oauth_token" | "other", updatedAt: string, description?: string | null, expiresAt?: string | null, metadata?: { [string]: unknown } | null, oauthClientId?: string | null, principalId?: string | null, scopes?: string[] | null }`
 Source: packages/types/src/credentials.ts
+
+**status**: Usability state of the credential: `active` (usable), `expired` (past its `expiresAt`), `revoked` (deliberately invalidated), or `error` (last use failed, e.g. rejected by the provider).
+**type**: Kind of secret material this credential holds: `api_key`, `oauth_token`, `certificate`, or `other`. Determines how `secret` (and `refreshSecret` for OAuth) is interpreted when the credential is used.
+**metadata**: Free-form provider- or integration-specific data attached to the credential. Not interpreted by the hub.
+**scopes**: Permissions granted to this credential by the provider (for example OAuth scopes). Informational on the credential record; the provider is the authority on what the secret can actually do.
 
 ### ErrorResponse
 `{ error: { code: string, message: string } }`
@@ -1210,6 +1242,9 @@ Source: packages/types/src/grants.ts
 ### EvaluateResult
 `{ effect: "allow" | "ask" | "deny", matchingGrants: { action: string, effect: "allow" | "ask" | "deny", id: string, origin: "creator" | "invoker" | "role" | "system", resource: string, specificity?: number }[] }`
 Source: packages/types/src/grants.ts
+
+**effect**: The resolved outcome for the query: the effect of the winning grant, or `deny` when no grant matched (authorization fails closed).
+**matchingGrants**: Every grant that matched the requested resource and action, including the one that won. Useful for debugging why a request was allowed, denied, or required approval.
 
 ### FederationTrust
 `{ createdAt: string, direction: "bilateral" | "inbound" | "outbound", tenantDomain: string, tenantId: string, tenantName: string }`
@@ -1227,6 +1262,10 @@ Source: packages/types/src/agent-data.ts
 `{ action: string, createdAt: string, effect: "allow" | "ask" | "deny", id: string, origin: "creator" | "invoker" | "role" | "system", resource: string, tenantId: string, updatedAt: string, conditions?: { [string]: unknown } | null, expiresAt?: string | null, principalId?: string | null, principalName?: string | null, roleId?: string | null, roleName?: string | null }`
 Source: packages/types/src/grants.ts
 
+**effect**: Outcome when this grant is the one resolved for a request: `allow` permits the action, `deny` blocks it, `ask` requires interactive approval before proceeding. When several grants match, the most specific wins, and at equal specificity the strongest effect wins (`deny` over `ask` over `allow`).
+**origin**: Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the agent definition author), or `invoker` (delegated by whoever launched the agent). Origin is provenance only; it does not affect evaluation precedence.
+**conditions**: Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A grant with conditions is skipped (fails closed) when no registry is available to evaluate them.
+
 ### HistoryEntry
 `{ author: string, message: string, ref: string, timestamp: string, filesChanged?: number }`
 Source: packages/types/src/agent-data.ts
@@ -1243,7 +1282,9 @@ Source: packages/types/src/observability.ts
 `{ attachments: { blobId: string, name: string | null, size: number, type: string }[], bodyValues: { [string]: unknown }, direction: "inbound" | "outbound", from: { email: string, name: string | null }[], headers: { [string]: string }, htmlBody: { partId: string, type: string }[], id: string, instanceId: string | null, receivedAt: string, sentAt: string | null, sessionId: string, status: "delivered" | "pending", subject: string | null, textBody: { partId: string, type: string }[], to: { email: string, name: string | null }[] }`
 Source: packages/types/src/sessions.ts
 
+**direction**: Whether the message was sent to the agent (`inbound`) or emitted by the agent (`outbound`).
 **sessionId**: Internal session channel identifier, not a user-facing session resource.
+**status**: Delivery state of the mail: `pending` (accepted, not yet dispatched to the running agent) or `delivered`.
 
 ### MetricsResponse
 `{ agentId: string, avgLatencyMs?: number, cost?: string, errorRate?: number, messageCount?: number, tokenUsage?: { input?: number, output?: number, total?: number } }`
@@ -1253,9 +1294,15 @@ Source: packages/types/src/observability.ts
 `{ id: string, name: string, providerId: string, capabilities?: string[], description?: string | null, limits?: { context?: number, output?: number }, pricing?: { cacheRead?: string, cacheWrite?: string, input?: string, output?: string } }`
 Source: packages/types/src/models.ts
 
+**capabilities**: Capability tags advertised for the model (for example streaming, tool use, or vision support), as reported by the provider.
+
 ### OAuthClientResponse
 `{ createdAt: string, id: string, name: string, providerId: string, tenantId: string, updatedAt: string, defaultScopes?: string[] | null, metadata?: { [string]: unknown } | null, redirectUris?: string[] | null }`
 Source: packages/types/src/oauth-clients.ts
+
+**defaultScopes**: Scopes requested by default when initiating an authorization flow with this client.
+**metadata**: Free-form client-specific configuration not covered by the typed fields. Not interpreted by the hub.
+**redirectUris**: Allowed OAuth redirect URIs for this client. The authorization callback must match one of these.
 
 ### OfferingDetail
 `{ agentId: string, agentName: string, id: string, name: string, tenantId: string, description?: string | null, pricing?: { base?: { amount: string, currency: string }, bounds?: { max?: string, min?: string }, methods?: string[], negotiable?: boolean }, schema?: { [string]: unknown } | null }`
@@ -1265,9 +1312,17 @@ Source: packages/types/src/offerings.ts
 `{ createdAt: string, displayName: string, id: string, kind: "agent" | "user", refId: string, roles: { id: string, name: string }[], status: "active" | "deactivated" | "invited" | "suspended", tenantId: string, updatedAt: string, email?: string }`
 Source: packages/types/src/principals.ts
 
+**kind**: Whether this principal represents a `user` (a human account) or an `agent`.
+**refId**: Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, or the agent id when `kind` is `agent`. Unique per tenant and kind.
+**status**: Account state of the principal: `active`, `suspended`, `invited` (membership pending acceptance), or `deactivated`.
+
 ### ProviderResponse
 `{ createdAt: string, id: string, name: string, plugin: string, tenantId: string, updatedAt: string, authorizationUrl?: string | null, metadata?: { [string]: unknown } | null, scopes?: string[] | null, tokenUrl?: string | null, userInfoUrl?: string | null }`
 Source: packages/types/src/providers.ts
+
+**plugin**: Identifier of the integration this provider drives (for example the inference backend). Used to dispatch to the matching plugin and as the prefix when forming fully-qualified model ids (`plugin:model`).
+**metadata**: Free-form provider-specific configuration not covered by the typed fields. Not interpreted by the hub.
+**scopes**: OAuth scopes associated with this provider integration.
 
 ### RejectAction
 `{ message?: string }`
@@ -1313,13 +1368,24 @@ Source: packages/types/src/agents.ts
 `{ description?: string, expiresAt?: string | null, metadata?: { [string]: unknown }, name?: string, refreshSecret?: string | null, scopes?: string[] | null, secret?: string, status?: "active" | "error" | "expired" | "revoked" }`
 Source: packages/types/src/credentials.ts
 
+**metadata**: Free-form provider- or integration-specific data attached to the credential. Not interpreted by the hub.
+**scopes**: Permissions granted to this credential by the provider (for example OAuth scopes). Informational on the credential record; the provider is the authority on what the secret can actually do.
+**status**: Usability state of the credential: `active` (usable), `expired` (past its `expiresAt`), `revoked` (deliberately invalidated), or `error` (last use failed, e.g. rejected by the provider).
+
 ### UpdateGrant
 `{ conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny", expiresAt?: string | null }`
 Source: packages/types/src/grants.ts
 
+**conditions**: Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A grant with conditions is skipped (fails closed) when no registry is available to evaluate them.
+**effect**: Outcome when this grant is the one resolved for a request: `allow` permits the action, `deny` blocks it, `ask` requires interactive approval before proceeding. When several grants match, the most specific wins, and at equal specificity the strongest effect wins (`deny` over `ask` over `allow`).
+
 ### UpdateOAuthClient
 `{ clientId?: string, clientSecret?: string, defaultScopes?: string[] | null, metadata?: { [string]: unknown } | null, name?: string, redirectUris?: string[] | null }`
 Source: packages/types/src/oauth-clients.ts
+
+**defaultScopes**: Scopes requested by default when initiating an authorization flow with this client.
+**metadata**: Free-form client-specific configuration not covered by the typed fields. Not interpreted by the hub.
+**redirectUris**: Allowed OAuth redirect URIs for this client. The authorization callback must match one of these.
 
 ### UpdateOffering
 `{ description?: string, name?: string, pricing?: { base?: { amount: string, currency: string }, bounds?: { max?: string, min?: string }, methods?: string[], negotiable?: boolean }, schema?: { [string]: unknown } }`
@@ -1329,9 +1395,15 @@ Source: packages/types/src/offerings.ts
 `{ status: "active" | "deactivated" | "suspended" }`
 Source: packages/types/src/principals.ts
 
+**status**: New account state for the principal. Only `active`, `suspended`, and `deactivated` are settable; `invited` is reached only through the invitation flow.
+
 ### UpdateProvider
 `{ authorizationUrl?: string | null, metadata?: { [string]: unknown } | null, name?: string, plugin?: string, scopes?: string[] | null, tokenUrl?: string | null, userInfoUrl?: string | null }`
 Source: packages/types/src/providers.ts
+
+**metadata**: Free-form provider-specific configuration not covered by the typed fields. Not interpreted by the hub.
+**plugin**: Identifier of the integration this provider drives (for example the inference backend). Used to dispatch to the matching plugin and as the prefix when forming fully-qualified model ids (`plugin:model`).
+**scopes**: OAuth scopes associated with this provider integration.
 
 ### UpdateRole
 `{ description?: string, name?: string }`
@@ -1345,6 +1417,8 @@ Source: packages/types/src/tenants.ts
 `{ config?: { [string]: unknown }, name?: string }`
 Source: packages/types/src/wallets.ts
 
+**config**: Backend-specific configuration for the wallet (for example chain or account details for a `crypto` backend). Shape depends on `backendType`; not interpreted by the hub.
+
 ### UserProfile
 `{ createdAt: string, email: string, emailVerified: boolean, id: string, name: string, updatedAt: string, image?: string | null }`
 Source: packages/types/src/me.ts
@@ -1352,4 +1426,8 @@ Source: packages/types/src/me.ts
 ### WalletResponse
 `{ backendType: "credits" | "crypto" | "fiat", balance: string, createdAt: string, currency: string, id: string, name: string, tenantId: string, updatedAt: string, config?: { [string]: unknown } }`
 Source: packages/types/src/wallets.ts
+
+**backendType**: Settlement backend the wallet is denominated in: `crypto` (on-chain assets), `fiat` (national currency), or `credits` (internal accounting units). Determines how balances and transactions are settled.
+**balance**: Current balance as a decimal string in the wallet's `currency`. Stored as a string to preserve precision for both crypto and fiat amounts.
+**config**: Backend-specific configuration for the wallet (for example chain or account details for a `crypto` backend). Shape depends on `backendType`; not interpreted by the hub.
 
