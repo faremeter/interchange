@@ -40,8 +40,19 @@ see [`LAYOUT.md`](../LAYOUT.md).
   `make docs` from the OpenAPI spec at `GET /openapi.json` and
   ArkType introspection over `@intx/types`. Do not edit by
   hand.
+- [`GIT_ACCESS.md`](./GIT_ACCESS.md) — operator-facing walkthrough
+  for the hub's smart-HTTP git endpoints. Minting tokens, configuring
+  stock `git`, and the URL and `refPattern` grammars for the assets
+  and agent-state repo families.
 
 ## Implementation notes
 
 - [`IMPLEMENTATION.md`](./IMPLEMENTATION.md) — implementation notes.
   Currently covers the SMTP/IMAP message bus.
+- [`ANTHROPIC_DISCOVERY.md`](./ANTHROPIC_DISCOVERY.md) — observed vs
+  documented wire behaviour of Anthropic's `/v1/messages` and
+  `/v1/files` surfaces. Narrative companion to the discovery fixtures
+  and the `SUPPORT_MATRIX`.
+- [`OPENCODE_DISCOVERY.md`](./OPENCODE_DISCOVERY.md) — observed vs
+  documented wire behaviour of the OpenCode Zen relay. Narrative
+  companion to the discovery fixtures and the `SUPPORT_MATRIX`.

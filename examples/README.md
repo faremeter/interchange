@@ -53,6 +53,10 @@ without overwhelming the conversation or the model.
   combine per-task model selection, failover, and cost optimisation
   using the agent's `sources` array and `setSource()`. Routing
   policy lives in user-land; the agent ships the primitives.
+- [`agent-gemini-image`](./agent-gemini-image/README.md) — run
+  `gemini-2.5-flash-image` asking for both text and image modalities,
+  then consume the streaming `inference.image_output` event via
+  `runInference`, writing the returned image bytes to disk.
 
 ## Full integration
 
