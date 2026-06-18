@@ -62,7 +62,7 @@ If an agent requires specific scopes and a credential doesn't declare any, the c
 
 ### Status and Lifecycle
 
-Credentials track their health via a status field: active, expired, revoked, or error. The control plane proactively refreshes OAuth tokens before they expire. When refresh fails, the credential is marked with an error status. Expired or errored credentials are not resolved for agent launches.
+Credentials track their health via a status field: active, expired, revoked, or error. Expired or errored credentials are not resolved for agent launches. Proactive refresh of OAuth tokens before they expire (and the error-status transition on refresh failure) is **Planned / Not Yet Implemented** — see "Credential Updates and Refresh" below.
 
 ## Agent Credential Requirements
 
@@ -107,15 +107,25 @@ This model is consistent with the architecture document's statement that child t
 
 ## Credential Updates and Refresh
 
+### Credential Rotation Push (Current Behavior)
+
+When a tenant administrator rotates a credential's secret, the control plane pushes the updated inference sources to every running instance in the tenant that may use credentials from the affected provider. It re-resolves each running instance's full sources array and sends a `sources.update` frame to the instance's sidecar over the persistent bidirectional connection that sidecars maintain with the control plane (described in the architecture document). The sidecar hot-swaps the active source on the harness and re-persists the agent config.
+
+This push is triggered only by an administrator rotating the secret. It is not an automatic token-refresh loop: the control plane does not, on its own, detect an expiring or invalid token and obtain a new one. The planned proactive and reactive refresh flows below would add that capability; today the only way an updated credential reaches a running instance is an administrator rotation.
+
 ### Proactive Refresh
 
-The control plane runs a background process that refreshes OAuth tokens before they expire. It queries credentials approaching expiration, resolves the associated OAuth client and provider, and performs a token refresh using the provider's token endpoint. The refreshed access token and expiry are updated in place. If the provider rotates refresh tokens, the new refresh token is stored as well.
+**Planned / Not Yet Implemented.** The behavior in this subsection describes a future design; it is not built today. There is no background process that refreshes OAuth tokens, and the control plane performs no token exchange against provider endpoints.
 
-When a credential is refreshed, the control plane pushes the updated credential to every harness that currently holds it. This happens over the persistent bidirectional connection that harnesses maintain with the control plane (described in the architecture document). The control plane tracks which harnesses hold which credentials based on agent launch records.
+The planned design: the control plane runs a background process that refreshes OAuth tokens before they expire. It queries credentials approaching expiration, resolves the associated OAuth client and provider, and performs a token refresh using the provider's token endpoint. The refreshed access token and expiry are updated in place. If the provider rotates refresh tokens, the new refresh token is stored as well.
+
+When a credential is refreshed, the control plane pushes the updated credential to every harness that currently holds it. This happens over the persistent bidirectional connection that harnesses maintain with the control plane. The control plane tracks which harnesses hold which credentials based on agent launch records.
 
 ### Runtime Token Failure
 
-Proactive refresh handles the happy path where tokens expire on schedule. The unhappy path -- a provider invalidating a token unexpectedly (service restart, manual revocation, security incident) -- requires a reactive flow.
+**Planned / Not Yet Implemented.** The reactive flow in this subsection describes a future design; it is not built today. The harness does not request a refresh from the control plane, and there is no harness-to-control-plane refresh-request frame on the wire.
+
+The planned design: proactive refresh handles the happy path where tokens expire on schedule. The unhappy path -- a provider invalidating a token unexpectedly (service restart, manual revocation, security incident) -- requires a reactive flow.
 
 When the harness encounters an authentication failure (e.g., a 401 response from a provider), it recognizes this as a credential failure and requests a refresh from the control plane over the persistent connection. The control plane receives the request, attempts to refresh the credential using the refresh token and OAuth client, and responds:
 
@@ -128,7 +138,9 @@ The harness enforces a retry budget: one retry after a successful refresh. If th
 
 ### Bidirectional Credential Channel
 
-The persistent connection between harnesses and the control plane serves both directions of credential lifecycle management:
+**Planned / Not Yet Implemented.** The two-directional refresh channel described here is a future design. Today the credential channel carries only the control-plane-to-sidecar rotation push described under "Credential Rotation Push" above; there is no harness-to-control-plane refresh request.
+
+The planned design: the persistent connection between harnesses and the control plane serves both directions of credential lifecycle management:
 
 - **Control plane to harness**: proactive credential updates when the control plane refreshes a token on schedule.
 - **Harness to control plane**: reactive refresh requests when the harness encounters an authentication failure at runtime.
@@ -171,13 +183,15 @@ For non-OAuth providers (API key services, certificate-based auth), the plugin f
 
 better-auth owns user authentication: sign-in, sign-up, session management, the `user`, `session`, and `account` tables. The credential system does not read from or write to these tables.
 
-The credential system owns integration credentials: the `provider`, `oauth_client`, and `credential` tables, tenant hierarchy walk-up, principal ownership, grant-based access control, proactive refresh, and harness distribution. It uses better-auth's OAuth2 protocol machinery as a library dependency, not as a framework it runs inside of.
+The credential system owns integration credentials: the `provider`, `oauth_client`, and `credential` tables, tenant hierarchy walk-up, principal ownership, grant-based access control, the rotation push to running instances, and (as planned, not-yet-implemented work) proactive refresh. It uses better-auth's OAuth2 protocol machinery as a library dependency, not as a framework it runs inside of.
 
 This separation means the two systems can evolve independently. Adding a new OAuth provider to better-auth's catalog automatically makes it available for integration credentials. Changes to better-auth's session or account model do not affect credential storage. The credential system's tenant-scoped, principal-aware storage model is entirely its own concern.
 
 ### Token Refresh
 
-For proactive refresh, the control plane uses the same provider objects that performed the original OAuth flow. The provider's `refreshAccessToken` method handles provider-specific refresh behavior. The control plane reads the refresh token from the credential table, calls the provider's refresh method, and updates the credential table with the new access token and expiry.
+**Planned / Not Yet Implemented.** Token refresh is not built today; the control plane performs no token exchange against provider endpoints. The design below records how the better-auth primitives are intended to be used once the proactive and reactive refresh flows (see "Credential Updates and Refresh") are implemented.
+
+For proactive refresh, the control plane would use the same provider objects that performed the original OAuth flow. The provider's `refreshAccessToken` method handles provider-specific refresh behavior. The control plane reads the refresh token from the credential table, calls the provider's refresh method, and updates the credential table with the new access token and expiry.
 
 For reactive refresh (when a harness reports a 401), the same path applies: the control plane resolves the provider, calls its refresh method, and pushes the result back to the harness.
 

@@ -203,7 +203,7 @@ Conditions are evaluated at runtime by the authorization engine. A grant with un
 
 Grant revocation is policy-driven with a default of fail-secure.
 
-**Creator grant revocation**: If the creator's authority is revoked after agents have been launched with creator-sourced grants, running agents lose the affected grants immediately. The control plane pushes a `grants.update` frame to the harness, which re-evaluates its materialized grants and stops exercising revoked capabilities regardless of in-flight work. Tenants can configure grace periods or notification-only behavior for specific grant types.
+**Creator grant revocation**: If the creator's authority is revoked after agents have been launched with creator-sourced grants, running agents lose the affected grants. The control plane pushes a `grants.update` frame to the harness, which replaces its live materialized grant set. The harness authorizes each tool call against this set before the call executes, so a revoked capability is blocked at the next authorization check; a tool call already in flight is not interrupted. Tenants can configure grace periods or notification-only behavior for specific grant types.
 
 **Invoker grant revocation**: Invoker-granted capabilities expire when the agent stops unless explicitly persisted. They are session-scoped by default.
 
