@@ -41,6 +41,7 @@ Uses `fetch` and `ReadableStream` exclusively. No Node APIs, no filesystem assum
 | `@intx/inference`      | Provider adapters (Anthropic, OpenAI-compatible), streaming harness, reactor, director system, context management, compaction, error classification, token accounting, cross-provider message transformation, test provider, and the `transforms/` subpath (`createSizeCapTransform` and friends). The reasoning engine. |
 | `@intx/harness`        | Agent lifecycle, event routing, tool dispatch, content safety, session channel logic. Composes inference and authz with environment-specific implementations injected at startup.                                                                                                                                        |
 | `@intx/agent`          | In-process agent runtime. Peer driver to the harness — the harness drives the reactor from a mail transport; the agent drives it from in-process calls. Bundles `storage-isogit` for context storage.                                                                                                                    |
+| `@intx/workflow`       | Workflow state machine, definition surface, runtime, and the in-memory `runLocal` harness. Reconstructs run state from an append-only event log (`applyEvent`/`resumeFromLog`), schedules the step DAG, and drives the agent through per-step authz contexts. Depends only on `agent` and `inference`.                   |
 | `@intx/mime`           | MIME message construction, multipart assembly, PGP detached signature generation, RFC 2822 formatting, and MIME parsing. Used by message transports.                                                                                                                                                                     |
 | `@intx/pack-transport` | Git pack protocol chunking and reassembly. Transfers git object data between the hub and sidecars over WebSocket or HTTP.                                                                                                                                                                                                |
 
@@ -74,6 +75,15 @@ Each package implements an interface defined in `@intx/types`. The harness accep
 | `@intx/tools-lsp`   | Server      | Language-server diagnostics. Composes with `tools-posix` and spawns LSP servers over JSON-RPC. Requires process spawning and `which` shell. |
 | `@intx/tools-mail`  | Any         | Mail send/read/search/reply/wait operations on the agent's inbox. Composes with any `MessageTransport` implementation.                      |
 
+### Server Runtime Host
+
+Server-only packages that compose the portable core and environment-specific implementations into a running host process. They assume a Node filesystem and process; they do not ship to constrained environments. Per the dependency rules their runtime dependencies are only shared-foundation and agent-runtime packages, never control-plane packages, even though `tool-packaging` also runs hub-side. (`hub-agent` carries a test-only dev dependency on `@intx/hub-sessions` to contract-test the hub WebSocket link against the real hub wire types; the shipped artifact links no control-plane code.)
+
+| Package                | Purpose                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@intx/hub-agent`      | Sidecar-side orchestrator. Builds a harness per hosted agent, manages session lifecycle (provision, restore, shutdown), reconnects to the hub WebSocket, owns the per-agent key and repo stores, and applies deploy and asset packs received from the hub. `createSidecarOrchestrator` is the core seam `apps/sidecar` wires together.                                                             |
+| `@intx/tool-packaging` | Hub-side closure resolver and sidecar-side loader for the npm-distributed tool-package format. Resolves a manifest's dependency closure, materializes tarballs into a content-addressable cache, and lays out a per-instance nested `node_modules/` so a tool package and its transitives resolve bare-specifier imports against the manifest closure. Used by both `apps/hub` and `apps/sidecar`. |
+
 ### Why the splits exist
 
 A package that pulls in native git bindings has no business shipping to a Cloudflare Worker. A package that bundles isomorphic-git has no business shipping to a server with native git available. The environment splits exist because the dependency trees are genuinely different — different native modules, different APIs, different capabilities. These are not configuration differences. They are different code.
@@ -90,9 +100,19 @@ The portable core packages (`inference`, `harness`, `agent`) never import enviro
 | `@intx/inference-discovery-openai`       | OpenAI-protocol provider plug-in for the discovery rig. Carries the protocol layer plus per-deployment wiring; OpenCode Zen (Moonshot, Z.AI, DeepSeek, Alibaba, Xiaomi MiMo) is the first deployment.                                                                     |
 | `@intx/inference-discovery-anthropic`    | Anthropic provider plug-in for the discovery rig. Captures Claude wire responses across streaming and non-streaming variants for the first-party `/v1/messages` and `/v1/files` surfaces, including extended thinking, redacted thinking, code execution, and web search. |
 
+## Applications
+
+Deployable processes under `apps/`. Each wires packages from one deployment context into a runnable artifact; none is published as a library. See each app's README for its startup contract and environment variables.
+
+| App             | Context       | Purpose                                                                                                                                                                                                                                         |
+| --------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/hub`      | Control plane | Bun server entry point. Wires `hub-api`, `hub-sessions`, and `db` into a Hono app, mounts the sidecar WebSocket, and exports the Bun `fetch`/`websocket` server. The control-plane process operators run.                                       |
+| `apps/sidecar`  | Agent runtime | Bun host process for hub-orchestrated agents. Boots the tarball cache and starts an `@intx/hub-agent` orchestrator wired with the default server harness builder (`@intx/tools-posix`/`tools-lsp`/`tools-mail`, `crypto-node`, isogit storage). |
+| `apps/admin-ui` | Control plane | React 19 single-page admin UI built with Vite. Renders the TanStack Router tenant-management console (agents, principals, roles, grants, credentials, wallets, instances, offerings) against the hub API through `@intx/hub-client`.            |
+
 ## Dependency Rules
 
-1. Agent runtime packages never depend on control-plane packages.
+1. Agent runtime packages never depend on control-plane packages at runtime. Test-only dev dependencies that exercise a cross-tree wire contract are permitted (e.g. `hub-agent`'s dev dependency on `hub-sessions`).
 2. Control-plane packages never depend on agent runtime packages.
 3. Both trees depend on the shared foundation (`types`, `authz`, `log`).
 4. Environment-specific packages depend on `types` for interfaces, never on each other (`tools-lsp` on `tools-posix` is the documented exception — see the tool-set table).
