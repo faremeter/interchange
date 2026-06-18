@@ -58,9 +58,9 @@ function decode(data: string): Uint8Array | null {
  *
  * The most specific error wins, in this priority order so the caller sees
  * the most actionable failure: per-attachment oversize, then disallowed
- * MIME type, then malformed base64, then per-message total oversize. On
- * success the decoded `MessageAttachment[]` is returned with names
- * defaulted to `attachment-{index}` by request-body position.
+ * MIME type, then invalid name, then malformed base64, then per-message
+ * total oversize. On success the decoded `MessageAttachment[]` is returned
+ * with names defaulted to `attachment-{index}` by request-body position.
  */
 export function validateAttachments(
   inputs: readonly AttachmentInput[],
@@ -68,6 +68,7 @@ export function validateAttachments(
 ): AttachmentValidationResult {
   let oversize: AttachmentValidationError | undefined;
   let disallowed: AttachmentValidationError | undefined;
+  let invalidName: AttachmentValidationError | undefined;
   let malformed: AttachmentValidationError | undefined;
   const decoded: MessageAttachment[] = [];
 
@@ -100,6 +101,17 @@ export function validateAttachments(
       };
       continue;
     }
+    // A user-supplied name becomes the MIME part's quoted filename, so it
+    // must not contain characters that would break out of the header
+    // (line breaks or a double quote). The default name is always safe.
+    if (input.name !== undefined && /[\r\n"]/.test(input.name)) {
+      invalidName ??= {
+        code: "invalid_attachment_name",
+        message: `attachment ${index} has a name with invalid characters (no quotes or line breaks)`,
+        attachmentIndex: index,
+      };
+      continue;
+    }
     decoded.push({
       name: input.name ?? `attachment-${index}`,
       contentType: input.mimeType,
@@ -109,6 +121,7 @@ export function validateAttachments(
 
   if (oversize !== undefined) return { ok: false, error: oversize };
   if (disallowed !== undefined) return { ok: false, error: disallowed };
+  if (invalidName !== undefined) return { ok: false, error: invalidName };
   if (malformed !== undefined) return { ok: false, error: malformed };
 
   const totalBytes = decoded.reduce((sum, a) => sum + a.data.length, 0);
