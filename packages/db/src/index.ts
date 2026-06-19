@@ -34,6 +34,11 @@ export {
   type ResolvedOffering,
 } from "./catalog-resolution";
 export {
+  resolveModelSources,
+  type CatalogSourceResolution,
+  type SourceSkip,
+} from "./model-source-resolution";
+export {
   parseAgentRow,
   parseAgentVersionRow,
   parseGrantRow,
