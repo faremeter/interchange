@@ -57,6 +57,14 @@ export type ReactorAssemblyConfig = {
   sessionId: string;
   director: ReactorDirector;
   source: InferenceSource;
+  /**
+   * Fail over `source` to the next entry in the priority-ordered source
+   * list, in place, returning false at the end of the list. Omit for a
+   * single-source reactor with no failover target.
+   */
+  failOverToNextSource?: () => boolean;
+  /** Reset `source` to the most-preferred source, in place. */
+  resetToPreferredSource?: () => void;
   toolRunner: ToolRunner;
   contextStore: ContextStore;
   onEvent: (event: ReactorEmittedEvent) => void;
@@ -107,6 +115,8 @@ export function createReactorAssembly(
     sessionId,
     director,
     source,
+    failOverToNextSource,
+    resetToPreferredSource,
     toolRunner,
     contextStore,
     onEvent,
@@ -221,6 +231,8 @@ export function createReactorAssembly(
     sessionId,
     director,
     source,
+    ...(failOverToNextSource !== undefined ? { failOverToNextSource } : {}),
+    ...(resetToPreferredSource !== undefined ? { resetToPreferredSource } : {}),
     toolRunner,
     contextStore,
     onEvent: composedOnEvent,

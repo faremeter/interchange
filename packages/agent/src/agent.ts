@@ -619,6 +619,8 @@ export async function createAgent<EnvReq extends BaseEnv>(
       sessionId,
       director,
       source: sourceRegistry.active,
+      failOverToNextSource: () => sourceRegistry.failOverToNextSource(),
+      resetToPreferredSource: () => sourceRegistry.resetToPreferredSource(),
       toolRunner: resolvedTools.runner,
       contextStore,
       onEvent: handleEvent,

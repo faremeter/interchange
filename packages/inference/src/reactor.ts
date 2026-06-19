@@ -83,6 +83,14 @@ export type ReactorConfig = {
   sessionId: string;
   director: ReactorDirector;
   source: InferenceSource;
+  /**
+   * Fail over `source` to the next entry in the priority-ordered source
+   * list, in place, returning false at the end of the list. When omitted the
+   * reactor runs the single active source with no failover.
+   */
+  failOverToNextSource?: () => boolean;
+  /** Reset `source` to the most-preferred source, in place. */
+  resetToPreferredSource?: () => void;
   toolRunner: ToolRunner;
   contextStore: ContextStore;
   correlationValidator?: CorrelationValidator;
@@ -135,6 +143,14 @@ export function createReactor(config: ReactorConfig): Reactor {
     onShutdown,
     gateTimeout = DEFAULT_GATE_TIMEOUT_MS,
     shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
+    // Resolve the optional failover hooks once here, at the reactor's
+    // construction edge. A reactor with no source list fails over to
+    // nothing and resets to a no-op, so the inference loop below runs the
+    // single active source exactly as before.
+    failOverToNextSource = () => false,
+    resetToPreferredSource = () => {
+      /* single-source: nothing to reset */
+    },
   } = config;
 
   // Monotonic sequence counter, scoped to this session.
@@ -431,10 +447,20 @@ export function createReactor(config: ReactorConfig): Reactor {
     }
 
     const p = (async () => {
-      const maxRetries = 3;
+      // Per-source attempt budget for transient errors (quota/retryable/
+      // timeout). Kept small because failover, not flogging one source, is
+      // the recovery path: the harness already does its own mechanical
+      // retry under each attempt, so this caps reactor-level same-source
+      // retries at one before moving to the next source.
+      const sameSourceAttempts = 2;
       const defaultRetryMs = 60_000;
 
-      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // Each cycle starts at the most-preferred source; a failover in a
+      // prior cycle must not leave the agent permanently demoted.
+      resetToPreferredSource();
+
+      let attempt = 0;
+      for (;;) {
         const harnessOpts = buildHarnessOpts(
           prompt,
           config.source,
@@ -488,15 +514,44 @@ export function createReactor(config: ReactorConfig): Reactor {
           return;
         }
 
-        if (lastError !== undefined) {
-          const err = lastError.data.error;
-          if (
-            err.category === "quota_exhausted" &&
-            attempt < maxRetries &&
-            !signal.aborted
-          ) {
+        if (lastError === undefined) {
+          emitError("Inference runner returned without a terminal event", true);
+          enqueue({
+            type: "inference.error",
+            error: {
+              category: "fatal",
+              message: "Inference runner returned without a terminal event",
+            },
+            partial: { text: "" },
+          });
+          return;
+        }
+
+        const err = lastError.data.error;
+        const partial = lastError.data.partial;
+
+        // Source-invariant failures: no source can serve this call, so
+        // abort the whole cycle rather than waste failover attempts.
+        if (
+          err.category === "context_overflow" ||
+          err.category === "fatal" ||
+          err.category === "aborted"
+        ) {
+          enqueue({ type: "inference.error", error: err, partial });
+          return;
+        }
+
+        // A rate limit is the one category worth waiting out on the same
+        // source: it clears with time, and the reactor's backoff is longer
+        // than the harness's own per-call retry. The harness has already
+        // exhausted its internal mechanical retries for retryable/timeout
+        // by the time the reactor sees them, so those fail over rather than
+        // re-running the same source (which would just retry-compound).
+        if (err.category === "quota_exhausted") {
+          attempt += 1;
+          if (attempt < sameSourceAttempts && !signal.aborted) {
             const delayMs = err.retryAfterMs ?? defaultRetryMs;
-            logger.warn`Rate limited (attempt ${String(attempt + 1)}/${String(maxRetries)}), retrying after ${String(delayMs)}ms`;
+            logger.warn`Rate limited, retrying same source after ${String(delayMs)}ms`;
             await new Promise<void>((resolve) => {
               const timer = setTimeout(resolve, delayMs);
               const onAbort = () => {
@@ -512,30 +567,27 @@ export function createReactor(config: ReactorConfig): Reactor {
                   category: "aborted",
                   message: "inference aborted during rate limit backoff",
                 },
-                partial: lastError.data.partial,
+                partial,
               });
               return;
             }
             continue;
           }
-
-          enqueue({
-            type: "inference.error",
-            error: err,
-            partial: lastError.data.partial,
-          });
-          return;
         }
 
-        emitError("Inference runner returned without a terminal event", true);
-        enqueue({
-          type: "inference.error",
-          error: {
-            category: "fatal",
-            message: "Inference runner returned without a terminal event",
-          },
-          partial: { text: "" },
-        });
+        // Same-source rate-limit budget exhausted, or a source-specific
+        // failure (credential, protocol mismatch, retryable, timeout): fail
+        // over to the next source. A pacing delay the leaving source asked
+        // for must not gate the next source.
+        pendingPacingDelayMs = 0;
+        if (failOverToNextSource()) {
+          logger.warn`Failing over to next inference source after ${err.category}`;
+          attempt = 0;
+          continue;
+        }
+
+        // No further source to fail over to: surface the last error.
+        enqueue({ type: "inference.error", error: err, partial });
         return;
       }
     })();
