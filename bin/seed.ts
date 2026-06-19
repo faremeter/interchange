@@ -13,6 +13,9 @@ import {
   AgentSummary,
   RoleResponse,
   ProviderResponse,
+  ModelResponse,
+  ModelProviderResponse,
+  ModelOfferingResponse,
   paginatedSchema,
 } from "@intx/types";
 import { WORKSPACE_BUILTINS_REGISTRY } from "@intx/hub-sessions";
@@ -545,6 +548,9 @@ const { status: a1Status, data: a1Data } = await api(
     systemPrompt:
       "You are a research assistant. Find and summarize information. When you receive a mail message, reply to it immediately with a helpful response. Do not wait for further instructions.",
     modelConfig: { defaultModel: "kimi-k2.6" },
+    modelRequirements: [
+      { model: "claude-sonnet-4", capabilities: ["tool-use"] },
+    ],
     toolPackages: BUILTIN_TOOL_PACKAGES,
     capabilities: { research: true, summarize: true },
     credentialRequirements: [
@@ -1074,6 +1080,150 @@ if (supportBot) {
     aliceCookies,
   );
   checkOrSkip("create ticket resolution offering", ofr4Status, 201, ofr4Data);
+}
+
+// -- Create model catalog --
+
+log("Creating model catalog...");
+
+const CredentialIdName = type({ id: "string", name: "string" });
+
+// The model provider authenticates with a tenant credential. Reuse the
+// Anthropic API key created above; list and find it so the seed is
+// idempotent across re-runs.
+const { data: acmeCredsData } = await api(
+  "GET",
+  `/api/tenants/${acmeTenantId}/credentials`,
+  undefined,
+  aliceCookies,
+);
+const anthropicCredential = parse(
+  paginatedSchema(CredentialIdName),
+  acmeCredsData,
+  "acme credentials response",
+).data.find((c) => c.name === "Anthropic API Key");
+
+if (anthropicCredential) {
+  const modelsToSeed = [
+    { canonicalName: "claude-sonnet-4", displayName: "Claude Sonnet 4" },
+    { canonicalName: "claude-haiku-4", displayName: "Claude Haiku 4" },
+  ];
+  for (const m of modelsToSeed) {
+    const { status, data } = await api(
+      "POST",
+      `/api/tenants/${acmeTenantId}/catalog/models`,
+      m,
+      aliceCookies,
+    );
+    checkOrSkip(`create model ${m.canonicalName}`, status, 201, data);
+  }
+
+  const { status: provStatus, data: provData } = await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/catalog/providers`,
+    {
+      name: "Anthropic Direct",
+      plugin: "anthropic",
+      baseURL: "https://api.anthropic.com",
+      credentialId: anthropicCredential.id,
+    },
+    aliceCookies,
+  );
+  checkOrSkip("create provider Anthropic Direct", provStatus, 201, provData);
+
+  // Resolve catalog ids by listing, so offering/pricing creation works on a
+  // re-run where the create calls above returned 409.
+  const { data: modelListData } = await api(
+    "GET",
+    `/api/tenants/${acmeTenantId}/catalog/models`,
+    undefined,
+    aliceCookies,
+  );
+  const catalogModels = parse(
+    paginatedSchema(ModelResponse),
+    modelListData,
+    "catalog models response",
+  ).data;
+  const { data: provListData } = await api(
+    "GET",
+    `/api/tenants/${acmeTenantId}/catalog/providers`,
+    undefined,
+    aliceCookies,
+  );
+  const anthropicProviderRow = parse(
+    paginatedSchema(ModelProviderResponse),
+    provListData,
+    "catalog providers response",
+  ).data.find((p) => p.name === "Anthropic Direct");
+
+  const sonnet = catalogModels.find(
+    (m) => m.canonicalName === "claude-sonnet-4",
+  );
+  const haiku = catalogModels.find((m) => m.canonicalName === "claude-haiku-4");
+
+  if (anthropicProviderRow && sonnet && haiku) {
+    const offeringSpecs = [
+      {
+        model: sonnet,
+        priority: 0,
+        capabilities: ["tool-use", "long-context"],
+      },
+      { model: haiku, priority: 10, capabilities: ["tool-use"] },
+    ];
+    for (const spec of offeringSpecs) {
+      const { status, data } = await api(
+        "POST",
+        `/api/tenants/${acmeTenantId}/catalog/offerings`,
+        {
+          modelId: spec.model.id,
+          providerId: anthropicProviderRow.id,
+          priority: spec.priority,
+          capabilities: spec.capabilities,
+        },
+        aliceCookies,
+      );
+      checkOrSkip(
+        `create offering ${spec.model.canonicalName}`,
+        status,
+        201,
+        data,
+      );
+    }
+
+    const { data: offeringListData } = await api(
+      "GET",
+      `/api/tenants/${acmeTenantId}/catalog/offerings`,
+      undefined,
+      aliceCookies,
+    );
+    const catalogOfferings = parse(
+      paginatedSchema(ModelOfferingResponse),
+      offeringListData,
+      "catalog offerings response",
+    ).data;
+    const priceByModel: Record<string, { input: string; output: string }> = {
+      [sonnet.id]: { input: "0.000003", output: "0.000015" },
+      [haiku.id]: { input: "0.0000008", output: "0.000004" },
+    };
+    for (const offering of catalogOfferings) {
+      const price = priceByModel[offering.modelId];
+      if (!price) continue;
+      const { status, data } = await api(
+        "POST",
+        `/api/tenants/${acmeTenantId}/catalog/offerings/${offering.id}/pricing`,
+        {
+          currency: "USD",
+          // Pinned so a seed re-run collides on (offering, currency,
+          // effectiveFrom) and skips rather than appending a duplicate.
+          effectiveFrom: "2024-01-01T00:00:00.000Z",
+          inputTokenPrice: price.input,
+          outputTokenPrice: price.output,
+        },
+        aliceCookies,
+      );
+      checkOrSkip(`create pricing for ${offering.id}`, status, 201, data);
+    }
+  }
 }
 
 // -- Verify with /me endpoints --
