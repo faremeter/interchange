@@ -136,9 +136,24 @@ export function createModelProviderRoutes({
       const tenantCtx = c.get("tenant");
       const body = c.req.valid("json");
 
-      const hasCredential =
-        body.credentialId !== undefined && body.credentialId !== null;
-      const hasWallet = body.walletId !== undefined && body.walletId !== null;
+      // Treat an empty string the same as absent: it is neither a usable
+      // credential reference nor a wallet reference, so it must not satisfy
+      // the XOR (which would otherwise let it through to a foreign-key
+      // violation instead of a clean 400).
+      const credentialId =
+        body.credentialId !== undefined &&
+        body.credentialId !== null &&
+        body.credentialId !== ""
+          ? body.credentialId
+          : null;
+      const walletId =
+        body.walletId !== undefined &&
+        body.walletId !== null &&
+        body.walletId !== ""
+          ? body.walletId
+          : null;
+      const hasCredential = credentialId !== null;
+      const hasWallet = walletId !== null;
       if (hasCredential === hasWallet) {
         return c.json(
           {
@@ -180,8 +195,8 @@ export function createModelProviderRoutes({
             name: body.name,
             plugin: body.plugin,
             baseURL: body.baseURL,
-            credentialId: hasCredential ? body.credentialId : null,
-            walletId: hasWallet ? body.walletId : null,
+            credentialId,
+            walletId,
             createdAt: now,
             updatedAt: now,
           })
