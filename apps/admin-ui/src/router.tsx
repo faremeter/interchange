@@ -26,6 +26,12 @@ import { TenantInstancesPage } from "@/pages/tenant-instances";
 import { TenantInstanceDetailPage } from "@/pages/tenant-instance-detail";
 import { TenantOfferingsPage } from "@/pages/tenant-offerings";
 import { TenantOfferingDetailPage } from "@/pages/tenant-offering-detail";
+import { TenantModelsPage } from "@/pages/tenant-models";
+import { TenantModelDetailPage } from "@/pages/tenant-model-detail";
+import { TenantModelProvidersPage } from "@/pages/tenant-model-providers";
+import { TenantModelProviderDetailPage } from "@/pages/tenant-model-provider-detail";
+import { TenantModelOfferingsPage } from "@/pages/tenant-model-offerings";
+import { TenantModelOfferingDetailPage } from "@/pages/tenant-model-offering-detail";
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -157,6 +163,42 @@ const tenantOfferingDetailRoute = createRoute({
   component: TenantOfferingDetailPage,
 });
 
+const tenantModelsRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/models",
+  component: TenantModelsPage,
+});
+
+const tenantModelDetailRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/models/$modelId",
+  component: TenantModelDetailPage,
+});
+
+const tenantModelProvidersRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/model-providers",
+  component: TenantModelProvidersPage,
+});
+
+const tenantModelProviderDetailRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/model-providers/$providerId",
+  component: TenantModelProviderDetailPage,
+});
+
+const tenantModelOfferingsRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/model-offerings",
+  component: TenantModelOfferingsPage,
+});
+
+const tenantModelOfferingDetailRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/model-offerings/$offeringId",
+  component: TenantModelOfferingDetailPage,
+});
+
 const routeTree = rootRoute.addChildren([
   loginRoute,
   authedRoute.addChildren([
@@ -178,6 +220,12 @@ const routeTree = rootRoute.addChildren([
     tenantWalletDetailRoute,
     tenantOfferingsRoute,
     tenantOfferingDetailRoute,
+    tenantModelsRoute,
+    tenantModelDetailRoute,
+    tenantModelProvidersRoute,
+    tenantModelProviderDetailRoute,
+    tenantModelOfferingsRoute,
+    tenantModelOfferingDetailRoute,
   ]),
 ]);
 
