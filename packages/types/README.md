@@ -17,18 +17,21 @@ pull in the shapes they need:
 
 - `@intx/types` — domain validators and shared primitives: tenants,
   principals, roles, grants, agents, sessions, approvals, wallets,
-  providers, oauth clients, credentials, offerings, models,
-  observability, sidecar status enums (distinct from the wire frames
-  under `@intx/types/sidecar` below), agent addresses, hex and
-  base64 helpers, and the `hasCode` error guard.
+  providers, oauth clients, credentials, offerings, the model catalog
+  (models, model providers, offerings, and append-only pricing, plus
+  the model-requirement and invoker-preference shapes and the model
+  discovery view), observability, sidecar status enums (distinct from
+  the wire frames under `@intx/types/sidecar` below), agent addresses,
+  hex and base64 helpers, and the `hasCode` error guard.
 - `@intx/types/authz` — grant rules, condition contexts, and
   authorization result shapes shared between `@intx/authz` and the
   hub.
 - `@intx/types/audit` — `AuditStore` contract for tool-authorization
   records.
 - `@intx/types/runtime` — inference and harness contracts:
-  `ContextStore`, `ToolRunner`, `ToolDefinition`, retry policy,
-  director and reactor types.
+  `ContextStore`, `ToolRunner`, `ToolDefinition`, `InferenceSource`
+  (the resolved provider/model/credential a call executes against),
+  retry policy, director and reactor types.
 - `@intx/types/runtime-capabilities` — the capability-registry
   contract harness extensions resolve against (e.g. mail transport,
   blob reader).
