@@ -13,7 +13,7 @@
     "@intx/mime": "workspace:*",
     "@intx/types": "workspace:*",
     "arktype": "catalog:",
-    "isomorphic-git": "^1.27.2"
+    "isomorphic-git": "catalog:"
   },
   "devDependencies": {
     "@intx/crypto-node": "workspace:*"

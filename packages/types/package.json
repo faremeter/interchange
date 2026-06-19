@@ -43,9 +43,9 @@
   },
   "dependencies": {
     "arktype": "catalog:",
-    "semver": "^7.7.2"
+    "semver": "catalog:"
   },
   "devDependencies": {
-    "@types/semver": "^7.7.1"
+    "@types/semver": "catalog:"
   }
 }

@@ -17,13 +17,13 @@
     "npm-package-arg": "^12.0.2",
     "npm-pick-manifest": "^10.0.0",
     "npm-registry-fetch": "^19.0.0",
-    "semver": "^7.7.2",
-    "ssri": "^12.0.0",
-    "tar": "^7.5.1"
+    "semver": "catalog:",
+    "ssri": "catalog:",
+    "tar": "catalog:"
   },
   "devDependencies": {
     "@types/npm-package-arg": "^6.1.4",
-    "@types/semver": "^7.7.1",
+    "@types/semver": "catalog:",
     "@types/ssri": "^7.1.5"
   }
 }
