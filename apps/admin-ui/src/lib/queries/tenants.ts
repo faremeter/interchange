@@ -833,3 +833,358 @@ export function deleteOfferingMutation(
     onSuccess: () => invalidate(qc, tenantId, "offerings"),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Model catalog
+// ---------------------------------------------------------------------------
+
+export type ModelProviderPluginValue =
+  | "anthropic"
+  | "openai"
+  | "openai-compatible"
+  | "google-genai";
+
+export type CatalogModelResponse = {
+  id: string;
+  tenantId: string;
+  canonicalName: string;
+  displayName: string | null;
+  description: string | null;
+  disabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CatalogModelProviderResponse = {
+  id: string;
+  tenantId: string;
+  name: string;
+  plugin: ModelProviderPluginValue;
+  baseURL: string;
+  credentialId: string | null;
+  walletId: string | null;
+  disabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CatalogModelOfferingResponse = {
+  id: string;
+  tenantId: string;
+  modelId: string;
+  providerId: string;
+  priority: number;
+  deploymentTags: string[];
+  capabilities: string[];
+  disabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CatalogPricingRowResponse = {
+  id: string;
+  tenantId: string;
+  offeringId: string;
+  currency: string;
+  inputTokenPrice: string | null;
+  outputTokenPrice: string | null;
+  cacheReadTokenPrice: string | null;
+  cacheWriteTokenPrice: string | null;
+  thinkingTokenPrice: string | null;
+  perRequestFee: string | null;
+  perImageFee: string | null;
+  perAudioFee: string | null;
+  effectiveFrom: string;
+  createdAt: string;
+};
+
+export function tenantCatalogModelsQuery(tenantId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "catalog-models"],
+    queryFn: async () => {
+      const res = await api<{ data: CatalogModelResponse[] }>(
+        "GET",
+        `/api/tenants/${tenantId}/catalog/models`,
+      );
+      return res.data;
+    },
+  });
+}
+
+export function catalogModelDetailQuery(tenantId: string, modelId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "catalog-models", modelId],
+    queryFn: () =>
+      api<CatalogModelResponse>(
+        "GET",
+        `/api/tenants/${tenantId}/catalog/models/${modelId}`,
+      ),
+  });
+}
+
+export function tenantModelProvidersQuery(tenantId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "model-providers"],
+    queryFn: async () => {
+      const res = await api<{ data: CatalogModelProviderResponse[] }>(
+        "GET",
+        `/api/tenants/${tenantId}/catalog/providers`,
+      );
+      return res.data;
+    },
+  });
+}
+
+export function modelProviderDetailQuery(tenantId: string, providerId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "model-providers", providerId],
+    queryFn: () =>
+      api<CatalogModelProviderResponse>(
+        "GET",
+        `/api/tenants/${tenantId}/catalog/providers/${providerId}`,
+      ),
+  });
+}
+
+export function tenantModelOfferingsQuery(tenantId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "model-offerings"],
+    queryFn: async () => {
+      const res = await api<{ data: CatalogModelOfferingResponse[] }>(
+        "GET",
+        `/api/tenants/${tenantId}/catalog/offerings`,
+      );
+      return res.data;
+    },
+  });
+}
+
+export function modelOfferingDetailQuery(tenantId: string, offeringId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "model-offerings", offeringId],
+    queryFn: () =>
+      api<CatalogModelOfferingResponse>(
+        "GET",
+        `/api/tenants/${tenantId}/catalog/offerings/${offeringId}`,
+      ),
+  });
+}
+
+export function offeringPricingQuery(tenantId: string, offeringId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "model-offerings", offeringId, "pricing"],
+    queryFn: () =>
+      api<CatalogPricingRowResponse[]>(
+        "GET",
+        `/api/tenants/${tenantId}/catalog/offerings/${offeringId}/pricing`,
+      ),
+  });
+}
+
+export type CreateModelBody = {
+  canonicalName: string;
+  displayName?: string | null;
+  description?: string | null;
+};
+
+export type UpdateModelBody = {
+  displayName?: string | null;
+  description?: string | null;
+  disabled?: boolean;
+};
+
+export function createCatalogModelMutation(tenantId: string, qc: QueryClient) {
+  return {
+    mutationFn: (body: CreateModelBody) =>
+      api<CatalogModelResponse>(
+        "POST",
+        `/api/tenants/${tenantId}/catalog/models`,
+        body,
+      ),
+    onSuccess: () => invalidate(qc, tenantId, "catalog-models"),
+  };
+}
+
+export function updateCatalogModelMutation(
+  tenantId: string,
+  modelId: string,
+  qc: QueryClient,
+) {
+  return {
+    mutationFn: (body: UpdateModelBody) =>
+      api<CatalogModelResponse>(
+        "PATCH",
+        `/api/tenants/${tenantId}/catalog/models/${modelId}`,
+        body,
+      ),
+    onSuccess: () => invalidate(qc, tenantId, "catalog-models"),
+  };
+}
+
+export function deleteCatalogModelMutation(
+  tenantId: string,
+  modelId: string,
+  qc: QueryClient,
+) {
+  return {
+    mutationFn: () =>
+      api<undefined>(
+        "DELETE",
+        `/api/tenants/${tenantId}/catalog/models/${modelId}`,
+      ),
+    onSuccess: () => invalidate(qc, tenantId, "catalog-models"),
+  };
+}
+
+export type CreateModelProviderBody = {
+  name: string;
+  plugin: ModelProviderPluginValue;
+  baseURL: string;
+  credentialId?: string | null;
+  walletId?: string | null;
+};
+
+export type UpdateModelProviderBody = {
+  name?: string;
+  baseURL?: string;
+  disabled?: boolean;
+};
+
+export function createModelProviderMutation(tenantId: string, qc: QueryClient) {
+  return {
+    mutationFn: (body: CreateModelProviderBody) =>
+      api<CatalogModelProviderResponse>(
+        "POST",
+        `/api/tenants/${tenantId}/catalog/providers`,
+        body,
+      ),
+    onSuccess: () => invalidate(qc, tenantId, "model-providers"),
+  };
+}
+
+export function updateModelProviderMutation(
+  tenantId: string,
+  providerId: string,
+  qc: QueryClient,
+) {
+  return {
+    mutationFn: (body: UpdateModelProviderBody) =>
+      api<CatalogModelProviderResponse>(
+        "PATCH",
+        `/api/tenants/${tenantId}/catalog/providers/${providerId}`,
+        body,
+      ),
+    onSuccess: () => invalidate(qc, tenantId, "model-providers"),
+  };
+}
+
+export function deleteModelProviderMutation(
+  tenantId: string,
+  providerId: string,
+  qc: QueryClient,
+) {
+  return {
+    mutationFn: () =>
+      api<undefined>(
+        "DELETE",
+        `/api/tenants/${tenantId}/catalog/providers/${providerId}`,
+      ),
+    onSuccess: () => invalidate(qc, tenantId, "model-providers"),
+  };
+}
+
+export type CreateModelOfferingBody = {
+  modelId: string;
+  providerId: string;
+  priority?: number;
+  deploymentTags?: string[];
+  capabilities?: string[];
+};
+
+export type UpdateModelOfferingBody = {
+  priority?: number;
+  deploymentTags?: string[];
+  capabilities?: string[];
+  disabled?: boolean;
+};
+
+export function createModelOfferingMutation(tenantId: string, qc: QueryClient) {
+  return {
+    mutationFn: (body: CreateModelOfferingBody) =>
+      api<CatalogModelOfferingResponse>(
+        "POST",
+        `/api/tenants/${tenantId}/catalog/offerings`,
+        body,
+      ),
+    onSuccess: () => invalidate(qc, tenantId, "model-offerings"),
+  };
+}
+
+export function updateModelOfferingMutation(
+  tenantId: string,
+  offeringId: string,
+  qc: QueryClient,
+) {
+  return {
+    mutationFn: (body: UpdateModelOfferingBody) =>
+      api<CatalogModelOfferingResponse>(
+        "PATCH",
+        `/api/tenants/${tenantId}/catalog/offerings/${offeringId}`,
+        body,
+      ),
+    onSuccess: () => invalidate(qc, tenantId, "model-offerings"),
+  };
+}
+
+export function deleteModelOfferingMutation(
+  tenantId: string,
+  offeringId: string,
+  qc: QueryClient,
+) {
+  return {
+    mutationFn: () =>
+      api<undefined>(
+        "DELETE",
+        `/api/tenants/${tenantId}/catalog/offerings/${offeringId}`,
+      ),
+    onSuccess: () => invalidate(qc, tenantId, "model-offerings"),
+  };
+}
+
+export type CreatePricingRowBody = {
+  currency: string;
+  effectiveFrom?: string;
+  inputTokenPrice?: string | null;
+  outputTokenPrice?: string | null;
+  cacheReadTokenPrice?: string | null;
+  cacheWriteTokenPrice?: string | null;
+  thinkingTokenPrice?: string | null;
+  perRequestFee?: string | null;
+  perImageFee?: string | null;
+  perAudioFee?: string | null;
+};
+
+export function createPricingRowMutation(
+  tenantId: string,
+  offeringId: string,
+  qc: QueryClient,
+) {
+  return {
+    mutationFn: (body: CreatePricingRowBody) =>
+      api<CatalogPricingRowResponse>(
+        "POST",
+        `/api/tenants/${tenantId}/catalog/offerings/${offeringId}/pricing`,
+        body,
+      ),
+    onSuccess: () =>
+      qc.invalidateQueries({
+        queryKey: [
+          "tenants",
+          tenantId,
+          "model-offerings",
+          offeringId,
+          "pricing",
+        ],
+      }),
+  };
+}

@@ -13,6 +13,9 @@ const NAV_ITEMS = [
   { label: "Credentials", path: "/credentials" },
   { label: "Wallets", path: "/wallets" },
   { label: "Offerings", path: "/offerings" },
+  { label: "Models", path: "/models" },
+  { label: "Model Providers", path: "/model-providers" },
+  { label: "Model Offerings", path: "/model-offerings" },
 ] as const;
 
 export function TenantNav({ tenantId }: { tenantId: string }) {
