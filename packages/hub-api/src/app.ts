@@ -33,7 +33,13 @@ import { createWalletRoutes } from "./routes/wallets";
 import { createProviderRoutes } from "./routes/providers";
 import { createOAuthClientRoutes } from "./routes/oauth-clients";
 import { createCredentialRoutes } from "./routes/credentials";
-import { createOfferingRoutes, createModelRoutes } from "./routes/offerings";
+import { createOfferingRoutes } from "./routes/offerings";
+import {
+  createModelCatalogRoutes,
+  createModelDiscoveryRoutes,
+} from "./routes/models";
+import { createModelProviderRoutes } from "./routes/model-providers";
+import { createModelOfferingRoutes } from "./routes/model-offerings";
 import { createObservabilityRoutes } from "./routes/observability";
 import { createAgentDataRoutes } from "./routes/agent-data";
 import { createSidecarRoutes } from "./routes/sidecars";
@@ -197,7 +203,6 @@ export function mountHubRoutes(
 
   // Global tenant routes (create needs auth, detail/update handle auth inline)
   app.route("/api/tenants", createTenantRoutes({ db }));
-  app.route("/api/models", createModelRoutes());
 
   // Tenant-scoped routes
   app.route(
@@ -261,6 +266,22 @@ export function mountHubRoutes(
   app.route(
     "/api/tenants/:tenantId/offerings",
     createOfferingRoutes({ db, requireGrant }),
+  );
+  app.route(
+    "/api/tenants/:tenantId/catalog/models",
+    createModelCatalogRoutes({ db, sidecarRouter, requireGrant }),
+  );
+  app.route(
+    "/api/tenants/:tenantId/catalog/providers",
+    createModelProviderRoutes({ db, sidecarRouter, requireGrant }),
+  );
+  app.route(
+    "/api/tenants/:tenantId/catalog/offerings",
+    createModelOfferingRoutes({ db, sidecarRouter, requireGrant }),
+  );
+  app.route(
+    "/api/tenants/:tenantId/models",
+    createModelDiscoveryRoutes({ db, requireGrant }),
   );
   if (repoStore !== null) {
     app.route(

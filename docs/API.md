@@ -18,7 +18,6 @@
 | POST | /api/tenants | Create a tenant |
 | GET | /api/tenants/:tenantId | Get tenant details |
 | PATCH | /api/tenants/:tenantId | Update tenant config |
-| GET | /api/models | List available models |
 | GET | /api/tenants/:tenantId/principals | List principals in the tenant |
 | GET | /api/tenants/:tenantId/principals/:principalId | Get principal details |
 | PATCH | /api/tenants/:tenantId/principals/:principalId | Update principal status |
@@ -87,6 +86,24 @@
 | GET | /api/tenants/:tenantId/offerings/:offeringId | Get offering details |
 | PATCH | /api/tenants/:tenantId/offerings/:offeringId | Update an offering |
 | DELETE | /api/tenants/:tenantId/offerings/:offeringId | Remove an offering |
+| GET | /api/tenants/:tenantId/catalog/models | List models owned by the tenant |
+| POST | /api/tenants/:tenantId/catalog/models | Create a model |
+| GET | /api/tenants/:tenantId/catalog/models/:modelId | Get a model |
+| PATCH | /api/tenants/:tenantId/catalog/models/:modelId | Update a model |
+| DELETE | /api/tenants/:tenantId/catalog/models/:modelId | Delete a model |
+| GET | /api/tenants/:tenantId/catalog/providers | List model providers owned by the tenant |
+| POST | /api/tenants/:tenantId/catalog/providers | Create a model provider |
+| GET | /api/tenants/:tenantId/catalog/providers/:providerId | Get a model provider |
+| PATCH | /api/tenants/:tenantId/catalog/providers/:providerId | Update a model provider |
+| DELETE | /api/tenants/:tenantId/catalog/providers/:providerId | Delete a model provider |
+| GET | /api/tenants/:tenantId/catalog/offerings | List model offerings owned by the tenant |
+| POST | /api/tenants/:tenantId/catalog/offerings | Create a model offering |
+| GET | /api/tenants/:tenantId/catalog/offerings/:offeringId | Get a model offering |
+| PATCH | /api/tenants/:tenantId/catalog/offerings/:offeringId | Update a model offering |
+| DELETE | /api/tenants/:tenantId/catalog/offerings/:offeringId | Delete a model offering |
+| GET | /api/tenants/:tenantId/catalog/offerings/:offeringId/pricing | List an offering's pricing history |
+| POST | /api/tenants/:tenantId/catalog/offerings/:offeringId/pricing | Add a pricing row to an offering |
+| GET | /api/tenants/:tenantId/models | List the models resolved for the tenant |
 | GET | /api/tenants/:tenantId/git-tokens | List tenant git tokens |
 | POST | /api/tenants/:tenantId/git-tokens | Mint a tenant-bound service git token |
 | DELETE | /api/tenants/:tenantId/git-tokens/:tokenId | Revoke a tenant git token |
@@ -276,57 +293,6 @@ Revoke federation trust
 
 204: (no content) -- Trust revoked
 404: ErrorResponse -- Trust not found
-
-## Discovery
-
-### GET /api/models
-List available models
-
-Lists available models across configured providers with capabilities, pricing, and limits.
-
-200: ModelInfo[] -- List of models
-
-### GET /api/tenants/:tenantId/offerings
-Search offerings
-
-Searches offerings across discoverable agents in the tenant and federated tenants. Filterable by offering name, pricing range, and payment method.
-
-Query: name?, minPrice?, maxPrice?, paymentMethod?, cursor?, limit?
-
-200: unknown -- List of offerings
-
-### POST /api/tenants/:tenantId/offerings
-Register an offering
-
-Registers an offering for an agent. The agent must belong to the tenant.
-
-Body: CreateOffering
-
-201: OfferingDetail -- Offering registered
-400: ErrorResponse -- Validation error
-404: ErrorResponse -- Agent not found
-
-### GET /api/tenants/:tenantId/offerings/:offeringId
-Get offering details
-
-Returns pricing, agent info, and request/response type information.
-
-200: OfferingDetail -- Offering details
-404: ErrorResponse -- Offering not found
-
-### PATCH /api/tenants/:tenantId/offerings/:offeringId
-Update an offering
-
-Body: UpdateOffering
-
-200: OfferingDetail -- Offering updated
-404: ErrorResponse -- Offering not found
-
-### DELETE /api/tenants/:tenantId/offerings/:offeringId
-Remove an offering
-
-204: (no content) -- Offering removed
-404: ErrorResponse -- Offering not found
 
 ## Principals
 
@@ -912,6 +878,207 @@ Only credentials owned by this tenant can be revoked.
 204: (no content) -- Credential revoked
 404: ErrorResponse -- Credential not found
 
+## Discovery
+
+### GET /api/tenants/:tenantId/offerings
+Search offerings
+
+Searches offerings across discoverable agents in the tenant and federated tenants. Filterable by offering name, pricing range, and payment method.
+
+Query: name?, minPrice?, maxPrice?, paymentMethod?, cursor?, limit?
+
+200: unknown -- List of offerings
+
+### POST /api/tenants/:tenantId/offerings
+Register an offering
+
+Registers an offering for an agent. The agent must belong to the tenant.
+
+Body: CreateOffering
+
+201: OfferingDetail -- Offering registered
+400: ErrorResponse -- Validation error
+404: ErrorResponse -- Agent not found
+
+### GET /api/tenants/:tenantId/offerings/:offeringId
+Get offering details
+
+Returns pricing, agent info, and request/response type information.
+
+200: OfferingDetail -- Offering details
+404: ErrorResponse -- Offering not found
+
+### PATCH /api/tenants/:tenantId/offerings/:offeringId
+Update an offering
+
+Body: UpdateOffering
+
+200: OfferingDetail -- Offering updated
+404: ErrorResponse -- Offering not found
+
+### DELETE /api/tenants/:tenantId/offerings/:offeringId
+Remove an offering
+
+204: (no content) -- Offering removed
+404: ErrorResponse -- Offering not found
+
+### GET /api/tenants/:tenantId/models
+List the models resolved for the tenant
+
+Returns the tenant's resolved catalog: every model visible after applying inheritance, shadowing, and disable suppression, broken down by the providers that offer it with each offering's active price per currency.
+
+200: ModelInfo[] -- Resolved models
+
+## Catalog
+
+### GET /api/tenants/:tenantId/catalog/models
+List models owned by the tenant
+
+Lists the models created directly on this tenant. Models inherited from ancestor tenants are not included; use the model discovery endpoint to see the resolved catalog.
+
+Query: cursor?, limit?
+
+200: unknown -- List of models
+
+### POST /api/tenants/:tenantId/catalog/models
+Create a model
+
+Creates a tenant-local model. Reusing the canonical name of an inherited model shadows that model for this tenant and its descendants.
+
+Body: CreateModel
+
+201: ModelResponse -- Model created
+409: ErrorResponse -- A model with this canonical name already exists
+
+### GET /api/tenants/:tenantId/catalog/models/:modelId
+Get a model
+
+200: ModelResponse -- Model details
+404: ErrorResponse -- Model not found
+
+### PATCH /api/tenants/:tenantId/catalog/models/:modelId
+Update a model
+
+Body: UpdateModel
+
+200: ModelResponse -- Model updated
+404: ErrorResponse -- Model not found
+
+### DELETE /api/tenants/:tenantId/catalog/models/:modelId
+Delete a model
+
+Removes the model and cascades to the offerings that reference it. Running instances resolved through those offerings fail over to the next eligible source.
+
+204: (no content) -- Model removed
+404: ErrorResponse -- Model not found
+
+### GET /api/tenants/:tenantId/catalog/providers
+List model providers owned by the tenant
+
+Lists the model providers created directly on this tenant. Providers inherited from ancestor tenants are not included.
+
+Query: cursor?, limit?
+
+200: unknown -- List of model providers
+
+### POST /api/tenants/:tenantId/catalog/providers
+Create a model provider
+
+Registers an inference endpoint authenticated by exactly one of a credential or a wallet. Supplying both or neither is rejected.
+
+Body: CreateModelProvider
+
+201: ModelProviderResponse -- Provider created
+400: ErrorResponse -- Exactly one of credentialId or walletId is required
+409: ErrorResponse -- Provider name already exists in this tenant
+
+### GET /api/tenants/:tenantId/catalog/providers/:providerId
+Get a model provider
+
+200: ModelProviderResponse -- Provider details
+404: ErrorResponse -- Provider not found
+
+### PATCH /api/tenants/:tenantId/catalog/providers/:providerId
+Update a model provider
+
+Updates a provider's name, base URL, or disabled flag. Changing the authentication binding is not supported; delete and recreate the provider to repoint it.
+
+Body: UpdateModelProvider
+
+200: ModelProviderResponse -- Provider updated
+404: ErrorResponse -- Provider not found
+409: ErrorResponse -- Provider name already exists in this tenant
+
+### DELETE /api/tenants/:tenantId/catalog/providers/:providerId
+Delete a model provider
+
+Removes the provider and cascades to the offerings that reference it. Running instances resolved through those offerings fail over to the next eligible source.
+
+204: (no content) -- Provider removed
+404: ErrorResponse -- Provider not found
+
+### GET /api/tenants/:tenantId/catalog/offerings
+List model offerings owned by the tenant
+
+Lists the model offerings created directly on this tenant. Offerings inherited from ancestor tenants are not included; use the model discovery endpoint to see the resolved catalog.
+
+Query: cursor?, limit?
+
+200: unknown -- List of model offerings
+
+### POST /api/tenants/:tenantId/catalog/offerings
+Create a model offering
+
+Pairs a tenant-owned model with a tenant-owned provider. To offer an inherited model or provider, first create a tenant-local copy of it (shadowing).
+
+Body: CreateModelOffering
+
+201: ModelOfferingResponse -- Offering created
+404: ErrorResponse -- Model or provider not found in this tenant
+409: ErrorResponse -- Offering already exists for this model and provider
+
+### GET /api/tenants/:tenantId/catalog/offerings/:offeringId
+Get a model offering
+
+200: ModelOfferingResponse -- Offering details
+404: ErrorResponse -- Offering not found
+
+### PATCH /api/tenants/:tenantId/catalog/offerings/:offeringId
+Update a model offering
+
+Body: UpdateModelOffering
+
+200: ModelOfferingResponse -- Offering updated
+404: ErrorResponse -- Offering not found
+
+### DELETE /api/tenants/:tenantId/catalog/offerings/:offeringId
+Delete a model offering
+
+Removes the offering and its pricing history. Running instances resolved through it fail over to the next eligible source.
+
+204: (no content) -- Offering removed
+404: ErrorResponse -- Offering not found
+
+### GET /api/tenants/:tenantId/catalog/offerings/:offeringId/pricing
+List an offering's pricing history
+
+Returns the full append-only pricing history for an offering, every currency and effective-from date, newest first.
+
+200: PricingRowResponse[] -- Pricing rows
+404: ErrorResponse -- Offering not found
+
+### POST /api/tenants/:tenantId/catalog/offerings/:offeringId/pricing
+Add a pricing row to an offering
+
+Appends a pricing row. Pricing is append-only: a price change inserts a new row with a later effective-from rather than editing an existing one, so historical cost attribution stays accurate.
+
+Body: CreatePricingRow
+
+201: PricingRowResponse -- Pricing row created
+400: ErrorResponse -- effectiveFrom is not a valid timestamp
+404: ErrorResponse -- Offering not found
+409: ErrorResponse -- A pricing row already exists for this currency and effective-from
+
 ## Observability
 
 ### GET /api/tenants/:tenantId/agents/:agentId/logs
@@ -1184,6 +1351,27 @@ Source: packages/types/src/grants.ts
 **origin**: Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the agent definition author), or `invoker` (delegated by whoever launched the agent). Origin is provenance only; it does not affect evaluation precedence.
 **conditions**: Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A grant with conditions is skipped (fails closed) when no registry is available to evaluate them.
 
+### CreateModel
+`{ canonicalName: string, description?: string | null, displayName?: string | null }`
+Source: packages/types/src/catalog.ts
+
+**canonicalName**: Tenant-unique canonical model name agents match their requirements against.
+
+### CreateModelOffering
+`{ modelId: string, providerId: string, capabilities?: ("audio-input" | "extended-thinking" | "long-context" | "prompt-caching" | "structured-output" | "tool-use" | "vision")[], deploymentTags?: string[], priority?: number }`
+Source: packages/types/src/catalog.ts
+
+**modelId**: Catalog id of a model owned by this tenant.
+**providerId**: Catalog id of a model-provider owned by this tenant.
+**priority**: Ordering hint for source resolution; lower values are preferred first. Defaults to 0.
+
+### CreateModelProvider
+`{ baseURL: string, name: string, plugin: "anthropic" | "google-genai" | "openai" | "openai-compatible", credentialId?: string | null, walletId?: string | null }`
+Source: packages/types/src/catalog.ts
+
+**name**: Tenant-unique model-provider name.
+**plugin**: The inference adapter that serves this provider's models, dispatched by the runtime provider registry.
+
 ### CreateOAuthClient
 `{ clientId: string, clientSecret: string, name: string, providerId: string, defaultScopes?: string[], metadata?: { [string]: unknown }, redirectUris?: string[] }`
 Source: packages/types/src/oauth-clients.ts
@@ -1195,6 +1383,21 @@ Source: packages/types/src/oauth-clients.ts
 ### CreateOffering
 `{ agentId: string, name: string, description?: string, pricing?: { base?: { amount: string, currency: string }, bounds?: { max?: string, min?: string }, methods?: string[], negotiable?: boolean }, schema?: { [string]: unknown } }`
 Source: packages/types/src/offerings.ts
+
+### CreatePricingRow
+`{ currency: string, cacheReadTokenPrice?: string | null, cacheWriteTokenPrice?: string | null, effectiveFrom?: string, inputTokenPrice?: string | null, outputTokenPrice?: string | null, perAudioFee?: string | null, perImageFee?: string | null, perRequestFee?: string | null, thinkingTokenPrice?: string | null }`
+Source: packages/types/src/catalog.ts
+
+**currency**: Fiat currency code or opaque credit unit this row prices in.
+**cacheReadTokenPrice**: Cost per cached-read token as a decimal string in this row's `currency`, or null if this provider does not charge for it.
+**cacheWriteTokenPrice**: Cost per cached-write token as a decimal string in this row's `currency`, or null if this provider does not charge for it.
+**effectiveFrom**: ISO-8601 timestamp from which this price applies. Defaults to the time of the request.
+**inputTokenPrice**: Cost per input token as a decimal string in this row's `currency`, or null if this provider does not charge for it.
+**outputTokenPrice**: Cost per output token as a decimal string in this row's `currency`, or null if this provider does not charge for it.
+**perAudioFee**: Fee per audio unit as a decimal string in this row's `currency`, or null if this provider does not charge for it.
+**perImageFee**: Fee per image as a decimal string in this row's `currency`, or null if this provider does not charge for it.
+**perRequestFee**: Flat fee per request as a decimal string in this row's `currency`, or null if this provider does not charge for it.
+**thinkingTokenPrice**: Cost per thinking token as a decimal string in this row's `currency`, or null if this provider does not charge for it.
 
 ### CreateProvider
 `{ name: string, plugin: string, authorizationUrl?: string, metadata?: { [string]: unknown }, scopes?: string[], tokenUrl?: string, userInfoUrl?: string }`
@@ -1300,6 +1503,23 @@ Source: packages/types/src/models.ts
 **canonicalName**: The model's tenant-unique canonical name, matched against an agent's model requirements.
 **offerings**: One entry per provider that offers this model in the tenant's resolved catalog, ordered by resolution priority.
 
+### ModelOfferingResponse
+`{ capabilities: ("audio-input" | "extended-thinking" | "long-context" | "prompt-caching" | "structured-output" | "tool-use" | "vision")[], createdAt: string, deploymentTags: string[], disabled: boolean, id: string, modelId: string, priority: number, providerId: string, tenantId: string, updatedAt: string }`
+Source: packages/types/src/catalog.ts
+
+**capabilities**: Curated capability tags this provider advertises for this model.
+**priority**: Ordering hint for source resolution; lower values are preferred first.
+
+### ModelProviderResponse
+`{ baseURL: string, createdAt: string, disabled: boolean, id: string, name: string, plugin: "anthropic" | "google-genai" | "openai" | "openai-compatible", tenantId: string, updatedAt: string, credentialId?: string | null, walletId?: string | null }`
+Source: packages/types/src/catalog.ts
+
+**plugin**: The inference adapter that serves this provider's models, dispatched by the runtime provider registry.
+
+### ModelResponse
+`{ canonicalName: string, createdAt: string, disabled: boolean, id: string, tenantId: string, updatedAt: string, description?: string | null, displayName?: string | null }`
+Source: packages/types/src/catalog.ts
+
 ### OAuthClientResponse
 `{ createdAt: string, id: string, name: string, providerId: string, tenantId: string, updatedAt: string, defaultScopes?: string[] | null, metadata?: { [string]: unknown } | null, redirectUris?: string[] | null }`
 Source: packages/types/src/oauth-clients.ts
@@ -1311,6 +1531,21 @@ Source: packages/types/src/oauth-clients.ts
 ### OfferingDetail
 `{ agentId: string, agentName: string, id: string, name: string, tenantId: string, description?: string | null, pricing?: { base?: { amount: string, currency: string }, bounds?: { max?: string, min?: string }, methods?: string[], negotiable?: boolean }, schema?: { [string]: unknown } | null }`
 Source: packages/types/src/offerings.ts
+
+### PricingRowResponse
+`{ createdAt: string, currency: string, effectiveFrom: string, id: string, offeringId: string, tenantId: string, cacheReadTokenPrice?: string | null, cacheWriteTokenPrice?: string | null, inputTokenPrice?: string | null, outputTokenPrice?: string | null, perAudioFee?: string | null, perImageFee?: string | null, perRequestFee?: string | null, thinkingTokenPrice?: string | null }`
+Source: packages/types/src/catalog.ts
+
+**currency**: Fiat currency code or opaque credit unit this row prices in.
+**effectiveFrom**: ISO-8601 timestamp from which this price applies. Cost attribution at a past time uses the latest row whose effectiveFrom is at or before that time.
+**cacheReadTokenPrice**: Cost per cached-read token as a decimal string in the row's `currency`, or null if this provider does not charge for it.
+**cacheWriteTokenPrice**: Cost per cached-write token as a decimal string in the row's `currency`, or null if this provider does not charge for it.
+**inputTokenPrice**: Cost per input token as a decimal string in the row's `currency`, or null if this provider does not charge for it.
+**outputTokenPrice**: Cost per output token as a decimal string in the row's `currency`, or null if this provider does not charge for it.
+**perAudioFee**: Fee per audio unit as a decimal string in the row's `currency`, or null if this provider does not charge for it.
+**perImageFee**: Fee per image as a decimal string in the row's `currency`, or null if this provider does not charge for it.
+**perRequestFee**: Flat fee per request as a decimal string in the row's `currency`, or null if this provider does not charge for it.
+**thinkingTokenPrice**: Cost per thinking token as a decimal string in the row's `currency`, or null if this provider does not charge for it.
 
 ### PrincipalResponse
 `{ createdAt: string, displayName: string, id: string, kind: "agent" | "user", refId: string, roles: { id: string, name: string }[], status: "active" | "deactivated" | "invited" | "suspended", tenantId: string, updatedAt: string, email?: string }`
@@ -1384,6 +1619,18 @@ Source: packages/types/src/grants.ts
 
 **conditions**: Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A grant with conditions is skipped (fails closed) when no registry is available to evaluate them.
 **effect**: Outcome when this grant is the one resolved for a request: `allow` permits the action, `deny` blocks it, `ask` requires interactive approval before proceeding. When several grants match, the most specific wins, and at equal specificity the strongest effect wins (`deny` over `ask` over `allow`).
+
+### UpdateModel
+`{ description?: string | null, disabled?: boolean, displayName?: string | null }`
+Source: packages/types/src/catalog.ts
+
+### UpdateModelOffering
+`{ capabilities?: ("audio-input" | "extended-thinking" | "long-context" | "prompt-caching" | "structured-output" | "tool-use" | "vision")[], deploymentTags?: string[], disabled?: boolean, priority?: number }`
+Source: packages/types/src/catalog.ts
+
+### UpdateModelProvider
+`{ baseURL?: string, disabled?: boolean, name?: string }`
+Source: packages/types/src/catalog.ts
 
 ### UpdateOAuthClient
 `{ clientId?: string, clientSecret?: string, defaultScopes?: string[] | null, metadata?: { [string]: unknown } | null, name?: string, redirectUris?: string[] | null }`

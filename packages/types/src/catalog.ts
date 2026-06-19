@@ -71,6 +71,93 @@ export type InvokerModelPreference = typeof InvokerModelPreference.infer;
 export const InvokerModelPreferences = InvokerModelPreference.array();
 export type InvokerModelPreferences = typeof InvokerModelPreferences.infer;
 
+export const CreateModel = type({
+  canonicalName: type("string").describe(
+    "Tenant-unique canonical model name agents match their requirements against.",
+  ),
+  "displayName?": "string | null",
+  "description?": "string | null",
+});
+
+export const UpdateModel = type({
+  "displayName?": "string | null",
+  "description?": "string | null",
+  "disabled?": "boolean",
+});
+
+export const CreateModelProvider = type({
+  name: type("string").describe("Tenant-unique model-provider name."),
+  plugin: ModelProviderPlugin,
+  baseURL: "string",
+  // Exactly one of these must be set; the route rejects a body that sets
+  // both or neither before touching the database.
+  "credentialId?": "string | null",
+  "walletId?": "string | null",
+});
+
+export const UpdateModelProvider = type({
+  "name?": "string",
+  "baseURL?": "string",
+  "disabled?": "boolean",
+});
+
+export const CreateModelOffering = type({
+  modelId: type("string").describe(
+    "Catalog id of a model owned by this tenant.",
+  ),
+  providerId: type("string").describe(
+    "Catalog id of a model-provider owned by this tenant.",
+  ),
+  "priority?": type("number").describe(
+    "Ordering hint for source resolution; lower values are preferred first. Defaults to 0.",
+  ),
+  "deploymentTags?": "string[]",
+  "capabilities?": Capability.array(),
+});
+
+export const UpdateModelOffering = type({
+  "priority?": "number",
+  "deploymentTags?": "string[]",
+  "capabilities?": Capability.array(),
+  "disabled?": "boolean",
+});
+
+const createPriceDescription = (axis: string): string =>
+  `${axis} as a decimal string in this row's \`currency\`, or null if this provider does not charge for it.`;
+
+export const CreatePricingRow = type({
+  currency: type("string").describe(
+    "Fiat currency code or opaque credit unit this row prices in.",
+  ),
+  "effectiveFrom?": type("string").describe(
+    "ISO-8601 timestamp from which this price applies. Defaults to the time of the request.",
+  ),
+  "inputTokenPrice?": type("string | null").describe(
+    createPriceDescription("Cost per input token"),
+  ),
+  "outputTokenPrice?": type("string | null").describe(
+    createPriceDescription("Cost per output token"),
+  ),
+  "cacheReadTokenPrice?": type("string | null").describe(
+    createPriceDescription("Cost per cached-read token"),
+  ),
+  "cacheWriteTokenPrice?": type("string | null").describe(
+    createPriceDescription("Cost per cached-write token"),
+  ),
+  "thinkingTokenPrice?": type("string | null").describe(
+    createPriceDescription("Cost per thinking token"),
+  ),
+  "perRequestFee?": type("string | null").describe(
+    createPriceDescription("Flat fee per request"),
+  ),
+  "perImageFee?": type("string | null").describe(
+    createPriceDescription("Fee per image"),
+  ),
+  "perAudioFee?": type("string | null").describe(
+    createPriceDescription("Fee per audio unit"),
+  ),
+});
+
 export const ModelResponse = type({
   id: "string",
   tenantId: "string",
