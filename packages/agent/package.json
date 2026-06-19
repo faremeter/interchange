@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@intx/inference": "workspace:*",
+    "@intx/log": "workspace:*",
     "@intx/mime": "workspace:*",
     "@intx/types": "workspace:*",
     "arktype": "catalog:"

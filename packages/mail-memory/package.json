@@ -13,6 +13,7 @@
     "@intx/crypto-node": "workspace:*",
     "@intx/log": "workspace:*",
     "@intx/mime": "workspace:*",
-    "@intx/types": "workspace:*"
+    "@intx/types": "workspace:*",
+    "arktype": "catalog:"
   }
 }
