@@ -1294,10 +1294,11 @@ Source: packages/types/src/sessions.ts
 Source: packages/types/src/observability.ts
 
 ### ModelInfo
-`{ id: string, name: string, providerId: string, capabilities?: ("audio-input" | "extended-thinking" | "long-context" | "prompt-caching" | "structured-output" | "tool-use" | "vision")[], description?: string | null, limits?: { context?: number, output?: number }, pricing?: { cacheRead?: string, cacheWrite?: string, input?: string, output?: string, perAudio?: string, perImage?: string, perRequest?: string, thinking?: string } }`
+`{ canonicalName: string, id: string, offerings: { capabilities: ("audio-input" | "extended-thinking" | "long-context" | "prompt-caching" | "structured-output" | "tool-use" | "vision")[], deploymentTags: string[], offeringId: string, plugin: "anthropic" | "google-genai" | "openai" | "openai-compatible", pricing: { createdAt: string, currency: string, effectiveFrom: string, id: string, offeringId: string, tenantId: string, cacheReadTokenPrice?: string | null, cacheWriteTokenPrice?: string | null, inputTokenPrice?: string | null, outputTokenPrice?: string | null, perAudioFee?: string | null, perImageFee?: string | null, perRequestFee?: string | null, thinkingTokenPrice?: string | null }[], priority: number, providerId: string, providerName: string }[], description?: string | null, displayName?: string | null }`
 Source: packages/types/src/models.ts
 
-**capabilities**: Curated platform capability tags advertised for the model (for example vision, tool-use, or long-context).
+**canonicalName**: The model's tenant-unique canonical name, matched against an agent's model requirements.
+**offerings**: One entry per provider that offers this model in the tenant's resolved catalog, ordered by resolution priority.
 
 ### OAuthClientResponse
 `{ createdAt: string, id: string, name: string, providerId: string, tenantId: string, updatedAt: string, defaultScopes?: string[] | null, metadata?: { [string]: unknown } | null, redirectUris?: string[] | null }`
