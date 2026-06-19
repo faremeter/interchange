@@ -40,25 +40,28 @@ export class SourceNotFoundError extends Error {
 export type SourceRegistry = {
   /**
    * The mutable active source. The same object reference is held by the
-   * reactor; mutating it through `setSource` is what swaps the source for
-   * subsequent inference calls.
+   * reactor; mutating it (through `setSource`, `setSources`, or
+   * `advanceToNextSource`) is what swaps the source for subsequent
+   * inference calls.
    */
   readonly active: InferenceSource;
   /** Replace the active source's fields in place. */
   setSource(source: InferenceSource): void;
+  /**
+   * Replace the whole ordered list and position the active source at
+   * `defaultSource`. Used when the control plane pushes a re-resolved
+   * source list to a running agent.
+   */
+  setSources(sources: InferenceSource[], defaultSource: string): void;
 };
 
-export function createSourceRegistry(opts: {
-  sources: InferenceSource[];
-  defaultSource: string;
-}): SourceRegistry {
-  if (opts.sources.length === 0) {
+function validateSources(sources: InferenceSource[]): InferenceSource[] {
+  if (sources.length === 0) {
     throw new InvalidInferenceSourceError("sources[] must be non-empty");
   }
-
   const validated: InferenceSource[] = [];
   const seenIds = new Set<string>();
-  for (const [i, raw] of opts.sources.entries()) {
+  for (const [i, raw] of sources.entries()) {
     const parsed = InferenceSourceValidator(raw);
     if (parsed instanceof type.errors) {
       throw new InvalidInferenceSourceError(
@@ -73,7 +76,14 @@ export function createSourceRegistry(opts: {
     seenIds.add(parsed.id);
     validated.push(parsed);
   }
+  return validated;
+}
 
+export function createSourceRegistry(opts: {
+  sources: InferenceSource[];
+  defaultSource: string;
+}): SourceRegistry {
+  const validated = validateSources(opts.sources);
   const initial = validated.find((s) => s.id === opts.defaultSource);
   if (initial === undefined) {
     throw new SourceNotFoundError(opts.defaultSource);
@@ -89,5 +99,13 @@ export function createSourceRegistry(opts: {
     applyInferenceSourceFields(active, parsed);
   }
 
-  return { active, setSource };
+  function setSources(sources: InferenceSource[], defaultSource: string): void {
+    const next = validateSources(sources).find((s) => s.id === defaultSource);
+    if (next === undefined) {
+      throw new SourceNotFoundError(defaultSource);
+    }
+    applyInferenceSourceFields(active, next);
+  }
+
+  return { active, setSource, setSources };
 }

@@ -37,7 +37,10 @@ export type DeployApplyErrorEmitter = (
 export type BuildHarnessArgs = {
   agentAddress: string;
   agentConfig: AgentConfig;
-  source: InferenceSource;
+  /** Ordered inference sources; the head (the source whose id is
+   * `defaultSource`) starts active, the tail is the failover chain. */
+  sources: InferenceSource[];
+  defaultSource: string;
   /** Absolute path to the per-agent directory, from AgentRepoStore. */
   storeDir: string;
   /** Per-agent view of the host's message transport. */

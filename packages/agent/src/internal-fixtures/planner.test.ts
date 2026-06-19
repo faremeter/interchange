@@ -54,7 +54,8 @@ describe("planner fixture: reactor wrapped exactly once", () => {
       const storage = await createIsogitStore(workdir);
 
       const env: BaseEnv = {
-        source: PLANNER_SOURCE,
+        sources: [PLANNER_SOURCE],
+        defaultSource: PLANNER_SOURCE.id,
         storage,
         workdir,
         audit: noopAuditStore(),

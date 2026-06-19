@@ -176,7 +176,8 @@ function mailEnv(opts: {
   transport: MessageTransport;
 }): MailEnv {
   return {
-    source: SOURCE,
+    sources: [SOURCE],
+    defaultSource: SOURCE.id,
     storage: opts.storage,
     workdir: opts.workdir,
     audit: noopAuditStore(),
@@ -343,13 +344,16 @@ describe("createHarness outbound pipeline", () => {
 
     const env: MailEnv = {
       ...mailEnv({ workdir: workDir, storage, transport }),
-      source: {
-        id: "anthropic:claude-3-5-sonnet",
-        provider: "anthropic",
-        baseURL: "https://api.anthropic.com",
-        apiKey: "sk-test-harness-outbound",
-        model: "claude-3-5-sonnet",
-      },
+      sources: [
+        {
+          id: "anthropic:claude-3-5-sonnet",
+          provider: "anthropic",
+          baseURL: "https://api.anthropic.com",
+          apiKey: "sk-test-harness-outbound",
+          model: "claude-3-5-sonnet",
+        },
+      ],
+      defaultSource: "anthropic:claude-3-5-sonnet",
       deps: inference.deps,
     };
 

@@ -168,4 +168,39 @@ describe("createSourceRegistry", () => {
     expect(inputs[0]?.apiKey).toBe("sk-anthropic-1");
     expect(inputs[0]?.baseURL).toBe("https://api.anthropic.com");
   });
+
+  test("setSources replaces the list and activates the new default in place", () => {
+    const reg = createSourceRegistry({
+      sources: [S_ANTHROPIC],
+      defaultSource: S_ANTHROPIC.id,
+    });
+    const reference = reg.active;
+
+    reg.setSources([S_ANTHROPIC, S_OPENAI], "openai:gpt-4o");
+
+    expect(reg.active).toBe(reference);
+    expect(reg.active.id).toBe("openai:gpt-4o");
+    expect(reg.active.provider).toBe("openai");
+    expect(reg.active.apiKey).toBe("sk-openai-1");
+  });
+
+  test("setSources throws when the new default matches no source", () => {
+    const reg = createSourceRegistry({
+      sources: [S_ANTHROPIC],
+      defaultSource: S_ANTHROPIC.id,
+    });
+    expect(() => reg.setSources([S_OPENAI], "anthropic:none")).toThrow(
+      SourceNotFoundError,
+    );
+  });
+
+  test("setSources rejects an empty list", () => {
+    const reg = createSourceRegistry({
+      sources: [S_ANTHROPIC],
+      defaultSource: S_ANTHROPIC.id,
+    });
+    expect(() => reg.setSources([], "anything")).toThrow(
+      InvalidInferenceSourceError,
+    );
+  });
 });

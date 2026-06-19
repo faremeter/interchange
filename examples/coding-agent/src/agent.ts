@@ -118,7 +118,8 @@ export async function createCodingAgent(
   });
 
   const env: BaseEnv = {
-    source,
+    sources: [source],
+    defaultSource: source.id,
     storage,
     workdir: opts.contextDir,
     audit: noopAuditStore(),

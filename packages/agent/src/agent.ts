@@ -156,6 +156,12 @@ export type Agent = {
    */
   setSource(source: InferenceSource): void;
   /**
+   * Replace the whole ordered source list and activate `defaultSource`.
+   * Used when the control plane pushes a re-resolved source list to a
+   * running agent (credential rotation, sidecar reconnect).
+   */
+  setSources(sources: InferenceSource[], defaultSource: string): void;
+  /**
    * Project conversation history from the underlying context store.
    * Remains callable after `close()` -- reads do not need the reactor
    * and the store is not destroyed by close. Returns the full-fidelity
@@ -347,8 +353,8 @@ export async function createAgent<EnvReq extends BaseEnv>(
     const resolvedTools = resolveTools(def, env);
     bundlesForRollback = resolvedTools.bundles;
     const sourceRegistry = createSourceRegistry({
-      sources: [env.source],
-      defaultSource: env.source.id,
+      sources: env.sources,
+      defaultSource: env.defaultSource,
     });
     // Capture the registered names as a frozen snapshot at construction
     // so the director receives a stable list it can iterate. The
@@ -709,6 +715,14 @@ export async function createAgent<EnvReq extends BaseEnv>(
       sourceRegistry.setSource(source);
     }
 
+    function setSources(
+      sources: InferenceSource[],
+      defaultSource: string,
+    ): void {
+      ensureOpen();
+      sourceRegistry.setSources(sources, defaultSource);
+    }
+
     async function history(): Promise<ConversationTurn[]> {
       const loaded = await contextStore.load();
       return loaded.turns;
@@ -773,6 +787,7 @@ export async function createAgent<EnvReq extends BaseEnv>(
       deliver,
       close,
       setSource,
+      setSources,
       history,
       checkpoints,
       readAt,

@@ -9,8 +9,9 @@
 // when you want to see the *required* `defineAgent` / `createAgent`
 // surface.
 //
-// The env below sets only the required `BaseEnv` keys (`source`,
-// `storage`, `workdir`, `audit`, `authorize`, `directors`). The
+// The env below sets only the required `BaseEnv` keys (`sources`,
+// `defaultSource`, `storage`, `workdir`, `audit`, `authorize`,
+// `directors`). The
 // optional tuning knobs documented on `BaseEnv` -- `closeTimeoutMs`,
 // `sendQueueMax`, `streamBufferMax`, `sizeCapMaxChars`, `sessionId`,
 // `deps` -- are intentionally omitted from this example to keep the
@@ -72,7 +73,8 @@ export async function main(
   });
 
   const agentEnv: BaseEnv = {
-    source,
+    sources: [source],
+    defaultSource: source.id,
     storage,
     workdir: contextDir,
     audit: noopAuditStore(),

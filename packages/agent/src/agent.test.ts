@@ -45,7 +45,8 @@ function minimalDef() {
 
 function baseEnv(workdir: string): BaseEnv {
   return {
-    source: SOURCE,
+    sources: [SOURCE],
+    defaultSource: SOURCE.id,
     storage: stubContextStore(),
     workdir,
     audit: noopAuditStore(),

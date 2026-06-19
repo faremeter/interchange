@@ -79,7 +79,8 @@ export function createBareMailEnv(opts: {
   workdir: string;
 }): BaseEnv {
   return {
-    source: MAIL_SOURCE,
+    sources: [MAIL_SOURCE],
+    defaultSource: MAIL_SOURCE.id,
     storage: opts.storage,
     workdir: opts.workdir,
     audit: noopAuditStore(),
@@ -98,7 +99,8 @@ export function createTransportMailEnv(opts: {
   workdir: string;
 }): FixtureMailEnv {
   return {
-    source: MAIL_SOURCE,
+    sources: [MAIL_SOURCE],
+    defaultSource: MAIL_SOURCE.id,
     storage: opts.storage,
     workdir: opts.workdir,
     audit: noopAuditStore(),
