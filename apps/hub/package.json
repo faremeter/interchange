@@ -11,6 +11,6 @@
     "@intx/hub-sessions": "workspace:*",
     "@intx/log": "workspace:*",
     "@intx/types": "workspace:*",
-    "hono": "^4.11.9"
+    "hono": "catalog:"
   }
 }

@@ -21,7 +21,7 @@
     "@intx/log": "workspace:*",
     "@intx/types": "workspace:*",
     "arktype": "catalog:",
-    "drizzle-orm": "^0.45.1",
+    "drizzle-orm": "catalog:",
     "postgres": "^3.4.8"
   },
   "devDependencies": {
