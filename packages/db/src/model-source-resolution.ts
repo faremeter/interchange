@@ -1,4 +1,11 @@
-import type { ModelRequirement, ProviderPreference } from "@intx/types";
+import { and, eq } from "drizzle-orm";
+
+import {
+  InvokerModelPreferences,
+  ModelRequirements,
+  type ModelRequirement,
+  type ProviderPreference,
+} from "@intx/types";
 import type { InferenceSource } from "@intx/types/runtime";
 
 import {
@@ -7,6 +14,7 @@ import {
 } from "./catalog-resolution";
 import type { DB } from "./client";
 import { resolveCredentialById } from "./credential-resolution";
+import { agent } from "./schema/agents";
 
 /**
  * Why a single offering could not be turned into a launchable source.
@@ -203,4 +211,46 @@ export async function resolveModelSources(
   }
 
   return { ok: true, sources };
+}
+
+/**
+ * Resolves the ordered sources for a running instance from persisted state:
+ * the agent definition's model requirements and the invoker's launch-time
+ * preferences stored on the instance row. Launch, credential-rotation push,
+ * and sidecar reconnect all resolve through this, so a running instance's
+ * source list is a pure function of persisted state — re-resolution
+ * reproduces the launch ordering, including the invoker's reorder/restrict.
+ */
+export async function resolveInstanceModelSources(
+  db: DB["db"],
+  tenantId: string,
+  instance: { agentId: string; modelPreferences: unknown },
+): Promise<CatalogSourceResolution> {
+  // Scope the agent lookup to the resolving tenant, matching the launch
+  // route. A cross-tenant agentId resolves to nothing rather than
+  // contributing another tenant's model names or preferences.
+  const agentRow = await db.query.agent.findFirst({
+    where: and(eq(agent.id, instance.agentId), eq(agent.tenantId, tenantId)),
+  });
+  if (agentRow === undefined) {
+    return { ok: false, reason: "no_requirements" };
+  }
+
+  const requirements =
+    agentRow.modelRequirements !== null
+      ? ModelRequirements.assert(agentRow.modelRequirements)
+      : [];
+
+  const preferences =
+    instance.modelPreferences !== null
+      ? InvokerModelPreferences.assert(instance.modelPreferences)
+      : [];
+  const invokerPreferences: Record<string, ProviderPreference> = {};
+  for (const preference of preferences) {
+    invokerPreferences[preference.model] = preference.providers;
+  }
+
+  return resolveModelSources(db, tenantId, requirements, {
+    invokerPreferences,
+  });
 }

@@ -1,0 +1,1 @@
+ALTER TABLE "agent_instance" ADD COLUMN "model_preferences" jsonb;

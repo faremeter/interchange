@@ -9,10 +9,14 @@ import type {
 } from "./catalog-resolution";
 import type { credential } from "./schema/credentials";
 import type { DB } from "./client";
-import { resolveModelSources } from "./model-source-resolution";
+import {
+  resolveInstanceModelSources,
+  resolveModelSources,
+} from "./model-source-resolution";
 
 type CredentialRow = typeof credential.$inferSelect;
 type TenantRow = { id: string; parentId: string | null };
+type AgentRow = { id: string; tenantId: string; modelRequirements: unknown };
 
 type DBState = {
   tenants: TenantRow[];
@@ -20,6 +24,7 @@ type DBState = {
   providers: ModelProviderRow[];
   offerings: ModelOfferingRow[];
   credentials: CredentialRow[];
+  agents?: AgentRow[];
 };
 
 const SQL_TO_JS: Record<string, string> = {
@@ -101,6 +106,7 @@ function makeMockDB(state: DBState): DB["db"] {
       modelProvider: finder(state.providers),
       modelOffering: finder(state.offerings),
       credential: finder(state.credentials),
+      agent: finder(state.agents ?? []),
     },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
@@ -423,5 +429,121 @@ describe("resolveModelSources", () => {
     if (!result.ok) return;
     // The invoker pins relay, overriding the creator's anthropic preference.
     expect(result.sources.map((s) => s.id)).toEqual(["mof_relay"]);
+  });
+});
+
+describe("resolveInstanceModelSources", () => {
+  function stateWithRelay(): DBState {
+    const state = baseState();
+    state.providers.push(
+      makeProvider({ id: "mpv_relay", name: "relay", credentialId: "cred_r" }),
+    );
+    state.offerings.push(
+      makeOffering({
+        id: "mof_relay",
+        modelId: "mdl_opus",
+        providerId: "mpv_relay",
+        priority: 1,
+      }),
+    );
+    state.credentials.push(
+      makeCredential({ id: "cred_r", secret: "sk-relay" }),
+    );
+    return state;
+  }
+
+  test("resolves from the agent's persisted modelRequirements", async () => {
+    const state = stateWithRelay();
+    state.agents = [
+      {
+        id: "agt_1",
+        tenantId: "tnt_root",
+        modelRequirements: [{ model: "opus" }],
+      },
+    ];
+    const result = await resolveInstanceModelSources(
+      makeMockDB(state),
+      "tnt_root",
+      {
+        agentId: "agt_1",
+        modelPreferences: null,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // mof_a (priority 0) before mof_relay (priority 1).
+    expect(result.sources.map((s) => s.id)).toEqual(["mof_a", "mof_relay"]);
+  });
+
+  test("applies the invoker preferences persisted on the instance", async () => {
+    const state = stateWithRelay();
+    state.agents = [
+      {
+        id: "agt_1",
+        tenantId: "tnt_root",
+        modelRequirements: [{ model: "opus" }],
+      },
+    ];
+    const result = await resolveInstanceModelSources(
+      makeMockDB(state),
+      "tnt_root",
+      {
+        agentId: "agt_1",
+        modelPreferences: [
+          { model: "opus", providers: { mode: "pin", order: ["relay"] } },
+        ],
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The invoker pin restricts to relay despite mof_a's better priority.
+    expect(result.sources.map((s) => s.id)).toEqual(["mof_relay"]);
+  });
+
+  test("returns no_requirements when the agent has none", async () => {
+    const state = stateWithRelay();
+    state.agents = [
+      { id: "agt_1", tenantId: "tnt_root", modelRequirements: null },
+    ];
+    const result = await resolveInstanceModelSources(
+      makeMockDB(state),
+      "tnt_root",
+      {
+        agentId: "agt_1",
+        modelPreferences: null,
+      },
+    );
+    expect(result).toEqual({ ok: false, reason: "no_requirements" });
+  });
+
+  test("returns no_requirements when the agent is absent from the tenant", async () => {
+    const state = stateWithRelay();
+    state.agents = []; // the instance's agent is not found in this tenant
+    const result = await resolveInstanceModelSources(
+      makeMockDB(state),
+      "tnt_root",
+      {
+        agentId: "agt_missing",
+        modelPreferences: null,
+      },
+    );
+    expect(result).toEqual({ ok: false, reason: "no_requirements" });
+  });
+
+  test("throws on malformed persisted modelPreferences", async () => {
+    const state = stateWithRelay();
+    state.agents = [
+      {
+        id: "agt_1",
+        tenantId: "tnt_root",
+        modelRequirements: [{ model: "opus" }],
+      },
+    ];
+    await expect(
+      resolveInstanceModelSources(makeMockDB(state), "tnt_root", {
+        agentId: "agt_1",
+        modelPreferences: [{ model: "opus", providers: { mode: "force" } }],
+      }),
+    ).rejects.toThrow();
   });
 });

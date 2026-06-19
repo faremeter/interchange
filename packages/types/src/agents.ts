@@ -1,5 +1,5 @@
 import { type } from "arktype";
-import { ModelRequirements } from "./catalog";
+import { InvokerModelPreferences, ModelRequirements } from "./catalog";
 import { grantEffects } from "./grants";
 import { ToolPackagePin, ToolPackagePinArray } from "./tool-packages";
 
@@ -126,6 +126,9 @@ export const AgentResponse = type({
 
 export const CreateAgentInstance = type({
   agentId: "string",
+  "modelPreferences?": InvokerModelPreferences.describe(
+    "The invoker's per-model provider preferences for this launch. Applied over the tenant-visible providers after the definition's preferences; it can only reorder or restrict, never introduce a provider the tenant catalog lacks. Persisted on the instance so re-resolution reuses it.",
+  ),
   "invokerGrants?": type({
     resource: "string",
     action: "string",

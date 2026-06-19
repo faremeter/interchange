@@ -1158,10 +1158,11 @@ Source: packages/types/src/agents.ts
 **toolPackages**: Tool packages pinned by this agent definition. Each entry must use a valid npm package name (lowercase, optionally `@scope/`-prefixed) and a parseable semver range; the array must contain no duplicate names. The hub resolves the full dependency closure at deploy-assembly time and ships the manifest to the sidecar; the sidecar materializes each pinned package and registers its tools with the harness.
 
 ### CreateAgentInstance
-`{ agentId: string, invokerGrants?: { action: string, resource: string, conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[] }`
+`{ agentId: string, invokerGrants?: { action: string, resource: string, conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], modelPreferences?: { model: string, providers: { mode: "pin" | "prefer", order: string[] } }[] }`
 Source: packages/types/src/agents.ts
 
 **invokerGrants**: Capabilities the invoker is willing to delegate to the agent, resolved against the invoker's own authority at launch. These are materialized as grants on the agent principal in addition to any grants from the definition's own requirements.
+**modelPreferences**: The invoker's per-model provider preferences for this launch. Applied over the tenant-visible providers after the definition's preferences; it can only reorder or restrict, never introduce a provider the tenant catalog lacks. Persisted on the instance so re-resolution reuses it.
 
 ### CreateCredential
 `{ name: string, providerId: string, secret: string, type: "api_key" | "certificate" | "oauth_token" | "other", description?: string, expiresAt?: string, metadata?: { [string]: unknown }, oauthClientId?: string, principalId?: string, refreshSecret?: string, scopes?: string[] }`

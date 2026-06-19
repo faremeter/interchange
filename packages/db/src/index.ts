@@ -35,6 +35,7 @@ export {
 } from "./catalog-resolution";
 export {
   resolveModelSources,
+  resolveInstanceModelSources,
   type CatalogSourceResolution,
   type SourceSkip,
 } from "./model-source-resolution";
