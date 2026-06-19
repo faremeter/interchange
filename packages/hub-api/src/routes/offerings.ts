@@ -9,12 +9,11 @@ import {
   CreateOffering,
   UpdateOffering,
   OfferingDetail,
-  ModelInfo,
   ErrorResponse,
   paginatedSchema,
 } from "@intx/types";
 
-import type { TenantEnv, AppEnv } from "../context";
+import type { TenantEnv } from "../context";
 import { first } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
@@ -346,37 +345,4 @@ export function createOfferingRoutes({
   );
 
   return app;
-}
-
-// Models endpoint is global (not tenant-scoped) -- remains a stub for now
-// since model discovery requires external provider integration
-export function createModelRoutes(): Hono<AppEnv> {
-  const modelsApp = new Hono<AppEnv>();
-
-  modelsApp.get(
-    "/",
-    describeRoute({
-      tags: ["Discovery"],
-      summary: "List available models",
-      description:
-        "Lists available models across configured providers with capabilities, pricing, and limits.",
-      responses: {
-        200: {
-          description: "List of models",
-          content: {
-            "application/json": {
-              schema: resolver(ModelInfo.array()),
-            },
-          },
-        },
-      },
-    }),
-    (c) =>
-      c.json(
-        { error: { code: "not_implemented", message: "Not implemented" } },
-        501,
-      ),
-  );
-
-  return modelsApp;
 }

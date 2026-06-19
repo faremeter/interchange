@@ -62,25 +62,33 @@ async function pushSourceUpdatesToTenants(
 ): Promise<void> {
   if (tenantIds.length === 0) return;
 
-  const instances = await db.query.agentInstance.findMany({
-    where: and(
-      inArray(agentInstance.tenantId, tenantIds),
-      eq(agentInstance.status, "running"),
-    ),
-  });
+  // Callers fire this without awaiting, so it must never reject: a failure to
+  // enumerate or push is logged and dropped, not propagated as an unhandled
+  // rejection. The push is best effort — the next mutation or a sidecar
+  // reconnect re-resolves sources.
+  try {
+    const instances = await db.query.agentInstance.findMany({
+      where: and(
+        inArray(agentInstance.tenantId, tenantIds),
+        eq(agentInstance.status, "running"),
+      ),
+    });
 
-  if (instances.length === 0) return;
+    if (instances.length === 0) return;
 
-  const results = await Promise.allSettled(
-    instances.map((instance) =>
-      pushInstanceSourceUpdate(db, sidecarRouter, instance),
-    ),
-  );
+    const results = await Promise.allSettled(
+      instances.map((instance) =>
+        pushInstanceSourceUpdate(db, sidecarRouter, instance),
+      ),
+    );
 
-  for (const result of results) {
-    if (result.status === "rejected") {
-      log.warn`Failed to push source update: ${String(result.reason)}`;
+    for (const result of results) {
+      if (result.status === "rejected") {
+        log.warn`Failed to push source update: ${String(result.reason)}`;
+      }
     }
+  } catch (err: unknown) {
+    log.warn`Failed to push source updates: ${String(err)}`;
   }
 }
 
@@ -109,6 +117,12 @@ export async function pushSourceUpdatesSubtree(
   sidecarRouter: SidecarRouter,
   tenantId: string,
 ): Promise<void> {
-  const tenants = await getDescendantTenants(db, tenantId);
+  let tenants: string[];
+  try {
+    tenants = await getDescendantTenants(db, tenantId);
+  } catch (err: unknown) {
+    log.warn`Failed to enumerate descendants for source push: ${String(err)}`;
+    return;
+  }
   await pushSourceUpdatesToTenants(db, sidecarRouter, tenants);
 }
