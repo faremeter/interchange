@@ -61,6 +61,9 @@
     "apps/sidecar": {
       "name": "@intx/sidecar-app",
       "version": "0.1.2",
+      "bin": {
+        "workflow-child": "./bin/workflow-child",
+      },
       "dependencies": {
         "@intx/agent": "workspace:*",
         "@intx/authz": "workspace:*",
@@ -71,12 +74,14 @@
         "@intx/inference": "workspace:*",
         "@intx/log": "workspace:*",
         "@intx/mail-memory": "workspace:*",
+        "@intx/pack-transport": "workspace:*",
         "@intx/storage-isogit": "workspace:*",
         "@intx/tool-packaging": "workspace:*",
         "@intx/tools-lsp": "workspace:*",
         "@intx/tools-mail": "workspace:*",
         "@intx/tools-posix": "workspace:*",
         "@intx/types": "workspace:*",
+        "@intx/workflow": "workspace:*",
         "@intx/workflow-host": "workspace:*",
       },
     },
@@ -545,9 +550,6 @@
     "packages/workflow-host": {
       "name": "@intx/workflow-host",
       "version": "0.0.1",
-      "bin": {
-        "workflow-child": "./bin/workflow-child",
-      },
       "dependencies": {
         "@intx/agent": "workspace:*",
         "@intx/crypto-node": "workspace:*",
