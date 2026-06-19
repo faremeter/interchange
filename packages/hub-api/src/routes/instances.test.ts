@@ -1137,6 +1137,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       credentialRequirements: [
         { source: "tenant", providerName: "test-provider" },
       ],
+      modelRequirements: null,
       grantRequirements: null,
       toolPackages: [],
       currentVersion: "1",

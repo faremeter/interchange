@@ -8,6 +8,7 @@ import {
   ModelProviderPlugin,
   modelProviderPlugins,
   ModelProviderResponse,
+  ModelRequirement,
   PricingRowResponse,
 } from "./catalog";
 
@@ -91,6 +92,37 @@ describe("ModelProviderResponse", () => {
   test("accepts a wallet-backed provider", () => {
     const row = { ...base, walletId: "wal_1" };
     expect(ModelProviderResponse(row) instanceof type.errors).toBe(false);
+  });
+});
+
+describe("ModelRequirement", () => {
+  test("accepts a bare model name", () => {
+    expect(ModelRequirement({ model: "opus" }) instanceof type.errors).toBe(
+      false,
+    );
+  });
+
+  test("accepts a capability filter and a provider preference", () => {
+    const req = {
+      model: "opus",
+      capabilities: ["vision", "tool-use"],
+      providers: { mode: "pin", order: ["anthropic"] },
+    };
+    expect(ModelRequirement(req) instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a non-curated capability", () => {
+    const req = { model: "opus", capabilities: ["telepathy"] };
+    expect(ModelRequirement(req) instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an unknown preference mode", () => {
+    const req = { model: "opus", providers: { mode: "force", order: [] } };
+    expect(ModelRequirement(req) instanceof type.errors).toBe(true);
+  });
+
+  test("requires the model name", () => {
+    expect(ModelRequirement({}) instanceof type.errors).toBe(true);
   });
 });
 

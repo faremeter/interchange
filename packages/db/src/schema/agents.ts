@@ -21,6 +21,12 @@ export const agent = pgTable("agent", {
   modelConfig: jsonb("model_config"),
   capabilities: jsonb("capabilities"),
   credentialRequirements: jsonb("credential_requirements"),
+  // Model needs declared by canonical name with per-model provider
+  // preferences, validated as ModelRequirements at parse time. The control
+  // plane resolves these against the tenant catalog at launch to build the
+  // ordered inference sources; credentialRequirements covers only
+  // tool/integration credentials, not inference.
+  modelRequirements: jsonb("model_requirements"),
   // Pinned tool packages, validated as ToolPackagePin[] at parse time.
   // Empty array (the default) means the agent has no NPM-distributed
   // tool packages wired to it; the loader receives an empty closure

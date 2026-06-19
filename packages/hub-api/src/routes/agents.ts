@@ -53,6 +53,7 @@ function formatAgent(
     status: parsed.status,
     capabilities: parsed.capabilities ?? undefined,
     credentialRequirements: parsed.credentialRequirements ?? undefined,
+    modelRequirements: parsed.modelRequirements ?? undefined,
     grantRequirements: parsed.grantRequirements ?? undefined,
     toolPackages: parsed.toolPackages,
     roles,
@@ -253,6 +254,7 @@ export function createAgentRoutes({
               modelConfig: body.modelConfig ?? null,
               capabilities: body.capabilities ?? null,
               credentialRequirements: body.credentialRequirements ?? null,
+              modelRequirements: body.modelRequirements ?? null,
               grantRequirements: body.grantRequirements ?? null,
               toolPackages: body.toolPackages ?? [],
               currentVersion: "1",
@@ -437,6 +439,8 @@ export function createAgentRoutes({
         updates["capabilities"] = body.capabilities;
       if (body.credentialRequirements !== undefined)
         updates["credentialRequirements"] = body.credentialRequirements;
+      if (body.modelRequirements !== undefined)
+        updates["modelRequirements"] = body.modelRequirements;
       if (body.grantRequirements !== undefined)
         updates["grantRequirements"] = body.grantRequirements;
       if (body.toolPackages !== undefined)

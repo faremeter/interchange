@@ -1,6 +1,10 @@
 import { type } from "arktype";
+import { ModelRequirements } from "./catalog";
 import { grantEffects } from "./grants";
 import { ToolPackagePin, ToolPackagePinArray } from "./tool-packages";
+
+const modelRequirementsDescription =
+  "Model needs declared by canonical name, with optional per-model capability filters and provider preferences. Resolved against the tenant catalog at launch to build the ordered inference sources; it does not introduce providers the tenant catalog lacks.";
 
 export const credentialRequirementSources = [
   "tenant",
@@ -61,6 +65,9 @@ export const CreateAgent = type({
   "modelConfig?": "Record<string, unknown>",
   "capabilities?": "Record<string, unknown>",
   "credentialRequirements?": CredentialRequirement.array(),
+  "modelRequirements?": ModelRequirements.describe(
+    modelRequirementsDescription,
+  ),
   "grantRequirements?": GrantRequirement.array().describe(
     "A grant requirements manifest, not live grants. Each entry declares a resource, action, and source (creator or invoker). The control plane resolves these requirements at each agent launch against the current authority of the creator and invoker.",
   ),
@@ -79,6 +86,9 @@ export const UpdateAgent = type({
   "modelConfig?": "Record<string, unknown>",
   "capabilities?": "Record<string, unknown>",
   "credentialRequirements?": CredentialRequirement.array(),
+  "modelRequirements?": ModelRequirements.describe(
+    modelRequirementsDescription,
+  ),
   "grantRequirements?": GrantRequirement.array(),
   "toolPackages?": ToolPackagePinArray,
   "roleIds?": "string[]",
@@ -102,6 +112,9 @@ export const AgentResponse = type({
   ),
   "capabilities?": "Record<string, unknown>",
   "credentialRequirements?": CredentialRequirement.array(),
+  "modelRequirements?": ModelRequirements.describe(
+    modelRequirementsDescription,
+  ),
   "grantRequirements?": GrantRequirement.array(),
   toolPackages: ToolPackagePin.array().describe(
     "Tool packages this definition pins. Always present; an empty array means the definition pins no packages (the agent runs with whatever non-tool-package factories the sidecar harness ships).",
