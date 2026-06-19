@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import { agent, agentVersion } from "./agents";
 import { agentSession } from "./sessions";
@@ -30,6 +30,11 @@ export const agentInstance = pgTable("agent_instance", {
   }),
   publicKey: text("public_key"),
   kernelId: text("kernel_id"),
+  // The invoker's launch-time per-model provider preferences, validated as
+  // InvokerModelPreferences at parse time. Persisted here so re-resolving an
+  // instance's sources (on credential rotation or sidecar reconnect) reuses
+  // the invoker's reorder/restrict, not just the definition's preferences.
+  modelPreferences: jsonb("model_preferences"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   endedAt: timestamp("ended_at"),

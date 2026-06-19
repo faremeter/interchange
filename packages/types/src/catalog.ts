@@ -60,6 +60,17 @@ export type ModelRequirement = typeof ModelRequirement.infer;
 export const ModelRequirements = ModelRequirement.array();
 export type ModelRequirements = typeof ModelRequirements.infer;
 
+export const InvokerModelPreference = type({
+  model: type("string").describe(
+    "Canonical model name this launch-time preference applies to.",
+  ),
+  providers: ProviderPreference,
+});
+export type InvokerModelPreference = typeof InvokerModelPreference.infer;
+
+export const InvokerModelPreferences = InvokerModelPreference.array();
+export type InvokerModelPreferences = typeof InvokerModelPreferences.infer;
+
 export const ModelResponse = type({
   id: "string",
   tenantId: "string",
