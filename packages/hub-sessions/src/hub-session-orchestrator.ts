@@ -14,7 +14,7 @@ import { eq } from "drizzle-orm";
 import { type } from "arktype";
 import type { DB } from "@intx/db";
 import { agentInstance } from "@intx/db/schema";
-import { resolveInstanceSources } from "@intx/db";
+import { pushInstanceSourceUpdate } from "./credential-push";
 import { parseMailToEmail } from "@intx/mime";
 import { parseInferenceEvent } from "@intx/types/runtime";
 import type { GrantRule, GrantStore } from "@intx/types/authz";
@@ -133,27 +133,16 @@ export function createHubSessionOrchestrator(
       );
       await router.sendGrantsUpdate(agentAddress, grants);
 
-      // Re-resolve and push credentials so the agent picks up any
-      // rotations that happened while the sidecar was disconnected.
-      // Fail-open: a stale credential causes runtime 401s, not a
-      // security escalation, so we log rather than reject the
-      // reconnect.
+      // Re-resolve and push sources so the agent picks up any catalog or
+      // credential changes that happened while the sidecar was
+      // disconnected. Fail-open: a stale source causes runtime 401s, not a
+      // security escalation, so we log rather than reject the reconnect.
       try {
-        const sources = await resolveInstanceSources(
-          db,
-          instance.tenantId,
-          instance,
-        );
-        if (sources.length > 0) {
-          const [first] = sources;
-          if (first !== undefined) {
-            await router.sendSourcesUpdate(agentAddress, sources, first.id);
-          }
-        }
+        await pushInstanceSourceUpdate(db, router, instance.tenantId, instance);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         log.warn(
-          "Failed to push credentials on reconnect for {agentAddress}: {msg}",
+          "Failed to push sources on reconnect for {agentAddress}: {msg}",
           { agentAddress, msg },
         );
       }

@@ -29,7 +29,7 @@ Authorization requirements declaring which capabilities the agent needs and wher
 External service credentials the agent needs, declared with a source annotation indicating whether the tenant, definition creator, or invoker should provide them. See CREDENTIALS.md for the resolution model.
 
 **Model Requirements**
-The models the agent needs for inference, declared by canonical name. Interchange maintains a global model registry with canonical identifiers for well-known models; tenants can extend the registry with custom names for private or self-hosted models. Model providers register which canonical models they serve and map them to their own internal model names where they differ.
+The models the agent needs for inference, declared by canonical name with optional capability filters and provider preferences. Models, the providers that serve them, and their pairings live in a tenant-scoped catalog that inherits through the tenant hierarchy (see Model Provider Management); a tenant defines its own canonical model names, including custom names for private or self-hosted deployments.
 
 A model provider is a service that offers access to one or more models — each with its own endpoint and authentication method. A model provider authenticates via either a credential (API key, OAuth token) or a wallet (pay-per-use), but not both. This is distinct from the credential system's "provider" concept (which represents any third-party service); model providers are specifically the services that serve inference.
 
@@ -37,9 +37,9 @@ For each model, the definition can specify model provider preferences and fallba
 
 - **Tenant-sourced** — Tenant policies define which model providers are available and set baseline priorities. This is the outer boundary; no agent can use a model provider the tenant has not registered.
 - **Creator-sourced** — The definition author sets model provider preferences that travel with the definition. A creator can pin a definition to specific model providers (e.g., requiring Anthropic direct for a safety-critical agent) or set a preferred fallback order.
-- **Invoker-sourced** — The user launching the agent can bring their own model provider credentials at launch, adding model providers to the agent's available set or overriding priority for the session.
+- **Invoker-sourced** — The user launching the agent can reorder or restrict the model providers for the session, within the set the tenant catalog already makes available. Bringing a provider the tenant has not registered is not supported; the invoker preference can only narrow or reprioritize, never extend, the available set.
 
-The definition does not carry model provider configurations directly; it declares model needs and preferences that the control plane resolves at launch time. If a required model has no available model providers at resolution time, the agent fails to launch — the same behavior as an unresolvable credential requirement. See INFERENCE.md for the provider adapter architecture.
+The definition does not carry model provider configurations directly; it declares model needs and preferences that the control plane resolves against the catalog at launch, producing an ordered per-model source list. The head of that list is the active source and the tail is the failover chain. If a required model resolves to no launchable source, the agent fails to launch — the same behavior as an unresolvable credential requirement. See INFERENCE.md for the provider adapter architecture.
 
 **Version History**
 Definitions are tracked in git repositories on the hub. The repository contains the agent-specific resources: skills, system prompt, context builder configuration, and initial state. External skill dependencies are referenced in configuration files and resolved when the agent is deployed.

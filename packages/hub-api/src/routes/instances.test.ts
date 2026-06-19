@@ -1019,6 +1019,9 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     inserts: TableInsert[];
     provider?: Record<string, unknown> | undefined;
     credential?: Record<string, unknown> | undefined;
+    model?: Record<string, unknown> | undefined;
+    modelProvider?: Record<string, unknown> | undefined;
+    modelOffering?: Record<string, unknown> | undefined;
   };
 
   function createLaunchMockDB(opts: LaunchMockOpts) {
@@ -1101,6 +1104,20 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
           findFirst: async () => opts.credential,
           findMany: async () => (opts.credential ? [opts.credential] : []),
         },
+        model: {
+          findFirst: notImplemented("db.query.model.findFirst"),
+          findMany: async () => (opts.model ? [opts.model] : []),
+        },
+        modelProvider: {
+          findFirst: notImplemented("db.query.modelProvider.findFirst"),
+          findMany: async () =>
+            opts.modelProvider ? [opts.modelProvider] : [],
+        },
+        modelOffering: {
+          findFirst: notImplemented("db.query.modelOffering.findFirst"),
+          findMany: async () =>
+            opts.modelOffering ? [opts.modelOffering] : [],
+        },
       },
       transaction: async (fn: (tx: typeof txLike) => Promise<unknown>) =>
         fn(txLike),
@@ -1134,10 +1151,8 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       initialState: null,
       modelConfig: { defaultModel: "test-model" },
       capabilities: null,
-      credentialRequirements: [
-        { source: "tenant", providerName: "test-provider" },
-      ],
-      modelRequirements: null,
+      credentialRequirements: null,
+      modelRequirements: [{ model: "test-model" }],
       grantRequirements: null,
       toolPackages: [],
       currentVersion: "1",
@@ -1147,13 +1162,50 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     };
   }
 
-  function makeProvider(): Record<string, unknown> {
+  const MODEL_ID = "mdl_test";
+  const MODEL_PROVIDER_ID = "mpv_test";
+  const OFFERING_ID = "mof_test";
+
+  function makeCatalogModel(): Record<string, unknown> {
     return {
-      id: PROVIDER_ID,
+      id: MODEL_ID,
+      tenantId: TENANT_ID,
+      canonicalName: "test-model",
+      displayName: null,
+      description: null,
+      disabled: false,
+      createdAt: new Date("2025-01-01"),
+      updatedAt: new Date("2025-01-01"),
+    };
+  }
+
+  function makeCatalogProvider(): Record<string, unknown> {
+    return {
+      id: MODEL_PROVIDER_ID,
       tenantId: TENANT_ID,
       name: "test-provider",
       plugin: "openai",
-      metadata: { baseURL: "https://api.test.example.com" },
+      baseURL: "https://api.test.example.com",
+      credentialId: CREDENTIAL_ID,
+      walletId: null,
+      disabled: false,
+      createdAt: new Date("2025-01-01"),
+      updatedAt: new Date("2025-01-01"),
+    };
+  }
+
+  function makeCatalogOffering(): Record<string, unknown> {
+    return {
+      id: OFFERING_ID,
+      tenantId: TENANT_ID,
+      modelId: MODEL_ID,
+      providerId: MODEL_PROVIDER_ID,
+      priority: 0,
+      deploymentTags: [],
+      capabilities: [],
+      disabled: false,
+      createdAt: new Date("2025-01-01"),
+      updatedAt: new Date("2025-01-01"),
     };
   }
 
@@ -1200,8 +1252,10 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
 
     const db = createLaunchMockDB({
       agent: makeAgentDef(),
-      provider: makeProvider(),
       credential: makeCredential(),
+      model: makeCatalogModel(),
+      modelProvider: makeCatalogProvider(),
+      modelOffering: makeCatalogOffering(),
       inserts,
     });
 
@@ -1266,8 +1320,10 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
 
     const db = createLaunchMockDB({
       agent: makeAgentDef(),
-      provider: makeProvider(),
       credential: makeCredential(),
+      model: makeCatalogModel(),
+      modelProvider: makeCatalogProvider(),
+      modelOffering: makeCatalogOffering(),
       inserts,
     });
 
@@ -1321,5 +1377,133 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
 
     expect(sawInstance).toBe(true);
     expect(sawStateGrantAfterInstance).toBe(true);
+  });
+
+  function launchApp(db: ReturnType<typeof createLaunchMockDB>) {
+    return createApp({
+      getSession: createMockGetSession(USER_ID),
+      authHandler: () => new Response("", { status: 404 }),
+      db,
+      grantStore: createLaunchGrantStore(),
+      sidecarRouter: createMockSidecarRouter(),
+      sessionService: createCapturingSessionService(),
+      eventCollectors: createCapturingEventCollectors(),
+      assetService: null,
+      repoStore: null,
+      maxTarballBytes: 10_000_000,
+    });
+  }
+
+  async function launch(db: ReturnType<typeof createLaunchMockDB>) {
+    return launchApp(db).request(`/api/tenants/${TENANT_ID}/agents/instances`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agentId: AGENT_DEF_ID }),
+    });
+  }
+
+  test("rejects launch when the agent declares no model requirements", async () => {
+    const agent = makeAgentDef();
+    agent["modelRequirements"] = null;
+    const res = await launch(
+      createLaunchMockDB({ agent, credential: makeCredential(), inserts: [] }),
+    );
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(await res.json())).toContain("no model requirements");
+  });
+
+  test("rejects launch when the only provider is wallet-backed", async () => {
+    const walletProvider = makeCatalogProvider();
+    walletProvider["credentialId"] = null;
+    walletProvider["walletId"] = "wal_test";
+    const res = await launch(
+      createLaunchMockDB({
+        agent: makeAgentDef(),
+        model: makeCatalogModel(),
+        modelProvider: walletProvider,
+        modelOffering: makeCatalogOffering(),
+        inserts: [],
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(await res.json())).toContain("wallet_backed");
+  });
+
+  test("passes catalog-ordered sources to launchSession and persists modelPreferences", async () => {
+    const inserts: TableInsert[] = [];
+    let launchedSources: unknown;
+    let launchedDefaultSource: unknown;
+    const sessionService: SessionService = {
+      launchSession: async (params) => {
+        launchedSources = params.config.sources;
+        launchedDefaultSource = params.config.defaultSource;
+      },
+      sendUserMessage: () => {
+        throw new Error("mock: sendUserMessage not implemented");
+      },
+      endSession: () => {
+        throw new Error("mock: endSession not implemented");
+      },
+    };
+
+    const db = createLaunchMockDB({
+      agent: makeAgentDef(),
+      credential: makeCredential(),
+      model: makeCatalogModel(),
+      modelProvider: makeCatalogProvider(),
+      modelOffering: makeCatalogOffering(),
+      inserts,
+    });
+
+    const app = createApp({
+      getSession: createMockGetSession(USER_ID),
+      authHandler: () => new Response("", { status: 404 }),
+      db,
+      grantStore: createLaunchGrantStore(),
+      sidecarRouter: createMockSidecarRouter(),
+      sessionService,
+      eventCollectors: createCapturingEventCollectors(),
+      assetService: null,
+      repoStore: null,
+      maxTarballBytes: 10_000_000,
+    });
+
+    const preferences = [
+      {
+        model: "test-model",
+        providers: { mode: "prefer", order: ["test-provider"] },
+      },
+    ];
+    const res = await app.request(
+      `/api/tenants/${TENANT_ID}/agents/instances`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          agentId: AGENT_DEF_ID,
+          modelPreferences: preferences,
+        }),
+      },
+    );
+
+    expect(res.status).toBe(201);
+    // The catalog-resolved source reaches the harness config verbatim, and
+    // the head of the priority-ordered list is the default.
+    expect(launchedSources).toEqual([
+      {
+        id: OFFERING_ID,
+        provider: "openai",
+        baseURL: "https://api.test.example.com",
+        apiKey: "sk-test",
+        model: "test-model",
+        capabilities: [],
+      },
+    ]);
+    expect(launchedDefaultSource).toBe(OFFERING_ID);
+
+    // The invoker preference is persisted on the instance for re-resolution.
+    const instanceRow = inserts.find((i) => i.table === "agent_instance")
+      ?.rows[0];
+    expect(instanceRow?.["modelPreferences"]).toEqual(preferences);
   });
 });

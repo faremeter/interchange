@@ -1,12 +1,13 @@
-// Shared logic for pushing inference-source updates to sidecars.
+// Shared logic for re-resolving a running instance's inference sources from
+// the catalog and pushing the update to its sidecar.
 //
-// Used by the credentials PATCH route to broadcast updates to every running
-// instance in the tenant after a credential secret is rotated.
+// Used after a credential secret rotation (a model provider's credential
+// changes the resolved source's apiKey) and on sidecar reconnect.
 
 import { eq, and } from "drizzle-orm";
 import { getLogger } from "@intx/log";
 import { agentInstance } from "@intx/db/schema";
-import { resolveInstanceSources } from "@intx/db";
+import { resolveInstanceModelSources } from "@intx/db";
 import type { DB } from "@intx/db";
 
 import type { SidecarRouter } from "./ws/sidecar-handler";
@@ -14,20 +15,39 @@ import type { SidecarRouter } from "./ws/sidecar-handler";
 const log = getLogger(["hub", "credentials"]);
 
 /**
- * After a credential secret is rotated, find all running instances in the
- * tenant that may use credentials from the affected provider, re-resolve
- * their full sources array, and push updates to sidecars.
+ * Re-resolve a single running instance's inference sources from the catalog
+ * (the agent's model requirements plus the invoker preferences persisted on
+ * the instance) and push the ordered list to its sidecar. The head of the
+ * catalog-priority-ordered list is the active default; the tail is the
+ * failover chain.
+ *
+ * No-op when the instance resolves to no launchable source — the resolver's
+ * own logger is the signal for why.
+ */
+export async function pushInstanceSourceUpdate(
+  db: DB["db"],
+  sidecarRouter: Pick<SidecarRouter, "sendSourcesUpdate">,
+  tenantId: string,
+  instance: { address: string; agentId: string; modelPreferences: unknown },
+): Promise<void> {
+  const resolution = await resolveInstanceModelSources(db, tenantId, instance);
+  if (!resolution.ok) return;
+  const [head] = resolution.sources;
+  if (head === undefined) return;
+  await sidecarRouter.sendSourcesUpdate(
+    instance.address,
+    resolution.sources,
+    head.id,
+  );
+}
+
+/**
+ * After a credential secret is rotated, re-resolve every running instance in
+ * the tenant against the catalog and push the updates to sidecars. A rotated
+ * secret flows through because resolution dereferences the provider's
+ * credential reference to the current secret.
  *
  * Errors are logged per-instance but do not propagate.
- *
- * **Silent no-op when sources is empty.** `resolveInstanceSources`
- * returns `[]` when an instance's agent has malformed
- * `credentialRequirements` or `modelConfig`. This function skips those
- * instances without emitting a log line of its own — the resolver's
- * `db.credentials` logger is the only signal. When a credential rotation
- * fails to reach an agent operators expect it to reach, grep the
- * `db.credentials` logger for `Invalid modelConfig` or
- * `Invalid credential requirements` warnings keyed on the agent id.
  */
 export async function pushSourceUpdates(
   db: DB["db"],
@@ -44,17 +64,9 @@ export async function pushSourceUpdates(
   if (instances.length === 0) return;
 
   const results = await Promise.allSettled(
-    instances.map(async (instance) => {
-      const sources = await resolveInstanceSources(db, tenantId, instance);
-      if (sources.length === 0) return;
-      const [first] = sources;
-      if (first === undefined) return;
-      await sidecarRouter.sendSourcesUpdate(
-        instance.address,
-        sources,
-        first.id,
-      );
-    }),
+    instances.map((instance) =>
+      pushInstanceSourceUpdate(db, sidecarRouter, tenantId, instance),
+    ),
   );
 
   for (const result of results) {

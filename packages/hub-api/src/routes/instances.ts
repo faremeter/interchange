@@ -18,7 +18,7 @@ import {
   sessionMail,
   turnPart,
 } from "@intx/db/schema";
-import { parseAgentRow, resolveOneCredential } from "@intx/db";
+import { parseAgentRow, resolveModelSources } from "@intx/db";
 import type { DB } from "@intx/db";
 import { evaluateGrants, authorize } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
@@ -29,7 +29,6 @@ import {
   CreateAgentInstance,
   AgentInstanceResponse,
   AgentHealth,
-  CredentialRequirement,
   OfferingDetail,
   GrantRequirement,
   SendMessage,
@@ -40,8 +39,8 @@ import {
   formatAgentAddress,
   paginatedSchema,
 } from "@intx/types";
-import type { GrantEffect, GrantOrigin } from "@intx/types";
-import type { CryptoProvider, InferenceSource } from "@intx/types/runtime";
+import type { GrantEffect, GrantOrigin, ProviderPreference } from "@intx/types";
+import type { CryptoProvider } from "@intx/types/runtime";
 import {
   SessionLaunchError,
   type EventCollectorRegistry,
@@ -64,7 +63,6 @@ import {
   pageParameters,
 } from "../pagination";
 
-const CredentialRequirements = CredentialRequirement.array();
 const GrantRequirements = GrantRequirement.array();
 
 // DoS guard on the mail route body. Sized above the legitimate ceiling
@@ -73,10 +71,6 @@ const GrantRequirements = GrantRequirement.array();
 // by the handler with a structured error, while genuine garbage is
 // rejected here before the JSON parser allocates a giant string.
 const MAX_MAIL_BODY_BYTES = 44 * 1024 * 1024;
-
-const ModelConfig = type({
-  defaultModel: "string",
-});
 
 const AbortBody = type({
   "reason?":
@@ -131,7 +125,7 @@ export function createInstanceRoutes({
       tags: ["Instances"],
       summary: "Deploy an agent instance",
       description:
-        "Creates a new running instance of the specified agent definition. Resolves the definition's credential and grant requirements, materializes grants on a new agent principal, provisions the agent on a sidecar, and starts it. The invoker can provide invokerGrants to delegate additional capabilities, resolved against the invoker's own authority at launch.",
+        "Creates a new running instance of the specified agent definition. Resolves the definition's model requirements against the tenant catalog into an ordered inference-source list, materializes grants on a new agent principal, provisions the agent on a sidecar, and starts it. The invoker can provide invokerGrants to delegate additional capabilities, and modelPreferences to reorder or restrict the resolved providers for the session.",
       responses: {
         201: {
           description: "Instance deployed",
@@ -204,127 +198,57 @@ export function createInstanceRoutes({
       const instanceId = generateId("instance");
       const agentAddress = formatAgentAddress(instanceId, tenant.domain);
 
-      // --- Credential resolution ---
-
-      const parsedRequirements = CredentialRequirements(
-        row.credentialRequirements ?? [],
-      );
-      if (parsedRequirements instanceof type.errors) {
-        return c.json(
-          {
-            error: {
-              code: "not_launchable",
-              message: `Invalid credential requirements: ${parsedRequirements.summary}`,
-            },
-          },
-          409,
-        );
-      }
+      // --- Inference source resolution (catalog) ---
 
       const creatorPrincipalId = row.creatorPrincipalId;
 
-      // Parse modelConfig up front: the model identity is part of every
-      // resolved InferenceSource (pre-catalog the same `defaultModel`
-      // gets stamped on each one), and the resolution loop below needs
-      // it. Surfacing an invalid modelConfig before the credential
-      // resolution avoids partial work that would have to be unwound.
-      const modelConfig = ModelConfig(row.modelConfig ?? {});
-      if (modelConfig instanceof type.errors) {
+      const modelRequirements = parseAgentRow(row).modelRequirements ?? [];
+
+      // The invoker's launch-time preference reorders or restricts the
+      // tenant-visible providers; it cannot introduce one the catalog lacks.
+      const invokerPreferences: Record<string, ProviderPreference> = {};
+      for (const preference of body.modelPreferences ?? []) {
+        invokerPreferences[preference.model] = preference.providers;
+      }
+
+      const resolution = await resolveModelSources(
+        db,
+        tenant.id,
+        modelRequirements,
+        { invokerPreferences },
+      );
+      if (!resolution.ok) {
+        const message =
+          resolution.reason === "no_requirements"
+            ? "Agent declares no model requirements; cannot resolve any inference sources"
+            : `No launchable inference source for model "${resolution.model}"` +
+              (resolution.skips.length > 0
+                ? ` (${resolution.skips
+                    .map((skip) => `${skip.provider}: ${skip.reason}`)
+                    .join(", ")})`
+                : "");
+        return c.json({ error: { code: "not_launchable", message } }, 409);
+      }
+      const sources = resolution.sources;
+
+      // The head of the catalog-priority-ordered list is the active source;
+      // the tail is the failover chain. resolveModelSources only returns ok
+      // when every required model produced at least one source, so the head
+      // is always present — the guard satisfies the type and would fail
+      // loudly if that invariant ever broke.
+      const [headSource] = sources;
+      if (headSource === undefined) {
         return c.json(
           {
             error: {
               code: "not_launchable",
-              message: `Agent model configuration is invalid: ${modelConfig.summary}`,
+              message: "Inference source resolution produced no sources",
             },
           },
           409,
         );
       }
-      const defaultModel = modelConfig.defaultModel;
-
-      const sources: InferenceSource[] = [];
-      for (const req of parsedRequirements) {
-        const outcome = await resolveOneCredential(
-          db,
-          tenant.id,
-          req,
-          creatorPrincipalId,
-          principal.id,
-          defaultModel,
-        );
-        if (outcome.ok) {
-          sources.push(outcome.source);
-          continue;
-        }
-        switch (outcome.reason) {
-          case "skipped":
-            // Requirement targets a principal that does not exist
-            // (invoker without a session principal). Skip silently;
-            // the resulting empty sources[] is surfaced as a
-            // `not_launchable` 409 below.
-            continue;
-          case "credential_error":
-            return c.json(
-              {
-                error: { code: "credential_error", message: outcome.message },
-              },
-              409,
-            );
-          case "credential_missing":
-            return c.json(
-              {
-                error: {
-                  code: "credential_missing",
-                  message: `No credential found for provider "${outcome.requirement.providerName}" (source: ${outcome.requirement.source})`,
-                },
-              },
-              409,
-            );
-          case "provider_missing":
-            return c.json(
-              {
-                error: {
-                  code: "provider_missing",
-                  message: `Provider not found for credential "${outcome.credentialId}"`,
-                },
-              },
-              409,
-            );
-          case "provider_misconfigured":
-            return c.json(
-              {
-                error: {
-                  code: "provider_misconfigured",
-                  message: `Provider "${outcome.providerName}" metadata is invalid: ${outcome.summary}`,
-                },
-              },
-              409,
-            );
-        }
-      }
-
-      // The first resolved source becomes the active one. Pre-catalog
-      // every source carries the same `defaultModel`, so the id of the
-      // first source is the canonical `defaultSource` reference.
-      const [firstSource] = sources;
-      if (firstSource === undefined) {
-        // An agent with no credentialRequirements has no resolvable
-        // sources, so the inference runtime has nothing to call. Surface
-        // this as a 409 here rather than letting the launch reach the
-        // sidecar with an empty sources[] only to fail with a less
-        // direct error.
-        return c.json(
-          {
-            error: {
-              code: "not_launchable",
-              message:
-                "Agent has no credential requirements; cannot resolve any inference sources",
-            },
-          },
-          409,
-        );
-      }
-      const defaultSource = firstSource.id;
+      const defaultSource = headSource.id;
 
       // --- Grant requirement resolution (creator/invoker delegation) ---
 
@@ -562,6 +486,7 @@ export function createInstanceRoutes({
           address: agentAddress,
           sessionId,
           status: "deployed",
+          modelPreferences: body.modelPreferences ?? null,
           createdAt: now,
           updatedAt: now,
         });
