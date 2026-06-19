@@ -122,7 +122,8 @@ async function buildAgentEnv(opts: {
 }): Promise<BaseEnv> {
   const storage = await createIsogitStore(opts.workdir);
   return {
-    source: UNREACHABLE_SOURCE,
+    sources: [UNREACHABLE_SOURCE],
+    defaultSource: UNREACHABLE_SOURCE.id,
     storage,
     workdir: opts.workdir,
     audit: opts.audit,

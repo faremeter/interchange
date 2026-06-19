@@ -287,7 +287,8 @@ function createSidecarStepBuildEnv(
     }
     const source = resolveStepInferenceSource(stepId);
     return {
-      source,
+      sources: [source],
+      defaultSource: source.id,
       storage: throwingStepEnvSlot<ContextStore>("storage", stepId),
       workdir: throwingStepEnvWorkdir(stepId),
       audit: throwingStepEnvSlot<AuditStore>("audit", stepId),

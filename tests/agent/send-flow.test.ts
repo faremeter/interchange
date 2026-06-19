@@ -54,7 +54,8 @@ async function envFor(
 ): Promise<BaseEnv> {
   const storage = await createIsogitStore(workdir);
   return {
-    source: SOURCE,
+    sources: [SOURCE],
+    defaultSource: SOURCE.id,
     storage,
     workdir,
     audit: noopAuditStore(),

@@ -166,7 +166,8 @@ async function buildEnv(opts: {
 }): Promise<BaseEnv> {
   const storage = await createIsogitStore(opts.workdir);
   return {
-    source: SOURCE,
+    sources: [SOURCE],
+    defaultSource: SOURCE.id,
     storage,
     workdir: opts.workdir,
     audit: noopAuditStore(),

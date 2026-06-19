@@ -28,7 +28,8 @@ import type { DirectorRef, DirectorRegistry } from "./director-types";
 import { type BaseEnv, AgentEnvError } from "./env";
 
 const BASE_ENV_KEYS = [
-  "source",
+  "sources",
+  "defaultSource",
   "storage",
   "workdir",
   "audit",
@@ -59,7 +60,7 @@ export function effectiveDirectorRef(
 
 /**
  * The result of `getRequiredEnvKeys`. `keys` is the env-key set the
- * supplied definition's tools and director declare (plus the six
+ * supplied definition's tools and director declare (plus the
  * `BaseEnv` core keys). `unresolvedDirectorId` is `null` when the
  * director resolved cleanly and the keys list is complete; non-null
  * when the registry could not resolve the definition's director, in
@@ -119,7 +120,7 @@ export function getRequiredEnvKeys(
  * missing key, the contributors that declared each one, and any
  * director ids the registry could not resolve.
  *
- * `BaseEnv` contributes the six core keys; each tool factory
+ * `BaseEnv` contributes its core keys; each tool factory
  * contributes under the label `tool:<id>`; the director contributes
  * under `director:<id>`. Multiple contributors blaming the same
  * missing key collapse into a single error. Unknown director ids land

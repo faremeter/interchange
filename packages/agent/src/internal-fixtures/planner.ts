@@ -48,7 +48,8 @@ export function createPlannerEnv(opts: {
   workdir: string;
 }): BaseEnv {
   return {
-    source: PLANNER_SOURCE,
+    sources: [PLANNER_SOURCE],
+    defaultSource: PLANNER_SOURCE.id,
     storage: opts.storage,
     workdir: opts.workdir,
     audit: noopAuditStore(),

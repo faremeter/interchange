@@ -84,6 +84,7 @@ export interface Harness {
   close(): Promise<void>;
   deliver(message: InboundMessage): void;
   setSource(source: InferenceSource): void;
+  setSources(sources: InferenceSource[], defaultSource: string): void;
   stream: Agent["stream"];
   readonly blobReader: BlobReader;
 }
@@ -524,6 +525,8 @@ export async function createHarness<EnvReq extends MailEnv>(
       close,
       deliver: (message) => agent.deliver(message),
       setSource: (source) => agent.setSource(source),
+      setSources: (sources, defaultSource) =>
+        agent.setSources(sources, defaultSource),
       stream: () => agent.stream(),
       blobReader: agent.blobReader,
     };

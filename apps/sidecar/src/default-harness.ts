@@ -747,7 +747,8 @@ export function createDefaultHarnessBuilder(
     async build({
       agentAddress,
       agentConfig,
-      source,
+      sources,
+      defaultSource,
       storeDir,
       agentTransport,
       crypto,
@@ -838,12 +839,16 @@ export function createDefaultHarnessBuilder(
         tools: factoriesWithCapture,
         capabilities: [],
         inference: {
-          sources: [{ provider: source.provider, model: source.model }],
+          sources: sources.map((s) => ({
+            provider: s.provider,
+            model: s.model,
+          })),
         },
       });
 
       const baseEnv: MailEnv = {
-        source,
+        sources,
+        defaultSource,
         storage,
         workdir: workDir,
         audit: storage,

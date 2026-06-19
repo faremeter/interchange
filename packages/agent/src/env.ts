@@ -59,13 +59,16 @@ export type AuthorizeFn<Ctx = unknown> = (
  */
 export interface BaseEnv {
   /**
-   * Active inference source supplied at instantiation. The agent
-   * copies this value into its own internal source registry; later
-   * `setSource(...)` calls mutate the registry's copy, not this object.
-   * Callers who want to observe the active source after a rotation
-   * should track it themselves via the value passed to `setSource`.
+   * Ordered inference sources supplied at instantiation. The agent copies
+   * these into its own internal source registry; the head of the priority
+   * order (the source whose id is `defaultSource`) starts active, and the
+   * tail is the failover chain. Later `setSource`/`setSources` calls mutate
+   * the registry's copy, not these objects.
    */
-  source: InferenceSource;
+  sources: InferenceSource[];
+
+  /** Id of the source that starts active (the head of the priority order). */
+  defaultSource: string;
 
   /** Backing context store. The caller owns its lifetime. */
   storage: ContextStore;

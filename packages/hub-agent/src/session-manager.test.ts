@@ -9,6 +9,7 @@ import type {
   CryptoProvider,
   HarnessConfig,
   InferenceEvent,
+  InferenceSource,
   KeyPair,
 } from "@intx/types/runtime";
 
@@ -97,7 +98,9 @@ function makeMailStoreStub(): MailAuditStore & { commits: string[] } {
   return store;
 }
 
-function makeHarnessStub(): Harness {
+function makeHarnessStub(
+  onSetSources?: (sources: InferenceSource[], defaultSource: string) => void,
+): Harness {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- Harness is a library type whose unused members are not structurally satisfied by the stub
   return {
     start: () => {
@@ -113,15 +116,23 @@ function makeHarnessStub(): Harness {
     setSource: () => {
       /* no-op */
     },
+    setSources: (sources: InferenceSource[], defaultSource: string) => {
+      onSetSources?.(sources, defaultSource);
+    },
     get blobReader() {
       throw new Error("blobReader unused in these tests");
     },
   } as unknown as Harness;
 }
 
+type SetSourcesRecord = {
+  sources: InferenceSource[];
+  defaultSource: string;
+};
 type RecordingBuilder = HarnessBuilder & {
   buildCalls: BuildHarnessArgs[];
   grants: GrantRecord[];
+  setSourcesCalls: SetSourcesRecord[];
 };
 type GrantRecord = { address: string; count: number };
 
@@ -131,10 +142,12 @@ function makeRecordingBuilder(opts: {
 }): RecordingBuilder {
   const buildCalls: BuildHarnessArgs[] = [];
   const grants: GrantRecord[] = [];
+  const setSourcesCalls: SetSourcesRecord[] = [];
 
   return {
     buildCalls,
     grants,
+    setSourcesCalls,
     canBuildSource(source) {
       if (opts.rejectSource?.(source)) {
         throw new Error(`source rejected: ${source.provider}`);
@@ -145,7 +158,9 @@ function makeRecordingBuilder(opts: {
       if (opts.throwOnBuild) {
         throw new Error("builder boom");
       }
-      const harness = makeHarnessStub();
+      const harness = makeHarnessStub((sources, defaultSource) => {
+        setSourcesCalls.push({ sources, defaultSource });
+      });
       const mailStore = makeMailStoreStub();
       const bundle: HarnessBundle = {
         harness,
@@ -213,8 +228,57 @@ describe("SessionManager.provisionAgent + startSession happy path", () => {
     if (call === undefined) throw new Error("unreachable");
     expect(call.agentAddress).toBe("agent@local");
     expect(call.agentConfig.agentId).toBe("test-agent");
-    expect(call.source.id).toBe("test:test-model");
+    expect(call.defaultSource).toBe("test:test-model");
+    expect(call.sources.map((s) => s.id)).toContain("test:test-model");
     expect(call.storeDir).toContain("agent_at_local");
+  });
+});
+
+describe("SessionManager.updateSources", () => {
+  const NEW_SOURCES: InferenceSource[] = [
+    {
+      id: "test:test-model",
+      provider: "test",
+      apiKey: "rotated-key",
+      baseURL: "http://localhost",
+      model: "test-model",
+    },
+    {
+      id: "test:fallback",
+      provider: "test",
+      apiKey: "fallback-key",
+      baseURL: "http://localhost",
+      model: "fallback-model",
+    },
+  ];
+
+  test("installs the full ordered list on the running harness", async () => {
+    const dataDir = await tempDir();
+    const { manager, builder } = makeManagerHarness(dataDir);
+    await manager.provisionAgent(makeConfig("agent@local"));
+    await manager.startSession("agent@local");
+
+    await manager.updateSources("agent@local", NEW_SOURCES, "test:test-model");
+
+    expect(builder.setSourcesCalls).toHaveLength(1);
+    const recorded = builder.setSourcesCalls[0];
+    if (recorded === undefined) throw new Error("unreachable");
+    expect(recorded.defaultSource).toBe("test:test-model");
+    expect(recorded.sources.map((s) => s.id)).toEqual([
+      "test:test-model",
+      "test:fallback",
+    ]);
+  });
+
+  test("rejects a default that names no source in the new list", async () => {
+    const dataDir = await tempDir();
+    const { manager } = makeManagerHarness(dataDir);
+    await manager.provisionAgent(makeConfig("agent@local"));
+    await manager.startSession("agent@local");
+
+    await expect(
+      manager.updateSources("agent@local", NEW_SOURCES, "test:missing"),
+    ).rejects.toThrow();
   });
 });
 

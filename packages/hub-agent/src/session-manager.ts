@@ -368,7 +368,8 @@ export function createSessionManager(
       const bundle = await buildHarness.build({
         agentAddress,
         agentConfig,
-        source,
+        sources: agentConfig.sources,
+        defaultSource: agentConfig.defaultSource,
         storeDir,
         agentTransport,
         crypto,
@@ -619,7 +620,7 @@ export function createSessionManager(
       );
     }
     buildHarness.canBuildSource(source);
-    session.harness.setSource(source);
+    session.harness.setSources(sources, defaultSource);
     session.config = { ...session.config, sources, defaultSource };
     await repoStore.persistConfig(agentAddress, session.config);
     logger.info`Updated sources for ${agentAddress}`;

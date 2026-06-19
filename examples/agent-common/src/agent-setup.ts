@@ -139,7 +139,8 @@ export async function openExampleAgent<T extends CommonMainOptions>(
   });
 
   const env: BaseEnv = {
-    source: active,
+    sources: [...spec.sources],
+    defaultSource: spec.defaultSource,
     storage,
     workdir: contextDir,
     audit: storage,

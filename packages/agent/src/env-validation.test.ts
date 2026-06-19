@@ -25,7 +25,8 @@ const STORAGE = {} as unknown as BaseEnv["storage"];
 
 function baseEnv(): BaseEnv {
   return {
-    source: SOURCE,
+    sources: [SOURCE],
+    defaultSource: SOURCE.id,
     storage: STORAGE,
     workdir: "/tmp/x",
     audit: noopAuditStore(),
@@ -281,13 +282,14 @@ describe("validateEnv", () => {
 });
 
 describe("getRequiredEnvKeys", () => {
-  test("returns the six BaseEnv keys when no tools or director declare more", () => {
+  test("returns the BaseEnv keys when no tools or director declare more", () => {
     const result = getRequiredEnvKeys(
       emptyDef(),
       createDefaultDirectorRegistry(),
     );
     expect(result.keys).toEqual([
-      "source",
+      "sources",
+      "defaultSource",
       "storage",
       "workdir",
       "audit",
@@ -363,7 +365,7 @@ describe("getRequiredEnvKeys", () => {
     );
     expect(result.keys).toContain("transport");
     // BaseEnv keys are always present.
-    expect(result.keys).toContain("source");
+    expect(result.keys).toContain("sources");
     expect(result.keys).toContain("storage");
     expect(result.unresolvedDirectorId).toBe("@vendor/pkg/not-registered");
   });
