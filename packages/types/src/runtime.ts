@@ -2015,10 +2015,9 @@ export type InferenceSourceDefaults = typeof InferenceSourceDefaults.infer;
  * Carries wire reachability, credentials, the model identity at the
  * provider, and the model-bound default knobs.
  *
- * Pre-catalog, `id` is synthesized by the resolver as `${provider}:${model}`.
- * When the catalog ships, `id` becomes the catalog primary key and the
- * resolver looks the source up rather than synthesizing it. `id` is the
- * routing key used by `AgentConfig.defaultSource` and `Agent.setSource`.
+ * `id` is the catalog offering's primary key, set by the resolver from the
+ * matched offering. It is the routing key used by `AgentConfig.defaultSource`
+ * and `Agent.setSource`.
  *
  * Multi-model providers become multiple sources — `model` is part of the
  * identity, not an optional override.

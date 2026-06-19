@@ -990,6 +990,7 @@ Body: CreateModelProvider
 
 201: ModelProviderResponse -- Provider created
 400: ErrorResponse -- Exactly one of credentialId or walletId is required
+404: ErrorResponse -- Credential not found in this tenant
 409: ErrorResponse -- Provider name already exists in this tenant
 
 ### GET /api/tenants/:tenantId/catalog/providers/:providerId

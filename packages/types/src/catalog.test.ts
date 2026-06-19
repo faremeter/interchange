@@ -9,6 +9,7 @@ import {
   modelProviderPlugins,
   ModelProviderResponse,
   ModelRequirement,
+  ModelRequirements,
   PricingRowResponse,
 } from "./catalog";
 
@@ -123,6 +124,25 @@ describe("ModelRequirement", () => {
 
   test("requires the model name", () => {
     expect(ModelRequirement({}) instanceof type.errors).toBe(true);
+  });
+});
+
+describe("ModelRequirements", () => {
+  test("accepts distinct model names", () => {
+    const reqs = [{ model: "opus" }, { model: "sonnet" }];
+    expect(ModelRequirements(reqs) instanceof type.errors).toBe(false);
+  });
+
+  test("rejects two requirements for the same model", () => {
+    const reqs = [
+      { model: "opus", capabilities: ["vision"] },
+      { model: "opus", capabilities: ["tool-use"] },
+    ];
+    expect(ModelRequirements(reqs) instanceof type.errors).toBe(true);
+  });
+
+  test("accepts an empty array", () => {
+    expect(ModelRequirements([]) instanceof type.errors).toBe(false);
   });
 });
 

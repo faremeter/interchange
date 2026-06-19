@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
 import { modelProvider } from "@intx/db/schema";
+import { resolveCredentialById } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
   CreateModelProvider,
@@ -123,6 +124,12 @@ export function createModelProviderRoutes({
             "application/json": { schema: resolver(ErrorResponse) },
           },
         },
+        404: {
+          description: "Credential not found in this tenant",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
         409: {
           description: "Provider name already exists in this tenant",
           content: {
@@ -165,6 +172,30 @@ export function createModelProviderRoutes({
           },
           400,
         );
+      }
+
+      // The credential must resolve within the tenant's ancestor chain, the
+      // same scope the launch-time resolver uses; otherwise the provider
+      // would store a reference that silently never resolves a source.
+      // Wallet-backed providers are not launchable in this release, so their
+      // reference is not yet ownership-checked here (tracked separately).
+      if (credentialId !== null) {
+        const cred = await resolveCredentialById(
+          db,
+          tenantCtx.id,
+          credentialId,
+        );
+        if (cred === null) {
+          return c.json(
+            {
+              error: {
+                code: "not_found",
+                message: "Credential not found in this tenant",
+              },
+            },
+            404,
+          );
+        }
       }
 
       const existing = await db.query.modelProvider.findFirst({

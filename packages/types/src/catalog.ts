@@ -57,7 +57,24 @@ export const ModelRequirement = type({
 });
 export type ModelRequirement = typeof ModelRequirement.infer;
 
-export const ModelRequirements = ModelRequirement.array();
+// A definition declares at most one requirement per canonical model: two
+// requirements for the same model would resolve the same offering twice and
+// produce duplicate inference-source ids. Reject the ambiguity here, at the
+// boundary, rather than letting it surface deep in source resolution.
+export const ModelRequirements = ModelRequirement.array().narrow(
+  (reqs, ctx) => {
+    const seen = new Set<string>();
+    for (const req of reqs) {
+      if (seen.has(req.model)) {
+        return ctx.mustBe(
+          `an array with no duplicate model requirements; "${req.model}" appears more than once`,
+        );
+      }
+      seen.add(req.model);
+    }
+    return true;
+  },
+);
 export type ModelRequirements = typeof ModelRequirements.infer;
 
 export const InvokerModelPreference = type({

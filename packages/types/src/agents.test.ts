@@ -215,6 +215,19 @@ describe("CreateAgent", () => {
     });
     expect(result instanceof type.errors).toBe(false);
   });
+
+  test("rejects modelRequirements with a duplicate model", () => {
+    // The uniqueness narrow on ModelRequirements must fire through the
+    // definition boundary, not just on the bare validator.
+    const result = CreateAgent({
+      name: "My Agent",
+      modelRequirements: [
+        { model: "opus", capabilities: ["vision"] },
+        { model: "opus", capabilities: ["tool-use"] },
+      ],
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

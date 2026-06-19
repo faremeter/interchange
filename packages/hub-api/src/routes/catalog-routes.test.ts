@@ -82,6 +82,7 @@ type CatalogDBOpts = {
   modelProvider?: Record<string, unknown>;
   modelOffering?: Record<string, unknown>;
   modelPricing?: Record<string, unknown>;
+  credential?: Record<string, unknown>;
   inserts: InsertCapture[];
 };
 
@@ -141,6 +142,12 @@ function createMockDB(opts: CatalogDBOpts) {
       },
       modelPricing: {
         findFirst: async () => opts.modelPricing,
+        findMany: async () => [],
+      },
+      // resolveCredentialById (provider-create ownership check) reads this,
+      // then verifies the row's tenantId is in the ancestor chain.
+      credential: {
+        findFirst: async () => opts.credential,
         findMany: async () => [],
       },
     },
@@ -314,9 +321,25 @@ describe("POST /catalog/providers", () => {
     expect(inserts.filter((i) => i.table === "model_provider")).toHaveLength(0);
   });
 
+  test("returns 404 when the credential is not owned by the tenant", async () => {
+    const inserts: InsertCapture[] = [];
+    // credential.findFirst → undefined (resolveCredentialById returns null).
+    const app = createTestApp({ db: { inserts } });
+    const res = await postJSON(app, providersURL, {
+      name: "anthropic",
+      plugin: "anthropic",
+      baseURL: "https://api.anthropic.com",
+      credentialId: "crd_foreign",
+    });
+    expect(res.status).toBe(404);
+    expect(inserts.filter((i) => i.table === "model_provider")).toHaveLength(0);
+  });
+
   test("creates a provider with exactly one auth binding", async () => {
     const inserts: InsertCapture[] = [];
-    const app = createTestApp({ db: { inserts } });
+    const app = createTestApp({
+      db: { inserts, credential: { id: "crd_1", tenantId: TENANT_ID } },
+    });
     const res = await postJSON(app, providersURL, {
       name: "anthropic",
       plugin: "anthropic",
@@ -337,7 +360,11 @@ describe("POST /catalog/providers", () => {
   test("returns 409 when the provider name already exists", async () => {
     const inserts: InsertCapture[] = [];
     const app = createTestApp({
-      db: { inserts, modelProvider: { id: "mpv_existing" } },
+      db: {
+        inserts,
+        credential: { id: "crd_1", tenantId: TENANT_ID },
+        modelProvider: { id: "mpv_existing" },
+      },
     });
     const res = await postJSON(app, providersURL, {
       name: "anthropic",
