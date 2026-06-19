@@ -29,6 +29,37 @@ export const ModelProviderPlugin = type
     "The inference adapter that serves this provider's models, dispatched by the runtime provider registry.",
   );
 
+export const providerPreferenceModes = ["pin", "prefer"] as const;
+export type ProviderPreferenceMode = (typeof providerPreferenceModes)[number];
+
+export const ProviderPreference = type({
+  mode: type
+    .enumerated(...providerPreferenceModes)
+    .describe(
+      "`pin` restricts resolution to the listed providers and fails over only among them; `prefer` orders the listed providers first but keeps the rest of the tenant's providers as fallback.",
+    ),
+  order: type("string[]").describe(
+    "Model-provider names in preferred order, most preferred first.",
+  ),
+});
+export type ProviderPreference = typeof ProviderPreference.infer;
+
+export const ModelRequirement = type({
+  model: type("string").describe(
+    "Canonical model name the agent requires for inference.",
+  ),
+  "capabilities?": Capability.array().describe(
+    "An offering must advertise every one of these capabilities to be eligible to serve this requirement.",
+  ),
+  "providers?": ProviderPreference.describe(
+    "The definition author's provider preference for this model. Resolution applies it over the tenant-visible providers; it cannot introduce a provider the tenant catalog does not contain.",
+  ),
+});
+export type ModelRequirement = typeof ModelRequirement.infer;
+
+export const ModelRequirements = ModelRequirement.array();
+export type ModelRequirements = typeof ModelRequirements.infer;
+
 export const ModelResponse = type({
   id: "string",
   tenantId: "string",
