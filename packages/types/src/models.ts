@@ -1,47 +1,38 @@
 import { type } from "arktype";
 
-import { Capability } from "./catalog";
+import { Capability, ModelProviderPlugin, PricingRowResponse } from "./catalog";
+
+export const ModelOfferingInfo = type({
+  offeringId: type("string").describe(
+    "Catalog primary key of the model-provider offering this entry describes.",
+  ),
+  providerId: "string",
+  providerName: type("string").describe(
+    "The model-provider's catalog name, as shown to operators.",
+  ),
+  plugin: ModelProviderPlugin,
+  priority: type("number").describe(
+    "Source-resolution ordering hint for this offering; lower values are preferred first.",
+  ),
+  deploymentTags: "string[]",
+  capabilities: Capability.array().describe(
+    "Curated capability tags this provider advertises for this model.",
+  ),
+  pricing: PricingRowResponse.array().describe(
+    "The active price per currency for this offering: for each currency, the latest pricing row in effect at the time of the discovery request.",
+  ),
+});
+export type ModelOfferingInfo = typeof ModelOfferingInfo.infer;
 
 export const ModelInfo = type({
   id: "string",
-  providerId: "string",
-  name: "string",
-  "description?": "string | null",
-  "capabilities?": Capability.array().describe(
-    "Curated platform capability tags advertised for the model (for example vision, tool-use, or long-context).",
+  canonicalName: type("string").describe(
+    "The model's tenant-unique canonical name, matched against an agent's model requirements.",
   ),
-  "pricing?": {
-    "input?": type("string").describe(
-      "Cost per input (prompt) token, as a decimal string in the provider's billing units.",
-    ),
-    "output?": type("string").describe(
-      "Cost per output (completion) token, as a decimal string in the provider's billing units.",
-    ),
-    "cacheRead?": type("string").describe(
-      "Cost per token read from the provider's prompt cache, as a decimal string. Typically lower than the input rate.",
-    ),
-    "cacheWrite?": type("string").describe(
-      "Cost per token written to the provider's prompt cache, as a decimal string.",
-    ),
-    "thinking?": type("string").describe(
-      "Cost per thinking (reasoning) token, as a decimal string.",
-    ),
-    "perRequest?": type("string").describe(
-      "Flat fee charged per request, as a decimal string.",
-    ),
-    "perImage?": type("string").describe(
-      "Fee charged per image, as a decimal string.",
-    ),
-    "perAudio?": type("string").describe(
-      "Fee charged per audio unit, as a decimal string.",
-    ),
-  },
-  "limits?": {
-    "context?": type("number").describe(
-      "Maximum combined input plus output tokens the model accepts in a single request (the context window).",
-    ),
-    "output?": type("number").describe(
-      "Maximum number of output tokens the model can produce in a single response.",
-    ),
-  },
+  "displayName?": "string | null",
+  "description?": "string | null",
+  offerings: ModelOfferingInfo.array().describe(
+    "One entry per provider that offers this model in the tenant's resolved catalog, ordered by resolution priority.",
+  ),
 });
+export type ModelInfo = typeof ModelInfo.infer;

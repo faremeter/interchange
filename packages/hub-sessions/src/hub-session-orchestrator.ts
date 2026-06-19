@@ -138,7 +138,7 @@ export function createHubSessionOrchestrator(
       // disconnected. Fail-open: a stale source causes runtime 401s, not a
       // security escalation, so we log rather than reject the reconnect.
       try {
-        await pushInstanceSourceUpdate(db, router, instance.tenantId, instance);
+        await pushInstanceSourceUpdate(db, router, instance);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         log.warn(

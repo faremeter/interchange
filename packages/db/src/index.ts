@@ -2,7 +2,8 @@ export { createDB, type DB } from "./client";
 export type { DBConfig } from "./config";
 export { runMigrations, dropSchema } from "./migrate";
 export { createGrantStore } from "./grant-store";
-export { getAncestorChain } from "./tenant-hierarchy";
+export { getAncestorChain, getDescendantTenants } from "./tenant-hierarchy";
+export { resolveActivePrice, type ModelPricingRow } from "./pricing";
 export {
   resolveProviderByName,
   resolveOAuthClient,
