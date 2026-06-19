@@ -301,6 +301,19 @@ describe("POST /catalog/providers", () => {
     expect(inserts.filter((i) => i.table === "model_provider")).toHaveLength(0);
   });
 
+  test("rejects an empty-string credentialId as neither binding", async () => {
+    const inserts: InsertCapture[] = [];
+    const app = createTestApp({ db: { inserts } });
+    const res = await postJSON(app, providersURL, {
+      name: "anthropic",
+      plugin: "anthropic",
+      baseURL: "https://api.anthropic.com",
+      credentialId: "",
+    });
+    expect(res.status).toBe(400);
+    expect(inserts.filter((i) => i.table === "model_provider")).toHaveLength(0);
+  });
+
   test("creates a provider with exactly one auth binding", async () => {
     const inserts: InsertCapture[] = [];
     const app = createTestApp({ db: { inserts } });
