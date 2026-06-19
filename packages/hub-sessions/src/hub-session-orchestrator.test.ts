@@ -62,10 +62,6 @@ type UpdateCall = { table: string; set: Record<string, unknown> };
 type MockDBOpts = {
   instance?: InstanceRow | undefined;
   recordUpdates?: UpdateCall[];
-  /** When set, `resolveInstanceSources` queries fan out into these
-   * tables; the helper returns empty arrays so the orchestrator's
-   * credential push is a no-op. */
-  emptyProviderTables?: boolean;
 };
 
 function createMockDB(opts: MockDBOpts) {

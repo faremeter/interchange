@@ -559,7 +559,7 @@ Body: RollbackRequest
 ### POST /api/tenants/:tenantId/agents/instances
 Deploy an agent instance
 
-Creates a new running instance of the specified agent definition. Resolves the definition's credential and grant requirements, materializes grants on a new agent principal, provisions the agent on a sidecar, and starts it. The invoker can provide invokerGrants to delegate additional capabilities, resolved against the invoker's own authority at launch.
+Creates a new running instance of the specified agent definition. Resolves the definition's model requirements against the tenant catalog into an ordered inference-source list, materializes grants on a new agent principal, provisions the agent on a sidecar, and starts it. The invoker can provide invokerGrants to delegate additional capabilities, and modelPreferences to reorder or restrict the resolved providers for the session.
 
 Body: CreateAgentInstance
 
