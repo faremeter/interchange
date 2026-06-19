@@ -7,6 +7,7 @@ import {
   grantEffects,
   grantOrigins,
   ModelProviderPlugin,
+  ModelRequirements,
   sidecarStatuses,
 } from "@intx/types";
 import { RepoAction } from "@intx/types/sidecar";
@@ -90,6 +91,10 @@ export function parseAgentRow(row: typeof agent.$inferSelect) {
     credentialRequirements:
       row.credentialRequirements !== null
         ? CredentialRequirement.array().assert(row.credentialRequirements)
+        : null,
+    modelRequirements:
+      row.modelRequirements !== null
+        ? ModelRequirements.assert(row.modelRequirements)
         : null,
     grantRequirements:
       row.grantRequirements !== null

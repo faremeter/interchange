@@ -201,6 +201,20 @@ describe("CreateAgent", () => {
     const result = CreateAgent({ name: "My Agent" });
     expect(result instanceof type.errors).toBe(false);
   });
+
+  test("accepts modelRequirements", () => {
+    const result = CreateAgent({
+      name: "My Agent",
+      modelRequirements: [
+        {
+          model: "opus",
+          capabilities: ["tool-use"],
+          providers: { mode: "prefer", order: ["anthropic"] },
+        },
+      ],
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

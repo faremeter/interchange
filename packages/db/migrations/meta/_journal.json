@@ -225,6 +225,13 @@
       "when": 1781823077761,
       "tag": "0031_gigantic_nicolaos",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1781837038055,
+      "tag": "0032_lethal_misty_knight",
+      "breakpoints": true
     }
   ]
 }
