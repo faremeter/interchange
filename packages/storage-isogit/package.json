@@ -14,5 +14,8 @@
     "@intx/types": "workspace:*",
     "arktype": "catalog:",
     "isomorphic-git": "^1.27.2"
+  },
+  "devDependencies": {
+    "@intx/crypto-node": "workspace:*"
   }
 }

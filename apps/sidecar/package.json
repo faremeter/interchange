@@ -25,6 +25,7 @@
     "@intx/tools-posix": "workspace:*",
     "@intx/types": "workspace:*",
     "@intx/workflow": "workspace:*",
-    "@intx/workflow-host": "workspace:*"
+    "@intx/workflow-host": "workspace:*",
+    "arktype": "catalog:"
   }
 }

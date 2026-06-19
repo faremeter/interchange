@@ -12,6 +12,7 @@
   "dependencies": {
     "@intx/inference": "workspace:*",
     "@intx/inference-discovery": "workspace:*",
-    "@intx/types": "workspace:*"
+    "@intx/types": "workspace:*",
+    "arktype": "catalog:"
   }
 }

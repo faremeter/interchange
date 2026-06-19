@@ -9,6 +9,8 @@
     "@intx/db": "workspace:*",
     "@intx/hub-api": "workspace:*",
     "@intx/hub-sessions": "workspace:*",
-    "@intx/log": "workspace:*"
+    "@intx/log": "workspace:*",
+    "@intx/types": "workspace:*",
+    "hono": "^4.11.9"
   }
 }
