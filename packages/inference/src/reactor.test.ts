@@ -236,6 +236,8 @@ type TestReactorOverrides = {
   // tests that don't care about the inference HTTP path.
   deps?: Dependencies;
   source?: ReactorConfig["source"];
+  failOverToNextSource?: () => boolean;
+  resetToPreferredSource?: () => void;
   compactors?: Record<string, Compactor>;
 };
 
@@ -274,6 +276,12 @@ function createTestReactor(
       : {}),
     ...(overrides.inferenceRunner !== undefined
       ? { inferenceRunner: overrides.inferenceRunner }
+      : {}),
+    ...(overrides.failOverToNextSource !== undefined
+      ? { failOverToNextSource: overrides.failOverToNextSource }
+      : {}),
+    ...(overrides.resetToPreferredSource !== undefined
+      ? { resetToPreferredSource: overrides.resetToPreferredSource }
       : {}),
     ...(overrides.beforeToolExtensions !== undefined
       ? { beforeToolExtensions: overrides.beforeToolExtensions }
@@ -3892,5 +3900,188 @@ describe("createReactor — message.run bracket emission", () => {
     expect(ended.length).toBe(0);
     const started = events.filter((e) => e.type === "message.run.started");
     expect(started.length).toBe(1);
+  });
+});
+
+describe("createReactor — source failover", () => {
+  // Simulates a priority-ordered source list the reactor fails over through.
+  // `resultFor(id, attemptOnThisSource)` decides what the inference runner
+  // yields each time it is invoked against the active source.
+  function multiSourceReactor(opts: {
+    sourceIds: string[];
+    resultFor: (id: string, attempt: number) => "done" | InferenceError;
+  }): TestReactorHandle & { attemptedSourceIds: string[] } {
+    const sources = opts.sourceIds.map((id) => ({
+      id,
+      provider: "anthropic",
+      baseURL: "https://api.anthropic.com",
+      apiKey: `key-${id}`,
+      model: "test-model",
+    }));
+    const head = sources[0];
+    if (head === undefined) throw new Error("need at least one source");
+
+    // The single mutable object the reactor reads as the active source.
+    const active = { ...head };
+    let index = 0;
+    const failOverToNextSource = (): boolean => {
+      if (index >= sources.length - 1) return false;
+      index += 1;
+      const next = sources[index];
+      if (next !== undefined) Object.assign(active, next);
+      return true;
+    };
+    const resetToPreferredSource = (): void => {
+      index = 0;
+      Object.assign(active, head);
+    };
+
+    const attemptedSourceIds: string[] = [];
+    const perSourceAttempts = new Map<string, number>();
+    const inferenceRunner = async function* (
+      o: InferenceHarnessOptions,
+    ): AsyncGenerator<InferenceEvent> {
+      attemptedSourceIds.push(o.source.id);
+      const attempt = (perSourceAttempts.get(o.source.id) ?? 0) + 1;
+      perSourceAttempts.set(o.source.id, attempt);
+      const result = opts.resultFor(o.source.id, attempt);
+      if (result === "done") {
+        yield {
+          type: "inference.done",
+          seq: o.nextSeq(),
+          data: {
+            turn: makeAssistantTurn(`reply from ${o.source.id}`),
+            usage: {
+              input: 1,
+              output: 1,
+              cacheRead: 0,
+              cacheWrite: 0,
+              thinking: 0,
+            },
+            source: {
+              sourceId: o.source.id,
+              provider: o.source.provider,
+              model: o.source.model,
+            },
+          },
+        };
+      } else {
+        yield {
+          type: "inference.error",
+          seq: o.nextSeq(),
+          data: { error: result, partial: { text: "" } },
+        };
+      }
+    };
+
+    const handle = createTestReactor({
+      source: active,
+      failOverToNextSource,
+      resetToPreferredSource,
+      inferenceRunner,
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) => caps.infer(),
+        "inference.done": (_e, _s, caps) => caps.done(),
+        "inference.error": (_e, _s, caps) => caps.done(),
+      }),
+    });
+    return { ...handle, attemptedSourceIds };
+  }
+
+  test("fails over to the next source on a credential failure", async () => {
+    const { reactor, events, waitFor, attemptedSourceIds } = multiSourceReactor(
+      {
+        sourceIds: ["s0", "s1"],
+        resultFor: (id) =>
+          id === "s0"
+            ? { category: "credential_failure", message: "bad key" }
+            : "done",
+      },
+    );
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // s0 failed on a source-specific error -> immediate failover -> s1.
+    expect(attemptedSourceIds).toEqual(["s0", "s1"]);
+    const done = getEvent(events, "inference.done");
+    expect(done.data.source.sourceId).toBe("s1");
+  });
+
+  test("retries the same source on a rate limit before failing over", async () => {
+    const { reactor, events, waitFor, attemptedSourceIds } = multiSourceReactor(
+      {
+        sourceIds: ["s0", "s1"],
+        // s0 is always rate-limited (short Retry-After so the test stays
+        // fast); s1 succeeds.
+        resultFor: (id) =>
+          id === "s0"
+            ? { category: "quota_exhausted", message: "429", retryAfterMs: 1 }
+            : "done",
+      },
+    );
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // s0 gets its same-source budget (2 attempts) before failover to s1.
+    expect(attemptedSourceIds).toEqual(["s0", "s0", "s1"]);
+    expect(getEvent(events, "inference.done").data.source.sourceId).toBe("s1");
+  });
+
+  test("fails over immediately on a transient error already retried by the harness", async () => {
+    const { reactor, events, waitFor, attemptedSourceIds } = multiSourceReactor(
+      {
+        sourceIds: ["s0", "s1"],
+        resultFor: (id) =>
+          id === "s0" ? { category: "retryable", message: "5xx" } : "done",
+      },
+    );
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // retryable is harness-exhausted, so the reactor does not re-run s0.
+    expect(attemptedSourceIds).toEqual(["s0", "s1"]);
+    expect(getEvent(events, "inference.done").data.source.sourceId).toBe("s1");
+  });
+
+  test("does not fail over on a source-invariant error", async () => {
+    const { reactor, events, waitFor, attemptedSourceIds } = multiSourceReactor(
+      {
+        sourceIds: ["s0", "s1"],
+        resultFor: () => ({ category: "context_overflow", message: "too big" }),
+      },
+    );
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // context_overflow aborts the cycle; s1 is never tried.
+    expect(attemptedSourceIds).toEqual(["s0"]);
+    expect(getEvent(events, "inference.error").data.error.category).toBe(
+      "context_overflow",
+    );
+  });
+
+  test("surfaces the last error when every source is exhausted", async () => {
+    const { reactor, events, waitFor, attemptedSourceIds } = multiSourceReactor(
+      {
+        sourceIds: ["s0", "s1"],
+        resultFor: () => ({
+          category: "credential_failure",
+          message: "bad key",
+        }),
+      },
+    );
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // Both sources fail over; the terminal error is surfaced.
+    expect(attemptedSourceIds).toEqual(["s0", "s1"]);
+    expect(getEvent(events, "inference.error").data.error.category).toBe(
+      "credential_failure",
+    );
   });
 });

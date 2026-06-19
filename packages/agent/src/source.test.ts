@@ -203,4 +203,81 @@ describe("createSourceRegistry", () => {
       InvalidInferenceSourceError,
     );
   });
+
+  test("failOverToNextSource advances through the list and reports exhaustion", () => {
+    const reg = createSourceRegistry({
+      sources: [S_ANTHROPIC, S_OPENAI],
+      defaultSource: S_ANTHROPIC.id,
+    });
+    const reference = reg.active;
+    expect(reg.active.id).toBe(S_ANTHROPIC.id);
+
+    expect(reg.failOverToNextSource()).toBe(true);
+    expect(reg.active).toBe(reference); // mutated in place
+    expect(reg.active.id).toBe(S_OPENAI.id);
+    expect(reg.active.apiKey).toBe(S_OPENAI.apiKey);
+
+    // Already at the last source: no further failover target.
+    expect(reg.failOverToNextSource()).toBe(false);
+    expect(reg.active.id).toBe(S_OPENAI.id);
+  });
+
+  test("failOverToNextSource starts from the default, not the list head", () => {
+    const reg = createSourceRegistry({
+      sources: [S_ANTHROPIC, S_OPENAI],
+      defaultSource: S_OPENAI.id,
+    });
+    // Default is the last entry, so there is nothing to fail over to.
+    expect(reg.failOverToNextSource()).toBe(false);
+    expect(reg.active.id).toBe(S_OPENAI.id);
+  });
+
+  test("resetToPreferredSource returns to the default after a failover", () => {
+    const reg = createSourceRegistry({
+      sources: [S_ANTHROPIC, S_OPENAI],
+      defaultSource: S_ANTHROPIC.id,
+    });
+    const reference = reg.active;
+    reg.failOverToNextSource();
+    expect(reg.active.id).toBe(S_OPENAI.id);
+
+    reg.resetToPreferredSource();
+    expect(reg.active).toBe(reference);
+    expect(reg.active.id).toBe(S_ANTHROPIC.id);
+  });
+
+  test("setSources repositions the default that resetToPreferredSource restores", () => {
+    const reg = createSourceRegistry({
+      sources: [S_ANTHROPIC],
+      defaultSource: S_ANTHROPIC.id,
+    });
+    reg.setSources([S_ANTHROPIC, S_OPENAI], S_OPENAI.id);
+    expect(reg.active.id).toBe(S_OPENAI.id);
+
+    reg.resetToPreferredSource();
+    expect(reg.active.id).toBe(S_OPENAI.id);
+    expect(reg.failOverToNextSource()).toBe(false);
+  });
+
+  test("a setSource hot-swap survives resetToPreferredSource after a failover", () => {
+    const reg = createSourceRegistry({
+      sources: [S_ANTHROPIC, S_OPENAI],
+      defaultSource: S_ANTHROPIC.id,
+    });
+    // Fail over off the default, then hot-swap to an off-list source.
+    reg.failOverToNextSource();
+    expect(reg.active.id).toBe(S_OPENAI.id);
+    reg.setSource({
+      id: "anthropic:claude-3-5-haiku",
+      provider: "anthropic",
+      baseURL: "https://proxy.example.com",
+      apiKey: "sk-hot",
+      model: "claude-3-5-haiku",
+    });
+
+    // The per-cycle reset must not discard the deliberate hot-swap.
+    reg.resetToPreferredSource();
+    expect(reg.active.id).toBe("anthropic:claude-3-5-haiku");
+    expect(reg.active.apiKey).toBe("sk-hot");
+  });
 });
