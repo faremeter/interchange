@@ -639,6 +639,32 @@ export function deriveDeploymentAgentId(args: {
 }
 
 /**
+ * Project a workflow-deployment agent address into the substrate-safe
+ * id of its workflow-run repo (`{ kind: "workflow-run", id }`). Pure
+ * function of the deployment's agent address.
+ *
+ * The workflow-run repo's `repoId.id` must match `SAFE_REPO_ID`
+ * (`/^[a-zA-Z0-9_-]+$/`, the substrate's repo-path-safety contract in
+ * `packages/hub-sessions/src/repo-store/types.ts`), and the supervisor
+ * principal's `deploymentId` must equal `workflowRunRepoId.id` for the
+ * workflow-run kind handler's authz check to pass. That regex rejects
+ * `@` and `.`, both of which appear in every agent address, so the
+ * address is sanitized by substituting every disallowed character with
+ * `-`.
+ *
+ * The mapping is lossy (two distinct addresses can collapse to the same
+ * slug) but deterministic. The sidecar's deploy router keys the
+ * workflow-run repo by this slug at write time; the hub's read routes
+ * reconstruct the deployment address via `deriveDeploymentAddress` and
+ * apply this same derivation so read and write address the same repo.
+ * A collision implies two deployments are claiming the same workflow-run
+ * surface, which the sidecar's deploy router rejects at deploy time.
+ */
+export function deriveWorkflowRunRepoId(agentAddress: string): string {
+  return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+/**
  * The id prefix `generateId("deployment")` stamps on every deployment
  * id (mirrors `@intx/hub-common`'s `PREFIXES.deployment`). Every
  * workflow-derived address — both the deployment-level address from

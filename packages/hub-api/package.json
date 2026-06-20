@@ -20,6 +20,7 @@
     "@intx/mime": "workspace:*",
     "@intx/storage-isogit": "workspace:*",
     "@intx/types": "workspace:*",
+    "@intx/workflow-deploy": "workspace:*",
     "arktype": "catalog:",
     "better-auth": "catalog:",
     "drizzle-orm": "catalog:",

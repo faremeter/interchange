@@ -8,6 +8,10 @@ import { type, type Type } from "arktype";
 import { createInMemoryGrantStore } from "@intx/authz";
 import { ErrorResponse } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
+import {
+  deriveDeploymentAddress,
+  deriveWorkflowRunRepoId,
+} from "@intx/workflow-deploy";
 
 import { createApp } from "../app";
 import {
@@ -28,6 +32,23 @@ const USER_ID = "usr_test";
 const DOMAIN = "test.example.com";
 const ASSET_ID = "ast_workflow";
 const DEPLOYMENT_ID = "dep_abc";
+
+// The sidecar's deploy router keys the workflow-run repo by the
+// sanitized deployment address, NOT the bare deployment id (see
+// `deriveTrivialDeploymentId` -> `deriveWorkflowRunRepoId` in
+// apps/sidecar/src/workflow-host-wiring.ts). The read routes must
+// reconstruct the same id from `(deploymentId, tenantDomain)`; the
+// run-observe tests build their on-disk repo under this derived id so a
+// passing test proves the read side addresses the same repo the write
+// side committed to. Keying the repo by the bare DEPLOYMENT_ID (the
+// pre-fix behavior) would make these tests pass against the buggy
+// bare-id reader and fail against the corrected derivation.
+const WORKFLOW_RUN_REPO_ID = deriveWorkflowRunRepoId(
+  deriveDeploymentAddress({
+    deploymentId: DEPLOYMENT_ID,
+    deploymentDomain: DOMAIN,
+  }),
+);
 
 const testTenant = {
   id: TENANT_ID,
@@ -749,7 +770,7 @@ afterAll(async () => {
 });
 
 async function buildRunRepo(
-  deploymentId: string,
+  repoId: string,
   files: Record<string, string>,
 ): Promise<Map<string, string>> {
   const dir = await fs.promises.mkdtemp(
@@ -769,7 +790,7 @@ async function buildRunRepo(
     message: "seed run events",
     author: { name: "test", email: "test@example.com" },
   });
-  return new Map([[deploymentId, dir]]);
+  return new Map([[repoId, dir]]);
 }
 
 describe("GET /workflows/:deploymentId/runs", () => {
@@ -781,7 +802,7 @@ describe("GET /workflows/:deploymentId/runs", () => {
   }
 
   test("lists the run ids for the deployment", async () => {
-    const repoDirById = await buildRunRepo(DEPLOYMENT_ID, {
+    const repoDirById = await buildRunRepo(WORKFLOW_RUN_REPO_ID, {
       "runs/run-a/events/0.json": JSON.stringify({ type: "RunStarted" }),
       "runs/run-b/events/0.json": JSON.stringify({ type: "RunStarted" }),
     });
@@ -797,6 +818,33 @@ describe("GET /workflows/:deploymentId/runs", () => {
     expect(res.status).toBe(200);
     const json = assertBody(RunListBody, await res.json());
     expect([...json.runIds].sort()).toEqual(["run-a", "run-b"]);
+  });
+
+  test("reads the sidecar-derived repo id, not the bare deployment id", async () => {
+    // The derived workflow-run repo id must differ from the bare
+    // deployment id for this guard to bite; the deployment address
+    // carries `@` and `.`, which the sanitizer rewrites to `-`.
+    expect(WORKFLOW_RUN_REPO_ID).not.toBe(DEPLOYMENT_ID);
+
+    // A repo committed only under the BARE deployment id (the pre-fix
+    // write target the buggy reader looked at) must NOT be found: the
+    // corrected reader addresses the sanitized id, so this run is
+    // invisible. This is the test that fails against the bare-id reader
+    // (it would return ["run-x"]) and passes against the fix.
+    const bareRepo = await buildRunRepo(DEPLOYMENT_ID, {
+      "runs/run-x/events/0.json": JSON.stringify({ type: "RunStarted" }),
+    });
+    const app = createTestApp({
+      grants: [readGrant()],
+      repoDirById: bareRepo,
+      db: { deploymentRow },
+    });
+
+    const res = await app.fetch(
+      new Request(`http://localhost${base()}/${DEPLOYMENT_ID}/runs`),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ runIds: [] });
   });
 
   test("returns an empty list when no run has committed events", async () => {
@@ -846,7 +894,7 @@ describe("GET /workflows/:deploymentId/runs/:runId/events", () => {
   }
 
   test("returns the seq-ordered event projection", async () => {
-    const repoDirById = await buildRunRepo(DEPLOYMENT_ID, {
+    const repoDirById = await buildRunRepo(WORKFLOW_RUN_REPO_ID, {
       "runs/run-1/events/0.json": JSON.stringify({
         type: "RunStarted",
         consumedMessageId: "m1",
@@ -879,7 +927,7 @@ describe("GET /workflows/:deploymentId/runs/:runId/events", () => {
   });
 
   test("returns an empty event list for an unknown run", async () => {
-    const repoDirById = await buildRunRepo(DEPLOYMENT_ID, {
+    const repoDirById = await buildRunRepo(WORKFLOW_RUN_REPO_ID, {
       "runs/run-1/events/0.json": JSON.stringify({ type: "RunStarted" }),
     });
     const app = createTestApp({

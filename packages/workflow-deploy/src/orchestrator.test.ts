@@ -24,6 +24,7 @@ import {
   deriveStepAddress,
   deriveStepAgentId,
   deriveStepInstanceId,
+  deriveWorkflowRunRepoId,
   isWorkflowDerivedAddress,
   MultiStepDeployHandoffMissingError,
   MultiStepDeploymentArgsMissingError,
@@ -966,6 +967,26 @@ describe("per-step address derivation", () => {
   test("deriveDeploymentAgentId drops the per-step suffix", () => {
     expect(deriveDeploymentAgentId({ deploymentId: "dep_abc" })).toBe(
       "ins_dep_abc",
+    );
+  });
+
+  test("deriveWorkflowRunRepoId sanitizes the deployment address into a SAFE_REPO_ID slug", () => {
+    const address = deriveDeploymentAddress({
+      deploymentId: "dep_abc",
+      deploymentDomain: "acme.localhost",
+    });
+    expect(address).toBe("ins_dep_abc@acme.localhost");
+    const repoId = deriveWorkflowRunRepoId(address);
+    expect(repoId).toBe("ins_dep_abc-acme-localhost");
+    expect(repoId).toMatch(/^[a-zA-Z0-9_-]+$/);
+  });
+
+  test("deriveWorkflowRunRepoId substitutes every @ and . that SAFE_REPO_ID rejects", () => {
+    expect(deriveWorkflowRunRepoId("ins_dep_x@a.b.c")).toBe("ins_dep_x-a-b-c");
+    // Already-safe slugs are passed through unchanged so a repo id that
+    // never crossed an address boundary is stable.
+    expect(deriveWorkflowRunRepoId("ins_dep_safe-slug_1")).toBe(
+      "ins_dep_safe-slug_1",
     );
   });
 });

@@ -29,6 +29,7 @@ export {
   deriveDeploymentAddress,
   deriveStepAddress,
   deriveStepAgentId,
+  deriveWorkflowRunRepoId,
   isWorkflowDerivedAddress,
   wrapHarnessAsTrivialAgent,
   CapabilityApprovalDeniedError,
