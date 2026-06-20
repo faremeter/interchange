@@ -1,7 +1,18 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { queryOptions } from "@tanstack/react-query";
+import {
+  createBrowserTransport,
+  deliverWorkflowSignal,
+  deployWorkflow,
+  listWorkflowDeployments,
+  type DeliverSignalInput,
+  type DeployWorkflowInput,
+  type WorkflowDeployment,
+} from "@intx/hub-client";
 
 import { api } from "@/lib/api";
+
+const transport = createBrowserTransport();
 
 type TenantResponse = {
   id: string;
@@ -149,6 +160,23 @@ type ProviderResponse = {
   updatedAt: string;
 };
 
+export type WorkflowAssetResponse = {
+  id: string;
+  tenantId: string;
+  kind: string;
+  name: string;
+  displayName: string | null;
+  creatorPrincipalId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WorkflowDefinitionResponse = WorkflowAssetResponse & {
+  origin: { tenantId: string; direct: boolean };
+};
+
+export type { WorkflowDeployment };
+
 export function tenantProvidersQuery(tenantId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "providers"],
@@ -253,6 +281,36 @@ export function instanceDetailQuery(tenantId: string, instanceId: string) {
         "GET",
         `/api/tenants/${tenantId}/agents/instances/${instanceId}`,
       ),
+    refetchInterval: 3000,
+  });
+}
+
+export function tenantWorkflowsQuery(tenantId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "workflows"],
+    queryFn: () =>
+      api<WorkflowDefinitionResponse[]>(
+        "GET",
+        `/api/tenants/${tenantId}/assets?kind=workflow`,
+      ),
+  });
+}
+
+export function workflowDetailQuery(tenantId: string, assetId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "workflows", assetId],
+    queryFn: () =>
+      api<WorkflowAssetResponse>(
+        "GET",
+        `/api/tenants/${tenantId}/assets/${assetId}`,
+      ),
+  });
+}
+
+export function workflowDeploymentsQuery(tenantId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "workflow-deployments"],
+    queryFn: () => listWorkflowDeployments(transport, tenantId),
     refetchInterval: 3000,
   });
 }
@@ -604,6 +662,28 @@ export function stopInstanceMutation(tenantId: string, qc: QueryClient) {
       invalidate(qc, tenantId, "instances");
       invalidate(qc, tenantId, "agents");
     },
+  };
+}
+
+// Workflows
+
+export function deployWorkflowMutation(tenantId: string, qc: QueryClient) {
+  return {
+    mutationFn: (input: DeployWorkflowInput) =>
+      deployWorkflow(transport, tenantId, input),
+    onSuccess: () => invalidate(qc, tenantId, "workflow-deployments"),
+  };
+}
+
+export function deliverWorkflowSignalMutation(
+  tenantId: string,
+  deploymentId: string,
+  qc: QueryClient,
+) {
+  return {
+    mutationFn: (input: DeliverSignalInput) =>
+      deliverWorkflowSignal(transport, tenantId, deploymentId, input),
+    onSuccess: () => invalidate(qc, tenantId, "workflow-deployments"),
   };
 }
 
