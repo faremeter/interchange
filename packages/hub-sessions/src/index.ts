@@ -7,7 +7,10 @@ export {
   createSessionService,
   SessionLaunchError,
   type SessionService,
+  type DeployWorkflowDefinitionParams,
+  type DeployWorkflowDefinitionResult,
 } from "./session-service";
+export type { WorkflowDefinition } from "@intx/workflow/definition";
 export {
   createEventCollectorRegistry,
   type EventCollectorRegistry,

@@ -26,6 +26,7 @@ const PREFIXES = {
   asset: "ast_",
   agentAsset: "aas_",
   gitToken: "gtk_",
+  deployment: "dep_",
 } as const;
 
 type IDKind = keyof typeof PREFIXES;

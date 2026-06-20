@@ -1425,6 +1425,176 @@ describe("SessionService", () => {
   });
 });
 
+describe("deployWorkflowDefinition", () => {
+  type CapturedDeploymentRow = {
+    id: string;
+    tenantId: string;
+    definitionAssetId: string;
+    status: string;
+  };
+
+  function createWorkflowDeployFixture() {
+    const deploymentRows: CapturedDeploymentRow[] = [];
+    const workflowRepoWrites: { repoId: RepoId; files: string[] }[] = [];
+
+    const fakeDb = {
+      insert(_table: unknown) {
+        return {
+          values(row: CapturedDeploymentRow) {
+            deploymentRows.push(row);
+            return Promise.resolve();
+          },
+        };
+      },
+    };
+
+    const writingRepoStore: RepoStore = {
+      ...unusedRepoStore(),
+      async writeTree(
+        _principal: Principal,
+        repoId: RepoId,
+        _ref: string,
+        content: { files: Record<string, string | Uint8Array> },
+      ) {
+        workflowRepoWrites.push({
+          repoId,
+          files: Object.keys(content.files),
+        });
+        return { commitSha: "wfcommit" + "0".repeat(32) };
+      },
+    };
+
+    const repoStore = createMockRepoStore();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- replace the throwing stub with a writeTree-recording substrate
+    (repoStore as unknown as { repoStore: RepoStore }).repoStore =
+      writingRepoStore;
+
+    return { deploymentRows, workflowRepoWrites, fakeDb, repoStore };
+  }
+
+  test("deploys a multi-step workflow with an awaitSignal step on the multi-step branch and records a projection row", async () => {
+    const { deploymentRows, workflowRepoWrites, fakeDb, repoStore } =
+      createWorkflowDeployFixture();
+    const mockRouter = createMockRouter();
+    const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
+    mockRouter.sendAgentDeploy = ((
+      _agentAddress: string,
+      _config: HarnessConfig,
+      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+    ) => {
+      sentWorkflows.push(workflow);
+      return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
+    }) as SidecarRouter["sendAgentDeploy"];
+
+    const { defineWorkflow, step, awaitSignal } = await import(
+      "@intx/workflow/definition"
+    );
+    const { defineAgent } = await import("@intx/agent");
+    const stubAgent = defineAgent({
+      id: "planner",
+      systemPrompt: "plan it",
+      tools: [],
+      capabilities: [],
+      inference: {
+        sources: [{ provider: "anthropic", model: "mock-model" }],
+      },
+    });
+    const definition = defineWorkflow({
+      id: "wf_deploy",
+      trigger: { type: "manual" },
+      steps: {
+        plan: step({ agent: stubAgent, after: [] }),
+        wait: awaitSignal({ name: "go", after: ["plan"] }),
+      },
+    });
+
+    const sources = [
+      {
+        id: "src-plan",
+        provider: "anthropic",
+        baseURL: "https://api.example/anthropic",
+        apiKey: "secret-plan",
+        model: "mock-model",
+      },
+    ];
+    const config: HarnessConfig = {
+      sessionId: "ses-deploy",
+      agentId: "ins_dep_xyz",
+      tenantId: "tenant-1",
+      principalId: "prin-deploy",
+      agentAddress: "ins_dep_xyz@workflow.test",
+      systemPrompt: "deployment-level",
+      tools: [],
+      grants: [],
+      sources,
+      defaultSource: "src-plan",
+    };
+
+    const service = createSessionService({
+      sidecarRouter: mockRouter,
+      agentRepoStore: repoStore,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- fake db only needs insert().values()
+      db: fakeDb as unknown as NonNullable<
+        Parameters<typeof createSessionService>[0]["db"]
+      >,
+    });
+
+    const result = await service.deployWorkflowDefinition({
+      tenantId: "tenant-1",
+      deploymentId: "dep_xyz",
+      deploymentDomain: "workflow.test",
+      definition,
+      definitionAssetId: "ast_workflow_1",
+      config,
+      deployContent: { systemPrompt: "deployment-level" },
+    });
+
+    // Multi-step branch: each step is provisioned via a per-step
+    // sendAgentDeploy without a workflow field, then a single
+    // deployment-level agent.deploy frame carries the workflow
+    // projection. The trivial branch never emits a workflow field at all.
+    const workflowFrames = sentWorkflows.filter(
+      (w): w is NonNullable<typeof w> => w !== undefined,
+    );
+    expect(workflowFrames).toHaveLength(1);
+    const sent = workflowFrames[0];
+    if (sent === undefined) throw new Error("missing workflow projection");
+    expect(sent.definition.id).toBe("wf_deploy");
+    expect(sent.definition.stepOrder).toEqual(["plan", "wait"]);
+    // The awaitSignal step survives into the deployed definition, so the
+    // run reaches an awaiting-signal state once the supervisor schedules it.
+    expect(Object.keys(sent.definition.steps).sort()).toEqual(["plan", "wait"]);
+
+    // The workflow repo tree is written before the deployment-level frame.
+    expect(workflowRepoWrites).toHaveLength(1);
+    const write = workflowRepoWrites[0];
+    if (write === undefined) throw new Error("missing workflow repo write");
+    expect(write.repoId).toEqual({ kind: "workflow", id: "wf_deploy" });
+    expect(write.files.sort()).toEqual([
+      ".gitignore",
+      "capability-declarations.json",
+      "workflow.json",
+    ]);
+
+    // The projection row is recorded for listing.
+    expect(deploymentRows).toHaveLength(1);
+    const deploymentRow = deploymentRows[0];
+    if (deploymentRow === undefined) {
+      throw new Error("missing workflow_deployment row");
+    }
+    expect(deploymentRow.id).toBe("dep_xyz");
+    expect(deploymentRow.tenantId).toBe("tenant-1");
+    expect(deploymentRow.definitionAssetId).toBe("ast_workflow_1");
+    expect(deploymentRow.status).toBe("deployed");
+
+    expect(result).toEqual({
+      deploymentId: "dep_xyz",
+      deploymentAddress: "ins_dep_xyz@workflow.test",
+      publicKey: "ed25519-supervisor-pubkey",
+    });
+  });
+});
+
 describe("sendMultiStepDeployFrame", () => {
   test("wires the workflow projection onto sendAgentDeploy", async () => {
     const mockRouter = createMockRouter();
