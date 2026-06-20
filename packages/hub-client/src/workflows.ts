@@ -15,6 +15,41 @@ export type WorkflowDeployment = typeof WorkflowDeployment.infer;
 
 const WorkflowDeploymentList = WorkflowDeployment.array();
 
+export const WorkflowRunTrigger = type({
+  deploymentId: "string",
+  address: "string",
+  messageId: "string",
+});
+export type WorkflowRunTrigger = typeof WorkflowRunTrigger.infer;
+
+const WorkflowRunList = type({
+  runIds: "string[]",
+});
+
+export const WorkflowRunEvent = type({
+  seq: "number",
+  type: "string",
+  body: "Record<string, unknown>",
+});
+export type WorkflowRunEvent = typeof WorkflowRunEvent.infer;
+
+export const WorkflowRunEvents = type({
+  runId: "string",
+  events: WorkflowRunEvent.array(),
+});
+export type WorkflowRunEvents = typeof WorkflowRunEvents.infer;
+
+export type TriggerRunAttachment = {
+  mimeType: string;
+  data: string;
+  name?: string;
+};
+
+export type TriggerWorkflowRunInput = {
+  content: string;
+  attachments?: TriggerRunAttachment[];
+};
+
 export type DeployWorkflowInput = {
   assetId: string;
   sources: InferenceSource[];
@@ -94,4 +129,61 @@ export async function deliverWorkflowSignal(
     `${workflowsBasePath(tenantId)}/${deploymentId}/signals`,
     body,
   );
+}
+
+export async function triggerWorkflowRun(
+  transport: Transport,
+  tenantId: string,
+  deploymentId: string,
+  input: TriggerWorkflowRunInput,
+): Promise<WorkflowRunTrigger> {
+  const body: TriggerWorkflowRunInput = { content: input.content };
+  if ("attachments" in input) {
+    body.attachments = input.attachments;
+  }
+  const raw = await transport.fetch<unknown>(
+    "POST",
+    `${workflowsBasePath(tenantId)}/${deploymentId}/mail`,
+    body,
+  );
+  const trigger = WorkflowRunTrigger(raw);
+  if (trigger instanceof type.errors) {
+    throw new Error(
+      `Invalid workflow run trigger response: ${trigger.summary}`,
+    );
+  }
+  return trigger;
+}
+
+export async function listWorkflowRuns(
+  transport: Transport,
+  tenantId: string,
+  deploymentId: string,
+): Promise<string[]> {
+  const raw = await transport.fetch<unknown>(
+    "GET",
+    `${workflowsBasePath(tenantId)}/${deploymentId}/runs`,
+  );
+  const list = WorkflowRunList(raw);
+  if (list instanceof type.errors) {
+    throw new Error(`Invalid workflow run list response: ${list.summary}`);
+  }
+  return list.runIds;
+}
+
+export async function readWorkflowRunEvents(
+  transport: Transport,
+  tenantId: string,
+  deploymentId: string,
+  runId: string,
+): Promise<WorkflowRunEvents> {
+  const raw = await transport.fetch<unknown>(
+    "GET",
+    `${workflowsBasePath(tenantId)}/${deploymentId}/runs/${runId}/events`,
+  );
+  const events = WorkflowRunEvents(raw);
+  if (events instanceof type.errors) {
+    throw new Error(`Invalid workflow run events response: ${events.summary}`);
+  }
+  return events;
 }
