@@ -8,6 +8,9 @@ import {
   deliverWorkflowSignal,
   deployWorkflow,
   listWorkflowDeployments,
+  listWorkflowRuns,
+  readWorkflowRunEvents,
+  triggerWorkflowRun,
   type WorkflowDeployment,
 } from "./workflows";
 
@@ -189,5 +192,180 @@ describe("deliverWorkflowSignal", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe("triggerWorkflowRun", () => {
+  test("POSTs the mail body and returns the parsed trigger ack", async () => {
+    const ack = {
+      deploymentId: DEPLOYMENT_ID,
+      address: "wf@deployments.example.com",
+      messageId: "<msg_1@example.com>",
+    };
+    const { transport, calls } = createMockTransport(() => ack);
+
+    const result = await triggerWorkflowRun(
+      transport,
+      TENANT_ID,
+      DEPLOYMENT_ID,
+      {
+        content: "kick off",
+        attachments: [
+          { mimeType: "text/plain", data: "aGk=", name: "note.txt" },
+        ],
+      },
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({
+      method: "POST",
+      path: `/api/tenants/${TENANT_ID}/workflows/${DEPLOYMENT_ID}/mail`,
+      body: {
+        content: "kick off",
+        attachments: [
+          { mimeType: "text/plain", data: "aGk=", name: "note.txt" },
+        ],
+      },
+    });
+    expect(result).toEqual(ack);
+  });
+
+  test("omits attachments from the body when the caller does not supply any", async () => {
+    const ack = {
+      deploymentId: DEPLOYMENT_ID,
+      address: "wf@deployments.example.com",
+      messageId: "<msg_1@example.com>",
+    };
+    const { transport, calls } = createMockTransport(() => ack);
+
+    await triggerWorkflowRun(transport, TENANT_ID, DEPLOYMENT_ID, {
+      content: "kick off",
+    });
+
+    expect(calls[0]?.body).toEqual({ content: "kick off" });
+  });
+
+  test("rejects a response that does not match the trigger ack shape", async () => {
+    const { transport } = createMockTransport(() => ({
+      deploymentId: DEPLOYMENT_ID,
+    }));
+    await expect(
+      triggerWorkflowRun(transport, TENANT_ID, DEPLOYMENT_ID, {
+        content: "kick off",
+      }),
+    ).rejects.toThrow(/Invalid workflow run trigger response/);
+  });
+
+  // The trigger route returns 202 WITH a JSON acknowledgement body, unlike
+  // the signal route's empty 202. Driving the call through the real browser
+  // transport (rather than a mock) exercises the 202-with-body path: a
+  // transport that discarded every 202 body would resolve to undefined and
+  // lose the deploymentId/address/messageId the caller needs.
+  test("returns the parsed ack from a real 202-with-body response", async () => {
+    const ack = {
+      deploymentId: DEPLOYMENT_ID,
+      address: "wf@deployments.example.com",
+      messageId: "<msg_1@example.com>",
+    };
+    const originalFetch = globalThis.fetch;
+    const seen: { url: string; method: string | undefined; body: unknown }[] =
+      [];
+    globalThis.fetch = Object.assign(
+      (input: string | URL | Request, init?: RequestInit) => {
+        seen.push({
+          url: String(input),
+          method: init?.method,
+          body: init?.body,
+        });
+        return Promise.resolve(
+          new Response(JSON.stringify(ack), {
+            status: 202,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      },
+      { preconnect: () => undefined },
+    );
+    try {
+      const transport = createBrowserTransport();
+      const result = await triggerWorkflowRun(
+        transport,
+        TENANT_ID,
+        DEPLOYMENT_ID,
+        { content: "kick off" },
+      );
+      expect(result).toEqual(ack);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.method).toBe("POST");
+      expect(seen[0]?.url).toBe(
+        `/api/tenants/${TENANT_ID}/workflows/${DEPLOYMENT_ID}/mail`,
+      );
+      expect(seen[0]?.body).toBe(JSON.stringify({ content: "kick off" }));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("listWorkflowRuns", () => {
+  test("GETs the runs endpoint and returns the run id array", async () => {
+    const { transport, calls } = createMockTransport(() => ({
+      runIds: ["run_1", "run_2"],
+    }));
+
+    const result = await listWorkflowRuns(transport, TENANT_ID, DEPLOYMENT_ID);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({
+      method: "GET",
+      path: `/api/tenants/${TENANT_ID}/workflows/${DEPLOYMENT_ID}/runs`,
+      body: undefined,
+    });
+    expect(result).toEqual(["run_1", "run_2"]);
+  });
+
+  test("rejects a response that does not match the run list shape", async () => {
+    const { transport } = createMockTransport(() => ({ runIds: [1, 2] }));
+    await expect(
+      listWorkflowRuns(transport, TENANT_ID, DEPLOYMENT_ID),
+    ).rejects.toThrow(/Invalid workflow run list response/);
+  });
+});
+
+describe("readWorkflowRunEvents", () => {
+  test("GETs the run events endpoint and returns the parsed projection", async () => {
+    const projection = {
+      runId: "run_1",
+      events: [
+        { seq: 0, type: "RunStarted", body: { at: "2024-01-01T00:00:00Z" } },
+        { seq: 1, type: "RunCompleted", body: { ok: true } },
+      ],
+    };
+    const { transport, calls } = createMockTransport(() => projection);
+
+    const result = await readWorkflowRunEvents(
+      transport,
+      TENANT_ID,
+      DEPLOYMENT_ID,
+      "run_1",
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({
+      method: "GET",
+      path: `/api/tenants/${TENANT_ID}/workflows/${DEPLOYMENT_ID}/runs/run_1/events`,
+      body: undefined,
+    });
+    expect(result).toEqual(projection);
+  });
+
+  test("rejects a response that does not match the run events shape", async () => {
+    const { transport } = createMockTransport(() => ({
+      runId: "run_1",
+      events: [{ seq: "0", type: "RunStarted", body: {} }],
+    }));
+    await expect(
+      readWorkflowRunEvents(transport, TENANT_ID, DEPLOYMENT_ID, "run_1"),
+    ).rejects.toThrow(/Invalid workflow run events response/);
   });
 });
