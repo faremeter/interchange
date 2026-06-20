@@ -110,7 +110,12 @@ export const SANE_GITIGNORE = [
 
 // REST contract -----------------------------------------------------
 
-const KIND_VALUES = ["agent-state", "skill", "package-registry"] as const;
+const KIND_VALUES = [
+  "agent-state",
+  "skill",
+  "package-registry",
+  "workflow",
+] as const;
 
 const CreateAsset = type({
   kind: type.enumerated(...KIND_VALUES),
@@ -138,7 +143,12 @@ const AssetResponseSchema = type({
 const ASSET_NAME_URL_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function parseKind(raw: string): RepoKind | null {
-  if (raw === "agent-state" || raw === "skill" || raw === "package-registry") {
+  if (
+    raw === "agent-state" ||
+    raw === "skill" ||
+    raw === "package-registry" ||
+    raw === "workflow"
+  ) {
     return raw;
   }
   return null;
@@ -1035,6 +1045,7 @@ export function createAssetRoutes({
     if (row.kind === "agent-state") narrowedKind = "agent-state";
     else if (row.kind === "skill") narrowedKind = "skill";
     else if (row.kind === "package-registry") narrowedKind = "package-registry";
+    else if (row.kind === "workflow") narrowedKind = "workflow";
     else {
       return {
         ok: false,
