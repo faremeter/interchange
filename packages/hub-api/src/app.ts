@@ -248,10 +248,12 @@ export function mountHubRoutes(
   );
 
   // The workflow deploy + signal + listing surface needs the asset
-  // service to hydrate a workflow definition from its workflow.json.
-  // Gate on `assetService !== null` like the asset routes; the XOR
-  // throw above keeps assetService and repoStore moving as a unit.
-  if (assetService !== null) {
+  // service to hydrate a workflow definition from its workflow.json, and
+  // the run-observe routes read the workflow-run repo through the repo
+  // store. Gate on both being present; the XOR throw above keeps
+  // assetService and repoStore moving as a unit, so this also narrows
+  // both away from null for the route factory.
+  if (assetService !== null && repoStore !== null) {
     app.route(
       "/api/tenants/:tenantId/workflows",
       createWorkflowRoutes({
@@ -259,6 +261,7 @@ export function mountHubRoutes(
         sessionService,
         sidecarRouter,
         assetService,
+        repoStore,
         requireGrant,
       }),
     );

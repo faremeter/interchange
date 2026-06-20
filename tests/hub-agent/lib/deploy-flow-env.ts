@@ -48,17 +48,17 @@ import {
   createAgentRepoStore,
   createSessionService,
   createSidecarRouter,
+  createWorkflowRunReader,
   dequeueToProcessing,
   enqueueInbox,
   DEFAULT_ASSET_REF,
   parseAgentId,
-  WORKFLOW_RUN_EVENTS_DIR,
-  WORKFLOW_RUN_RUNS_PREFIX,
   type AgentRepoStore,
   type AssetService,
   type RepoId,
   type SidecarRouter,
   type SessionService,
+  type WorkflowRunEvent,
   type WorkflowRunHubPrincipal,
   type WsHandle,
 } from "@intx/hub-sessions";
@@ -986,23 +986,16 @@ function requireDeployment(
   return handle;
 }
 
-/**
- * A workflow-run event as committed under `runs/<runId>/events/<seq>.json`.
- * The discriminator field is `type`; the per-type body is opaque to
- * this helper.
- */
-export type WorkflowRunEvent = {
-  seq: number;
-  type: string;
-  body: Record<string, unknown>;
-};
+export type { WorkflowRunEvent };
 
 /**
  * Read every event under `runs/<runId>/events/` from the deployment's
  * workflow-run repo and return them in ascending `seq` order. Returns
  * an empty array when the run has not yet committed any events or the
  * repo has not yet been created (e.g. the deployment hasn't taken the
- * multi-step branch yet).
+ * multi-step branch yet). Delegates to the shared hub-side
+ * `WorkflowRunReader` so the fixture and the REST route project the
+ * substrate through one reader.
  */
 export async function readWorkflowRunEvents(
   env: DeployFlowEnv,
@@ -1010,57 +1003,12 @@ export async function readWorkflowRunEvents(
   runId: string,
 ): Promise<WorkflowRunEvent[]> {
   const handle = requireDeployment(env, deploymentId);
-  const repoDir = env.hub.agentRepoStore.repoStore.getRepoDir(
+  const reader = createWorkflowRunReader(env.hub.agentRepoStore.repoStore);
+  return reader.readRunEvents(
     handle.workflowRunRepoId,
+    handle.workflowRunRef,
+    runId,
   );
-  let oid: string;
-  try {
-    oid = await git.resolveRef({
-      fs,
-      dir: repoDir,
-      ref: handle.workflowRunRef,
-    });
-  } catch {
-    return [];
-  }
-  const eventsDir = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_EVENTS_DIR}`;
-  let tree: Awaited<ReturnType<typeof git.readTree>>;
-  try {
-    tree = await git.readTree({
-      fs,
-      dir: repoDir,
-      oid,
-      filepath: eventsDir,
-    });
-  } catch {
-    return [];
-  }
-  const events: WorkflowRunEvent[] = [];
-  for (const entry of tree.tree) {
-    if (entry.type !== "blob") continue;
-    const m = /^(0|[1-9][0-9]*)\.json$/.exec(entry.path);
-    if (m === null || m[1] === undefined) continue;
-    const seq = Number.parseInt(m[1], 10);
-    const blob = await git.readBlob({
-      fs,
-      dir: repoDir,
-      oid: entry.oid,
-    });
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow-run kind handler validates the parsed shape at push time; readers downstream of validatePush observe Record<string, unknown>
-    const parsed = JSON.parse(new TextDecoder().decode(blob.blob)) as Record<
-      string,
-      unknown
-    >;
-    const type = parsed["type"];
-    if (typeof type !== "string") {
-      throw new Error(
-        `readWorkflowRunEvents: event at ${entry.path} is missing a string \`type\` field`,
-      );
-    }
-    events.push({ seq, type, body: parsed });
-  }
-  events.sort((a, b) => a.seq - b.seq);
-  return events;
 }
 
 /**
@@ -1321,38 +1269,8 @@ export async function listRunIds(
   env: DeployFlowEnv,
   workflowRunRepoId: RepoId,
 ): Promise<string[]> {
-  let repoDir: string;
-  try {
-    repoDir = env.hub.agentRepoStore.repoStore.getRepoDir(workflowRunRepoId);
-  } catch {
-    return [];
-  }
-  let oid: string;
-  try {
-    oid = await git.resolveRef({
-      fs,
-      dir: repoDir,
-      ref: "refs/heads/main",
-    });
-  } catch (cause) {
-    if (
-      cause instanceof git.Errors.NotFoundError ||
-      (cause instanceof Error && /ENOENT|not found/i.test(cause.message))
-    ) {
-      return [];
-    }
-    throw cause;
-  }
-  let tree: Awaited<ReturnType<typeof git.readTree>>;
-  try {
-    tree = await git.readTree({ fs, dir: repoDir, oid, filepath: "runs" });
-  } catch (cause) {
-    if (cause instanceof git.Errors.NotFoundError) return [];
-    throw cause;
-  }
-  return tree.tree
-    .filter((entry) => entry.type === "tree")
-    .map((entry) => entry.path);
+  const reader = createWorkflowRunReader(env.hub.agentRepoStore.repoStore);
+  return reader.listRunIds(workflowRunRepoId, DEFAULT_WORKFLOW_RUN_REF);
 }
 
 /**

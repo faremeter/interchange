@@ -58,6 +58,9 @@
 | POST | /api/tenants/:tenantId/workflows/instances | Deploy a workflow |
 | GET | /api/tenants/:tenantId/workflows/instances | List workflow deployments |
 | POST | /api/tenants/:tenantId/workflows/:deploymentId/signals | Deliver a signal to a workflow run |
+| POST | /api/tenants/:tenantId/workflows/:deploymentId/mail | Trigger a workflow run |
+| GET | /api/tenants/:tenantId/workflows/:deploymentId/runs | List workflow runs |
+| GET | /api/tenants/:tenantId/workflows/:deploymentId/runs/:runId/events | Read a workflow run's event log |
 | GET | /api/tenants/:tenantId/approvals | List pending approvals in the tenant |
 | GET | /api/tenants/:tenantId/approvals/:approvalId | Get approval details |
 | POST | /api/tenants/:tenantId/approvals/:approvalId/approve | Approve an action |
@@ -678,6 +681,35 @@ Body: unknown
 202: (no content) -- Signal accepted for delivery
 404: ErrorResponse -- Workflow deployment not found
 502: ErrorResponse -- Sidecar unavailable
+
+### POST /api/tenants/:tenantId/workflows/:deploymentId/mail
+Trigger a workflow run
+
+Assembles a fresh signed conversation message and delivers it to the deployment's inbound mail address, starting a new workflow run. The run id is minted by the supervisor and is not returned synchronously; correlate the resulting RunStarted via the returned messageId.
+
+Body: SendMessage
+
+202: unknown -- Trigger accepted for delivery
+400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
+404: ErrorResponse -- Workflow deployment not found
+409: ErrorResponse -- Deployment address is not routable
+413: ErrorResponse -- Request body exceeds the maximum allowed size
+
+### GET /api/tenants/:tenantId/workflows/:deploymentId/runs
+List workflow runs
+
+Lists the run ids present in the deployment's workflow-run event log. Returns an empty list when no run has committed events yet.
+
+200: unknown -- List of run ids
+404: ErrorResponse -- Workflow deployment not found
+
+### GET /api/tenants/:tenantId/workflows/:deploymentId/runs/:runId/events
+Read a workflow run's event log
+
+Returns the seq-ordered event projection (RunStarted, StepStarted, StepCompleted, SignalAwaited, RunCompleted, etc.) for a single run. The full event log is returned in ascending seq order; an unknown run returns an empty list.
+
+200: unknown -- Seq-ordered run events
+404: ErrorResponse -- Workflow deployment not found
 
 ## Approvals
 

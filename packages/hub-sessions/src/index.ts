@@ -122,6 +122,11 @@ export {
   buildAvailableSkillsStanza,
   type AvailableSkillEntry,
 } from "./available-skills-stanza";
+export {
+  createWorkflowRunReader,
+  type WorkflowRunReader,
+  type WorkflowRunEvent,
+} from "./workflow-run-reader";
 export type {
   AuthorizeFn,
   CreateRepoStoreConfig,
