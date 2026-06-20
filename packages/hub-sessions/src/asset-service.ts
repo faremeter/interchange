@@ -71,9 +71,9 @@ export type AgentAssetWithAsset = AgentAsset & {
 
 export type CreateAssetParams = {
   tenantId: string;
-  /** Accepted kinds: "skill", "package-registry". "agent-state" is
-   * rejected because those repos are managed by the agent lifecycle,
-   * not the asset service. */
+  /** Accepted kinds: "skill", "package-registry", "workflow".
+   * "agent-state" is rejected because those repos are managed by the
+   * agent lifecycle, not the asset service. */
   kind: RepoKind;
   name: string;
   displayName?: string;
@@ -244,6 +244,9 @@ function rowToAsset(row: typeof assetTable.$inferSelect): Asset {
     case "package-registry":
       narrowed = "package-registry";
       break;
+    case "workflow":
+      narrowed = "workflow";
+      break;
     default:
       throw new Error(
         `asset row ${row.id} has unknown kind ${JSON.stringify(row.kind)}`,
@@ -302,10 +305,14 @@ export function createAssetService(deps: {
     deps.reservedPackageRegistryNames ?? new Set<string>();
 
   async function createAsset(params: CreateAssetParams): Promise<Asset> {
-    if (params.kind !== "skill" && params.kind !== "package-registry") {
+    if (
+      params.kind !== "skill" &&
+      params.kind !== "package-registry" &&
+      params.kind !== "workflow"
+    ) {
       throw new AssetServiceError(
         "unsupported_kind",
-        `createAsset rejects kind ${JSON.stringify(params.kind)}: the asset service handles "skill" and "package-registry" assets; other repo kinds are managed by their respective subsystems`,
+        `createAsset rejects kind ${JSON.stringify(params.kind)}: the asset service handles "skill", "package-registry", and "workflow" assets; other repo kinds are managed by their respective subsystems`,
       );
     }
 

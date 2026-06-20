@@ -17,8 +17,9 @@ import {
   type AssetService,
 } from "./asset-service";
 import { createRepoStore } from "./repo-store";
-import type { Principal, RepoStore } from "./repo-store";
+import type { AuthorizeFn, Principal, RepoStore } from "./repo-store";
 import { skillKindHandler, skillAuthorize } from "./skill-kind";
+import { workflowKindHandler, workflowAuthorize } from "./workflow-kind";
 
 // ---------------------------------------------------------------------------
 // DB stub
@@ -251,11 +252,17 @@ async function createSkillRepoStore(): Promise<RepoStore> {
     signingKey = await generateKeyPair();
   }
   const dataDir = await makeTempDir("asset-svc-");
+  const authorize: AuthorizeFn = (principal, repoId, ref, action) => {
+    if (repoId.kind === "workflow") {
+      return workflowAuthorize(principal, repoId, ref, action);
+    }
+    return skillAuthorize(principal, repoId, ref, action);
+  };
   return createRepoStore({
     dataDir,
     signingKey,
-    handlers: { skill: skillKindHandler },
-    authorize: skillAuthorize,
+    handlers: { skill: skillKindHandler, workflow: workflowKindHandler },
+    authorize,
   });
 }
 
@@ -330,7 +337,7 @@ describe("AssetService", () => {
       expect(out.commitSha).toMatch(/^[0-9a-f]{40}$/);
     });
 
-    test.each([["agent-state"], ["workflow"], ["workflow-run"]] as const)(
+    test.each([["agent-state"], ["workflow-run"]] as const)(
       "rejects kind %s",
       async (kind) => {
         const err = await service
@@ -347,6 +354,35 @@ describe("AssetService", () => {
         expect(dbFixture.assets).toHaveLength(0);
       },
     );
+
+    test("creates a workflow asset and inits its repo", async () => {
+      const asset = await service.createAsset({
+        tenantId: "tnt_1",
+        kind: "workflow",
+        name: "nightly-report",
+      });
+      expect(asset.kind).toBe("workflow");
+      expect(asset.name).toBe("nightly-report");
+      expect(dbFixture.assets).toHaveLength(1);
+
+      const out = await repoStore.writeTree(
+        HUB,
+        { kind: "workflow", id: asset.id },
+        "refs/heads/main",
+        {
+          files: {
+            "workflow.json": JSON.stringify({
+              id: "nightly-report",
+              triggers: [{ type: "manual" }],
+              steps: { first: { kind: "step", id: "first" } },
+              stepOrder: ["first"],
+            }),
+          },
+          message: "initial",
+        },
+      );
+      expect(out.commitSha).toMatch(/^[0-9a-f]{40}$/);
+    });
 
     test("accepts a valid lowercase-kebab name", async () => {
       const asset = await service.createAsset({

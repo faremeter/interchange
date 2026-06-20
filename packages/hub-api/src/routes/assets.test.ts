@@ -26,13 +26,21 @@ import {
   packageRegistryKindHandler,
   skillKindHandler,
   skillAuthorize,
+  workflowAuthorize,
+  workflowKindHandler,
+  WORKFLOW_JSON_PATH,
   type AssetService,
   type AuthorizeFn,
   type EventCollectorRegistry,
+  type KindHandler,
+  type Principal,
+  type RepoId,
   type RepoStore,
   type SessionService,
   type SidecarRouter,
+  type ValidatePushResult,
 } from "@intx/hub-sessions";
+import { collectReachableObjects } from "@intx/storage-isogit";
 
 import { createApp } from "../app";
 import type { GetSession } from "../session";
@@ -100,7 +108,7 @@ afterAll(async () => {
 type AssetRow = {
   id: string;
   tenantId: string;
-  kind: "agent-state" | "skill";
+  kind: "agent-state" | "skill" | "package-registry" | "workflow";
   name: string;
   displayName: string | null;
   creatorPrincipalId: string | null;
@@ -226,6 +234,9 @@ async function createWiredSubstrate(): Promise<{
     if (repoId.kind === "package-registry") {
       return packageRegistryAuthorize(principal, repoId, ref, action);
     }
+    if (repoId.kind === "workflow") {
+      return workflowAuthorize(principal, repoId, ref, action);
+    }
     return { allowed: false, reason: `no authorize for ${repoId.kind}` };
   };
   const repoStore = createRepoStore({
@@ -234,6 +245,7 @@ async function createWiredSubstrate(): Promise<{
     handlers: {
       skill: skillKindHandler,
       "package-registry": packageRegistryKindHandler,
+      workflow: workflowKindHandler,
     },
     authorize,
     signingCallback: () => signer,
@@ -583,6 +595,169 @@ describe("smart-HTTP asset routes", () => {
     const url = `/api/tenants/${TENANT_ID}/assets/skill/missing.git/git-receive-pack`;
     const res = await h.app.request(url, { method: "POST" });
     expect(res.status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Workflow-kind assets: REST create + smart-HTTP push validation
+// ---------------------------------------------------------------------------
+
+const HUB_PRINCIPAL: Principal = { kind: "hub" };
+
+function validWorkflowJSON(): string {
+  return JSON.stringify({
+    id: "my-workflow",
+    triggers: [{ type: "manual" }],
+    steps: { first: { kind: "step", id: "first" } },
+    stepOrder: ["first"],
+  });
+}
+
+// Permissive source handler: the workflow allowlist is enforced by the
+// *target* repo's receivePack (the path the smart-HTTP route drives), so
+// the pack must be staged in a source that does not pre-reject the tree
+// at write time. This mirrors the source/target split used by the
+// workflow-kind substrate tests.
+const permissiveWorkflowHandler: KindHandler = {
+  kind: "workflow",
+  directoryPrefix: "assets/workflow",
+  validatePush(): ValidatePushResult {
+    return { ok: true };
+  },
+  onRefUpdated() {
+    /* no-op */
+  },
+};
+
+/**
+ * Build a packfile that introduces `files` as a single commit on `ref`
+ * of `repoId`, using a permissive throwaway substrate as the source.
+ * Returns the bytes plus the tip SHA so the caller can drive
+ * `receivePack` against the strict asset repo the way the smart-HTTP
+ * `git-receive-pack` route does.
+ */
+async function buildWorkflowPack(
+  repoId: RepoId,
+  ref: string,
+  files: Record<string, string>,
+): Promise<{ pack: Uint8Array; commitSha: string }> {
+  const sourceDataDir = await makeTempDir("workflow-pack-src-");
+  const signer = async (payload: string) =>
+    createSSHSignature(payload, signingKey.privateKey, signingKey.publicKey);
+  const source = createRepoStore({
+    dataDir: sourceDataDir,
+    signingKey,
+    handlers: { workflow: permissiveWorkflowHandler },
+    authorize: () => ({ allowed: true }),
+    signingCallback: () => signer,
+  });
+  await source.initRepo(repoId);
+  const { commitSha } = await source.writeTree(HUB_PRINCIPAL, repoId, ref, {
+    files,
+    message: "workflow push",
+  });
+  const sourceDir = source.getRepoDir(repoId);
+  const oids = await collectReachableObjects(sourceDir, commitSha);
+  const packResult = await git.packObjects({
+    fs,
+    dir: sourceDir,
+    oids,
+    write: false,
+  });
+  if (packResult.packfile === undefined) {
+    throw new Error("git.packObjects returned no packfile");
+  }
+  return { pack: packResult.packfile, commitSha };
+}
+
+describe("workflow-kind asset routes", () => {
+  test("POST creates a workflow asset and returns the row", async () => {
+    const h = await setup();
+    const res = await h.app.request(createURL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "workflow",
+        name: "nightly-report",
+        displayName: "Nightly report",
+      }),
+    });
+    expect(res.status).toBe(201);
+    const body = await parseAssetResponse(res);
+    expect(body.kind).toBe("workflow");
+    expect(body.name).toBe("nightly-report");
+    expect(body.tenantId).toBe(TENANT_ID);
+    expect(body.id.startsWith("ast_")).toBe(true);
+    expect(h.state.assets).toHaveLength(1);
+    expect(h.state.assets[0]?.kind).toBe("workflow");
+  });
+
+  test("a workflow.json pushed to the created repo is accepted by workflowKindHandler", async () => {
+    const h = await setup();
+    const createRes = await h.app.request(createURL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "workflow", name: "nightly-report" }),
+    });
+    expect(createRes.status).toBe(201);
+    const created = await parseAssetResponse(createRes);
+
+    // The smart-HTTP git-receive-pack route resolves the URL to this
+    // RepoId and hands the pack to repoStore.receivePack, which runs
+    // workflowKindHandler.validatePush on every new commit. Drive that
+    // substrate call directly against the REST-created repo. The pack is
+    // a parentless commit, so push it to a fresh ref (createAsset's
+    // genesis owns refs/heads/main); the workflow handler does not gate
+    // on ref name.
+    const repoId: RepoId = { kind: "workflow", id: created.id };
+    const ref = "refs/heads/deploy";
+    const { pack, commitSha } = await buildWorkflowPack(repoId, ref, {
+      [WORKFLOW_JSON_PATH]: validWorkflowJSON(),
+    });
+
+    await h.repoStore.receivePack(
+      HUB_PRINCIPAL,
+      repoId,
+      ref,
+      pack,
+      commitSha,
+      null,
+    );
+
+    expect(await h.repoStore.resolveRef(HUB_PRINCIPAL, repoId, ref)).toBe(
+      commitSha,
+    );
+  });
+
+  test("a push carrying a disallowed top-level path is rejected by workflowKindHandler", async () => {
+    const h = await setup();
+    const createRes = await h.app.request(createURL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "workflow", name: "nightly-report" }),
+    });
+    expect(createRes.status).toBe(201);
+    const created = await parseAssetResponse(createRes);
+
+    const repoId: RepoId = { kind: "workflow", id: created.id };
+    const ref = "refs/heads/deploy";
+    const { pack, commitSha } = await buildWorkflowPack(repoId, ref, {
+      [WORKFLOW_JSON_PATH]: validWorkflowJSON(),
+      "stray-file.txt": "not in the workflow allowlist",
+    });
+
+    await expect(
+      h.repoStore.receivePack(
+        HUB_PRINCIPAL,
+        repoId,
+        ref,
+        pack,
+        commitSha,
+        null,
+      ),
+    ).rejects.toThrow(
+      /path_violation:.*unexpected top-level entry "stray-file\.txt"/,
+    );
   });
 });
 
