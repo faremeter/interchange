@@ -5,9 +5,15 @@ import {
   deliverWorkflowSignal,
   deployWorkflow,
   listWorkflowDeployments,
+  listWorkflowRuns,
+  readWorkflowRunEvents,
+  triggerWorkflowRun,
   type DeliverSignalInput,
   type DeployWorkflowInput,
+  type TriggerWorkflowRunInput,
   type WorkflowDeployment,
+  type WorkflowRunEvent,
+  type WorkflowRunEvents,
 } from "@intx/hub-client";
 
 import { api } from "@/lib/api";
@@ -175,7 +181,60 @@ export type WorkflowDefinitionResponse = WorkflowAssetResponse & {
   origin: { tenantId: string; direct: boolean };
 };
 
-export type { WorkflowDeployment };
+export type { WorkflowDeployment, WorkflowRunEvent, WorkflowRunEvents };
+
+const TERMINAL_RUN_EVENT_TYPES: readonly string[] = [
+  "RunCompleted",
+  "RunFailed",
+  "RunCancelled",
+];
+
+export function isTerminalRunEvents(events: WorkflowRunEvent[]): boolean {
+  return events.some((e) => TERMINAL_RUN_EVENT_TYPES.includes(e.type));
+}
+
+export type AwaitedSignal = {
+  seq: number;
+  signalName: string;
+};
+
+/**
+ * Returns the awaited signal from the latest unresolved `SignalAwaited`
+ * event, or null when the run is not currently parked on a signal. A
+ * later `SignalReceived` carrying the same `signalName`, or a terminal
+ * event, clears the await.
+ */
+export function findAwaitingSignal(
+  events: WorkflowRunEvent[],
+): AwaitedSignal | null {
+  let awaiting: AwaitedSignal | null = null;
+  for (const event of events) {
+    if (event.type === "SignalAwaited") {
+      const signalName = event.body["signalName"];
+      if (typeof signalName !== "string") {
+        throw new Error(
+          `SignalAwaited event at seq ${String(event.seq)} is missing a string signalName`,
+        );
+      }
+      awaiting = { seq: event.seq, signalName };
+      continue;
+    }
+    if (awaiting === null) {
+      continue;
+    }
+    if (
+      event.type === "SignalReceived" &&
+      event.body["signalName"] === awaiting.signalName
+    ) {
+      awaiting = null;
+      continue;
+    }
+    if (TERMINAL_RUN_EVENT_TYPES.includes(event.type)) {
+      awaiting = null;
+    }
+  }
+  return awaiting;
+}
 
 export function tenantProvidersQuery(tenantId: string) {
   return queryOptions({
@@ -312,6 +371,47 @@ export function workflowDeploymentsQuery(tenantId: string) {
     queryKey: ["tenants", tenantId, "workflow-deployments"],
     queryFn: () => listWorkflowDeployments(transport, tenantId),
     refetchInterval: 3000,
+  });
+}
+
+export function workflowRunsQuery(tenantId: string, deploymentId: string) {
+  return queryOptions({
+    queryKey: [
+      "tenants",
+      tenantId,
+      "workflow-deployments",
+      deploymentId,
+      "runs",
+    ],
+    queryFn: () => listWorkflowRuns(transport, tenantId, deploymentId),
+    refetchInterval: 3000,
+  });
+}
+
+export function workflowRunEventsQuery(
+  tenantId: string,
+  deploymentId: string,
+  runId: string,
+) {
+  return queryOptions({
+    queryKey: [
+      "tenants",
+      tenantId,
+      "workflow-deployments",
+      deploymentId,
+      "runs",
+      runId,
+      "events",
+    ],
+    queryFn: () =>
+      readWorkflowRunEvents(transport, tenantId, deploymentId, runId),
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (data && isTerminalRunEvents(data.events)) {
+        return false;
+      }
+      return 2000;
+    },
   });
 }
 
@@ -672,6 +772,27 @@ export function deployWorkflowMutation(tenantId: string, qc: QueryClient) {
     mutationFn: (input: DeployWorkflowInput) =>
       deployWorkflow(transport, tenantId, input),
     onSuccess: () => invalidate(qc, tenantId, "workflow-deployments"),
+  };
+}
+
+export function triggerWorkflowRunMutation(
+  tenantId: string,
+  deploymentId: string,
+  qc: QueryClient,
+) {
+  return {
+    mutationFn: (input: TriggerWorkflowRunInput) =>
+      triggerWorkflowRun(transport, tenantId, deploymentId, input),
+    onSuccess: () =>
+      qc.invalidateQueries({
+        queryKey: [
+          "tenants",
+          tenantId,
+          "workflow-deployments",
+          deploymentId,
+          "runs",
+        ],
+      }),
   };
 }
 
