@@ -371,7 +371,7 @@ describe("workflowAuthorize", () => {
       tenantId: "tenant-1",
       authz: {
         effect: overrides.effect ?? "allow",
-        resource: overrides.resource ?? "workflow:wf-123",
+        resource: overrides.resource ?? "asset:wf-123",
         grantVerb: overrides.grantVerb ?? "read",
       },
       tokenClaims: {
@@ -509,7 +509,7 @@ describe("workflowAuthorize", () => {
 
   test("user principal: denied when verdict.resource targets a different workflow id", () => {
     const r = workflowAuthorize(
-      userPrincipal({ resource: "workflow:other-wf" }),
+      userPrincipal({ resource: "asset:other-wf" }),
       WORKFLOW_REPO,
       REF,
       "createPack",
@@ -521,7 +521,7 @@ describe("workflowAuthorize", () => {
 
   test("user principal: denied when verdict.resource has the wrong kind prefix", () => {
     const r = workflowAuthorize(
-      userPrincipal({ resource: "asset:wf-123" }),
+      userPrincipal({ resource: "workflow:wf-123" }),
       WORKFLOW_REPO,
       REF,
       "createPack",

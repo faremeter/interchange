@@ -48,8 +48,11 @@ export function createBrowserTransport(): Transport {
         );
       }
 
+      // 204 (No Content) and 202 (Accepted) carry no response body, so
+      // there is nothing to JSON-parse. Calling res.json() on the empty
+      // body would throw "Unexpected end of JSON input".
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- T is a generic parameter; runtime validation is the caller's responsibility
-      if (res.status === 204) return undefined as T;
+      if (res.status === 204 || res.status === 202) return undefined as T;
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- T is a generic parameter; runtime validation is the caller's responsibility
       return (await res.json()) as T;
     },

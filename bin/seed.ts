@@ -20,6 +20,7 @@ import {
   ModelResponse,
   ModelProviderResponse,
   ModelOfferingResponse,
+  GrantResponse,
   paginatedSchema,
 } from "@intx/types";
 import {
@@ -1291,6 +1292,34 @@ async function plantPrincipalGrant(
   action: string,
   cookies: CookieJar,
 ): Promise<void> {
+  // The grants table has no unique constraint and the POST is a plain
+  // insert, so re-running the seed would accumulate duplicate grant
+  // rows. Check for an equivalent existing grant first and skip the
+  // insert when one is present, matching how the role-grant block only
+  // plants grants for a freshly created role.
+  const { status: listStatus, data: listData } = await api(
+    "GET",
+    `/api/tenants/${tenantId}/grants?principalId=${encodeURIComponent(principalId)}&resource=${encodeURIComponent(resource)}&limit=200`,
+    undefined,
+    cookies,
+  );
+  check(`list grants for principal ${principalId}`, listStatus, 200, listData);
+  const existing = parse(
+    paginatedSchema(GrantResponse),
+    listData,
+    `grants list for principal ${principalId}`,
+  ).data.find(
+    (g) =>
+      g.resource === resource &&
+      g.action === action &&
+      g.effect === "allow" &&
+      g.principalId === principalId,
+  );
+  if (existing) {
+    log(`  SKIP grant ${resource}/${action} on principal (already exists)`);
+    return;
+  }
+
   const { status, data } = await api(
     "POST",
     `/api/tenants/${tenantId}/grants`,

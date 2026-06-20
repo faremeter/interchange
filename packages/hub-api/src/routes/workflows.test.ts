@@ -1,6 +1,8 @@
 import { describe, test, expect } from "bun:test";
+import { type } from "arktype";
 
 import { createInMemoryGrantStore } from "@intx/authz";
+import { ErrorResponse } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 
 import { createApp } from "../app";
@@ -305,6 +307,14 @@ function authedPost(path: string, body: unknown): Request {
   });
 }
 
+async function errorCode(res: Response): Promise<string> {
+  const parsed = ErrorResponse(await res.json());
+  if (parsed instanceof type.errors) {
+    throw new Error(`unexpected error body: ${parsed.summary}`);
+  }
+  return parsed.error.code;
+}
+
 describe("POST /workflows/instances", () => {
   test("deploys a workflow and returns the deployment record", async () => {
     const deployCalls: DeployWorkflowDefinitionParams[] = [];
@@ -368,6 +378,60 @@ describe("POST /workflows/instances", () => {
       }),
     );
     expect(res.status).toBe(403);
+  });
+
+  test("reports a sidecar deploy failure as 502 sidecar_unavailable", async () => {
+    // Omitting deployResult makes the session-service mock throw, which
+    // is the sidecar-unavailable path.
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+    });
+    const res = await app.fetch(
+      authedPost(`${base()}/instances`, {
+        assetId: ASSET_ID,
+        sources: [
+          {
+            id: "src",
+            provider: "anthropic",
+            baseURL: "https://api.example",
+            apiKey: "secret",
+            model: "m",
+          },
+        ],
+        defaultSource: "src",
+      }),
+    );
+    expect(res.status).toBe(502);
+    expect(await errorCode(res)).toBe("sidecar_unavailable");
+  });
+
+  test("reports a missing post-deploy projection row as 500, not 502", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      db: { assetRow: workflowAssetRow, deploymentRow: undefined },
+      deployResult: {
+        deploymentId: DEPLOYMENT_ID,
+        deploymentAddress: `ins_${DEPLOYMENT_ID}@${DOMAIN}`,
+        publicKey: "pubkey",
+      },
+    });
+    const res = await app.fetch(
+      authedPost(`${base()}/instances`, {
+        assetId: ASSET_ID,
+        sources: [
+          {
+            id: "src",
+            provider: "anthropic",
+            baseURL: "https://api.example",
+            apiKey: "secret",
+            model: "m",
+          },
+        ],
+        defaultSource: "src",
+      }),
+    );
+    expect(res.status).toBe(500);
+    expect(await errorCode(res)).toBe("deployment_projection_missing");
   });
 
   test("returns 404 when the workflow asset is missing", async () => {
@@ -451,6 +515,30 @@ describe("POST /workflows/:deploymentId/signals", () => {
     // The signalId is the caller-supplied stable id, never server-minted.
     expect(call.signalId).toBe("sig-caller-1");
     expect(call.payload).toEqual({ ok: true });
+  });
+
+  test("accepts a payload-less signal with 202", async () => {
+    const signalCalls: SignalCall[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      signalCalls,
+      db: { deploymentRow },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/signals`, {
+        runId: "run-1",
+        signalName: "go",
+        signalId: "sig-caller-2",
+      }),
+    );
+
+    expect(res.status).toBe(202);
+    expect(signalCalls).toHaveLength(1);
+    const call = signalCalls[0];
+    if (call === undefined) throw new Error("missing signal call");
+    expect(call.signalId).toBe("sig-caller-2");
+    expect(call.payload).toBeUndefined();
   });
 
   test("rejects a caller without the workflow-run manage grant", async () => {

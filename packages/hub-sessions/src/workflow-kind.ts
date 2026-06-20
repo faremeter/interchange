@@ -288,7 +288,7 @@ export const workflowAuthorize: AuthorizeFn = (
         reason: `token expired at ${parsed.tokenClaims.expiresAt}`,
       };
     }
-    const expectedResource = `workflow:${repoId.id}`;
+    const expectedResource = `asset:${repoId.id}`;
     if (parsed.authz.resource !== expectedResource) {
       return {
         allowed: false,
