@@ -47,6 +47,7 @@ import {
 import type { InferenceEvent } from "@intx/types/runtime";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 import { STEP_ID_PATTERN } from "@intx/workflow";
+import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import type {
   MultistepDrainRouter,
@@ -57,27 +58,17 @@ import type {
 const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
 
 /**
- * Project an agent address into a substrate-safe deployment id for
- * the trivial branch. The workflow-run repo's `repoId.id` must match
- * `/^[a-zA-Z0-9_-]+$/` (see `SAFE_REPO_ID` in
- * `packages/hub-sessions/src/repo-store/types.ts`), and the supervisor
- * principal's `deploymentId` must equal `workflowRunRepoId.id` for
- * the workflow-run kind handler's authz check to pass. The strict
- * regex rejects `@` and `.`, which both appear in every agent
- * address. The substrate test
- * `packages/hub-sessions/src/agent-repo.test.ts` explicitly asserts
- * `agent@domain` is rejected as `repo_id_invalid`, so the regex is
- * the substrate's contract surface for repo-path safety; widening it
- * would mean updating that contract and the test suite that pins it.
- *
- * Substitute disallowed characters with `-`. The mapping is lossy
- * (two distinct addresses can collapse to the same slug) but
- * deterministic; trivial deployments share one workflow-run repo
- * per agent address by design, and a collision implies two
- * deployments are claiming the same trivial workflow surface.
+ * Project an agent address into the substrate-safe id of its
+ * workflow-run repo. Both deploy branches key `{ kind: "workflow-run",
+ * id }` by this slug, and the supervisor principal's `deploymentId`
+ * must equal that id for the workflow-run kind handler's authz check to
+ * pass. The derivation is owned by `@intx/workflow-deploy` so the hub's
+ * read routes reconstruct the identical id; this thin delegator keeps
+ * the sidecar's call sites readable while the rationale and the
+ * substrate `SAFE_REPO_ID` contract live with the shared function.
  */
 export function deriveTrivialDeploymentId(agentAddress: string): string {
-  return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
+  return deriveWorkflowRunRepoId(agentAddress);
 }
 
 // The supervisor's `binaryPath` binding resolves to the sidecar's

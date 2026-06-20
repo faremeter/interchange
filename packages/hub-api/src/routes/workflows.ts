@@ -29,6 +29,10 @@ import {
   type WorkflowRunEvent,
 } from "@intx/hub-sessions";
 import { generateId } from "@intx/hub-common";
+import {
+  deriveDeploymentAddress,
+  deriveWorkflowRunRepoId,
+} from "@intx/workflow-deploy";
 
 import type { TenantEnv } from "../context";
 import { idResource, type RequireGrant } from "../middleware/grant";
@@ -47,8 +51,23 @@ const MAX_MAIL_BODY_BYTES = 44 * 1024 * 1024;
 // supervisor wires the workflow-process child against this ref.
 const WORKFLOW_RUN_REF = "refs/heads/main";
 
-function workflowRunRepoId(deploymentId: string): RepoId {
-  return { kind: "workflow-run", id: deploymentId };
+// The sidecar's deploy router keys the workflow-run repo by
+// `deriveWorkflowRunRepoId(deploymentAddress)`, where the deployment
+// address is `deriveDeploymentAddress({ deploymentId, deploymentDomain })`
+// and `deploymentDomain` is the tenant's domain (see
+// `deployWorkflowDefinition` in `@intx/hub-sessions`, which passes
+// `deploymentDomain: tenant.domain`). The read side must reconstruct the
+// identical address and apply the same sanitization, or it opens a
+// different on-disk repo than the one events committed to.
+function workflowRunRepoId(deploymentId: string, tenantDomain: string): RepoId {
+  const deploymentAddress = deriveDeploymentAddress({
+    deploymentId,
+    deploymentDomain: tenantDomain,
+  });
+  return {
+    kind: "workflow-run",
+    id: deriveWorkflowRunRepoId(deploymentAddress),
+  };
 }
 
 // Request body for the general workflow deploy. The workflow definition
@@ -594,7 +613,7 @@ export function createWorkflowRoutes({
       }
 
       const runIds = await runReader.listRunIds(
-        workflowRunRepoId(deploymentId),
+        workflowRunRepoId(deploymentId, tenant.domain),
         WORKFLOW_RUN_REF,
       );
       return c.json({ runIds });
@@ -648,7 +667,7 @@ export function createWorkflowRoutes({
       }
 
       const events = await runReader.readRunEvents(
-        workflowRunRepoId(deploymentId),
+        workflowRunRepoId(deploymentId, tenant.domain),
         WORKFLOW_RUN_REF,
         runId,
       );
