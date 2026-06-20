@@ -24,6 +24,8 @@ import { TenantWalletsPage } from "@/pages/tenant-wallets";
 import { TenantWalletDetailPage } from "@/pages/tenant-wallet-detail";
 import { TenantInstancesPage } from "@/pages/tenant-instances";
 import { TenantInstanceDetailPage } from "@/pages/tenant-instance-detail";
+import { TenantWorkflowsPage } from "@/pages/tenant-workflows";
+import { TenantWorkflowDetailPage } from "@/pages/tenant-workflow-detail";
 import { TenantOfferingsPage } from "@/pages/tenant-offerings";
 import { TenantOfferingDetailPage } from "@/pages/tenant-offering-detail";
 import { TenantModelsPage } from "@/pages/tenant-models";
@@ -89,6 +91,18 @@ const tenantInstanceDetailRoute = createRoute({
   getParentRoute: () => authedRoute,
   path: "/tenants/$tenantId/instances/$instanceId",
   component: TenantInstanceDetailPage,
+});
+
+const tenantWorkflowsRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/workflows",
+  component: TenantWorkflowsPage,
+});
+
+const tenantWorkflowDetailRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/tenants/$tenantId/workflows/$workflowId",
+  component: TenantWorkflowDetailPage,
 });
 
 const tenantPrincipalsRoute = createRoute({
@@ -208,6 +222,8 @@ const routeTree = rootRoute.addChildren([
     tenantAgentDetailRoute,
     tenantInstancesRoute,
     tenantInstanceDetailRoute,
+    tenantWorkflowsRoute,
+    tenantWorkflowDetailRoute,
     tenantPrincipalsRoute,
     tenantPrincipalDetailRoute,
     tenantRolesRoute,
