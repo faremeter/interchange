@@ -1,26 +1,55 @@
 import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import { type } from "arktype";
 
 import { asset, workflowDeployment } from "@intx/db/schema";
 import type { DB } from "@intx/db";
-import { ErrorResponse } from "@intx/types";
+import {
+  assembleSignedContent,
+  assembleMessage,
+  createDetachedSignatureFromProvider,
+  type MessageHeaders,
+} from "@intx/mime";
+import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
+import { ErrorResponse, SendMessage } from "@intx/types";
 import { InferenceSource } from "@intx/types/runtime";
 import type { HarnessConfig } from "@intx/types/runtime";
 import {
+  createWorkflowRunReader,
   workflowDefinitionEnvelopeSchema,
   WORKFLOW_JSON_PATH,
   type AssetService,
+  type RepoId,
+  type RepoStore,
   type SessionService,
   type SidecarRouter,
   type WorkflowDefinition,
+  type WorkflowRunEvent,
 } from "@intx/hub-sessions";
 import { generateId } from "@intx/hub-common";
 
 import type { TenantEnv } from "../context";
 import { idResource, type RequireGrant } from "../middleware/grant";
+import { validateAttachments } from "../attachment-validation";
 import { ts } from "../format";
+
+// DoS guard on the trigger route body. Sized identically to the agent
+// mail route: above the legitimate ceiling (the 30 MB per-message
+// attachment cap is ~40 MB once base64-encoded, plus JSON and text
+// overhead) so over-business-cap requests are rejected by the handler
+// with a structured error, while genuine garbage is rejected here
+// before the JSON parser allocates a giant string.
+const MAX_MAIL_BODY_BYTES = 44 * 1024 * 1024;
+
+// Workflow-run events commit on the substrate's default branch; the
+// supervisor wires the workflow-process child against this ref.
+const WORKFLOW_RUN_REF = "refs/heads/main";
+
+function workflowRunRepoId(deploymentId: string): RepoId {
+  return { kind: "workflow-run", id: deploymentId };
+}
 
 // Request body for the general workflow deploy. The workflow definition
 // is hydrated from `assetId`'s `workflow.json`; the caller supplies the
@@ -52,6 +81,38 @@ const WorkflowDeploymentResponse = type({
   createdAt: "string",
 });
 
+// Response for the run-trigger route. The trigger fires a mail at the
+// deployment address; the run id is minted by the supervisor on the
+// sidecar side and is not known synchronously here, so the caller
+// correlates the downstream RunStarted via the returned messageId.
+const WorkflowRunTriggerResponse = type({
+  deploymentId: "string",
+  address: "string",
+  messageId: "string",
+});
+
+const WorkflowRunListResponse = type({
+  runIds: "string[]",
+});
+
+// A single committed workflow-run event. `type` is the discriminator;
+// `body` carries the full per-type payload verbatim (the workflow-run
+// kind handler validates the shape at push time).
+const WorkflowRunEventResponse = type({
+  seq: "number",
+  type: "string",
+  body: "Record<string, unknown>",
+});
+
+const WorkflowRunEventsResponse = type({
+  runId: "string",
+  events: WorkflowRunEventResponse.array(),
+});
+
+function formatRunEvent(event: WorkflowRunEvent) {
+  return { seq: event.seq, type: event.type, body: event.body };
+}
+
 function formatDeployment(row: typeof workflowDeployment.$inferSelect) {
   return {
     id: row.id,
@@ -67,6 +128,7 @@ export type CreateWorkflowRoutesDeps = {
   sessionService: SessionService;
   sidecarRouter: SidecarRouter;
   assetService: AssetService;
+  repoStore: RepoStore;
   requireGrant: RequireGrant;
 };
 
@@ -75,9 +137,11 @@ export function createWorkflowRoutes({
   sessionService,
   sidecarRouter,
   assetService,
+  repoStore,
   requireGrant,
 }: CreateWorkflowRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
+  const runReader = createWorkflowRunReader(repoStore);
 
   app.post(
     "/instances",
@@ -331,6 +395,264 @@ export function createWorkflowRoutes({
       }
 
       return c.body(null, 202);
+    },
+  );
+
+  app.post(
+    "/:deploymentId/mail",
+    requireGrant(idResource("workflow-run", "deploymentId"), "manage"),
+    describeRoute({
+      tags: ["Workflows"],
+      summary: "Trigger a workflow run",
+      description:
+        "Assembles a fresh signed conversation message and delivers it to the deployment's inbound mail address, starting a new workflow run. The run id is minted by the supervisor and is not returned synchronously; correlate the resulting RunStarted via the returned messageId.",
+      responses: {
+        202: {
+          description: "Trigger accepted for delivery",
+          content: {
+            "application/json": {
+              schema: resolver(WorkflowRunTriggerResponse),
+            },
+          },
+        },
+        400: {
+          description:
+            "Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.",
+          content: { "application/json": { schema: resolver(ErrorResponse) } },
+        },
+        404: {
+          description: "Workflow deployment not found",
+          content: { "application/json": { schema: resolver(ErrorResponse) } },
+        },
+        409: {
+          description: "Deployment address is not routable",
+          content: { "application/json": { schema: resolver(ErrorResponse) } },
+        },
+        413: {
+          description: "Request body exceeds the maximum allowed size",
+          content: { "application/json": { schema: resolver(ErrorResponse) } },
+        },
+      },
+    }),
+    bodyLimit({
+      maxSize: MAX_MAIL_BODY_BYTES,
+      onError: (c) =>
+        c.json(
+          {
+            error: {
+              code: "payload_too_large",
+              message: "Request body exceeds the maximum allowed size",
+            },
+          },
+          413,
+        ),
+    }),
+    validator("json", SendMessage),
+    async (c) => {
+      const tenant = c.get("tenant");
+      const principal = c.get("principal");
+      const deploymentId = c.req.param("deploymentId");
+      const body = c.req.valid("json");
+
+      // Decode and validate attachments at the boundary, emitting
+      // ordered, per-index structured errors, exactly as the agent mail
+      // route does.
+      const attachmentResult = validateAttachments(body.attachments ?? []);
+      if (!attachmentResult.ok) {
+        return c.json({ error: attachmentResult.error }, 400);
+      }
+      const messageAttachments = attachmentResult.attachments;
+
+      const row = await db.query.workflowDeployment.findFirst({
+        where: and(
+          eq(workflowDeployment.id, deploymentId),
+          eq(workflowDeployment.tenantId, tenant.id),
+        ),
+      });
+      if (!row) {
+        return c.json(
+          {
+            error: {
+              code: "not_found",
+              message: "Workflow deployment not found",
+            },
+          },
+          404,
+        );
+      }
+
+      const address = `ins_${deploymentId}@${tenant.domain}`;
+      const messageId = `<${generateId("sessionMail")}@${tenant.domain}>`;
+      const fromAddr = `${principal.refId}@${tenant.domain}`;
+      const user = c.get("user");
+      const from = user?.name ? `"${user.name}" <${fromAddr}>` : fromAddr;
+
+      // A run trigger is threading-less by construction: it starts a new
+      // run rather than continuing a conversation, so no inReplyTo or
+      // references are stamped. This is the same fresh-signed-message
+      // shape the deploy-flow fixture's mail trigger and the production
+      // session-service mail path assemble. The route does not route
+      // through sessionService.sendUserMessage because that path stamps
+      // interchangeSessionId/agentId headers that scope the message to an
+      // agent session; a workflow run trigger has no such session.
+      const keyPair = await generateKeyPair();
+      const crypto = createNodeCrypto(keyPair);
+      const headers: MessageHeaders = {
+        from,
+        to: [address],
+        cc: undefined,
+        date: new Date(),
+        messageId,
+        subject: undefined,
+        inReplyTo: undefined,
+        references: undefined,
+        mimeVersion: "1.0",
+        interchangeType: "conversation.message",
+        interchangeCorrelationId: undefined,
+        interchangeTenantId: tenant.id,
+        interchangeAgentId: undefined,
+        interchangeSessionId: undefined,
+        interchangeOfferingId: undefined,
+        interchangeSchemaVersion: undefined,
+        traceparent: undefined,
+        tracestate: undefined,
+      };
+      const signedContent = assembleSignedContent({
+        kind: "conversation",
+        text: body.content,
+        ...(messageAttachments.length > 0
+          ? { attachments: messageAttachments }
+          : {}),
+      });
+      const signature = await createDetachedSignatureFromProvider(
+        signedContent,
+        crypto,
+      );
+      const rawMessage = assembleMessage(headers, signedContent, signature);
+      const base64 = Buffer.from(rawMessage).toString("base64");
+
+      const delivered = sidecarRouter.routeMail(address, base64);
+      if (!delivered) {
+        return c.json(
+          {
+            error: {
+              code: "deployment_unreachable",
+              message: `Deployment address ${address} is not routable`,
+            },
+          },
+          409,
+        );
+      }
+
+      return c.json({ deploymentId, address, messageId }, 202);
+    },
+  );
+
+  app.get(
+    "/:deploymentId/runs",
+    requireGrant(idResource("workflow-run", "deploymentId"), "read"),
+    describeRoute({
+      tags: ["Workflows"],
+      summary: "List workflow runs",
+      description:
+        "Lists the run ids present in the deployment's workflow-run event log. Returns an empty list when no run has committed events yet.",
+      responses: {
+        200: {
+          description: "List of run ids",
+          content: {
+            "application/json": {
+              schema: resolver(WorkflowRunListResponse),
+            },
+          },
+        },
+        404: {
+          description: "Workflow deployment not found",
+          content: { "application/json": { schema: resolver(ErrorResponse) } },
+        },
+      },
+    }),
+    async (c) => {
+      const tenant = c.get("tenant");
+      const deploymentId = c.req.param("deploymentId");
+
+      const row = await db.query.workflowDeployment.findFirst({
+        where: and(
+          eq(workflowDeployment.id, deploymentId),
+          eq(workflowDeployment.tenantId, tenant.id),
+        ),
+      });
+      if (!row) {
+        return c.json(
+          {
+            error: {
+              code: "not_found",
+              message: "Workflow deployment not found",
+            },
+          },
+          404,
+        );
+      }
+
+      const runIds = await runReader.listRunIds(
+        workflowRunRepoId(deploymentId),
+        WORKFLOW_RUN_REF,
+      );
+      return c.json({ runIds });
+    },
+  );
+
+  app.get(
+    "/:deploymentId/runs/:runId/events",
+    requireGrant(idResource("workflow-run", "deploymentId"), "read"),
+    describeRoute({
+      tags: ["Workflows"],
+      summary: "Read a workflow run's event log",
+      description:
+        "Returns the seq-ordered event projection (RunStarted, StepStarted, StepCompleted, SignalAwaited, RunCompleted, etc.) for a single run. The full event log is returned in ascending seq order; an unknown run returns an empty list.",
+      responses: {
+        200: {
+          description: "Seq-ordered run events",
+          content: {
+            "application/json": {
+              schema: resolver(WorkflowRunEventsResponse),
+            },
+          },
+        },
+        404: {
+          description: "Workflow deployment not found",
+          content: { "application/json": { schema: resolver(ErrorResponse) } },
+        },
+      },
+    }),
+    async (c) => {
+      const tenant = c.get("tenant");
+      const deploymentId = c.req.param("deploymentId");
+      const runId = c.req.param("runId");
+
+      const row = await db.query.workflowDeployment.findFirst({
+        where: and(
+          eq(workflowDeployment.id, deploymentId),
+          eq(workflowDeployment.tenantId, tenant.id),
+        ),
+      });
+      if (!row) {
+        return c.json(
+          {
+            error: {
+              code: "not_found",
+              message: "Workflow deployment not found",
+            },
+          },
+          404,
+        );
+      }
+
+      const events = await runReader.readRunEvents(
+        workflowRunRepoId(deploymentId),
+        WORKFLOW_RUN_REF,
+        runId,
+      );
+      return c.json({ runId, events: events.map(formatRunEvent) });
     },
   );
 

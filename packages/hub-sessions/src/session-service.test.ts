@@ -10,6 +10,10 @@ import type {
   MessageAttachment,
 } from "@intx/types/runtime";
 import { extractAttachments } from "@intx/mime";
+import {
+  grant as grantTable,
+  workflowDeployment as workflowDeploymentTable,
+} from "@intx/db/schema";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { AgentAssetWithAsset, AssetService } from "./asset-service";
 import type { Principal, RepoId, RepoStore } from "./repo-store";
@@ -1433,18 +1437,46 @@ describe("deployWorkflowDefinition", () => {
     status: string;
   };
 
+  type CapturedGrantRow = {
+    principalId: string | null;
+    resource: string;
+    action: string;
+    effect: string;
+  };
+
   function createWorkflowDeployFixture() {
     const deploymentRows: CapturedDeploymentRow[] = [];
+    const grantRows: CapturedGrantRow[] = [];
     const workflowRepoWrites: { repoId: RepoId; files: string[] }[] = [];
 
-    const fakeDb = {
-      insert(_table: unknown) {
+    const insert = (table: unknown) => {
+      if (table === grantTable) {
+        return {
+          values(row: CapturedGrantRow) {
+            grantRows.push(row);
+            return Promise.resolve();
+          },
+        };
+      }
+      if (table === workflowDeploymentTable) {
         return {
           values(row: CapturedDeploymentRow) {
             deploymentRows.push(row);
             return Promise.resolve();
           },
         };
+      }
+      throw new Error("deployWorkflowDefinition fixture: unexpected insert");
+    };
+
+    // The projection row and the run-read grant are written inside a
+    // single `db.transaction`. The fixture passes a `tx` exposing the
+    // same `insert` surface so both writes are captured, mirroring how
+    // the production code commits them atomically.
+    const fakeDb = {
+      insert,
+      transaction(fn: (tx: { insert: typeof insert }) => Promise<void>) {
+        return fn({ insert });
       },
     };
 
@@ -1469,11 +1501,11 @@ describe("deployWorkflowDefinition", () => {
     (repoStore as unknown as { repoStore: RepoStore }).repoStore =
       writingRepoStore;
 
-    return { deploymentRows, workflowRepoWrites, fakeDb, repoStore };
+    return { deploymentRows, grantRows, workflowRepoWrites, fakeDb, repoStore };
   }
 
   test("deploys a multi-step workflow with an awaitSignal step on the multi-step branch and records a projection row", async () => {
-    const { deploymentRows, workflowRepoWrites, fakeDb, repoStore } =
+    const { deploymentRows, grantRows, workflowRepoWrites, fakeDb, repoStore } =
       createWorkflowDeployFixture();
     const mockRouter = createMockRouter();
     const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
@@ -1586,6 +1618,16 @@ describe("deployWorkflowDefinition", () => {
     expect(deploymentRow.tenantId).toBe("tenant-1");
     expect(deploymentRow.definitionAssetId).toBe("ast_workflow_1");
     expect(deploymentRow.status).toBe("deployed");
+
+    // A read grant on the deployment's workflow-run resource is seeded
+    // for the deploying principal so they can observe run events.
+    expect(grantRows).toHaveLength(1);
+    const grantRow = grantRows[0];
+    if (grantRow === undefined) throw new Error("missing workflow-run grant");
+    expect(grantRow.principalId).toBe("prin-deploy");
+    expect(grantRow.resource).toBe("workflow-run:dep_xyz");
+    expect(grantRow.action).toBe("read");
+    expect(grantRow.effect).toBe("allow");
 
     expect(result).toEqual({
       deploymentId: "dep_xyz",

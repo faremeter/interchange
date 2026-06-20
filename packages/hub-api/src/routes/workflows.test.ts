@@ -1,5 +1,9 @@
-import { describe, test, expect } from "bun:test";
-import { type } from "arktype";
+import { describe, test, expect, afterAll } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import git from "isomorphic-git";
+import { type, type Type } from "arktype";
 
 import { createInMemoryGrantStore } from "@intx/authz";
 import { ErrorResponse } from "@intx/types";
@@ -151,8 +155,13 @@ function createMockGetSession(): GetSession {
 }
 
 type SignalCall = Parameters<SidecarRouter["sendSignalDeliver"]>[0];
+type RouteMailCall = { address: string; rawMessage: string };
 
-function createMockSidecarRouter(signalCalls: SignalCall[]): SidecarRouter {
+function createMockSidecarRouter(
+  signalCalls: SignalCall[],
+  routeMailCalls: RouteMailCall[] = [],
+  routeMailResult = true,
+): SidecarRouter {
   function notImpl(name: string): never {
     throw new Error(`mock: sidecarRouter.${name} not implemented`);
   }
@@ -160,7 +169,10 @@ function createMockSidecarRouter(signalCalls: SignalCall[]): SidecarRouter {
     handleOpen: () => notImpl("handleOpen"),
     handleMessage: () => notImpl("handleMessage"),
     handleClose: () => notImpl("handleClose"),
-    routeMail: () => notImpl("routeMail"),
+    routeMail: (address, rawMessage) => {
+      routeMailCalls.push({ address, rawMessage });
+      return routeMailResult;
+    },
     sendAgentDeploy: () => notImpl("sendAgentDeploy"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
     sendSessionStart: () => notImpl("sendSessionStart"),
@@ -222,11 +234,12 @@ function createMockAssetService(workflowJson: string | null): AssetService {
   };
 }
 
-function createStubRepoStore(): RepoStore {
-  // The workflow routes read the definition via assetService, never the
-  // repoStore. app.ts requires assetService and repoStore to move as a
-  // unit, so a throwing stub keeps the XOR happy without exercising the
-  // substrate from any path these tests drive.
+function createStubRepoStore(repoDirById?: Map<string, string>): RepoStore {
+  // The deploy/signal/trigger routes never read the repoStore; only the
+  // run-observe routes do, via `getRepoDir`. Tests that exercise those
+  // routes pass a `repoDirById` map pointing at a constructed on-disk
+  // workflow-run repo. The remaining methods throw so any drift onto a
+  // substrate method these routes do not own fails loudly.
   const unused = () =>
     Promise.reject(new Error("stub repoStore is not wired in workflow tests"));
   return {
@@ -238,8 +251,14 @@ function createStubRepoStore(): RepoStore {
     resolveRef: unused,
     listRefs: unused,
     resolveHead: unused,
-    getRepoDir: () => {
-      throw new Error("stub repoStore is not wired in workflow tests");
+    getRepoDir: (repoId) => {
+      const dir = repoDirById?.get(repoId.id);
+      if (dir === undefined) {
+        throw new Error(
+          `stub repoStore has no dir for ${repoId.id} in workflow tests`,
+        );
+      }
+      return dir;
     },
     subscribe: () => {
       throw new Error("stub repoStore is not wired in workflow tests");
@@ -267,9 +286,12 @@ type TestAppOpts = {
   db?: MockDBOpts;
   grants?: GrantRule[];
   signalCalls?: SignalCall[];
+  routeMailCalls?: RouteMailCall[];
+  routeMailResult?: boolean;
   deployCalls?: DeployWorkflowDefinitionParams[];
   deployResult?: DeployWorkflowDefinitionResult;
   workflowJson?: string | null;
+  repoDirById?: Map<string, string>;
 };
 
 function createTestApp(opts: TestAppOpts = {}) {
@@ -281,7 +303,11 @@ function createTestApp(opts: TestAppOpts = {}) {
     authHandler: () => new Response("", { status: 404 }),
     db,
     grantStore: createInMemoryGrantStore(opts.grants ?? [makeGrant()]),
-    sidecarRouter: createMockSidecarRouter(opts.signalCalls ?? []),
+    sidecarRouter: createMockSidecarRouter(
+      opts.signalCalls ?? [],
+      opts.routeMailCalls ?? [],
+      opts.routeMailResult ?? true,
+    ),
     sessionService: createMockSessionService(
       opts.deployCalls ?? [],
       opts.deployResult,
@@ -290,7 +316,7 @@ function createTestApp(opts: TestAppOpts = {}) {
     assetService: createMockAssetService(
       opts.workflowJson === undefined ? WORKFLOW_JSON : opts.workflowJson,
     ),
-    repoStore: createStubRepoStore(),
+    repoStore: createStubRepoStore(opts.repoDirById),
     maxTarballBytes: 10_000_000,
   });
 }
@@ -313,6 +339,27 @@ async function errorCode(res: Response): Promise<string> {
     throw new Error(`unexpected error body: ${parsed.summary}`);
   }
   return parsed.error.code;
+}
+
+const TriggerBody = type({
+  deploymentId: "string",
+  address: "string",
+  messageId: "string",
+});
+
+const RunListBody = type({ runIds: "string[]" });
+
+const RunEventsBody = type({
+  runId: "string",
+  events: type({ seq: "number", type: "string", body: "object" }).array(),
+});
+
+function assertBody<T extends Type>(schema: T, raw: unknown): T["infer"] {
+  const parsed = schema(raw);
+  if (parsed instanceof type.errors) {
+    throw new Error(`unexpected response body: ${parsed.summary}`);
+  }
+  return parsed;
 }
 
 describe("POST /workflows/instances", () => {
@@ -595,6 +642,283 @@ describe("POST /workflows/:deploymentId/signals", () => {
         signalId: "sig-1",
         payload: null,
       }),
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /workflows/:deploymentId/mail", () => {
+  function manageGrant(): GrantRule {
+    return makeGrant({
+      resource: `workflow-run:${DEPLOYMENT_ID}`,
+      action: "manage",
+    });
+  }
+
+  test("fires a run by routing mail to the deployment address", async () => {
+    const routeMailCalls: RouteMailCall[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      routeMailCalls,
+      db: { deploymentRow },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+
+    expect(res.status).toBe(202);
+    const json = assertBody(TriggerBody, await res.json());
+    expect(json.deploymentId).toBe(DEPLOYMENT_ID);
+    expect(json.address).toBe(`ins_${DEPLOYMENT_ID}@${DOMAIN}`);
+    expect(json.messageId.length).toBeGreaterThan(0);
+
+    expect(routeMailCalls).toHaveLength(1);
+    const call = routeMailCalls[0];
+    if (call === undefined) throw new Error("missing routeMail call");
+    expect(call.address).toBe(`ins_${DEPLOYMENT_ID}@${DOMAIN}`);
+    // The wire payload is base64-encoded MIME carrying the body text.
+    const decoded = Buffer.from(call.rawMessage, "base64").toString("utf8");
+    expect(decoded).toContain("kick off");
+    // A run trigger is threading-less: no In-Reply-To / References.
+    expect(decoded).not.toContain("In-Reply-To");
+    expect(decoded).not.toContain("References:");
+  });
+
+  test("surfaces an unroutable deployment address as 409", async () => {
+    const routeMailCalls: RouteMailCall[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      routeMailCalls,
+      routeMailResult: false,
+      db: { deploymentRow },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("deployment_unreachable");
+    expect(routeMailCalls).toHaveLength(1);
+  });
+
+  test("rejects a caller without the workflow-run manage grant", async () => {
+    const routeMailCalls: RouteMailCall[] = [];
+    const app = createTestApp({
+      grants: [makeGrant({ resource: "workflow:*", action: "read" })],
+      routeMailCalls,
+      db: { deploymentRow },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(routeMailCalls).toHaveLength(0);
+  });
+
+  test("returns 404 when the deployment does not exist", async () => {
+    const routeMailCalls: RouteMailCall[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      routeMailCalls,
+      db: { deploymentRow: undefined },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+
+    expect(res.status).toBe(404);
+    expect(routeMailCalls).toHaveLength(0);
+  });
+});
+
+// On-disk workflow-run repos backing the run-observe route tests. Each
+// repo is laid out by hand with isomorphic-git so the reader projects a
+// real tree; the substrate's push-time validation is exercised
+// elsewhere and is not the unit under test here.
+const runRepoDirs: string[] = [];
+
+afterAll(async () => {
+  for (const dir of runRepoDirs.splice(0)) {
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  }
+});
+
+async function buildRunRepo(
+  deploymentId: string,
+  files: Record<string, string>,
+): Promise<Map<string, string>> {
+  const dir = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), "wf-run-route-"),
+  );
+  runRepoDirs.push(dir);
+  await git.init({ fs, dir, defaultBranch: "main" });
+  for (const [rel, content] of Object.entries(files)) {
+    const full = path.join(dir, rel);
+    await fs.promises.mkdir(path.dirname(full), { recursive: true });
+    await fs.promises.writeFile(full, content);
+    await git.add({ fs, dir, filepath: rel });
+  }
+  await git.commit({
+    fs,
+    dir,
+    message: "seed run events",
+    author: { name: "test", email: "test@example.com" },
+  });
+  return new Map([[deploymentId, dir]]);
+}
+
+describe("GET /workflows/:deploymentId/runs", () => {
+  function readGrant(): GrantRule {
+    return makeGrant({
+      resource: `workflow-run:${DEPLOYMENT_ID}`,
+      action: "read",
+    });
+  }
+
+  test("lists the run ids for the deployment", async () => {
+    const repoDirById = await buildRunRepo(DEPLOYMENT_ID, {
+      "runs/run-a/events/0.json": JSON.stringify({ type: "RunStarted" }),
+      "runs/run-b/events/0.json": JSON.stringify({ type: "RunStarted" }),
+    });
+    const app = createTestApp({
+      grants: [readGrant()],
+      repoDirById,
+      db: { deploymentRow },
+    });
+
+    const res = await app.fetch(
+      new Request(`http://localhost${base()}/${DEPLOYMENT_ID}/runs`),
+    );
+    expect(res.status).toBe(200);
+    const json = assertBody(RunListBody, await res.json());
+    expect([...json.runIds].sort()).toEqual(["run-a", "run-b"]);
+  });
+
+  test("returns an empty list when no run has committed events", async () => {
+    const repoDirById = new Map<string, string>();
+    const app = createTestApp({
+      grants: [readGrant()],
+      repoDirById,
+      db: { deploymentRow },
+    });
+
+    const res = await app.fetch(
+      new Request(`http://localhost${base()}/${DEPLOYMENT_ID}/runs`),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ runIds: [] });
+  });
+
+  test("rejects a caller without the workflow-run read grant", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ resource: "workflow:*", action: "read" })],
+      db: { deploymentRow },
+    });
+    const res = await app.fetch(
+      new Request(`http://localhost${base()}/${DEPLOYMENT_ID}/runs`),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  test("returns 404 for an unknown deployment", async () => {
+    const app = createTestApp({
+      grants: [readGrant()],
+      db: { deploymentRow: undefined },
+    });
+    const res = await app.fetch(
+      new Request(`http://localhost${base()}/${DEPLOYMENT_ID}/runs`),
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /workflows/:deploymentId/runs/:runId/events", () => {
+  function readGrant(): GrantRule {
+    return makeGrant({
+      resource: `workflow-run:${DEPLOYMENT_ID}`,
+      action: "read",
+    });
+  }
+
+  test("returns the seq-ordered event projection", async () => {
+    const repoDirById = await buildRunRepo(DEPLOYMENT_ID, {
+      "runs/run-1/events/0.json": JSON.stringify({
+        type: "RunStarted",
+        consumedMessageId: "m1",
+      }),
+      "runs/run-1/events/2.json": JSON.stringify({ type: "RunCompleted" }),
+      "runs/run-1/events/1.json": JSON.stringify({
+        type: "SignalAwaited",
+        name: "approve",
+      }),
+    });
+    const app = createTestApp({
+      grants: [readGrant()],
+      repoDirById,
+      db: { deploymentRow },
+    });
+
+    const res = await app.fetch(
+      new Request(
+        `http://localhost${base()}/${DEPLOYMENT_ID}/runs/run-1/events`,
+      ),
+    );
+    expect(res.status).toBe(200);
+    const json = assertBody(RunEventsBody, await res.json());
+    expect(json.runId).toBe("run-1");
+    expect(json.events.map((e) => [e.seq, e.type])).toEqual([
+      [0, "RunStarted"],
+      [1, "SignalAwaited"],
+      [2, "RunCompleted"],
+    ]);
+  });
+
+  test("returns an empty event list for an unknown run", async () => {
+    const repoDirById = await buildRunRepo(DEPLOYMENT_ID, {
+      "runs/run-1/events/0.json": JSON.stringify({ type: "RunStarted" }),
+    });
+    const app = createTestApp({
+      grants: [readGrant()],
+      repoDirById,
+      db: { deploymentRow },
+    });
+
+    const res = await app.fetch(
+      new Request(
+        `http://localhost${base()}/${DEPLOYMENT_ID}/runs/missing/events`,
+      ),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ runId: "missing", events: [] });
+  });
+
+  test("rejects a caller without the workflow-run read grant", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ resource: "workflow:*", action: "read" })],
+      db: { deploymentRow },
+    });
+    const res = await app.fetch(
+      new Request(
+        `http://localhost${base()}/${DEPLOYMENT_ID}/runs/run-1/events`,
+      ),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  test("returns 404 for an unknown deployment", async () => {
+    const app = createTestApp({
+      grants: [readGrant()],
+      db: { deploymentRow: undefined },
+    });
+    const res = await app.fetch(
+      new Request(
+        `http://localhost${base()}/${DEPLOYMENT_ID}/runs/run-1/events`,
+      ),
     );
     expect(res.status).toBe(404);
   });

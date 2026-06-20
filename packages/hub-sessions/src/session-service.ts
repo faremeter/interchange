@@ -15,8 +15,12 @@ import {
   type MessageHeaders,
 } from "@intx/mime";
 import { listAssetsForTenant, type DB } from "@intx/db";
-import { workflowDeployment as workflowDeploymentTable } from "@intx/db/schema";
+import {
+  grant as grantTable,
+  workflowDeployment as workflowDeploymentTable,
+} from "@intx/db/schema";
 import { hexEncode } from "@intx/types";
+import { generateId } from "@intx/hub-common";
 import {
   sessionAsset as sessionAssetTable,
   type SessionAssetSource,
@@ -970,12 +974,32 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         "deployWorkflowDefinition requires a db handle to record the workflow_deployment projection row",
       );
     }
-    await db.insert(workflowDeploymentTable).values({
-      id: deploymentId,
-      tenantId,
-      definitionAssetId,
-      status: "deployed",
-      createdAt: new Date(),
+    const now = new Date();
+    await db.transaction(async (tx) => {
+      await tx.insert(workflowDeploymentTable).values({
+        id: deploymentId,
+        tenantId,
+        definitionAssetId,
+        status: "deployed",
+        createdAt: now,
+      });
+
+      // Seed a read grant on the deployment's workflow-run resource for the
+      // deploying principal so they can observe run events out of the box,
+      // mirroring the per-instance agent-state read grant the agent deploy
+      // path seeds for the creator. Without this a non-owner deployer would
+      // deploy a workflow they cannot read the runs of.
+      await tx.insert(grantTable).values({
+        id: generateId("grant"),
+        tenantId,
+        principalId: config.principalId,
+        resource: `workflow-run:${deploymentId}`,
+        action: "read",
+        effect: "allow",
+        origin: "creator",
+        createdAt: now,
+        updatedAt: now,
+      });
     });
 
     return {
