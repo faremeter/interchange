@@ -12,6 +12,7 @@ import {
   TenantResponse,
   AgentResponse,
   AssetResponse,
+  AssetWithOriginResponse,
   PrincipalResponse,
   PrincipalSummary,
   AgentSummary,
@@ -1529,10 +1530,10 @@ const { data: workflowAssetsData } = await api(
   aliceCookies,
 );
 const workflowAssets = parse(
-  paginatedSchema(AssetResponse),
+  AssetWithOriginResponse.array(),
   workflowAssetsData,
   "workflow assets list response",
-).data;
+);
 if (!workflowAssets.some((a) => a.name === WORKFLOW_FIXTURE_ASSET_NAME)) {
   process.stderr.write(
     `[seed] FATAL: workflow asset ${WORKFLOW_FIXTURE_ASSET_NAME} is not listable after seeding\n`,
