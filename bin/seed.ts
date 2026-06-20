@@ -1,13 +1,17 @@
 #!/usr/bin/env bun
 /* eslint-disable no-console */
 
+import { spawn } from "node:child_process";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { type, type Type } from "arktype";
 import {
   TenantResponse,
   AgentResponse,
+  AssetResponse,
   PrincipalResponse,
   PrincipalSummary,
   AgentSummary,
@@ -18,8 +22,19 @@ import {
   ModelOfferingResponse,
   paginatedSchema,
 } from "@intx/types";
-import { WORKSPACE_BUILTINS_REGISTRY } from "@intx/hub-sessions";
+import {
+  WORKSPACE_BUILTINS_REGISTRY,
+  WORKFLOW_JSON_PATH,
+} from "@intx/hub-sessions";
 import { extractTarballPackageJSON } from "@intx/tool-packaging";
+
+import {
+  buildWorkflowJson,
+  WORKFLOW_FIXTURE_ASSET_NAME,
+  WORKFLOW_FIXTURE_SIGNAL_NAME,
+  WORKFLOW_RUN_GRANT_ACTION,
+  WORKFLOW_RUN_GRANT_RESOURCE,
+} from "./workflow-fixture";
 
 const AuthResponse = type({ "user?": { id: "string" } });
 
@@ -1225,6 +1240,279 @@ if (anthropicCredential) {
     }
   }
 }
+
+// -- Seed a launchable human-in-the-loop workflow on Acme --
+//
+// The fixture is a `draft -> awaitSignal{"approve"} -> publish`
+// workflow whose step-agents are authored inline (system prompts and
+// inference preferences on the definition; no FK to the agent-catalog
+// rows above). The definition is created as a `workflow`-kind asset and
+// its `workflow.json` is pushed over the asset smart-HTTP route -- the
+// only surface that writes asset tree content, since `createAsset` only
+// lays down the genesis `.gitignore`. The push uses the system git
+// binary with a `GIT_ASKPASS` bearer-token shim, matching the
+// established asset-push convention; isomorphic-git over HTTP is not
+// used anywhere in the repo for this.
+
+log("Seeding workflow definition on Acme...");
+
+const GitTokenMintResponse = type({ id: "string", secret: "string" });
+
+async function resolveTenantPrincipalId(
+  tenantId: string,
+  userId: string,
+  cookies: CookieJar,
+): Promise<string> {
+  const { data } = await api(
+    "GET",
+    `/api/tenants/${tenantId}/principals?limit=200`,
+    undefined,
+    cookies,
+  );
+  const principals = parse(
+    paginatedSchema(PrincipalResponse),
+    data,
+    "tenant principals response",
+  ).data;
+  const match = principals.find((p) => p.refId === userId);
+  if (!match) {
+    process.stderr.write(
+      `[seed] FATAL: could not resolve principal for user ${userId} on tenant ${tenantId}\n`,
+    );
+    process.exit(1);
+  }
+  return match.id;
+}
+
+async function plantPrincipalGrant(
+  tenantId: string,
+  principalId: string,
+  resource: string,
+  action: string,
+  cookies: CookieJar,
+): Promise<void> {
+  const { status, data } = await api(
+    "POST",
+    `/api/tenants/${tenantId}/grants`,
+    { principalId, resource, action, effect: "allow", origin: "creator" },
+    cookies,
+  );
+  check(`grant ${resource}/${action} on principal`, status, 201, data);
+}
+
+type GitRunResult = { stdout: string; stderr: string; status: number };
+
+async function runGit(
+  args: string[],
+  cwd: string,
+  extraEnv: Record<string, string>,
+): Promise<GitRunResult> {
+  return await new Promise<GitRunResult>((resolveRun, reject) => {
+    const child = spawn("git", args, {
+      cwd,
+      env: { ...process.env, ...extraEnv },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (c: Buffer) => {
+      stdout += c.toString("utf-8");
+    });
+    child.stderr.on("data", (c: Buffer) => {
+      stderr += c.toString("utf-8");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      resolveRun({ stdout, stderr, status: code ?? -1 });
+    });
+  });
+}
+
+function withBasicAuth(url: string, user: string, pass: string): string {
+  const u = new URL(url);
+  u.username = user;
+  u.password = pass;
+  return u.toString();
+}
+
+async function pushWorkflowJson(args: {
+  tenantId: string;
+  assetName: string;
+  tokenSecret: string;
+  workflowJson: string;
+}): Promise<void> {
+  // The bearer token is embedded as the basic-auth password in the
+  // smart-HTTP URL (username is an ignored placeholder); a GIT_ASKPASS
+  // shim echoes the same token as a belt-and-suspenders fallback so git
+  // never blocks on an interactive prompt. `-c credential.helper=`
+  // disables any developer-configured credential helper.
+  const work = await mkdtemp(join(tmpdir(), "seed-workflow-"));
+  const repoDir = join(work, "repo");
+  const askpass = join(work, "askpass.sh");
+  try {
+    await writeFile(
+      askpass,
+      `#!/bin/sh\nprintf '%s\\n' '${args.tokenSecret.replace(/'/g, "'\\''")}'\n`,
+      "utf-8",
+    );
+    await chmod(askpass, 0o755);
+    const gitEnv: Record<string, string> = {
+      GIT_ASKPASS: askpass,
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_AUTHOR_NAME: "Interchange Seed",
+      GIT_AUTHOR_EMAIL: "seed@interchange.local",
+      GIT_COMMITTER_NAME: "Interchange Seed",
+      GIT_COMMITTER_EMAIL: "seed@interchange.local",
+    };
+    const remote = `${BASE}/api/tenants/${args.tenantId}/assets/workflow/${args.assetName}.git`;
+    const authRemote = withBasicAuth(
+      remote,
+      "x-access-token",
+      args.tokenSecret,
+    );
+
+    const clone = await runGit(
+      ["-c", "credential.helper=", "clone", authRemote, repoDir],
+      work,
+      gitEnv,
+    );
+    if (clone.status !== 0) {
+      throw new Error(`git clone failed: ${clone.stderr || clone.stdout}`);
+    }
+
+    await writeFile(
+      join(repoDir, WORKFLOW_JSON_PATH),
+      args.workflowJson,
+      "utf-8",
+    );
+
+    const remaining: { label: string; args: string[] }[] = [
+      { label: "add workflow.json", args: ["add", WORKFLOW_JSON_PATH] },
+      {
+        label: "commit",
+        args: ["commit", "-m", "Seed approval-flow workflow definition"],
+      },
+      {
+        label: "push",
+        args: ["-c", "credential.helper=", "push", authRemote, "HEAD:main"],
+      },
+    ];
+    for (const stepArgs of remaining) {
+      const r = await runGit(stepArgs.args, repoDir, gitEnv);
+      if (r.status !== 0) {
+        throw new Error(
+          `git ${stepArgs.label} failed: ${r.stderr || r.stdout}`,
+        );
+      }
+    }
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
+}
+
+const aliceAcmePrincipalId = await resolveTenantPrincipalId(
+  acmeTenantId,
+  alice.userId,
+  aliceCookies,
+);
+log(`  Alice Acme principal ID: ${aliceAcmePrincipalId}`);
+
+// Plant the grants the deploy, listing, and signal routes gate on. Alice
+// owns Acme (the owner role already grants `*`/`*`), but the operator
+// who delivers the `approve` signal must hold an explicit
+// `workflow-run:<deploymentId>`/`manage` grant; the deployment id is
+// minted at deploy time, so the planted resource is the
+// `workflow-run:*` wildcard the authz glob matcher resolves against any
+// concrete deployment. The `workflow:*` create + read grants back the
+// deploy and listing routes.
+await plantPrincipalGrant(
+  acmeTenantId,
+  aliceAcmePrincipalId,
+  "workflow:*",
+  "create",
+  aliceCookies,
+);
+await plantPrincipalGrant(
+  acmeTenantId,
+  aliceAcmePrincipalId,
+  "workflow:*",
+  "read",
+  aliceCookies,
+);
+await plantPrincipalGrant(
+  acmeTenantId,
+  aliceAcmePrincipalId,
+  WORKFLOW_RUN_GRANT_RESOURCE,
+  WORKFLOW_RUN_GRANT_ACTION,
+  aliceCookies,
+);
+
+const { status: wfAssetStatus, data: wfAssetData } = await api(
+  "POST",
+  `/api/tenants/${acmeTenantId}/assets`,
+  { kind: "workflow", name: WORKFLOW_FIXTURE_ASSET_NAME },
+  aliceCookies,
+);
+const workflowAssetCreated = checkOrSkip(
+  "create workflow asset",
+  wfAssetStatus,
+  201,
+  wfAssetData,
+);
+
+if (workflowAssetCreated) {
+  parse(AssetResponse, wfAssetData, "workflow asset response");
+
+  const tokenExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const { status: tokenStatus, data: tokenData } = await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/git-tokens`,
+    {
+      name: "seed-workflow-push",
+      resource: "asset:*",
+      refPattern: "**",
+      actions: ["can_read", "can_push"],
+      expiresAt: tokenExpiresAt,
+    },
+    aliceCookies,
+  );
+  check("mint workflow git token", tokenStatus, 201, tokenData);
+  const token = parse(
+    GitTokenMintResponse,
+    tokenData,
+    "git token mint response",
+  );
+
+  await pushWorkflowJson({
+    tenantId: acmeTenantId,
+    assetName: WORKFLOW_FIXTURE_ASSET_NAME,
+    tokenSecret: token.secret,
+    workflowJson: buildWorkflowJson(),
+  });
+  log(`  Pushed ${WORKFLOW_JSON_PATH} to ${WORKFLOW_FIXTURE_ASSET_NAME}`);
+}
+
+// Confirm the workflow asset is listable on the tenant.
+const { data: workflowAssetsData } = await api(
+  "GET",
+  `/api/tenants/${acmeTenantId}/assets?kind=workflow`,
+  undefined,
+  aliceCookies,
+);
+const workflowAssets = parse(
+  paginatedSchema(AssetResponse),
+  workflowAssetsData,
+  "workflow assets list response",
+).data;
+if (!workflowAssets.some((a) => a.name === WORKFLOW_FIXTURE_ASSET_NAME)) {
+  process.stderr.write(
+    `[seed] FATAL: workflow asset ${WORKFLOW_FIXTURE_ASSET_NAME} is not listable after seeding\n`,
+  );
+  process.exit(1);
+}
+log(
+  `  Workflow asset ${WORKFLOW_FIXTURE_ASSET_NAME} is listable (signal: ${WORKFLOW_FIXTURE_SIGNAL_NAME})`,
+);
 
 // -- Verify with /me endpoints --
 
