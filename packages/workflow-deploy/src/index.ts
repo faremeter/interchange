@@ -29,6 +29,7 @@ export {
   deriveDeploymentAddress,
   deriveStepAddress,
   deriveStepAgentId,
+  isWorkflowDerivedAddress,
   wrapHarnessAsTrivialAgent,
   CapabilityApprovalDeniedError,
   MultiStepDeployHandoffMissingError,

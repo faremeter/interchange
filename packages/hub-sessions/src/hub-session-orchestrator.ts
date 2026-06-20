@@ -20,11 +20,16 @@ import { parseInferenceEvent } from "@intx/types/runtime";
 import type { GrantRule, GrantStore } from "@intx/types/authz";
 import type { InferenceSource } from "@intx/types/runtime";
 import { getLogger } from "@intx/log";
+import { isWorkflowDerivedAddress } from "@intx/workflow-deploy";
 
 import type { AgentRepoStore } from "./agent-repo";
 import type { EventCollectorRegistry } from "./event-collector-registry";
 import type { SidecarEventEmitter } from "./ws/sidecar-events";
-import { parseAgentId, requireInstance } from "./hub-session-lookups";
+import {
+  findInstance,
+  parseAgentId,
+  requireInstance,
+} from "./hub-session-lookups";
 
 const log = getLogger(["hub", "orchestrator"]);
 
@@ -106,7 +111,25 @@ export function createHubSessionOrchestrator(
 
   unsubscribers.push(
     events.on("agent.deploy.ack", async ({ agentAddress, publicKey }) => {
-      const instance = await requireInstance(db, agentAddress);
+      const instance = await findInstance(db, agentAddress);
+      if (instance === undefined) {
+        // Workflow agents are provisioned at derived addresses — the
+        // deployment-level `ins_<deploymentId>@<domain>` and the per-step
+        // `ins_<deploymentId>-<stepId>@<domain>` — with no agent_instance
+        // row, and nothing reads back their public key. The only reader
+        // of `agentInstance.publicKey` is the instance-keyed reconnect
+        // challenge, which workflow-derived addresses never take. So a
+        // missing row for a workflow-derived address is a correct no-op.
+        // A missing row for any other address is a launched agent whose
+        // instance should exist; surface that rather than silently
+        // dropping it.
+        if (isWorkflowDerivedAddress(agentAddress)) {
+          return;
+        }
+        throw new Error(
+          `No active instance found for deploy ack on address "${agentAddress}"`,
+        );
+      }
       await db
         .update(agentInstance)
         .set({ publicKey })

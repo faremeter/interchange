@@ -363,6 +363,25 @@ describe("createHubSessionOrchestrator", () => {
       expect(harness.updates).toHaveLength(1);
       expect(harness.updates[0]?.set).toEqual({ publicKey: "deadbeef" });
     });
+
+    test("no-ops for a derived workflow-step address with no instance row", async () => {
+      harness = setup({ instance: undefined });
+      await harness.events.emitAndAwait("agent.deploy.ack", {
+        agentAddress: "ins_dep_abc-step1@workflow.interchange",
+        publicKey: "deadbeef",
+      });
+      expect(harness.updates).toHaveLength(0);
+    });
+
+    test("throws when a launched-agent instance address has no row", async () => {
+      harness = setup({ instance: undefined });
+      await expect(
+        harness.events.emitAndAwait("agent.deploy.ack", {
+          agentAddress: AGENT_ADDRESS,
+          publicKey: "deadbeef",
+        }),
+      ).rejects.toThrow(/No active instance found for deploy ack/);
+    });
   });
 
   describe("agent.reconnected", () => {
