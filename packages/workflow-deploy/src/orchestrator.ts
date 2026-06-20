@@ -46,6 +46,7 @@ import type {
   ToolDefinition,
 } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
+import { parseAgentAddress } from "@intx/types";
 import {
   STEP_ID_PATTERN,
   type Primitive,
@@ -635,6 +636,37 @@ export function deriveDeploymentAgentId(args: {
   deploymentId: string;
 }): string {
   return `ins_${args.deploymentId}`;
+}
+
+/**
+ * The id prefix `generateId("deployment")` stamps on every deployment
+ * id (mirrors `@intx/hub-common`'s `PREFIXES.deployment`). Every
+ * workflow-derived address — both the deployment-level address from
+ * `deriveDeploymentAddress` (`ins_dep_<...>`) and the per-step
+ * addresses from `deriveStepAddress` (`ins_dep_<...>-<stepId>`) — wraps
+ * a deployment id in the `ins_` instance prefix, so its instance id
+ * begins with `ins_dep_`. A plain agent-launch instance id is `ins_` +
+ * 32 hex characters, which can never produce that segment, so the
+ * prefix is an exact discriminator between the two address families.
+ */
+const DEPLOYMENT_ID_PREFIX = "dep_";
+
+/**
+ * True when `address` is a workflow-derived agent address — either the
+ * deployment-level address from `deriveDeploymentAddress` or a per-step
+ * address from `deriveStepAddress`. Both wrap a deployment id in the
+ * `ins_` instance prefix, so both are recognized here.
+ *
+ * Used by host-side reactions that must treat workflow-derived
+ * addresses (which never carry an `agent_instance` row) differently
+ * from launched-agent instance addresses.
+ */
+export function isWorkflowDerivedAddress(address: string): boolean {
+  const parsed = parseAgentAddress(address);
+  if (parsed === null) {
+    return false;
+  }
+  return parsed.instanceId.startsWith(`ins_${DEPLOYMENT_ID_PREFIX}`);
 }
 
 /**

@@ -24,6 +24,7 @@ import {
   deriveStepAddress,
   deriveStepAgentId,
   deriveStepInstanceId,
+  isWorkflowDerivedAddress,
   MultiStepDeployHandoffMissingError,
   MultiStepDeploymentArgsMissingError,
   WorkflowDefinitionInvalidError,
@@ -966,5 +967,35 @@ describe("per-step address derivation", () => {
     expect(deriveDeploymentAgentId({ deploymentId: "dep_abc" })).toBe(
       "ins_dep_abc",
     );
+  });
+});
+
+describe("isWorkflowDerivedAddress", () => {
+  test("recognizes a per-step address produced by deriveStepAddress", () => {
+    const address = deriveStepAddress({
+      deploymentId: "dep_abc",
+      stepId: "step1",
+      deploymentDomain: "workflow.interchange",
+    });
+    expect(isWorkflowDerivedAddress(address)).toBe(true);
+  });
+
+  test("recognizes the deployment-level address", () => {
+    expect(
+      isWorkflowDerivedAddress(
+        deriveDeploymentAddress({
+          deploymentId: "dep_abc",
+          deploymentDomain: "workflow.interchange",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  test("rejects a launched-agent instance address", () => {
+    expect(isWorkflowDerivedAddress("ins_0123abcd@tenant.local")).toBe(false);
+  });
+
+  test("rejects a malformed address", () => {
+    expect(isWorkflowDerivedAddress("not-an-address")).toBe(false);
   });
 });
