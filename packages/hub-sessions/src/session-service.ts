@@ -15,6 +15,8 @@ import {
   type MessageHeaders,
 } from "@intx/mime";
 import { listAssetsForTenant, type DB } from "@intx/db";
+import { workflowDeployment as workflowDeploymentTable } from "@intx/db/schema";
+import { hexEncode } from "@intx/types";
 import {
   sessionAsset as sessionAssetTable,
   type SessionAssetSource,
@@ -44,6 +46,8 @@ import {
 } from "@intx/workflow/definition";
 import {
   createWorkflowDeployOrchestrator,
+  deriveDeploymentAddress,
+  walkCapabilities,
   wrapHarnessAsTrivialAgent,
   type ApprovalSet,
   type DeployContent as OrchestratorDeployContent,
@@ -120,6 +124,27 @@ export type SessionService = {
   }): Promise<void>;
 
   /**
+   * Deploy a multi-step `WorkflowDefinition` through the workflow-deploy
+   * orchestrator's multi-step branch. This is the general workflow
+   * deploy entry point: it carries no `trivialBindings` and is not
+   * coupled to a single agent's credential/session model the way
+   * `launchSession` is. The orchestrator derives every per-step address
+   * from `deploymentId` + `deploymentDomain`, provisions each step's
+   * agent-state repo via the shared per-agent deploy phases, writes the
+   * workflow repo, and fires the deployment-level `agent.deploy` frame.
+   *
+   * Persists one `workflow_deployment` projection row keyed by
+   * `deploymentId` so the deployment is listable per tenant; the
+   * RepoStore substrate has no by-kind listing API of its own.
+   *
+   * Returns the supervisor's principal public key surfaced by the
+   * sidecar's `agent.deploy.ack`.
+   */
+  deployWorkflowDefinition(
+    params: DeployWorkflowDefinitionParams,
+  ): Promise<DeployWorkflowDefinitionResult>;
+
+  /**
    * Compose a signed RFC 2822 message from the user and deliver it to the
    * agent via the mail transport. Throws if the agent is unreachable.
    * Returns the raw MIME bytes of the assembled message.
@@ -130,6 +155,52 @@ export type SessionService = {
    * Undeploy an agent and wait for the sidecar to acknowledge.
    */
   endSession(agentAddress: string, reason: string): Promise<void>;
+};
+
+export type DeployWorkflowDefinitionParams = {
+  /** Owning tenant; recorded on the projection row. */
+  tenantId: string;
+  /**
+   * Stable deployment identifier. The orchestrator concatenates it into
+   * every derived per-step address and the deployment-level address, and
+   * it is the `workflow_deployment` row's primary key. The caller owns
+   * its generation.
+   */
+  deploymentId: string;
+  /**
+   * Mail domain the deployment's derived addresses live under. The
+   * orchestrator derives `ins_<deploymentId>-<stepId>@<deploymentDomain>`
+   * per step and `ins_<deploymentId>@<deploymentDomain>` for the
+   * deployment-level supervisor address.
+   */
+  deploymentDomain: string;
+  /** The hydrated workflow definition to deploy. */
+  definition: WorkflowDefinition;
+  /**
+   * The `workflow`-kind asset the definition was hydrated from. Recorded
+   * on the projection row so the listing surface can join back to the
+   * source asset.
+   */
+  definitionAssetId: string;
+  /**
+   * Harness configuration shared across every step's launch. The
+   * orchestrator overrides `agentAddress`, `agentId`, and `systemPrompt`
+   * per step.
+   */
+  config: HarnessConfig;
+  /** Deploy-tree content shared across every step's launch. */
+  deployContent: DeployContent;
+  /** Tool-package pins to ship with every step's deploy. */
+  toolPackagePins?: readonly ToolPackagePin[];
+};
+
+export type DeployWorkflowDefinitionResult = {
+  /** Echoes the deployment id recorded on the projection row. */
+  deploymentId: string;
+  /** Deployment-level mail address the supervisor registers on the bus. */
+  deploymentAddress: string;
+  /** Supervisor principal public key from the sidecar's deploy ack. */
+  publicKey: string;
 };
 
 export type UserMessageParams = {
@@ -449,6 +520,34 @@ function createNoopWorkflowRepoWriter(): WorkflowRepoWriter {
   return {
     async writeWorkflowRepo(_args) {
       return;
+    },
+  };
+}
+
+/**
+ * `WorkflowRepoWriter` backed by the hub's repo substrate. Writes the
+ * orchestrator-produced workflow tree (`workflow.json`,
+ * `capability-declarations.json`, `.gitignore`) into a `workflow`-kind
+ * repo keyed by the workflow definition id, committing on the published
+ * asset ref. The hub principal is the only writer of the workflow repo,
+ * matching `workflowAuthorize`'s hub-writes / sidecar-reads split.
+ */
+function createHubWorkflowRepoWriter(
+  agentRepoStore: AgentRepoStore,
+): WorkflowRepoWriter {
+  return {
+    async writeWorkflowRepo(args) {
+      const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
+      const files: Record<string, string> = {};
+      for (const [path, contents] of args.files) {
+        files[path] = contents;
+      }
+      await agentRepoStore.repoStore.writeTree(
+        HUB_PRINCIPAL,
+        repoId,
+        DEFAULT_ASSET_REF,
+        { files, message: "Write workflow deploy tree" },
+      );
     },
   };
 }
@@ -785,6 +884,108 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         : {}),
       operatorApprovals,
     });
+  }
+
+  async function deployWorkflowDefinition(
+    params: DeployWorkflowDefinitionParams,
+  ): Promise<DeployWorkflowDefinitionResult> {
+    const {
+      tenantId,
+      deploymentId,
+      deploymentDomain,
+      definition,
+      definitionAssetId,
+      config,
+      deployContent,
+    } = params;
+
+    // The deploy is initiated by an authorized tenant operator against a
+    // workflow asset they authored; approve exactly the grant surface the
+    // definition declares. The same director registry feeds both this
+    // approval-set derivation and the orchestrator's gate so the walk the
+    // route approves and the walk the orchestrator enforces are identical.
+    const directorRegistry = createDefaultDirectorRegistry();
+    const walk = walkCapabilities(definition, directorRegistry);
+    const operatorApprovals: ApprovalSet = new Set<string>(
+      [...walk.perStep.values()].flatMap((declarations) => [
+        ...declarations.grants,
+      ]),
+    );
+
+    const launchSessionCallback: LaunchSessionFn = async (orchestratorParams) =>
+      executeLaunchPhases({
+        agentAddress: orchestratorParams.agentAddress,
+        agentId: orchestratorParams.agentId,
+        instanceId: orchestratorParams.instanceId,
+        config: orchestratorParams.config,
+        deployContent: bridgeOrchestratorDeployContent(
+          orchestratorParams.deployContent,
+        ),
+        ...(orchestratorParams.toolPackagePins !== undefined
+          ? { toolPackagePins: orchestratorParams.toolPackagePins }
+          : {}),
+      });
+
+    const sendMultiStepDeployCallback: SendMultiStepDeployFn = (deployParams) =>
+      sendMultiStepDeployFrame({
+        sidecarRouter,
+        agentAddress: deployParams.agentAddress,
+        config: deployParams.config,
+        definition: deployParams.definition,
+        sources: deployParams.sources,
+      });
+
+    const orchestrator = createWorkflowDeployOrchestrator({
+      directorRegistry,
+      workflowRepo: createHubWorkflowRepoWriter(agentRepoStore),
+      launchSession: launchSessionCallback,
+      sendMultiStepDeploy: sendMultiStepDeployCallback,
+    });
+
+    const result = await orchestrator.deployWorkflow({
+      workflow: definition,
+      deploymentId,
+      deploymentDomain,
+      config,
+      deployContent,
+      operatorApprovals,
+      hubPublicKey: hexEncode(agentRepoStore.getSigningPublicKey()),
+      ...(params.toolPackagePins !== undefined
+        ? { toolPackagePins: params.toolPackagePins }
+        : {}),
+    });
+    if (result.kind !== "multi-step") {
+      // The general deploy path always omits trivialBindings, so the
+      // orchestrator must take the multi-step branch. A trivial result
+      // here means the orchestrator's branch decision diverged from this
+      // method's contract; surface it loudly rather than recording a
+      // projection row for a deployment that never reached the sidecar.
+      throw new Error(
+        `deployWorkflowDefinition expected a multi-step deploy for ${deploymentId} but the orchestrator returned a ${result.kind} result`,
+      );
+    }
+
+    if (db === undefined) {
+      throw new Error(
+        "deployWorkflowDefinition requires a db handle to record the workflow_deployment projection row",
+      );
+    }
+    await db.insert(workflowDeploymentTable).values({
+      id: deploymentId,
+      tenantId,
+      definitionAssetId,
+      status: "deployed",
+      createdAt: new Date(),
+    });
+
+    return {
+      deploymentId,
+      deploymentAddress: deriveDeploymentAddress({
+        deploymentId,
+        deploymentDomain,
+      }),
+      publicKey: result.publicKey,
+    };
   }
 
   async function rollbackCommittedAttachments(
@@ -1171,5 +1372,10 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     await sidecarRouter.sendAgentUndeploy(agentAddress, reason);
   }
 
-  return { launchSession, sendUserMessage, endSession };
+  return {
+    launchSession,
+    deployWorkflowDefinition,
+    sendUserMessage,
+    endSession,
+  };
 }

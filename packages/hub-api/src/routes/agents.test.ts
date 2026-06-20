@@ -196,6 +196,11 @@ function createMockSessionService(): SessionService {
     launchSession: () => {
       throw new Error("mock: sessionService.launchSession not implemented");
     },
+    deployWorkflowDefinition: () => {
+      throw new Error(
+        "mock: sessionService.deployWorkflowDefinition not implemented",
+      );
+    },
     sendUserMessage: () => {
       throw new Error("mock: sessionService.sendUserMessage not implemented");
     },

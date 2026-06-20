@@ -28,6 +28,7 @@ import { createRoleRoutes, createRoleAssignRoutes } from "./routes/roles";
 import { createGrantRoutes, createEvaluateRoutes } from "./routes/grants";
 import { createAgentRoutes } from "./routes/agents";
 import { createInstanceRoutes } from "./routes/instances";
+import { createWorkflowRoutes } from "./routes/workflows";
 import { createApprovalRoutes } from "./routes/approvals";
 import { createWalletRoutes } from "./routes/wallets";
 import { createProviderRoutes } from "./routes/providers";
@@ -245,6 +246,23 @@ export function mountHubRoutes(
       requireGrant,
     }),
   );
+
+  // The workflow deploy + signal + listing surface needs the asset
+  // service to hydrate a workflow definition from its workflow.json.
+  // Gate on `assetService !== null` like the asset routes; the XOR
+  // throw above keeps assetService and repoStore moving as a unit.
+  if (assetService !== null) {
+    app.route(
+      "/api/tenants/:tenantId/workflows",
+      createWorkflowRoutes({
+        db,
+        sessionService,
+        sidecarRouter,
+        assetService,
+        requireGrant,
+      }),
+    );
+  }
 
   app.route("/api/tenants/:tenantId/approvals", createApprovalRoutes());
   app.route(

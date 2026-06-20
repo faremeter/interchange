@@ -286,6 +286,9 @@ function createMockSessionService(): SessionService {
     launchSession(_params) {
       return notImpl("launchSession");
     },
+    deployWorkflowDefinition(_params) {
+      return notImpl("deployWorkflowDefinition");
+    },
     sendUserMessage(_params) {
       return notImpl("sendUserMessage");
     },
@@ -653,6 +656,9 @@ describe("POST /agents/instances/:instanceId/mail", () => {
       launchSession() {
         throw new Error("not implemented");
       },
+      deployWorkflowDefinition() {
+        throw new Error("not implemented");
+      },
       endSession() {
         throw new Error("not implemented");
       },
@@ -796,6 +802,9 @@ describe("POST /agents/instances/:instanceId/mail attachments", () => {
     const captured: (MessageAttachment[] | undefined)[] = [];
     const service: SessionService = {
       launchSession() {
+        throw new Error("not implemented");
+      },
+      deployWorkflowDefinition() {
         throw new Error("not implemented");
       },
       endSession() {
@@ -1225,6 +1234,9 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
   function createCapturingSessionService(): SessionService {
     return {
       launchSession: async () => undefined,
+      deployWorkflowDefinition: () => {
+        throw new Error("mock: deployWorkflowDefinition not implemented");
+      },
       sendUserMessage: () => {
         throw new Error("mock: sendUserMessage not implemented");
       },
@@ -1437,6 +1449,9 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       launchSession: async (params) => {
         launchedSources = params.config.sources;
         launchedDefaultSource = params.config.defaultSource;
+      },
+      deployWorkflowDefinition: () => {
+        throw new Error("mock: deployWorkflowDefinition not implemented");
       },
       sendUserMessage: () => {
         throw new Error("mock: sendUserMessage not implemented");

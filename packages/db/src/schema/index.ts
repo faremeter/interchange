@@ -18,3 +18,4 @@ export * from "./instances";
 export * from "./session-assets";
 export * from "./messages";
 export * from "./git-tokens";
+export * from "./workflow-deployments";

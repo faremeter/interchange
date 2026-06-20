@@ -55,6 +55,9 @@
 | POST | /api/tenants/:tenantId/agents/instances/:instanceId/mail | Send mail to the agent |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/mail | List mail for an instance |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/turns | List inference turns for an instance |
+| POST | /api/tenants/:tenantId/workflows/instances | Deploy a workflow |
+| GET | /api/tenants/:tenantId/workflows/instances | List workflow deployments |
+| POST | /api/tenants/:tenantId/workflows/:deploymentId/signals | Deliver a signal to a workflow run |
 | GET | /api/tenants/:tenantId/approvals | List pending approvals in the tenant |
 | GET | /api/tenants/:tenantId/approvals/:approvalId | Get approval details |
 | POST | /api/tenants/:tenantId/approvals/:approvalId/approve | Approve an action |
@@ -642,6 +645,38 @@ Query: cursor?, limit?
 
 200: unknown -- List of inference turns
 404: ErrorResponse -- Instance not found
+
+## Workflows
+
+### POST /api/tenants/:tenantId/workflows/instances
+Deploy a workflow
+
+Hydrates a workflow definition from its workflow asset's workflow.json and deploys it through the general multi-step workflow deploy path. Returns the deployment record.
+
+Body: unknown
+
+201: unknown -- Workflow deployed
+404: ErrorResponse -- Workflow asset not found
+409: ErrorResponse -- Workflow definition could not be hydrated
+502: ErrorResponse -- Sidecar unavailable
+
+### GET /api/tenants/:tenantId/workflows/instances
+List workflow deployments
+
+Lists the workflow deployments for the tenant, most recent first.
+
+200: unknown -- List of workflow deployments
+
+### POST /api/tenants/:tenantId/workflows/:deploymentId/signals
+Deliver a signal to a workflow run
+
+Delivers a caller-supplied, stable signal to the named run of a workflow deployment. The signalId must be supplied by the caller; the run state machine dedups on it.
+
+Body: unknown
+
+202: (no content) -- Signal accepted for delivery
+404: ErrorResponse -- Workflow deployment not found
+502: ErrorResponse -- Sidecar unavailable
 
 ## Approvals
 

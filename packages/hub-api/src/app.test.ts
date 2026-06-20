@@ -23,6 +23,11 @@ const sessionService: SessionService = {
   launchSession(_params) {
     throw new Error("mock: sessionService.launchSession not implemented");
   },
+  deployWorkflowDefinition(_params) {
+    throw new Error(
+      "mock: sessionService.deployWorkflowDefinition not implemented",
+    );
+  },
   sendUserMessage(_params) {
     throw new Error("mock: sessionService.sendUserMessage not implemented");
   },
