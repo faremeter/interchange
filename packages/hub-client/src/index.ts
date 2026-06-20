@@ -24,3 +24,11 @@ export {
   TurnCommittedEvent,
 } from "./validators";
 export { createInstanceSession, type InstanceSession } from "./session";
+export {
+  listWorkflowDeployments,
+  deployWorkflow,
+  deliverWorkflowSignal,
+  WorkflowDeployment,
+  type DeployWorkflowInput,
+  type DeliverSignalInput,
+} from "./workflows";
