@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { InferenceSource } from "@intx/types/runtime";
 
-import type { Transport } from "./transport";
+import { createBrowserTransport, type Transport } from "./transport";
 import {
   deliverWorkflowSignal,
   deployWorkflow,
@@ -156,5 +156,38 @@ describe("deliverWorkflowSignal", () => {
       signalName: "approve",
       signalId: "sig_1",
     });
+  });
+
+  // The signal route returns 202 with an empty body. Driving the call
+  // through the real browser transport (rather than a mock that returns
+  // undefined) exercises the no-content path: a transport that tried to
+  // JSON-parse the empty body would reject with "Unexpected end of JSON
+  // input" even though the hub accepted the signal.
+  test("resolves on a real 202 empty-body response without throwing", async () => {
+    const originalFetch = globalThis.fetch;
+    const seen: { url: string; method: string | undefined }[] = [];
+    globalThis.fetch = Object.assign(
+      (input: string | URL | Request, init?: RequestInit) => {
+        seen.push({ url: String(input), method: init?.method });
+        return Promise.resolve(new Response(null, { status: 202 }));
+      },
+      { preconnect: () => undefined },
+    );
+    try {
+      const transport = createBrowserTransport();
+      await deliverWorkflowSignal(transport, TENANT_ID, DEPLOYMENT_ID, {
+        runId: "run_1",
+        signalName: "approve",
+        signalId: "sig_1",
+        payload: { ok: true },
+      });
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.method).toBe("POST");
+      expect(seen[0]?.url).toBe(
+        `/api/tenants/${TENANT_ID}/workflows/${DEPLOYMENT_ID}/signals`,
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

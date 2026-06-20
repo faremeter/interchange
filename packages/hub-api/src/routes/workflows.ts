@@ -41,7 +41,7 @@ const DeliverSignal = type({
   runId: "string > 0",
   signalName: "string > 0",
   signalId: "string > 0",
-  payload: "unknown",
+  "payload?": "unknown",
 });
 
 const WorkflowDeploymentResponse = type({
@@ -102,6 +102,10 @@ export function createWorkflowRoutes({
         },
         409: {
           description: "Workflow definition could not be hydrated",
+          content: { "application/json": { schema: resolver(ErrorResponse) } },
+        },
+        500: {
+          description: "Deployment projection row missing after deploy",
           content: { "application/json": { schema: resolver(ErrorResponse) } },
         },
         502: {
@@ -177,8 +181,11 @@ export function createWorkflowRoutes({
         defaultSource: body.defaultSource,
       };
 
+      let result: Awaited<
+        ReturnType<SessionService["deployWorkflowDefinition"]>
+      >;
       try {
-        const result = await sessionService.deployWorkflowDefinition({
+        result = await sessionService.deployWorkflowDefinition({
           tenantId: tenant.id,
           deploymentId,
           deploymentDomain: tenant.domain,
@@ -187,16 +194,6 @@ export function createWorkflowRoutes({
           config,
           deployContent: { systemPrompt: "" },
         });
-
-        const row = await db.query.workflowDeployment.findFirst({
-          where: eq(workflowDeployment.id, result.deploymentId),
-        });
-        if (!row) {
-          throw new Error(
-            `workflow_deployment row ${result.deploymentId} missing after deploy`,
-          );
-        }
-        return c.json(formatDeployment(row), 201);
       } catch (err) {
         return c.json(
           {
@@ -211,6 +208,26 @@ export function createWorkflowRoutes({
           502,
         );
       }
+
+      // The sidecar deploy succeeded; reading back the projection row is
+      // an internal persistence concern. A missing row here is an
+      // invariant violation, not a sidecar-reachability failure, so it
+      // must surface as a 500 rather than be mislabeled 502.
+      const row = await db.query.workflowDeployment.findFirst({
+        where: eq(workflowDeployment.id, result.deploymentId),
+      });
+      if (!row) {
+        return c.json(
+          {
+            error: {
+              code: "deployment_projection_missing",
+              message: `workflow_deployment row ${result.deploymentId} missing after deploy`,
+            },
+          },
+          500,
+        );
+      }
+      return c.json(formatDeployment(row), 201);
     },
   );
 
