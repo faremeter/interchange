@@ -21,6 +21,7 @@ import { dirname, join as pathJoin } from "node:path";
 
 import { describe, test, expect } from "bun:test";
 import { createInMemoryTransport } from "@intx/mail-memory";
+import { createNodeCrypto, generateKeyPair } from "@intx/crypto-node";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 import type { SubprocessSpawner } from "@intx/workflow-host";
@@ -39,7 +40,12 @@ function stubKeyStore(): Parameters<
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
   return {
     async loadOrGenerateKey() {
-      throw new Error("not used in this test");
+      // The single-step multi-step branch registers the agent's signing
+      // key on the host transport before `spawn()` (OUTBOUND half of
+      // mailbox ownership). Return a real keypair so that registration
+      // succeeds and the SPAWNER failure remains the failure this test
+      // exercises.
+      return { keyPair: await generateKeyPair(), isNew: false };
     },
     async scanKeys() {
       return [];
@@ -97,6 +103,7 @@ describe("deploy-failure registry leak", () => {
         typeof createSidecarDeployRouter
       >[0]["repoStore"],
       signingKeySeed: new Uint8Array(32),
+      createAgentCrypto: createNodeCrypto,
       registerDeployment: ({ deploymentId, agentAddress }) => {
         registry.record(deploymentId, agentAddress);
       },
@@ -177,6 +184,7 @@ describe("deploy-failure registry leak", () => {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only getRepoDir + writeTree are exercised before the spawn-time failure
       repoStore: repoStoreStub as RepoStore,
       signingKeySeed: new Uint8Array(32),
+      createAgentCrypto: createNodeCrypto,
       registerDeployment: ({ deploymentId, agentAddress }) => {
         registry.record(deploymentId, agentAddress);
       },

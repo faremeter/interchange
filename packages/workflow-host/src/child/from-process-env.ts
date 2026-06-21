@@ -32,6 +32,10 @@ import {
   type ChildSubstrateWriteBridge,
 } from "./substrate-write-bridge";
 import {
+  createChildOutboundMailBridge,
+  type ChildOutboundMailBridge,
+} from "./outbound-mail-bridge";
+import {
   createControlChannelSender,
   type FrameWriter,
   type NdjsonReader,
@@ -87,6 +91,18 @@ export interface SubstrateFactoryEnv {
    * space.
    */
   readonly substrateWriteBridge: ChildSubstrateWriteBridge;
+  /**
+   * Child-side IPC bridge over the upstream control channel for the
+   * OUTBOUND half of mailbox ownership (§3a). The substrate factory uses
+   * this to construct the supervisor-backed `MessageTransport` it
+   * supplies as the step agent's `env.transport`: the transport's
+   * `send` calls `bridge.submit`, which emits an `outbound.message`
+   * upstream frame and resolves once the supervisor's matching
+   * `outbound.result` lands. The supervisor performs the actual signed
+   * send through the host transport, so outbound mail carries the
+   * agent's signature without the child ever holding the agent's key.
+   */
+  readonly outboundMailBridge: ChildOutboundMailBridge;
 }
 
 /**
@@ -180,10 +196,14 @@ export async function runWorkflowChildFromProcessEnv(
   const substrateWriteBridge = createChildSubstrateWriteBridge({
     upstreamSender,
   });
+  const outboundMailBridge = createChildOutboundMailBridge({
+    upstreamSender,
+  });
   const bindings = await factory({
     spawn,
     substrateConfig,
     substrateWriteBridge,
+    outboundMailBridge,
   });
   return runWorkflowChild({
     env: spawn,
@@ -200,6 +220,7 @@ export async function runWorkflowChildFromProcessEnv(
     },
     upstreamSender,
     substrateWriteBridge,
+    outboundMailBridge,
   });
 }
 

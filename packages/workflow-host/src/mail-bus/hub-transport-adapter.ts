@@ -14,6 +14,8 @@
 // their own `provisionAgent` flow) and does not double-deliver
 // messages the transport itself routes.
 
+import type { OutboundMessage, SendReceipt } from "@intx/types/runtime";
+
 import type { HubTransport } from "@intx/mail-memory";
 
 import type { MailBusBindings } from "../supervisor/types";
@@ -86,6 +88,24 @@ export function wrapHubTransportAsMailBus(
       const set = subscribers.get(address);
       if (set === undefined) return;
       for (const handler of set) handler(message);
+    },
+    async sendOutbound(
+      senderAddress: string,
+      message: OutboundMessage,
+    ): Promise<SendReceipt> {
+      // OUTBOUND half of mailbox ownership (§3a): route the agent's
+      // reply / mail-tool send through the host transport's signed-send
+      // path. `getTransportFor(senderAddress).send(message)` is the
+      // exact path the in-process agent uses today -- it signs with the
+      // `CryptoProvider` the host registered for `senderAddress` via
+      // `register(address, crypto)`, so the outbound mail carries the
+      // AGENT's signature and fires the same `addMessageSentHandler`
+      // audit hook the in-process path relies on. The supervisor never
+      // holds the agent's key; the host transport does. An unregistered
+      // sender throws inside `getTransportFor` rather than emitting
+      // unsigned mail.
+      const scoped = transport.getTransportFor(senderAddress);
+      return scoped.send(message);
     },
   };
 }

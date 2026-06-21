@@ -28,6 +28,7 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { InferenceSource } from "@intx/types/runtime";
+import type { MessageTransport } from "@intx/types/runtime";
 import { evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
 import type { DirectorRegistry } from "@intx/agent";
@@ -44,12 +45,14 @@ import { createIsogitStore } from "@intx/storage-isogit";
 import {
   adaptHostScheduler,
   createProxyWorkflowRunRepoStore,
+  createSupervisorBackedTransport,
   createWorkflowHostScheduler,
   createWorkflowRunBlobSubstrate,
   createWorkflowRunRepoStore,
   createWorkflowHostSignalChannel,
   createWorkflowSpawnChild,
   createWorkflowStepInvoker,
+  type ChildOutboundMailBridge,
   type GrantEvaluator,
   type RunChildWorkflow,
   type RunWorkflowChildBindings,
@@ -315,9 +318,24 @@ interface SidecarStepBuildEnvDeps {
   /**
    * Deployment mailbox address the supervisor threaded into the child
    * (`MAILBOX_ADDRESS`). Used to locate each step's on-disk deploy tree
-   * for tool materialization (see `stepDeployTreeDir`).
+   * for tool materialization (see `stepDeployTreeDir`) AND as the step
+   * agent's outbound mail `address`: the supervisor signs the agent's
+   * outbound mail as this address through the host transport (OUTBOUND
+   * half of mailbox ownership, §3a). For the single-step launched-agent
+   * deploy this is the legacy `ins_<hex>` identity the host registered
+   * the agent's `CryptoProvider` against.
    */
   mailboxAddress: string;
+  /**
+   * Child-side outbound-mail bridge over the upstream control channel
+   * (OUTBOUND half of mailbox ownership, §3a). The per-step env builder
+   * wraps it in a supervisor-backed `MessageTransport` it supplies as
+   * the step agent's `env.transport`; the agent's mail tools call
+   * `transport.send`, which routes through the bridge to the supervisor
+   * for the actual signed send. The step agent never holds the signing
+   * key.
+   */
+  outboundMailBridge: ChildOutboundMailBridge;
   /** Per-step tool-loader caps (cache + registry tarball size). */
   cache: StepToolCacheConfig;
 }
@@ -388,14 +406,40 @@ function createSidecarStepBuildEnv(
       cache: deps.cache,
     });
 
-    const env: StepEnvBase = {
-      sources: [source],
-      defaultSource: source.id,
-      storage,
-      workdir,
-      audit: storage,
-      directors: createDefaultDirectorRegistry(),
-    };
+    // Supervisor-backed transport for the step agent's mail tools
+    // (OUTBOUND half of mailbox ownership, §3a). Inbound is inert -- the
+    // supervisor delivers the agent's input as the step input, not
+    // through the agent's own mailbox -- and outbound (`send`) routes
+    // over the control IPC to the supervisor, which performs the actual
+    // signed send through the host transport as `address`. `address` is
+    // the deployment mailbox address: the same identity the host
+    // registered the agent's `CryptoProvider` against, so the outbound
+    // mail carries the agent's signature with parity to the in-process
+    // path. Both `transport` and `address` are the env keys
+    // `@intx/tools-mail`'s sidecar bundle declares in its `requires`.
+    const transport = createSupervisorBackedTransport(
+      deps.outboundMailBridge,
+      deps.mailboxAddress,
+    );
+
+    // The step env carries `transport` + `address` beyond `BaseEnv` so
+    // the mail-tool bundle (`@intx/tools-mail`, `requires: ["transport",
+    // "address"]`) resolves its handles. The two keys are extra env
+    // surface the tool factory reads at handler-init; they widen the
+    // returned `StepEnvBase` structurally, which the buildEnv return
+    // type (`StepEnvBase`) accepts (a wider object is assignable to the
+    // narrower type).
+    const env: StepEnvBase & { transport: MessageTransport; address: string } =
+      {
+        sources: [source],
+        defaultSource: source.id,
+        storage,
+        workdir,
+        audit: storage,
+        directors: createDefaultDirectorRegistry(),
+        transport,
+        address: deps.mailboxAddress,
+      };
     // Carry the materialized tool runtime to the tool-bearing
     // `agentFactory` via the env's symbol-keyed slot. The step-invoker
     // adapter spreads this env (`{ ...envBase, authorize }`) before
@@ -761,6 +805,7 @@ export function createSidecarSubstrateFactory(
       workflowRunRepoId,
       signer: createStepStorageSigner(signingKey),
       mailboxAddress: env.spawn.mailboxAddress,
+      outboundMailBridge: env.outboundMailBridge,
       cache: stepToolCache,
     });
 
