@@ -1070,9 +1070,19 @@ export function createSidecarDeployRouter(deps: {
       }
 
       const stepOrder = [...projection.definition.stepOrder];
+      // Warm-keep is the single-step launched-agent deploy (design §3b):
+      // the sole step IS the long-lived agent, so the child warm-keeps it
+      // across messages. A genuine multi-step deploy keeps
+      // instantiate-send-teardown per step -- warm-keeping N steps would
+      // hold N agents and N LSP subprocesses for no benefit. The signal
+      // is carried explicitly from this projection-level recognition down
+      // through the spawn env to the child's run-loop, never re-derived
+      // heuristically there.
+      const warmKeep = projection.definition.stepOrder.length === 1;
       const spawnOpts: SpawnOpts = {
         stepOrder,
         definitionHash,
+        warmKeep,
         onInferenceEvent: (event) => {
           // The event arrives already HMAC-verified and validated as an
           // `EventPayload` over the child's event channel. Re-narrow it

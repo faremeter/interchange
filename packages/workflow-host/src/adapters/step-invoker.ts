@@ -33,6 +33,24 @@
 // `AgentClosedError` and releases the workdir lock) and rejects the
 // step with a `DOMException("aborted", "AbortError")`. A pre-aborted
 // signal short-circuits without constructing an agent.
+//
+// Warm-keep mode (design §3b). When `opts.warmCache` is supplied the
+// step is the sole step of a long-lived single-step deployment: the
+// agent is built once on the first message, cached, and reused on every
+// subsequent message rather than torn down per send. The warm path
+// diverges from the per-step path at three points:
+//   - Construction: a cache hit reuses the warm agent (tools loaded,
+//     plugins live, LSP subprocess attached); only a miss builds one.
+//   - Abort: the step's abort signal is threaded into `agent.send` so a
+//     mid-conversation turn abort cancels just that turn -- the warm
+//     agent (and its LSP subprocess) stays alive and usable for the next
+//     message. The agent is NOT closed on abort; closing happens only at
+//     the run-loop's eviction points (shutdown/undeploy/recycle/drain
+//     teardown), which is the abort-one-turn vs teardown distinction.
+//   - Teardown: the `finally` does NOT close the agent and does NOT
+//     drain the event forwarder -- both span messages and are owned by
+//     the warm cache, torn down at eviction.
+// Multi-step steps pass no cache and keep instantiate-send-teardown.
 
 import {
   createAgent,
@@ -50,6 +68,11 @@ import type {
   StepInvoker,
   WorkflowAuthorizeFn,
 } from "@intx/workflow";
+
+import type {
+  WarmAgentCache,
+  WarmEventSinkRef,
+} from "../child/warm-agent-cache";
 
 const logger = getLogger(["workflow-host", "step-invoker"]);
 
@@ -113,6 +136,22 @@ export interface WorkflowStepInvokerOpts {
    * `stream()` is never consumed and no events are forwarded.
    */
   onEvent?: (event: InferenceEvent) => void;
+  /**
+   * Warm-agent cache (design §3b). When supplied, the adapter runs in
+   * warm-keep mode: the step's agent is built once on the first
+   * invocation, cached under the step's identity, and reused on every
+   * subsequent invocation instead of being torn down per send. The
+   * agent's `close()` (the wrapped teardown that kills the LSP
+   * subprocess) runs only when the run-loop that owns the cache evicts
+   * it -- not in this adapter's `finally`.
+   *
+   * Supplying a cache is the explicit warm-keep signal: the run-loop
+   * builds and threads a cache only for the single-step long-lived
+   * deployment the deploy projection marked a warm candidate. Multi-step
+   * steps omit it and keep instantiate-send-teardown, so a multi-step
+   * agent is never warm-kept.
+   */
+  warmCache?: WarmAgentCache;
 }
 
 /**
@@ -142,11 +181,23 @@ async function invokeStep(
     throw abortError(req.signal);
   }
 
-  const envBase = await opts.buildEnv(req);
-  const authorize = wrapAuthorize(opts.workflowAuthorize, req.authzContext);
-  const env: BaseEnv = { ...envBase, authorize };
+  if (opts.warmCache !== undefined) {
+    return invokeWarmStep(opts, opts.warmCache, agentFactory, req);
+  }
+  return invokeColdStep(opts, agentFactory, req);
+}
 
-  const agent = await agentFactory(req.agent, env);
+/**
+ * Instantiate-send-teardown path (multi-step steps, and any deployment
+ * without a warm cache). The agent is built, sent one message, and torn
+ * down on every exit path. This is the original, unchanged behaviour.
+ */
+async function invokeColdStep(
+  opts: WorkflowStepInvokerOpts,
+  agentFactory: NonNullable<WorkflowStepInvokerOpts["agentFactory"]>,
+  req: StepInvokeRequest,
+): Promise<StepInvokeResult> {
+  const agent = await buildStepAgent(opts, agentFactory, req);
 
   // Subscribe the agent's event stream BEFORE `agent.send` so the
   // inbound `inference.start` and the per-turn / tool-call events are
@@ -165,52 +216,10 @@ async function invokeStep(
   // flow through by default.
   const eventForward = subscribeAgentEvents(agent, opts.onEvent);
 
-  let abortListener: (() => void) | null = null;
   try {
-    const sendResult = await new Promise<{ reply: string; turn: unknown }>(
-      (resolve, reject) => {
-        // Re-check the abort signal inside the executor. The two
-        // awaits above (`buildEnv`, `agentFactory`) yield to the
-        // microtask queue, and the caller can fire `signal.abort()`
-        // between the entry-time check and here. Without this re-
-        // check, a mid-construction abort would attach the listener
-        // to an already-aborted signal that never fires the event
-        // again, and the send would hang to the workflow runtime's
-        // step timeout.
-        if (req.signal.aborted) {
-          reject(abortError(req.signal));
-          return;
-        }
-        const onAbort = (): void => {
-          // The abort signal racing the send. `agent.close()` aborts
-          // the reactor and drains the send queue with
-          // `AgentClosedError`; the in-flight `agent.send` rejects
-          // shortly after. The send-rejection path below routes
-          // through `reject`, but we want the abort attribution to
-          // win regardless of which side settles first, so reject
-          // here with the abort reason and let the finally block
-          // close the agent.
-          reject(abortError(req.signal));
-        };
-        abortListener = onAbort;
-        req.signal.addEventListener("abort", onAbort, { once: true });
-        let synthesized: string;
-        try {
-          synthesized = synthesizeInputContent(req.input);
-        } catch (cause) {
-          reject(cause instanceof Error ? cause : new Error(String(cause)));
-          return;
-        }
-        agent.send(synthesized).then(resolve, (cause: unknown) => {
-          reject(cause instanceof Error ? cause : new Error(String(cause)));
-        });
-      },
-    );
+    const sendResult = await sendWithAbort(agent, req, { closeOnAbort: true });
     return { output: { reply: sendResult.reply, turn: sendResult.turn } };
   } finally {
-    if (abortListener !== null) {
-      req.signal.removeEventListener("abort", abortListener);
-    }
     // `close` is idempotent: a second call after the send already
     // resolved still releases the workdir lock and tears down stream
     // consumers. We await so the lock is gone before the adapter
@@ -223,6 +232,157 @@ async function invokeStep(
     // adapter returns and no listener outlives the step. Awaited last
     // because the loop only ends once close has fired.
     await eventForward;
+  }
+}
+
+/**
+ * Warm-keep path (design §3b). The agent is built once on the first
+ * invocation and cached under the step's identity; every later
+ * invocation reuses it. The cache owns the agent's lifetime: this
+ * adapter neither closes the agent nor drains its event forwarder on
+ * exit -- both span messages and are torn down by the run-loop at an
+ * eviction point.
+ *
+ * The agent's single lifetime stream is forwarded through a mutable
+ * per-entry event sink the cache holds. This invocation points the sink
+ * at THIS step's `onEvent` before `agent.send` and clears it after, so
+ * each run's events reach its own channel and a stray event between
+ * messages is dropped rather than delivered to a torn-down channel.
+ *
+ * A mid-conversation abort cancels only the in-flight turn (the abort
+ * signal is threaded into `agent.send`); the warm agent and its LSP
+ * subprocess survive for the next message. The agent is closed only at
+ * eviction -- the abort-one-turn vs teardown distinction.
+ */
+async function invokeWarmStep(
+  opts: WorkflowStepInvokerOpts,
+  warmCache: WarmAgentCache,
+  agentFactory: NonNullable<WorkflowStepInvokerOpts["agentFactory"]>,
+  req: StepInvokeRequest,
+): Promise<StepInvokeResult> {
+  const key = req.authzContext.stepId;
+  if (key === undefined) {
+    // The warm cache is keyed by the step's identity; the workflow
+    // runtime threads `stepId` through every step's `AuthorizeContext`,
+    // so an absent id is a runtime-wiring bug. Fail loudly rather than
+    // warm-keep agents under an ambiguous key that would collide
+    // distinct steps onto one cached agent.
+    throw new Error(
+      "workflow step invoker: warm-keep requires authzContext.stepId; the runtime must thread the step id through every invocation",
+    );
+  }
+  let agent = warmCache.acquire(key);
+  if (agent === null) {
+    // Lazy first-message build. The agent's stream is consumed once,
+    // for its whole life, through the entry's mutable sink ref; the
+    // forwarder loop ends only when the agent closes at eviction.
+    agent = await buildStepAgent(opts, agentFactory, req);
+    const eventSinkRef: WarmEventSinkRef = { current: null };
+    const eventForward = subscribeAgentEvents(agent, (event) => {
+      const sink = eventSinkRef.current;
+      if (sink !== null) sink(event);
+    });
+    warmCache.store(key, agent, eventSinkRef, eventForward);
+  }
+
+  if (opts.onEvent !== undefined) {
+    warmCache.setEventSink(key, opts.onEvent);
+  }
+  try {
+    const sendResult = await sendWithAbort(agent, req, { closeOnAbort: false });
+    return { output: { reply: sendResult.reply, turn: sendResult.turn } };
+  } finally {
+    // Do NOT close the agent or drain its forwarder: both span
+    // messages and are owned by the warm cache, torn down at eviction.
+    // Clear the per-message sink so an event emitted between this send
+    // and the next is dropped rather than delivered to this run's
+    // torn-down per-run channel.
+    warmCache.clearEventSink(key);
+  }
+}
+
+/**
+ * Build the per-step agent: assemble the `BaseEnv`, wrap the
+ * workflow-typed authorize into the agent harness's `AuthorizeFn`, and
+ * instantiate the agent through the factory. Shared by the cold path and
+ * the warm path's first-message build.
+ */
+async function buildStepAgent(
+  opts: WorkflowStepInvokerOpts,
+  agentFactory: NonNullable<WorkflowStepInvokerOpts["agentFactory"]>,
+  req: StepInvokeRequest,
+): Promise<Agent> {
+  const envBase = await opts.buildEnv(req);
+  const authorize = wrapAuthorize(opts.workflowAuthorize, req.authzContext);
+  const env: BaseEnv = { ...envBase, authorize };
+  return agentFactory(req.agent, env);
+}
+
+/**
+ * Drive one `agent.send`, racing it against the step's abort signal.
+ *
+ * `closeOnAbort` selects the abort semantics:
+ *   - `true` (cold path): the in-flight send is left to settle via
+ *     `agent.close()` in the caller's `finally`, which aborts the
+ *     reactor and drains the send queue with `AgentClosedError`. We do
+ *     not thread the signal into `agent.send`; the abort attribution is
+ *     the `DOMException` rejected here, and close tears the agent down.
+ *   - `false` (warm path): the abort signal is threaded into
+ *     `agent.send`, so a mid-turn abort cancels only this turn. The warm
+ *     agent stays alive for the next message; no `agent.close()` runs.
+ *
+ * In both modes a pre-send abort (the signal already aborted when the
+ * executor runs) and a mid-send abort reject with the abort error so the
+ * step's abort attribution wins regardless of which side settles first.
+ */
+async function sendWithAbort(
+  agent: Agent,
+  req: StepInvokeRequest,
+  cfg: { closeOnAbort: boolean },
+): Promise<{ reply: string; turn: unknown }> {
+  let abortListener: (() => void) | null = null;
+  try {
+    return await new Promise<{ reply: string; turn: unknown }>(
+      (resolve, reject) => {
+        // Re-check the abort signal inside the executor. `buildEnv` and
+        // `agentFactory` (or a warm-cache acquire) yield to the
+        // microtask queue, and the caller can fire `signal.abort()`
+        // between the entry-time check and here. Without this re-check,
+        // a mid-construction abort would attach the listener to an
+        // already-aborted signal that never fires the event again, and
+        // the send would hang to the workflow runtime's step timeout.
+        if (req.signal.aborted) {
+          reject(abortError(req.signal));
+          return;
+        }
+        const onAbort = (): void => {
+          // The abort signal racing the send. On the cold path the
+          // caller's `finally` close aborts the reactor and the
+          // in-flight `agent.send` rejects shortly after; on the warm
+          // path the signal threaded into `agent.send` rejects the
+          // send. Either way we reject here so the abort attribution
+          // wins regardless of which side settles first.
+          reject(abortError(req.signal));
+        };
+        abortListener = onAbort;
+        req.signal.addEventListener("abort", onAbort, { once: true });
+        let synthesized: string;
+        try {
+          synthesized = synthesizeInputContent(req.input);
+        } catch (cause) {
+          reject(cause instanceof Error ? cause : new Error(String(cause)));
+          return;
+        }
+        const sendOpts = cfg.closeOnAbort ? undefined : { signal: req.signal };
+        agent.send(synthesized, sendOpts).then(resolve, (cause: unknown) => {
+          reject(cause instanceof Error ? cause : new Error(String(cause)));
+        });
+      },
+    );
+  } finally {
+    if (abortListener !== null) {
+      req.signal.removeEventListener("abort", abortListener);
+    }
   }
 }
 

@@ -171,6 +171,13 @@ export interface RecycleContext {
   readonly stepOrder: readonly string[];
   /** Definition hash carried on respawn env (unchanged across recycle). */
   readonly definitionHash: string;
+  /**
+   * Warm-keep flag carried on the respawn env (design §3b). Unchanged
+   * across recycle: the respawned child rebuilds its empty warm-agent
+   * cache lazily on the next message, so the deterministic warm-keep
+   * decision must survive the respawn rather than be re-derived.
+   */
+  readonly warmKeep: boolean;
   /** Forward target for InferenceEvents the new child publishes. */
   readonly onInferenceEvent: (event: EventPayload) => void;
   /** Live child wiring on entry; replaced before return. */
@@ -316,6 +323,7 @@ export async function triggerRecycle(
     DEPLOYMENT_ID: ctx.bindings.deploymentId,
     DEFINITION_HASH: ctx.definitionHash,
     MAILBOX_ADDRESS: ctx.bindings.deploymentMailAddress,
+    WARM_KEEP: ctx.warmKeep ? "true" : "false",
   };
 
   const handle = ctx.bindings.subprocessSpawner({

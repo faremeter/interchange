@@ -508,6 +508,7 @@ async function spawnSupervisor(opts: {
   const spawnPromise = supervisor.spawn({
     stepOrder: ["step-1"],
     definitionHash: "def-hash-abc",
+    warmKeep: false,
     onInferenceEvent: () => undefined,
   });
   // Wait until the spawner has been invoked and the channelId is
@@ -602,6 +603,7 @@ describe("supervisor recycle: failure after the cohort handoff", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
+      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     while (tracker.children.length === 0) {
@@ -656,6 +658,7 @@ describe("supervisor recycle: deliverSignal phase guard", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
+      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     while (tracker.children.length === 0) {
@@ -963,6 +966,7 @@ describe("supervisor recycle: terminal-event broadcaster cohort", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
+      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     while (tracker.children.length === 0) {
@@ -1076,6 +1080,7 @@ describe("supervisor recycle: drain-side processing replay", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
+      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     while (originalKill.length === 0) {
@@ -1134,6 +1139,7 @@ describe("supervisor recycle: shutdown during the kill/respawn gap", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-shutdown-race",
+      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     while (tracker.children.length === 0) {
@@ -1218,6 +1224,7 @@ describe("supervisor recycle: external drain phase guard", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-drain-guard",
+      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     while (tracker.children.length === 0) {

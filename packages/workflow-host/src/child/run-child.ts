@@ -111,6 +111,7 @@ import { hashGrants } from "../supervisor/credentials";
 import type { SpawnTimeEnv } from "./env-bootstrap";
 import { discoverInFlightRuns } from "./self-discovery";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
+import { createWarmAgentCache, type WarmAgentCache } from "./warm-agent-cache";
 
 const logger = getLogger(["workflow-host", "child"]);
 
@@ -213,11 +214,20 @@ export type DrainController = WorkflowHostDrainController;
  * shape -- the child wraps this binding into a `StepInvoker` inside
  * `buildRuntimeEnv` so the workflow-runtime never sees the
  * host-specific surface.
+ *
+ * The `warmCache` argument carries the run-loop's per-deployment
+ * warm-agent cache (design §3b) when the deployment is a warm candidate,
+ * and `undefined` otherwise. The binding forwards it to the step-invoker
+ * adapter, which builds-or-reuses the cached agent on a warm cache and
+ * keeps instantiate-send-teardown when it is absent. The cache is owned
+ * by the run-loop (`runWorkflowChild`), not the binding: the binding
+ * only reads it through to the adapter.
  */
 export type ChildStepInvoker = (
   req: StepInvokeRequest,
   onEvent: (event: EventPayload) => void,
   authorize: WorkflowAuthorizeFn,
+  warmCache: WarmAgentCache | undefined,
 ) => Promise<StepInvokeResult>;
 
 /**
@@ -433,6 +443,19 @@ export async function runWorkflowChild(
 
   const drainController = createWorkflowHostDrainController({ definition });
 
+  // Warm-agent cache (design §3b). Built only when the deployment is a
+  // warm candidate (the single-step long-lived agent the deploy
+  // projection marked). The cache lives in this run-loop's address
+  // space, holds the constructed agent across messages, and is evicted
+  // -- running the wrapped `agent.close()` that kills the LSP subprocess
+  // -- at the loop's teardown points (the shutdown frame and the
+  // exit-path `finally` below). A multi-step deployment leaves this
+  // `undefined`, so its steps keep instantiate-send-teardown and no
+  // multi-step agent is ever warm-kept.
+  const warmCache: WarmAgentCache | undefined = opts.env.warmKeep
+    ? createWarmAgentCache()
+    : undefined;
+
   // Construct the upstream control-channel sender up-front. The
   // supervisor's `waitForReady` consumes the `ready` frame and the
   // upstream-control pump consumes every subsequent upstream payload
@@ -469,6 +492,7 @@ export async function runWorkflowChild(
       clock,
       newId,
       drainController,
+      warmCache,
       onEvent: (event) => {
         void eventSender.send(event).catch((cause) => {
           logger.error`event-channel send failed during resume run ${run.runId}: ${String(cause)}`;
@@ -543,6 +567,7 @@ export async function runWorkflowChild(
           upstreamSender,
           drainController,
           triggeredRunIds,
+          warmCache,
           ...(opts.substrateWriteBridge !== undefined
             ? { substrateWriteBridge: opts.substrateWriteBridge }
             : {}),
@@ -572,6 +597,17 @@ export async function runWorkflowChild(
     // than hang on a torn-down channel.
     if (opts.outboundMailBridge !== undefined) {
       opts.outboundMailBridge.cancelAll("workflow-child control loop exited");
+    }
+    // Evict the warm-agent cache (design §3b) on every exit path:
+    // graceful (shutdown frame -> iterator end), dirty (thrown error),
+    // or the control channel closing. Eviction runs the wrapped
+    // `agent.close()` that disposes plugins and kills the LSP
+    // subprocess, so no warm agent or LSP outlives the run-loop. On a
+    // production hard kill (recycle/SIGKILL) the process dies before
+    // this runs, but the OS reaps the LSP grandchild regardless; this
+    // path covers the graceful teardown the eviction contract names.
+    if (warmCache !== undefined) {
+      await warmCache.evictAll("workflow-child control loop exited");
     }
   }
 
@@ -603,6 +639,7 @@ async function handleControlPayload(
     upstreamSender: ControlChannelSender;
     drainController: DrainController;
     triggeredRunIds: string[];
+    warmCache: WarmAgentCache | undefined;
     substrateWriteBridge?: SubstrateWriteResponseSink;
     outboundMailBridge?: ChildOutboundMailBridge;
   },
@@ -635,6 +672,7 @@ async function handleControlPayload(
         clock: ctx.clock,
         newId: ctx.newId,
         drainController: ctx.drainController,
+        warmCache: ctx.warmCache,
         onEvent: (event) => {
           void ctx.eventSender.send(event).catch((cause) => {
             logger.error`event-channel send failed during run ${payload.data.runId}: ${String(cause)}`;
@@ -872,6 +910,7 @@ function buildRuntimeEnv(args: {
   clock: () => Date;
   newId: (prefix: string) => string;
   drainController: DrainController;
+  warmCache: WarmAgentCache | undefined;
   onEvent: (event: EventPayload) => void;
 }): WorkflowRuntimeEnv {
   const signalChannel = createWorkflowHostSignalChannel({
@@ -899,7 +938,12 @@ function buildRuntimeEnv(args: {
   // `ChildStepInvoker` shape (carries onEvent), so the workflow-
   // runtime never has to know an event firehose exists.
   const invokeStep: StepInvoker = async (req) => {
-    return args.bindings.invokeStep(req, args.onEvent, args.authorize);
+    return args.bindings.invokeStep(
+      req,
+      args.onEvent,
+      args.authorize,
+      args.warmCache,
+    );
   };
   return {
     repoStore: args.runtimeRepoStore,

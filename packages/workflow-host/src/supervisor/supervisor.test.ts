@@ -624,6 +624,7 @@ describe("createWorkflowSupervisor", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
+      warmKeep: false,
       onInferenceEvent: (event) => {
         eventsObserved.push({ type: event.type });
       },
@@ -836,6 +837,7 @@ describe("createWorkflowSupervisor", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
+      warmKeep: false,
       onInferenceEvent: () => {
         /* unused in this test */
       },
@@ -1053,6 +1055,7 @@ describe("createWorkflowSupervisor", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
+      warmKeep: false,
       onInferenceEvent: () => {
         /* unused in this test */
       },
@@ -1544,6 +1547,7 @@ describe("createWorkflowSupervisor", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
+      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     while (observedEnv === undefined) {
@@ -1700,6 +1704,7 @@ describe("createWorkflowSupervisor", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
+      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     while (observedEnv === undefined) {
@@ -2134,6 +2139,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
+      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     while (observedEnv === undefined) {

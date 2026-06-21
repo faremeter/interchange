@@ -457,6 +457,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     const spawnP = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash",
+      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     while (tracker.children.length === 0)

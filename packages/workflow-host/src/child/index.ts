@@ -41,6 +41,12 @@ export {
 } from "./self-discovery";
 
 export {
+  createWarmAgentCache,
+  type WarmAgentCache,
+  type WarmEventSinkRef,
+} from "./warm-agent-cache";
+
+export {
   EVENT_CHANNEL_FD,
   runWorkflowChildFromProcessEnv,
   type RunWorkflowChildFromProcessEnvOpts,

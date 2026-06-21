@@ -135,6 +135,7 @@ export {
   createCredentialsBackedAuthorize,
   createProxyWorkflowRunRepoStore,
   createSupervisorBackedTransport,
+  createWarmAgentCache,
   discoverInFlightRuns,
   parseSpawnTimeEnv,
   runWorkflowChild,
@@ -158,6 +159,8 @@ export {
   type SubstrateFactoryEnv,
   type SubstrateWriteRequest,
   type SubstrateWriteResponseSink,
+  type WarmAgentCache,
+  type WarmEventSinkRef,
 } from "./child/index";
 
 export {

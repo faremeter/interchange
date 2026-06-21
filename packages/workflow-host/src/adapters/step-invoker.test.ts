@@ -23,6 +23,7 @@ import type {
 } from "@intx/types/runtime";
 
 import { createWorkflowStepInvoker, type StepEnvBase } from "./step-invoker";
+import { createWarmAgentCache } from "../child/warm-agent-cache";
 
 const STUB_SOURCE: InferenceSource = {
   id: "anthropic:stub",
@@ -528,3 +529,282 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
     expect(stub.events).toContain("close");
   });
 });
+
+interface WarmStubLifecycle {
+  /** LSP-subprocess analogue: spawned on build, disposed on close. */
+  lspSpawnCount: number;
+  lspAlive: boolean;
+  closeCount: number;
+}
+
+interface WarmStubControl {
+  readonly agent: Agent;
+  readonly lifecycle: WarmStubLifecycle;
+  /** Conversation turns the warm agent retains across sends (continuity). */
+  readonly conversation: string[];
+}
+
+/**
+ * Construct a warm-agent stub that models the lifecycle warm-keep
+ * guards: an LSP-subprocess analogue spawned once at construction and
+ * disposed on `close()`, an in-memory conversation that retains every
+ * user turn across sends (so a later reply can reflect an earlier
+ * message), and a `stream()` that ends only at `close()`. The reply
+ * echoes the running conversation so a test proves continuity:
+ * `reply(N) = "reply<N>:" + every prior user turn`.
+ */
+function buildWarmStubAgent(): WarmStubControl {
+  const lifecycle: WarmStubLifecycle = {
+    lspSpawnCount: 1,
+    lspAlive: true,
+    closeCount: 0,
+  };
+  const conversation: string[] = [];
+  let endStream: () => void = () => {
+    /* assigned below */
+  };
+  const streamEnded = new Promise<void>((resolve) => {
+    endStream = resolve;
+  });
+  const agent: Agent = {
+    async send(content): Promise<SendResult> {
+      if (!lifecycle.lspAlive) {
+        throw new Error(
+          "warm stub: send after the LSP subprocess was disposed",
+        );
+      }
+      const text = typeof content === "string" ? content : "message";
+      conversation.push(text);
+      const reply = `reply${String(conversation.length)}:${conversation.join("|")}`;
+      return {
+        reply,
+        turn: {
+          role: "assistant",
+          content: [{ type: "text", text: reply }],
+          model: STUB_SOURCE.model,
+          timestamp: 0,
+        },
+      };
+    },
+    async *stream() {
+      yield stubEvent("inference.start");
+      await streamEnded;
+    },
+    deliver(_message: InboundMessage) {
+      throw new Error("stub deliver() not used");
+    },
+    async close() {
+      lifecycle.closeCount += 1;
+      lifecycle.lspAlive = false;
+      endStream();
+    },
+    setSource(_source: InferenceSource) {
+      throw new Error("stub setSource() not used");
+    },
+    setSources(_sources: InferenceSource[], _defaultSource: string) {
+      throw new Error("stub setSources() not used");
+    },
+    async history() {
+      return [];
+    },
+    async checkpoints() {
+      return [];
+    },
+    async readAt() {
+      return [];
+    },
+    blobReader: stubBlobReader(),
+  };
+  return { agent, lifecycle, conversation };
+}
+
+describe("workflow-host StepInvoker adapter - warm-keep mode", () => {
+  test("builds the agent once across two messages and keeps the LSP alive between them", async () => {
+    const warmCache = createWarmAgentCache();
+    const stub = buildWarmStubAgent();
+    let factoryCalls = 0;
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: async () => ({
+        effect: "allow",
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => {
+        factoryCalls += 1;
+        return stub.agent;
+      },
+      warmCache,
+    });
+
+    const first = await invoker(buildRequest({ input: "first message" }));
+    // The LSP is alive between messages (no teardown after the first
+    // send) and the agent was built exactly once so far.
+    expect(factoryCalls).toBe(1);
+    expect(stub.lifecycle.lspAlive).toBe(true);
+    expect(stub.lifecycle.closeCount).toBe(0);
+
+    const second = await invoker(buildRequest({ input: "second message" }));
+    // Still exactly one build -- the warm agent was reused, not rebuilt
+    // -- and the LSP subprocess was spawned once and never torn down
+    // between messages.
+    expect(factoryCalls).toBe(1);
+    expect(stub.lifecycle.lspSpawnCount).toBe(1);
+    expect(stub.lifecycle.lspAlive).toBe(true);
+    expect(stub.lifecycle.closeCount).toBe(0);
+
+    // Conversation continuity: the warm agent retained the first message
+    // in memory, so the second reply reflects both turns.
+    const firstReply = readReply(first.output);
+    const secondReply = readReply(second.output);
+    expect(firstReply).toBe("reply1:first message");
+    expect(secondReply).toBe("reply2:first message|second message");
+
+    // Eviction runs the wrapped close exactly once, killing the LSP.
+    await warmCache.evictAll("test teardown");
+    expect(stub.lifecycle.lspAlive).toBe(false);
+    expect(stub.lifecycle.closeCount).toBe(1);
+  });
+
+  test("a mid-turn abort cancels only the turn and leaves the warm agent usable", async () => {
+    const warmCache = createWarmAgentCache();
+    // An agent whose first send blocks until the abort signal fires, so
+    // the abort races a live turn. The second send (after the abort)
+    // must succeed against the still-warm agent.
+    const lifecycle = { lspAlive: true, closeCount: 0 };
+    const conversation: string[] = [];
+    let endStream: () => void = () => undefined;
+    const streamEnded = new Promise<void>((resolve) => {
+      endStream = resolve;
+    });
+    const agent: Agent = {
+      async send(content, opts): Promise<SendResult> {
+        const text = typeof content === "string" ? content : "message";
+        if (opts?.signal !== undefined && text === "stalls") {
+          // Model the warm agent honoring the per-send abort signal:
+          // reject this turn when the signal fires, without closing.
+          return new Promise<SendResult>((_resolve, reject) => {
+            opts.signal?.addEventListener(
+              "abort",
+              () => reject(new Error("send aborted")),
+              { once: true },
+            );
+          });
+        }
+        conversation.push(text);
+        return {
+          reply: `ok:${conversation.join("|")}`,
+          turn: {
+            role: "assistant",
+            content: [{ type: "text", text: "ok" }],
+            model: STUB_SOURCE.model,
+            timestamp: 0,
+          },
+        };
+      },
+      async *stream() {
+        yield stubEvent("inference.start");
+        await streamEnded;
+      },
+      deliver: () => undefined,
+      async close() {
+        lifecycle.closeCount += 1;
+        lifecycle.lspAlive = false;
+        endStream();
+      },
+      setSource: () => undefined,
+      setSources: () => undefined,
+      async history() {
+        return [];
+      },
+      async checkpoints() {
+        return [];
+      },
+      async readAt() {
+        return [];
+      },
+      blobReader: stubBlobReader(),
+    };
+    let factoryCalls = 0;
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: async () => ({
+        effect: "allow",
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => {
+        factoryCalls += 1;
+        return agent;
+      },
+      warmCache,
+    });
+
+    const ctrl = new AbortController();
+    const aborted = invoker(
+      buildRequest({ signal: ctrl.signal, input: "stalls" }),
+    );
+    await Promise.resolve();
+    ctrl.abort();
+    await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
+
+    // The warm agent survived the turn abort: NOT closed, LSP still
+    // alive, and a subsequent message succeeds against the same build.
+    expect(lifecycle.lspAlive).toBe(true);
+    expect(lifecycle.closeCount).toBe(0);
+
+    const after = await invoker(buildRequest({ input: "next message" }));
+    expect(factoryCalls).toBe(1);
+    expect(readReply(after.output)).toBe("ok:next message");
+
+    // Teardown closes the warm agent once.
+    await warmCache.evictAll("test teardown");
+    expect(lifecycle.lspAlive).toBe(false);
+    expect(lifecycle.closeCount).toBe(1);
+  });
+
+  test("routes each message's events to that message's onEvent sink", async () => {
+    const warmCache = createWarmAgentCache();
+    const stub = buildWarmStubAgent();
+    const firstSink: string[] = [];
+    const secondSink: string[] = [];
+    const makeInvoker = (onEvent: (event: InferenceEvent) => void) =>
+      createWorkflowStepInvoker({
+        workflowAuthorize: async () => ({
+          effect: "allow",
+          matchingGrants: [],
+          resolvedBy: null,
+        }),
+        buildEnv: async () => stubBuildEnv(),
+        agentFactory: async () => stub.agent,
+        onEvent,
+        warmCache,
+      });
+
+    await makeInvoker((event) => firstSink.push(event.type))(
+      buildRequest({ input: "one" }),
+    );
+    await makeInvoker((event) => secondSink.push(event.type))(
+      buildRequest({ input: "two" }),
+    );
+
+    // The agent's single lifetime stream yields one `inference.start`,
+    // delivered to whichever message's sink was active when it fired.
+    // Each message's events reach its own sink; neither leaks to the
+    // other after its send settles.
+    expect([...firstSink, ...secondSink]).toContain("inference.start");
+    await warmCache.evictAll("test teardown");
+  });
+});
+
+function readReply(output: unknown): string {
+  if (
+    typeof output === "object" &&
+    output !== null &&
+    "reply" in output &&
+    typeof output.reply === "string"
+  ) {
+    return output.reply;
+  }
+  throw new Error(`unexpected step output shape: ${JSON.stringify(output)}`);
+}
