@@ -805,12 +805,10 @@ export function createSidecarSubstrateFactory(
     // step's `AgentDefinition`, builds the plugin chain on
     // `env.plugins` exactly as `default-harness.ts` does, and wraps
     // `agent.close()` so every plugin (the LSP subprocess included) and
-    // tool bundle is torn down with the agent on every exit path.
-    const baseInvokeStep: StepInvoker = createWorkflowStepInvoker({
-      workflowAuthorize,
-      buildEnv: buildStepEnv,
-      agentFactory: createToolBearingAgentFactory(),
-    });
+    // tool bundle is torn down with the agent on every exit path. The
+    // factory is stateless across steps, so it is pinned once here and
+    // shared by every per-step invoker built below.
+    const stepAgentFactory = createToolBearingAgentFactory();
 
     // Child-runtime step invoker. The in-process `runChild` (see
     // `createSidecarRunChild` below) runs a separate WorkflowDefinition
@@ -825,18 +823,26 @@ export function createSidecarSubstrateFactory(
       Promise.resolve({ output: { reply: req.agent.id, turn: null } });
 
     // Adapt the workflow-runtime `StepInvoker` shape onto the host's
-    // `ChildStepInvoker` shape. The wrapper drops `onEvent` -- the
-    // step-invoker adapter does not yet thread an event firehose
-    // through the agent's send path; the event funnel inside the
-    // adapter is a later phase. Holding the parameter at this boundary
-    // keeps the seam explicit so the wire-up is a single point of edit.
+    // `ChildStepInvoker` shape. The host's `onEvent` is the child's
+    // per-run event-channel sink: the runtime body passes it per step,
+    // and the chain from here is `onEvent -> child event-channel sender
+    // -> supervisor -> publishWorkflowInferenceEvent -> hub timeline`.
+    //
+    // A fresh `createWorkflowStepInvoker` is built per invocation so the
+    // adapter subscribes the step agent's event stream to THIS step's
+    // `onEvent`. The per-step env builder, workflow authorize, and the
+    // tool-bearing agent factory are pinned (closed over above); only
+    // the event sink varies per step.
     const invokeStep: RunWorkflowChildBindings["invokeStep"] = async (
       req,
       onEvent,
-    ) => {
-      void onEvent;
-      return baseInvokeStep(req);
-    };
+    ) =>
+      createWorkflowStepInvoker({
+        workflowAuthorize,
+        buildEnv: buildStepEnv,
+        agentFactory: stepAgentFactory,
+        onEvent,
+      })(req);
 
     const evaluateGrantsAdapter: GrantEvaluator = async ({
       resource,

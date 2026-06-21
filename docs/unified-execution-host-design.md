@@ -618,7 +618,15 @@ event funnel inside the adapter lands when the harness's emit hook is wired."
 The transport for events already exists end-to-end:
 
 - Child emits via `createEventChannelSender` (HMAC over fd3) in
-  `packages/workflow-host/src/child/run-child.ts`.
+  `packages/workflow-host/src/child/run-child.ts`. The event channel is
+  **newline-delimited**: fd3 is a byte-stream pipe, so the kernel may
+  coalesce successive frames into one read or split one frame across reads.
+  The sender terminates every frame with `\n` and the receiver
+  (`receiveEventChannel`) buffers raw bytes and splits on that terminator,
+  mirroring the control channel's NDJSON discipline. (The one-write-equals-
+  one-frame assumption the channel originally carried held only because the
+  channel was empty until events actually flowed; threading real events
+  surfaced the framing requirement.)
 - Supervisor reads the event channel and the DeployRouter forwards via
   `publishWorkflowInferenceEvent(frame.agentAddress, event)` in
   `apps/sidecar/src/workflow-host-wiring.ts`.

@@ -92,7 +92,17 @@ export function createEventChannelSender(
         envelope,
         mac: hexEncode(tag),
       };
-      await opts.writer.write(new TextEncoder().encode(JSON.stringify(maced)));
+      // Newline-delimit each frame. The channel rides a byte-stream
+      // pipe (fd3) where the kernel may coalesce successive writes into
+      // one read or split one write across reads -- the one-write-equals-
+      // one-frame assumption does not hold under the burst of events a
+      // real step emits. `JSON.stringify` never emits a literal newline
+      // (newlines inside strings are escaped as `\n`), so `\n` is an
+      // unambiguous frame terminator the receiver splits on, mirroring
+      // the control channel's NDJSON discipline.
+      await opts.writer.write(
+        new TextEncoder().encode(`${JSON.stringify(maced)}\n`),
+      );
     },
   };
 }
@@ -135,116 +145,154 @@ export async function* receiveEventChannel(
   }
 
   const pump = (async () => {
+    // The channel rides a byte-stream pipe: the kernel can coalesce
+    // several sender writes into one read chunk or split one write
+    // across chunks, so a chunk boundary is not a frame boundary. The
+    // sender newline-delimits every frame; this decoder accumulates raw
+    // bytes and splits on `\n` so each complete line is exactly one
+    // envelope, mirroring the control channel's NDJSON reader. A partial
+    // trailing line stays buffered until its terminator arrives.
+    const decoder = new TextDecoder("utf-8");
+    let pending = "";
     try {
-      for await (const frame of opts.reader.read()) {
+      for await (const chunk of opts.reader.read()) {
         if (crashed) return;
-        let raw: unknown;
-        try {
-          raw = JSON.parse(new TextDecoder().decode(frame));
-        } catch (cause) {
-          crashed = true;
-          opts.onCrash(
-            `event channel received non-JSON frame: ${errorMessage(cause)}`,
-          );
-          wake();
-          return;
-        }
+        pending += decoder.decode(chunk, { stream: true });
+        let nl = pending.indexOf("\n");
+        while (nl >= 0) {
+          const line = pending.slice(0, nl).replace(/\r$/, "");
+          pending = pending.slice(nl + 1);
+          nl = pending.indexOf("\n");
+          if (line.length === 0) continue;
+          if (crashed) return;
 
-        const maced = MacedEnvelope(raw);
-        if (maced instanceof type.errors) {
-          crashed = true;
-          opts.onCrash(
-            `event channel envelope failed validation: ${maced.summary}`,
-          );
-          wake();
-          return;
-        }
+          let raw: unknown;
+          try {
+            raw = JSON.parse(line);
+          } catch (cause) {
+            crashed = true;
+            opts.onCrash(
+              `event channel received non-JSON frame: ${errorMessage(cause)}`,
+            );
+            wake();
+            return;
+          }
 
-        let envelopeBytes: Uint8Array;
-        try {
-          envelopeBytes = encodeEnvelope(maced.envelope);
-        } catch (cause) {
-          crashed = true;
-          opts.onCrash(
-            `event channel envelope re-encode failed: ${errorMessage(cause)}`,
-          );
-          wake();
-          return;
+          const crashedOnLine = processLine(raw);
+          if (crashedOnLine) return;
         }
-
-        let macBytes: Uint8Array;
-        try {
-          macBytes = hexDecode(maced.mac);
-        } catch (cause) {
-          crashed = true;
-          opts.onCrash(
-            `event channel MAC decode failed: ${errorMessage(cause)}`,
-          );
-          wake();
-          return;
-        }
-
-        const ok = verifyHmac(envelopeBytes, macBytes, opts.hmacKey);
-        if (!ok) {
-          crashed = true;
-          opts.onCrash(
-            `event channel HMAC did not verify (seq=${String(maced.envelope.seq)}, channelId=${maced.envelope.channelId})`,
-          );
-          wake();
-          return;
-        }
-
-        if (maced.envelope.channelId !== opts.channelId) {
-          crashed = true;
-          opts.onCrash(
-            `event channel channelId mismatch: expected ${opts.channelId}, got ${maced.envelope.channelId} at seq=${String(maced.envelope.seq)}`,
-          );
-          wake();
-          return;
-        }
-
-        if (maced.envelope.seq <= highestSeq) {
-          crashed = true;
-          opts.onCrash(
-            `event channel out-of-order seq: expected > ${String(highestSeq)}, got ${String(maced.envelope.seq)}`,
-          );
-          wake();
-          return;
-        }
-        if (maced.envelope.seq !== highestSeq + 1) {
-          crashed = true;
-          opts.onCrash(
-            `event channel seq gap: expected ${String(highestSeq + 1)}, got ${String(maced.envelope.seq)}`,
-          );
-          wake();
-          return;
-        }
-        highestSeq = maced.envelope.seq;
-
-        const payload = EventPayload(maced.envelope.payload);
-        if (payload instanceof type.errors) {
-          crashed = true;
-          opts.onCrash(
-            `event channel payload failed validation: ${payload.summary}`,
-          );
-          wake();
-          return;
-        }
-
-        if (buffer.length >= limit) {
-          crashed = true;
-          opts.onCrash(
-            `event channel buffer overrun: ${String(buffer.length)} frames pending, limit ${String(limit)}`,
-          );
-          wake();
-          return;
-        }
-        buffer.push(payload);
+      }
+      // A non-empty trailing buffer at EOF is a truncated final frame:
+      // the sender always terminates a frame with `\n`, so unterminated
+      // bytes mean the writer died mid-frame. Surface it as a crash
+      // rather than silently dropping a partial envelope.
+      if (pending.length > 0) {
+        crashed = true;
+        opts.onCrash(
+          `event channel received truncated frame at EOF (${String(pending.length)} bytes, no terminator)`,
+        );
         wake();
+        return;
       }
     } finally {
       producerDone = true;
       wake();
+    }
+
+    // Process one decoded frame through the verify/order/validate
+    // pipeline. Returns `true` when the frame tripped a crash (the
+    // caller must stop pumping), `false` on a clean buffered push.
+    function processLine(raw: unknown): boolean {
+      const maced = MacedEnvelope(raw);
+      if (maced instanceof type.errors) {
+        crashed = true;
+        opts.onCrash(
+          `event channel envelope failed validation: ${maced.summary}`,
+        );
+        wake();
+        return true;
+      }
+
+      let envelopeBytes: Uint8Array;
+      try {
+        envelopeBytes = encodeEnvelope(maced.envelope);
+      } catch (cause) {
+        crashed = true;
+        opts.onCrash(
+          `event channel envelope re-encode failed: ${errorMessage(cause)}`,
+        );
+        wake();
+        return true;
+      }
+
+      let macBytes: Uint8Array;
+      try {
+        macBytes = hexDecode(maced.mac);
+      } catch (cause) {
+        crashed = true;
+        opts.onCrash(`event channel MAC decode failed: ${errorMessage(cause)}`);
+        wake();
+        return true;
+      }
+
+      const ok = verifyHmac(envelopeBytes, macBytes, opts.hmacKey);
+      if (!ok) {
+        crashed = true;
+        opts.onCrash(
+          `event channel HMAC did not verify (seq=${String(maced.envelope.seq)}, channelId=${maced.envelope.channelId})`,
+        );
+        wake();
+        return true;
+      }
+
+      if (maced.envelope.channelId !== opts.channelId) {
+        crashed = true;
+        opts.onCrash(
+          `event channel channelId mismatch: expected ${opts.channelId}, got ${maced.envelope.channelId} at seq=${String(maced.envelope.seq)}`,
+        );
+        wake();
+        return true;
+      }
+
+      if (maced.envelope.seq <= highestSeq) {
+        crashed = true;
+        opts.onCrash(
+          `event channel out-of-order seq: expected > ${String(highestSeq)}, got ${String(maced.envelope.seq)}`,
+        );
+        wake();
+        return true;
+      }
+      if (maced.envelope.seq !== highestSeq + 1) {
+        crashed = true;
+        opts.onCrash(
+          `event channel seq gap: expected ${String(highestSeq + 1)}, got ${String(maced.envelope.seq)}`,
+        );
+        wake();
+        return true;
+      }
+      highestSeq = maced.envelope.seq;
+
+      const payload = EventPayload(maced.envelope.payload);
+      if (payload instanceof type.errors) {
+        crashed = true;
+        opts.onCrash(
+          `event channel payload failed validation: ${payload.summary}`,
+        );
+        wake();
+        return true;
+      }
+
+      if (buffer.length >= limit) {
+        crashed = true;
+        opts.onCrash(
+          `event channel buffer overrun: ${String(buffer.length)} frames pending, limit ${String(limit)}`,
+        );
+        wake();
+        return true;
+      }
+      buffer.push(payload);
+      wake();
+      return false;
     }
   })();
 

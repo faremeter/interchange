@@ -41,6 +41,8 @@ import {
   type AuthorizeFn,
   type BaseEnv,
 } from "@intx/agent";
+import { getLogger } from "@intx/log";
+import type { InferenceEvent } from "@intx/types/runtime";
 import type {
   AuthorizeContext,
   StepInvokeRequest,
@@ -48,6 +50,8 @@ import type {
   StepInvoker,
   WorkflowAuthorizeFn,
 } from "@intx/workflow";
+
+const logger = getLogger(["workflow-host", "step-invoker"]);
 
 /**
  * Per-step env contributions the caller of the adapter owns.
@@ -89,6 +93,26 @@ export interface WorkflowStepInvokerOpts {
     def: AgentDefinition<EnvReq>,
     env: EnvReq,
   ) => Promise<Agent>;
+  /**
+   * Optional observability sink for the per-step agent's event stream.
+   * When supplied, the adapter subscribes the agent's `stream()` before
+   * `agent.send` so the inbound `inference.start` and the per-turn /
+   * tool-call events are captured, and forwards every `InferenceEvent`
+   * here. The subscription is torn down with the agent on every exit
+   * path, so no listener outlives the step.
+   *
+   * `onEvent` is a generic `(event: InferenceEvent) => void` sink: the
+   * adapter neither knows nor cares where the events go (a host wires
+   * it to its event-channel sender, the hub timeline, a test recorder).
+   * Forwarding is best-effort observability -- a throwing sink is
+   * logged and swallowed so a downstream consumer's failure cannot
+   * abort the step -- but the subscription's own teardown failures
+   * still surface.
+   *
+   * Omitting `onEvent` preserves the prior behaviour: the agent's
+   * `stream()` is never consumed and no events are forwarded.
+   */
+  onEvent?: (event: InferenceEvent) => void;
 }
 
 /**
@@ -123,6 +147,23 @@ async function invokeStep(
   const env: BaseEnv = { ...envBase, authorize };
 
   const agent = await agentFactory(req.agent, env);
+
+  // Subscribe the agent's event stream BEFORE `agent.send` so the
+  // inbound `inference.start` and the per-turn / tool-call events are
+  // captured -- a subscription attached after send would miss the
+  // events emitted while the reactor processes the synthesized inbound
+  // message. The forwarder runs only when the caller supplied an
+  // `onEvent` sink; absent a sink the agent's `stream()` is never
+  // consumed (stub agents whose `stream()` throws stay untouched).
+  //
+  // `message.received` is the single intentional exclusion, matching
+  // the in-process harness's forwarder (`default-harness.ts`): it is an
+  // assembly-internal dequeue signal, and the hub-facing audit chain
+  // expresses per-message work through the `message.run.started` /
+  // `message.run.ended` bracket pair instead. The filter is an
+  // allowlist-of-everything-except, so new `InferenceEvent` members
+  // flow through by default.
+  const eventForward = subscribeAgentEvents(agent, opts.onEvent);
 
   let abortListener: (() => void) | null = null;
   try {
@@ -176,7 +217,53 @@ async function invokeStep(
     // returns -- a subsequent step on the same workdir must not race
     // a still-closing agent.
     await agent.close();
+    // `agent.close()` terminates every active `stream()` iterator, so
+    // the forwarder's for-await loop has ended (or is about to). Await
+    // it after close so the subscription is fully drained before the
+    // adapter returns and no listener outlives the step. Awaited last
+    // because the loop only ends once close has fired.
+    await eventForward;
   }
+}
+
+/**
+ * Subscribe the per-step agent's event stream and forward every
+ * `InferenceEvent` to `onEvent`. Returns a promise that settles when
+ * the forwarder's loop ends -- which happens when `agent.close()`
+ * terminates the stream iterator. When `onEvent` is absent the agent's
+ * `stream()` is never consumed and the returned promise resolves
+ * immediately, so a caller that does not want observability never
+ * touches the stream (stub agents whose `stream()` throws stay
+ * untouched).
+ *
+ * Forwarding is best-effort observability: a sink that throws is
+ * logged and swallowed so a downstream consumer's failure cannot abort
+ * the step. A failure of the stream iterator itself (the agent's
+ * teardown surfacing through the iterator) is logged at warn, mirroring
+ * the in-process harness's forwarder.
+ */
+function subscribeAgentEvents(
+  agent: Agent,
+  onEvent: ((event: InferenceEvent) => void) | undefined,
+): Promise<void> {
+  if (onEvent === undefined) {
+    return Promise.resolve();
+  }
+  const events = agent.stream();
+  return (async () => {
+    try {
+      for await (const event of events) {
+        if (event.type === "message.received") continue;
+        try {
+          onEvent(event);
+        } catch (cause) {
+          logger.error`step-invoker event sink threw forwarding ${event.type}: ${cause instanceof Error ? cause.message : String(cause)}`;
+        }
+      }
+    } catch (cause) {
+      logger.warn`step-invoker event forwarder terminated: ${cause instanceof Error ? cause.message : String(cause)}`;
+    }
+  })();
 }
 
 /**

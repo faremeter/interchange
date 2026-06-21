@@ -101,6 +101,7 @@ function createMemoryFrameStream(): {
   reader: FrameReader;
   close: () => void;
   inject: (bytes: Uint8Array) => void;
+  injectRaw: (bytes: Uint8Array) => void;
 } {
   const buffer: Uint8Array[] = [];
   let waiter: (() => void) | null = null;
@@ -139,6 +140,23 @@ function createMemoryFrameStream(): {
     },
     reader,
     inject(bytes: Uint8Array) {
+      // Simulate one complete frame arriving on the wire. The event
+      // channel is newline-delimited (`createEventChannelSender`
+      // terminates every frame with `\n`); the receiver splits on that
+      // terminator, so an injected raw frame must carry it too. Callers
+      // pass the JSON envelope bytes; the terminator is appended here so
+      // the injected bytes form exactly one wire frame.
+      const framed = new Uint8Array(bytes.length + 1);
+      framed.set(bytes, 0);
+      framed[bytes.length] = 0x0a;
+      buffer.push(framed);
+      wake();
+    },
+    injectRaw(bytes: Uint8Array) {
+      // Push bytes onto the wire verbatim, with no frame terminator
+      // appended. Used to simulate the kernel coalescing several frames
+      // into one read chunk or splitting one frame across chunks -- the
+      // exact byte-stream behaviour the newline framing must survive.
       buffer.push(bytes);
       wake();
     },
@@ -747,6 +765,155 @@ describe("Event channel", () => {
 
     expect(crashes.length).toBe(1);
     expect(crashes[0]).toMatch(/payload failed validation/);
+  });
+
+  test("reassembles multiple frames coalesced into one read chunk", async () => {
+    // A real step emits a burst of events; the kernel can deliver
+    // several newline-delimited frames in a single pipe read. The
+    // receiver must split them on the terminator, not parse the whole
+    // chunk as one JSON value.
+    const key = generateHmacKey();
+    const channelId = generateChannelId();
+    const stream = createMemoryFrameStream();
+    const crashes: string[] = [];
+    const received: EventPayload[] = [];
+
+    const consumer = (async () => {
+      for await (const payload of receiveEventChannel({
+        hmacKey: key,
+        channelId,
+        reader: stream.reader,
+        onCrash: (r) => crashes.push(r),
+      })) {
+        received.push(payload);
+        if (received.length === 3) return;
+      }
+    })();
+
+    function macedLine(seq: number): string {
+      const envelope: FrameEnvelope = {
+        seq,
+        channelId,
+        payload: { type: "inference.start", seq, data: { model: "x" } },
+      };
+      const tag = signHmac(encodeEnvelope(envelope), key);
+      const maced: MacedEnvelope = { envelope, mac: hexEncode(tag) };
+      return `${JSON.stringify(maced)}\n`;
+    }
+
+    // Three frames in a single chunk.
+    stream.injectRaw(
+      new TextEncoder().encode(macedLine(1) + macedLine(2) + macedLine(3)),
+    );
+    stream.close();
+    await consumer;
+
+    expect(crashes).toEqual([]);
+    expect(received.length).toBe(3);
+  });
+
+  test("reassembles one frame split across two read chunks", async () => {
+    // The kernel can also split a single frame across reads. The
+    // receiver buffers the partial line until its terminator arrives.
+    const key = generateHmacKey();
+    const channelId = generateChannelId();
+    const stream = createMemoryFrameStream();
+    const crashes: string[] = [];
+    const received: EventPayload[] = [];
+
+    const consumer = (async () => {
+      for await (const payload of receiveEventChannel({
+        hmacKey: key,
+        channelId,
+        reader: stream.reader,
+        onCrash: (r) => crashes.push(r),
+      })) {
+        received.push(payload);
+        if (received.length === 1) return;
+      }
+    })();
+
+    const envelope: FrameEnvelope = {
+      seq: 1,
+      channelId,
+      payload: { type: "inference.start", seq: 1, data: { model: "x" } },
+    };
+    const tag = signHmac(encodeEnvelope(envelope), key);
+    const maced: MacedEnvelope = { envelope, mac: hexEncode(tag) };
+    const wire = new TextEncoder().encode(`${JSON.stringify(maced)}\n`);
+    const cut = Math.floor(wire.length / 2);
+
+    stream.injectRaw(wire.subarray(0, cut));
+    // The first chunk has no terminator; nothing is delivered yet.
+    await new Promise<void>((r) => setTimeout(r, 10));
+    expect(received.length).toBe(0);
+    stream.injectRaw(wire.subarray(cut));
+    stream.close();
+    await consumer;
+
+    expect(crashes).toEqual([]);
+    expect(received.length).toBe(1);
+  });
+
+  test("crashes on a non-JSON line", async () => {
+    const key = generateHmacKey();
+    const channelId = generateChannelId();
+    const stream = createMemoryFrameStream();
+    const crashes: string[] = [];
+
+    const consumer = (async () => {
+      for await (const _ of receiveEventChannel({
+        hmacKey: key,
+        channelId,
+        reader: stream.reader,
+        onCrash: (r) => crashes.push(r),
+      })) {
+        // no-op
+      }
+    })();
+
+    stream.injectRaw(new TextEncoder().encode("not json at all\n"));
+    stream.close();
+    await consumer;
+
+    expect(crashes.length).toBe(1);
+    expect(crashes[0]).toMatch(/non-JSON frame/);
+  });
+
+  test("crashes on a truncated final frame at EOF", async () => {
+    // The sender always terminates a frame with `\n`; unterminated bytes
+    // at EOF mean the writer died mid-frame, which must surface rather
+    // than silently drop the partial envelope.
+    const key = generateHmacKey();
+    const channelId = generateChannelId();
+    const stream = createMemoryFrameStream();
+    const crashes: string[] = [];
+
+    const consumer = (async () => {
+      for await (const _ of receiveEventChannel({
+        hmacKey: key,
+        channelId,
+        reader: stream.reader,
+        onCrash: (r) => crashes.push(r),
+      })) {
+        // no-op
+      }
+    })();
+
+    const envelope: FrameEnvelope = {
+      seq: 1,
+      channelId,
+      payload: { type: "inference.start", seq: 1, data: { model: "x" } },
+    };
+    const tag = signHmac(encodeEnvelope(envelope), key);
+    const maced: MacedEnvelope = { envelope, mac: hexEncode(tag) };
+    // No trailing newline: a truncated frame.
+    stream.injectRaw(new TextEncoder().encode(JSON.stringify(maced)));
+    stream.close();
+    await consumer;
+
+    expect(crashes.length).toBe(1);
+    expect(crashes[0]).toMatch(/truncated frame at EOF/);
   });
 });
 
