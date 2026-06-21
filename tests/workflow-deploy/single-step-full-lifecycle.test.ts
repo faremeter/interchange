@@ -83,7 +83,10 @@ import {
   type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
 import { deriveTrivialDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import { createDurableConversationRegistry } from "@intx/sidecar-app/src/conversation-state";
+import {
+  createDurableConversationRegistry,
+  reconstructDurableConversation,
+} from "@intx/sidecar-app/src/conversation-state";
 import {
   createAgentRepoStore,
   type RepoId,
@@ -453,20 +456,16 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
     // same conversation, so after two runs the substrate snapshot carries
     // BOTH user turns. A non-warm path would have torn the agent down
     // between messages and the per-run isogit store would not accumulate.
-    const snapshotPath = substrateConversationPath(
+    const agentStateDir = substrateAgentStateDir(
       env,
       workflowRunRepoId.id,
       STEP_ID,
     );
-    await waitFor(() => fs.existsSync(snapshotPath), {
-      timeoutMs: 20_000,
-      diagnostics: env.sidecarDiagnostics,
-    });
     await waitFor(
-      async () => (await readSnapshotUserTexts(snapshotPath)).length >= 2,
+      async () => (await readSnapshotUserTexts(agentStateDir)).length >= 2,
       { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
     );
-    const afterWarm = await readSnapshotUserTexts(snapshotPath);
+    const afterWarm = await readSnapshotUserTexts(agentStateDir);
     // Both inbound bodies appear in the durable transcript, in order: the
     // single warm agent handled both messages and accumulated the turns.
     expect(afterWarm.some((t) => t.includes(FIRST_BODY))).toBe(true);
@@ -604,7 +603,7 @@ function stepWorkspaceSentinelPath(
  * single-writer substrate). Deterministic, no hub pack-push timing
  * dependency.
  */
-function substrateConversationPath(
+function substrateAgentStateDir(
   deployEnv: DeployFlowEnv,
   workflowRunRepoSlug: string,
   stepId: string,
@@ -615,7 +614,6 @@ function substrateConversationPath(
     workflowRunRepoSlug,
     "agent-state",
     encodeURIComponent(stepId),
-    "conversation.json",
   );
 }
 
@@ -640,24 +638,34 @@ function readReceiptSentinel(p: string): {
   return validated;
 }
 
-const SnapshotShape = type({
-  turns: type({
-    role: "string",
-    content: type({ type: "string", "text?": "string" }).array(),
-  }).array(),
+const TurnShape = type({
+  role: "string",
+  content: type({ type: "string", "text?": "string" }).array(),
 });
 
-/** Read the user-turn texts from a substrate conversation snapshot. */
-async function readSnapshotUserTexts(snapshotPath: string): Promise<string[]> {
-  const raw = await fs.promises.readFile(snapshotPath, "utf8");
-  const parsed: unknown = JSON.parse(raw);
-  const validated = SnapshotShape(parsed);
-  if (validated instanceof type.errors) {
-    throw new Error(`snapshot failed validation: ${validated.summary}`);
+/**
+ * Reconstruct the durable conversation from the two-tier substrate layout
+ * (checkpoint + WAL) at the per-agent `agent-state/<stepId>/` dir and
+ * return the user-turn texts. Goes through the production
+ * `reconstructDurableConversation` so the test reads the conversation the
+ * same way the warm agent's restore does.
+ */
+async function readSnapshotUserTexts(agentStateDir: string): Promise<string[]> {
+  const reconstructed = await reconstructDurableConversation(
+    agentStateDir,
+    STEP_ID,
+  );
+  if (reconstructed === null) return [];
+  const texts: string[] = [];
+  for (const rawTurn of reconstructed.turns) {
+    const turn = TurnShape(rawTurn);
+    if (turn instanceof type.errors) {
+      throw new Error(`reconstructed turn failed validation: ${turn.summary}`);
+    }
+    if (turn.role !== "user") continue;
+    texts.push(turn.content.map((c) => c.text ?? "").join(""));
   }
-  return validated.turns
-    .filter((t) => t.role === "user")
-    .map((t) => t.content.map((c) => c.text ?? "").join(""));
+  return texts;
 }
 
 /**

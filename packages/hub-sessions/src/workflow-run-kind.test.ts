@@ -234,6 +234,70 @@ describe("workflowRunKindHandler.validatePush — accepts", () => {
     expect(r.ok).toBe(true);
   });
 
+  test("accepts the two-tier WAL + checkpoint agent-state layout (Phase D1)", async () => {
+    // The durable conversation store no longer writes a single
+    // `conversation.json`; it writes a compacted `checkpoint.json` plus
+    // bucket-sharded `wal/<bucket>/<seq>.json` delta blobs. The validator
+    // enforces only that every `agent-state/<segment>` is a non-empty
+    // directory (not a dangling blob) and round-trips URL-encoding -- it
+    // says nothing about the files INSIDE, so the nested WAL layout must
+    // pass unchanged with no validator loosening.
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/checkpoint.json`]:
+          JSON.stringify({
+            turns: [],
+            pendingOperations: [],
+            tokenUsage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              thinking: 0,
+            },
+            connectorState: null,
+          }),
+        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/checkpoint.meta.json`]:
+          JSON.stringify({
+            checkpointSeq: 0,
+            turnCount: 0,
+            pendingOperations: [],
+            tokenUsage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              thinking: 0,
+            },
+            connectorState: null,
+          }),
+        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/wal/0/0.json`]:
+          JSON.stringify({
+            seq: 0,
+            turns: [{ role: "user", content: [], timestamp: 0 }],
+            metadata: {
+              pendingOperations: [],
+              tokenUsage: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                thinking: 0,
+              },
+              connectorState: null,
+            },
+          }),
+      },
+      { principal: WORKFLOW_PROCESS_PRINCIPAL },
+    );
+    expect(r.ok).toBe(true);
+  });
+
   test("accepts a mutated agent-state snapshot (subtree is mutable, not append-only)", async () => {
     const r = await validate(
       {

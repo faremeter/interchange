@@ -5,9 +5,10 @@
 // holds conversation state in memory only; kill the child and the
 // conversation is lost. 4.5 makes that state durable in the workflow-run
 // substrate -- committed at the run boundary to a per-agent path
-// (`agent-state/<stepId>/conversation.json`, sibling to the per-run
-// event log under `runs/<runId>/...`) -- and restored when the warm
-// agent is rebuilt lazily after respawn.
+// (`agent-state/<stepId>/`, a bucket-sharded WAL plus a periodic
+// checkpoint, sibling to the per-run event log under `runs/<runId>/...`)
+// -- and restored (checkpoint load + WAL replay) when the warm agent is
+// rebuilt lazily after respawn.
 //
 // Harness choice (in-process run-loop, mirroring 4.4's warm round-trip
 // test). A respawn IS a second `runWorkflowChild` invocation against the
@@ -82,7 +83,10 @@ import {
   type RunWorkflowChildBindings,
   type StepEnvBase,
 } from "@intx/workflow-host";
-import { createDurableConversationRegistry } from "@intx/sidecar-app/src/conversation-state";
+import {
+  createDurableConversationRegistry,
+  reconstructDurableConversation,
+} from "@intx/sidecar-app/src/conversation-state";
 
 const DEPLOYMENT_ID = "durability-deployment";
 const STEP_ID = "step-1";
@@ -115,28 +119,41 @@ function stubStreamEvent(): StreamEvent {
   } as unknown as StreamEvent;
 }
 
-const SnapshotShape = type({
-  turns: type({
-    role: "string",
-    content: type({ type: "string", "text?": "string" }).array(),
-  }).array(),
+const TurnShape = type({
+  role: "string",
+  content: type({ type: "string", "text?": "string" }).array(),
 });
 
 /**
- * Read and validate the conversation snapshot the substrate carries at
- * the per-agent path. Validating at the read boundary keeps the test
- * honest about the on-disk shape without an unchecked `as` assertion.
+ * Reconstruct the durable conversation from the two-tier substrate layout
+ * (checkpoint + WAL) at the per-agent `agent-state/<stepId>/` dir and
+ * return the user-turn texts. Goes through the production
+ * `reconstructDurableConversation` so the test reads the conversation the
+ * same way the warm agent's restore does -- not by re-deriving the WAL
+ * fold independently. Validating each turn at the read boundary keeps the
+ * test honest about the on-disk shape without an unchecked `as`.
  */
-async function readSnapshotUserTexts(snapshotPath: string): Promise<string[]> {
-  const raw = await fs.readFile(snapshotPath, "utf8");
-  const parsed: unknown = JSON.parse(raw);
-  const validated = SnapshotShape(parsed);
-  if (validated instanceof type.errors) {
-    throw new Error(`snapshot failed validation: ${validated.summary}`);
+async function readSnapshotUserTexts(
+  agentStateDir: string,
+  stepId: string,
+): Promise<string[]> {
+  const reconstructed = await reconstructDurableConversation(
+    agentStateDir,
+    stepId,
+  );
+  if (reconstructed === null) return [];
+  const texts: string[] = [];
+  for (const rawTurn of reconstructed.turns) {
+    const turn = TurnShape(rawTurn);
+    if (turn instanceof type.errors) {
+      throw new Error(`reconstructed turn failed validation: ${turn.summary}`);
+    }
+    if (turn.role !== "user") continue;
+    for (const block of turn.content) {
+      texts.push(block.text ?? "");
+    }
   }
-  return validated.turns
-    .filter((t) => t.role === "user")
-    .flatMap((t) => t.content.map((c) => c.text ?? ""));
+  return texts;
 }
 
 function createMemoryNdjsonStream() {
@@ -658,16 +675,15 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
     // The warm agent was built once across the two messages.
     expect(child1.builds()).toBe(1);
 
-    // The conversation snapshot was COMMITTED to the substrate at the
-    // per-agent path, sibling to the run-event log. Read it straight back
-    // from the workflow-run substrate working tree.
-    const snapshotPath = path.join(
+    // The conversation was COMMITTED to the substrate at the per-agent
+    // path (checkpoint + WAL), sibling to the run-event log. Reconstruct it
+    // straight back from the workflow-run substrate working tree.
+    const agentStateDir = path.join(
       runRepoDir,
       WORKFLOW_RUN_AGENT_STATE_PREFIX,
       encodeURIComponent(STEP_ID),
-      "conversation.json",
     );
-    const afterChild1 = await readSnapshotUserTexts(snapshotPath);
+    const afterChild1 = await readSnapshotUserTexts(agentStateDir, STEP_ID);
     expect(afterChild1).toEqual(["alpha", "bravo"]);
 
     // Tear down child #1 (the respawn). Both runs reached a terminal
@@ -743,7 +759,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
     // back -- overwriting the prior snapshot -- and this would read just
     // ["charlie"]. Reading the full transcript proves the substrate
     // restore reconstructed the conversation with no local-store fallback.
-    const afterRespawn = await readSnapshotUserTexts(snapshotPath);
+    const afterRespawn = await readSnapshotUserTexts(agentStateDir, STEP_ID);
     expect(afterRespawn).toEqual(["alpha", "bravo", "charlie"]);
 
     // The restore wrote the prior conversation into the previously-empty
