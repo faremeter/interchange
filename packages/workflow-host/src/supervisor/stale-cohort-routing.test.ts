@@ -164,6 +164,9 @@ function createMockMailBus() {
         subs.get(a)?.delete(h);
       };
     },
+    sendOutbound() {
+      throw new Error("sendOutbound not exercised in this test");
+    },
     registered(): readonly string[] {
       return registered.slice();
     },

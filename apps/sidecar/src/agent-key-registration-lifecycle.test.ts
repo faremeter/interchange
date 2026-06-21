@@ -1,14 +1,14 @@
-// Pins C-A: the multi-step undeploy hook must shut down the per-
-// deployment supervisor so the workflow-process child, its IPC pipes,
-// and its event-channel fd are released. Without the shutdown the
-// supervisor's reference outlives every other piece of routing state
-// the undeploy hook tears down, leaking the child for the life of the
-// sidecar.
+// Pins the security-critical registration lifecycle of the launched-agent
+// signing key on the host transport: the single-step deploy registers the
+// agent's CryptoProvider on the host transport at spawn (sub-step 4.3's
+// outbound-signing registration), and undeploy UNREGISTERS it so no signing
+// key leaks for a torn-down agent. The undeploy-supervisor wiring test drives
+// the same harness but never asserts the transport registration state.
 //
-// The harness drives the multi-step deploy through the same spawn
-// handshake the existing wiring tests use, captures the
-// `SubprocessHandle.kill` call, and asserts that `undeploy(frame)`
-// invokes it and awaits the handle's `exited` settlement.
+// Probe: `getTransportFor(address)` throws "is not registered" for an address
+// with no CryptoProvider; it succeeds once registered. We assert (a) it
+// throws BEFORE deploy, (b) succeeds AFTER deploy, (c) throws again AFTER
+// undeploy.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -50,9 +50,7 @@ function createMemoryNdjsonStream() {
         while (true) {
           if (buffer.length > 0) {
             const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("buffer shift returned undefined");
-            }
+            if (next === undefined) throw new Error("buffer shift undefined");
             yield next;
             continue;
           }
@@ -100,9 +98,7 @@ function createMemoryFrameStream() {
         while (true) {
           if (buffer.length > 0) {
             const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("frame buffer shift returned undefined");
-            }
+            if (next === undefined) throw new Error("frame shift undefined");
             yield next;
             continue;
           }
@@ -132,10 +128,6 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
       await args.merge(new Map());
       return { commitSha: "stub-sha" };
     },
-    // The deploy router's grants bridge writes `state/grants.json` to
-    // each step's agent-state repo before `spawn()`. Mirror the
-    // `getRepoDir` layout so the write lands where the subsequent
-    // `assembleCredentialsSnapshot` working-tree read looks for it.
     async writeTree(_p, repoId, _ref, content) {
       const dir = path.join(tempBase, repoId.kind, repoId.id);
       for (const [relPath, contents] of Object.entries(content.files)) {
@@ -152,53 +144,53 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
       const value = Reflect.get(target, prop, receiver);
       if (value !== undefined) return value;
       return () => {
-        throw new Error(
-          `stub RepoStore: ${String(prop)} not implemented for this test`,
-        );
+        throw new Error(`stub RepoStore: ${String(prop)} not implemented`);
       };
     },
   });
 }
 
-describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor down", () => {
-  test("undeploy invokes the spawned child's kill and awaits exited", async () => {
-    // Per-spawn tracking.
-    type Spawn = {
-      handle: SubprocessHandle;
-      childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>;
-      supervisorToChild: ReturnType<typeof createMemoryNdjsonStream>;
-      eventChildToSupervisor: ReturnType<typeof createMemoryFrameStream>;
+const AGENT_ADDRESS = "ins_keylifecycle@example.com";
+
+function isRegistered(
+  transport: ReturnType<typeof createInMemoryTransport>,
+): boolean {
+  try {
+    transport.getTransportFor(AGENT_ADDRESS);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe("agent signing-key registration lifecycle on the host transport", () => {
+  test("single-step deploy registers the agent crypto; undeploy unregisters it", async () => {
+    type SpawnEntry = {
       env: Record<string, string>;
+      childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>;
+      handle: SubprocessHandle;
       killed: boolean;
-      exitedResolved: boolean;
       resolveExited: (code: number) => void;
     };
-    const spawns: Spawn[] = [];
-
+    const spawns: SpawnEntry[] = [];
     const spawner: SubprocessSpawner = ({ env }) => {
       const supervisorToChild = createMemoryNdjsonStream();
       const childToSupervisor = createMemoryNdjsonStream();
       const eventChildToSupervisor = createMemoryFrameStream();
-      let resolveExit: ((code: number) => void) | undefined;
+      let resolveExited: (code: number) => void = () => undefined;
       const exited = new Promise<number>((resolve) => {
-        resolveExit = resolve;
+        resolveExited = resolve;
       });
-      const entry: Spawn = {
+      const entry: SpawnEntry = {
+        env,
+        childToSupervisor,
+        killed: false,
+        resolveExited,
         // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- assigned below
         handle: undefined as unknown as SubprocessHandle,
-        supervisorToChild,
-        childToSupervisor,
-        eventChildToSupervisor,
-        env,
-        killed: false,
-        exitedResolved: false,
-        resolveExited: (code) => {
-          entry.exitedResolved = true;
-          resolveExit?.(code);
-        },
       };
       const handle: SubprocessHandle = {
-        pid: 5100 + spawns.length,
+        pid: 6100 + spawns.length,
         controlWriter: supervisorToChild.writer,
         controlReader: childToSupervisor.reader,
         eventReader: eventChildToSupervisor.reader,
@@ -218,27 +210,21 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
     const transport = createInMemoryTransport();
     const keyPair = await generateKeyPair();
     const tempBase = await fs.mkdtemp(
-      path.join(os.tmpdir(), "sidecar-undeploy-supervisor-"),
+      path.join(os.tmpdir(), "sidecar-keylifecycle-"),
     );
     const dataDir = await fs.mkdtemp(
-      path.join(os.tmpdir(), "sidecar-undeploy-supervisor-data-"),
+      path.join(os.tmpdir(), "sidecar-keylifecycle-data-"),
     );
     const repoStore = createSpawnTestRepoStore(tempBase);
-
-    const mailRouter = createMultistepMailRouter();
-    const signalRouter = createMultistepSignalRouter();
-    const drainRouter = createMultistepDrainRouter();
 
     const router = createSidecarDeployRouter({
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- multi-step branch never invokes sessions
       sessions: {
         provisionAgent: async () => {
-          throw new Error("multi-step branch must not invoke provisionAgent");
+          throw new Error("must not invoke provisionAgent");
         },
         persistHubPublicKey: async () => {
-          throw new Error(
-            "multi-step branch must not invoke persistHubPublicKey",
-          );
+          throw new Error("must not invoke persistHubPublicKey");
         },
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
@@ -246,7 +232,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- only loadOrGenerateKey is exercised (the single-step branch registers the agent's signing key on the transport before spawn)
       keyStore: {
         recordHubKey: () => {
-          throw new Error("multi-step branch must not invoke recordHubKey");
+          throw new Error("must not invoke recordHubKey");
         },
         loadOrGenerateKey: async () => ({
           keyPair: await generateKeyPair(),
@@ -255,41 +241,30 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
-      onAgentEvent: () => () => {
-        /* unused */
-      },
+      onAgentEvent: () => () => undefined,
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
       createAgentCrypto: createNodeCrypto,
-      registerDeployment: () => {
-        /* no-op */
-      },
-      unregisterDeployment: () => {
-        /* no-op */
-      },
+      registerDeployment: () => undefined,
+      unregisterDeployment: () => undefined,
       multistepSubprocessSpawner: spawner,
-      multistepSubstrateEnv: {
-        SIDECAR_DATA_DIR: dataDir,
-      },
-      multistepMailRouter: mailRouter,
-      multistepSignalRouter: signalRouter,
-      multistepDrainRouter: drainRouter,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      multistepMailRouter: createMultistepMailRouter(),
+      multistepSignalRouter: createMultistepSignalRouter(),
+      multistepDrainRouter: createMultistepDrainRouter(),
     });
 
     const frame: AgentDeployFrame = {
       type: "agent.deploy",
-      // Single-step projection: the deploy router derives the sole
-      // step's agent-state repo from `parseAgentId(agentAddress)`, which
-      // requires the canonical `ins_<id>@<domain>` instance shape.
-      agentAddress: "ins_undeploy-supervisor@example.com",
-      agentId: "undeploy-supervisor-agent",
+      agentAddress: AGENT_ADDRESS,
+      agentId: "keylifecycle-agent",
       hubPublicKey: "hub-pk",
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch does not read config
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- multi-step branch does not read config
       config: {} as AgentDeployFrame["config"],
       workflow: {
         definition: {
-          id: "wf-undeploy-supervisor",
+          id: "wf-keylifecycle",
           triggers: [{ type: "manual" }],
           stepOrder: ["step-1"],
           steps: { "step-1": { kind: "step" } },
@@ -306,18 +281,17 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       },
     };
 
-    const deployPromise = router.deploy(frame);
+    // (a) Not registered before deploy.
+    expect(isRegistered(transport)).toBe(false);
 
+    const deployPromise = router.deploy(frame);
     while (spawns.length === 0) {
       await new Promise((r) => setTimeout(r, 1));
     }
     const spawn = spawns[0];
     if (spawn === undefined) throw new Error("unreachable");
-
     const channelId = spawn.env.IPC_CHANNEL_ID;
-    if (channelId === undefined) {
-      throw new Error("IPC_CHANNEL_ID missing from spawn env");
-    }
+    if (channelId === undefined) throw new Error("IPC_CHANNEL_ID missing");
     const childIpcKeyPair = await generateKeyPair();
     const childSender = createControlChannelSender({
       privateKeySeed: childIpcKeyPair.privateKey,
@@ -336,24 +310,23 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
       },
     });
-
     await deployPromise;
 
-    expect(spawn.killed).toBe(false);
-    expect(spawn.exitedResolved).toBe(false);
+    // (b) Registered after deploy -- the supervisor can now sign agent mail.
+    expect(isRegistered(transport)).toBe(true);
 
     const undeploy = router.undeploy;
-    if (undeploy === undefined) {
-      throw new Error("router.undeploy is undefined");
-    }
-
+    if (undeploy === undefined) throw new Error("router.undeploy undefined");
     await undeploy({
       type: "agent.undeploy",
-      agentAddress: frame.agentAddress,
-      reason: "test undeploy",
+      agentAddress: AGENT_ADDRESS,
+      reason: "key-lifecycle undeploy",
     });
 
-    expect(spawn.killed).toBe(true);
-    expect(spawn.exitedResolved).toBe(true);
+    // (c) Unregistered after undeploy -- no leaked key for a torn-down agent.
+    expect(isRegistered(transport)).toBe(false);
+
+    await fs.rm(tempBase, { recursive: true, force: true });
+    await fs.rm(dataDir, { recursive: true, force: true });
   });
 });

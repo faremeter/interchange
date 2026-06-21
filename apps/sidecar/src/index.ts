@@ -296,6 +296,7 @@ const orchestrator = createSidecarOrchestrator({
       transport,
       repoStore: wrappedRepoStore,
       signingKeySeed: sidecarSigningKey.privateKey,
+      createAgentCrypto: createNodeCrypto,
       registerDeployment: ({ deploymentId, agentAddress }) => {
         deploymentAddressRegistry.record(deploymentId, agentAddress);
       },

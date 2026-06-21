@@ -55,6 +55,7 @@ import {
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
 import { RepoId } from "@intx/types/sidecar";
+import type { OutboundMessage } from "@intx/types/runtime";
 import type { CancelOrigin } from "@intx/workflow";
 
 import {
@@ -66,6 +67,7 @@ import {
   type ControlChannelSender,
   type ControlPayload,
   type EventPayload,
+  type OutboundMessagePayload,
 } from "../ipc/index";
 
 import {
@@ -556,6 +558,21 @@ export function createWorkflowSupervisor(
         resolveMergeResponse(payload.data);
         continue;
       }
+      if (payload.type === "outbound.message") {
+        // OUTBOUND half of mailbox ownership (§3a). The child produced a
+        // reply or invoked a mail-send tool; the supervisor is the sole
+        // mail owner and performs the actual signed send through the
+        // host's real transport. Run it off the iterator's loop so the
+        // iterator keeps draining other upstream frames while the host
+        // transport assembles and signs the mail; the handler owns the
+        // `outbound.result` reply that resolves the child's awaiter.
+        void handleOutboundMessage(payload.data).catch((cause) => {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.error`outbound.message handler crashed: ${message}`;
+        });
+        continue;
+      }
       if (payload.type === "terminal.event") {
         // The workflow-process child mirrors every terminal-run commit
         // over the control IPC. Fan it out to the COHORT'S broadcaster
@@ -637,6 +654,63 @@ export function createWorkflowSupervisor(
       return;
     }
     entry.resolve({ ok: false, reason: data.result.reason });
+  }
+
+  /**
+   * OUTBOUND half of mailbox ownership (§3a). The workflow-process child
+   * never holds the agent's signing key; it forwards the structured
+   * outbound message plus the sender (agent) address up over the control
+   * channel and the supervisor performs the actual signed send through
+   * the host's real transport (`bindings.mailBus.sendOutbound`). The
+   * host transport signs with the sender's `CryptoProvider` -- the same
+   * `executeSend` path the in-process agent uses -- so the outbound mail
+   * carries the AGENT's signature with full parity to the pre-supervisor
+   * path. A send failure (unregistered sender, signing failure,
+   * transport rejection) surfaces back to the child as a structured
+   * `{ ok: false, reason }` so the agent's mail-tool call fails loudly
+   * rather than silently dropping the send.
+   */
+  async function handleOutboundMessage(
+    data: Extract<ControlPayload, { type: "outbound.message" }>["data"],
+  ): Promise<void> {
+    const controlSender = activeControlSender();
+    if (controlSender === null) {
+      // The request arrived after the control sender was cleared (the
+      // supervisor is mid-recycle or tearing down). The child's read end
+      // is being closed alongside this transition, so its pending
+      // mail-tool awaiter surfaces a pipe-close error on its own read.
+      // There is no sender to write the `outbound.result` on; dropping
+      // the frame is the only available action, logged loudly.
+      logger.warn`outbound.message received outside running phase; requestId=${data.requestId} dropped (child awaiter will fail on pipe close)`;
+      return;
+    }
+    try {
+      const message = outboundMessageFromPayload(data.message);
+      const receipt = await bindings.mailBus.sendOutbound(
+        data.senderAddress,
+        message,
+      );
+      await controlSender.send({
+        type: "outbound.result",
+        data: {
+          requestId: data.requestId,
+          result: {
+            ok: true,
+            messageId: receipt.messageId,
+            status: receipt.status,
+          },
+        },
+      });
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      await controlSender.send({
+        type: "outbound.result",
+        data: {
+          requestId: data.requestId,
+          result: { ok: false, reason },
+        },
+      });
+    }
   }
 
   async function handleSubstrateWriteRequest(
@@ -2341,6 +2415,45 @@ function terminalEventFromPayload(
     at: data.at,
     error: { message: data.error.message },
   };
+}
+
+/**
+ * Reconstruct a runtime `OutboundMessage` from the IPC wire projection.
+ * The wire shape (`OutboundMessagePayload`) carries attachment bytes
+ * base64-encoded and spells every optional field with a `"?"` suffix; an
+ * absent field is omitted on the wire and stays omitted on the
+ * reconstructed message so `exactOptionalPropertyTypes` is honored (an
+ * `undefined`-valued optional would violate it). The wire validator
+ * narrows `type` to the `InterchangeType` union (see
+ * `OutboundMessagePayload` in the control-channel module), so it carries
+ * straight onto the message without a cast.
+ */
+function outboundMessageFromPayload(
+  payload: OutboundMessagePayload,
+): OutboundMessage {
+  const message: OutboundMessage = {
+    to: payload.to,
+    type: payload.type,
+  };
+  if (payload.cc !== undefined) message.cc = payload.cc;
+  if (payload.subject !== undefined) message.subject = payload.subject;
+  if (payload.content !== undefined) message.content = payload.content;
+  if (payload.payload !== undefined) message.payload = payload.payload;
+  if (payload.summary !== undefined) message.summary = payload.summary;
+  if (payload.inReplyTo !== undefined) message.inReplyTo = payload.inReplyTo;
+  if (payload.correlationId !== undefined) {
+    message.correlationId = payload.correlationId;
+  }
+  if (payload.sessionId !== undefined) message.sessionId = payload.sessionId;
+  if (payload.tenantId !== undefined) message.tenantId = payload.tenantId;
+  if (payload.attachments !== undefined) {
+    message.attachments = payload.attachments.map((a) => ({
+      name: a.name,
+      contentType: a.contentType,
+      data: base64ToBytes(a.dataBase64),
+    }));
+  }
+  return message;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

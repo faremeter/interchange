@@ -50,7 +50,12 @@ import {
   type TrivialLaunch,
   type WorkflowSupervisor,
 } from "@intx/workflow-host";
-import { parseInferenceEvent, type InferenceEvent } from "@intx/types/runtime";
+import {
+  parseInferenceEvent,
+  type CryptoProvider,
+  type InferenceEvent,
+  type KeyPair,
+} from "@intx/types/runtime";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 import { STEP_ID_PATTERN } from "@intx/workflow";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
@@ -631,6 +636,20 @@ export function createSidecarDeployRouter(deps: {
   repoStore: RepoStore;
   signingKeySeed: Uint8Array;
   /**
+   * Per-agent crypto factory. Receives the agent's raw key pair and
+   * returns a `CryptoProvider` bound to it (production wires
+   * `@intx/crypto-node`'s `createNodeCrypto`). The multi-step branch
+   * uses this to register the spawned single-step agent's signing key on
+   * the host transport before `spawn()`, so the supervisor's outbound
+   * mail path (`MailBusBindings.sendOutbound`) signs the agent's replies
+   * with the AGENT's identity -- the OUTBOUND half of mailbox ownership
+   * (§3a). Without this registration the spawned agent's address has no
+   * `CryptoProvider` on the transport (no `startSession` runs for it),
+   * and an outbound send would throw "address is not registered" rather
+   * than emit unsigned mail.
+   */
+  createAgentCrypto: (keyPair: KeyPair) => CryptoProvider;
+  /**
    * Record a `(deploymentId -> agentAddress)` mapping the boot edge's
    * workflow-run pack push facade consults when it must address an
    * outbound pack frame. Fires once per inbound `agent.deploy` frame
@@ -858,6 +877,7 @@ export function createSidecarDeployRouter(deps: {
     let wiredForUnwind: SidecarWorkflowSupervisor | undefined;
     let supervisorRegistered = false;
     let routersRegistered = false;
+    let agentTransportRegistered = false;
     try {
       const definitionHash = computeWireDefinitionHash(projection.definition);
 
@@ -1023,6 +1043,32 @@ export function createSidecarDeployRouter(deps: {
         grants: frame.config.grants,
       });
 
+      // OUTBOUND half of mailbox ownership (§3a): register the spawned
+      // agent's signing key on the host transport so the supervisor's
+      // outbound mail path (`MailBusBindings.sendOutbound`) signs the
+      // agent's replies as the AGENT's identity, with parity to the
+      // in-process path's `transport.register(address, crypto)`.
+      //
+      // Gated on the single-step launched-agent deploy: there the
+      // deployment mail address IS the legacy agent identity whose
+      // keypair lives in the keyStore, so the supervisor can sign
+      // outbound mail as that address. A genuine multi-step deploy
+      // derives a distinct per-step address with no keypair on the host;
+      // per-step outbound signing for multi-step is out of 4.3 scope
+      // (the unified single-agent path 4.3 targets is the single-step
+      // case). The registration happens before `spawn()` so the agent's
+      // address is live the instant the first reply routes outbound.
+      if (projection.definition.stepOrder.length === 1) {
+        const { keyPair } = await deps.keyStore.loadOrGenerateKey(
+          frame.agentAddress,
+        );
+        deps.transport.register(
+          frame.agentAddress,
+          deps.createAgentCrypto(keyPair),
+        );
+        agentTransportRegistered = true;
+      }
+
       const stepOrder = [...projection.definition.stepOrder];
       const spawnOpts: SpawnOpts = {
         stepOrder,
@@ -1141,6 +1187,13 @@ export function createSidecarDeployRouter(deps: {
               cause instanceof Error ? cause.message : String(cause);
             logger.warn`multi-step deploy unwind: supervisor.shutdown failed: ${message}`;
           });
+        }
+        if (agentTransportRegistered) {
+          // Drop the agent's transport registration so a failed deploy
+          // does not leave the address live on the host transport with a
+          // dangling `CryptoProvider`. `unregister` is safe to call even
+          // if the address was never registered.
+          deps.transport.unregister(frame.agentAddress);
         }
         releaseSlug(deploymentId, frame.agentAddress);
       }
@@ -1291,6 +1344,13 @@ export function createSidecarDeployRouter(deps: {
       if (wired !== undefined) {
         activeSupervisors.delete(frame.agentAddress);
         await wired.supervisor.shutdown();
+        // Drop the agent's transport registration installed at spawn for
+        // the single-step launched-agent deploy (OUTBOUND half of
+        // mailbox ownership, §3a). `unregister` is a no-op when the
+        // address was never registered (a genuine multi-step deploy
+        // whose derived per-step addresses carry no host keypair), so it
+        // is safe to call unconditionally for any spawned deployment.
+        deps.transport.unregister(frame.agentAddress);
       }
       releaseSlug(deploymentId, frame.agentAddress);
       deps.unregisterDeployment({

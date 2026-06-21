@@ -20,6 +20,14 @@ export {
 } from "./substrate-write-bridge";
 
 export {
+  createChildOutboundMailBridge,
+  type ChildOutboundMailBridge,
+  type CreateChildOutboundMailBridgeOpts,
+} from "./outbound-mail-bridge";
+
+export { createSupervisorBackedTransport } from "./supervisor-backed-transport";
+
+export {
   createProxyWorkflowRunRepoStore,
   type CreateProxyWorkflowRunRepoStoreOpts,
 } from "./proxy-repo-store";

@@ -36,6 +36,8 @@
 
 import { type } from "arktype";
 
+import { InterchangeType } from "@intx/types/runtime";
+
 import {
   decodeEnvelope,
   encodeEnvelope,
@@ -66,6 +68,50 @@ export const CredentialsSnapshotStepPayload = type({
 export const CredentialsSnapshotPayload = type({
   steps: CredentialsSnapshotStepPayload.array(),
 });
+
+/**
+ * Wire projection of an attachment on an outbound mail message. The
+ * runtime `MessageAttachment.data` is raw bytes; the NDJSON control
+ * channel is text, so the bytes ride base64-encoded under `dataBase64`.
+ * The child encodes on send; the supervisor decodes before handing the
+ * `OutboundMessage` to the host transport.
+ */
+export const OutboundAttachmentPayload = type({
+  name: "string",
+  contentType: "string",
+  dataBase64: "string",
+});
+
+/**
+ * Wire projection of `@intx/types/runtime`'s `OutboundMessage`. Mirrors
+ * that type field-for-field with two adjustments for the NDJSON wire:
+ * attachment bytes are base64 strings (see `OutboundAttachmentPayload`),
+ * and every optional field is spelled with the `"?"` suffix so an
+ * absent field round-trips as absent rather than `null`. The supervisor
+ * reconstructs the runtime `OutboundMessage` from this shape before
+ * invoking `MailBusBindings.sendOutbound`.
+ *
+ * Duplicated here as an arktype validator (rather than importing the
+ * TypeScript `OutboundMessage` type) so the IPC module validates the
+ * child-supplied payload at the wire boundary -- the child is a separate
+ * process and its frames are untrusted input the receiver must parse.
+ */
+export const OutboundMessagePayload = type({
+  to: "string | string[]",
+  "cc?": "string | string[]",
+  "subject?": "string",
+  type: InterchangeType,
+  "content?": "string",
+  "payload?": "Record<string, unknown>",
+  "summary?": "string",
+  "attachments?": OutboundAttachmentPayload.array(),
+  "inReplyTo?": "string",
+  "correlationId?": "string",
+  "sessionId?": "string",
+  "tenantId?": "string",
+});
+
+export type OutboundMessagePayload = typeof OutboundMessagePayload.infer;
 
 /**
  * Discriminated union of every control-channel payload kind. The
@@ -245,6 +291,58 @@ export const ControlPayload = type(
         {
           ok: "true",
           commitSha: "string > 0",
+        },
+        "|",
+        {
+          ok: "false",
+          reason: "string > 0",
+        },
+      ),
+    },
+  })
+  .or({
+    // Child-initiated outbound-mail request (OUTBOUND half of mailbox
+    // ownership, §3a). The workflow-process child never holds the
+    // agent's signing key and never calls `transport.send` itself. When
+    // a step agent produces a reply or invokes a mail-send tool, the
+    // child forwards the structured outbound message plus the sender
+    // (agent) address up over the control channel; the supervisor
+    // performs the actual signed send through the host's real transport
+    // (`MailBusBindings.sendOutbound`), which signs with the sender's
+    // `CryptoProvider` exactly as the in-process path does. The
+    // supervisor is the sole mail owner and the only process that can
+    // emit signed mail on the agent's behalf.
+    //
+    // `requestId` correlates the supervisor's `outbound.result` reply so
+    // the child's mail-tool `send()` resolves with the real
+    // `SendReceipt` (or rejects with the supervisor's structured
+    // failure). The message is carried as a JSON-projected
+    // `OutboundMessage`; attachment bytes ride base64-encoded so the
+    // NDJSON wire stays text-safe.
+    type: "'outbound.message'",
+    data: {
+      requestId: "string > 0",
+      senderAddress: "string > 0",
+      "mailbox?": "string",
+      message: OutboundMessagePayload,
+    },
+  })
+  .or({
+    // Supervisor's terminal reply to a child's `outbound.message`. The
+    // `requestId` echoes the child's correlation id so the child's
+    // pending mail-tool awaiter resolves. A successful send surfaces the
+    // `SendReceipt` (messageId + status); a failed send (unregistered
+    // sender, signing failure, transport rejection) surfaces a
+    // structured `{ ok: false, reason }` the child's transport rethrows
+    // so the mail-tool call fails loudly rather than dropping the send.
+    type: "'outbound.result'",
+    data: {
+      requestId: "string > 0",
+      result: type(
+        {
+          ok: "true",
+          messageId: "string > 0",
+          status: "'delivered' | 'queued'",
         },
         "|",
         {

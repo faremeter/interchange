@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { generateKeyPair } from "@intx/crypto-node";
+import { createNodeCrypto, generateKeyPair } from "@intx/crypto-node";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
@@ -338,6 +338,10 @@ describe("createSidecarDeployRouter wires the InferenceEvent subscription to rec
         recordHubKey: (_a: string, _h: string) => {
           /* no-op */
         },
+        loadOrGenerateKey: async () => ({
+          keyPair: await generateKeyPair(),
+          isNew: false,
+        }),
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
@@ -345,6 +349,7 @@ describe("createSidecarDeployRouter wires the InferenceEvent subscription to rec
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
+      createAgentCrypto: createNodeCrypto,
       registerDeployment: () => {
         /* the in-test repoStore is a stub; the pack-push facade is exercised separately */
       },
@@ -708,6 +713,10 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
         recordHubKey: (_a: string, _h: string) => {
           /* no-op */
         },
+        loadOrGenerateKey: async () => ({
+          keyPair: await generateKeyPair(),
+          isNew: false,
+        }),
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
@@ -717,6 +726,7 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
+      createAgentCrypto: createNodeCrypto,
       registerDeployment: () => {
         /* no-op */
       },
@@ -776,6 +786,10 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
         recordHubKey: (_a: string, _h: string) => {
           /* no-op */
         },
+        loadOrGenerateKey: async () => ({
+          keyPair: await generateKeyPair(),
+          isNew: false,
+        }),
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
@@ -785,6 +799,7 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
+      createAgentCrypto: createNodeCrypto,
       registerDeployment: () => {
         /* no-op */
       },
@@ -861,6 +876,10 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
       keyStore: {
         recordHubKey: (_a: string, _h: string) => undefined,
+        loadOrGenerateKey: async () => ({
+          keyPair: await generateKeyPair(),
+          isNew: false,
+        }),
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
@@ -868,6 +887,7 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
+      createAgentCrypto: createNodeCrypto,
       registerDeployment: () => undefined,
       unregisterDeployment: () => undefined,
       multistepSubprocessSpawner: () => {
@@ -931,6 +951,10 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
       keyStore: {
         recordHubKey: (_a: string, _h: string) => undefined,
+        loadOrGenerateKey: async () => ({
+          keyPair: await generateKeyPair(),
+          isNew: false,
+        }),
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
@@ -938,6 +962,7 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
+      createAgentCrypto: createNodeCrypto,
       registerDeployment: () => undefined,
       unregisterDeployment: () => undefined,
       multistepSubprocessSpawner: () => {
@@ -1011,6 +1036,10 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
       keyStore: {
         recordHubKey: (_a: string, _h: string) => undefined,
+        loadOrGenerateKey: async () => ({
+          keyPair: await generateKeyPair(),
+          isNew: false,
+        }),
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
@@ -1018,6 +1047,7 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
+      createAgentCrypto: createNodeCrypto,
       registerDeployment: () => undefined,
       unregisterDeployment: () => undefined,
       multistepSubprocessSpawner: () => {
@@ -1110,6 +1140,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         recordHubKey: () => {
           throw new Error("multi-step branch must not invoke recordHubKey");
         },
+        loadOrGenerateKey: async () => ({
+          keyPair: await generateKeyPair(),
+          isNew: false,
+        }),
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
@@ -1119,6 +1153,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
+      createAgentCrypto: createNodeCrypto,
       registerDeployment: opts.registerDeployment ?? (() => undefined),
       unregisterDeployment: () => {
         /* no-op */

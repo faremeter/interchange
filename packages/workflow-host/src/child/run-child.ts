@@ -110,6 +110,7 @@ import { hashGrants } from "../supervisor/credentials";
 
 import type { SpawnTimeEnv } from "./env-bootstrap";
 import { discoverInFlightRuns } from "./self-discovery";
+import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
 
 const logger = getLogger(["workflow-host", "child"]);
 
@@ -339,6 +340,20 @@ export interface RunWorkflowChildOpts {
    * against it.
    */
   substrateWriteBridge?: SubstrateWriteResponseSink;
+  /**
+   * Optional outbound-mail bridge (OUTBOUND half of mailbox ownership,
+   * §3a). The step agent's mail tools are backed by a transport whose
+   * `send` routes through this bridge: it emits an `outbound.message`
+   * upstream control frame and resolves the agent's mail-tool `send`
+   * once the supervisor's matching `outbound.result` lands. The
+   * control loop routes the downstream `outbound.result` frame to the
+   * bridge's `handleResult` and invokes `cancelAll` on any exit path so
+   * a pending send does not leak an awaiter after the supervisor tears
+   * the IPC down. When omitted, inbound `outbound.result` frames are
+   * logged at warn-level and dropped -- the wire shape is well-formed
+   * but no agent on the child side asked for an outbound send.
+   */
+  outboundMailBridge?: ChildOutboundMailBridge;
 }
 
 /**
@@ -531,6 +546,9 @@ export async function runWorkflowChild(
           ...(opts.substrateWriteBridge !== undefined
             ? { substrateWriteBridge: opts.substrateWriteBridge }
             : {}),
+          ...(opts.outboundMailBridge !== undefined
+            ? { outboundMailBridge: opts.outboundMailBridge }
+            : {}),
         })
       ) {
         // shutdown received; the shutdown case already cancelled any
@@ -547,6 +565,13 @@ export async function runWorkflowChild(
     // supervisor has already torn down.
     if (opts.substrateWriteBridge !== undefined) {
       opts.substrateWriteBridge.cancelAll("workflow-child control loop exited");
+    }
+    // Same contract for outbound mail: a step agent's mail-tool send
+    // that is still awaiting the supervisor's `outbound.result` when
+    // the control loop exits must surface a structured rejection rather
+    // than hang on a torn-down channel.
+    if (opts.outboundMailBridge !== undefined) {
+      opts.outboundMailBridge.cancelAll("workflow-child control loop exited");
     }
   }
 
@@ -579,6 +604,7 @@ async function handleControlPayload(
     drainController: DrainController;
     triggeredRunIds: string[];
     substrateWriteBridge?: SubstrateWriteResponseSink;
+    outboundMailBridge?: ChildOutboundMailBridge;
   },
 ): Promise<boolean> {
   switch (payload.type) {
@@ -782,6 +808,27 @@ async function handleControlPayload(
       throw new Error(
         "workflow-child received a `terminal.event` frame on its inbound control channel; this is a child-only upstream payload",
       );
+    }
+    case "outbound.message": {
+      // `outbound.message` is the child->supervisor outbound-mail
+      // request frame; receiving one on the child's downstream side is a
+      // protocol violation in the same shape as a downstream `ready`.
+      throw new Error(
+        "workflow-child received an `outbound.message` frame on its inbound control channel; this is a child-only upstream payload",
+      );
+    }
+    case "outbound.result": {
+      // Route the supervisor's signed-send result to the outbound-mail
+      // bridge if one is wired. A result that lands without an active
+      // bridge means a stale supervisor frame for which no awaiter
+      // exists; log and drop rather than throwing so the runtime keeps
+      // progressing.
+      if (ctx.outboundMailBridge === undefined) {
+        logger.warn`workflow-child outbound.result received without a bridge wired; requestId=${payload.data.requestId} dropped`;
+        return false;
+      }
+      ctx.outboundMailBridge.handleResult(payload.data);
+      return false;
     }
     case "substrate.merge.request": {
       // Route the request to the substrate-write bridge if one is

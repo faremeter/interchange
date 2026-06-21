@@ -19,7 +19,11 @@ import type {
   RepoStore as SubstrateRepoStore,
   ReplayProcessingToInboxResult,
 } from "@intx/hub-sessions";
-import type { InferenceSource } from "@intx/types/runtime";
+import type {
+  InferenceSource,
+  OutboundMessage,
+  SendReceipt,
+} from "@intx/types/runtime";
 import type { RunCancelled, RunCompleted, RunFailed } from "@intx/workflow";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
 
@@ -107,6 +111,24 @@ export type PrincipalSigner = (
  * `subscribeMailForAddress` returns a disposer the supervisor calls
  * during teardown. The supplied handler is invoked with the raw RFC
  * 2822 message bytes of each inbound message at the address.
+ *
+ * `sendOutbound` is the OUTBOUND half of mailbox ownership (§3a). The
+ * supervisor is the sole mail owner: the workflow-process child never
+ * holds the agent's signing key and never calls `transport.send`
+ * itself. When a step agent produces a reply (or invokes a mail-send
+ * tool), the child forwards the structured `OutboundMessage` plus the
+ * sender (agent) address up over the control IPC; the supervisor calls
+ * `sendOutbound` to perform the actual signed send through the host's
+ * real transport. The host implementation signs the message with the
+ * sender's `CryptoProvider` exactly as the in-process path does
+ * (`@intx/mail-memory`'s `executeSend`), so the outbound mail carries
+ * the AGENT's signature with full parity to the pre-supervisor path.
+ *
+ * The signing identity lives at the host transport (registered per
+ * address via `register(address, crypto)`); the supervisor does not
+ * hold the agent's key and the child does not either. A send for an
+ * address with no registered crypto surfaces loudly (the host
+ * implementation throws) rather than emitting unsigned mail.
  */
 export interface MailBusBindings {
   registerAddress(address: string): void;
@@ -115,6 +137,10 @@ export interface MailBusBindings {
     address: string,
     handler: (rawMessage: Uint8Array) => void,
   ): () => void;
+  sendOutbound(
+    senderAddress: string,
+    message: OutboundMessage,
+  ): Promise<SendReceipt>;
 }
 
 /**

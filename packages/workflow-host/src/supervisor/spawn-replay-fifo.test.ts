@@ -176,6 +176,9 @@ function createMockMailBus(): MailBusBindings & {
         current?.delete(handler);
       };
     },
+    sendOutbound() {
+      throw new Error("sendOutbound not exercised in this test");
+    },
     registered(): readonly string[] {
       return registered.slice();
     },
