@@ -18,6 +18,7 @@ import type {
   BlobReader,
   ContextStore,
   InboundMessage,
+  InferenceEvent,
   InferenceSource,
 } from "@intx/types/runtime";
 
@@ -155,6 +156,85 @@ function buildStubAgent(): StubAgentControl {
     },
   };
 }
+
+interface StreamingStubState {
+  streamStarted: boolean;
+  closed: boolean;
+}
+
+interface StreamingStubControl {
+  readonly agent: Agent;
+  readonly state: StreamingStubState;
+}
+
+/**
+ * Construct an `Agent` stub whose `stream()` yields a controllable
+ * sequence of `InferenceEvent`s and then blocks until `close()` fires,
+ * mimicking a live stream that ends only when the agent tears down.
+ * `state.streamStarted` records whether the adapter ever subscribed (so
+ * a test can prove the no-`onEvent` path never consumes the stream);
+ * `state.closed` records teardown (so a test can prove the subscription
+ * is torn down with the agent). Unlike `buildStubAgent`, `send` resolves
+ * immediately and independently of `close`, matching the real agent's
+ * send/stream separation.
+ */
+function buildStreamingStubAgent(
+  events: InferenceEvent[],
+): StreamingStubControl {
+  const state: StreamingStubState = { streamStarted: false, closed: false };
+  let endStream: () => void = () => {
+    /* assigned below */
+  };
+  const streamEnded = new Promise<void>((resolve) => {
+    endStream = resolve;
+  });
+  const agent: Agent = {
+    async send(): Promise<SendResult> {
+      return {
+        reply: "ok",
+        turn: {
+          role: "assistant",
+          content: [{ type: "text", text: "ok" }],
+          model: STUB_SOURCE.model,
+          timestamp: 0,
+        },
+      };
+    },
+    async *stream() {
+      state.streamStarted = true;
+      for (const event of events) yield event;
+      await streamEnded;
+    },
+    deliver(_message: InboundMessage) {
+      throw new Error("stub deliver() not used");
+    },
+    async close() {
+      state.closed = true;
+      endStream();
+    },
+    setSource(_source: InferenceSource) {
+      throw new Error("stub setSource() not used");
+    },
+    setSources(_sources: InferenceSource[], _defaultSource: string) {
+      throw new Error("stub setSources() not used");
+    },
+    async history() {
+      return [];
+    },
+    async checkpoints() {
+      return [];
+    },
+    async readAt() {
+      return [];
+    },
+    blobReader: stubBlobReader(),
+  };
+  return { agent, state };
+}
+
+const stubEvent = (type: string): InferenceEvent =>
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub event; only `type` is read by the forwarder
+  ({ type, seq: 1, data: {} }) as unknown as InferenceEvent;
 
 function buildRequest(opts: {
   signal?: AbortSignal;
@@ -364,5 +444,87 @@ describe("workflow-host StepInvoker adapter - output shape", () => {
     stub.resolveSend({ reply: "hello", turn });
     const result = await settled;
     expect(result.output).toEqual({ reply: "hello", turn });
+  });
+});
+
+describe("workflow-host StepInvoker adapter - onEvent contract", () => {
+  test("a throwing onEvent sink is swallowed and does not abort the step", async () => {
+    const stub = buildStreamingStubAgent([
+      stubEvent("inference.start"),
+      stubEvent("inference.done"),
+    ]);
+    let calls = 0;
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: async () => ({
+        effect: "allow",
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => stub.agent,
+      onEvent: () => {
+        calls += 1;
+        throw new Error("sink boom");
+      },
+    });
+
+    const result = await invoker(buildRequest({ input: { goal: "go" } }));
+    expect(result.output).toMatchObject({ reply: "ok" });
+    expect(calls).toBeGreaterThan(0);
+    expect(stub.state.closed).toBe(true);
+  });
+
+  test("tears down the stream subscription with the agent", async () => {
+    const stub = buildStreamingStubAgent([stubEvent("inference.start")]);
+    const seen: string[] = [];
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: async () => ({
+        effect: "allow",
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => stub.agent,
+      onEvent: (event) => seen.push(event.type),
+    });
+
+    // The stub's `stream()` blocks until `close()` fires, so the
+    // forwarder's loop only ends once the agent is torn down. The
+    // invoker resolving proves the subscription was drained and closed
+    // with the agent rather than leaking past the step.
+    await invoker(buildRequest({ input: { goal: "go" } }));
+    expect(stub.state.streamStarted).toBe(true);
+    expect(stub.state.closed).toBe(true);
+    expect(seen).toContain("inference.start");
+  });
+
+  test("omitting onEvent never consumes the agent stream", async () => {
+    // `buildStubAgent`'s `stream()` throws when invoked. Reusing it here
+    // proves the no-`onEvent` path never touches the stream: were the
+    // adapter to subscribe, the throwing `stream()` would surface.
+    const stub = buildStubAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: async () => ({
+        effect: "allow",
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => stub.agent,
+    });
+
+    const sendPromise = invoker(buildRequest({ input: { goal: "go" } }));
+    await Promise.resolve();
+    stub.resolveSend({
+      reply: "ok",
+      turn: {
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+        model: STUB_SOURCE.model,
+        timestamp: 0,
+      },
+    });
+    await sendPromise;
+    expect(stub.events).toContain("close");
   });
 });
