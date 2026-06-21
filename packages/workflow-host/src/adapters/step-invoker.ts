@@ -152,6 +152,24 @@ export interface WorkflowStepInvokerOpts {
    * agent is never warm-kept.
    */
   warmCache?: WarmAgentCache;
+  /**
+   * Run-boundary hook for the warm path (design §3c durability). When
+   * supplied, the adapter awaits it in the warm path's `finally` -- once
+   * per message, after the agent's send settles (whether it completed,
+   * aborted, or rejected). The sidecar wires this to flush the warm
+   * agent's conversation snapshot to the durable workflow-run substrate,
+   * so the conversation survives a child respawn between this message
+   * and the next. Awaited (not fire-and-forget) so a respawn landing
+   * immediately after the reply cannot lose this message's turns; a
+   * flush failure surfaces by rejecting the step rather than silently
+   * dropping the durability write.
+   *
+   * The `key` is the step identity (`authzContext.stepId`), the same key
+   * the warm cache uses, so the hook resolves the right per-agent
+   * durable store. Omitted on the cold path: a torn-down per-step agent
+   * has no cross-run conversation to mirror.
+   */
+  onRunBoundary?: (key: string) => Promise<void>;
 }
 
 /**
@@ -298,6 +316,15 @@ async function invokeWarmStep(
     // and the next is dropped rather than delivered to this run's
     // torn-down per-run channel.
     warmCache.clearEventSink(key);
+    // Run-boundary durability flush (design §3c). Mirror the warm
+    // agent's conversation snapshot to the durable substrate once per
+    // message, after the send settles, so a respawn before the next
+    // message resumes from this message's turns. Awaited so the
+    // durability write completes (or surfaces its failure) before the
+    // step result is observed.
+    if (opts.onRunBoundary !== undefined) {
+      await opts.onRunBoundary(key);
+    }
   }
 }
 

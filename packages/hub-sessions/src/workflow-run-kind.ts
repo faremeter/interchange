@@ -179,12 +179,29 @@ export const WORKFLOW_RUN_PROCESSING_DIR = "processing";
 export const WORKFLOW_RUN_CONSUMED_DIR = "consumed";
 
 /**
+ * Per-agent durable conversation-state subtree (design §3c). A
+ * long-lived single-step agent's multi-turn conversation context is
+ * committed under `agent-state/<agentKey>/...` so it survives child
+ * respawn: on respawn the rebuilt warm agent reads its prior
+ * conversation back from here before the resumed run replays.
+ *
+ * Unlike `runs/` (append-only events, immutable blobs) this subtree is
+ * MUTABLE: each run boundary overwrites the agent's conversation
+ * snapshot with the latest turns. It is therefore exempt from the
+ * append-only / deletion-direction walks `runs/` is subject to; the
+ * only push-time constraint is segment shape (a single round-trip-safe
+ * `<agentKey>` directory layer below the prefix).
+ */
+export const WORKFLOW_RUN_AGENT_STATE_PREFIX = "agent-state";
+
+/**
  * Allowed top-level entries in the prospective tree. Anything else
  * fails the push. `control/` has no v1 use and stays absent.
  */
 const ALLOWED_TOP_LEVEL = new Set<string>([
   WORKFLOW_RUN_RUNS_PREFIX,
   WORKFLOW_RUN_ADDRESSES_PREFIX,
+  WORKFLOW_RUN_AGENT_STATE_PREFIX,
   WORKFLOW_RUN_GITIGNORE_PATH,
 ]);
 
@@ -1277,6 +1294,54 @@ async function enforceWorkflowProcessPathScope(
   return { ok: true };
 }
 
+/**
+ * Validate the `agent-state/` subtree shape (design §3c). The subtree
+ * holds one MUTABLE per-agent conversation snapshot directory per agent
+ * below the prefix; each entry directly under `agent-state/` must be a
+ * `<agentKey>/` DIRECTORY (not a dangling blob), and each `<agentKey>`
+ * segment must round-trip URL-encoding so a reader can recover the
+ * agent's identity from the path. The conversation blobs inside a
+ * `<agentKey>/` directory are opaque to the substrate (the warm agent's
+ * ContextStore owns their shape), so no file-level shape is enforced
+ * here.
+ *
+ * A blob written DIRECTLY at `agent-state/<name>` (with no `<agentKey>/`
+ * layer) is rejected: it would not be keyed by an agent and would not be
+ * recoverable by any reader walking the per-agent layout.
+ */
+async function validateAgentStateSubtree(
+  topLevelTreePaths: readonly string[],
+  listDir: (path: string) => Promise<string[]>,
+): Promise<ValidatePushResult> {
+  if (!topLevelTreePaths.includes(WORKFLOW_RUN_AGENT_STATE_PREFIX)) {
+    return { ok: true };
+  }
+  const segments = await listDir(WORKFLOW_RUN_AGENT_STATE_PREFIX);
+  for (const segment of segments) {
+    const roundTrip = checkAddressSegmentRoundTrip(segment);
+    if (!roundTrip.ok) {
+      return {
+        ok: false,
+        reason: `agent-state segment ${JSON.stringify(segment)} does not round-trip URL-encoding; ${roundTrip.reason}`,
+      };
+    }
+    // Reject a blob dangling directly at `agent-state/<segment>`: every
+    // entry under the prefix must be a `<agentKey>/` directory carrying
+    // the agent's snapshot files. A directory has children under
+    // `agent-state/<segment>/`; a direct blob has none.
+    const children = await listDir(
+      `${WORKFLOW_RUN_AGENT_STATE_PREFIX}/${segment}`,
+    );
+    if (children.length === 0) {
+      return {
+        ok: false,
+        reason: `agent-state entry ${JSON.stringify(segment)} is a blob directly under ${WORKFLOW_RUN_AGENT_STATE_PREFIX}/; entries must be a <agentKey>/ directory carrying the agent's snapshot files`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 export const workflowRunKindHandler: KindHandler = {
   kind: "workflow-run",
   directoryPrefix: "workflow-runs",
@@ -1303,7 +1368,7 @@ export const workflowRunKindHandler: KindHandler = {
       if (!ALLOWED_TOP_LEVEL.has(entry)) {
         return {
           ok: false,
-          reason: `unexpected top-level entry ${JSON.stringify(entry)}; allowed: "${WORKFLOW_RUN_RUNS_PREFIX}", "${WORKFLOW_RUN_ADDRESSES_PREFIX}", "${WORKFLOW_RUN_GITIGNORE_PATH}"`,
+          reason: `unexpected top-level entry ${JSON.stringify(entry)}; allowed: "${WORKFLOW_RUN_RUNS_PREFIX}", "${WORKFLOW_RUN_ADDRESSES_PREFIX}", "${WORKFLOW_RUN_AGENT_STATE_PREFIX}", "${WORKFLOW_RUN_GITIGNORE_PATH}"`,
         };
       }
     }
@@ -1316,6 +1381,15 @@ export const workflowRunKindHandler: KindHandler = {
     if (!scopingCheck.ok) {
       logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${scopingCheck.reason}`;
       return scopingCheck;
+    }
+
+    const agentStateCheck = await validateAgentStateSubtree(
+      topLevelTreePaths,
+      listDir,
+    );
+    if (!agentStateCheck.ok) {
+      logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${agentStateCheck.reason}`;
+      return agentStateCheck;
     }
 
     const priorTopLevels = await priorListDir("");

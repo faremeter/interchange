@@ -267,10 +267,10 @@ describe("single-step real-agent round-trip", () => {
     // the reply is real model output rather than a synthesized constant.
     expect(env.inference.requests.length).toBeGreaterThan(0);
 
-    // Per-step storage/workspace materialized under the run, rooted in a
+    // Per-step workspace/tools materialized under the run, rooted in a
     // `workflow-step-state/` subtree that is a sibling of the
     // workflow-run repo's git directory. The run-event log lives inside
-    // the workflow-run repo's own tree, so the per-step store cannot
+    // the workflow-run repo's own tree, so the per-step root cannot
     // overlap it.
     const stepStoreDir = path.join(
       env.sidecar.dataDir,
@@ -284,15 +284,49 @@ describe("single-step real-agent round-trip", () => {
     );
     expect(fs.existsSync(stepStoreDir)).toBe(true);
     expect(fs.existsSync(path.join(stepStoreDir, "workspace"))).toBe(true);
-    expect(fs.existsSync(path.join(stepStoreDir, ".git"))).toBe(true);
 
-    // The per-step store does not live inside the workflow-run repo's
-    // working tree (where `runs/<runId>/events/...` is committed). The
-    // run-event log read above already proves the events committed
-    // intact; assert the per-step root is outside that repo dir.
+    // The warm single-step agent's conversation ContextStore is durable
+    // (Phase 4.5): its `.git` lives at the stable per-agent durable store
+    // root, NOT under the per-run `attempt-1` dir, so the conversation
+    // survives across runs and child respawn. The per-run dir therefore
+    // carries the workspace + tool state but no conversation `.git`.
+    const durableConversationDir = path.join(
+      env.sidecar.dataDir,
+      "agent-conversation-state",
+      workflowRunRepoId.id,
+      encodeURIComponent(STEP_ID),
+    );
+    expect(fs.existsSync(path.join(durableConversationDir, ".git"))).toBe(true);
+
+    // The conversation snapshot is mirrored through the real proxy ->
+    // supervisor single-writer path to the workflow-run substrate at the
+    // per-agent `agent-state/<stepId>/conversation.json` path, sibling to
+    // the per-run event log under `runs/<runId>/...`. The supervisor's
+    // substrate is the sidecar's on-disk workflow-run repo; assert
+    // against it (deterministic, no hub pack-push timing dependency).
+    const sidecarWorkflowRunRepoDir = path.join(
+      env.sidecar.dataDir,
+      "workflow-runs",
+      workflowRunRepoId.id,
+    );
+    expect(
+      fs.existsSync(
+        path.join(
+          sidecarWorkflowRunRepoDir,
+          "agent-state",
+          encodeURIComponent(STEP_ID),
+          "conversation.json",
+        ),
+      ),
+    ).toBe(true);
+
+    // Neither the per-step root nor the durable conversation store lives
+    // inside the workflow-run repo's working tree (where
+    // `runs/<runId>/events/...` is committed).
     const workflowRunRepoDir =
       env.hub.agentRepoStore.repoStore.getRepoDir(workflowRunRepoId);
     expect(stepStoreDir.startsWith(workflowRunRepoDir)).toBe(false);
+    expect(durableConversationDir.startsWith(workflowRunRepoDir)).toBe(false);
   });
 });
 

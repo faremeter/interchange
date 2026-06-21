@@ -141,6 +141,7 @@ export {
   runWorkflowChild,
   runWorkflowChildFromProcessEnv,
   type ChildOutboundMailBridge,
+  type ChildStepInvoker,
   type ChildSubstrateWriteBridge,
   type CreateChildOutboundMailBridgeOpts,
   type CreateChildSubstrateWriteBridgeOpts,
