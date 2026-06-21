@@ -12,13 +12,17 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join as pathJoin } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { type } from "arktype";
+
 import { importPrivateKeyBytes } from "@intx/crypto-node";
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
-import type {
-  RepoId,
-  RepoStore,
-  WorkflowRunSupervisorPrincipal,
+import {
+  parseAgentId,
+  type Principal,
+  type RepoId,
+  type RepoStore,
+  type WorkflowRunSupervisorPrincipal,
 } from "@intx/hub-sessions";
 import type {
   AgentKeyStore,
@@ -28,10 +32,12 @@ import type {
 } from "@intx/hub-agent";
 import {
   createWorkflowSupervisor,
+  STEP_GRANTS_PATH,
+  STEP_GRANTS_REF,
   wrapHubTransportAsMailBus,
   type CredentialsSnapshot,
   type DeriveStepAddress,
-  type EventPayload,
+  type DeriveStepRepoId,
   type FrameReader,
   type HubTransportMailBusAdapter,
   type NdjsonReader,
@@ -44,7 +50,7 @@ import {
   type TrivialLaunch,
   type WorkflowSupervisor,
 } from "@intx/workflow-host";
-import type { InferenceEvent } from "@intx/types/runtime";
+import { parseInferenceEvent, type InferenceEvent } from "@intx/types/runtime";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 import { STEP_ID_PATTERN } from "@intx/workflow";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
@@ -69,6 +75,131 @@ const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
  */
 export function deriveTrivialDeploymentId(agentAddress: string): string {
   return deriveWorkflowRunRepoId(agentAddress);
+}
+
+/**
+ * Hub principal the deploy router presents when it writes a step's
+ * grants into the agent-state repo on the sidecar's substrate. The
+ * agent-state kind handler gates `writeTree` as hub-only; the deploy
+ * router is the local stand-in for the hub on the sidecar's disk, so it
+ * claims the hub principal for this single bookkeeping write. The child
+ * reads the same repo via the working-tree path (`getRepoDir`), which is
+ * not authorize-gated.
+ */
+const GRANTS_WRITE_PRINCIPAL: Principal = { kind: "hub" };
+
+/**
+ * Per-deploy address/repo strategy. The single-step launched-agent
+ * deploy and the derived multi-step deploy disagree on how the per-step
+ * mail address and agent-state repo id are computed; both
+ * `deriveStepAddress` (consumed by the supervisor's credentialsSnapshot
+ * assembly for the step's mail address) and `deriveStepRepoId` (consumed
+ * by the same assembly to locate each step's grants) must agree on the
+ * choice, so they are minted together.
+ */
+type StepStrategy = {
+  deriveStepAddress: DeriveStepAddress;
+  deriveStepRepoId: DeriveStepRepoId;
+};
+
+/**
+ * Decide the per-step address/repo strategy from the projection's step
+ * count.
+ *
+ * `stepOrder.length === 1` is the agent-launch identity deploy: the sole
+ * step IS the legacy launched agent, so its grants live in the legacy
+ * agent-state repo keyed by `parseAgentId(legacyAddress)`. This is
+ * exactly the repo the legacy agent identity keys, so the spawned child
+ * reads the agent's grants from where the agent's identity already
+ * lives, and the deployment frame's `ins_<hex>` address is preserved
+ * (the deploy-ack listener finds the `agent_instance` row, the
+ * workflow-run repo stays keyed by `deriveWorkflowRunRepoId(legacy)`).
+ *
+ * Any other step count is a derived multi-step deploy: each step gets a
+ * derived `<deploymentId>-<stepId>` mail address (via the router's
+ * `multistepDeriveStepAddress`) and a derived agent-state repo under the
+ * default `<deploymentId>-<stepId>` convention.
+ *
+ * NOTE: the supervisor's `deriveStepAddress` feeds the credentials
+ * snapshot's per-step mail `address` and the grants-repo derivation. It
+ * does NOT feed the child's on-disk tool read (`stepDeployTreeDir` in
+ * `step-agent-tools.ts`), which re-derives the step address from the
+ * deployment mailbox address independently. The deploy tree must
+ * therefore be staged at the address `stepDeployTreeDir` computes,
+ * regardless of this strategy's address choice.
+ */
+function createStepStrategy(args: {
+  legacyAddress: string;
+  stepOrder: readonly string[];
+  multistepDeriveStepAddress: DeriveStepAddress;
+}): StepStrategy {
+  if (args.stepOrder.length === 1) {
+    return {
+      deriveStepAddress: () => args.legacyAddress,
+      // `parseAgentId` is deferred into the closure rather than computed
+      // eagerly: the supervisor only invokes `deriveStepRepoId` while
+      // assembling the credentialsSnapshot inside `spawn()`, so a
+      // malformed address surfaces at the same point the rest of the
+      // spawn path would fault rather than ahead of the deploy router's
+      // other boundary checks.
+      deriveStepRepoId: () => ({
+        kind: "agent-state",
+        id: parseAgentId(args.legacyAddress),
+      }),
+    };
+  }
+  return {
+    deriveStepAddress: args.multistepDeriveStepAddress,
+    deriveStepRepoId: ({ deploymentId, stepId }) => ({
+      kind: "agent-state",
+      id: `${deploymentId}-${stepId}`,
+    }),
+  };
+}
+
+/**
+ * Write every step's grants into its agent-state repo so the
+ * supervisor's `assembleCredentialsSnapshot` (invoked inside `spawn()`)
+ * reads them off the working tree at `STEP_GRANTS_PATH`. The on-disk
+ * shape is `{ grants: WireGrantRule[] }` -- the envelope
+ * `assembleCredentialsSnapshot` validates (`{ grants: unknown[] }`) and
+ * the child's `evaluateGrants` adapter narrows to `GrantRule[]`.
+ *
+ * The same `deriveStepRepoId` the supervisor reads with keys the write,
+ * so read and write address the same repo. The write is on the spawn
+ * critical path: a failure rejects the deploy (the caller's `finally`
+ * unwinds the partial state) rather than spawning a child that would
+ * fail every authorize closed against an empty grant set.
+ */
+async function writeStepGrants(args: {
+  repoStore: RepoStore;
+  deploymentId: string;
+  stepOrder: readonly string[];
+  deriveStepRepoId: DeriveStepRepoId;
+  grants: readonly unknown[] | undefined;
+}): Promise<void> {
+  // The deploy frame's validated HarnessConfig always carries a `grants`
+  // array (possibly empty); an absent array means "no grants", which
+  // serializes to the same fail-closed empty file the snapshot expects.
+  // Coerce here so the on-disk envelope is always a valid `{ grants: [] }`
+  // rather than `{}` (which the snapshot's validator rejects).
+  const grants = args.grants ?? [];
+  const serialized = JSON.stringify({ grants }, null, 2);
+  for (const stepId of args.stepOrder) {
+    const repoId = args.deriveStepRepoId({
+      deploymentId: args.deploymentId,
+      stepId,
+    });
+    await args.repoStore.writeTree(
+      GRANTS_WRITE_PRINCIPAL,
+      repoId,
+      STEP_GRANTS_REF,
+      {
+        files: { [STEP_GRANTS_PATH]: serialized },
+        message: `Write step grants for ${stepId}`,
+      },
+    );
+  }
 }
 
 // The supervisor's `binaryPath` binding resolves to the sidecar's
@@ -269,6 +400,16 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   deploymentMailAddress: string;
   /** Per-step mail-address derivation. */
   deriveStepAddress: DeriveStepAddress;
+  /**
+   * Optional override of the per-step `agent-state` repo identity the
+   * supervisor reads grants from while assembling the
+   * credentialsSnapshot. Defaults to the `<deploymentId>-<stepId>`
+   * convention; the single-step launched-agent deploy supplies a
+   * derivation that returns the legacy agent-state repo so the spawned
+   * child reads grants from the same repo the legacy agent identity
+   * keys.
+   */
+  deriveStepRepoId?: DeriveStepRepoId;
   /** Substrate-config keys propagated to the child via spawn-time env. */
   substrateEnv: Record<string, string>;
   /**
@@ -542,13 +683,20 @@ export function createSidecarDeployRouter(deps: {
   /**
    * Callback the supervisor invokes for every verified InferenceEvent
    * the workflow-process child publishes. The router threads the
-   * deployment's agent address through to the callback so a downstream
-   * fan-out can route events to per-agent listeners. Defaults to a
-   * no-op; production wiring supplies the event publisher.
+   * deployment's agent address plus the deploy's session id through to
+   * the callback so a downstream fan-out can route each event to the
+   * hub timeline keyed to the right session. The `InferenceEvent` itself
+   * is sessionless; the session id rides alongside it, sourced from the
+   * deploy frame's `HarnessConfig.sessionId` per deployment. It is
+   * optional because a deploy frame need not carry a session id (a
+   * headless deployment with no hub-side session); the sink decides what
+   * an absent session id means. Defaults to a no-op; production wiring
+   * supplies the event publisher.
    */
   publishWorkflowInferenceEvent?: (
     agentAddress: string,
-    event: EventPayload,
+    event: InferenceEvent,
+    sessionId: string | undefined,
   ) => void;
   /**
    * Optional override for the multi-step branch's per-step mail-address
@@ -614,7 +762,11 @@ export function createSidecarDeployRouter(deps: {
   );
   const publishInferenceEvent =
     deps.publishWorkflowInferenceEvent ??
-    ((_address: string, _event: EventPayload): void => {
+    ((
+      _address: string,
+      _event: InferenceEvent,
+      _sessionId: string | undefined,
+    ): void => {
       /* no-op default: tests and production-without-a-publisher
          deployments do not consume events. */
     });
@@ -672,6 +824,26 @@ export function createSidecarDeployRouter(deps: {
     validateWorkflowProjection(projection);
 
     const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
+
+    // Single-step launched-agent deploy vs. derived multi-step deploy.
+    //
+    // A one-step projection is the agent-launch identity path: the sole
+    // step keeps the deployment's own (legacy) mail address, and its
+    // grants live in the legacy agent-state repo keyed by the legacy
+    // instance id (`parseAgentId(frame.agentAddress)`). This preserves
+    // the identity the legacy agent-deploy path established -- the
+    // workflow-run repo stays keyed by `deriveWorkflowRunRepoId(legacy)`
+    // and `agent_instance.address` remains the `ins_<hex>` legacy shape.
+    //
+    // A multi-step projection derives `<deploymentId>-<stepId>` per step
+    // for both the mail address and the agent-state repo id, isolating
+    // each step's grants in its own repo.
+    const stepStrategy = createStepStrategy({
+      legacyAddress: frame.agentAddress,
+      stepOrder: projection.definition.stepOrder,
+      multistepDeriveStepAddress,
+    });
+
     claimSlug(deploymentId, frame.agentAddress);
     // Release every piece of partial state if any step between here
     // and `registerDeployment` throws. The undeploy hook -- the only
@@ -809,7 +981,8 @@ export function createSidecarDeployRouter(deps: {
         workflowRunRef: "refs/heads/main",
         deploymentId,
         deploymentMailAddress: frame.agentAddress,
-        deriveStepAddress: multistepDeriveStepAddress,
+        deriveStepAddress: stepStrategy.deriveStepAddress,
+        deriveStepRepoId: stepStrategy.deriveStepRepoId,
         substrateEnv,
         subprocessSpawner: multistepSpawner,
         ...(deps.multistepBinaryPath !== undefined
@@ -826,12 +999,54 @@ export function createSidecarDeployRouter(deps: {
         },
       });
 
+      // Grants bridge (the sharp edge of the always-spawn convergence).
+      //
+      // The legacy agent-deploy path shipped grants in-band on the
+      // deploy frame; the in-process runtime loaded them straight into
+      // its grant store and never wrote them to disk. The spawned child
+      // does not see the frame: it reads each step's grants out of
+      // `state/grants.json` in the step's agent-state repo while the
+      // supervisor assembles the credentialsSnapshot inside `spawn()`.
+      //
+      // Write every step's grants to the step's agent-state repo BEFORE
+      // `spawn()` so the supervisor's read sees them. The hub is the
+      // source of truth -- `frame.config.grants` is the operator-approved
+      // grant set the hub shipped -- and the same `deriveStepRepoId` the
+      // supervisor reads with keys the write so the read and the write
+      // address the same repo. A missing or empty file would make every
+      // authorize fail closed, so the write must surface its failure.
+      await writeStepGrants({
+        repoStore: deps.repoStore,
+        deploymentId,
+        stepOrder: projection.definition.stepOrder,
+        deriveStepRepoId: stepStrategy.deriveStepRepoId,
+        grants: frame.config.grants,
+      });
+
       const stepOrder = [...projection.definition.stepOrder];
       const spawnOpts: SpawnOpts = {
         stepOrder,
         definitionHash,
         onInferenceEvent: (event) => {
-          publishInferenceEvent(frame.agentAddress, event);
+          // The event arrives already HMAC-verified and validated as an
+          // `EventPayload` over the child's event channel. Re-narrow it
+          // to the manually-defined `InferenceEvent` union the hub's
+          // `agent.event` sink consumes (the arktype-inferred
+          // `EventPayload` widens a few discriminants the hand-written
+          // type narrows). A parse failure here means the channel
+          // delivered something the validator rejects, which would be a
+          // corruption upstream -- drop it loudly rather than forwarding
+          // an unvalidated payload onto the hub timeline.
+          const validated = parseInferenceEvent(event);
+          if (validated instanceof type.errors) {
+            logger.warn`dropping workflow inference event for ${frame.agentAddress}: ${validated.summary}`;
+            return;
+          }
+          publishInferenceEvent(
+            frame.agentAddress,
+            validated,
+            frame.config.sessionId,
+          );
         },
       };
 
@@ -1251,6 +1466,9 @@ export function createSidecarWorkflowSupervisor(
     deploymentMailAddress: opts.deploymentMailAddress,
     readPrincipal: supervisorPrincipal,
     deriveStepAddress: opts.deriveStepAddress,
+    ...(opts.deriveStepRepoId !== undefined
+      ? { deriveStepRepoId: opts.deriveStepRepoId }
+      : {}),
     trivialLaunch: opts.trivialLaunch,
     deriveMailAuditRef: deriveSidecarMailAuditRef(opts.deploymentId),
   });

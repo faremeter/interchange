@@ -85,6 +85,19 @@ export type DeriveStepAddress = (args: {
   stepId: string;
 }) => string;
 
+/**
+ * Caller-supplied override of the per-step `agent-state` repo identity
+ * the supervisor reads grants from. Defaults to the
+ * `<deploymentId>-<stepId>` convention (`defaultStepRepoId`); the
+ * single-step launched-agent deploy supplies a derivation that returns
+ * the legacy agent-state repo so the child reads grants from the same
+ * repo the legacy agent identity already keys.
+ */
+export type DeriveStepRepoId = (args: {
+  deploymentId: string;
+  stepId: string;
+}) => RepoId;
+
 export type AssembleCredentialsSnapshotOpts = {
   /** Substrate handle the supervisor reads from. */
   repoStore: RepoStore;
@@ -105,7 +118,7 @@ export type AssembleCredentialsSnapshotOpts = {
    * follow the documented convention (`<deploymentId>-<stepId>`) can
    * omit this; tests and bespoke layouts can supply their own.
    */
-  deriveStepRepoId?: (args: { deploymentId: string; stepId: string }) => RepoId;
+  deriveStepRepoId?: DeriveStepRepoId;
 };
 
 /**

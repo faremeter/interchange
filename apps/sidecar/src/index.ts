@@ -283,7 +283,12 @@ const orchestrator = createSidecarOrchestrator({
   mailInboundRouter: multistepMailRouter,
   signalInboundRouter: multistepSignalRouter,
   drainInboundRouter: multistepDrainRouter,
-  createDeployRouter: ({ sessions, keyStore, onAgentEvent }) =>
+  createDeployRouter: ({
+    sessions,
+    keyStore,
+    onAgentEvent,
+    publishWorkflowInferenceEvent,
+  }) =>
     createSidecarDeployRouter({
       sessions,
       keyStore,
@@ -301,6 +306,7 @@ const orchestrator = createSidecarOrchestrator({
       multistepSignalRouter,
       multistepDrainRouter,
       multistepSubstrateEnv,
+      publishWorkflowInferenceEvent,
     }),
 });
 

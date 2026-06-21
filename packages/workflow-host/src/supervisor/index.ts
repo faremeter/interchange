@@ -21,6 +21,7 @@ export {
   type CredentialsSnapshot,
   type CredentialsSnapshotStep,
   type DeriveStepAddress,
+  type DeriveStepRepoId,
 } from "./credentials";
 
 export {

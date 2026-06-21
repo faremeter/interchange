@@ -15,12 +15,13 @@
 //   - multi-step: the subprocess spawner throws synchronously so
 //     `supervisor.spawn` rejects.
 
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join as pathJoin } from "node:path";
+import { dirname, join as pathJoin } from "node:path";
 
 import { describe, test, expect } from "bun:test";
 import { createInMemoryTransport } from "@intx/mail-memory";
+import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 import type { SubprocessSpawner } from "@intx/workflow-host";
 
@@ -149,15 +150,32 @@ describe("deploy-failure registry leak", () => {
 
     const tmpDir = mkdtempSync(pathJoin(tmpdir(), "h-a1-deploy-failure-"));
 
+    // The grants bridge writes `state/grants.json` to each step's
+    // agent-state repo before `spawn()`; supply a minimal RepoStore that
+    // honors `getRepoDir` + `writeTree` so the bridge succeeds and the
+    // SPAWNER failure is the one this test exercises.
+    const repoStoreStub: Partial<RepoStore> = {
+      getRepoDir(repoId: RepoId): string {
+        return pathJoin(tmpDir, repoId.kind, repoId.id);
+      },
+      writeTree(_p, repoId, _ref, content) {
+        const dir = pathJoin(tmpDir, repoId.kind, repoId.id);
+        for (const [relPath, contents] of Object.entries(content.files)) {
+          const full = pathJoin(dir, relPath);
+          mkdirSync(dirname(full), { recursive: true });
+          writeFileSync(full, contents);
+        }
+        return Promise.resolve({ commitSha: "stub-sha" });
+      },
+    };
+
     const router = createSidecarDeployRouter({
       sessions,
       keyStore,
       onAgentEvent: () => () => undefined,
       transport,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- repoStore is consulted lazily by the supervisor; the spawn-time failure short-circuits the test
-      repoStore: {} as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["repoStore"],
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only getRepoDir + writeTree are exercised before the spawn-time failure
+      repoStore: repoStoreStub as RepoStore,
       signingKeySeed: new Uint8Array(32),
       registerDeployment: ({ deploymentId, agentAddress }) => {
         registry.record(deploymentId, agentAddress);
@@ -182,12 +200,15 @@ describe("deploy-failure registry leak", () => {
 
     const frame: AgentDeployFrame = {
       type: "agent.deploy",
-      agentAddress: "mstep@x.example",
+      // Single-step projection: the deploy router parses the frame
+      // address into the legacy agent-state repo id, so it must carry the
+      // canonical `ins_<id>@<domain>` shape.
+      agentAddress: "ins_mstep@x.example",
       agentId: "mstep",
       hubPublicKey: "00".repeat(32),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- multi-step branch does not consult config before failing
       config: {
-        agentAddress: "mstep@x.example",
+        agentAddress: "ins_mstep@x.example",
         agentId: "mstep",
         sessionId: "s",
         sources: [],
@@ -221,7 +242,7 @@ describe("deploy-failure registry leak", () => {
     }
     expect(threw).toBe(true);
 
-    const slug = "mstep-x-example";
+    const slug = "ins_mstep-x-example";
     expect(registry.resolve(slug)).toBeNull();
   });
 });

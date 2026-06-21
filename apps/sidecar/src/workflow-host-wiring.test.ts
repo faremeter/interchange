@@ -524,8 +524,21 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
       await args.merge(new Map());
       return { commitSha: "stub-sha" };
     },
+    // The deploy router's grants bridge writes `state/grants.json` to
+    // each step's agent-state repo before `spawn()`. Mirror the
+    // `getRepoDir` layout so the write lands where the subsequent
+    // `assembleCredentialsSnapshot` working-tree read looks for it.
+    async writeTree(_p, repoId, _ref, content) {
+      const dir = path.join(tempBase, repoId.kind, repoId.id);
+      for (const [relPath, contents] of Object.entries(content.files)) {
+        const full = path.join(dir, relPath);
+        await fs.mkdir(path.dirname(full), { recursive: true });
+        await fs.writeFile(full, contents);
+      }
+      return { commitSha: "stub-sha" };
+    },
   };
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; only getRepoDir + writeTreePreservingPrefix exercised
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; only getRepoDir + writeTreePreservingPrefix + writeTree exercised
   return new Proxy(stub as RepoStore, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
@@ -550,6 +563,16 @@ type MultistepDeployArgs = {
     stepOrder: string[];
     steps: Record<string, unknown>;
   };
+  /**
+   * Override the deploy frame's `agentAddress`. Single-step projections
+   * are the agent-launch identity path: the deploy router derives the
+   * sole step's agent-state repo from `parseAgentId(agentAddress)`, which
+   * requires the canonical `ins_<id>@<domain>` shape. Tests that drive a
+   * single-step projection supply a valid instance address here; the
+   * default keeps the historical multi-step address for the multi-step
+   * tests (whose derived per-step repos do not parse the frame address).
+   */
+  agentAddress?: string;
 };
 
 function makeInferenceSource(id: string): InferenceSourceFixture {
@@ -565,7 +588,7 @@ function makeInferenceSource(id: string): InferenceSourceFixture {
 function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
   return {
     type: "agent.deploy",
-    agentAddress: "multi@example.com",
+    agentAddress: args.agentAddress ?? "multi@example.com",
     agentId: "multi-agent",
     hubPublicKey: "hub-pk",
     // The wire-side HarnessConfig has many required fields. The router
@@ -1040,6 +1063,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     publishWorkflowInferenceEvent?: (
       address: string,
       event: EventPayload,
+      sessionId: string | undefined,
     ) => void;
     multistepBinaryPath?: string;
     multistepSubstrateEnv?: Record<string, string>;
@@ -1336,6 +1360,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
 
     const frame = makeMultistepFrame({
+      agentAddress: "ins_crash-noreg@example.com",
       definition: {
         id: "wf-crash-noreg",
         triggers: [{ type: "manual" }],
@@ -1365,6 +1390,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const { router } = await buildMultistepFixture({ spawner: crashSpawner });
 
     const frame = makeMultistepFrame({
+      agentAddress: "ins_crash@example.com",
       definition: {
         id: "wf-crash",
         triggers: [{ type: "manual" }],
