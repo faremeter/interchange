@@ -22,14 +22,17 @@
 // as part of the supervisor's normal write path -- the child does
 // not open its own pack-push pipeline.
 
+import fs from "node:fs";
+import path from "node:path";
+
 import { type } from "arktype";
 
-import type { AuditStore, ContextStore } from "@intx/types/runtime";
 import { InferenceSource } from "@intx/types/runtime";
 import { evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
 import type { DirectorRegistry } from "@intx/agent";
-import { createDefaultDirectorRegistry } from "@intx/agent";
+import { createAgent, createDefaultDirectorRegistry } from "@intx/agent";
+import { createSSHSignature } from "@intx/crypto-node";
 import {
   createAgentRepoStore,
   type Principal,
@@ -37,6 +40,7 @@ import {
   type RepoStore,
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
+import { createIsogitStore } from "@intx/storage-isogit";
 import {
   adaptHostScheduler,
   createProxyWorkflowRunRepoStore,
@@ -45,6 +49,7 @@ import {
   createWorkflowRunRepoStore,
   createWorkflowHostSignalChannel,
   createWorkflowSpawnChild,
+  createWorkflowStepInvoker,
   type GrantEvaluator,
   type RunChildWorkflow,
   type RunWorkflowChildBindings,
@@ -217,82 +222,122 @@ interface SidecarSubstrateFactoryDeps {
 }
 
 /**
- * Object-shaped `StepEnvBase` slot whose every access throws. The
- * sidecar's substrate factory wires `source` from the pinned
- * `STEP_INFERENCE_SOURCES` table; the remaining `StepEnvBase` slots
- * (storage, audit, directors) are not yet populated by the factory.
- * Returning a throwing-getter Proxy keeps the static `StepEnvBase`
- * contract intact while surfacing a precise failure at the first
- * downstream access — a step invocation that actually consumes one
- * of these slots gets a structured "not wired" error naming the
- * slot and the originating `stepId`.
+ * `CommitSigner` the per-step isogit stores use to sign every commit.
+ * The factory's Ed25519 signing keypair (the same key the child's bare
+ * `RepoStore` carries) is bound into an `sshsig`-shaped signer so the
+ * per-step agent-state commits are attributable to the sidecar's
+ * substrate identity, matching the signing surface the production
+ * `RepoStore` uses for workflow-run writes.
  */
-function throwingStepEnvSlot<T extends object>(
-  slot: string,
-  stepId: string,
-): T {
-  const trap = (prop: PropertyKey): never => {
-    throw new Error(
-      `sidecar workflow-child step invoker buildEnv: ${slot} slot is not wired (stepId=${JSON.stringify(stepId)}, access=${String(prop)}); the substrate factory does not yet supply per-step ${slot}`,
+function createStepStorageSigner(signingKey: {
+  publicKey: Uint8Array;
+  privateKey: Uint8Array;
+}): (payload: string) => Promise<string> {
+  return (payload: string) =>
+    Promise.resolve(
+      createSSHSignature(payload, signingKey.privateKey, signingKey.publicKey),
     );
-  };
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- throwing Proxy stands in for a typed StepEnvBase slot until per-step storage/audit/directors land
-  return new Proxy({} as T, {
-    get(_target, prop) {
-      return trap(prop);
-    },
-    has(_target, prop) {
-      return trap(prop);
-    },
-    apply() {
-      return trap("apply");
-    },
-  });
 }
 
 /**
- * Sentinel `workdir` path the agent's lock boundary uses. The
- * substrate factory does not yet allocate a per-step workdir; a
- * step invocation that reaches `BaseEnv.workdir` surfaces a loud
- * `ENOENT` against this path rather than silently writing into an
- * unrelated directory. The path is intentionally unusable so a
- * silent default is impossible.
+ * Root directory for a single step invocation's agent-state storage and
+ * workspace, derived from the sidecar data dir and the run/step/attempt
+ * coordinates the workflow runtime owns.
+ *
+ * The per-step agent storage is a distinct isogit repo, deliberately
+ * rooted OUTSIDE the workflow-run repo's working tree. The workflow-run
+ * repo's single writer is the supervisor, and its working tree carries
+ * the run-event log under `runs/<runId>/events/...`; nesting a second
+ * git repo inside that tree would collide with the event subtree and
+ * with the supervisor's write contract. Rooting the per-step store under
+ * a dedicated `workflow-step-state/` sibling subtree keyed by the
+ * workflow-run repo id keeps every step's storage isolated per run and
+ * per step while never touching the run-event tree.
  */
-function throwingStepEnvWorkdir(stepId: string): string {
-  return `/__sidecar_workflow_child_workdir_not_wired__/stepId=${stepId}`;
+function stepStorageRoot(args: {
+  dataDir: string;
+  workflowRunRepoId: RepoId;
+  runId: string;
+  stepId: string;
+  attempt: number;
+}): string {
+  return path.join(
+    args.dataDir,
+    "workflow-step-state",
+    args.workflowRunRepoId.id,
+    "runs",
+    args.runId,
+    "steps",
+    args.stepId,
+    `attempt-${String(args.attempt)}`,
+  );
+}
+
+interface SidecarStepBuildEnvDeps {
+  table: StepInferenceSourceTable;
+  dataDir: string;
+  workflowRunRepoId: RepoId;
+  signer: (payload: string) => Promise<string>;
 }
 
 /**
  * Build the step-invoker `buildEnv` callback the workflow-host's
  * adapter consumes. Pulled out of `createSidecarSubstrateFactory` so
- * source-resolution is observable without standing up the full
- * substrate; the closure pins the parsed per-step source table once,
- * derives the `stepId` from the runtime's `AuthorizeContext`, and
- * populates `StepEnvBase.source` from the table. The other
- * `StepEnvBase` slots are not yet supplied by the substrate factory
- * and are filled with throwing-getter stubs so a step invocation
- * that exercises them surfaces a precise failure rather than a
- * silent default.
+ * the per-step env construction is observable without standing up the
+ * full substrate.
+ *
+ * The closure pins the parsed per-step source table, derives the
+ * `stepId` / `runId` / `attempt` from the runtime's `AuthorizeContext`,
+ * resolves the per-step `InferenceSource` from the table, and stands up
+ * a per-step isogit `ContextStore` (also serving as the audit store)
+ * plus a per-step workspace directory rooted under the run. A
+ * construction failure (mkdir, isogit init) surfaces here rather than
+ * being papered over with a stub: the single-step path now always runs
+ * a real agent against real storage.
  */
 function createSidecarStepBuildEnv(
-  table: StepInferenceSourceTable,
+  deps: SidecarStepBuildEnvDeps,
 ): (req: StepInvokeRequest) => Promise<StepEnvBase> {
-  const resolveStepInferenceSource = createStepInferenceSourceResolver(table);
+  const resolveStepInferenceSource = createStepInferenceSourceResolver(
+    deps.table,
+  );
   return async (req: StepInvokeRequest): Promise<StepEnvBase> => {
-    const stepId = req.authzContext.stepId;
+    const { stepId, runId, attempt } = req.authzContext;
     if (stepId === undefined) {
       throw new Error(
         "sidecar workflow-child step invoker buildEnv: AuthorizeContext.stepId is required for per-step InferenceSource resolution; the workflow runtime must populate stepId on every step-originated invocation",
       );
     }
+    if (runId === undefined) {
+      throw new Error(
+        "sidecar workflow-child step invoker buildEnv: AuthorizeContext.runId is required to root per-step storage under the run; the workflow runtime must populate runId on every step-originated invocation",
+      );
+    }
+    if (attempt === undefined) {
+      throw new Error(
+        "sidecar workflow-child step invoker buildEnv: AuthorizeContext.attempt is required to root per-step storage per attempt; the workflow runtime must populate attempt on every step-originated invocation",
+      );
+    }
     const source = resolveStepInferenceSource(stepId);
+
+    const storeDir = stepStorageRoot({
+      dataDir: deps.dataDir,
+      workflowRunRepoId: deps.workflowRunRepoId,
+      runId,
+      stepId,
+      attempt,
+    });
+    const storage = await createIsogitStore(storeDir, deps.signer);
+    const workdir = path.join(storeDir, "workspace");
+    await fs.promises.mkdir(workdir, { recursive: true });
+
     return {
       sources: [source],
       defaultSource: source.id,
-      storage: throwingStepEnvSlot<ContextStore>("storage", stepId),
-      workdir: throwingStepEnvWorkdir(stepId),
-      audit: throwingStepEnvSlot<AuditStore>("audit", stepId),
-      directors: throwingStepEnvSlot<DirectorRegistry>("directors", stepId),
+      storage,
+      workdir,
+      audit: storage,
+      directors: createDefaultDirectorRegistry(),
     };
   };
 }
@@ -567,7 +612,6 @@ export function createSidecarSubstrateFactory(
     const stepInferenceSources = parseStepInferenceSources(
       validated.STEP_INFERENCE_SOURCES,
     );
-    const buildStepEnv = createSidecarStepBuildEnv(stepInferenceSources);
 
     const signingKey = {
       publicKey: hexDecode(
@@ -619,51 +663,56 @@ export function createSidecarSubstrateFactory(
     await hostScheduler.start();
     const scheduler = adaptHostScheduler(hostScheduler);
 
-    // Per-step substrate slots (storage, audit, directors, workdir) the
-    // production `createWorkflowStepInvoker` adapter requires for a
-    // full agent harness are not yet wired by this factory; the
-    // throwing-Proxy stubs in `createSidecarStepBuildEnv` would surface
-    // immediately on every step invocation. Until those slots land, the
-    // factory installs a stub step invoker that mirrors the runlocal
-    // default body's spirit (`createDefaultStepInvoker` in
-    // `packages/workflow/src/runlocal/run-local.ts`): return a
-    // deterministic success output so the runtime body commits
-    // `StepCompleted` and schedules downstream primitives, without
-    // touching the agent harness's storage/audit/directors/workdir
-    // surface.
-    //
-    // `buildStepEnv` resolves the per-step `InferenceSource` from the
-    // pinned table; it is invoked here so a missing source-table entry
-    // (which is a deploy-router contract violation) surfaces at the
-    // step boundary rather than only on a downstream env-touch. The
-    // resolved source is intentionally unused by the stub; threading
-    // it into a real inference call is the next gap on the agent-
-    // harness wiring backlog.
-    const baseInvokeStep: StepInvoker = async (req) => {
-      const envBase = await buildStepEnv(req);
-      void envBase;
-      return { output: { reply: req.agent.id, turn: null } };
+    // The single-step / top-level path runs a real agent. The per-step
+    // env builder stands up real per-step storage/workdir/audit/directors
+    // rooted under the run (see `createSidecarStepBuildEnv`), resolving
+    // the per-step `InferenceSource` from the pinned table; the real
+    // step-invoker instantiates the step's agent via `createAgent`,
+    // delivers the resolved input as a synthesized inbound message, and
+    // captures the agent's reply as the step output.
+    const buildStepEnv = createSidecarStepBuildEnv({
+      table: stepInferenceSources,
+      dataDir: validated.SIDECAR_DATA_DIR,
+      workflowRunRepoId,
+      signer: createStepStorageSigner(signingKey),
+    });
+
+    // Tools are empty this phase, so a step's agent never reaches its
+    // `BaseEnv.authorize` slot (only tool/capability execution calls
+    // authorize). Wiring a throwing workflow-authorize surfaces a loud,
+    // structured failure the moment a tool-bearing step is added before
+    // the credentials snapshot is threaded into the step path, rather
+    // than silently authorizing.
+    const workflowAuthorize: WorkflowAuthorizeFn = () => {
+      throw new Error(
+        "sidecar workflow-child step invoker authorize: per-step credentials snapshot is not yet threaded into the step path; a step that calls authorize requires the supervisor's credentials snapshot wiring",
+      );
     };
+
+    const baseInvokeStep: StepInvoker = createWorkflowStepInvoker({
+      workflowAuthorize,
+      buildEnv: buildStepEnv,
+      agentFactory: createAgent,
+    });
 
     // Child-runtime step invoker. The in-process `runChild` (see
     // `createSidecarRunChild` below) runs a separate WorkflowDefinition
     // whose stepIds are disjoint from the parent's, so the parent's
     // `STEP_INFERENCE_SOURCES`-driven `buildStepEnv` would throw on
     // every child stepId ("no InferenceSource pinned"). The child
-    // invoker mirrors the parent stub's success output without
-    // consulting the parent's pinned source table; threading the
-    // child's WorkflowDefinition-derived sources into a real inference
-    // call is on the same backlog as the parent's stub.
+    // invoker returns a deterministic success output without consulting
+    // the parent's pinned source table; threading the child's
+    // WorkflowDefinition-derived sources into a real per-step agent is
+    // the recursive-honoring work, not the single-step path.
     const childInvokeStep: StepInvoker = (req) =>
       Promise.resolve({ output: { reply: req.agent.id, turn: null } });
 
     // Adapt the workflow-runtime `StepInvoker` shape onto the host's
-    // `ChildStepInvoker` shape. The wrapper today drops `onEvent` --
-    // the production step-invoker adapter does not yet thread an
-    // event firehose through the harness's send path; the event
-    // funnel inside the adapter lands when the harness's emit hook is
-    // wired. Holding the parameter at this boundary keeps the seam
-    // explicit so the wire-up is a single point of edit.
+    // `ChildStepInvoker` shape. The wrapper drops `onEvent` -- the
+    // step-invoker adapter does not yet thread an event firehose
+    // through the agent's send path; the event funnel inside the
+    // adapter is a later phase. Holding the parameter at this boundary
+    // keeps the seam explicit so the wire-up is a single point of edit.
     const invokeStep: RunWorkflowChildBindings["invokeStep"] = async (
       req,
       onEvent,
