@@ -1,0 +1,435 @@
+// Per-step tool materialization and agent construction for the
+// workflow-process child.
+//
+// The child IS the sidecar binary, so the sidecar's tool runtime
+// (`@intx/tool-packaging` loader, posix, the LSP plugin) is present in
+// the child's address space. This module is the seam that runs that
+// runtime when the real step-invoker builds a step's agent: it reads
+// the step's deploy tree off disk, materializes the pinned tool-package
+// closure via `materializeToolPackages`, builds the plugin chain
+// (mirroring `default-harness.ts`'s `build()`), attaches the resulting
+// tool factories to the step's `AgentDefinition`, and returns an
+// `Agent` whose `close()` tears every plugin and tool bundle down.
+//
+// LSP lifecycle (the riskiest sub-item, design §6): the LSP plugin
+// factory's `dispose` terminates the LSP subprocess. The
+// `createWorkflowStepInvoker` adapter calls `agent.close()` in a
+// `finally` on EVERY exit path (clean completion, abort, rejection),
+// so wrapping `close()` to also run the plugin + bundle disposers is
+// what guarantees the LSP subprocess dies with the step's agent --
+// no leak across steps, on abort, or on child recycle/drain (recycle
+// kills the child process, which kills the LSP grandchild regardless).
+//
+// Layering (design §3d): everything here lives in `apps/sidecar`. The
+// portable `@intx/workflow-host` package never gains a dependency on
+// the tool runtime; it only sees the `agentFactory` callback this
+// module produces.
+
+import path from "node:path";
+
+import {
+  createAgent,
+  defineAgent,
+  defineTool,
+  type Agent,
+  type AgentDefinition,
+  type AnnotatedPluginFactory,
+  type BaseEnv,
+  type ToolBundle,
+} from "@intx/agent";
+import {
+  readDeployTree,
+  sanitizeAddress,
+  type DeployApplyErrorEmitter,
+} from "@intx/hub-agent";
+import { getLogger } from "@intx/log";
+import type { LoadedToolFactory } from "@intx/tool-packaging";
+import { deriveStepAddress } from "@intx/workflow-deploy";
+import { parseAgentAddress } from "@intx/types";
+
+import { materializeToolPackages } from "./tool-materialization";
+
+const logger = getLogger(["sidecar", "workflow-child", "step-tools"]);
+
+const INSTANCE_PREFIX = "ins_";
+
+/**
+ * Cache and registry caps the per-step tool loader needs. Resolved at
+ * the sidecar boot edge from the existing `SIDECAR_CACHE_*` /
+ * `SIDECAR_REGISTRY_*` config keys and threaded into the child through
+ * the substrate config, so the child's per-step materialization uses
+ * the same caps the in-process harness builder does.
+ */
+export interface StepToolCacheConfig {
+  readonly cacheMaxBytes: number;
+  readonly registryMaxTarballBytes: number;
+}
+
+/**
+ * Materialized tool runtime for one step's agent. Carried from
+ * `buildEnv` (which knows the step's identity) to the `agentFactory`
+ * (which knows the agent definition + env) via a symbol-keyed slot on
+ * the per-step env so the two callbacks of `createWorkflowStepInvoker`
+ * can cooperate without widening the portable adapter's surface.
+ */
+export interface StepToolMaterialization {
+  readonly factories: readonly LoadedToolFactory[];
+  readonly pluginFactories: readonly AnnotatedPluginFactory[];
+}
+
+/**
+ * Symbol-keyed slot the `buildEnv` callback sets on the env it returns
+ * and the `agentFactory` reads. Object spread (`{ ...envBase,
+ * authorize }`) inside the step-invoker adapter copies own enumerable
+ * symbol-keyed properties, so the slot survives the spread that
+ * produces the env handed to `agentFactory`.
+ */
+const STEP_TOOLS = Symbol("intx.sidecar.step-tools");
+
+// The per-step env carries one private symbol-keyed slot the
+// buildEnv/agentFactory pair cooperate over. The slot is read/written
+// through `Reflect.get`/`Reflect.set` so neither site needs a type
+// assertion: `BaseEnv` is an interface without a symbol index
+// signature, so a structural cast would otherwise be required.
+function setStepToolSlot(
+  env: object,
+  materialization: StepToolMaterialization,
+): void {
+  Reflect.set(env, STEP_TOOLS, materialization);
+}
+
+function getStepToolSlot(env: object): StepToolMaterialization | undefined {
+  const value: unknown = Reflect.get(env, STEP_TOOLS);
+  if (value === undefined) return undefined;
+  if (!isStepToolMaterialization(value)) {
+    throw new Error(
+      "sidecar workflow-child step tools: the per-step env's tool slot is not a StepToolMaterialization; the slot is private to this module and must only be set by attachStepTools",
+    );
+  }
+  return value;
+}
+
+function isStepToolMaterialization(
+  value: unknown,
+): value is StepToolMaterialization {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "factories" in value &&
+    "pluginFactories" in value &&
+    Array.isArray(value.factories) &&
+    Array.isArray(value.pluginFactories)
+  );
+}
+
+/**
+ * Resolve the on-disk directory holding a step's deploy tree.
+ *
+ * The deploy tree (`deploy/prompt.md`, `deploy/tool-packages-manifest.json`,
+ * `deploy/asset-mounts.json`) is shipped to the sidecar per step by the
+ * hub's `launchSession` deploy-pack push, which lands it in the LEGACY
+ * per-agent directory keyed by the step's sanitized mail address (see
+ * `@intx/hub-agent` `agentDir` / `sanitizeAddress`). It is NOT in the
+ * substrate's `agent-state/<id>` layout -- the multi-step deploy path
+ * never pushes step `agent-state` packs to the child's substrate.
+ *
+ * The step's mail address is the orchestrator's
+ * `deriveStepAddress(deploymentId, stepId, deploymentDomain)`. The
+ * orchestrator's `deploymentId`/`deploymentDomain` are recovered from
+ * the deployment mailbox address the supervisor threaded into the
+ * child as `MAILBOX_ADDRESS` (`ins_<deploymentId>@<domain>`): the
+ * instance-id local part minus the `ins_` prefix is the deploymentId,
+ * and the address domain is the deploymentDomain.
+ */
+export function stepDeployTreeDir(args: {
+  dataDir: string;
+  mailboxAddress: string;
+  stepId: string;
+}): string {
+  const parsed = parseAgentAddress(args.mailboxAddress);
+  if (parsed === null) {
+    throw new Error(
+      `sidecar workflow-child step tools: deployment mailbox address ${JSON.stringify(args.mailboxAddress)} is not a parseable agent address; cannot locate the step's deploy tree`,
+    );
+  }
+  if (!parsed.instanceId.startsWith(INSTANCE_PREFIX)) {
+    throw new Error(
+      `sidecar workflow-child step tools: deployment mailbox instance id ${JSON.stringify(parsed.instanceId)} does not carry the ${JSON.stringify(INSTANCE_PREFIX)} prefix; cannot derive the orchestrator deploymentId`,
+    );
+  }
+  const deploymentId = parsed.instanceId.slice(INSTANCE_PREFIX.length);
+  const stepAddress = deriveStepAddress({
+    deploymentId,
+    stepId: args.stepId,
+    deploymentDomain: parsed.domain,
+  });
+  return path.join(args.dataDir, sanitizeAddress(stepAddress));
+}
+
+/**
+ * Read a step's deploy tree and materialize its pinned tool-package
+ * closure. The tarball cache and the tool instance dir are rooted under
+ * the supplied per-step `storeDir` (the Phase-1 per-step state root) so
+ * concurrent steps/agents in one child never collide on cache or
+ * apply-state paths.
+ *
+ * A deploy with no tool-package manifest yields empty factories -- the
+ * legitimate `rawManifestBytes === undefined` case. A manifest that is
+ * present but fails to load surfaces loudly through
+ * `materializeToolPackages` (the deploy.apply.error / throw path),
+ * never a silent empty-tools fallback that would mask a broken deploy.
+ */
+export async function materializeStepTools(args: {
+  dataDir: string;
+  mailboxAddress: string;
+  stepId: string;
+  /** Per-step state root; cache + instance dir + workspace live under it. */
+  storeDir: string;
+  cache: StepToolCacheConfig;
+  emitDeployApplyError?: DeployApplyErrorEmitter;
+}): Promise<StepToolMaterialization> {
+  const deployTreeDir = stepDeployTreeDir({
+    dataDir: args.dataDir,
+    mailboxAddress: args.mailboxAddress,
+    stepId: args.stepId,
+  });
+  const deployTree = await readDeployTree(deployTreeDir);
+
+  // Root the tarball cache per step so concurrent steps in one child
+  // do not race on the content-addressable cache root. The cache is
+  // content-addressed and therefore safe to share globally, but the
+  // design (§3d, point 3) calls for a per-step cacheRoot so a wedged
+  // or partially-written apply in one step cannot corrupt another's
+  // view.
+  const cacheRoot = path.join(args.storeDir, "tarball-cache");
+
+  // Asset-mounted tool tarballs are staged by the hub's asset-pack push
+  // into the step's LEGACY agent dir workspace (the same dir the deploy
+  // tree lives in), not under the per-step store dir. Point the loader's
+  // asset resolution there while keeping the apply-state + cache rooted
+  // per step under `storeDir`.
+  const assetRoot = path.join(deployTreeDir, "workspace");
+
+  const materialized = await materializeToolPackages({
+    rawManifestBytes: deployTree.toolPackageManifestRaw,
+    assetMounts: deployTree.assetMounts,
+    storeDir: args.storeDir,
+    assetRoot,
+    agentAddress: args.mailboxAddress,
+    cacheRoot,
+    cacheMaxBytes: args.cache.cacheMaxBytes,
+    registryMaxTarballBytes: args.cache.registryMaxTarballBytes,
+    ...(args.emitDeployApplyError !== undefined
+      ? { emitDeployApplyError: args.emitDeployApplyError }
+      : { emitDeployApplyError: undefined }),
+  });
+  return {
+    factories: materialized.factories,
+    pluginFactories: materialized.pluginFactories,
+  };
+}
+
+/**
+ * Attach a step's materialized tool runtime to the per-step env so the
+ * tool-bearing `agentFactory` can consume it. Called by `buildEnv`
+ * after `materializeStepTools` resolves.
+ *
+ * The parameter is `Omit<BaseEnv, "authorize">` because `buildEnv`
+ * yields exactly that shape (the step-invoker adapter adds `authorize`
+ * before the env reaches `agentFactory`); the symbol slot survives the
+ * adapter's `{ ...envBase, authorize }` spread.
+ */
+export function attachStepTools(
+  env: Omit<BaseEnv, "authorize">,
+  materialization: StepToolMaterialization,
+): void {
+  setStepToolSlot(env, materialization);
+}
+
+/**
+ * Build the `agentFactory` the workflow step-invoker uses. The returned
+ * factory reads the materialized tool runtime off the env (set by
+ * `buildEnv` via `attachStepTools`), augments the step's
+ * `AgentDefinition` with the loaded tool factories (wrapped to capture
+ * each bundle's disposer), constructs the plugin chain on `env.plugins`
+ * exactly as `default-harness.ts` does, builds the agent, and wraps
+ * `agent.close()` so every plugin instance and tool bundle is disposed
+ * when the step's agent closes.
+ *
+ * When the env carries no materialized tools (the `buildEnv` did not
+ * run materialization, e.g. a unit test using the bare factory), the
+ * factory falls back to `createAgent(def, env)` unchanged.
+ */
+export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
+  def: AgentDefinition<EnvReq>,
+  env: EnvReq,
+) => Promise<Agent> {
+  return async <EnvReq extends BaseEnv>(
+    def: AgentDefinition<EnvReq>,
+    env: EnvReq,
+  ): Promise<Agent> => {
+    const materialization = getStepToolSlot(env);
+    if (materialization === undefined) {
+      return createAgent(def, env);
+    }
+
+    // Wrap each loaded tool factory so its bundle's `dispose` (when
+    // present) is captured. Dedupe by closure identity, mirroring
+    // `default-harness.ts`: a factory whose bundle returns the same
+    // `dispose` on every invocation must not be torn down once per
+    // push. `defineTool` re-annotates the wrapper with the loader's
+    // `id`/`requires` so the resulting factory is a real
+    // `AnnotatedToolFactory<BaseEnv>`, not a hand-shaped lookalike.
+    const capturedDisposers = new Set<() => unknown>();
+    const factoriesWithCapture = materialization.factories.map((annotated) =>
+      defineTool({
+        id: annotated.id,
+        requires: annotated.requires,
+        factory: (factoryEnv: BaseEnv): ToolBundle => {
+          const bundle = annotated(factoryEnv);
+          if (bundle.dispose !== undefined) {
+            capturedDisposers.add(bundle.dispose);
+          }
+          return bundle;
+        },
+      }),
+    );
+
+    // Rebuild the def with the materialized tool factories. The
+    // serialized `def.toolFactories` carry only `{ id, requires }`
+    // metadata (the workflow projection strips closures on the wire),
+    // so the runnable factories come from materialization, not the
+    // incoming def. `defineAgent` owns the contravariance escape for
+    // the `BaseEnv`-typed loader factories (see its `EnvRequiredByAll`
+    // machinery), the same path `default-harness.ts` takes.
+    const toolDef = defineAgent({
+      id: def.id,
+      systemPrompt: def.systemPrompt,
+      tools: factoriesWithCapture,
+      capabilities: [...def.capabilities],
+      inference: { sources: [...def.inference.sources] },
+      ...(def.description !== undefined
+        ? { description: def.description }
+        : {}),
+      ...(def.director !== undefined ? { director: def.director } : {}),
+      ...(def.tags !== undefined ? { tags: def.tags } : {}),
+    });
+
+    // Instantiate plugin factories one at a time so each successive
+    // factory sees the prior plugins' instances on `env.plugins`. This
+    // mirrors `default-harness.ts`'s `build()`: posix's bundle reads
+    // `env.plugins` and threads ToolPlugin-shaped values into
+    // `createPosixTools`; the LSP plugin factory is what populates them.
+    //
+    // On a midway factory throw, every plugin instance already
+    // constructed releases what it acquired (the LSP plugin starts a
+    // subprocess) before the construction error propagates, so a
+    // partial-success chain never leaks an LSP subprocess.
+    const pluginInstances: unknown[] = [];
+    let chainEnv: BaseEnv = env;
+    try {
+      for (const factory of materialization.pluginFactories) {
+        const instance = factory(chainEnv);
+        pluginInstances.push(instance);
+        chainEnv = {
+          ...env,
+          plugins: [...pluginInstances],
+        };
+      }
+    } catch (err) {
+      await disposeAll(pluginInstances, "plugin construction rollback");
+      throw err;
+    }
+
+    let agent: Agent;
+    try {
+      agent = await createAgent(toolDef, chainEnv);
+    } catch (err) {
+      // `createAgent` disposes the tool bundles it constructed on its
+      // own failure path, but the plugin instances are this module's
+      // to own -- tear them down so a failed agent build does not leak
+      // the LSP subprocess.
+      await disposeAll(pluginInstances, "agent construction failure");
+      throw err;
+    }
+
+    return wrapAgentClose(agent, async () => {
+      // Tool bundle disposers first (posix's bundle dispose chains
+      // through to the LSP plugin's `dispose`), then the plugin
+      // instances directly. Disposing the LSP plugin twice is safe:
+      // `lsp.dispose()` clears its client set and the posix bundle's
+      // dispose is idempotent. Running both guarantees the LSP
+      // subprocess is torn down even for a plugin no tool bundle
+      // consumed.
+      for (const dispose of capturedDisposers) {
+        try {
+          await dispose();
+        } catch (cause) {
+          logger.warn`step tool bundle dispose failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+        }
+      }
+      await disposeAll(pluginInstances, "step teardown");
+    });
+  };
+}
+
+/**
+ * Return an `Agent` whose `close()` runs the original close and then
+ * the supplied teardown. The teardown runs AFTER the agent's own close
+ * so the reactor has stopped issuing tool calls before the tool/plugin
+ * resources are released. `close()` is idempotent at the agent layer;
+ * this wrapper guards its own teardown so a double `close()` does not
+ * double-dispose.
+ */
+function wrapAgentClose(agent: Agent, teardown: () => Promise<void>): Agent {
+  let tornDown = false;
+  return {
+    ...agent,
+    send: (content, opts) => agent.send(content, opts),
+    stream: () => agent.stream(),
+    deliver: (message) => agent.deliver(message),
+    setSource: (source) => agent.setSource(source),
+    history: () => agent.history(),
+    checkpoints: (limit) => agent.checkpoints(limit),
+    readAt: (hash) => agent.readAt(hash),
+    blobReader: agent.blobReader,
+    async close() {
+      await agent.close();
+      if (tornDown) return;
+      tornDown = true;
+      await teardown();
+    },
+  };
+}
+
+async function disposeAll(
+  instances: readonly unknown[],
+  context: string,
+): Promise<void> {
+  for (const instance of instances) {
+    const dispose = pluginDispose(instance);
+    if (dispose === undefined) continue;
+    try {
+      // `await` accepts non-promise values verbatim, so this works
+      // whether the disposer is sync or async.
+      await dispose();
+    } catch (cause) {
+      logger.warn`step plugin dispose failed during ${context}: ${cause instanceof Error ? cause.message : String(cause)}`;
+    }
+  }
+}
+
+/**
+ * Extract a callable `dispose` from a plugin instance whose static type
+ * is `unknown` (plugin factories return host-defined shapes the agent
+ * runtime does not interpret). Returns a bound disposer or `undefined`
+ * when the instance carries no `dispose` function.
+ */
+function pluginDispose(value: unknown): (() => unknown) | undefined {
+  if (value === null || typeof value !== "object") return undefined;
+  if (!("dispose" in value)) return undefined;
+  const dispose: unknown = value.dispose;
+  if (typeof dispose !== "function") return undefined;
+  const fn = dispose;
+  return () => fn.call(value);
+}

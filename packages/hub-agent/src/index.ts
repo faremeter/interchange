@@ -48,3 +48,4 @@ export {
 } from "./sidecar-orchestrator";
 export { applyAssetPack, type ApplyAssetPackArgs } from "./apply-asset-pack";
 export { readDeployTree, type DeployTree } from "./deploy-tree";
+export { agentDir, sanitizeAddress } from "./agent-paths";
