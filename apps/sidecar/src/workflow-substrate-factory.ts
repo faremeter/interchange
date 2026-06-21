@@ -31,7 +31,7 @@ import { InferenceSource } from "@intx/types/runtime";
 import { evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
 import type { DirectorRegistry } from "@intx/agent";
-import { createAgent, createDefaultDirectorRegistry } from "@intx/agent";
+import { createDefaultDirectorRegistry } from "@intx/agent";
 import { createSSHSignature } from "@intx/crypto-node";
 import {
   createAgentRepoStore,
@@ -68,6 +68,13 @@ import {
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 
+import {
+  attachStepTools,
+  createToolBearingAgentFactory,
+  materializeStepTools,
+  type StepToolCacheConfig,
+} from "./step-agent-tools";
+
 // The child does not construct a workflow-run pack-push pipeline of
 // its own. The supervisor owns the workflow-run repo's write
 // contract; the supervisor's substrate is wrapped at the sidecar's
@@ -102,6 +109,8 @@ export const SIDECAR_SUBSTRATE_CONFIG_KEYS = [
   "SIDECAR_ID",
   "SIDECAR_TOKEN",
   "STEP_INFERENCE_SOURCES",
+  "SIDECAR_CACHE_MAX_BYTES",
+  "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
 ] as const;
 
 const SubstrateConfig = type({
@@ -116,7 +125,32 @@ const SubstrateConfig = type({
   SIDECAR_ID: "string > 0",
   SIDECAR_TOKEN: "string > 0",
   STEP_INFERENCE_SOURCES: "string > 0",
+  // Per-step tool-loader caps. The supervisor threads the boot edge's
+  // resolved `SIDECAR_CACHE_MAX_BYTES` / `SIDECAR_REGISTRY_MAX_TARBALL_BYTES`
+  // through `substrateEnv`; the child's per-step tool materialization
+  // uses the same caps the in-process harness builder does. Validated
+  // as positive-finite-number strings at this boundary.
+  SIDECAR_CACHE_MAX_BYTES: "string > 0",
+  SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "string > 0",
 }).onUndeclaredKey("ignore");
+
+/**
+ * Parse a substrate-config cap entry (`SIDECAR_CACHE_MAX_BYTES` /
+ * `SIDECAR_REGISTRY_MAX_TARBALL_BYTES`) into a positive finite number.
+ * The boot edge already validated these via the `config.ts` readers
+ * before serializing them into `substrateEnv`; this re-parse at the
+ * child boundary keeps the typed-config contract honest rather than
+ * trusting the wire blindly.
+ */
+function parseByteCap(raw: string, name: string): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(
+      `sidecar workflow-child substrate config: ${name} must be a positive finite number; got ${JSON.stringify(raw)}`,
+    );
+  }
+  return n;
+}
 
 /**
  * Per-step `InferenceSource` table parsed from the spawn-time
@@ -278,6 +312,14 @@ interface SidecarStepBuildEnvDeps {
   dataDir: string;
   workflowRunRepoId: RepoId;
   signer: (payload: string) => Promise<string>;
+  /**
+   * Deployment mailbox address the supervisor threaded into the child
+   * (`MAILBOX_ADDRESS`). Used to locate each step's on-disk deploy tree
+   * for tool materialization (see `stepDeployTreeDir`).
+   */
+  mailboxAddress: string;
+  /** Per-step tool-loader caps (cache + registry tarball size). */
+  cache: StepToolCacheConfig;
 }
 
 /**
@@ -331,7 +373,22 @@ function createSidecarStepBuildEnv(
     const workdir = path.join(storeDir, "workspace");
     await fs.promises.mkdir(workdir, { recursive: true });
 
-    return {
+    // Materialize the step's pinned tool-package closure (posix, LSP,
+    // mail, ...) from its on-disk deploy tree, rooted per step under
+    // `storeDir` so concurrent steps in one child never collide on the
+    // tarball cache or the apply-state tree. A deploy with no manifest
+    // yields empty tools (the legitimate `rawManifestBytes === undefined`
+    // case); a present-but-broken manifest surfaces loudly through
+    // `materializeStepTools` rather than degrading to empty tools.
+    const materialization = await materializeStepTools({
+      dataDir: deps.dataDir,
+      mailboxAddress: deps.mailboxAddress,
+      stepId,
+      storeDir,
+      cache: deps.cache,
+    });
+
+    const env: StepEnvBase = {
       sources: [source],
       defaultSource: source.id,
       storage,
@@ -339,6 +396,13 @@ function createSidecarStepBuildEnv(
       audit: storage,
       directors: createDefaultDirectorRegistry(),
     };
+    // Carry the materialized tool runtime to the tool-bearing
+    // `agentFactory` via the env's symbol-keyed slot. The step-invoker
+    // adapter spreads this env (`{ ...envBase, authorize }`) before
+    // handing it to `agentFactory`; object spread preserves own
+    // symbol-keyed properties, so the slot survives the spread.
+    attachStepTools(env, materialization);
+    return env;
   };
 }
 
@@ -670,29 +734,82 @@ export function createSidecarSubstrateFactory(
     // step-invoker instantiates the step's agent via `createAgent`,
     // delivers the resolved input as a synthesized inbound message, and
     // captures the agent's reply as the step output.
+    const stepToolCache: StepToolCacheConfig = {
+      cacheMaxBytes: parseByteCap(
+        validated.SIDECAR_CACHE_MAX_BYTES,
+        "SIDECAR_CACHE_MAX_BYTES",
+      ),
+      registryMaxTarballBytes: parseByteCap(
+        validated.SIDECAR_REGISTRY_MAX_TARBALL_BYTES,
+        "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
+      ),
+    };
+
+    // The single-step / top-level path runs a real agent with REAL
+    // tools materialized in-child. The per-step env builder stands up
+    // real per-step storage/workdir/audit/directors rooted under the
+    // run (see `createSidecarStepBuildEnv`), resolves the per-step
+    // `InferenceSource`, and materializes the step's pinned
+    // tool-package closure (posix, LSP, mail, ...) from its on-disk
+    // deploy tree -- rooted per step so concurrent steps in one child
+    // never collide on the tarball cache or apply-state. The
+    // tool-bearing `agentFactory` below attaches those factories to the
+    // step's `AgentDefinition` and builds the plugin chain.
     const buildStepEnv = createSidecarStepBuildEnv({
       table: stepInferenceSources,
       dataDir: validated.SIDECAR_DATA_DIR,
       workflowRunRepoId,
       signer: createStepStorageSigner(signingKey),
+      mailboxAddress: env.spawn.mailboxAddress,
+      cache: stepToolCache,
     });
 
-    // Tools are empty this phase, so a step's agent never reaches its
-    // `BaseEnv.authorize` slot (only tool/capability execution calls
-    // authorize). Wiring a throwing workflow-authorize surfaces a loud,
-    // structured failure the moment a tool-bearing step is added before
-    // the credentials snapshot is threaded into the step path, rather
-    // than silently authorizing.
-    const workflowAuthorize: WorkflowAuthorizeFn = () => {
+    // Step authorize for the tool-invocation gate.
+    //
+    // The agent runtime gates EVERY tool call through `env.authorize`
+    // with `resource = tool:<name>`, `action = "invoke"` (the inference
+    // layer's authz before-tool extension). So running real tools in the
+    // child requires a working authorize, not the throwing stub Phase 1
+    // could use with empty tools.
+    //
+    // The toolset the step's agent carries was already vetted at deploy
+    // time: the workflow-deploy capability walk emits a `tool:<name>`
+    // grant for every tool the agent pins, and the deploy fails unless
+    // the operator approved each one (`operatorApprovals`). So a tool
+    // that reaches the child has already passed the operator gate; the
+    // child allowing its `tool:<name>/invoke` call does not widen the
+    // toolset beyond what the operator approved upstream.
+    //
+    // The PER-STEP grant snapshot (the supervisor's credentials snapshot
+    // over the control IPC) is Phase 4 work and is not yet threaded into
+    // the step path. Until it lands, any authorize call for a NON-tool
+    // resource -- a capability-gated tool asking for a domain resource,
+    // an `mail.send` check -- still surfaces a loud, structured failure
+    // rather than a silent allow, so the Phase 4 gap stays visible.
+    const workflowAuthorize: WorkflowAuthorizeFn = (resource, action) => {
+      if (resource.startsWith("tool:") && action === "invoke") {
+        return Promise.resolve({
+          effect: "allow" as const,
+          matchingGrants: [],
+          resolvedBy: null,
+        });
+      }
       throw new Error(
-        "sidecar workflow-child step invoker authorize: per-step credentials snapshot is not yet threaded into the step path; a step that calls authorize requires the supervisor's credentials snapshot wiring",
+        `sidecar workflow-child step invoker authorize: per-step credentials snapshot is not yet threaded into the step path; a step that authorizes ${JSON.stringify(resource)}/${JSON.stringify(action)} (beyond the deploy-vetted tool-invocation gate) requires the supervisor's credentials snapshot wiring`,
       );
     };
 
+    // The tool-bearing agent factory reads the materialized tool
+    // runtime off the per-step env (set by `buildStepEnv` via
+    // `attachStepTools`), attaches the loaded tool factories to the
+    // step's `AgentDefinition`, builds the plugin chain on
+    // `env.plugins` exactly as `default-harness.ts` does, and wraps
+    // `agent.close()` so every plugin (the LSP subprocess included) and
+    // tool bundle is torn down with the agent on every exit path.
     const baseInvokeStep: StepInvoker = createWorkflowStepInvoker({
       workflowAuthorize,
       buildEnv: buildStepEnv,
-      agentFactory: createAgent,
+      agentFactory: createToolBearingAgentFactory(),
     });
 
     // Child-runtime step invoker. The in-process `runChild` (see

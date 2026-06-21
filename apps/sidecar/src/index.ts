@@ -244,6 +244,12 @@ const multistepSubstrateEnv: Record<string, string> = {
   SIDECAR_ID: sidecarId,
   SIDECAR_TOKEN: sidecarToken,
   PATH: requireEnv("PATH"),
+  // Tool-loader caps the child's per-step tool materialization uses.
+  // Resolved once at the boot edge (same values the in-process harness
+  // builder receives) and threaded into the child through the substrate
+  // config so the child does not re-read env at a non-boundary site.
+  SIDECAR_CACHE_MAX_BYTES: String(cacheMaxBytes),
+  SIDECAR_REGISTRY_MAX_TARBALL_BYTES: String(registryMaxTarballBytes),
 };
 const hostHome = process.env["HOME"];
 if (hostHome !== undefined) {

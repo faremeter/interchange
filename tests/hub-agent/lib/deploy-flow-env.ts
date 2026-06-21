@@ -120,13 +120,116 @@ export type MockInference = {
   requests: InferenceRequest[];
 };
 
+/**
+ * Opt-in tool-call behavior for the mock inference server. When set, the
+ * FIRST request whose `tools` array contains a tool named `toolName`
+ * yields a `tool_use` turn (stop_reason `tool_use`) calling that tool
+ * with `input`; every later request (the one carrying the tool_result)
+ * yields the ordinary `I see these tools: ...` text turn. This drives a
+ * real tool execution + tool_result round-trip through the spawned
+ * child so a test can assert the tool ran in-child (e.g. by its
+ * filesystem side effect).
+ */
+export type MockToolCall = {
+  toolName: string;
+  input: Record<string, unknown>;
+};
+
+export type StartMockInferenceOpts = {
+  toolCall?: MockToolCall;
+};
+
 // Mock inference server
 //
 // Returns a canned Anthropic-style SSE assistant response that includes the
 // tool names it was given in the request. This lets tests assert that the
 // harness passed the deploy-tree tools through to inference.
-export function startMockInference(): MockInference {
+//
+// With `opts.toolCall`, the first request that exposes the named tool
+// instead returns a `tool_use` turn so the agent executes the tool and
+// loops back with a tool_result, on which the server returns the text
+// turn. This is how the Phase 2 posix-tool test drives a real tool run
+// inside the spawned child.
+export function startMockInference(
+  opts: StartMockInferenceOpts = {},
+): MockInference {
   const requests: InferenceRequest[] = [];
+  let toolCallEmitted = false;
+
+  const textTurn = (toolNames: string[]): string[] => {
+    const text = `I see these tools: ${toolNames.join(", ")}`;
+    return [
+      sse("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_mock",
+          type: "message",
+          role: "assistant",
+          content: [],
+          model: "mock-model",
+          stop_reason: null,
+          usage: { input_tokens: 10, output_tokens: 0 },
+        },
+      }),
+      sse("content_block_start", {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      }),
+      sse("content_block_delta", {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text },
+      }),
+      sse("content_block_stop", { type: "content_block_stop", index: 0 }),
+      sse("message_delta", {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn" },
+        usage: { output_tokens: 20 },
+      }),
+      sse("message_stop", { type: "message_stop" }),
+    ];
+  };
+
+  const toolUseTurn = (call: MockToolCall): string[] => [
+    sse("message_start", {
+      type: "message_start",
+      message: {
+        id: "msg_mock_tooluse",
+        type: "message",
+        role: "assistant",
+        content: [],
+        model: "mock-model",
+        stop_reason: null,
+        usage: { input_tokens: 10, output_tokens: 0 },
+      },
+    }),
+    sse("content_block_start", {
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "tool_use",
+        id: "toolu_mock_1",
+        name: call.toolName,
+        input: {},
+      },
+    }),
+    sse("content_block_delta", {
+      type: "content_block_delta",
+      index: 0,
+      delta: {
+        type: "input_json_delta",
+        partial_json: JSON.stringify(call.input),
+      },
+    }),
+    sse("content_block_stop", { type: "content_block_stop", index: 0 }),
+    sse("message_delta", {
+      type: "message_delta",
+      delta: { stop_reason: "tool_use" },
+      usage: { output_tokens: 20 },
+    }),
+    sse("message_stop", { type: "message_stop" }),
+  ];
 
   const server = Bun.serve({
     port: 0,
@@ -136,44 +239,18 @@ export function startMockInference(): MockInference {
       requests.push(body);
 
       const toolNames = (body.tools ?? []).map((t) => t.name);
-      const text = `I see these tools: ${toolNames.join(", ")}`;
+      const wantsToolCall =
+        opts.toolCall !== undefined &&
+        !toolCallEmitted &&
+        toolNames.includes(opts.toolCall.toolName);
 
-      const events = [
-        `event: message_start\ndata: ${JSON.stringify({
-          type: "message_start",
-          message: {
-            id: "msg_mock",
-            type: "message",
-            role: "assistant",
-            content: [],
-            model: "mock-model",
-            stop_reason: null,
-            usage: { input_tokens: 10, output_tokens: 0 },
-          },
-        })}\n\n`,
-        `event: content_block_start\ndata: ${JSON.stringify({
-          type: "content_block_start",
-          index: 0,
-          content_block: { type: "text", text: "" },
-        })}\n\n`,
-        `event: content_block_delta\ndata: ${JSON.stringify({
-          type: "content_block_delta",
-          index: 0,
-          delta: { type: "text_delta", text },
-        })}\n\n`,
-        `event: content_block_stop\ndata: ${JSON.stringify({
-          type: "content_block_stop",
-          index: 0,
-        })}\n\n`,
-        `event: message_delta\ndata: ${JSON.stringify({
-          type: "message_delta",
-          delta: { stop_reason: "end_turn" },
-          usage: { output_tokens: 20 },
-        })}\n\n`,
-        `event: message_stop\ndata: ${JSON.stringify({
-          type: "message_stop",
-        })}\n\n`,
-      ];
+      let events: string[];
+      if (wantsToolCall && opts.toolCall !== undefined) {
+        toolCallEmitted = true;
+        events = toolUseTurn(opts.toolCall);
+      } else {
+        events = textTurn(toolNames);
+      }
 
       const stream = new ReadableStream({
         start(controller) {
@@ -191,6 +268,10 @@ export function startMockInference(): MockInference {
   });
 
   return { server, requests };
+}
+
+function sse(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
 // Synthetic @intx/tools-mail tarball
@@ -223,7 +304,16 @@ export async function buildSyntheticToolsMailTarball(
     }),
   );
 
+  // The tool's `run` writes a sentinel file into the agent's
+  // `env.workdir` so a spawned-child test can prove the tool actually
+  // executed IN THE CHILD by observing the file land in the child's
+  // per-step workspace. The write targets the `body` input as the
+  // filename and writes its `to` input as the content. Tests that never
+  // drive the model to call the tool (e.g. the deploy-flow tool-name
+  // round-trip) never invoke `run`, so the write is inert for them.
   const bundleSource = `
+import fs from "node:fs";
+import path from "node:path";
 const factory = (env) => ({
   definitions: [
     {
@@ -236,7 +326,14 @@ const factory = (env) => ({
       },
     },
   ],
-  run: async (call, signal) => ({ callId: call.id, content: "ok" }),
+  run: async (call, signal) => {
+    const args = call.arguments ?? {};
+    const filename = typeof args.body === "string" ? args.body : "tool-ran.txt";
+    const content = typeof args.to === "string" ? args.to : "ok";
+    await fs.promises.mkdir(env.workdir, { recursive: true });
+    await fs.promises.writeFile(path.join(env.workdir, filename), content);
+    return { callId: call.id, content: "wrote " + filename };
+  },
 });
 export const mail = Object.assign(factory, {
   id: "@intx/tools-mail/sidecar-bundle",
@@ -634,6 +731,13 @@ export type StartDeployFlowEnvOpts = {
    * flags and override any fixture default.
    */
   sidecarEnv?: Record<string, string>;
+  /**
+   * Opt-in tool-call behavior for the mock inference server. When set,
+   * the first request exposing the named tool returns a `tool_use`
+   * turn so the spawned child's agent actually runs the tool. See
+   * `MockToolCall`.
+   */
+  inferenceToolCall?: MockToolCall;
 };
 
 // Compose the full deploy-flow env: hub server, mock inference, sidecar
@@ -650,7 +754,11 @@ export async function startDeployFlowEnv(
   };
 
   const hub = await startHub(registerTempDir);
-  const inference = startMockInference();
+  const inference = startMockInference(
+    opts.inferenceToolCall !== undefined
+      ? { toolCall: opts.inferenceToolCall }
+      : {},
+  );
 
   const hubPort = hub.server.port;
   if (hubPort === undefined) {

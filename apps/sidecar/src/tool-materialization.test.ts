@@ -8,7 +8,7 @@ import {
   materializeToolPackages,
   parseActiveDeployId,
   persistActiveDeployIdWithFallback,
-} from "./default-harness";
+} from "./tool-materialization";
 
 const tempDirs: string[] = [];
 
