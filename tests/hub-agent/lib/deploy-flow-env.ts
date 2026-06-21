@@ -333,6 +333,7 @@ function sse(event: string, data: unknown): string {
 // seeing.
 export async function buildSyntheticToolsMailTarball(
   registerTempDir: (dir: string) => void,
+  opts: { transportBacked?: boolean } = {},
 ): Promise<Uint8Array> {
   const stagingDir = await fs.promises.mkdtemp(
     path.join(os.tmpdir(), "tools-mail-fixture-"),
@@ -351,14 +352,65 @@ export async function buildSyntheticToolsMailTarball(
     }),
   );
 
-  // The tool's `run` writes a sentinel file into the agent's
-  // `env.workdir` so a spawned-child test can prove the tool actually
-  // executed IN THE CHILD by observing the file land in the child's
-  // per-step workspace. The write targets the `body` input as the
-  // filename and writes its `to` input as the content. Tests that never
-  // drive the model to call the tool (e.g. the deploy-flow tool-name
-  // round-trip) never invoke `run`, so the write is inert for them.
-  const bundleSource = `
+  // Two bundle shapes, selected by `opts.transportBacked`:
+  //
+  // Default (filesystem-only): the tool's `run` writes a sentinel file
+  // into the agent's `env.workdir` so a spawned-child test can prove the
+  // tool executed IN THE CHILD by observing the file in the per-step
+  // workspace. It declares `requires: []` and never touches the agent's
+  // transport. Tests that never drive the model to call the tool never
+  // invoke `run`, so the write is inert for them.
+  //
+  // Transport-backed (the 4.6 milestone's OUTBOUND proof): the tool calls
+  // `env.transport.send(...)` -- the SAME supervisor-backed transport the
+  // unified child wires for a step agent -- so the call exercises the
+  // real OUTBOUND chain (mail tool -> supervisor-backed transport ->
+  // outbound bridge -> `outbound.message` IPC -> supervisor `sendOutbound`
+  // -> host transport signed send -> `SendReceipt`). It declares
+  // `requires: ["transport", "address"]` so the loader populates those
+  // env slots, sends to the `to` argument, and writes the sentinel ONLY
+  // after a successful receipt. A broken outbound path rejects inside
+  // `send`, so no sentinel is written and the run fails -- making the
+  // sentinel a load-bearing proof of the signed-outbound composition.
+  const bundleSource = opts.transportBacked
+    ? `
+import fs from "node:fs";
+import path from "node:path";
+const factory = (env) => ({
+  definitions: [
+    {
+      name: "mail_send",
+      description: "Send a mail message",
+      inputSchema: {
+        type: "object",
+        properties: { to: { type: "string" }, body: { type: "string" } },
+        required: ["to", "body"],
+      },
+    },
+  ],
+  run: async (call, signal) => {
+    const args = call.arguments ?? {};
+    const to = typeof args.to === "string" ? args.to : env.address;
+    const filename = typeof args.body === "string" ? args.body : "tool-ran.txt";
+    const receipt = await env.transport.send({
+      to,
+      type: "conversation.message",
+      content: "Reply produced by the unified-host step agent.",
+    }, signal);
+    await fs.promises.mkdir(env.workdir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(env.workdir, filename),
+      JSON.stringify({ messageId: receipt.messageId, status: receipt.status }),
+    );
+    return { callId: call.id, content: "sent " + receipt.messageId };
+  },
+});
+export const mail = Object.assign(factory, {
+  id: "@intx/tools-mail/sidecar-bundle",
+  requires: ["transport", "address"],
+});
+`.trimStart()
+    : `
 import fs from "node:fs";
 import path from "node:path";
 const factory = (env) => ({
@@ -420,6 +472,7 @@ export type HubEnv = {
 // resolver path exercises the real registry walker end-to-end.
 export async function startHub(
   registerTempDir: (dir: string) => void,
+  opts: { transportBackedMailTool?: boolean } = {},
 ): Promise<HubEnv> {
   const agentEvents: HubEnv["agentEvents"] = [];
   const deployAcks = new Map<string, string>();
@@ -510,7 +563,9 @@ export async function startHub(
     deployAcks.set(agentAddress, publicKey);
   });
 
-  const tarballBytes = await buildSyntheticToolsMailTarball(registerTempDir);
+  const tarballBytes = await buildSyntheticToolsMailTarball(registerTempDir, {
+    ...(opts.transportBackedMailTool === true ? { transportBacked: true } : {}),
+  });
   await agentRepoStore.repoStore.initRepo({
     kind: "package-registry",
     id: ASSET_ID,
@@ -792,6 +847,18 @@ export type StartDeployFlowEnvOpts = {
    * `StartMockInferenceOpts.echoUserMessage`.
    */
   inferenceEchoUserMessage?: boolean;
+  /**
+   * When true, the synthetic `@intx/tools-mail` tarball the hub seeds
+   * ships the transport-backed `mail_send` bundle: its `run` calls
+   * `env.transport.send(...)` (the supervisor-backed transport the
+   * unified child wires) and writes its workspace sentinel only after a
+   * successful `SendReceipt`. This drives the real OUTBOUND signed-send
+   * chain through the spawned child, proving the 4.3 path composes with
+   * the rest of the single-agent lifecycle. The default filesystem-only
+   * bundle is unchanged for tests that only assert in-child tool
+   * execution.
+   */
+  transportBackedMailTool?: boolean;
 };
 
 // Compose the full deploy-flow env: hub server, mock inference, sidecar
@@ -807,7 +874,11 @@ export async function startDeployFlowEnv(
     tempDirs.push(dir);
   };
 
-  const hub = await startHub(registerTempDir);
+  const hub = await startHub(registerTempDir, {
+    ...(opts.transportBackedMailTool === true
+      ? { transportBackedMailTool: true }
+      : {}),
+  });
   const inference = startMockInference({
     ...(opts.inferenceToolCall !== undefined
       ? { toolCall: opts.inferenceToolCall }
