@@ -69,6 +69,21 @@ export type CreateDeployRouter = (deps: {
   sessions: SessionManager;
   keyStore: AgentKeyStore;
   onAgentEvent: SessionManager["onAgentEvent"];
+  /**
+   * Per-event sink the multi-step branch routes a spawned child's
+   * verified `InferenceEvent`s through, keyed by the deployment's agent
+   * address and the deploy's session id. Wired to the same hub-link
+   * `agent.event` sink the in-process path's `onEvent` uses, so a step
+   * agent's events reach the hub timeline keyed to the right session.
+   * The `sessionId` is optional because a deploy frame need not carry
+   * one (a headless deployment); the sink drops a sessionless event
+   * rather than guessing a session.
+   */
+  publishWorkflowInferenceEvent: (
+    agentAddress: string,
+    event: InferenceEvent,
+    sessionId: string | undefined,
+  ) => void;
 }) => DeployRouter;
 
 export type SidecarOrchestratorConfig = {
@@ -203,6 +218,24 @@ export function createSidecarOrchestrator(
     sessions,
     keyStore,
     onAgentEvent: sessions.onAgentEvent,
+    // Route a spawned child's verified InferenceEvents up the same
+    // hub-link `agent.event` sink the in-process path uses, so step
+    // agent events reach the hub timeline keyed to the deploy's
+    // session. `dispatchEvent` is a no-op until HubLink is constructed
+    // below; the closure reads it lazily so the post-construction swap
+    // is observed. A sessionless event is dropped rather than guessed
+    // onto an arbitrary session -- the hub timeline is session-keyed and
+    // a forged session id would mis-route the event.
+    publishWorkflowInferenceEvent: (agentAddress, event, sessionId) => {
+      if (sessionId === undefined) {
+        log.warn(
+          "Dropping workflow inference event for {agentAddress}: deploy carried no sessionId",
+          { agentAddress },
+        );
+        return;
+      }
+      dispatchEvent(agentAddress, sessionId, event);
+    },
   });
 
   const hubLink = createHubLink({

@@ -47,6 +47,7 @@ export {
   type DeliverSignalOpts,
   type DeriveMailAuditRef,
   type DeriveStepAddress,
+  type DeriveStepRepoId,
   type DrainOpts,
   type DrainTimeoutAccumulator,
   type DrainTimeoutAccumulatorFactory,

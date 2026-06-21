@@ -132,6 +132,19 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
       await args.merge(new Map());
       return { commitSha: "stub-sha" };
     },
+    // The deploy router's grants bridge writes `state/grants.json` to
+    // each step's agent-state repo before `spawn()`. Mirror the
+    // `getRepoDir` layout so the write lands where the subsequent
+    // `assembleCredentialsSnapshot` working-tree read looks for it.
+    async writeTree(_p, repoId, _ref, content) {
+      const dir = path.join(tempBase, repoId.kind, repoId.id);
+      for (const [relPath, contents] of Object.entries(content.files)) {
+        const full = path.join(dir, relPath);
+        await fs.mkdir(path.dirname(full), { recursive: true });
+        await fs.writeFile(full, contents);
+      }
+      return { commitSha: "stub-sha" };
+    },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
   return new Proxy(stub as RepoStore, {
@@ -261,7 +274,10 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
 
     const frame: AgentDeployFrame = {
       type: "agent.deploy",
-      agentAddress: "undeploy-supervisor@example.com",
+      // Single-step projection: the deploy router derives the sole
+      // step's agent-state repo from `parseAgentId(agentAddress)`, which
+      // requires the canonical `ins_<id>@<domain>` instance shape.
+      agentAddress: "ins_undeploy-supervisor@example.com",
       agentId: "undeploy-supervisor-agent",
       hubPublicKey: "hub-pk",
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch does not read config

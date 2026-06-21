@@ -191,18 +191,24 @@ export type DrainController = WorkflowHostDrainController;
 /**
  * Step-invoker shape the child binds. Widens the workflow-runtime
  * `StepInvoker` with an `onEvent` callback the harness fires for
- * every `InferenceEvent` it emits during the step's run. The child's
- * `buildRuntimeEnv` constructs the per-step `onEvent` closure
- * (wrapping the HMAC-authenticated event-channel sender) and threads
- * it here so every event reaches the supervisor over the wire. The
- * runtime-runtime `StepInvoker` exposed via `WorkflowRuntimeEnv`
- * remains the narrower shape -- the child wraps this binding into a
- * `StepInvoker` inside `buildRuntimeEnv` so the workflow-runtime
- * never sees the host-specific surface.
+ * every `InferenceEvent` it emits during the step's run, plus the
+ * child's credentials-backed `authorize` closure so the step agent's
+ * tool-invocation gate evaluates the per-step grants the supervisor
+ * pushed (rather than the host minting its own authorize that cannot
+ * see the live credentials snapshot). The child's `buildRuntimeEnv`
+ * constructs the per-step `onEvent` closure (wrapping the
+ * HMAC-authenticated event-channel sender) and threads both here so
+ * every event reaches the supervisor over the wire and every tool
+ * call resolves against the agent's grants. The runtime-runtime
+ * `StepInvoker` exposed via `WorkflowRuntimeEnv` remains the narrower
+ * shape -- the child wraps this binding into a `StepInvoker` inside
+ * `buildRuntimeEnv` so the workflow-runtime never sees the
+ * host-specific surface.
  */
 export type ChildStepInvoker = (
   req: StepInvokeRequest,
   onEvent: (event: EventPayload) => void,
+  authorize: WorkflowAuthorizeFn,
 ) => Promise<StepInvokeResult>;
 
 /**
@@ -820,7 +826,7 @@ function buildRuntimeEnv(args: {
   // `ChildStepInvoker` shape (carries onEvent), so the workflow-
   // runtime never has to know an event firehose exists.
   const invokeStep: StepInvoker = async (req) => {
-    return args.bindings.invokeStep(req, args.onEvent);
+    return args.bindings.invokeStep(req, args.onEvent, args.authorize);
   };
   return {
     repoStore: args.runtimeRepoStore,

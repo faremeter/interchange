@@ -764,41 +764,6 @@ export function createSidecarSubstrateFactory(
       cache: stepToolCache,
     });
 
-    // Step authorize for the tool-invocation gate.
-    //
-    // The agent runtime gates EVERY tool call through `env.authorize`
-    // with `resource = tool:<name>`, `action = "invoke"` (the inference
-    // layer's authz before-tool extension). So running real tools in the
-    // child requires a working authorize, not the throwing stub Phase 1
-    // could use with empty tools.
-    //
-    // The toolset the step's agent carries was already vetted at deploy
-    // time: the workflow-deploy capability walk emits a `tool:<name>`
-    // grant for every tool the agent pins, and the deploy fails unless
-    // the operator approved each one (`operatorApprovals`). So a tool
-    // that reaches the child has already passed the operator gate; the
-    // child allowing its `tool:<name>/invoke` call does not widen the
-    // toolset beyond what the operator approved upstream.
-    //
-    // The PER-STEP grant snapshot (the supervisor's credentials snapshot
-    // over the control IPC) is Phase 4 work and is not yet threaded into
-    // the step path. Until it lands, any authorize call for a NON-tool
-    // resource -- a capability-gated tool asking for a domain resource,
-    // an `mail.send` check -- still surfaces a loud, structured failure
-    // rather than a silent allow, so the Phase 4 gap stays visible.
-    const workflowAuthorize: WorkflowAuthorizeFn = (resource, action) => {
-      if (resource.startsWith("tool:") && action === "invoke") {
-        return Promise.resolve({
-          effect: "allow" as const,
-          matchingGrants: [],
-          resolvedBy: null,
-        });
-      }
-      throw new Error(
-        `sidecar workflow-child step invoker authorize: per-step credentials snapshot is not yet threaded into the step path; a step that authorizes ${JSON.stringify(resource)}/${JSON.stringify(action)} (beyond the deploy-vetted tool-invocation gate) requires the supervisor's credentials snapshot wiring`,
-      );
-    };
-
     // The tool-bearing agent factory reads the materialized tool
     // runtime off the per-step env (set by `buildStepEnv` via
     // `attachStepTools`), attaches the loaded tool factories to the
@@ -828,17 +793,33 @@ export function createSidecarSubstrateFactory(
     // and the chain from here is `onEvent -> child event-channel sender
     // -> supervisor -> publishWorkflowInferenceEvent -> hub timeline`.
     //
+    // The `authorize` argument is the child's credentials-backed
+    // authorize closure (`createCredentialsBackedAuthorize`), threaded
+    // in from `run-child.ts`'s runtime env. The step agent's runtime
+    // gates EVERY tool call through `env.authorize` with
+    // `resource = tool:<name>`, `action = "invoke"` (the inference
+    // layer's authz before-tool extension); using the credentials-backed
+    // authorize here means each tool call resolves against the per-step
+    // grant snapshot the supervisor assembled from the agent's
+    // `state/grants.json` and pushed over the control IPC. A tool the
+    // agent's grants do not allow is blocked; a granted tool runs. The
+    // operator gate at deploy time (the capability walk's `tool:<name>`
+    // approval) and this runtime grant check are complementary: the walk
+    // bounds the toolset the deploy may carry, the grant snapshot decides
+    // which of those the agent may invoke at run time.
+    //
     // A fresh `createWorkflowStepInvoker` is built per invocation so the
     // adapter subscribes the step agent's event stream to THIS step's
-    // `onEvent`. The per-step env builder, workflow authorize, and the
-    // tool-bearing agent factory are pinned (closed over above); only
-    // the event sink varies per step.
+    // `onEvent`. The per-step env builder and the tool-bearing agent
+    // factory are pinned (closed over above); the event sink and the
+    // authorize closure vary per step.
     const invokeStep: RunWorkflowChildBindings["invokeStep"] = async (
       req,
       onEvent,
+      authorize,
     ) =>
       createWorkflowStepInvoker({
-        workflowAuthorize,
+        workflowAuthorize: authorize,
         buildEnv: buildStepEnv,
         agentFactory: stepAgentFactory,
         onEvent,

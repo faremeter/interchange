@@ -119,7 +119,25 @@ describe("single-step posix-tool in-child execution", () => {
       agentAddress: deploymentMailAddress,
       systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
       tools: [],
-      grants: [],
+      // The child's step authorize now evaluates the agent's grants (the
+      // supervisor's credentials snapshot, written from `config.grants`
+      // by the deploy router's grants bridge). The tool the model calls
+      // must therefore carry an allow grant for its `tool:<name>/invoke`
+      // resource, or the inference layer's before-tool authz gate blocks
+      // the call and the tool never runs.
+      grants: [
+        {
+          id: "grant-posix-tool-invoke",
+          resource: `tool:${TOOL_NAME}`,
+          action: "invoke",
+          effect: "allow",
+          origin: "creator",
+          conditions: null,
+          expiresAt: null,
+          roleId: null,
+          principalId: null,
+        },
+      ],
       sources: [
         {
           id: "anthropic:mock-model",

@@ -398,7 +398,7 @@ export interface WorkflowSupervisorBindings {
    * Optional override for the step's agent-state repo identity. The
    * default convention is `<deploymentId>-<stepId>`.
    */
-  deriveStepRepoId?: import("./credentials").AssembleCredentialsSnapshotOpts["deriveStepRepoId"];
+  deriveStepRepoId?: import("./credentials").DeriveStepRepoId;
   /**
    * Optional override for the per-spawn IPC keypair factory. Each
    * spawn mints a fresh control-channel Ed25519 keypair; this hook
