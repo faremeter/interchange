@@ -858,16 +858,27 @@ export function createSidecarSubstrateFactory(
     // `onEvent`. The per-step env builder and the tool-bearing agent
     // factory are pinned (closed over above); the event sink and the
     // authorize closure vary per step.
+    //
+    // The `warmCache` (design §3b) is the run-loop's per-deployment
+    // warm-agent cache, present only for the single-step long-lived
+    // deployment the deploy projection marked a warm candidate. When
+    // supplied, the adapter builds the agent once and reuses it across
+    // messages; when absent, it keeps instantiate-send-teardown per
+    // step. Forwarding it here is the only warm-keep wiring this binding
+    // needs -- the adapter and the run-loop own the rest of the
+    // lifecycle.
     const invokeStep: RunWorkflowChildBindings["invokeStep"] = async (
       req,
       onEvent,
       authorize,
+      warmCache,
     ) =>
       createWorkflowStepInvoker({
         workflowAuthorize: authorize,
         buildEnv: buildStepEnv,
         agentFactory: stepAgentFactory,
         onEvent,
+        ...(warmCache !== undefined ? { warmCache } : {}),
       })(req);
 
     const evaluateGrantsAdapter: GrantEvaluator = async ({

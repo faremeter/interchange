@@ -281,6 +281,7 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash",
+      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
 

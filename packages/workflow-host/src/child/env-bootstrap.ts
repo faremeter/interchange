@@ -31,6 +31,14 @@ const SpawnTimeEnvShape = type({
   DEPLOYMENT_ID: "string > 0",
   DEFINITION_HASH: "string > 0",
   MAILBOX_ADDRESS: "string > 0",
+  // Warm-keep signal (design §3b). The supervisor sets this to the
+  // string `"true"` only for the single-step long-lived deployment the
+  // deploy projection marked a warm candidate; any other value (or the
+  // key's absence) means cold instantiate-send-teardown per message.
+  // Carried explicitly rather than re-derived heuristically in the child
+  // so the warm-keep decision is deterministic and a multi-step agent is
+  // never warm-kept by a silent default.
+  "WARM_KEEP?": "string",
 }).onUndeclaredKey("ignore");
 
 /**
@@ -51,6 +59,13 @@ export interface SpawnTimeEnv {
   definitionHash: string;
   /** Mail address the deployment registered on the bus. */
   mailboxAddress: string;
+  /**
+   * Whether this deployment's agent is warm-kept across messages (design
+   * §3b). True only for the single-step long-lived deployment the deploy
+   * projection marked a warm candidate; the run-loop builds a warm-agent
+   * cache when set and keeps cold instantiate-send-teardown otherwise.
+   */
+  warmKeep: boolean;
 }
 
 /**
@@ -104,5 +119,9 @@ export function parseSpawnTimeEnv(
     deploymentId: validated.DEPLOYMENT_ID,
     definitionHash: validated.DEFINITION_HASH,
     mailboxAddress: validated.MAILBOX_ADDRESS,
+    // Strict `=== "true"` so any other value (including the key's
+    // absence) reads false. Warm-keep is opt-in and deterministic; a
+    // typo'd or partial value must not silently enable it.
+    warmKeep: validated.WARM_KEEP === "true",
   };
 }

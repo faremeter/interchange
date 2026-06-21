@@ -435,6 +435,7 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
+      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
 
@@ -577,6 +578,7 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
+      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     // Wait for the spawn to be in flight and registered with the

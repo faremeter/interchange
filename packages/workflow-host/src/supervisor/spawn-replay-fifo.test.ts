@@ -560,6 +560,7 @@ async function boot(opts: { prefix: string }): Promise<
   const spawnPromise = supervisor.spawn({
     stepOrder: ["step-1"],
     definitionHash: "def-hash-abc",
+    warmKeep: false,
     onInferenceEvent: () => {
       /* unused */
     },
