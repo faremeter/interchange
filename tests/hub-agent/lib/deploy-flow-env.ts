@@ -111,8 +111,19 @@ export type InferenceTool = {
   input_schema?: Record<string, unknown>;
 };
 
+export type InferenceMessageBlock = {
+  type?: string;
+  text?: string;
+};
+
+export type InferenceMessage = {
+  role?: string;
+  content?: string | InferenceMessageBlock[];
+};
+
 export type InferenceRequest = {
   tools?: InferenceTool[];
+  messages?: InferenceMessage[];
 };
 
 export type MockInference = {
@@ -137,7 +148,39 @@ export type MockToolCall = {
 
 export type StartMockInferenceOpts = {
   toolCall?: MockToolCall;
+  /**
+   * When true, the assistant reply echoes the last user message's text
+   * as `echo:<text>` instead of the tool-names text turn. This lets a
+   * test assert the agent's `agent.send` actually received the inbound
+   * mail body (the body reaches inference as the user turn, so the echo
+   * reflects it). Mutually exclusive in spirit with `toolCall`, which
+   * drives a different reply shape.
+   */
+  echoUserMessage?: boolean;
 };
+
+/**
+ * Recover the last user message's plain text from an Anthropic-style
+ * request body. The agent sends the inbound conversation content as a
+ * user turn whose `content` is either a bare string or an array of
+ * `{ type: "text", text }` blocks; both shapes are flattened here.
+ */
+function lastUserText(req: InferenceRequest): string {
+  const messages = req.messages ?? [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message === undefined || message.role !== "user") continue;
+    const content = message.content;
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      return content
+        .filter((block) => block.type === "text" && block.text !== undefined)
+        .map((block) => block.text ?? "")
+        .join("");
+    }
+  }
+  return "";
+}
 
 // Mock inference server
 //
@@ -156,8 +199,10 @@ export function startMockInference(
   const requests: InferenceRequest[] = [];
   let toolCallEmitted = false;
 
-  const textTurn = (toolNames: string[]): string[] => {
-    const text = `I see these tools: ${toolNames.join(", ")}`;
+  const textTurn = (toolNames: string[]): string[] =>
+    textTurnText(`I see these tools: ${toolNames.join(", ")}`);
+
+  const textTurnText = (text: string): string[] => {
     return [
       sse("message_start", {
         type: "message_start",
@@ -248,6 +293,8 @@ export function startMockInference(
       if (wantsToolCall && opts.toolCall !== undefined) {
         toolCallEmitted = true;
         events = toolUseTurn(opts.toolCall);
+      } else if (opts.echoUserMessage === true) {
+        events = textTurnText(`echo:${lastUserText(body)}`);
       } else {
         events = textTurn(toolNames);
       }
@@ -738,6 +785,13 @@ export type StartDeployFlowEnvOpts = {
    * `MockToolCall`.
    */
   inferenceToolCall?: MockToolCall;
+  /**
+   * When true, the mock inference server echoes the last user message's
+   * text as `echo:<text>` so a test can assert the inbound mail body
+   * reached the agent's `agent.send` as the step input. See
+   * `StartMockInferenceOpts.echoUserMessage`.
+   */
+  inferenceEchoUserMessage?: boolean;
 };
 
 // Compose the full deploy-flow env: hub server, mock inference, sidecar
@@ -754,11 +808,14 @@ export async function startDeployFlowEnv(
   };
 
   const hub = await startHub(registerTempDir);
-  const inference = startMockInference(
-    opts.inferenceToolCall !== undefined
+  const inference = startMockInference({
+    ...(opts.inferenceToolCall !== undefined
       ? { toolCall: opts.inferenceToolCall }
-      : {},
-  );
+      : {}),
+    ...(opts.inferenceEchoUserMessage === true
+      ? { echoUserMessage: true }
+      : {}),
+  });
 
   const hubPort = hub.server.port;
   if (hubPort === undefined) {

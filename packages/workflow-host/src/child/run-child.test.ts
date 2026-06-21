@@ -5,6 +5,11 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto-node";
 import type { Principal, RepoId, RepoStore } from "@intx/hub-sessions";
+import {
+  assembleMessage,
+  assembleSignedContent,
+  type MessageHeaders,
+} from "@intx/mime";
 
 import {
   parseSpawnTimeEnv,
@@ -190,6 +195,79 @@ async function seedRun(
   }
 }
 
+/**
+ * Seed a claim-check processing entry into the workflow-run repo's
+ * working tree so the child's `trigger.fire` handler can recover the
+ * inbound message bytes by messageId. Mirrors the production substrate's
+ * working-tree materialization: the supervisor's `dequeueToProcessing`
+ * commit lands the entry at
+ * `addresses/<urlEncoded(address)>/processing/<receivedAt>-<messageId>.json`,
+ * which `readProcessingEntry` reads with a flat fs read.
+ */
+async function seedProcessingEntry(
+  baseDir: string,
+  workflowRunRepoId: RepoId,
+  opts: {
+    address: string;
+    messageId: string;
+    receivedAt: number;
+    text: string;
+  },
+): Promise<void> {
+  const dir = path.join(
+    baseDir,
+    workflowRunRepoId.kind,
+    workflowRunRepoId.id,
+    "addresses",
+    encodeURIComponent(opts.address),
+    "processing",
+  );
+  await fs.mkdir(dir, { recursive: true });
+  const rawMessage = assembleConversationMessage(opts.address, opts.text);
+  const envelope = {
+    messageId: opts.messageId,
+    receivedAt: opts.receivedAt,
+    address: opts.address,
+    mailAuditRef: { store: "test", path: opts.messageId },
+    rawMessage: Buffer.from(rawMessage).toString("base64"),
+  };
+  await fs.writeFile(
+    path.join(dir, `${String(opts.receivedAt)}-${opts.messageId}.json`),
+    JSON.stringify(envelope),
+  );
+}
+
+/**
+ * Assemble a signed conversation MIME message carrying `text`, matching
+ * the on-wire shape the hub's `routeMail` path delivers. The signature
+ * bytes are a placeholder: the child's input extraction reads the
+ * conversation text at part `1.1` and never verifies the signature.
+ */
+function assembleConversationMessage(to: string, text: string): Uint8Array {
+  const headers: MessageHeaders = {
+    from: "user@example.com",
+    to: [to],
+    cc: undefined,
+    date: new Date(0),
+    messageId: "<seed@example.com>",
+    subject: undefined,
+    inReplyTo: undefined,
+    references: undefined,
+    mimeVersion: "1.0",
+    interchangeType: "conversation.message",
+    interchangeCorrelationId: undefined,
+    interchangeTenantId: undefined,
+    interchangeAgentId: undefined,
+    interchangeSessionId: undefined,
+    interchangeOfferingId: undefined,
+    interchangeSchemaVersion: undefined,
+    traceparent: undefined,
+    tracestate: undefined,
+  };
+  const signedContent = assembleSignedContent({ kind: "conversation", text });
+  return assembleMessage(headers, signedContent, new Uint8Array([0]));
+}
+
 function buildBindings(opts: {
   baseDir: string;
   childKeyPair?: { privateKey: Uint8Array; publicKey: Uint8Array };
@@ -332,6 +410,20 @@ describe("runWorkflowChild", () => {
       kind: "workflow",
       id: "workflow-asset",
     });
+    // Seed the claim-check processing entry the child reads to recover
+    // the inbound message bytes for the `trigger.fire` below. The
+    // supervisor's dispatch loop creates this entry via
+    // `dequeueToProcessing` before forwarding the trigger.
+    await seedProcessingEntry(
+      baseDir,
+      { kind: "workflow-run", id: "deployment-x" },
+      {
+        address: "deployment-x@example.com",
+        messageId: "msg-1",
+        receivedAt: 1,
+        text: "hello from the inbox",
+      },
+    );
 
     const supervisorToChild = createMemoryNdjsonStream();
     const childToSupervisor = createMemoryNdjsonStream();

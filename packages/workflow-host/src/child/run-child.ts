@@ -58,7 +58,15 @@ import type {
   RepoId,
   RepoStore as SubstrateRepoStore,
 } from "@intx/hub-sessions";
-import { workflowDefinitionEnvelopeSchema } from "@intx/hub-sessions";
+import {
+  readProcessingEntry,
+  workflowDefinitionEnvelopeSchema,
+} from "@intx/hub-sessions";
+import {
+  extractPartByPath,
+  parseHeaderSection,
+  parseMimePart,
+} from "@intx/mime";
 import type { DirectorRegistry } from "@intx/agent";
 import { createDefaultDirectorRegistry } from "@intx/agent";
 import type { AuthzCallResult } from "@intx/inference";
@@ -575,6 +583,23 @@ async function handleControlPayload(
 ): Promise<boolean> {
   switch (payload.type) {
     case "trigger.fire": {
+      // Resolve the inbound mail bytes for this messageId from the
+      // claim-check processing entry the supervisor created when it
+      // dequeued the message. The bytes become the run's trigger
+      // payload; the one-step workflow's first step defaults its input
+      // selector to `trigger.payload` (defineWorkflow's default-input
+      // convention), so the step input resolves to the inbound message
+      // and `agent.send` receives it. A missing or unreadable entry
+      // surfaces loudly -- the run cannot proceed without its input,
+      // and silently running the agent with empty input would mask a
+      // real mailbox-ownership failure.
+      const triggerPayload = await resolveTriggerPayload({
+        substrate: ctx.bindings.substrate,
+        principal: ctx.bindings.principal,
+        workflowRunRepoId: ctx.bindings.workflowRunRepoId,
+        mailboxAddress: ctx.env.mailboxAddress,
+        messageId: payload.data.messageId,
+      });
       const env = buildRuntimeEnv({
         runId: payload.data.runId,
         bindings: ctx.bindings,
@@ -593,6 +618,7 @@ async function handleControlPayload(
       const handle: WorkflowRun = runtimeRun(ctx.definition, env, {
         runId: payload.data.runId,
         consumedMessageId: payload.data.messageId,
+        triggerPayload,
       });
       // Fan the run's terminal status back to the supervisor over the
       // upstream control channel. The supervisor's dispatch loop and
@@ -926,6 +952,99 @@ function emitTerminalEvent(
       const message = cause instanceof Error ? cause.message : String(cause);
       logger.error`terminal.event upstream send failed for runId=${result.runId}: ${message}`;
     });
+}
+
+/**
+ * Resolve the run's trigger payload from the inbound mail message the
+ * supervisor moved to the claim-check processing queue. Reads the
+ * processing entry by messageId (a read-only snapshot of the
+ * `refs/heads/events` tip that cannot race the supervisor's
+ * `markConsumed` write), decodes the inlined raw MIME bytes, and
+ * extracts the conversation text the agent's `agent.send` receives.
+ *
+ * Defensive: a missing processing entry, an entry with no inlined
+ * bytes, or unparseable mail all throw. The run cannot proceed without
+ * its input, and a placeholder would mask a mailbox-ownership failure.
+ */
+async function resolveTriggerPayload(args: {
+  substrate: SubstrateRepoStore;
+  principal: Principal;
+  workflowRunRepoId: RepoId;
+  mailboxAddress: string;
+  messageId: string;
+}): Promise<string> {
+  const entry = await readProcessingEntry(
+    args.substrate,
+    args.principal,
+    args.workflowRunRepoId,
+    args.mailboxAddress,
+    args.messageId,
+  );
+  if (entry === null) {
+    throw new Error(
+      `workflow-child trigger.fire: no claim-check processing entry for messageId ${args.messageId} at ${args.mailboxAddress}; the run has no input to deliver to the agent`,
+    );
+  }
+  const rawMessageBase64 = entry.envelope.rawMessage;
+  if (rawMessageBase64 === undefined) {
+    throw new Error(
+      `workflow-child trigger.fire: processing entry for messageId ${args.messageId} carries no inlined rawMessage; the supervisor must inline the inbound mail bytes for the child to deliver them as the step input`,
+    );
+  }
+  const raw = new Uint8Array(Buffer.from(rawMessageBase64, "base64"));
+  return extractConversationText(raw, args.messageId);
+}
+
+/**
+ * Extract the conversation body text from a raw inbound MIME message.
+ *
+ * Three on-wire shapes are handled, matching every producer the mail
+ * bus accepts:
+ *   1. The Interchange assembler's `multipart/signed` envelope whose
+ *      first part is a `multipart/mixed` body carrying the text at part
+ *      path `1.1`.
+ *   2. A `multipart/signed` envelope wrapping a bare `text/plain` part
+ *      (a sender that signs without the `multipart/mixed` wrapper); the
+ *      text is at part path `1`.
+ *   3. A flat top-level `text/plain` message (no multipart structure at
+ *      all); the body is the bytes after the header section.
+ *
+ * The top-level `Content-Type` selects the shape: only a `multipart/*`
+ * root walks into parts; anything else reads the single body directly.
+ * This mirrors the conversation branch of mail-memory's `fetchFull`
+ * while also tolerating the flat single-part case the in-process agent
+ * accepts, so a non-standard inbound mail still delivers its text to
+ * the agent rather than crashing the run.
+ */
+function extractConversationText(raw: Uint8Array, messageId: string): string {
+  const { headers, bodyOffset } = parseHeaderSection(raw);
+  const rootMime = (headers.get("content-type") ?? "")
+    .split(";")[0]
+    ?.trim()
+    .toLowerCase();
+  if (rootMime === undefined || !rootMime.startsWith("multipart/")) {
+    // Flat single-part message: the body is everything after the
+    // header section.
+    return new TextDecoder("utf-8", { fatal: false }).decode(
+      raw.subarray(bodyOffset),
+    );
+  }
+  let part1: ReturnType<typeof parseMimePart>;
+  try {
+    part1 = parseMimePart(extractPartByPath(raw, "1"));
+  } catch (cause) {
+    throw new Error(
+      `workflow-child trigger.fire: cannot parse inbound mail part 1 for messageId ${messageId}`,
+      { cause },
+    );
+  }
+  const part1Mime = (part1.contentType.split(";")[0] ?? "")
+    .trim()
+    .toLowerCase();
+  const bodyBytes = part1Mime.startsWith("multipart/")
+    ? parseMimePart(extractPartByPath(raw, "1.1")).body
+    : part1.body;
+  return new TextDecoder("utf-8", { fatal: false }).decode(bodyBytes);
 }
 
 /**
