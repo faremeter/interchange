@@ -482,6 +482,13 @@ export function createWorkflowSupervisor(
       rawMessage,
     );
     const receivedAt = Date.now();
+    // Inline the raw mail bytes on the claim-check envelope so the
+    // workflow-process child can recover its step input by messageId at
+    // `trigger.fired` time. The supervisor is the sole mail owner (§3a)
+    // and has no separate durable byte store the child reads; the bytes
+    // survive the inbox->processing transition verbatim and are dropped
+    // when `markConsumed` writes the dedup index.
+    const rawMessageBase64 = Buffer.from(rawMessage).toString("base64");
     await inboxPrimitives.enqueueInbox(
       bindings.repoStore,
       inboxWritePrincipal,
@@ -491,6 +498,7 @@ export function createWorkflowSupervisor(
         messageId,
         receivedAt,
         mailAuditRef,
+        rawMessage: rawMessageBase64,
       },
     );
     wakeDispatch();

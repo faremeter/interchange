@@ -237,8 +237,19 @@ const CONSUMED_FILENAME_RE = /^(.+)\.json$/;
  *     message; sortable FIFO key prefix.
  *   - `address`: decoded canonical address (not URL-encoded).
  *   - `mailAuditRef`: pointer to the raw mail bytes in the mail-audit
- *     store. Raw bytes are NOT inlined; the audit store remains
- *     authoritative.
+ *     store. For the in-process single-agent path a separate
+ *     `MailAuditStore` holds the authoritative bytes and this ref joins
+ *     onto it.
+ *   - `rawMessage`: base64 of the inbound mail's raw MIME bytes,
+ *     inlined so the workflow-process child can read its step input by
+ *     messageId at `trigger.fired` time. The supervisor is the sole
+ *     mail owner under the unified-execution host (§3a); it has no
+ *     separate durable byte store the child can read, so the bytes ride
+ *     the claim-check envelope itself. Present whenever the supervisor
+ *     enqueued the entry; omitted by callers that only stamp the audit
+ *     ref. The bytes survive the inbox→processing transition verbatim
+ *     (the dequeue copies the entry bytes), so a `trigger.fired` for a
+ *     processing entry can always recover the input.
  */
 const ClaimCheckEnvelope = type({
   messageId: "string > 0",
@@ -248,6 +259,7 @@ const ClaimCheckEnvelope = type({
     store: "string > 0",
     path: "string > 0",
   },
+  "rawMessage?": "string > 0",
   "+": "ignore",
 });
 
@@ -1828,6 +1840,14 @@ export type EnqueueInboxArgs = {
   messageId: string;
   receivedAt: number;
   mailAuditRef: { store: string; path: string };
+  /**
+   * Base64 of the inbound mail's raw MIME bytes. Inlined on the
+   * claim-check envelope so the workflow-process child can recover its
+   * step input by messageId at `trigger.fired` time (§3a -- the
+   * supervisor is the sole mail owner and has no separate durable byte
+   * store the child reads). Omit to stamp only the audit ref.
+   */
+  rawMessage?: string;
 };
 
 export type EnqueueInboxResult = {
@@ -1864,6 +1884,7 @@ export async function enqueueInbox(
     receivedAt: args.receivedAt,
     address: args.address,
     mailAuditRef: args.mailAuditRef,
+    ...(args.rawMessage !== undefined ? { rawMessage: args.rawMessage } : {}),
   };
   const newInboxPath = inboxPath(addressSegment, inboxKey);
   const { commitSha } = await store.writeTreePreservingPrefix(
@@ -2021,6 +2042,73 @@ export async function dequeueToProcessing(
   if (dequeued === null) return null;
   const captured: { key: string; envelope: ClaimCheckEnvelope } = dequeued;
   return { commitSha, key: captured.key, envelope: captured.envelope };
+}
+
+export type ReadProcessingEntryResult = {
+  envelope: ClaimCheckEnvelope;
+} | null;
+
+/**
+ * Read the processing-queue entry for `messageId` at `address` without
+ * mutating the tree. Returns the decoded claim-check envelope (carrying
+ * `mailAuditRef` and, when the enqueuer inlined them, the base64
+ * `rawMessage` bytes) or `null` when no processing entry exists for the
+ * messageId.
+ *
+ * This is the read half of mailbox ownership (§3a): the supervisor's
+ * dispatch loop moves an inbox entry to processing and forwards a
+ * `trigger.fired{messageId}` to the workflow-process child; the child
+ * calls this to recover the inbound message bytes that become its step
+ * input.
+ *
+ * The read is a flat working-tree read of
+ * `addresses/<seg>/processing/`. The substrate materializes every
+ * claim-check commit into the repo's working tree (each
+ * `writeTreePreservingPrefix` resets the working tree to the ref tip),
+ * so a read issued after `dequeueToProcessing` committed -- which is
+ * exactly when the supervisor forwards `trigger.fired` -- observes the
+ * processing entry. Reading the working tree (rather than walking the
+ * committed git tree) matches the workflow-process child's sibling
+ * reads of `workflow.json` and `runs/<runId>/events/`. Because the
+ * read issues no commit it cannot race the supervisor's `markConsumed`
+ * write; it returns a point-in-time snapshot of the directory.
+ */
+export async function readProcessingEntry(
+  store: RepoStore,
+  _principal: Principal,
+  repoId: RepoId,
+  address: string,
+  messageId: string,
+): Promise<ReadProcessingEntryResult> {
+  const addressSegment = addressSegmentFor(address);
+  const repoDir = store.getRepoDir(repoId);
+  const processingDir = `${repoDir}/${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_PROCESSING_DIR}`;
+  const suffix = `-${messageId}.json`;
+  let filenames: string[];
+  try {
+    filenames = await fs.promises.readdir(processingDir);
+  } catch (cause) {
+    // A missing processing directory is the legitimate "no entry yet"
+    // state; any other failure surfaces.
+    if (
+      cause instanceof Error &&
+      (cause as NodeJS.ErrnoException).code === "ENOENT"
+    ) {
+      return null;
+    }
+    throw cause;
+  }
+  for (const filename of filenames) {
+    if (!filename.endsWith(suffix)) continue;
+    const blobPath = `${processingDir}/${filename}`;
+    const bytes = await fs.promises.readFile(blobPath);
+    const envelope = decodeQueueEnvelopeOrThrow(
+      new Uint8Array(bytes),
+      blobPath,
+    );
+    return { envelope };
+  }
+  return null;
 }
 
 export type MarkConsumedArgs = {
