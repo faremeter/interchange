@@ -38,6 +38,7 @@ import {
   type CredentialsSnapshot,
   type DeriveStepAddress,
   type DeriveStepRepoId,
+  type DispatchTimingMark,
   type FrameReader,
   type HubTransportMailBusAdapter,
   type NdjsonReader,
@@ -432,6 +433,21 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   subprocessSpawner?: SubprocessSpawner;
   /** Override the `bin/workflow-child` path. */
   binaryPath?: string;
+  /**
+   * Optional per-message dispatch-timing observer, forwarded verbatim to
+   * the supervisor's `onDispatchTiming` binding. Absent in production;
+   * the deploy router wires it (off a benchmark env gate) only for the
+   * Phase 4.7 latency gate, which needs the supervisor to emit the
+   * per-message infra round-trip from inside the sidecar subprocess.
+   */
+  onDispatchTiming?: (mark: DispatchTimingMark) => void;
+  /**
+   * D2 §10c forced-repack A/B toggle, forwarded verbatim to the
+   * supervisor's `repackEveryMessages` binding. Absent in production;
+   * the deploy router wires it (off the same benchmark env gate) only
+   * for the D2 attribution run.
+   */
+  repackEveryMessages?: { everyMessages: number };
 };
 
 export type SidecarWorkflowSupervisor = {
@@ -775,6 +791,22 @@ export function createSidecarDeployRouter(deps: {
    * route through the hub-link until the wiring is plumbed.
    */
   multistepDrainRouter?: MultistepDrainRouter;
+  /**
+   * Optional per-message dispatch-timing observer the multi-step branch
+   * forwards to each supervisor it constructs. Resolved at the sidecar
+   * boot edge from the Phase 4.7 latency-gate env gate; absent in
+   * ordinary production. The supervisor runs in this sidecar subprocess,
+   * so the observer sees both ends of the per-message IPC round-trip in
+   * one process and can emit a parseable timing line the benchmark
+   * harness reads off the subprocess's output stream.
+   */
+  onDispatchTiming?: (mark: DispatchTimingMark) => void;
+  /**
+   * D2 §10c forced-repack A/B toggle the multi-step branch forwards to
+   * each supervisor it constructs. Resolved at the sidecar boot edge from
+   * the same benchmark env gate; absent in ordinary production.
+   */
+  repackEveryMessages?: { everyMessages: number };
 }): DeployRouter {
   const principalPublicKeyHex = derivePrincipalPublicKeyHex(
     deps.signingKeySeed,
@@ -1017,6 +1049,12 @@ export function createSidecarDeployRouter(deps: {
             "sidecar deploy router: trivialLaunch invoked on the multi-step branch; this is a programming bug",
           );
         },
+        ...(deps.onDispatchTiming !== undefined
+          ? { onDispatchTiming: deps.onDispatchTiming }
+          : {}),
+        ...(deps.repackEveryMessages !== undefined
+          ? { repackEveryMessages: deps.repackEveryMessages }
+          : {}),
       });
 
       // Grants bridge (the sharp edge of the always-spawn convergence).
@@ -1541,6 +1579,12 @@ export function createSidecarWorkflowSupervisor(
       : {}),
     trivialLaunch: opts.trivialLaunch,
     deriveMailAuditRef: deriveSidecarMailAuditRef(opts.deploymentId),
+    ...(opts.onDispatchTiming !== undefined
+      ? { onDispatchTiming: opts.onDispatchTiming }
+      : {}),
+    ...(opts.repackEveryMessages !== undefined
+      ? { repackEveryMessages: opts.repackEveryMessages }
+      : {}),
   });
   return {
     supervisor,

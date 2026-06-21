@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { appendFileSync } from "node:fs";
 import { sign as nodeSign } from "node:crypto";
 import path from "node:path";
 import { setup } from "@intx/log";
@@ -22,6 +23,8 @@ import { createDefaultHarnessBuilder } from "./default-harness";
 // inbound frame flows through a freshly-constructed workflow-host
 // supervisor whose trivial branch calls back into the sidecar's
 // existing single-agent provisioning surface.
+import type { DispatchTimingMark } from "@intx/workflow-host";
+
 import {
   createSidecarDeployRouter,
   createSidecarWorkflowSupervisor,
@@ -57,6 +60,67 @@ const cacheRoot =
     : path.join(dataDir, "cache", "tarballs");
 const cacheMaxBytes = readCacheMaxBytes();
 const registryMaxTarballBytes = readRegistryMaxTarballBytes();
+
+// Phase 4.7 latency-gate hook. When `SIDECAR_LATENCY_BENCH_FILE` names a
+// path, the deploy router wires the supervisor's `onDispatchTiming`
+// observer to append a parseable line per per-message dispatch boundary
+// to that file, which the benchmark harness reads after the run. A file
+// (rather than stdout) is the channel because the spawn fixture caps its
+// stdout drain buffer, and a few-hundred-message run emits more lines
+// than that cap holds. Resolved here at the boot edge (the one layer
+// that reads env) so no non-boundary site re-decides what the absent
+// value means; an unset path leaves the observer unwired and the
+// supervisor's dispatch path untouched. This is observability-only -- no
+// control-flow effect -- and is the single benchmark-side instrumentation
+// hook the 4.7 gate adds. The synchronous append (not the logger) is the
+// raw measurement channel: it is not application logging and must not be
+// formatted or level-gated. A failed append surfaces (it is not
+// swallowed) so a broken benchmark channel does not silently yield an
+// empty result set.
+// Two line shapes share the channel, discriminated by `mark.kind`:
+//   roundtrip:  `<runId> <marker> <atMs>`          (4.7 latency gate)
+//   leg:        `<runId> leg <leg> <phase> <atMs> [runsFanOut consumedFanOut looseObjects gitBytes]`
+//               (D2 per-leg attribution; the trailing four counters are
+//               present only on the `end` phase). The leg shape is a
+//               strict superset prefixed with the literal `leg` token, so
+//               a reader can split on whitespace and branch on field 2.
+const latencyBenchFile = process.env["SIDECAR_LATENCY_BENCH_FILE"];
+const onDispatchTiming: ((mark: DispatchTimingMark) => void) | undefined =
+  latencyBenchFile !== undefined && latencyBenchFile.trim() !== ""
+    ? (mark) => {
+        let line: string;
+        if (mark.kind === "roundtrip") {
+          line = `${mark.runId} ${mark.marker} ${mark.atMs.toFixed(3)}\n`;
+        } else {
+          const counters =
+            mark.counters !== undefined
+              ? ` ${String(mark.counters.runsFanOut)} ${String(mark.counters.consumedFanOut)} ${String(mark.counters.looseObjects)} ${String(mark.counters.gitBytes)}`
+              : "";
+          line = `${mark.runId} leg ${mark.leg} ${mark.phase} ${mark.atMs.toFixed(3)}${counters}\n`;
+        }
+        appendFileSync(latencyBenchFile, line);
+      }
+    : undefined;
+
+// D2 §10c forced-repack A/B toggle. When `SIDECAR_REPACK_EVERY_MESSAGES`
+// names a positive integer, the supervisor forces a `git gc`/repack of
+// the workflow-run repo every Nth dispatched message (under the
+// single-writer discipline). Resolved here at the boot edge alongside the
+// timing channel; absent or non-positive => the supervisor forks no
+// `git gc` and the dispatch path is untouched. Measurement-only: this
+// exists to discriminate pack-growth from tree-fan-out, never to run in
+// production.
+const repackEveryRaw = process.env["SIDECAR_REPACK_EVERY_MESSAGES"];
+let repackEveryMessages: { everyMessages: number } | undefined;
+if (repackEveryRaw !== undefined && repackEveryRaw.trim() !== "") {
+  const parsed = Number.parseInt(repackEveryRaw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(
+      `SIDECAR_REPACK_EVERY_MESSAGES must be a positive integer, got ${repackEveryRaw}`,
+    );
+  }
+  repackEveryMessages = { everyMessages: parsed };
+}
 
 // Sweep any tmp staging directories left behind by a `put` or
 // `extractTarball` that crashed between staging and the final rename
@@ -308,6 +372,8 @@ const orchestrator = createSidecarOrchestrator({
       multistepDrainRouter,
       multistepSubstrateEnv,
       publishWorkflowInferenceEvent,
+      ...(onDispatchTiming !== undefined ? { onDispatchTiming } : {}),
+      ...(repackEveryMessages !== undefined ? { repackEveryMessages } : {}),
     }),
 });
 
