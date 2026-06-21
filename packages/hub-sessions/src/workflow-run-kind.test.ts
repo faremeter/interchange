@@ -20,6 +20,7 @@ import {
   WORKFLOW_RUN_PROCESSING_DIR,
   WORKFLOW_RUN_CONSUMED_DIR,
   WORKFLOW_RUN_BLOBS_DIR,
+  WORKFLOW_RUN_AGENT_STATE_PREFIX,
 } from "./workflow-run-kind";
 import { createRepoStore } from "./repo-store";
 import type { Principal, RepoId } from "./repo-store";
@@ -216,6 +217,70 @@ describe("workflowRunKindHandler.validatePush — accepts", () => {
       expect(r.ok).toBe(true);
     }
   });
+
+  test("accepts a per-agent conversation snapshot under agent-state/", async () => {
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/conversation.json`]:
+          JSON.stringify({ turns: [], connectorState: null }),
+      },
+      { principal: WORKFLOW_PROCESS_PRINCIPAL },
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  test("accepts a mutated agent-state snapshot (subtree is mutable, not append-only)", async () => {
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/conversation.json`]:
+          JSON.stringify({ turns: ["second"], connectorState: null }),
+      },
+      {
+        principal: WORKFLOW_PROCESS_PRINCIPAL,
+        priorFiles: {
+          [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+          [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/conversation.json`]:
+            JSON.stringify({ turns: ["first"], connectorState: null }),
+        },
+      },
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  test("rejects an agent-state segment that does not round-trip URL-encoding", async () => {
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/bad%2segment/conversation.json`]:
+          "{}",
+      },
+      { principal: WORKFLOW_PROCESS_PRINCIPAL },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/agent-state segment/);
+  });
+
+  test("rejects a blob dangling directly under agent-state/", async () => {
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        // No `<agentKey>/` directory layer: the blob sits directly under
+        // the prefix, so it is not keyed by any agent.
+        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/conversation.json`]: "{}",
+      },
+      { principal: WORKFLOW_PROCESS_PRINCIPAL },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/blob directly under/);
+  });
 });
 
 describe("workflowRunKindHandler.validatePush — rejects top-level shape", () => {
@@ -229,7 +294,7 @@ describe("workflowRunKindHandler.validatePush — rejects top-level shape", () =
     expect(r.reason).toMatch(/unsupported .*control\//);
   });
 
-  test("rejects an arbitrary disallowed top-level entry", async () => {
+  test("rejects an arbitrary disallowed top-level entry and names agent-state in the allowed list", async () => {
     const r = await validate({
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
       "stray.txt": "nope",
@@ -237,6 +302,9 @@ describe("workflowRunKindHandler.validatePush — rejects top-level shape", () =
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
     expect(r.reason).toMatch(/unexpected top-level entry/);
+    // The allowed-list in the rejection message must enumerate every
+    // accepted top-level, including agent-state/ (Phase 4.5).
+    expect(r.reason).toContain(WORKFLOW_RUN_AGENT_STATE_PREFIX);
   });
 });
 

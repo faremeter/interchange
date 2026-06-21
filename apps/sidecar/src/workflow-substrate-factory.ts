@@ -28,7 +28,11 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { InferenceSource } from "@intx/types/runtime";
-import type { MessageTransport } from "@intx/types/runtime";
+import type {
+  AuditStore,
+  ContextStore,
+  MessageTransport,
+} from "@intx/types/runtime";
 import { evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
 import type { DirectorRegistry } from "@intx/agent";
@@ -77,6 +81,10 @@ import {
   materializeStepTools,
   type StepToolCacheConfig,
 } from "./step-agent-tools";
+import {
+  createDurableConversationRegistry,
+  type DurableConversationRegistry,
+} from "./conversation-state";
 
 // The child does not construct a workflow-run pack-push pipeline of
 // its own. The supervisor owns the workflow-run repo's write
@@ -338,6 +346,18 @@ interface SidecarStepBuildEnvDeps {
   outboundMailBridge: ChildOutboundMailBridge;
   /** Per-step tool-loader caps (cache + registry tarball size). */
   cache: StepToolCacheConfig;
+  /**
+   * Durable-conversation registry for the warm single-step agent
+   * (design §3c). When present, the env builder swaps the per-run isogit
+   * `ContextStore` for a per-agent durable store whose conversation is
+   * mirrored to the workflow-run substrate, and restores the prior
+   * conversation from the substrate before returning the env (so the
+   * agent's reactor `load()` and the warm cache's lazy build see the
+   * restored turns -- including the respawn-rebuild path). Absent for a
+   * multi-step deploy, whose per-step agents are not warm/long-lived and
+   * need no cross-run conversation durability.
+   */
+  durableConversation?: DurableConversationRegistry;
 }
 
 /**
@@ -387,7 +407,19 @@ function createSidecarStepBuildEnv(
       stepId,
       attempt,
     });
-    const storage = await createIsogitStore(storeDir, deps.signer);
+    // Conversation storage. For the warm single-step agent the
+    // conversation must survive child respawn, so it is backed by a
+    // per-agent durable store whose content is mirrored to the
+    // workflow-run substrate (design §3c); building it here restores the
+    // prior conversation before the agent's reactor loads. A multi-step
+    // deploy (no durable registry) keeps the per-run isogit store: its
+    // per-step agents are not warm/long-lived and have no cross-run
+    // conversation to carry. The workdir + tools stay per-run in both
+    // cases -- only the conversation context is durable across runs.
+    const storage: ContextStore & AuditStore =
+      deps.durableConversation !== undefined
+        ? (await deps.durableConversation.acquire(stepId)).storage
+        : await createIsogitStore(storeDir, deps.signer);
     const workdir = path.join(storeDir, "workspace");
     await fs.promises.mkdir(workdir, { recursive: true });
 
@@ -799,14 +831,38 @@ export function createSidecarSubstrateFactory(
     // never collide on the tarball cache or apply-state. The
     // tool-bearing `agentFactory` below attaches those factories to the
     // step's `AgentDefinition` and builds the plugin chain.
+    // Durable-conversation registry for the warm single-step agent
+    // (design §3c). Built only when the deployment is warm-kept: the
+    // sole long-lived agent's conversation must survive child respawn,
+    // so it is mirrored to the workflow-run substrate at a per-agent
+    // path. A multi-step deploy leaves this `undefined` -- its per-step
+    // agents are not warm/long-lived (§3b), so they carry no cross-run
+    // conversation and keep the per-run isogit store. The registry lives
+    // for the child's lifetime; on respawn the child rebuilds it empty
+    // and each store restores its prior snapshot from the substrate on
+    // first acquire.
+    const conversationSigner = createStepStorageSigner(signingKey);
+    const durableConversation: DurableConversationRegistry | undefined = env
+      .spawn.warmKeep
+      ? createDurableConversationRegistry({
+          dataDir: validated.SIDECAR_DATA_DIR,
+          workflowRunRepoId,
+          workflowRunRef: validated.WORKFLOW_RUN_REF,
+          substrate,
+          principal,
+          signer: conversationSigner,
+        })
+      : undefined;
+
     const buildStepEnv = createSidecarStepBuildEnv({
       table: stepInferenceSources,
       dataDir: validated.SIDECAR_DATA_DIR,
       workflowRunRepoId,
-      signer: createStepStorageSigner(signingKey),
+      signer: conversationSigner,
       mailboxAddress: env.spawn.mailboxAddress,
       outboundMailBridge: env.outboundMailBridge,
       cache: stepToolCache,
+      ...(durableConversation !== undefined ? { durableConversation } : {}),
     });
 
     // The tool-bearing agent factory reads the materialized tool
@@ -867,6 +923,19 @@ export function createSidecarSubstrateFactory(
     // step. Forwarding it here is the only warm-keep wiring this binding
     // needs -- the adapter and the run-loop own the rest of the
     // lifecycle.
+    // Run-boundary durability flush (design §3c). When the deployment is
+    // warm-kept, mirror the warm agent's conversation snapshot to the
+    // workflow-run substrate after each message's send settles. The key
+    // is the step identity, the same key the env builder filed the
+    // durable store under, so the hook resolves the right per-agent
+    // store. Absent for a multi-step deploy (no durable registry).
+    const onRunBoundary: ((key: string) => Promise<void>) | undefined =
+      durableConversation !== undefined
+        ? async (key: string) => {
+            await durableConversation.get(key).mirrorToSubstrate();
+          }
+        : undefined;
+
     const invokeStep: RunWorkflowChildBindings["invokeStep"] = async (
       req,
       onEvent,
@@ -879,6 +948,7 @@ export function createSidecarSubstrateFactory(
         agentFactory: stepAgentFactory,
         onEvent,
         ...(warmCache !== undefined ? { warmCache } : {}),
+        ...(onRunBoundary !== undefined ? { onRunBoundary } : {}),
       })(req);
 
     const evaluateGrantsAdapter: GrantEvaluator = async ({
