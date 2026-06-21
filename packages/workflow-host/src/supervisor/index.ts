@@ -64,6 +64,9 @@ export {
 
 export type {
   DeriveMailAuditRef,
+  DispatchStructuralCounters,
+  DispatchSubstrateLeg,
+  DispatchTimingMark,
   InboxPrimitives,
   MailAuditRef,
   MailBusBindings,

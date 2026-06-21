@@ -555,4 +555,130 @@ export interface WorkflowSupervisorBindings {
    * for the production duration.
    */
   terminalWriteWatchdogMs?: number;
+  /**
+   * Optional per-message dispatch-timing observer. When supplied, the
+   * dispatch loop invokes it twice per dispatched inbox entry: once with
+   * marker `"dispatch-start"` the instant the entry is dequeued for
+   * dispatch (claim-check read complete, `trigger.fire` about to be
+   * forwarded) and once with marker `"reply-produced"` the instant the
+   * child's terminal-event frame for that run lands back at the
+   * supervisor (the run's reply is produced and committed). Both marks
+   * carry the same monotonic `atMs` clock so an observer can compute the
+   * per-message infra round-trip the unified path adds over a bare
+   * in-process `agent.send`.
+   *
+   * This is a pure observability hook with no control-flow effect. It is
+   * absent in production and wired only by the Phase 4.7 latency-gate
+   * benchmark, which threads it through the sidecar host so the
+   * supervisor (running in the sidecar subprocess, where both ends of
+   * the IPC round-trip are visible in one process) emits a parseable
+   * timing line. A throwing observer is swallowed and logged so a
+   * benchmark hook bug cannot wedge dispatch.
+   */
+  onDispatchTiming?: (mark: DispatchTimingMark) => void;
+  /**
+   * D2 §10c forced-repack A/B toggle (measurement-only). When supplied
+   * with a non-zero `everyMessages`, the dispatch loop forces a
+   * `git gc`/repack of the workflow-run repo every `everyMessages`-th
+   * dispatched message (after `markConsumed`, under the single-writer
+   * discipline). This exists solely to discriminate pack-growth from
+   * tree-fan-out as the dominant per-message substrate cost: if forcing a
+   * repack flattens the per-leg slope the cost is loose-object/pack
+   * growth (cheap pack/gc fix); if it does not, the cost is the
+   * per-commit root-tree rewrite scaling with `runs/` + `consumed/`
+   * fan-out (run-model change). Absent in production -- the dispatch path
+   * forks no `git gc` when this is unset.
+   */
+  repackEveryMessages?: { everyMessages: number };
 }
+
+/**
+ * The five per-message substrate legs the D2 attribution splits the
+ * unified path's substrate tax across. Each is a single git
+ * `writeTreePreservingPrefix` commit (or, for `runevent`, one of several
+ * commits per message) against the growing workflow-run repo:
+ *
+ *   - `enqueue`      — `enqueueInbox` in `onMailMessage`, BEFORE dispatch
+ *                      (paid OUTSIDE the dispatch-start..reply-produced
+ *                      window; its growth is invisible to the 4.7 bracket).
+ *   - `dequeue`      — `dequeueToProcessing`, the claim-check READ at the
+ *                      head of `dispatchOne` (inside the window).
+ *   - `runevent`     — a run-event bracket commit
+ *                      (`runs/<runId>/events/<seq>.json`), arriving as a
+ *                      child-proxied `substrate.write.request` (inside the
+ *                      window). One message may produce several; each is
+ *                      stamped and the D2 post-processing sums them and
+ *                      counts them per message.
+ *   - `markconsumed` — `markConsumed` at the tail of `dispatchOne`, AFTER
+ *                      `reply-produced` (paid OUTSIDE the window).
+ *   - `wal`          — the D1 conversation WAL append / checkpoint
+ *                      (`agent-state/<key>/...`), arriving as a
+ *                      child-proxied `substrate.write.request`. The control
+ *                      leg: post-D1 it should be small and flat.
+ */
+export type DispatchSubstrateLeg =
+  | "enqueue"
+  | "dequeue"
+  | "runevent"
+  | "markconsumed"
+  | "wal";
+
+/**
+ * Structural counters sampled at a `leg` mark's `"end"` phase so the D2
+ * attribution can explain WHY a leg grows, not merely that it does
+ * (design §10b). All are cheap filesystem reads against the workflow-run
+ * repo's on-disk working tree, taken only when the observer is wired.
+ *
+ *   - `runsFanOut`     — entry count under `runs/` (one subdir per message;
+ *                        never pruned). The candidate-(i) "collapse runs"
+ *                        win is sized by this.
+ *   - `consumedFanOut` — entry count under
+ *                        `addresses/<addr>/consumed/` (one dedup entry per
+ *                        message; never pruned). The candidate-(iv) "prune
+ *                        consumed" win is sized by this.
+ *   - `looseObjects`   — count of loose git objects under
+ *                        `.git/objects/<xx>/` (the pack-growth proxy; the
+ *                        §10c repack A/B targets this).
+ *   - `gitBytes`       — total byte size of the repo's `.git` directory
+ *                        (loose + pack), a coarse repo-size proxy.
+ */
+export type DispatchStructuralCounters = {
+  runsFanOut: number;
+  consumedFanOut: number;
+  looseObjects: number;
+  gitBytes: number;
+};
+
+/**
+ * One observation emitted by `WorkflowSupervisorBindings.onDispatchTiming`.
+ *
+ * The `"roundtrip"` variant is the 4.7 latency-gate bracket: pair the
+ * `"dispatch-start"` and `"reply-produced"` marks for the same `runId` to
+ * recover the per-message round-trip. `atMs` is a high-resolution
+ * monotonic timestamp (`performance.now()`).
+ *
+ * The `"leg"` variant is the D2 per-leg attribution surface: a paired
+ * `start`/`end` mark around one of the five substrate commits
+ * (`DispatchSubstrateLeg`), so each leg's per-message slope (ms added per
+ * sustained message) and floor (intercept) can be fit independently. The
+ * `end` mark of a `runevent`/`markconsumed`/`enqueue`/`dequeue` leg also
+ * carries the structural counters sampled at commit time. Both variants
+ * flow through the same off-by-default observer; production leaves the
+ * observer unwired and samples no clock and no counter.
+ */
+export type DispatchTimingMark =
+  | {
+      kind: "roundtrip";
+      runId: string;
+      marker: "dispatch-start" | "reply-produced";
+      atMs: number;
+    }
+  | {
+      kind: "leg";
+      runId: string;
+      leg: DispatchSubstrateLeg;
+      phase: "start" | "end";
+      atMs: number;
+      /** Sampled only on the `"end"` phase; absent on `"start"`. */
+      counters?: DispatchStructuralCounters;
+    };
