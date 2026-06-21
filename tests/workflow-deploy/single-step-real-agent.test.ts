@@ -38,6 +38,7 @@ import {
   type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
 import { deriveTrivialDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
+import { reconstructDurableConversation } from "@intx/sidecar-app/src/conversation-state";
 import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
 import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
 
@@ -298,27 +299,32 @@ describe("single-step real-agent round-trip", () => {
     );
     expect(fs.existsSync(path.join(durableConversationDir, ".git"))).toBe(true);
 
-    // The conversation snapshot is mirrored through the real proxy ->
-    // supervisor single-writer path to the workflow-run substrate at the
-    // per-agent `agent-state/<stepId>/conversation.json` path, sibling to
-    // the per-run event log under `runs/<runId>/...`. The supervisor's
-    // substrate is the sidecar's on-disk workflow-run repo; assert
-    // against it (deterministic, no hub pack-push timing dependency).
+    // The conversation is mirrored through the real proxy -> supervisor
+    // single-writer path to the workflow-run substrate at the per-agent
+    // `agent-state/<stepId>/` path (Phase D1: a bucket-sharded WAL plus a
+    // periodic checkpoint, no longer a single `conversation.json`), sibling
+    // to the per-run event log under `runs/<runId>/...`. The supervisor's
+    // substrate is the sidecar's on-disk workflow-run repo; reconstruct the
+    // durable conversation from it (deterministic, no hub pack-push timing
+    // dependency) and assert the agent's turn is durably committed.
     const sidecarWorkflowRunRepoDir = path.join(
       env.sidecar.dataDir,
       "workflow-runs",
       workflowRunRepoId.id,
     );
-    expect(
-      fs.existsSync(
-        path.join(
-          sidecarWorkflowRunRepoDir,
-          "agent-state",
-          encodeURIComponent(STEP_ID),
-          "conversation.json",
-        ),
-      ),
-    ).toBe(true);
+    const durableSubstrateAgentStateDir = path.join(
+      sidecarWorkflowRunRepoDir,
+      "agent-state",
+      encodeURIComponent(STEP_ID),
+    );
+    const durableConversation = await reconstructDurableConversation(
+      durableSubstrateAgentStateDir,
+      STEP_ID,
+    );
+    if (durableConversation === null) {
+      throw new Error("expected a durable conversation in the substrate");
+    }
+    expect(durableConversation.turns.length).toBeGreaterThan(0);
 
     // Neither the per-step root nor the durable conversation store lives
     // inside the workflow-run repo's working tree (where
