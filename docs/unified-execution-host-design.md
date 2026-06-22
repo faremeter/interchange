@@ -1,10 +1,15 @@
 # Unified Execution Host Design
 
-> **DESIGN PROPOSAL — not yet implemented.**
+> **STATUS — implemented (the unified single-agent path is built end to end).**
 >
-> This document describes a target architecture and a build path for it. No
-> part of it has been built. It is the artifact the operator reviews for a
-> go/no-go decision on INTR-209 and to guide the build once approved.
+> This document is the design of record. The unified single-agent path it
+> describes is built: the sidecar spawns a child that runs a real agent for
+> a workflow step with materialized tools, threads agent events up, keeps
+> the agent warm across messages, and persists its conversation durably
+> across a child respawn. The per-message latency hardening the design
+> implies was measured and landed, save one residual substrate
+> optimization tracked as a separate follow-up. The recursive per-rung
+> sandbox model in the later sections remains forward-looking.
 >
 > References are by file path and symbol name, deliberately without line
 > numbers, so the document outlives the code's line numbering.
