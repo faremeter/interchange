@@ -33,7 +33,26 @@
 //   - `addresses/<urlEncoded(address)>/consumed/<messageId>.json` —
 //     dedup index keyed by messageId. A `markConsumed` commit
 //     atomically removes the matching processing entry and writes
-//     this dedup entry.
+//     this dedup entry. The dedup index is bounded by a per-address
+//     retention watermark (see `watermark.json`): a `markConsumed`
+//     commit prunes consumed entries whose `receivedAt` falls below
+//     the watermark so the index reaches a bounded steady state
+//     instead of growing one entry per message forever.
+//   - `addresses/<urlEncoded(address)>/watermark.json` — the
+//     per-address retention watermark. Carries a single
+//     `receivedAt`-horizon value: the oldest `receivedAt` a consumed
+//     entry may still retain. The watermark only ever advances
+//     (monotonic non-decreasing). `enqueueInbox` rejects any inbound
+//     whose `receivedAt` is strictly below the watermark as
+//     definitively-stale (its dedup entry may have been pruned, so a
+//     duplicate cannot be ruled out -- refuse loudly rather than risk
+//     reprocessing). Above the watermark the `consumed/` index is
+//     authoritative; below it, refuse. The watermark advances only as
+//     the prune advances, both under the single writer, so the two
+//     never diverge. The stale-reject applies ONLY to fresh inbound at
+//     `enqueueInbox`; `replayProcessingToInbox` is intentionally exempt
+//     (a recovered in-flight `processing/` entry is already past dedup
+//     -- see that function's note).
 //   - `.gitignore` — supplied by the asset routes' genesis init body.
 //
 // The control-plane subtree (`control/...`) is not part of this
@@ -77,8 +96,8 @@
 //     rejected so consumers can rely on a single canonical encoding.
 //   - The only entries permitted under an `addresses/<urlEncoded>/`
 //     subtree are the directories `inbox`, `processing`, and
-//     `consumed`. Other top-level names under an address fail the
-//     push.
+//     `consumed`, plus the single `watermark.json` file. Other names
+//     under an address fail the push.
 //   - Inbox and processing filenames must match
 //     `<receivedAt>-<messageId>.json` where `receivedAt` is a decimal
 //     epoch-ms integer. The body's `receivedAt` matches the filename
@@ -96,10 +115,30 @@
 //     a same-state collision; the cross-state check fires when the
 //     same messageId appears in inbox+processing, inbox+consumed, or
 //     processing+consumed.
-//   - `consumed/<messageId>.json` is immutable: a prospective commit
-//     that mutates the bytes of an existing consumed entry is
-//     rejected by the same prior-tree byte-equality guard used for
-//     run events.
+//   - `consumed/<messageId>.json` bytes are immutable: a prospective
+//     commit that mutates the bytes of a consumed entry RETAINED from
+//     the prior tree is rejected by the same prior-tree byte-equality
+//     guard used for run events. A retained consumed entry may be
+//     DELETED only as a watermark-consistent retention prune (see the
+//     watermark invariants below); any other deletion is rejected.
+//   - Retention prune (the bounded-`consumed/` contract): the consumed
+//     dedup index may shrink only by a watermark-passed SUFFIX prune.
+//     A consumed entry present in the prior tree may be absent from the
+//     prospective tree only when (a) its `receivedAt` is strictly
+//     below the prospective `watermark.json` value (you may prune only
+//     what the watermark passed), (b) the watermark did not regress
+//     (`prospective watermark >= prior watermark`), and (c) it is older
+//     than every retained prior consumed entry (`max receivedAt of
+//     dropped <= min receivedAt of retained`) -- the suffix relation,
+//     so a writer can trim only the oldest age-ordered tail and can
+//     never selectively delete a recent messageId to sneak a reprocess
+//     past dedup. A RETAINED entry is NOT required to sit at or above
+//     the watermark: a message consumed long after receipt (or one
+//     replayed back in-flight after a crash) may legitimately carry a
+//     below-watermark `receivedAt` and survive until a later commit
+//     prunes it. Retaining it gives only EXTRA dedup -- a re-submission
+//     at or above the watermark still hits the entry, one below it is
+//     stale-rejected at enqueue -- so it never weakens exactly-once.
 //   - Inbox→processing transition: a processing entry that is newly
 //     added (not present in the prior tree) must be backed by a
 //     matching inbox entry in the prior tree at the same
@@ -177,6 +216,36 @@ export const WORKFLOW_RUN_CONTROL_PREFIX = "control";
 export const WORKFLOW_RUN_INBOX_DIR = "inbox";
 export const WORKFLOW_RUN_PROCESSING_DIR = "processing";
 export const WORKFLOW_RUN_CONSUMED_DIR = "consumed";
+
+/**
+ * Filename of the per-address retention watermark blob, a direct child
+ * of `addresses/<urlEncoded>/` (a file, not a directory). Carries the
+ * monotonic `receivedAt`-horizon below which consumed entries may be
+ * pruned and at-or-below which inbound enqueues are refused as stale.
+ */
+export const WORKFLOW_RUN_WATERMARK_FILE = "watermark.json";
+
+/**
+ * Default retention horizon for the consumed dedup index, in
+ * milliseconds. The boot edge resolves the operator's
+ * `CONSUMED_RETENTION_MS` config to a concrete value and threads it
+ * into `markConsumed`; this default applies only when no operator
+ * value is supplied. 24 hours is the conservative default: long enough
+ * that a duplicate from a retrying upstream within a day is still
+ * deduped by a retained consumed entry, short enough that `consumed/`
+ * reaches a bounded steady state of one day's message volume.
+ *
+ * INVARIANT (operator-owned): the horizon must be >= the longest
+ * window in which the same `messageId` could legitimately be
+ * re-submitted and still must be caught as a duplicate. There is no
+ * automatic internal mail redelivery in the system today, so this is
+ * the external re-submission window. If an at-least-once redelivery
+ * source is ever added, the horizon must be >= its maximum redelivery
+ * window or dedup breaks; a breach surfaces LOUDLY (a too-late
+ * re-submission carrying an old `receivedAt` is refused at enqueue,
+ * not silently reprocessed) rather than as silent double-processing.
+ */
+export const DEFAULT_CONSUMED_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Per-agent durable conversation-state subtree (design §3c). A
@@ -299,8 +368,21 @@ const ConsumedEnvelope = type({
   "+": "ignore",
 });
 
+/**
+ * JSON envelope carried by the per-address `watermark.json` blob. The
+ * `watermark` is a `receivedAt` horizon (epoch ms): the oldest
+ * `receivedAt` a consumed entry may still retain. It only ever
+ * advances. A retention prune drops consumed entries strictly below
+ * it; `enqueueInbox` refuses any inbound strictly below it.
+ */
+const WatermarkEnvelope = type({
+  watermark: "number >= 0",
+  "+": "ignore",
+});
+
 export type ClaimCheckEnvelope = typeof ClaimCheckEnvelope.infer;
 export type ConsumedEnvelope = typeof ConsumedEnvelope.infer;
+export type WatermarkEnvelope = typeof WatermarkEnvelope.infer;
 
 /**
  * Terminal event discriminators. A run whose log contains an entry
@@ -769,33 +851,27 @@ function compareQueueEntries(a: ClaimCheckBlob, b: ClaimCheckBlob): number {
   return 0;
 }
 
+type ClaimCheckAddressBucket = {
+  decodedAddress: string;
+  inbox: ClaimCheckBlob[];
+  processing: ClaimCheckBlob[];
+  consumed: ClaimCheckBlob[];
+  /**
+   * Repo-root-relative path of the address's `watermark.json` when the
+   * tree carries one, else `null`. The blob's parsed value is read on
+   * demand via `readBlob`/`priorReadBlob` (not eagerly, to keep the
+   * enumeration pure of body reads).
+   */
+  watermarkPath: string | null;
+};
+
 async function enumerateClaimCheckBlobs(
   listDir: (path: string) => Promise<string[]>,
 ): Promise<
-  | {
-      ok: true;
-      /** `addressSegment` → kind → entries */
-      perAddress: Map<
-        string,
-        {
-          decodedAddress: string;
-          inbox: ClaimCheckBlob[];
-          processing: ClaimCheckBlob[];
-          consumed: ClaimCheckBlob[];
-        }
-      >;
-    }
+  | { ok: true; perAddress: Map<string, ClaimCheckAddressBucket> }
   | { ok: false; reason: string }
 > {
-  const perAddress = new Map<
-    string,
-    {
-      decodedAddress: string;
-      inbox: ClaimCheckBlob[];
-      processing: ClaimCheckBlob[];
-      consumed: ClaimCheckBlob[];
-    }
-  >();
+  const perAddress = new Map<string, ClaimCheckAddressBucket>();
   const segments = await listDir(WORKFLOW_RUN_ADDRESSES_PREFIX);
   for (const segment of segments) {
     const roundTrip = checkAddressSegmentRoundTrip(segment);
@@ -803,19 +879,23 @@ async function enumerateClaimCheckBlobs(
     const addrDir = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${segment}`;
     const children = await listDir(addrDir);
     for (const child of children) {
-      if (!CLAIM_CHECK_SUBDIRS.has(child)) {
-        return {
-          ok: false,
-          reason: `address directory ${addrDir} contains unexpected entry ${JSON.stringify(child)}; allowed: "${WORKFLOW_RUN_INBOX_DIR}", "${WORKFLOW_RUN_PROCESSING_DIR}", "${WORKFLOW_RUN_CONSUMED_DIR}"`,
-        };
-      }
+      if (CLAIM_CHECK_SUBDIRS.has(child)) continue;
+      if (child === WORKFLOW_RUN_WATERMARK_FILE) continue;
+      return {
+        ok: false,
+        reason: `address directory ${addrDir} contains unexpected entry ${JSON.stringify(child)}; allowed: "${WORKFLOW_RUN_INBOX_DIR}", "${WORKFLOW_RUN_PROCESSING_DIR}", "${WORKFLOW_RUN_CONSUMED_DIR}", "${WORKFLOW_RUN_WATERMARK_FILE}"`,
+      };
     }
-    const bucket = perAddress.get(segment) ?? {
+    const bucket: ClaimCheckAddressBucket = perAddress.get(segment) ?? {
       decodedAddress: roundTrip.decoded,
       inbox: [],
       processing: [],
       consumed: [],
+      watermarkPath: null,
     };
+    if (children.includes(WORKFLOW_RUN_WATERMARK_FILE)) {
+      bucket.watermarkPath = `${addrDir}/${WORKFLOW_RUN_WATERMARK_FILE}`;
+    }
     for (const subdir of CLAIM_CHECK_SUBDIRS) {
       if (!children.includes(subdir)) continue;
       const dirPath = `${addrDir}/${subdir}`;
@@ -892,13 +972,73 @@ async function enumerateClaimCheckBlobs(
   return { ok: true, perAddress };
 }
 
+/**
+ * Read + validate the per-address `watermark.json` value from a blob
+ * reader. `null` means the tree has no watermark blob (treated as
+ * watermark 0 -- no entry pruned, nothing refused). The reader may be
+ * the prospective `readBlob` or the `priorReadBlob` (the latter
+ * returns `null` for an absent path, which is the legitimate
+ * never-pruned genesis state).
+ */
+async function readWatermark(
+  watermarkPath: string,
+  readBlob: (path: string) => Promise<Uint8Array | null>,
+): Promise<{ ok: true; watermark: number } | { ok: false; reason: string }> {
+  let raw: Uint8Array | null;
+  try {
+    raw = await readBlob(watermarkPath);
+  } catch (cause) {
+    return {
+      ok: false,
+      reason: `watermark ${watermarkPath} could not be read from the tree: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+    };
+  }
+  if (raw === null) return { ok: true, watermark: 0 };
+  let bodyJson: unknown;
+  try {
+    bodyJson = JSON.parse(new TextDecoder().decode(raw));
+  } catch (cause) {
+    return {
+      ok: false,
+      reason: `watermark ${watermarkPath} is not valid JSON: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+    };
+  }
+  const validated = WatermarkEnvelope(bodyJson);
+  if (validated instanceof type.errors) {
+    return {
+      ok: false,
+      reason: `watermark ${watermarkPath} envelope invalid: ${validated.summary}`,
+    };
+  }
+  return { ok: true, watermark: validated.watermark };
+}
+
 async function parseConsumedBlob(
   entry: ClaimCheckBlob,
   readBlob: (path: string) => Promise<Uint8Array>,
 ): Promise<
   { ok: true; body: ConsumedEnvelope } | { ok: false; reason: string }
 > {
-  let raw: Uint8Array;
+  return parseConsumedBlobFrom(entry, readBlob);
+}
+
+/**
+ * Read + validate a consumed entry's envelope from a blob reader that
+ * may return `null` for an absent path (the `priorReadBlob` shape).
+ * `null` is treated as a read failure: the caller only passes a path
+ * the prior tree is known to carry, so a `null` is structural damage.
+ */
+async function parseConsumedBlobFrom(
+  entry: ClaimCheckBlob,
+  readBlob: (path: string) => Promise<Uint8Array | null>,
+): Promise<
+  { ok: true; body: ConsumedEnvelope } | { ok: false; reason: string }
+> {
+  let raw: Uint8Array | null;
   try {
     raw = await readBlob(entry.blobPath);
   } catch (cause) {
@@ -907,6 +1047,12 @@ async function parseConsumedBlob(
       reason: `consumed ${entry.blobPath} could not be read from the tree: ${
         cause instanceof Error ? cause.message : String(cause)
       }`,
+    };
+  }
+  if (raw === null) {
+    return {
+      ok: false,
+      reason: `consumed ${entry.blobPath} was enumerated in the tree but its bytes could not be read`,
     };
   }
   let bodyJson: unknown;
@@ -1052,11 +1198,12 @@ async function validateClaimCheckSubtree(
     };
   }
 
-  const emptyBucket = (decodedAddress: string) => ({
+  const emptyBucket = (decodedAddress: string): ClaimCheckAddressBucket => ({
     decodedAddress,
-    inbox: [] as ClaimCheckBlob[],
-    processing: [] as ClaimCheckBlob[],
-    consumed: [] as ClaimCheckBlob[],
+    inbox: [],
+    processing: [],
+    consumed: [],
+    watermarkPath: null,
   });
   // Iterate the UNION of prospective and prior address segments so a
   // prospective tree that wipes an address subtree entirely still
@@ -1158,21 +1305,84 @@ async function validateClaimCheckSubtree(
     for (const e of bucket.consumed)
       prospectiveConsumedByMessageId.set(e.messageIdFromFilename, e);
 
-    // Append-only / immutability extended to the deletion direction:
-    // walk every entry the prior tree carried under
-    // `consumed/` and `processing/` and reject any prior path that
-    // does not reappear in the prospective tree, with a per-kind
-    // allowance for legitimate transitions (processing entries may
-    // drop in the same commit they transition to consumed or replay
-    // back to inbox). Without this walk, a prospective tree that
-    // simply omits a prior entry slips past the prospective-tree
-    // iteration the by-presence checks above perform.
+    // Deletion-direction guards: walk every entry the prior tree
+    // carried under `consumed/`, `processing/`, and `inbox/` and reject
+    // any prior path that vanishes from the prospective tree except via
+    // a permitted transition (or, for consumed, a watermark-passed
+    // retention prune). Without this walk a prospective tree that
+    // simply omits a prior entry would slip past the prospective-tree
+    // by-presence checks above.
+    //
+    // Retention-watermark contract for the consumed dedup index. The
+    // watermark is a monotonic `receivedAt` horizon; a `markConsumed`
+    // commit may drop the oldest consumed tail (entries strictly below
+    // the watermark) and the watermark may only advance. Resolve both
+    // the prospective and prior watermark up front so the consumed
+    // deletion check below can bind every drop to the watermark.
+    let prospectiveWatermark = 0;
+    if (bucket.watermarkPath !== null) {
+      const wm = await readWatermark(bucket.watermarkPath, (p) => readBlob(p));
+      if (!wm.ok) return wm;
+      prospectiveWatermark = wm.watermark;
+    }
+    let priorWatermark = 0;
+    if (priorBucket?.watermarkPath != null) {
+      const wm = await readWatermark(priorBucket.watermarkPath, priorReadBlob);
+      if (!wm.ok) return wm;
+      priorWatermark = wm.watermark;
+    }
+    if (prospectiveWatermark < priorWatermark) {
+      return {
+        ok: false,
+        reason: `address ${JSON.stringify(decodedAddress)} retention watermark regressed from ${String(priorWatermark)} to ${String(prospectiveWatermark)}; the watermark is monotonically non-decreasing`,
+      };
+    }
+
     if (priorBucket !== undefined) {
+      // The consumed dedup index may shrink ONLY by a watermark-passed
+      // SUFFIX prune: the entries dropped from the prior tree must be
+      // the oldest age-ordered tail, every one of them strictly below
+      // the prospective watermark, and never younger than any entry
+      // that survives. Expressed as two structural facts the handler
+      // can check without wall-clock policy:
+      //   (1) every DROPPED prior consumed entry has receivedAt <
+      //       watermark (you may prune only what the watermark passed);
+      //   (2) every dropped entry is older than every RETAINED prior
+      //       entry (max receivedAt of dropped <= min receivedAt of
+      //       retained) -- the suffix relation, so a writer cannot
+      //       selectively delete a recent messageId while keeping an
+      //       older one to sneak a reprocess past dedup.
+      // A RETAINED entry is NOT required to sit at or above the
+      // watermark: a message consumed long after receipt (or replayed
+      // back in-flight) may legitimately carry a below-watermark
+      // receivedAt and survive until a later commit prunes it. Holding
+      // it gives only EXTRA dedup (a re-submission at or above the
+      // watermark still hits the retained entry; one below is
+      // stale-rejected at enqueue), so it never weakens exactly-once.
+      // The receivedAt lives in the body; read it from the prior tree
+      // (retained bytes are immutable, so prior and prospective agree).
+      let maxDroppedReceivedAt = Number.NEGATIVE_INFINITY;
+      let minRetainedReceivedAt = Number.POSITIVE_INFINITY;
       for (const e of priorBucket.consumed) {
-        if (prospectiveConsumedPaths.has(e.blobPath)) continue;
+        const priorParsed = await parseConsumedBlobFrom(e, priorReadBlob);
+        if (!priorParsed.ok) return priorParsed;
+        const receivedAt = priorParsed.body.receivedAt;
+        if (prospectiveConsumedPaths.has(e.blobPath)) {
+          minRetainedReceivedAt = Math.min(minRetainedReceivedAt, receivedAt);
+          continue;
+        }
+        if (receivedAt >= prospectiveWatermark) {
+          return {
+            ok: false,
+            reason: `consumed ${e.blobPath} present in the prior tree is missing from the prospective tree but its receivedAt ${String(receivedAt)} is not below the retention watermark ${String(prospectiveWatermark)}; consumed entries may be pruned only once the watermark has passed them`,
+          };
+        }
+        maxDroppedReceivedAt = Math.max(maxDroppedReceivedAt, receivedAt);
+      }
+      if (maxDroppedReceivedAt > minRetainedReceivedAt) {
         return {
           ok: false,
-          reason: `consumed ${e.blobPath} present in the prior tree is missing from the prospective tree; consumed entries are immutable once written`,
+          reason: `address ${JSON.stringify(decodedAddress)} consumed prune is not a suffix: a dropped entry (receivedAt ${String(maxDroppedReceivedAt)}) is newer than a retained entry (receivedAt ${String(minRetainedReceivedAt)}); only the oldest age-ordered tail may be pruned`,
         };
       }
       for (const e of priorBucket.processing) {
@@ -1932,6 +2142,18 @@ async function readAddressSubtree(
     oid: addrTreeOid,
   });
   for (const child of addrChildren) {
+    if (child.type === "blob" && child.path === WORKFLOW_RUN_WATERMARK_FILE) {
+      const { blob } = await git.readBlob({
+        fs,
+        dir: repoDir,
+        oid: child.oid,
+      });
+      out.set(
+        `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_WATERMARK_FILE}`,
+        blob,
+      );
+      continue;
+    }
     if (child.type !== "tree") continue;
     if (!CLAIM_CHECK_SUBDIRS.has(child.path)) continue;
     const { tree: children } = await git.readTree({
@@ -1990,6 +2212,52 @@ function decodeQueueEnvelopeOrThrow(
     );
   }
   return validated;
+}
+
+function decodeConsumedReceivedAtOrThrow(
+  bytes: Uint8Array,
+  blobPath: string,
+): number {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(bytes));
+  } catch (cause) {
+    throw new Error(`claim_check_corrupt_json: ${blobPath}`, { cause });
+  }
+  const validated = ConsumedEnvelope(parsed);
+  if (validated instanceof type.errors) {
+    throw new Error(
+      `claim_check_consumed_invalid: ${blobPath}: ${validated.summary}`,
+    );
+  }
+  return validated.receivedAt;
+}
+
+/**
+ * Read the per-address watermark from a claim-check subtree map keyed
+ * by repo-root-relative path. An absent watermark blob means the
+ * address has never pruned; treat it as watermark 0 (nothing pruned,
+ * nothing refused).
+ */
+function readWatermarkFromMap(
+  existing: Map<string, Uint8Array>,
+  watermarkFull: string,
+): number {
+  const bytes = existing.get(watermarkFull);
+  if (bytes === undefined) return 0;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(bytes));
+  } catch (cause) {
+    throw new Error(`claim_check_corrupt_json: ${watermarkFull}`, { cause });
+  }
+  const validated = WatermarkEnvelope(parsed);
+  if (validated instanceof type.errors) {
+    throw new Error(
+      `claim_check_watermark_invalid: ${watermarkFull}: ${validated.summary}`,
+    );
+  }
+  return validated.watermark;
 }
 
 export type EnqueueInboxArgs = {
@@ -2055,8 +2323,23 @@ export async function enqueueInbox(
         const inboxPrefix = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_INBOX_DIR}/`;
         const processingPrefix = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_PROCESSING_DIR}/`;
         const consumedPrefix = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_CONSUMED_DIR}/`;
+        const watermarkFull = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_WATERMARK_FILE}`;
         const messageIdSuffix = `-${args.messageId}.json`;
+        // Refuse a definitively-stale enqueue: a message whose
+        // receivedAt is strictly below the retention watermark could
+        // have had its consumed/ dedup entry pruned, so a duplicate can
+        // no longer be ruled out. Reject it LOUDLY rather than risk
+        // reprocessing. This is the second half of the exactly-once
+        // guarantee: above the watermark the consumed/ index is
+        // authoritative; below it, refuse.
+        const watermark = readWatermarkFromMap(existing, watermarkFull);
+        if (args.receivedAt < watermark) {
+          throw new Error(
+            `claim_check_stale_enqueue: address ${args.address} message ${args.messageId} receivedAt ${String(args.receivedAt)} is below the retention watermark ${String(watermark)}; its dedup entry may have been pruned, so it is refused as definitively-stale`,
+          );
+        }
         for (const [blobPath] of existing) {
+          if (blobPath === watermarkFull) continue;
           if (blobPath === newInboxPath) {
             throw new Error(
               `claim_check_duplicate_inbox: ${newInboxPath} already exists`,
@@ -2273,23 +2556,47 @@ export type MarkConsumedArgs = {
   messageId: string;
   runId: string;
   consumedAt: number;
+  /**
+   * Retention horizon for the consumed dedup index, in milliseconds.
+   * The commit advances the per-address watermark to
+   * `consumedAt - retentionHorizonMs` (never backward, never past the
+   * entry being written) and prunes consumed entries below it. The
+   * boot edge resolves the operator's `CONSUMED_RETENTION_MS` config
+   * to a concrete value and threads it here. Omit to apply
+   * `DEFAULT_CONSUMED_RETENTION_MS` (24h).
+   */
+  retentionHorizonMs?: number;
 };
 
 export type MarkConsumedResult = {
   commitSha: string;
   envelope: ConsumedEnvelope;
+  /** Watermark the commit advanced to (epoch-ms `receivedAt` horizon). */
+  watermark: number;
+  /** messageIds whose consumed entries this commit pruned. */
+  prunedMessageIds: string[];
 };
 
 /**
- * Atomically remove the processing entry for `messageId` at `address`
- * and write the canonical `consumed/<messageId>.json` dedup index
- * entry. The caller is expected to have called
- * `dequeueToProcessing` for this messageId; calling `markConsumed`
- * without a matching processing entry throws.
+ * Atomically remove the processing entry for `messageId` at `address`,
+ * write the canonical `consumed/<messageId>.json` dedup index entry,
+ * advance the per-address retention watermark, and prune consumed
+ * entries the watermark has passed. The caller is expected to have
+ * called `dequeueToProcessing` for this messageId; calling
+ * `markConsumed` without a matching processing entry throws.
  *
  * The consumed envelope preserves the original `receivedAt` and
- * `mailAuditRef` from the processing entry so the dedup index
- * doubles as an audit record.
+ * `mailAuditRef` from the processing entry so the dedup index doubles
+ * as an audit record.
+ *
+ * Retention (the bounded-`consumed/` contract): the watermark advances
+ * to `max(priorWatermark, min(consumedAt - retentionHorizonMs,
+ * thisEntry.receivedAt))` -- monotonic, and never past the entry being
+ * written so the new entry is always retained. Every consumed entry
+ * whose `receivedAt` is strictly below the new watermark is dropped
+ * (the oldest age-ordered tail). `consumed/` therefore reaches a
+ * bounded steady state of roughly one horizon's worth of entries
+ * instead of growing one entry per message forever.
  */
 export async function markConsumed(
   store: RepoStore,
@@ -2300,7 +2607,11 @@ export async function markConsumed(
   const addressSegment = addressSegmentFor(args.address);
   const ref = claimCheckCommitRef();
   const repoDir = store.getRepoDir(repoId);
+  const retentionHorizonMs =
+    args.retentionHorizonMs ?? DEFAULT_CONSUMED_RETENTION_MS;
   let consumedEnvelope: ConsumedEnvelope | null = null;
+  let advancedWatermark = 0;
+  const prunedMessageIds: string[] = [];
   const { commitSha } = await store.writeTreePreservingPrefix(
     principal,
     repoId,
@@ -2311,6 +2622,7 @@ export async function markConsumed(
         const existing = await readAddressSubtree(repoDir, ref, addressSegment);
         const processingPrefix = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_PROCESSING_DIR}/`;
         const consumedPrefix = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_CONSUMED_DIR}/`;
+        const watermarkFull = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_WATERMARK_FILE}`;
         const consumedFname = `${args.messageId}.json`;
         const consumedFull = `${consumedPrefix}${consumedFname}`;
         if (existing.has(consumedFull)) {
@@ -2347,12 +2659,45 @@ export async function markConsumed(
           mailAuditRef: processingEnvelope.mailAuditRef,
         };
         consumedEnvelope = envelope;
+
+        const priorWatermark = readWatermarkFromMap(existing, watermarkFull);
+        // The watermark may only advance, and never past the entry
+        // this commit writes (so the new entry is always retained --
+        // a message consumed long after receipt may legitimately sit
+        // below `consumedAt - horizon`, and it is pruned on a later
+        // commit once the watermark passes ITS receivedAt).
+        const horizonBoundary = args.consumedAt - retentionHorizonMs;
+        const newWatermark = Math.max(
+          priorWatermark,
+          Math.min(horizonBoundary, envelope.receivedAt),
+        );
+        advancedWatermark = newWatermark;
+
         const files: Record<string, string | Uint8Array> = {};
         for (const [blobPath, blobBytes] of existing) {
           if (blobPath === processingFull) continue;
+          if (blobPath === watermarkFull) continue;
+          if (blobPath.startsWith(consumedPrefix)) {
+            // Prune the oldest consumed tail: drop any retained entry
+            // whose receivedAt has fallen strictly below the new
+            // watermark. The new entry (added below) is never below
+            // the watermark by construction.
+            const consumedReceivedAt = decodeConsumedReceivedAtOrThrow(
+              blobBytes,
+              blobPath,
+            );
+            if (consumedReceivedAt < newWatermark) {
+              const prunedFname = blobPath.slice(consumedPrefix.length);
+              prunedMessageIds.push(prunedFname.slice(0, -".json".length));
+              continue;
+            }
+          }
           files[blobPath] = blobBytes;
         }
         files[consumedFull] = utf8(JSON.stringify(envelope));
+        files[watermarkFull] = utf8(
+          JSON.stringify({ watermark: newWatermark }),
+        );
         return files;
       },
       message: `consume ${args.address} ${args.messageId}`,
@@ -2360,7 +2705,12 @@ export async function markConsumed(
   );
   if (consumedEnvelope === null) throw new Error("unreachable");
   const captured: ConsumedEnvelope = consumedEnvelope;
-  return { commitSha, envelope: captured };
+  return {
+    commitSha,
+    envelope: captured,
+    watermark: advancedWatermark,
+    prunedMessageIds,
+  };
 }
 
 export type ReplayProcessingToInboxResult = {
@@ -2379,6 +2729,17 @@ export type ReplayProcessingToInboxResult = {
  * The replay is atomic across all processing entries — a partial
  * replay that left some entries in processing would corrupt the
  * FIFO discipline (the next dequeue would pull the wrong entry).
+ *
+ * Watermark carve-out (load-bearing — do NOT "tighten" this): the
+ * replay deliberately does NOT apply the `receivedAt < watermark`
+ * stale-reject that `enqueueInbox` applies. A `processing/` entry was
+ * already dequeued past the dedup index, so re-admitting it to
+ * `inbox/` even when its `receivedAt` has fallen below an advanced
+ * watermark is correct — the message is a legitimately in-flight one
+ * recovered after a crash, not a fresh inbound that could be a
+ * duplicate. Applying the stale-reject here would silently LOSE that
+ * message. The watermark only ever gates fresh inbound at the enqueue
+ * boundary; the recovery replay is exempt by design.
  */
 export async function replayProcessingToInbox(
   store: RepoStore,
@@ -2411,6 +2772,12 @@ export async function replayProcessingToInbox(
                 `claim_check_replay_collision: ${inboxFull} already exists; cannot replay processing entry`,
               );
             }
+            // Re-admit the in-flight entry WITHOUT the watermark
+            // stale-reject enqueueInbox applies: it was already past
+            // dedup, so a below-watermark receivedAt is no reason to
+            // refuse it. Applying the stale-check here would lose a
+            // legitimately in-flight message after a crash. Do not
+            // tighten this.
             files[inboxFull] = bytes;
             replayedKeys.push(key);
             continue;

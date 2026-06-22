@@ -302,6 +302,8 @@ function createMemoryInbox(): InboxPrimitives & {
               consumedAt: args.consumedAt,
               mailAuditRef: value.mailAuditRef,
             },
+            watermark: 0,
+            prunedMessageIds: [],
           };
         }
       }

@@ -547,6 +547,21 @@ export interface WorkflowSupervisorBindings {
    */
   inboxWritePrincipal?: Principal;
   /**
+   * Retention horizon for the consumed dedup index, in milliseconds.
+   * Threaded into every `markConsumed` so the per-address watermark
+   * advances to `consumedAt - consumedRetentionMs` and the consumed/
+   * index is pruned to a bounded steady state. This is an
+   * OPERATOR-policy value: the longest window in which the same
+   * message could legitimately be re-submitted and still must be
+   * caught as a duplicate. The boot edge resolves the operator's
+   * config and supplies it; absent, `DEFAULT_CONSUMED_RETENTION_MS`
+   * (24h) applies. The invariant the operator owns: the horizon must
+   * be >= the maximum redelivery window of any at-least-once source if
+   * one is ever added, or dedup breaks (a breach surfaces loudly as a
+   * refused stale enqueue, not silent double-processing).
+   */
+  consumedRetentionMs?: number;
+  /**
    * Watchdog timeout (ms) for the supervisor's substrate-write
    * handler's wait on the dispatch loop's `markConsumed` when a
    * terminal-event blob lands in a proxied write. Defaults to
