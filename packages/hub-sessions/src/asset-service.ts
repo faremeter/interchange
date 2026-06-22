@@ -20,14 +20,18 @@
 import fs from "node:fs";
 import { asc, eq } from "drizzle-orm";
 import git from "isomorphic-git";
-import { type DB } from "@intx/db";
+import {
+  type DB,
+  pgErrorCode,
+  PG_UNIQUE_VIOLATION,
+  PG_FOREIGN_KEY_VIOLATION,
+} from "@intx/db";
 import {
   agentAsset as agentAssetTable,
   asset as assetTable,
 } from "@intx/db/schema";
 import { generateId } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
-import { hasCode } from "@intx/types";
 import type { RepoKind } from "@intx/types/sidecar";
 
 import type {
@@ -38,11 +42,6 @@ import type {
 } from "./repo-store";
 
 const logger = getLogger(["hub-sessions", "asset-service"]);
-
-// Postgres SQLSTATE codes. drizzle / postgres-js surfaces the original
-// error with `code` set; `hasCode` narrows safely.
-const PG_UNIQUE_VIOLATION = "23505";
-const PG_FOREIGN_KEY_VIOLATION = "23503";
 
 export type Asset = {
   id: string;
@@ -377,7 +376,7 @@ export function createAssetService(deps: {
       }
       inserted = row;
     } catch (err) {
-      if (hasCode(err) && err.code === PG_UNIQUE_VIOLATION) {
+      if (pgErrorCode(err) === PG_UNIQUE_VIOLATION) {
         throw new AssetServiceError(
           "duplicate_asset",
           `asset (tenantId=${params.tenantId}, kind=${params.kind}, name=${params.name}) already exists`,
@@ -449,14 +448,14 @@ export function createAssetService(deps: {
       }
       inserted = row;
     } catch (err) {
-      if (hasCode(err) && err.code === PG_UNIQUE_VIOLATION) {
+      if (pgErrorCode(err) === PG_UNIQUE_VIOLATION) {
         throw new AssetServiceError(
           "duplicate_attachment",
           `agent_asset (agentId=${params.agentId}, assetId=${params.assetId}) already attached`,
           err,
         );
       }
-      if (hasCode(err) && err.code === PG_FOREIGN_KEY_VIOLATION) {
+      if (pgErrorCode(err) === PG_FOREIGN_KEY_VIOLATION) {
         throw new AssetServiceError(
           "invalid_reference",
           `agent_asset (agentId=${params.agentId}, assetId=${params.assetId}) references a missing agent or asset`,
