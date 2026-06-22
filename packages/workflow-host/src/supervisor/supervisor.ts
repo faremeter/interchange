@@ -56,6 +56,7 @@ import {
   dequeueToProcessing as defaultDequeueToProcessing,
   markConsumed as defaultMarkConsumed,
   replayProcessingToInbox as defaultReplayProcessingToInbox,
+  DEFAULT_CONSUMED_RETENTION_MS,
   type Principal,
   type WorkflowRunSupervisorPrincipal,
   type WorkflowRunWorkflowProcessPrincipal,
@@ -545,6 +546,12 @@ export function createWorkflowSupervisor(
   };
   const inboxWritePrincipal: Principal =
     bindings.inboxWritePrincipal ?? defaultInboxWritePrincipal;
+  // Resolve the consumed-dedup retention horizon once at the bindings
+  // edge (the layer that owns the operator config); every markConsumed
+  // is threaded the concrete value. See `WorkflowSupervisorBindings.
+  // consumedRetentionMs` for the operator-owned invariant.
+  const consumedRetentionMs =
+    bindings.consumedRetentionMs ?? DEFAULT_CONSUMED_RETENTION_MS;
   /**
    * Resolved on every successful `enqueueInbox`; the dispatch loop
    * awaits this promise after a null dequeue so it returns to
@@ -1793,6 +1800,7 @@ export function createWorkflowSupervisor(
           messageId: envelope.messageId,
           runId,
           consumedAt: Date.now(),
+          retentionHorizonMs: consumedRetentionMs,
         },
       );
     } catch (cause) {

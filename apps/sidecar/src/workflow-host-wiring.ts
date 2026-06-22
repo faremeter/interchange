@@ -448,6 +448,13 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    * for the D2 attribution run.
    */
   repackEveryMessages?: { everyMessages: number };
+  /**
+   * Consumed-dedup retention horizon (ms), forwarded to the
+   * supervisor's `consumedRetentionMs` binding. The boot edge resolves
+   * the operator's `CONSUMED_RETENTION_MS` config; absent, the
+   * supervisor applies `DEFAULT_CONSUMED_RETENTION_MS` (24h).
+   */
+  consumedRetentionMs?: number;
 };
 
 export type SidecarWorkflowSupervisor = {
@@ -807,6 +814,14 @@ export function createSidecarDeployRouter(deps: {
    * the same benchmark env gate; absent in ordinary production.
    */
   repackEveryMessages?: { everyMessages: number };
+  /**
+   * Consumed-dedup retention horizon (ms) forwarded to every supervisor
+   * the router constructs. The sidecar boot edge resolves the operator's
+   * `CONSUMED_RETENTION_MS` config; absent, the supervisor applies
+   * `DEFAULT_CONSUMED_RETENTION_MS` (24h). See the workflow-run kind
+   * handler for the operator-owned horizon invariant.
+   */
+  consumedRetentionMs?: number;
 }): DeployRouter {
   const principalPublicKeyHex = derivePrincipalPublicKeyHex(
     deps.signingKeySeed,
@@ -1054,6 +1069,9 @@ export function createSidecarDeployRouter(deps: {
           : {}),
         ...(deps.repackEveryMessages !== undefined
           ? { repackEveryMessages: deps.repackEveryMessages }
+          : {}),
+        ...(deps.consumedRetentionMs !== undefined
+          ? { consumedRetentionMs: deps.consumedRetentionMs }
           : {}),
       });
 
@@ -1328,6 +1346,9 @@ export function createSidecarDeployRouter(deps: {
               );
             });
           },
+          ...(deps.consumedRetentionMs !== undefined
+            ? { consumedRetentionMs: deps.consumedRetentionMs }
+            : {}),
         });
         await wired.supervisor.deploy({
           agentAddress: frame.agentAddress,
@@ -1584,6 +1605,9 @@ export function createSidecarWorkflowSupervisor(
       : {}),
     ...(opts.repackEveryMessages !== undefined
       ? { repackEveryMessages: opts.repackEveryMessages }
+      : {}),
+    ...(opts.consumedRetentionMs !== undefined
+      ? { consumedRetentionMs: opts.consumedRetentionMs }
       : {}),
   });
   return {

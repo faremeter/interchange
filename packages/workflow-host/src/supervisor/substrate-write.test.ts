@@ -361,6 +361,8 @@ function createMemoryInboxPrimitives(opts: {
           consumedAt: args.consumedAt,
           mailAuditRef: envelope.mailAuditRef,
         },
+        watermark: 0,
+        prunedMessageIds: [],
       };
     },
     async replayProcessingToInbox(_store, _principal, _repoId, address) {

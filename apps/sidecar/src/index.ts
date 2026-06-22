@@ -122,6 +122,27 @@ if (repackEveryRaw !== undefined && repackEveryRaw.trim() !== "") {
   repackEveryMessages = { everyMessages: parsed };
 }
 
+// Consumed-dedup retention horizon (ms). Resolved here at the boot edge
+// -- the single layer that owns operator config -- and threaded into
+// every supervisor the deploy router constructs. Absent or empty =>
+// the supervisor applies its 24h default. This is the OPERATOR-policy
+// value: the longest window in which the same message could
+// legitimately be re-submitted and still must be caught as a duplicate
+// (the consumed/ dedup index retains at least this long before the
+// retention watermark prunes it). It must be >= the maximum redelivery
+// window of any at-least-once mail source if one is ever added.
+const consumedRetentionRaw = process.env["CONSUMED_RETENTION_MS"];
+let consumedRetentionMs: number | undefined;
+if (consumedRetentionRaw !== undefined && consumedRetentionRaw.trim() !== "") {
+  const parsed = Number.parseInt(consumedRetentionRaw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(
+      `CONSUMED_RETENTION_MS must be a positive integer (milliseconds), got ${consumedRetentionRaw}`,
+    );
+  }
+  consumedRetentionMs = parsed;
+}
+
 // Sweep any tmp staging directories left behind by a `put` or
 // `extractTarball` that crashed between staging and the final rename
 // on a previous boot. Running here, before the orchestrator starts
@@ -374,6 +395,7 @@ const orchestrator = createSidecarOrchestrator({
       publishWorkflowInferenceEvent,
       ...(onDispatchTiming !== undefined ? { onDispatchTiming } : {}),
       ...(repackEveryMessages !== undefined ? { repackEveryMessages } : {}),
+      ...(consumedRetentionMs !== undefined ? { consumedRetentionMs } : {}),
     }),
 });
 

@@ -21,6 +21,7 @@ import {
   WORKFLOW_RUN_CONSUMED_DIR,
   WORKFLOW_RUN_BLOBS_DIR,
   WORKFLOW_RUN_AGENT_STATE_PREFIX,
+  WORKFLOW_RUN_WATERMARK_FILE,
 } from "./workflow-run-kind";
 import { createRepoStore } from "./repo-store";
 import type { KindHandler, Principal, RepoId } from "./repo-store";
@@ -1212,6 +1213,14 @@ function processingPathFor(seg: string, receivedAt: number, messageId: string) {
 
 function consumedPathFor(seg: string, messageId: string) {
   return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${seg}/${WORKFLOW_RUN_CONSUMED_DIR}/${messageId}.json`;
+}
+
+function watermarkPathFor(seg: string) {
+  return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${seg}/${WORKFLOW_RUN_WATERMARK_FILE}`;
+}
+
+function watermarkBody(watermark: number): string {
+  return JSON.stringify({ watermark });
 }
 
 function inboxBody(
@@ -2605,5 +2614,551 @@ describe("workflow-run substrate — pack-path per-run scope completeness", () =
     // The clean contract reason, not a raw "is not a directory" throw.
     expect(reason).toContain("append-only");
     expect(reason).not.toContain("is not a directory");
+  });
+});
+
+// =====================================================================
+// P2 — retention watermark: bound the consumed/ dedup index.
+//
+// The watermark is a per-address monotonic receivedAt horizon. A
+// markConsumed commit advances it and prunes consumed entries below it
+// (the oldest tail only); enqueueInbox refuses any inbound below it as
+// definitively-stale. These tests prove the gate items: the structural
+// contract relaxation (validate-level: suffix-only prune, monotonic
+// watermark, retained-floor) and the end-to-end exactly-once + bounded
+// behaviour against a real on-disk store.
+
+describe("workflowRunKindHandler.validatePush — retention watermark contract", () => {
+  // Gate 3: a watermark regression is rejected.
+  test("rejects a watermark that moves backward", async () => {
+    const prior = {
+      [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(500),
+      [consumedPathFor(ADDRESS_SEG, "msg-1")]: consumedBody(
+        "msg-1",
+        600,
+        "run-1",
+        700,
+      ),
+    };
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(400),
+        [consumedPathFor(ADDRESS_SEG, "msg-1")]: consumedBody(
+          "msg-1",
+          600,
+          "run-1",
+          700,
+        ),
+      },
+      { priorFiles: prior },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/watermark regressed/);
+  });
+
+  // Gate 2: a non-suffix deletion (drop a recent consumed entry while
+  // keeping an older one) is rejected. Dropping msg-recent (receivedAt
+  // 200) while retaining msg-old (receivedAt 100) is not a suffix of
+  // the age-ordered set -- the suffix guard fires (max dropped 200 >
+  // min retained 100), regardless of where the watermark sits.
+  test("rejects dropping a recent consumed entry while keeping an older one", async () => {
+    const prior = {
+      [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(0),
+      [consumedPathFor(ADDRESS_SEG, "msg-old")]: consumedBody(
+        "msg-old",
+        100,
+        "run-old",
+        150,
+      ),
+      [consumedPathFor(ADDRESS_SEG, "msg-recent")]: consumedBody(
+        "msg-recent",
+        200,
+        "run-recent",
+        250,
+      ),
+    };
+    // Drop msg-recent (the younger one), keep msg-old (the older one).
+    // To "permit" the drop the writer must claim a watermark above 200
+    // (so the dropped 200 is below it); the retained 100 is then newer
+    // than nothing dropped above it, but the dropped 200 is newer than
+    // the retained 100 -- a non-suffix prune.
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(201),
+        [consumedPathFor(ADDRESS_SEG, "msg-old")]: consumedBody(
+          "msg-old",
+          100,
+          "run-old",
+          150,
+        ),
+      },
+      { priorFiles: prior },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/prune is not a suffix/);
+  });
+
+  // A dropped entry that the watermark has NOT passed is rejected (you
+  // may only prune what the watermark cleared).
+  test("rejects pruning a consumed entry the watermark has not passed", async () => {
+    const prior = {
+      [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(0),
+      [consumedPathFor(ADDRESS_SEG, "msg-1")]: consumedBody(
+        "msg-1",
+        100,
+        "run-1",
+        150,
+      ),
+    };
+    // Watermark stays at 0; dropping msg-1 (receivedAt 100 >= 0) is not
+    // a watermark-passed prune.
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(0),
+      },
+      { priorFiles: prior },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /may be pruned only once the watermark has passed/,
+    );
+  });
+
+  // The suffix prune IS permitted: drop the oldest tail (below the
+  // advanced watermark), keep the rest at-or-above it.
+  test("accepts pruning the oldest consumed tail below the advanced watermark", async () => {
+    const prior = {
+      [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(0),
+      [consumedPathFor(ADDRESS_SEG, "msg-old")]: consumedBody(
+        "msg-old",
+        100,
+        "run-old",
+        150,
+      ),
+      [consumedPathFor(ADDRESS_SEG, "msg-new")]: consumedBody(
+        "msg-new",
+        300,
+        "run-new",
+        350,
+      ),
+    };
+    // Advance watermark to 200: prune msg-old (100 < 200), retain
+    // msg-new (300 >= 200).
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(200),
+        [consumedPathFor(ADDRESS_SEG, "msg-new")]: consumedBody(
+          "msg-new",
+          300,
+          "run-new",
+          350,
+        ),
+      },
+      { priorFiles: prior },
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  // The freshly-written consumed entry is exempt from the retained
+  // floor: a message consumed long after receipt may land below an
+  // already-advanced watermark (it is pruned on the next commit).
+  test("accepts a newly-added consumed entry below the watermark (slow-consumed message)", async () => {
+    const prior = {
+      [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(500),
+      [processingPathFor(ADDRESS_SEG, 100, "msg-slow")]: inboxBody(
+        "msg-slow",
+        100,
+      ),
+    };
+    // processing -> consumed for msg-slow whose receivedAt (100) is
+    // below the prior watermark (500). The transition is legal and the
+    // new entry is exempt from the floor.
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(500),
+        [consumedPathFor(ADDRESS_SEG, "msg-slow")]: consumedBody(
+          "msg-slow",
+          100,
+          "run-slow",
+          600,
+        ),
+      },
+      { priorFiles: prior },
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  // The address may carry a watermark.json file without tripping the
+  // unexpected-entry guard.
+  test("accepts a watermark.json file as a permitted address child", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(0),
+      [inboxPathFor(ADDRESS_SEG, 100, "msg-1")]: inboxBody("msg-1", 100),
+    });
+    expect(r.ok).toBe(true);
+  });
+});
+
+// End-to-end retention against a real on-disk store.
+function isEnoent(cause: unknown): boolean {
+  return cause instanceof Error && "code" in cause && cause.code === "ENOENT";
+}
+
+async function consumedCount(repoDir: string, seg: string): Promise<number> {
+  const dir = path.join(
+    repoDir,
+    WORKFLOW_RUN_ADDRESSES_PREFIX,
+    seg,
+    WORKFLOW_RUN_CONSUMED_DIR,
+  );
+  try {
+    const names = await fs.promises.readdir(dir);
+    return names.filter((n) => n.endsWith(".json")).length;
+  } catch (cause) {
+    if (isEnoent(cause)) return 0;
+    throw cause;
+  }
+}
+
+async function readWatermarkOnDisk(
+  repoDir: string,
+  seg: string,
+): Promise<number | null> {
+  const file = path.join(
+    repoDir,
+    WORKFLOW_RUN_ADDRESSES_PREFIX,
+    seg,
+    WORKFLOW_RUN_WATERMARK_FILE,
+  );
+  let raw: string;
+  try {
+    raw = await fs.promises.readFile(file, "utf8");
+  } catch (cause) {
+    if (isEnoent(cause)) return null;
+    throw cause;
+  }
+  const parsed: unknown = JSON.parse(raw);
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "watermark" in parsed &&
+    typeof parsed.watermark === "number"
+  ) {
+    return parsed.watermark;
+  }
+  throw new Error("watermark.json shape invalid");
+}
+
+describe("claim-check API — retention watermark exactly-once + bounded", () => {
+  // Gate 1(a): a duplicate WITHIN the window is still deduped (the
+  // consumed/ entry is retained, so a re-enqueue is rejected).
+  test("a duplicate within the retention window is deduped at enqueue", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-dup-window-");
+    const horizon = 10_000;
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      receivedAt: 1000,
+      mailAuditRef: { store: "audit", path: "mail/msg-1" },
+    });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    await markConsumed(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      runId: "run-1",
+      consumedAt: 2000,
+      retentionHorizonMs: horizon,
+    });
+    // Re-submit the same messageId still within the window (its
+    // consumed/ entry is retained). receivedAt is a fresh, later value
+    // but >= watermark, so the stale-reject does NOT fire; the
+    // consumed-dedup does.
+    await expect(
+      enqueueInbox(store, principal, repoId, {
+        address: ADDRESS,
+        messageId: "msg-1",
+        receivedAt: 3000,
+        mailAuditRef: { store: "audit", path: "mail/msg-1" },
+      }),
+    ).rejects.toThrow(/claim_check_already_consumed/);
+  });
+
+  // Gate 1(b): a message whose receivedAt is below the watermark (its
+  // dedup entry may have been pruned) is rejected at enqueue as stale,
+  // NOT silently reprocessed.
+  test("a message below the watermark is rejected at enqueue as stale", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore("cc-stale-");
+    const horizon = 1000;
+    // Drive a message at a late time so the watermark advances well
+    // past an old receivedAt.
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-driver",
+      receivedAt: 100_000,
+      mailAuditRef: { store: "audit", path: "mail/msg-driver" },
+    });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    const consumed = await markConsumed(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-driver",
+      runId: "run-driver",
+      consumedAt: 100_000,
+      retentionHorizonMs: horizon,
+    });
+    // Watermark advanced to consumedAt - horizon = 99_000.
+    expect(consumed.watermark).toBe(99_000);
+    // A stale message arriving with an old receivedAt (50_000 < 99_000)
+    // is refused loudly -- never reprocessed.
+    await expect(
+      enqueueInbox(store, principal, repoId, {
+        address: ADDRESS,
+        messageId: "msg-stale",
+        receivedAt: 50_000,
+        mailAuditRef: { store: "audit", path: "mail/msg-stale" },
+      }),
+    ).rejects.toThrow(/claim_check_stale_enqueue/);
+  });
+
+  // Gate 1(c): a brand-new message with receivedAt >= watermark is
+  // accepted normally.
+  test("a fresh message at or above the watermark is accepted", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore("cc-fresh-");
+    const horizon = 1000;
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-driver",
+      receivedAt: 100_000,
+      mailAuditRef: { store: "audit", path: "mail/msg-driver" },
+    });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    await markConsumed(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-driver",
+      runId: "run-driver",
+      consumedAt: 100_000,
+      retentionHorizonMs: horizon,
+    });
+    // watermark = 99_000; a new message at 100_500 is fine.
+    const r = await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-fresh",
+      receivedAt: 100_500,
+      mailAuditRef: { store: "audit", path: "mail/msg-fresh" },
+    });
+    expect(r.inboxKey).toBe("100500-msg-fresh");
+  });
+
+  // Gate 4: after N >> horizon-worth of messages with advancing time,
+  // consumed/ holds ~one horizon's worth, not N.
+  test("consumed/ stays bounded under many messages with advancing time", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-bounded-");
+    const repoDir = store.getRepoDir(repoId);
+    const seg = ADDRESS_SEG;
+    const horizon = 1000; // retain ~1000ms worth of entries
+    const step = 100; // a message every 100ms
+    const n = 60; // 60 messages span 6000ms >> horizon
+    for (let i = 0; i < n; i++) {
+      const t = 10_000 + i * step;
+      const messageId = `m-${String(i)}`;
+      await enqueueInbox(store, principal, repoId, {
+        address: ADDRESS,
+        messageId,
+        receivedAt: t,
+        mailAuditRef: { store: "audit", path: `mail/${messageId}` },
+      });
+      await dequeueToProcessing(store, principal, repoId, ADDRESS);
+      await markConsumed(store, principal, repoId, {
+        address: ADDRESS,
+        messageId,
+        runId: `r-${String(i)}`,
+        consumedAt: t,
+        retentionHorizonMs: horizon,
+      });
+    }
+    const count = await consumedCount(repoDir, seg);
+    // Bounded: at most ceil(horizon/step)+1 entries are retained
+    // (entries within [watermark, now]). It must NOT be ~N.
+    const bound = Math.ceil(horizon / step) + 2;
+    expect(count).toBeLessThanOrEqual(bound);
+    expect(count).toBeLessThan(n);
+    // The watermark advanced and tracks the prune boundary.
+    const wm = await readWatermarkOnDisk(repoDir, seg);
+    expect(wm).not.toBeNull();
+    if (wm === null) throw new Error("unreachable");
+    expect(wm).toBeGreaterThan(10_000);
+  });
+
+  // The watermark is monotonic across real commits: a later commit
+  // with an earlier consumedAt does not move it backward.
+  test("the watermark never regresses across markConsumed commits", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore("cc-mono-");
+    const repoDir = store.getRepoDir(repoId);
+    const horizon = 1000;
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "a",
+      receivedAt: 50_000,
+      mailAuditRef: { store: "audit", path: "mail/a" },
+    });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    await markConsumed(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "a",
+      runId: "ra",
+      consumedAt: 50_000,
+      retentionHorizonMs: horizon,
+    });
+    const wmAfterA = await readWatermarkOnDisk(repoDir, ADDRESS_SEG);
+    expect(wmAfterA).toBe(49_000);
+    // A second message that arrived earlier (clock skew) and is
+    // consumed with an earlier consumedAt must not drag the watermark
+    // back. Its receivedAt (49_500) is >= the current watermark so the
+    // enqueue is accepted.
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "b",
+      receivedAt: 49_500,
+      mailAuditRef: { store: "audit", path: "mail/b" },
+    });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    const consumedB = await markConsumed(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "b",
+      runId: "rb",
+      consumedAt: 49_600,
+      retentionHorizonMs: horizon,
+    });
+    // horizonBoundary for b = 48_600 < priorWatermark 49_000, so the
+    // watermark holds at 49_000.
+    expect(consumedB.watermark).toBe(49_000);
+    const wmAfterB = await readWatermarkOnDisk(repoDir, ADDRESS_SEG);
+    expect(wmAfterB).toBe(49_000);
+  });
+
+  // Replay-vs-watermark regression (the path that becomes a silent
+  // message-loss bug if someone "tightens" replay with a watermark
+  // stale-check). A message that is already in processing/ -- past
+  // dedup -- whose receivedAt has fallen BELOW an advanced watermark
+  // must be re-admitted to inbox/ by replayProcessingToInbox (NOT
+  // rejected as stale), then dequeued and consumed exactly once (not
+  // lost, not double-processed).
+  test("replay re-admits a below-watermark in-flight message and it completes exactly once", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-replay-wm-");
+    const repoDir = store.getRepoDir(repoId);
+    const horizon = 1000;
+
+    // 1. An in-flight message: enqueued at receivedAt 10_000 and moved
+    //    to processing (past dedup), left there to simulate a crash
+    //    mid-handling.
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "inflight",
+      receivedAt: 10_000,
+      mailAuditRef: { store: "audit", path: "mail/inflight" },
+    });
+    const inflightDequeue = await dequeueToProcessing(
+      store,
+      principal,
+      repoId,
+      ADDRESS,
+    );
+    expect(inflightDequeue?.envelope.messageId).toBe("inflight");
+
+    // 2. Advance the watermark well past 10_000 by consuming a much
+    //    newer message. consumedAt 100_000, horizon 1000 -> watermark
+    //    99_000. The in-flight processing entry (10_000) is now below
+    //    the watermark.
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "newer",
+      receivedAt: 100_000,
+      mailAuditRef: { store: "audit", path: "mail/newer" },
+    });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    const newerConsumed = await markConsumed(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "newer",
+      runId: "r-newer",
+      consumedAt: 100_000,
+      retentionHorizonMs: horizon,
+    });
+    expect(newerConsumed.watermark).toBe(99_000);
+    const wm = await readWatermarkOnDisk(repoDir, ADDRESS_SEG);
+    expect(wm).toBe(99_000);
+
+    // 3. Replay must re-admit the below-watermark in-flight entry to
+    //    inbox -- NOT reject it as stale. (A fresh enqueue at 10_000
+    //    WOULD be refused; replay is intentionally exempt.)
+    const replay = await replayProcessingToInbox(
+      store,
+      principal,
+      repoId,
+      ADDRESS,
+    );
+    expect(replay.replayedKeys).toContain("10000-inflight");
+    // The entry is back in inbox at its original filename key.
+    const inboxDir = path.join(
+      repoDir,
+      WORKFLOW_RUN_ADDRESSES_PREFIX,
+      ADDRESS_SEG,
+      WORKFLOW_RUN_INBOX_DIR,
+    );
+    const inboxEntries = await fs.promises.readdir(inboxDir);
+    expect(inboxEntries).toContain("10000-inflight.json");
+
+    // 4. It can be dequeued and consumed exactly once.
+    const reDequeue = await dequeueToProcessing(
+      store,
+      principal,
+      repoId,
+      ADDRESS,
+    );
+    expect(reDequeue?.envelope.messageId).toBe("inflight");
+    await markConsumed(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "inflight",
+      runId: "r-inflight",
+      consumedAt: 101_000,
+      retentionHorizonMs: horizon,
+    });
+    const consumedPath = path.join(
+      repoDir,
+      WORKFLOW_RUN_ADDRESSES_PREFIX,
+      ADDRESS_SEG,
+      WORKFLOW_RUN_CONSUMED_DIR,
+      "inflight.json",
+    );
+    await fs.promises.access(consumedPath);
+
+    // 5. No double-process: nothing remains to dequeue, and a
+    //    re-enqueue of the same content (fresh receivedAt >= watermark)
+    //    is now deduped by the retained consumed entry.
+    const drained = await dequeueToProcessing(
+      store,
+      principal,
+      repoId,
+      ADDRESS,
+    );
+    expect(drained).toBeNull();
+    await expect(
+      enqueueInbox(store, principal, repoId, {
+        address: ADDRESS,
+        messageId: "inflight",
+        receivedAt: 102_000,
+        mailAuditRef: { store: "audit", path: "mail/inflight" },
+      }),
+    ).rejects.toThrow(/claim_check_already_consumed/);
   });
 });

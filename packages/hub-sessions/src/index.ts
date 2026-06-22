@@ -90,6 +90,8 @@ export {
   WORKFLOW_RUN_INBOX_DIR,
   WORKFLOW_RUN_PROCESSING_DIR,
   WORKFLOW_RUN_CONSUMED_DIR,
+  WORKFLOW_RUN_WATERMARK_FILE,
+  DEFAULT_CONSUMED_RETENTION_MS,
   type ClaimCheckEnvelope,
   type ConsumedEnvelope,
   type EnqueueInboxArgs,
