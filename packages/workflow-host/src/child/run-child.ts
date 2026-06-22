@@ -274,6 +274,21 @@ export interface RunWorkflowChildBindings {
   scheduler: Scheduler;
   /** Grant evaluator wired against the host's grant-rule grammar. */
   evaluateGrants: GrantEvaluator;
+  /**
+   * Reclaim the local-disk scratch a run produced once the run has
+   * reached its terminal status. The host owns the on-disk layout
+   * (`<dataDir>/workflow-step-state/<repoId>/runs/<runId>/`), so the
+   * teardown lives next to the path construction in the substrate
+   * factory and the run-loop merely fires it at the run-completion
+   * moment it observes. Invoked ONLY on the cold (non-warm) path -- a
+   * warm deployment's single agent reuses one stable workspace across
+   * runs, so deleting per run would wipe a live conversation's files
+   * mid-stream. A cleanup failure is logged and swallowed: it is a
+   * disk-reclamation best-effort, never a correctness gate on the run's
+   * terminal status. Optional so tests and the recursive child-workflow
+   * adapter (which roots no per-run scratch of its own) can omit it.
+   */
+  cleanupRunStorage?: (runId: string) => Promise<void>;
   /** Optional director registry; defaults to the canonical built-ins. */
   directors?: DirectorRegistry;
   /** Optional clock override; production wires `() => new Date()`. */
@@ -509,7 +524,14 @@ export async function runWorkflowChild(
     // accumulator subscribes to the resumed run's terminal via the
     // `terminal.event` upstream frame the child emits below.
     void handle.complete
-      .then((result) => emitTerminalEvent(upstreamSender, result))
+      .then((result) => {
+        reclaimRunStorageIfCold({
+          warmKeep: opts.env.warmKeep,
+          cleanupRunStorage: opts.bindings.cleanupRunStorage,
+          runId: run.runId,
+        });
+        return emitTerminalEvent(upstreamSender, result);
+      })
       .catch((cause) => {
         logger.error`resumed run ${run.runId} failed: ${String(cause)}`;
       });
@@ -693,7 +715,14 @@ async function handleControlPayload(
       // same lifecycle moment, so the on-disk audit chain and the
       // peer notification originate from the same code path.
       void handle.complete
-        .then((result) => emitTerminalEvent(ctx.upstreamSender, result))
+        .then((result) => {
+          reclaimRunStorageIfCold({
+            warmKeep: ctx.env.warmKeep,
+            cleanupRunStorage: ctx.bindings.cleanupRunStorage,
+            runId: payload.data.runId,
+          });
+          return emitTerminalEvent(ctx.upstreamSender, result);
+        })
         .catch((cause) => {
           logger.error`triggered run ${payload.data.runId} failed: ${String(cause)}`;
         });
@@ -1043,6 +1072,33 @@ function emitTerminalEvent(
       const message = cause instanceof Error ? cause.message : String(cause);
       logger.error`terminal.event upstream send failed for runId=${result.runId}: ${message}`;
     });
+}
+
+/**
+ * Reclaim a completed run's local-disk scratch on the COLD path.
+ *
+ * Gated on `!warmKeep`: a warm deployment's single agent reuses one
+ * stable workspace across runs (the substrate factory roots its scratch
+ * per agent, not per run), so per-run deletion there would wipe a live
+ * conversation's files mid-stream. On the cold path each run rebuilds
+ * its agent + scratch, so once the run is terminal nothing reopens its
+ * `runs/<runId>/` subtree (resume reads the substrate run log, not local
+ * step state) and the subtree is safe to drop.
+ *
+ * Best-effort: a reclamation failure is logged and swallowed -- it must
+ * never gate the run's terminal status or the upstream terminal.event.
+ */
+function reclaimRunStorageIfCold(opts: {
+  warmKeep: boolean;
+  cleanupRunStorage: ((runId: string) => Promise<void>) | undefined;
+  runId: string;
+}): void {
+  if (opts.warmKeep) return;
+  if (opts.cleanupRunStorage === undefined) return;
+  void opts.cleanupRunStorage(opts.runId).catch((cause) => {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    logger.warn`workflow-step-state cleanup failed for runId=${opts.runId}: ${message}`;
+  });
 }
 
 /**

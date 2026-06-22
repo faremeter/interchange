@@ -287,19 +287,20 @@ describe("single-step posix-tool in-child execution", () => {
     expect(toolNames).toContain(TOOL_NAME);
 
     // THE PROOF that the tool ran IN THE CHILD: the tool's `run` wrote a
-    // sentinel file into `env.workdir`, which for a step agent is the
-    // per-step workspace under the sidecar data dir. The file's presence
-    // (with the content the tool was given) means the materialized tool
-    // factory's `run` executed in the child's filesystem view.
+    // sentinel file into `env.workdir`, which for the warm single-step
+    // agent is the STABLE per-agent workspace rooted at
+    // `workflow-step-state/<repoId>/warm/<stepId>/workspace` (keyed by the
+    // step identity, not the per-message runId, so the workspace is reused
+    // across messages and bounded to one dir per agent). The file's
+    // presence (with the content the tool was given) means the
+    // materialized tool factory's `run` executed in the child's filesystem
+    // view.
     const stepWorkspace = path.join(
       env.sidecar.dataDir,
       "workflow-step-state",
       workflowRunRepoId.id,
-      "runs",
-      runId,
-      "steps",
-      STEP_ID,
-      "attempt-1",
+      "warm",
+      encodeURIComponent(STEP_ID),
       "workspace",
     );
     const sentinelPath = path.join(stepWorkspace, SENTINEL_FILENAME);

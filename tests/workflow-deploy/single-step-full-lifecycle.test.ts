@@ -392,7 +392,6 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
     const firstSentinelPath = stepWorkspaceSentinelPath(
       env,
       workflowRunRepoId.id,
-      firstRunId,
       SENTINEL_FILENAME_FIRST,
     );
     if (!fs.existsSync(firstSentinelPath)) {
@@ -574,24 +573,23 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
 });
 
 /**
- * Per-step workspace path under the sidecar data dir where the
- * transport-backed `mail_send` tool writes its receipt sentinel.
+ * Warm single-step workspace path under the sidecar data dir where the
+ * transport-backed `mail_send` tool writes its receipt sentinel. The warm
+ * agent's workspace is keyed STABLY per agent
+ * (`workflow-step-state/<repoId>/warm/<stepId>/workspace`), not per
+ * message, so the path is independent of the run that wrote the sentinel.
  */
 function stepWorkspaceSentinelPath(
   deployEnv: DeployFlowEnv,
   workflowRunRepoSlug: string,
-  runId: string,
   filename: string,
 ): string {
   return path.join(
     deployEnv.sidecar.dataDir,
     "workflow-step-state",
     workflowRunRepoSlug,
-    "runs",
-    runId,
-    "steps",
-    STEP_ID,
-    "attempt-1",
+    "warm",
+    encodeURIComponent(STEP_ID),
     "workspace",
     filename,
   );
