@@ -239,6 +239,13 @@
       "when": 1781838311284,
       "tag": "0033_old_payback",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1782164862412,
+      "tag": "0034_sleepy_songbird",
+      "breakpoints": true
     }
   ]
 }
