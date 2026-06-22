@@ -100,6 +100,7 @@ function gatedRepoStore(): {
       return inner.read(runId);
     },
     append: inner.append.bind(inner),
+    appendBatch: inner.appendBatch.bind(inner),
     subscribe: inner.subscribe.bind(inner),
   };
   return { store, releaseBodyFirstRead: releaseFirst };

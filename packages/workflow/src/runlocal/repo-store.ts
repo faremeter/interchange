@@ -66,33 +66,18 @@ export function createInMemoryRepoStore(): RepoStore {
       return logs.get(runId) ?? [];
     },
     async append(runId, event) {
-      let log = logs.get(runId);
-      if (!log) {
-        log = [];
-        logs.set(runId, log);
+      appendOne(logs, notify, runId, event);
+    },
+    async appendBatch(runId, events) {
+      // One logical commit: validate-and-apply every event in seq
+      // order, so a batch with a same-seq idempotent re-seed at its
+      // head and fresh events after it lands coherently. The in-memory
+      // store has no separate "commit" boundary to coalesce, so the
+      // batch is simply each event applied in order; correctness
+      // (monotonicity, append-only) is identical to N single appends.
+      for (const event of events) {
+        appendOne(logs, notify, runId, event);
       }
-      const last = log[log.length - 1];
-      if (last && last.seq >= event.seq) {
-        // A same-seq append is an idempotent re-seed only when the
-        // payload is structurally identical (the resume seam relies
-        // on this behavior). A same-seq append whose kind or content
-        // differs would silently drop a real event and corrupt the
-        // log; reject it with a diagnostic that names both sides.
-        // Non-monotonic appends with a lower seq are also rejected.
-        if (last.seq === event.seq) {
-          if (!eventsEqual(last, event)) {
-            throw new Error(
-              `same-seq conflict at ${runId} seq ${String(event.seq)}: store holds ${last.kind}, append carries ${event.kind}; payloads do not match`,
-            );
-          }
-          return;
-        }
-        throw new Error(
-          `non-monotonic append to ${runId}: last seq ${String(last.seq)}, event seq ${String(event.seq)}`,
-        );
-      }
-      log.push(event);
-      notify(runId, { seq: event.seq, event });
     },
     subscribe(runId, opts) {
       return createSubscription(runId, opts, logs, subscribers);
@@ -203,6 +188,41 @@ function createSubscription(
     },
   };
   return iterator;
+}
+
+function appendOne(
+  logs: Map<string, WorkflowEvent[]>,
+  notify: (runId: string, entry: { seq: number; event: WorkflowEvent }) => void,
+  runId: string,
+  event: WorkflowEvent,
+): void {
+  let log = logs.get(runId);
+  if (!log) {
+    log = [];
+    logs.set(runId, log);
+  }
+  const last = log[log.length - 1];
+  if (last && last.seq >= event.seq) {
+    // A same-seq append is an idempotent re-seed only when the
+    // payload is structurally identical (the resume seam relies
+    // on this behavior). A same-seq append whose kind or content
+    // differs would silently drop a real event and corrupt the
+    // log; reject it with a diagnostic that names both sides.
+    // Non-monotonic appends with a lower seq are also rejected.
+    if (last.seq === event.seq) {
+      if (!eventsEqual(last, event)) {
+        throw new Error(
+          `same-seq conflict at ${runId} seq ${String(event.seq)}: store holds ${last.kind}, append carries ${event.kind}; payloads do not match`,
+        );
+      }
+      return;
+    }
+    throw new Error(
+      `non-monotonic append to ${runId}: last seq ${String(last.seq)}, event seq ${String(event.seq)}`,
+    );
+  }
+  log.push(event);
+  notify(runId, { seq: event.seq, event });
 }
 
 /**
