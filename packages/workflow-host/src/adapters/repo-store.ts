@@ -139,7 +139,10 @@ export function createWorkflowRunRepoStore(
       return readAllEventsForRun(opts, runId);
     },
     async append(runId, event) {
-      await appendEvent(opts, runId, event);
+      await appendBatchEvents(opts, runId, [event]);
+    },
+    async appendBatch(runId, events) {
+      await appendBatchEvents(opts, runId, events);
     },
     subscribe(runId, subOpts) {
       return subscribeRun(opts, runId, subOpts);
@@ -241,12 +244,29 @@ function workflowEventToOnDisk(
   return { seq, type: kind, ...rest };
 }
 
-async function appendEvent(
+/**
+ * Append one or more contiguous events to a run's event log in a
+ * SINGLE durable commit. The events must carry strictly-monotonic,
+ * gap-free seqs continuing the prior tree's tip (the first event's seq
+ * is `priorLastSeq + 1`); the merge writes every `events/<seq>.json`
+ * blob into one `writeTreePreservingPrefix` tree-rewrite, so N events
+ * cost one tree-rewrite + one ref-advance instead of N. An empty
+ * `events` array is a no-op. The seq-contiguity check is performed
+ * against the supplied events themselves so a caller that buffered a
+ * gap surfaces a single-writer conflict rather than a silent gap in
+ * the tree.
+ */
+async function appendBatchEvents(
   opts: WorkflowRunRepoStoreOpts,
   runId: string,
-  event: WorkflowEvent,
+  events: readonly WorkflowEvent[],
 ): Promise<void> {
+  if (events.length === 0) return;
   const prefix = `${RUNS_PREFIX}/${runId}/${EVENTS_DIR}/`;
+  const firstEvent = events[0];
+  if (firstEvent === undefined) throw new Error("unreachable");
+  const lastEvent = events[events.length - 1];
+  if (lastEvent === undefined) throw new Error("unreachable");
   let seqConflict: { expected: number; supplied: number } | null = null;
   try {
     await opts.substrate.writeTreePreservingPrefix(
@@ -261,7 +281,8 @@ async function appendEvent(
           // events tree carries seq=1. The adapter mirrors that
           // convention: the prior tree's lastSeq is the maximum seq
           // observed under the prefix, or 0 when no events exist yet;
-          // the expected next seq is `priorLastSeq + 1`.
+          // the expected next seq is `priorLastSeq + 1`. Every event
+          // in the batch must continue contiguously from there.
           let priorLastSeq = 0;
           for (const filepath of existing.keys()) {
             const name = filepath.slice(prefix.length);
@@ -272,28 +293,35 @@ async function appendEvent(
             const seq = Number.parseInt(seqStr, 10);
             if (seq > priorLastSeq) priorLastSeq = seq;
           }
-          const nextSeq = priorLastSeq + 1;
-          if (event.seq !== nextSeq) {
-            // Capture the divergence and return an unchanged tree so
-            // the substrate's commit short-circuits (the kind handler
-            // accepts an empty diff against the same prior tree); the
-            // throw happens outside the merge callback so the
-            // adapter's error carries the full context. The empty
-            // tree returned here preserves the existing prefix
-            // bit-for-bit so the rollback path inside the substrate
-            // does not need to fire.
-            seqConflict = { expected: nextSeq, supplied: event.seq };
-            const passthrough: Record<string, string | Uint8Array> = {};
-            for (const [k, v] of existing) passthrough[k] = v;
-            return passthrough;
-          }
-          const onDisk = workflowEventToOnDisk(event, nextSeq);
           const files: Record<string, string | Uint8Array> = {};
           for (const [k, v] of existing) files[k] = v;
-          files[`${prefix}${String(nextSeq)}.json`] = JSON.stringify(onDisk);
+          let expectedSeq = priorLastSeq + 1;
+          for (const event of events) {
+            if (event.seq !== expectedSeq) {
+              // Capture the divergence and return an unchanged tree so
+              // the substrate's commit short-circuits (the kind handler
+              // accepts an empty diff against the same prior tree); the
+              // throw happens outside the merge callback so the
+              // adapter's error carries the full context. The empty
+              // tree returned here preserves the existing prefix
+              // bit-for-bit so the rollback path inside the substrate
+              // does not need to fire.
+              seqConflict = { expected: expectedSeq, supplied: event.seq };
+              const passthrough: Record<string, string | Uint8Array> = {};
+              for (const [k, v] of existing) passthrough[k] = v;
+              return passthrough;
+            }
+            const onDisk = workflowEventToOnDisk(event, expectedSeq);
+            files[`${prefix}${String(expectedSeq)}.json`] =
+              JSON.stringify(onDisk);
+            expectedSeq += 1;
+          }
           return files;
         },
-        message: `append workflow event ${event.kind} for run ${runId}`,
+        message:
+          events.length === 1
+            ? `append workflow event ${firstEvent.kind} for run ${runId}`
+            : `append ${String(events.length)} workflow events ${firstEvent.kind}..${lastEvent.kind} for run ${runId}`,
       },
     );
   } catch (cause) {

@@ -30,6 +30,21 @@ export interface RepoStore {
   /** Append one event; rejects if seq is non-monotonic. */
   append(runId: string, event: WorkflowEvent): Promise<void>;
   /**
+   * Append a contiguous run of events in a SINGLE durable commit. The
+   * events must carry strictly-monotonic, gap-free seqs continuing the
+   * run's prior tip (the first event's seq is `priorLastSeq + 1`).
+   * Equivalent in effect to calling `append` once per event, but the
+   * durable substrate writes all `events/<seq>.json` blobs under one
+   * tree-rewrite + ref-advance instead of one per event. An empty
+   * `events` array is a no-op (no commit).
+   *
+   * This is the batch seam the runtime's commit-chain flushes through
+   * at a segment boundary (suspension or completion): the per-event
+   * in-memory state-machine validation is unchanged; only the durable
+   * write is coalesced.
+   */
+  appendBatch(runId: string, events: readonly WorkflowEvent[]): Promise<void>;
+  /**
    * Tail the run's event log. Returns an async iterator yielding one
    * `{ seq, event }` entry per committed `WorkflowEvent` on the run's
    * ref, in commit order. `seq` is the workflow-event `seq` (the

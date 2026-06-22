@@ -23,8 +23,10 @@ import { hashDefinition } from "../definition/index";
 import { evaluate, type SelectorContext } from "./selectors";
 import { hasFailedStep, isRunDone, nextSchedulable } from "./dag";
 import {
-  commit as commitToChain,
+  commit as commitDurableToChain,
+  commitBuffered as commitBufferedToChain,
   dropChain,
+  flushChain,
   reloadState as reloadStateInChain,
 } from "./commit-chain";
 import type { RunResult, WorkflowRun, WorkflowRuntimeEnv } from "./env";
@@ -123,7 +125,13 @@ export function runtimeRun(
         origin,
       };
       try {
-        await commit(env, runId, event);
+        // The control-plane cancel is out-of-band relative to the run
+        // body's segment buffer; persist it immediately so the run
+        // body's loop observes a durable `CancelRequested` and a crash
+        // mid-cancel does not lose the request. `commitDurable` flushes
+        // any pending run-body buffer first, keeping the durable tip
+        // contiguous.
+        await commitDurable(env, runId, event);
         // Emit ChildCancelRequested for any live children before the
         // abort listener fires. Without this here, the parent's main
         // loop might settle the spawn step (the child terminates
@@ -176,12 +184,49 @@ async function executeRun(
   }
 }
 
+// Intra-segment commit: validates the transition and assigns the seq
+// in memory (unchanged from before batching) but DEFERS the durable
+// write into the per-runId buffer. The buffer is flushed in one
+// `appendBatch` at the next segment boundary -- a suspension (`flush`
+// before the run parks) or completion (`commitDurable` on the terminal
+// event). A synchronous single-step run buffers RunStarted ->
+// StepStarted -> StepCompleted and flushes all of them together with
+// the terminal RunCompleted in ONE commit.
 function commit(
   env: WorkflowRuntimeEnv,
   runId: string,
   event: WorkflowEvent,
 ): Promise<ReturnType<typeof resumeFromLog>> {
-  return commitToChain(env, runId, event);
+  return commitBufferedToChain(env, runId, event);
+}
+
+// Segment-boundary commit: buffers the event then flushes the whole
+// pending buffer (this event LAST) in one durable `appendBatch`. Used
+// for the terminal events (RunCompleted/RunFailed/RunCancelled) so the
+// terminal is on disk -- and the supervisor's terminal-write sniff
+// fires -- the moment the commit resolves, and for the control-plane
+// `cancel` whose `CancelRequested` must persist immediately. The
+// terminal event being the last blob in the merge keeps the
+// workflow-run kind handler's terminal-lock satisfied.
+function commitDurable(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  event: WorkflowEvent,
+): Promise<ReturnType<typeof resumeFromLog>> {
+  return commitDurableToChain(env, runId, event);
+}
+
+// Flush the pending buffer to durable storage in one `appendBatch`.
+// Called at a suspension boundary AFTER buffering the suspension
+// marker (`SignalAwaited`/`TimerSet`) so the marker -- and everything
+// before it in the segment -- is durable BEFORE the run parks. The
+// out-of-process scheduler tails the durable `TimerSet`; resume after
+// a crash-while-suspended reconstructs the awaiting state from the
+// durable log. A buffered suspension marker that never flushed would
+// be lost on a park, so this flush is load-bearing, not an
+// optimisation knob.
+async function flush(env: WorkflowRuntimeEnv, runId: string): Promise<void> {
+  await flushChain(env, runId);
 }
 
 async function reloadState(
@@ -413,7 +458,7 @@ async function executeRunBody(
         seq: state.lastSeq + 1,
         at: env.clock().toISOString(),
       };
-      state = await commit(env, runId, cancelled);
+      state = await commitDurable(env, runId, cancelled);
       break;
     }
 
@@ -464,7 +509,7 @@ async function executeRunBody(
           at: env.clock().toISOString(),
         };
     try {
-      state = await commit(env, runId, terminal);
+      state = await commitDurable(env, runId, terminal);
     } catch (cause) {
       // A `cancel()` racing the post-loop terminal commit can land
       // `CancelRequested` first (legal from `phase=running`). The
@@ -544,7 +589,7 @@ async function settleCancelling(
     seq: state.lastSeq + 1,
     at: env.clock().toISOString(),
   };
-  return commit(env, runId, cancelled);
+  return commitDurable(env, runId, cancelled);
 }
 
 /**
@@ -983,6 +1028,14 @@ async function waitForTimer(
   drain: import("./drain").DrainController,
   stepId: string,
 ): Promise<void> {
+  // Segment boundary: the run parks here, tailing the durable log for
+  // the scheduler-committed `TimerFired`. Flush the buffered segment
+  // (the `TimerSet` -- and, on the retry path, the preceding
+  // `StepFailed`/`AttemptScheduled`) to durable storage BEFORE
+  // computing `subscribeFromSeq` and subscribing, so the out-of-process
+  // scheduler can tail the durable `TimerSet` and a crash-while-waiting
+  // leaves a resumable pre-suspension log.
+  await flush(env, runId);
   const subscribeFromSeq = (await reloadState(env, runId)).lastSeq + 1;
   const ac = new AbortController();
   const onOuterAbort = (): void => {
@@ -1337,6 +1390,19 @@ async function runAwaitSignal(
   }
   void state;
 
+  // Segment boundary: the run is about to park on the signal channel
+  // (and, when a timeout is set, tail the durable log for the
+  // scheduler-committed `TimerFired`). Flush the buffered
+  // `SignalAwaited` (+ `TimerSet`) to durable storage BEFORE parking so
+  // (a) the out-of-process scheduler can tail the durable `TimerSet`
+  // and arm the timeout, and (b) a crash-while-suspended leaves a
+  // complete pre-suspension log that resume reconstructs the
+  // awaiting-signal state from. `subscribeFromSeq` above was computed
+  // from the in-memory tip; the flush makes the durable tip match, so
+  // the timer-watch subscription starts exactly past the flushed
+  // markers.
+  await flush(env, runId);
+
   // Drain observation point #4: runAwaitSignal entry. If drain has
   // fired and the step's behavior is `"cancel"` (an awaitSignal whose
   // author explicitly opted in to cancel-on-drain), abort
@@ -1528,6 +1594,19 @@ async function runChildWorkflow(
     childDefinitionRef: primitive.definitionRef,
   };
   state = await commit(env, parentRunId, spawned);
+  // Segment boundary: the parent is about to hand off to and AWAIT a
+  // sub-run (which commits its own events -- including its terminal --
+  // to the same workflow-run repo while this await blocks). Flush the
+  // parent's buffered pre-spawn events (RunStarted .. ChildSpawned) to
+  // durable storage BEFORE the child runs so the parent's audit log
+  // records the spawn ahead of any child-side work and a concurrent
+  // cancel sweep iterating state.children finds the child to cascade
+  // against -- the exact invariant the ChildSpawned-before-spawn
+  // ordering above exists to uphold. Without this flush the parent's
+  // RunStarted would not become durable until the parent's own
+  // terminal, so its runs/<parentRunId>/ subtree would materialize
+  // AFTER its children's.
+  await flush(env, parentRunId);
   // Wrap the spawn callback so a throw still lands a closing
   // ChildCompleted event for the orphan. Without this, ChildSpawned
   // would persist in state.children with `terminalStatus: undefined`
