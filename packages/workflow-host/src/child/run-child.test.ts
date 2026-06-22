@@ -535,6 +535,214 @@ describe("runWorkflowChild", () => {
     expect(result.finalCredentialsSnapshot?.steps).toHaveLength(1);
   });
 
+  test("cold path fires cleanupRunStorage once per run at run granularity, never before terminal", async () => {
+    const baseDir = await makeTempDir("child-cold-cleanup-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    await seedWorkflowDefinition(baseDir, {
+      kind: "workflow",
+      id: "workflow-asset",
+    });
+    for (const messageId of ["msg-1", "msg-2"]) {
+      await seedProcessingEntry(
+        baseDir,
+        { kind: "workflow-run", id: "deployment-x" },
+        {
+          address: "deployment-x@example.com",
+          messageId,
+          receivedAt: 1,
+          text: `body ${messageId}`,
+        },
+      );
+    }
+
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: bytesToHex(hmacKey),
+        hostPubKeyHex: bytesToHex(supervisorKeyPair.publicKey),
+      }),
+    );
+
+    // Record every runId the run-loop asks to reclaim, in order. A run's
+    // entry must appear only after that run reaches its terminal status,
+    // and exactly once -- proving run (not step) granularity and that no
+    // in-flight run's subtree is touched.
+    const cleaned: string[] = [];
+    const bindings: RunWorkflowChildBindings = {
+      ...buildBindings({ baseDir, childKeyPair }),
+      cleanupRunStorage: (runId: string) => {
+        cleaned.push(runId);
+        return Promise.resolve();
+      },
+    };
+
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: eventStream.writer,
+      bindings,
+    });
+
+    await waitForTriggeredRun(childToSupervisor, (lines) => lines.length > 0);
+
+    // Two independent runs. The stub `invokeStep` returns immediately, so
+    // each run reaches terminal on its own; the run-loop fires cleanup per
+    // run with that run's id.
+    await supervisorSender.send({
+      type: "trigger.fire",
+      data: { runId: "run-1", messageId: "msg-1", receivedAt: 1 },
+    });
+    await supervisorSender.send({
+      type: "trigger.fire",
+      data: { runId: "run-2", messageId: "msg-2", receivedAt: 2 },
+    });
+    // Both runs reach terminal asynchronously; the run-loop fires cleanup
+    // in each run's completion continuation. Wait for both reclamations
+    // before tearing the loop down so the assertion observes the per-run
+    // firing rather than racing the shutdown.
+    for (let i = 0; i < 400 && cleaned.length < 2; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+
+    const result = await runPromise;
+    expect(result.triggeredRunIds).toEqual(["run-1", "run-2"]);
+    // Exactly one reclamation per run, keyed by that run's id -- never a
+    // per-step or per-attempt call, never another run's id.
+    expect([...cleaned].sort()).toEqual(["run-1", "run-2"]);
+  });
+
+  test("warm path never fires cleanupRunStorage on run completion", async () => {
+    const baseDir = await makeTempDir("child-warm-no-cleanup-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    await seedWorkflowDefinition(baseDir, {
+      kind: "workflow",
+      id: "workflow-asset",
+    });
+    await seedProcessingEntry(
+      baseDir,
+      { kind: "workflow-run", id: "deployment-x" },
+      {
+        address: "deployment-x@example.com",
+        messageId: "msg-1",
+        receivedAt: 1,
+        text: "warm body",
+      },
+    );
+
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+
+    // WARM_KEEP="true": the warm single-step deployment reuses one stable
+    // workspace across runs, so deleting per run would wipe a live
+    // conversation's files. The run-loop's warmKeep gate must suppress the
+    // per-run cleanup entirely even when a callback is wired.
+    const env = parseSpawnTimeEnv({
+      ...makeSpawnEnv({
+        channelId,
+        hmacKeyHex: bytesToHex(hmacKey),
+        hostPubKeyHex: bytesToHex(supervisorKeyPair.publicKey),
+      }),
+      WARM_KEEP: "true",
+    });
+    expect(env.warmKeep).toBe(true);
+
+    const cleaned: string[] = [];
+    const bindings: RunWorkflowChildBindings = {
+      ...buildBindings({ baseDir, childKeyPair }),
+      cleanupRunStorage: (runId: string) => {
+        cleaned.push(runId);
+        return Promise.resolve();
+      },
+    };
+
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: eventStream.writer,
+      bindings,
+    });
+
+    // Decode the child's upstream frames so the test can observe the run
+    // reach TERMINAL. The warm gate lives in the same void-ed
+    // `handle.complete.then(...)` continuation that emits the
+    // `terminal.event`, and that continuation runs the gate BEFORE the
+    // emit. Waiting for `terminal.event` therefore proves the continuation
+    // executed -- so a subsequent `cleaned` assertion fires at exactly the
+    // point the cold path WOULD have deleted, making the suppression proof
+    // non-vacuous rather than passing merely because the continuation never
+    // ran. The receiver bootstraps the child's verifying key from `ready`;
+    // `flushed()`-based waits elsewhere are non-consuming, so `ready` is
+    // still queued for this iterator.
+    const recvIter = receiveControlChannel({
+      publicKey: { bootstrapFromReady: true },
+      channelId,
+      reader: childToSupervisor.reader,
+      onCrash: (reason) => {
+        throw new Error(`unexpected control channel crash: ${reason}`);
+      },
+    });
+
+    await supervisorSender.send({
+      type: "trigger.fire",
+      data: { runId: "run-1", messageId: "msg-1", receivedAt: 1 },
+    });
+
+    let sawTerminal = false;
+    for await (const payload of recvIter) {
+      if (payload.type === "terminal.event" && payload.data.runId === "run-1") {
+        sawTerminal = true;
+        break;
+      }
+    }
+    expect(sawTerminal).toBe(true);
+    // The run reached terminal AND the completion continuation ran (it
+    // emitted the terminal.event we just observed). On the cold path the
+    // same continuation would have called cleanupRunStorage by now; the
+    // warm gate suppressed it. Asserting here -- before shutdown -- proves
+    // the suppression, not a race.
+    expect(cleaned).toEqual([]);
+
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+
+    const result = await runPromise;
+    expect(result.triggeredRunIds).toEqual(["run-1"]);
+    expect(cleaned).toEqual([]);
+  });
+
   test("self-discovery resumes non-terminal runs and skips terminal ones", async () => {
     const baseDir = await makeTempDir("child-discover-");
     const supervisorKeyPair = await generateKeyPair();

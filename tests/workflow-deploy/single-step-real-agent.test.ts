@@ -268,20 +268,21 @@ describe("single-step real-agent round-trip", () => {
     // the reply is real model output rather than a synthesized constant.
     expect(env.inference.requests.length).toBeGreaterThan(0);
 
-    // Per-step workspace/tools materialized under the run, rooted in a
-    // `workflow-step-state/` subtree that is a sibling of the
-    // workflow-run repo's git directory. The run-event log lives inside
-    // the workflow-run repo's own tree, so the per-step root cannot
+    // The warm single-step agent's workspace/tools are rooted at a STABLE
+    // per-agent path under `workflow-step-state/<repoId>/warm/<stepId>/`
+    // (keyed by the step identity like the durable conversation store, NOT
+    // the per-message runId) so the cached agent reuses one workspace
+    // across messages and the scratch is bounded to one dir per agent
+    // rather than leaking a fresh per-run subtree. The subtree is a sibling
+    // of the workflow-run repo's git directory; the run-event log lives
+    // inside the workflow-run repo's own tree, so the warm root cannot
     // overlap it.
     const stepStoreDir = path.join(
       env.sidecar.dataDir,
       "workflow-step-state",
       workflowRunRepoId.id,
-      "runs",
-      runId,
-      "steps",
-      STEP_ID,
-      "attempt-1",
+      "warm",
+      encodeURIComponent(STEP_ID),
     );
     expect(fs.existsSync(stepStoreDir)).toBe(true);
     expect(fs.existsSync(path.join(stepStoreDir, "workspace"))).toBe(true);

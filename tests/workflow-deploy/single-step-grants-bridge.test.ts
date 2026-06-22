@@ -421,17 +421,16 @@ describe("single-step launched-agent grants bridge via spawned child", () => {
     expect(terminal.type).toBe("RunCompleted");
 
     // The granted tool actually executed in the child (proof the
-    // authorize allowed it): the tool wrote a sentinel into the per-step
-    // workspace.
+    // authorize allowed it): the tool wrote a sentinel into the warm
+    // single-step agent's STABLE per-agent workspace, rooted at
+    // `workflow-step-state/<repoId>/warm/<stepId>/workspace` (keyed by the
+    // step identity, not the per-message runId).
     const sentinelPath = path.join(
       env.sidecar.dataDir,
       "workflow-step-state",
       workflowRunRepoId.id,
-      "runs",
-      runId,
-      "steps",
-      STEP_ID,
-      "attempt-1",
+      "warm",
+      encodeURIComponent(STEP_ID),
       "workspace",
       SENTINEL_FILENAME,
     );

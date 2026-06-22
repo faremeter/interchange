@@ -8,7 +8,7 @@
 // implementation lives inside `@intx/workflow-host`, not here.
 
 import { createHash, createPublicKey, sign as nodeSign } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join as pathJoin } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -837,6 +837,14 @@ export function createSidecarDeployRouter(deps: {
          deployments do not consume events. */
     });
   const multistepSubstrateEnv = deps.multistepSubstrateEnv ?? {};
+  // Sidecar data dir the deployment's per-step scratch is rooted under
+  // (`<dataDir>/workflow-step-state/<deploymentId>/...`). Resolved once
+  // from the boot-edge substrate env so the undeploy hook can reclaim
+  // the whole subtree. Absent only when the router is wired without
+  // substrate config (trivial-only paths / tests that never spawn a
+  // child), in which case no child ever rooted scratch and the
+  // undeploy reclaim is correctly skipped.
+  const stepStateDataDir = multistepSubstrateEnv.SIDECAR_DATA_DIR;
   const multistepSpawner =
     deps.multistepSubprocessSpawner ?? defaultSubprocessSpawner;
   const multistepDeriveStepAddress: DeriveStepAddress =
@@ -1420,6 +1428,23 @@ export function createSidecarDeployRouter(deps: {
         // whose derived per-step addresses carry no host keypair), so it
         // is safe to call unconditionally for any spawned deployment.
         deps.transport.unregister(frame.agentAddress);
+        // Reclaim the deployment's per-step local-disk scratch now that
+        // its supervisor + workflow-process child are torn down. The
+        // whole `workflow-step-state/<deploymentId>/` subtree goes: the
+        // warm single-step agent's stable workspace under `warm/` (the
+        // dir bounded keying parks per agent) AND any cold `runs/<runId>/`
+        // subtrees a multi-step deploy's per-run cleanup did not already
+        // drop. Awaiting `shutdown()` above guarantees no child still
+        // holds the scratch, so this is a safe `rm -rf`. The durable
+        // conversation under `agent-conversation-state/` is a DIFFERENT
+        // root and is deliberately NOT touched here -- a re-deploy on the
+        // same address must restore the prior conversation from it.
+        if (stepStateDataDir !== undefined) {
+          await rm(
+            pathJoin(stepStateDataDir, "workflow-step-state", deploymentId),
+            { recursive: true, force: true },
+          );
+        }
       }
       releaseSlug(deploymentId, frame.agentAddress);
       deps.unregisterDeployment({

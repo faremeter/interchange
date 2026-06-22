@@ -28,7 +28,10 @@ import {
 } from "@intx/workflow-host";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 
-import { createSidecarDeployRouter } from "./workflow-host-wiring";
+import {
+  createSidecarDeployRouter,
+  deriveTrivialDeploymentId,
+} from "./workflow-host-wiring";
 import {
   createMultistepDrainRouter,
   createMultistepMailRouter,
@@ -347,6 +350,59 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       throw new Error("router.undeploy is undefined");
     }
 
+    // Pre-seed the on-disk per-step scratch the child roots under
+    // `<dataDir>/workflow-step-state/<deploymentId>/` and the durable
+    // conversation under `<dataDir>/agent-conversation-state/<deploymentId>/`.
+    // The warm subtree is the stable per-agent workspace (one dir, not
+    // one-per-message); a stale cold `runs/<runId>/` subtree models a
+    // multi-step leftover the per-run cleanup did not drop. An unrelated
+    // deployment's step-state subtree must survive the undeploy sweep.
+    const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
+    const stepStateRoot = path.join(dataDir, "workflow-step-state");
+    const warmWorkspaceFile = path.join(
+      stepStateRoot,
+      deploymentId,
+      "warm",
+      encodeURIComponent("step-1"),
+      "workspace",
+      "notes.txt",
+    );
+    const coldLeftoverFile = path.join(
+      stepStateRoot,
+      deploymentId,
+      "runs",
+      "run-stale",
+      "steps",
+      "step-1",
+      "attempt-1",
+      "workspace",
+      "scratch.txt",
+    );
+    const otherDeploymentFile = path.join(
+      stepStateRoot,
+      "other-deployment",
+      "warm",
+      "step-1",
+      "workspace",
+      "keep.txt",
+    );
+    const durableConversationFile = path.join(
+      dataDir,
+      "agent-conversation-state",
+      deploymentId,
+      encodeURIComponent("step-1"),
+      "checkpoint.json",
+    );
+    for (const file of [
+      warmWorkspaceFile,
+      coldLeftoverFile,
+      otherDeploymentFile,
+      durableConversationFile,
+    ]) {
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, "x");
+    }
+
     await undeploy({
       type: "agent.undeploy",
       agentAddress: frame.agentAddress,
@@ -355,5 +411,18 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
 
     expect(spawn.killed).toBe(true);
     expect(spawn.exitedResolved).toBe(true);
+
+    // The deployment's whole step-state subtree is reclaimed -- warm
+    // stable workspace AND any cold leftover -- now that its supervisor
+    // and child are torn down.
+    await expect(
+      fs.stat(path.join(stepStateRoot, deploymentId)),
+    ).rejects.toThrow();
+    // A different deployment's scratch is untouched: the sweep is scoped
+    // to this deployment's `<deploymentId>` subtree only.
+    expect(await fs.readFile(otherDeploymentFile, "utf8")).toBe("x");
+    // The durable conversation lives under a DIFFERENT root and must
+    // survive so a re-deploy restores the prior conversation.
+    expect(await fs.readFile(durableConversationFile, "utf8")).toBe("x");
   });
 });

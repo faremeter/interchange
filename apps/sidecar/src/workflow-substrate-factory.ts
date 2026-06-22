@@ -318,7 +318,59 @@ function stepStorageRoot(args: {
   );
 }
 
-interface SidecarStepBuildEnvDeps {
+/**
+ * Root directory for a single workflow-run subtree's per-step scratch:
+ * `<dataDir>/workflow-step-state/<repoId>/runs/<runId>/`. The cold
+ * (multi-step) path's per-step `stepStorageRoot` nests under this, so
+ * reclaiming this subtree on run completion drops every step/attempt the
+ * run produced in one `rm -rf`. Kept distinct from `stepStorageRoot` so
+ * the deletion granularity (a whole run, not a single step/attempt) is
+ * expressed at the call site that owns run-completion cleanup.
+ */
+function runStepStorageRoot(args: {
+  dataDir: string;
+  workflowRunRepoId: RepoId;
+  runId: string;
+}): string {
+  return path.join(
+    args.dataDir,
+    "workflow-step-state",
+    args.workflowRunRepoId.id,
+    "runs",
+    args.runId,
+  );
+}
+
+/**
+ * Stable per-agent scratch root for the WARM single-step agent's
+ * workspace + tool materialization (tarball-cache + apply-state). Keyed
+ * by the step identity exactly like the durable conversation store's
+ * `agent-conversation-state/<repoId>/<agentKey>/` (conversation-state.ts),
+ * NOT by the arbitrary first-message runId. Keying it stably is what
+ * bounds the warm case: the cached agent reuses ONE workspace across
+ * every message in the child's lifetime, and that same workspace is
+ * re-derived (and so survives) across a child respawn, instead of
+ * stranding a fresh per-runId subtree each time. The whole subtree is
+ * reclaimed on undeploy, when the deployment's supervisor + child are
+ * already torn down. Rooted under a `warm/` sibling of the cold `runs/`
+ * subtree so the undeploy sweep of `workflow-step-state/<repoId>/`
+ * reclaims both with one removal and the two keyings never collide.
+ */
+function warmStepStorageRoot(args: {
+  dataDir: string;
+  workflowRunRepoId: RepoId;
+  stepId: string;
+}): string {
+  return path.join(
+    args.dataDir,
+    "workflow-step-state",
+    args.workflowRunRepoId.id,
+    "warm",
+    encodeURIComponent(args.stepId),
+  );
+}
+
+export interface SidecarStepBuildEnvDeps {
   table: StepInferenceSourceTable;
   dataDir: string;
   workflowRunRepoId: RepoId;
@@ -375,7 +427,7 @@ interface SidecarStepBuildEnvDeps {
  * being papered over with a stub: the single-step path now always runs
  * a real agent against real storage.
  */
-function createSidecarStepBuildEnv(
+export function createSidecarStepBuildEnv(
   deps: SidecarStepBuildEnvDeps,
 ): (req: StepInvokeRequest) => Promise<StepEnvBase> {
   const resolveStepInferenceSource = createStepInferenceSourceResolver(
@@ -400,13 +452,33 @@ function createSidecarStepBuildEnv(
     }
     const source = resolveStepInferenceSource(stepId);
 
-    const storeDir = stepStorageRoot({
-      dataDir: deps.dataDir,
-      workflowRunRepoId: deps.workflowRunRepoId,
-      runId,
-      stepId,
-      attempt,
-    });
+    // Root the per-step scratch (workspace + tool tarball-cache +
+    // apply-state). The cold (multi-step) path keys it per
+    // run/step/attempt: each run rebuilds the agent and its scratch, and
+    // the run's whole `runs/<runId>/` subtree is reclaimed on run
+    // completion. The warm single-step path (`durableConversation`
+    // present) keys it STABLY per agent so the cached agent reuses one
+    // workspace across every message -- bounding the warm case to one
+    // dir per agent and letting that workspace survive child respawn --
+    // and the subtree is reclaimed on undeploy. The two keyings live
+    // under disjoint `runs/` and `warm/` sub-roots so neither sweep
+    // touches the other's tree, and the durable conversation under
+    // `agent-conversation-state/` is a different root that neither
+    // sweep touches.
+    const storeDir =
+      deps.durableConversation !== undefined
+        ? warmStepStorageRoot({
+            dataDir: deps.dataDir,
+            workflowRunRepoId: deps.workflowRunRepoId,
+            stepId,
+          })
+        : stepStorageRoot({
+            dataDir: deps.dataDir,
+            workflowRunRepoId: deps.workflowRunRepoId,
+            runId,
+            stepId,
+            attempt,
+          });
     // Conversation storage. For the warm single-step agent the
     // conversation must survive child respawn, so it is backed by a
     // per-agent durable store whose content is mirrored to the
@@ -991,6 +1063,32 @@ export function createSidecarSubstrateFactory(
       runChild,
     });
 
+    // Per-run scratch reclamation for the cold (multi-step) path. The
+    // run-loop fires this once each run reaches its terminal status; it
+    // drops the run's whole `workflow-step-state/<repoId>/runs/<runId>/`
+    // subtree (every step/attempt the run produced), which nothing
+    // reopens after terminal (resume reads the substrate run log, not
+    // local step state). Built only for the cold path: a warm deploy
+    // roots its single agent's scratch per agent under the disjoint
+    // `warm/` sub-root (reclaimed on undeploy), and the run-loop's own
+    // `warmKeep` gate already suppresses the per-run call there, so
+    // leaving this undefined for warm deploys keeps the path-owning
+    // module's intent explicit. `rm -rf` semantics via `recursive +
+    // force` so a run that never wrote scratch (no buildEnv reached) is
+    // a no-op rather than an ENOENT throw.
+    const cleanupRunStorage: ((runId: string) => Promise<void>) | undefined =
+      env.spawn.warmKeep
+        ? undefined
+        : (runId: string) =>
+            fs.promises.rm(
+              runStepStorageRoot({
+                dataDir: validated.SIDECAR_DATA_DIR,
+                workflowRunRepoId,
+                runId,
+              }),
+              { recursive: true, force: true },
+            );
+
     const bindings: RunWorkflowChildBindings = {
       substrate,
       workflowRunRepoId,
@@ -1002,6 +1100,7 @@ export function createSidecarSubstrateFactory(
       spawnChild,
       scheduler,
       evaluateGrants: evaluateGrantsAdapter,
+      ...(cleanupRunStorage !== undefined ? { cleanupRunStorage } : {}),
     };
     return bindings;
   };
