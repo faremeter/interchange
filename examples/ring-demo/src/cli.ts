@@ -394,7 +394,8 @@ for (const [i, name] of AGENT_NAMES.entries()) {
   });
 
   const env: MailEnv = {
-    source,
+    sources: [source],
+    defaultSource: source.id,
     storage,
     workdir: join(TMP_ROOT, name),
     audit: noopAuditStore(),

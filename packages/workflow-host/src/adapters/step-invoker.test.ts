@@ -47,7 +47,8 @@ function stubBlobReader(): BlobReader {
 
 function stubBuildEnv(): StepEnvBase {
   return {
-    source: STUB_SOURCE,
+    sources: [STUB_SOURCE],
+    defaultSource: STUB_SOURCE.id,
     storage: stubContextStore(),
     workdir: "/tmp/workflow-step-invoker-stub",
     audit: noopAuditStore(),
@@ -128,6 +129,9 @@ function buildStubAgent(): StubAgentControl {
     },
     setSource(_source: InferenceSource) {
       throw new Error("stub setSource() not used");
+    },
+    setSources(_sources: InferenceSource[], _defaultSource: string) {
+      throw new Error("stub setSources() not used");
     },
     async history() {
       return [];

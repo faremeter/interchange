@@ -335,7 +335,8 @@ const betaDef = defineAgent({
 });
 
 const alphaEnv: MailEnv = {
-  source: alphaSource,
+  sources: [alphaSource],
+  defaultSource: alphaSource.id,
   storage: storageAlpha,
   workdir: alphaDir,
   audit: noopAuditStore(),
@@ -346,7 +347,8 @@ const alphaEnv: MailEnv = {
 };
 
 const betaEnv: MailEnv = {
-  source: betaSource,
+  sources: [betaSource],
+  defaultSource: betaSource.id,
   storage: storageBeta,
   workdir: betaDir,
   audit: noopAuditStore(),
