@@ -1,4 +1,9 @@
 export { createDB, type DB } from "./client";
+export {
+  pgErrorCode,
+  PG_UNIQUE_VIOLATION,
+  PG_FOREIGN_KEY_VIOLATION,
+} from "./pg-error";
 export type { DBConfig } from "./config";
 export { runMigrations, dropSchema } from "./migrate";
 export { createGrantStore } from "./grant-store";

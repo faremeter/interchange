@@ -26,9 +26,15 @@ import { skillKindHandler, skillAuthorize } from "./skill-kind";
 // Mirrors the mocking style used by hub-session-orchestrator.test.ts: a
 // minimal in-memory store routed by drizzle table identity. Captures the
 // rows passed to insert/values so the test can assert column-level shape,
-// and raises a typed Postgres unique-violation error (code "23505") to
+// and raises a typed Postgres unique-violation error (SQLSTATE "23505") to
 // exercise the AssetService's translation of duplicates into typed domain
 // errors.
+//
+// Drizzle does not surface the driver error directly: it wraps the
+// postgres-js error (which carries `code`) as the `cause` of a
+// DrizzleQueryError, so the SQLSTATE sits on `.cause`, not on the
+// top-level error. The violation fixtures mirror that wrapping so the
+// stub reproduces the shape the service must walk to find the code.
 //
 // The where-clauses passed by drizzle's `eq` are opaque values; rather
 // than inspect them, the stub exposes `nextFindFirstAssetId` and
@@ -56,17 +62,35 @@ type AgentAssetRow = {
   createdAt: Date;
 };
 
+// A postgres-js-style driver error: carries the SQLSTATE on `code`.
+class PostgresError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+// A DrizzleQueryError-style wrapper: the SQLSTATE lives on `.cause`, not on
+// the top-level error. This is the shape Drizzle actually throws, so the
+// service must walk the cause chain to recover the code.
 class UniqueViolation extends Error {
-  readonly code = "23505";
   constructor(constraint: string) {
-    super(`duplicate key value violates unique constraint "${constraint}"`);
+    const driver = new PostgresError(
+      "23505",
+      `duplicate key value violates unique constraint "${constraint}"`,
+    );
+    super(`Failed query: insert`, { cause: driver });
   }
 }
 
 class ForeignKeyViolation extends Error {
-  readonly code = "23503";
   constructor(constraint: string) {
-    super(`insert violates foreign key constraint "${constraint}"`);
+    const driver = new PostgresError(
+      "23503",
+      `insert violates foreign key constraint "${constraint}"`,
+    );
+    super(`Failed query: insert`, { cause: driver });
   }
 }
 
@@ -423,6 +447,51 @@ describe("AssetService", () => {
       if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
       expect(err.reason).toBe("duplicate_asset");
       expect(dbFixture.assets).toHaveLength(1);
+    });
+
+    test("detects a unique violation whose SQLSTATE is nested under .cause", async () => {
+      // Regression guard for the DrizzleQueryError wrapping: Drizzle
+      // re-wraps the postgres-js driver error as its `.cause`, so the
+      // SQLSTATE never appears on the top-level error. A check that only
+      // inspected the top-level `code` would miss it and let the raw
+      // error escape as a 500. Build a db whose insert rejects with a
+      // multi-level wrapped error and assert the duplicate path still
+      // fires.
+      const wrapped = new Error("Failed query: insert into asset", {
+        cause: new Error("driver layer", {
+          cause: new PostgresError(
+            "23505",
+            'duplicate key value violates unique constraint "asset_tenant_kind_name"',
+          ),
+        }),
+      });
+      /* eslint-disable @typescript-eslint/no-unsafe-type-assertion --
+       * drizzle PgDatabase type cannot be structurally satisfied in tests */
+      const db = {
+        insert(_t: unknown) {
+          return {
+            values(_row: unknown) {
+              return {
+                returning: () => Promise.reject(wrapped),
+              };
+            },
+          };
+        },
+      } as unknown as DB["db"];
+      /* eslint-enable @typescript-eslint/no-unsafe-type-assertion */
+
+      const wrappedService = createAssetService({ db, repoStore });
+      const err = await wrappedService
+        .createAsset({
+          tenantId: "tnt_1",
+          kind: "skill",
+          name: "greet",
+        })
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(AssetServiceError);
+      if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
+      expect(err.reason).toBe("duplicate_asset");
     });
   });
 
