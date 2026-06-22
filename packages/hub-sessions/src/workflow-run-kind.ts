@@ -390,23 +390,78 @@ type RunEventBlob = {
 };
 
 /**
+ * Resolve the substrate's `changedPathPrefixes` into the set of run ids
+ * the commit could have touched, or `undefined` to validate every run.
+ *
+ * Returns `undefined` (validate-all) when the substrate could not bound
+ * the change set, or when a change prefix reaches into `runs/` without
+ * naming a specific run (`runs` or `runs/` alone). A change prefix that
+ * never touches `runs/` -- e.g. a claim-check write under `addresses/`
+ * -- contributes no run ids; an empty result set means the commit
+ * touched no run, so the per-run walks legitimately validate nothing.
+ */
+function runScopeFromChangedPrefixes(
+  changedPathPrefixes: ReadonlySet<string> | undefined,
+): Set<string> | undefined {
+  if (changedPathPrefixes === undefined) return undefined;
+  const runsPrefix = `${WORKFLOW_RUN_RUNS_PREFIX}/`;
+  const runIds = new Set<string>();
+  for (const prefix of changedPathPrefixes) {
+    if (prefix === WORKFLOW_RUN_RUNS_PREFIX || prefix === runsPrefix) {
+      // The `runs/` subtree changed but the substrate could not name
+      // which run; fall back to validating every run.
+      return undefined;
+    }
+    if (!prefix.startsWith(runsPrefix)) continue;
+    const rest = prefix.slice(runsPrefix.length);
+    const slash = rest.indexOf("/");
+    if (slash <= 0) return undefined;
+    runIds.add(rest.slice(0, slash));
+  }
+  return runIds;
+}
+
+/**
  * Build the (runId → events[]) map by walking the prospective tree.
  * The substrate's listDir yields names directly under the given
  * directory, so the walk is `runs/` → run-id subdirs → `events/` →
  * event filenames. Filenames outside the `<seq>.json` shape fail the
- * push.
+ * push. When `scopeRunIds` is supplied, only those runs are walked --
+ * see the substrate's `changedPathPrefixes` contract.
  */
 async function enumerateEventBlobs(
   listDir: (path: string) => Promise<string[]>,
+  scopeRunIds?: ReadonlySet<string>,
 ): Promise<
   | { ok: true; runs: Map<string, RunEventBlob[]> }
   | { ok: false; reason: string }
 > {
   const runs = new Map<string, RunEventBlob[]>();
-  const runIds = await listDir(WORKFLOW_RUN_RUNS_PREFIX);
+  // When the substrate bounds the commit's change set to a specific set
+  // of runs, walk only those `runs/<runId>/` directories instead of
+  // listing every run. An untouched run is carried forward
+  // byte-identical by the substrate's prefix-preserving commit, so its
+  // per-run invariants -- already validated when it was written --
+  // cannot change. `scopeRunIds` may name a run absent from the tree
+  // (e.g. a prior-tree walk for a run the prospective tree dropped);
+  // `listDir` on a missing directory returns `[]`, which the
+  // empty-children guards below handle.
+  const runIds =
+    scopeRunIds === undefined
+      ? await listDir(WORKFLOW_RUN_RUNS_PREFIX)
+      : Array.from(scopeRunIds);
   for (const runId of runIds) {
     const runDirPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
     const runChildren = await listDir(runDirPath);
+    // A scoped run id can name a run that is absent from the tree being
+    // walked -- the substrate's change set is the union of prospective
+    // and prior touched runs, so the prospective walk may receive a run
+    // that exists only in the prior tree (and vice versa). An absent run
+    // directory lists as empty; skip it here so only runs actually
+    // present in this tree are validated. The unscoped walk never
+    // reaches this branch because its run ids come from listing the
+    // present `runs/` directory.
+    if (scopeRunIds !== undefined && runChildren.length === 0) continue;
     const offender = runChildren.find((c) => !RUN_DIR_ALLOWED_CHILDREN.has(c));
     if (offender !== undefined) {
       return {
@@ -468,11 +523,18 @@ type RunBlobEntry = {
  */
 async function enumerateRunBlobs(
   listDir: (path: string) => Promise<string[]>,
+  scopeRunIds?: ReadonlySet<string>,
 ): Promise<
   { ok: true; blobs: RunBlobEntry[] } | { ok: false; reason: string }
 > {
   const out: RunBlobEntry[] = [];
-  const runIds = await listDir(WORKFLOW_RUN_RUNS_PREFIX);
+  // See enumerateEventBlobs: a defined `scopeRunIds` walks only the
+  // commit's touched runs; an untouched run's blobs are carried forward
+  // byte-identical and were validated when written.
+  const runIds =
+    scopeRunIds === undefined
+      ? await listDir(WORKFLOW_RUN_RUNS_PREFIX)
+      : Array.from(scopeRunIds);
   for (const runId of runIds) {
     const runDirPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
     const runChildren = await listDir(runDirPath);
@@ -1354,7 +1416,22 @@ export const workflowRunKindHandler: KindHandler = {
     listDir,
     priorReadBlob,
     priorListDir,
+    changedPathPrefixes,
   }): Promise<ValidatePushResult> {
+    // Bound the per-run event/blob walks to the runs this commit could
+    // have touched. The substrate guarantees a prefix-preserving commit
+    // mutates only paths under `changedPathPrefixes`; every run outside
+    // them is carried forward byte-identical, so its per-run invariants
+    // (seq-contiguity, terminal-lock, append-only, blob-immutability)
+    // cannot change and were already validated when the run was last
+    // written. `scopeRunIds` is the set of run ids under a
+    // `runs/<runId>/` change prefix. It stays `undefined` -- validate
+    // every run -- whenever the substrate could not bound the change set
+    // (`changedPathPrefixes` is undefined) OR a change prefix touches the
+    // `runs/` subtree at a coarser-than-per-run granularity (a bare
+    // `runs/` prefix, which cannot identify which run changed), so the
+    // scoping never narrows below what the substrate can prove.
+    const scopeRunIds = runScopeFromChangedPrefixes(changedPathPrefixes);
     for (const entry of topLevelTreePaths) {
       if (
         entry.startsWith(`${WORKFLOW_RUN_CONTROL_PREFIX}/`) ||
@@ -1426,7 +1503,7 @@ export const workflowRunKindHandler: KindHandler = {
       return { ok: true };
     }
 
-    const enumerated = await enumerateEventBlobs(listDir);
+    const enumerated = await enumerateEventBlobs(listDir, scopeRunIds);
     if (!enumerated.ok) {
       logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${enumerated.reason}`;
       return { ok: false, reason: enumerated.reason };
@@ -1511,7 +1588,7 @@ export const workflowRunKindHandler: KindHandler = {
       }
     }
 
-    const blobsEnumerated = await enumerateRunBlobs(listDir);
+    const blobsEnumerated = await enumerateRunBlobs(listDir, scopeRunIds);
     if (!blobsEnumerated.ok) {
       logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${blobsEnumerated.reason}`;
       return { ok: false, reason: blobsEnumerated.reason };
@@ -1535,7 +1612,10 @@ export const workflowRunKindHandler: KindHandler = {
     // `runs/<runId>/blobs/<sha>` slips past those iterations
     // entirely. Enumerate the prior tree's runs subtree under the
     // same shapes and reject any prior path that does not reappear.
-    const priorEnumerated = await enumerateEventBlobs(priorListDir);
+    const priorEnumerated = await enumerateEventBlobs(
+      priorListDir,
+      scopeRunIds,
+    );
     if (!priorEnumerated.ok) {
       return {
         ok: false,
@@ -1555,7 +1635,10 @@ export const workflowRunKindHandler: KindHandler = {
         };
       }
     }
-    const priorBlobsEnumerated = await enumerateRunBlobs(priorListDir);
+    const priorBlobsEnumerated = await enumerateRunBlobs(
+      priorListDir,
+      scopeRunIds,
+    );
     if (!priorBlobsEnumerated.ok) {
       return {
         ok: false,
