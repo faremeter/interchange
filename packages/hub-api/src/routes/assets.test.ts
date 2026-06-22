@@ -145,10 +145,12 @@ function makeMockDB(state: DBState): DB["db"] {
                   existing.name === r.name,
               )
             ) {
-              const err = new Error(
+              const driverErr = new Error(
                 `duplicate key value violates unique constraint`,
               ) as Error & { code?: string };
-              err.code = "23505";
+              driverErr.code = "23505";
+              // Mirror Drizzle: the driver error is wrapped as `cause`.
+              const err = new Error("Failed query", { cause: driverErr });
               return {
                 returning: () => Promise.reject(err),
                 then: (_resolve: (v: undefined) => unknown) =>
@@ -711,10 +713,12 @@ function makeMultiTenantMockDB(state: MultiTenantState): DB["db"] {
         existing.name === row.name,
     );
     if (duplicate) {
-      const err = new Error(
+      const driverErr = new Error(
         `duplicate key value violates unique constraint`,
       ) as Error & { code?: string };
-      err.code = "23505";
+      driverErr.code = "23505";
+      // Mirror Drizzle: the driver error is wrapped as `cause`.
+      const err = new Error("Failed query", { cause: driverErr });
       return Promise.reject(err);
     }
     state.assets.push(row);
