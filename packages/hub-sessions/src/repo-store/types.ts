@@ -198,6 +198,22 @@ export interface KindHandler {
    * payload cross-checks that a structural shape validator cannot
    * express (e.g. "only a `hub` principal may write a `CancelRequested`
    * whose origin is `hub-admin`").
+   *
+   * `changedPathPrefixes` is the set of repo-root-relative POSIX path
+   * prefixes (each ending in `/`) under which this commit could have
+   * mutated tree entries -- the cleared prefix for a `writeTree`
+   * carrying a `clearPrefix`, or the subtrees whose object differs from
+   * the parent commit for a received pack. Every path the commit can
+   * have changed relative to its parent is under one of these prefixes;
+   * any path outside them is carried forward byte-identical by the
+   * substrate. It is `undefined` when the substrate cannot bound the
+   * change set (no parent to diff against and no `clearPrefix`), in
+   * which case the handler must validate the whole prospective tree. A
+   * handler with per-subtree invariants that cannot be affected by a
+   * commit outside that subtree (workflow-run's per-run append-only
+   * log) uses this to skip re-validating subtrees the commit provably
+   * did not touch; a handler with no such structure ignores it and
+   * validates unconditionally.
    */
   validatePush: (args: {
     repoId: RepoId;
@@ -208,6 +224,7 @@ export interface KindHandler {
     listDir: (path: string) => Promise<string[]>;
     priorReadBlob: (path: string) => Promise<Uint8Array | null>;
     priorListDir: (path: string) => Promise<string[]>;
+    changedPathPrefixes?: ReadonlySet<string> | undefined;
   }) => Promise<ValidatePushResult> | ValidatePushResult;
   /**
    * Fired after a successful ref update from any operation. `oldSha`

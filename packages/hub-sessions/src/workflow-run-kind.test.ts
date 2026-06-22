@@ -23,7 +23,7 @@ import {
   WORKFLOW_RUN_AGENT_STATE_PREFIX,
 } from "./workflow-run-kind";
 import { createRepoStore } from "./repo-store";
-import type { Principal, RepoId } from "./repo-store";
+import type { KindHandler, Principal, RepoId } from "./repo-store";
 
 const REF = "refs/heads/events";
 
@@ -92,6 +92,7 @@ type ValidateOpts = {
   ref?: string;
   principal?: Principal;
   priorFiles?: Record<string, string>;
+  changedPathPrefixes?: ReadonlySet<string>;
 };
 
 async function validate(
@@ -116,6 +117,7 @@ async function validate(
     listDir: makeListDir(files),
     priorReadBlob,
     priorListDir,
+    changedPathPrefixes: opts.changedPathPrefixes,
   });
 }
 
@@ -1970,5 +1972,638 @@ describe("workflow-run substrate — per-commit pack validation", () => {
 
     const targetTip = await targetStore.resolveRef(HUB_PRINCIPAL, repoId, ref);
     expect(targetTip).toBe(dequeued.commitSha);
+  });
+});
+
+// B3.3 per-run validatePush scoping. The substrate bounds a
+// prefix-preserving commit's change set via `changedPathPrefixes`; the
+// handler scopes its per-run event/blob walks to the runs under those
+// prefixes. These cases pin two properties: (1) scoping does not change
+// the verdict for the touched run -- every per-run violation still
+// rejects when the violating run is in scope; (2) the prospective tree a
+// scoped run-event commit produces validates identically whether the
+// substrate bounds the change set or not, so the commit the substrate
+// signs is byte-identical either way.
+describe("workflowRunKindHandler.validatePush — per-run scoping", () => {
+  const TWO_RUN_TREE: Record<string, string> = {
+    [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+    [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+      0,
+      "RunStarted",
+    ),
+    [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/1.json`]: eventBody(
+      1,
+      "StepCompleted",
+    ),
+    [`${WORKFLOW_RUN_RUNS_PREFIX}/run-b/events/0.json`]: eventBody(
+      0,
+      "RunStarted",
+    ),
+  };
+
+  test("a valid two-run tree is accepted under undefined and scoped change sets alike", async () => {
+    const unscoped = await validate(TWO_RUN_TREE);
+    expect(unscoped.ok).toBe(true);
+
+    const scopedToA = await validate(TWO_RUN_TREE, {
+      priorFiles: {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-b/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+      },
+      changedPathPrefixes: new Set([
+        `${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/`,
+      ]),
+    });
+    expect(scopedToA.ok).toBe(true);
+  });
+
+  test("an append-only overwrite in the TOUCHED run is still rejected under scoping", async () => {
+    const prior = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+    };
+    const prospective = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+        { tampered: true },
+      ),
+    };
+    const r = await validate(prospective, {
+      priorFiles: prior,
+      changedPathPrefixes: new Set([
+        `${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/`,
+      ]),
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  test("a sequence gap in the TOUCHED run is still rejected under scoping", async () => {
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/2.json`]: eventBody(
+          2,
+          "StepCompleted",
+        ),
+      },
+      {
+        changedPathPrefixes: new Set([
+          `${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/`,
+        ]),
+      },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toContain("sequence gap");
+  });
+
+  test("a post-terminal event in the TOUCHED run is still rejected under scoping", async () => {
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+          0,
+          "RunCompleted",
+        ),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/1.json`]: eventBody(
+          1,
+          "StepStarted",
+        ),
+      },
+      {
+        changedPathPrefixes: new Set([
+          `${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/`,
+        ]),
+      },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toContain("after terminal");
+  });
+
+  test("dropping a prior event blob in the TOUCHED run is still rejected under scoping", async () => {
+    const prior = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/1.json`]: eventBody(
+        1,
+        "StepCompleted",
+      ),
+    };
+    const prospective = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+    };
+    const r = await validate(prospective, {
+      priorFiles: prior,
+      changedPathPrefixes: new Set([
+        `${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/`,
+      ]),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toContain("append-only");
+  });
+
+  test("a mutated content-addressed blob in the TOUCHED run is still rejected under scoping", async () => {
+    const sha = "a".repeat(64);
+    const prior = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/${WORKFLOW_RUN_BLOBS_DIR}/${sha}`]:
+        "original",
+    };
+    const prospective = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/${WORKFLOW_RUN_BLOBS_DIR}/${sha}`]:
+        "mutated",
+    };
+    const r = await validate(prospective, {
+      priorFiles: prior,
+      changedPathPrefixes: new Set([
+        `${WORKFLOW_RUN_RUNS_PREFIX}/run-a/${WORKFLOW_RUN_BLOBS_DIR}/`,
+      ]),
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  test("a bare runs/ change prefix falls back to validating every run", async () => {
+    // When the substrate can only say "runs/ changed" without naming the
+    // run, the scope must widen to validate-all so a violation in any run
+    // is still caught.
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-b/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-b/events/2.json`]: eventBody(
+          2,
+          "StepCompleted",
+        ),
+      },
+      { changedPathPrefixes: new Set([`${WORKFLOW_RUN_RUNS_PREFIX}/`]) },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toContain("sequence gap");
+  });
+
+  test("a claim-check-only change set scopes the run walk to nothing", async () => {
+    // A commit whose change prefix is entirely under addresses/ touches
+    // no run; the per-run walk legitimately validates nothing while the
+    // pre-existing runs are carried forward by the substrate.
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+      },
+      {
+        priorFiles: {
+          [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+          [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+            0,
+            "RunStarted",
+          ),
+        },
+        changedPathPrefixes: new Set([
+          `${WORKFLOW_RUN_ADDRESSES_PREFIX}/some-address/`,
+        ]),
+      },
+    );
+    expect(r.ok).toBe(true);
+  });
+});
+
+// B3.3 byte-identical-commit equivalence. validatePush only accepts or
+// rejects -- it never alters the tree git.commit builds -- so any commit
+// the scoped handler accepts is byte-identical to the same commit the
+// validate-all handler accepts. This drives the real substrate end to
+// end: an identical multi-run, multi-commit run-event sequence is
+// replayed into two stores, one running the production (scoped) handler
+// and one running a handler whose `changedPathPrefixes` is forced to
+// `undefined` (validate-all), and asserts every commit's tree object id
+// matches. A divergence would mean the scoping changed which writes were
+// accepted, hence the committed history -- the failure mode the gate
+// guards against.
+describe("workflowRunKindHandler — scoped vs validate-all byte-identity", () => {
+  const equivTempDirs: string[] = [];
+  let equivKey: KeyPair;
+
+  beforeAll(async () => {
+    equivKey = await generateKeyPair();
+  });
+  afterAll(async () => {
+    for (const d of equivTempDirs.splice(0)) {
+      await fs.promises.rm(d, { recursive: true, force: true }).catch(() => {
+        /* best effort */
+      });
+    }
+  });
+
+  const validateAllHandler: KindHandler = {
+    ...workflowRunKindHandler,
+    validatePush(args) {
+      // Force the validate-all path regardless of what the substrate
+      // computed, so this store is the un-scoped reference.
+      return workflowRunKindHandler.validatePush({
+        ...args,
+        changedPathPrefixes: undefined,
+      });
+    },
+  };
+
+  async function makeStore(
+    handler: KindHandler,
+  ): Promise<{ store: ReturnType<typeof createRepoStore>; dir: string }> {
+    const dataDir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "wfr-equiv-"),
+    );
+    equivTempDirs.push(dataDir);
+    const store = createRepoStore({
+      dataDir,
+      signingKey: equivKey,
+      handlers: { "workflow-run": handler },
+      authorize: () => ({ allowed: true }),
+    });
+    return { store, dir: path.join(dataDir, handler.directoryPrefix, "") };
+  }
+
+  test("identical run-event sequences across two runs produce identical commit trees", async () => {
+    const repoId: RepoId = { kind: "workflow-run", id: "equiv-dep" };
+    const ref = REF;
+
+    // Each entry is one run-event bracket commit: the run whose
+    // `events/` prefix is preserved, plus the full event set for that
+    // run at that point. Interleaving run-a and run-b exercises the
+    // scoping deciding "this commit touched only run-X".
+    const commits: { runId: string; files: Record<string, string> }[] = [
+      {
+        runId: "run-a",
+        files: { "runs/run-a/events/0.json": eventBody(0, "RunStarted") },
+      },
+      {
+        runId: "run-b",
+        files: { "runs/run-b/events/0.json": eventBody(0, "RunStarted") },
+      },
+      {
+        runId: "run-a",
+        files: {
+          "runs/run-a/events/0.json": eventBody(0, "RunStarted"),
+          "runs/run-a/events/1.json": eventBody(1, "StepCompleted"),
+        },
+      },
+      {
+        runId: "run-b",
+        files: {
+          "runs/run-b/events/0.json": eventBody(0, "RunStarted"),
+          "runs/run-b/events/1.json": eventBody(1, "RunCompleted"),
+        },
+      },
+      {
+        runId: "run-a",
+        files: {
+          "runs/run-a/events/0.json": eventBody(0, "RunStarted"),
+          "runs/run-a/events/1.json": eventBody(1, "StepCompleted"),
+          "runs/run-a/events/2.json": eventBody(2, "RunCompleted"),
+        },
+      },
+    ];
+
+    const scoped = await makeStore(workflowRunKindHandler);
+    const reference = await makeStore(validateAllHandler);
+    await scoped.store.initRepo(repoId);
+    await reference.store.initRepo(repoId);
+
+    const scopedDir = path.join(scoped.dir, repoId.id);
+    const refDir = path.join(reference.dir, repoId.id);
+
+    for (const c of commits) {
+      const content = {
+        files: c.files,
+        clearPrefix: `runs/${c.runId}/events/`,
+        message: `bracket ${c.runId}`,
+      };
+      const s = await scoped.store.writeTree(
+        HUB_PRINCIPAL,
+        repoId,
+        ref,
+        content,
+      );
+      const r = await reference.store.writeTree(
+        HUB_PRINCIPAL,
+        repoId,
+        ref,
+        content,
+      );
+      const { commit: sCommit } = await git.readCommit({
+        fs,
+        dir: scopedDir,
+        oid: s.commitSha,
+      });
+      const { commit: rCommit } = await git.readCommit({
+        fs,
+        dir: refDir,
+        oid: r.commitSha,
+      });
+      // The tree object id is the content hash of the whole tree; equal
+      // tree oids means byte-identical trees.
+      expect(sCommit.tree).toBe(rCommit.tree);
+    }
+  });
+});
+
+// B3.3 pack-path per-run scope completeness. The byte-identity test
+// above drives single-run writeTree commits; production writes one run
+// per commit today, so the multi-run *pack* path -- where
+// computeChangedPathPrefixes derives the touched-run SET from a tree
+// OID diff (design 56c/61) -- is the load-bearing derivation site that
+// no other test exercises. These author commits directly into a source
+// git repo, pack them, and receivePack into the real scoped handler.
+describe("workflow-run substrate — pack-path per-run scope completeness", () => {
+  // Author a commit whose tree adds `files` on top of the index left by
+  // `parent`, parented on `parent`. receivePack validates the tree via
+  // validatePush, not the commit signature, so an unsigned source commit
+  // is sufficient.
+  async function authorCommit(
+    dir: string,
+    files: Record<string, string>,
+    parent: string[],
+    message: string,
+  ): Promise<string> {
+    for (const [rel, body] of Object.entries(files)) {
+      const full = path.join(dir, rel);
+      await fs.promises.mkdir(path.dirname(full), { recursive: true });
+      await fs.promises.writeFile(full, body);
+      await git.add({ fs, dir, filepath: rel });
+    }
+    return git.commit({
+      fs,
+      dir,
+      message,
+      author: { name: "probe", email: "probe@example.com" },
+      parent,
+      ref: REF,
+    });
+  }
+
+  // Author a commit whose tree is EXACTLY `files`: every currently
+  // tracked path is removed first, so paths absent from `files` are
+  // dropped. This is how a run deletion is expressed.
+  async function authorExactTree(
+    dir: string,
+    files: Record<string, string>,
+    parent: string[],
+    message: string,
+  ): Promise<string> {
+    const tracked = await git.listFiles({ fs, dir });
+    for (const rel of tracked) {
+      await git.remove({ fs, dir, filepath: rel });
+      await fs.promises.rm(path.join(dir, rel), { force: true });
+    }
+    for (const [rel, body] of Object.entries(files)) {
+      const full = path.join(dir, rel);
+      await fs.promises.mkdir(path.dirname(full), { recursive: true });
+      await fs.promises.writeFile(full, body);
+      await git.add({ fs, dir, filepath: rel });
+    }
+    return git.commit({
+      fs,
+      dir,
+      message,
+      author: { name: "probe", email: "probe@example.com" },
+      parent,
+      ref: REF,
+    });
+  }
+
+  async function packOids(dir: string, shas: string[]): Promise<Uint8Array> {
+    const oids = Array.from(
+      new Set(
+        (
+          await Promise.all(shas.map((s) => collectReachableObjects(dir, s)))
+        ).flat(),
+      ),
+    );
+    const packResult = await git.packObjects({ fs, dir, oids, write: false });
+    if (packResult.packfile === undefined) {
+      throw new Error("git.packObjects returned no packfile");
+    }
+    return packResult.packfile;
+  }
+
+  function makeTargetStore() {
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: `dep-${Math.random().toString(36).slice(2, 10)}`,
+    };
+    return { repoId };
+  }
+
+  test("a seq gap in the SECOND run of a two-run pack commit is rejected", async () => {
+    // If computeChangedPathPrefixes under-reported run-b (the second
+    // changed run), the scoped walk would skip it and accept the gap.
+    const srcDir = await makeClaimCheckTempDir("wfr-multirun-src-");
+    await git.init({ fs, dir: srcDir, defaultBranch: "events" });
+    const genesis = await authorCommit(srcDir, { ".gitignore": "" }, [], "g");
+    const tip = await authorCommit(
+      srcDir,
+      {
+        ".gitignore": "",
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-b/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-b/events/2.json`]: eventBody(
+          2,
+          "StepCompleted",
+        ),
+      },
+      [genesis],
+      "two runs, gap in run-b",
+    );
+    const pack = await packOids(srcDir, [genesis, tip]);
+
+    const tgtDataDir = await makeClaimCheckTempDir("wfr-multirun-tgt-");
+    const store = createRepoStore({
+      dataDir: tgtDataDir,
+      signingKey: claimCheckSigningKey,
+      handlers: { "workflow-run": workflowRunKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    const { repoId } = makeTargetStore();
+    await store.initRepo(repoId);
+
+    let reason = "";
+    try {
+      await store.receivePack(HUB_PRINCIPAL, repoId, REF, pack, tip, null);
+      throw new Error("expected receivePack to reject the seq gap in run-b");
+    } catch (err) {
+      reason = err instanceof Error ? err.message : String(err);
+    }
+    expect(reason).toContain("sequence gap");
+    // The ref must not advance.
+    const tipAfter = await store.resolveRef(HUB_PRINCIPAL, repoId, REF);
+    expect(tipAfter).toBe(null);
+  });
+
+  test("a valid two-run pack commit is accepted (scope does not over-reject)", async () => {
+    const srcDir = await makeClaimCheckTempDir("wfr-multirun-ok-src-");
+    await git.init({ fs, dir: srcDir, defaultBranch: "events" });
+    const genesis = await authorCommit(srcDir, { ".gitignore": "" }, [], "g");
+    const tip = await authorCommit(
+      srcDir,
+      {
+        ".gitignore": "",
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-b/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-b/events/1.json`]: eventBody(
+          1,
+          "StepCompleted",
+        ),
+      },
+      [genesis],
+      "two valid runs",
+    );
+    const pack = await packOids(srcDir, [genesis, tip]);
+
+    const tgtDataDir = await makeClaimCheckTempDir("wfr-multirun-ok-tgt-");
+    const store = createRepoStore({
+      dataDir: tgtDataDir,
+      signingKey: claimCheckSigningKey,
+      handlers: { "workflow-run": workflowRunKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    const { repoId } = makeTargetStore();
+    await store.initRepo(repoId);
+    await store.receivePack(HUB_PRINCIPAL, repoId, REF, pack, tip, null);
+    expect(await store.resolveRef(HUB_PRINCIPAL, repoId, REF)).toBe(tip);
+  });
+
+  test("dropping a prior run while adding to another is rejected with the clean append-only reason", async () => {
+    // computeChangedPathPrefixes flags run-a (its subtree OID went
+    // present->absent), putting it in scope so the deletion-direction
+    // guard fires. The scoped prospective walk lists the now-absent
+    // run-a as empty -- via buildCommitTreeClosures.listDir returning []
+    // for a missing dir -- and skips it, so the rejection surfaces as the
+    // clean append-only path_violation rather than a raw substrate throw.
+    const srcDir = await makeClaimCheckTempDir("wfr-drop-src-");
+    await git.init({ fs, dir: srcDir, defaultBranch: "events" });
+    const parent = await authorExactTree(
+      srcDir,
+      {
+        ".gitignore": "",
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-b/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+      },
+      [],
+      "two runs",
+    );
+    const tip = await authorExactTree(
+      srcDir,
+      {
+        ".gitignore": "",
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-b/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-b/events/1.json`]: eventBody(
+          1,
+          "StepCompleted",
+        ),
+      },
+      [parent],
+      "drop run-a, grow run-b",
+    );
+
+    const tgtDataDir = await makeClaimCheckTempDir("wfr-drop-tgt-");
+    const store = createRepoStore({
+      dataDir: tgtDataDir,
+      signingKey: claimCheckSigningKey,
+      handlers: { "workflow-run": workflowRunKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    const { repoId } = makeTargetStore();
+    await store.initRepo(repoId);
+
+    // Land the valid two-run parent first.
+    const parentPack = await packOids(srcDir, [parent]);
+    await store.receivePack(
+      HUB_PRINCIPAL,
+      repoId,
+      REF,
+      parentPack,
+      parent,
+      null,
+    );
+
+    // Push the tip that drops run-a. It must be rejected, fail-closed,
+    // with the clean append-only reason (not a raw listDir throw).
+    const tipPack = await packOids(srcDir, [tip]);
+    let reason = "";
+    try {
+      await store.receivePack(HUB_PRINCIPAL, repoId, REF, tipPack, tip, parent);
+      throw new Error("expected receivePack to reject the dropped run-a");
+    } catch (err) {
+      reason = err instanceof Error ? err.message : String(err);
+    }
+    // The ref must not advance past the parent.
+    expect(await store.resolveRef(HUB_PRINCIPAL, repoId, REF)).toBe(parent);
+    // The clean contract reason, not a raw "is not a directory" throw.
+    expect(reason).toContain("append-only");
+    expect(reason).not.toContain("is not a directory");
   });
 });

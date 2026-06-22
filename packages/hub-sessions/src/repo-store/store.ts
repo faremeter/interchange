@@ -419,7 +419,15 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   }
 
   async function clearIndexPrefix(dir: string, prefix: string): Promise<void> {
-    const matrix = await git.statusMatrix({ fs, dir });
+    // `filepaths: [prefix]` scopes statusMatrix to the cleared subtree
+    // instead of walking every tracked file in the repo and discarding
+    // the non-prefix rows. The narrowed call returns status rows only
+    // for files under `prefix` -- exactly the set this loop then
+    // removes -- so the removal set is identical while the per-commit
+    // walk becomes O(prefix) rather than O(repo). A prefix with no
+    // tracked entries (a first write) yields an empty matrix and clears
+    // nothing.
+    const matrix = await git.statusMatrix({ fs, dir, filepaths: [prefix] });
     for (const row of matrix) {
       const filepath = row[0];
       if (filepath.startsWith(prefix)) {
@@ -657,15 +665,82 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     const listDir = async (relPath: string): Promise<string[]> => {
       if (relPath === "") return rootTree.map((e) => e.path);
       const oid = await resolveTreeEntry(dir, commitSha, relPath, "tree");
-      if (oid === null) {
-        throw new Error(
-          `listDir: path ${relPath} is not a directory in commit ${commitSha} tree`,
-        );
-      }
+      // An absent directory lists as empty, matching the writeTree-path
+      // `listDir` and the prior-tree closures: every `listDir` the
+      // substrate hands a kind handler returns `[]` for a missing path,
+      // so a handler that walks an optional or scoped-but-absent subtree
+      // (e.g. workflow-run's per-run scoped walk over a run the commit
+      // dropped) hits its own empty-directory guard and produces a clean
+      // `path_violation` reason instead of a raw substrate throw. A real
+      // read fault inside `git.readTree` below still bubbles.
+      if (oid === null) return [];
       const { tree } = await git.readTree({ fs, dir, oid });
       return tree.map((e) => e.path);
     };
     return { topLevelTreePaths, readBlob, listDir };
+  }
+
+  // Read a tree's child entries as a name->oid map. Returns null when
+  // the path is absent or is not a tree at the given commit, so the
+  // diff below treats "subtree gained/lost" uniformly with "subtree
+  // changed".
+  async function readTreeEntryMap(
+    dir: string,
+    commitSha: string,
+    relPath: string,
+  ): Promise<Map<string, string> | null> {
+    const oid =
+      relPath === ""
+        ? (await git.readCommit({ fs, dir, oid: commitSha })).commit.tree
+        : await resolveTreeEntry(dir, commitSha, relPath, "tree");
+    if (oid === null) return null;
+    const { tree } = await git.readTree({ fs, dir, oid });
+    const out = new Map<string, string>();
+    for (const e of tree) out.set(e.path, e.oid);
+    return out;
+  }
+
+  // Bound the set of paths a received-pack commit may have changed
+  // relative to its parent, as repo-root-relative POSIX prefixes ending
+  // in `/`. Git is content-addressed: a subtree whose object id is
+  // unchanged between the two commits is byte-identical, so the diff
+  // only descends into entries whose oid differs. Top-level entries that
+  // differ are emitted as `<name>/`; the `runs/` subtree is descended
+  // one level further so a per-run handler can scope to the exact
+  // `runs/<runId>/` directories that changed rather than re-validating
+  // every run. `parentSha === null` (no readable parent) means the
+  // substrate cannot bound the change set, so it returns `undefined`
+  // and the handler validates the whole tree.
+  async function computeChangedPathPrefixes(
+    dir: string,
+    commitSha: string,
+    parentSha: string | null,
+  ): Promise<Set<string> | undefined> {
+    if (parentSha === null) return undefined;
+    const prefixes = new Set<string>();
+    const newTop = (await readTreeEntryMap(dir, commitSha, "")) ?? new Map();
+    const oldTop = (await readTreeEntryMap(dir, parentSha, "")) ?? new Map();
+    const topNames = new Set<string>([...newTop.keys(), ...oldTop.keys()]);
+    for (const name of topNames) {
+      if (newTop.get(name) === oldTop.get(name)) continue;
+      if (name === "runs") {
+        const newRuns =
+          (await readTreeEntryMap(dir, commitSha, "runs")) ?? new Map();
+        const oldRuns =
+          (await readTreeEntryMap(dir, parentSha, "runs")) ?? new Map();
+        const runNames = new Set<string>([
+          ...newRuns.keys(),
+          ...oldRuns.keys(),
+        ]);
+        for (const runId of runNames) {
+          if (newRuns.get(runId) === oldRuns.get(runId)) continue;
+          prefixes.add(`runs/${runId}/`);
+        }
+        continue;
+      }
+      prefixes.add(`${name}/`);
+    }
+    return prefixes;
   }
 
   // Enumerate every commit OID reachable from any branch or tag in
@@ -986,6 +1061,16 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       }
       return Array.from(names);
     };
+    // A writeTree carrying a `clearPrefix` mutates only paths under that
+    // prefix: the clearPrefix step removes the prefix's prior entries and
+    // `writeFileEntry` restages the writer's files, while every other
+    // prior path is carried forward verbatim in `survivingPriorPaths`
+    // above. So the change set the handler may scope to is exactly
+    // `{clearPrefix}`. Without a clearPrefix the write is purely additive
+    // over an arbitrary set of paths the substrate does not summarise, so
+    // leave the change set unbounded (validate-all).
+    const changedPathPrefixes =
+      clearedPrefix === undefined ? undefined : new Set([clearedPrefix]);
     const validation = await handler.validatePush({
       repoId,
       ref,
@@ -995,6 +1080,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       listDir,
       priorReadBlob,
       priorListDir,
+      changedPathPrefixes,
     });
     if (!validation.ok) {
       // Roll the working tree and index back to HEAD before
@@ -1257,6 +1343,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
             );
             const { topLevelTreePaths, readBlob, listDir } =
               await buildCommitTreeClosures(dir, newCommit);
+            const changedPathPrefixes = await computeChangedPathPrefixes(
+              dir,
+              newCommit,
+              parentSha,
+            );
             const result = await handler.validatePush({
               repoId,
               ref,
@@ -1266,6 +1357,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
               listDir,
               priorReadBlob,
               priorListDir,
+              changedPathPrefixes,
             });
             if (!result.ok) {
               logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref} at commit ${newCommit}: ${result.reason}`;

@@ -252,6 +252,78 @@ describe("RepoStore", () => {
     expect(deployPaths).not.toContain("b.md");
   });
 
+  test("writeTree with clearPrefix on a first write clears nothing and does not error", async () => {
+    // clearIndexPrefix narrows git.statusMatrix to the cleared prefix.
+    // A first write to a fresh repo has no tracked entries under the
+    // prefix, so the narrowed statusMatrix must return an empty matrix
+    // (clear nothing) rather than erroring on a non-existent subtree.
+    const dataDir = await makeTempDir("repo-store-clear-first-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    const first = await store.writeTree(principal, repoId, REF, {
+      files: { "deploy/a.md": "A" },
+      clearPrefix: "deploy/",
+      message: "first write with clearPrefix",
+    });
+    expect(first.commitSha).toMatch(/^[0-9a-f]{40}$/);
+
+    const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
+    const { commit } = await git.readCommit({
+      fs,
+      dir,
+      oid: first.commitSha,
+    });
+    const { tree: rootTree } = await git.readTree({
+      fs,
+      dir,
+      oid: commit.tree,
+    });
+    const deployEntry = rootTree.find((e) => e.path === "deploy");
+    if (!deployEntry) throw new Error("deploy subtree missing");
+    const deployPaths = await readTreePaths(dir, deployEntry.oid);
+    expect(deployPaths).toEqual(["a.md"]);
+  });
+
+  test("writeTree clearPrefix targeting a never-written prefix is a no-op clear", async () => {
+    // The narrowed statusMatrix is asked for a prefix that exists in
+    // neither the index nor the tree (a sibling subtree was written, but
+    // not this one). It must return empty and leave the sibling intact.
+    const dataDir = await makeTempDir("repo-store-clear-absent-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    await store.writeTree(principal, repoId, REF, {
+      files: { "keep/a.md": "A" },
+      message: "seed sibling subtree",
+    });
+    const second = await store.writeTree(principal, repoId, REF, {
+      files: { "fresh/b.md": "B" },
+      clearPrefix: "fresh/",
+      message: "clear a never-written prefix",
+    });
+
+    const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
+    const { commit } = await git.readCommit({
+      fs,
+      dir,
+      oid: second.commitSha,
+    });
+    const rootEntries = await readTreePaths(dir, commit.tree);
+    expect(rootEntries).toContain("keep");
+    expect(rootEntries).toContain("fresh");
+  });
+
   test("writeTree without clearPrefix is purely additive", async () => {
     const dataDir = await makeTempDir("repo-store-additive-");
     const handler = createTestHandler();

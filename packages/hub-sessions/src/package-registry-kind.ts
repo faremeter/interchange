@@ -176,11 +176,14 @@ export const packageRegistryKindHandler: KindHandler = {
     // Gate on `topLevelTreePaths` so a tree without a `tarballs/`
     // subtree (the genesis commit, or any push that simply does not
     // include tarballs yet) skips the enumeration: the substrate's
-    // `buildCommitTreeClosures.listDir` throws a plain `Error` on an
-    // absent path rather than something we can distinguish from a
-    // transport fault, so "is the subtree there at all" is answered
-    // at the handler from the top-level enumeration the substrate
-    // already supplies, not from a probe call.
+    // `listDir` returns `[]` for an absent path, which is
+    // indistinguishable from a present-but-empty `tarballs/` subtree.
+    // "Is the subtree there at all" is therefore answered at the handler
+    // from the top-level enumeration the substrate already supplies, not
+    // from a probe call. With `tarballs` confirmed present, any throw
+    // from the `listDir` below is a real fault (EACCES, EIO, malformed
+    // tree, transient transport), so it is surfaced rather than treated
+    // as "no tarballs."
     let tarballChildren: string[];
     if (!topLevelTreePaths.includes("tarballs")) {
       tarballChildren = [];
