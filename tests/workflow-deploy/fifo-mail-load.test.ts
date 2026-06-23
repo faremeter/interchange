@@ -8,16 +8,12 @@
 // `markConsumed` against the next `dispatchOne`) would slip through
 // the 3-mail case but surface here.
 //
-// Held out of `make test`'s default run because the per-mail
-// wall-clock under sustained pressure climbs to ~15-25s, which makes
-// the test alone a ~3-4 minute cost on every iteration. The test
-// runs through the dedicated `bun run test:load` script instead;
-// CI invokes that separately. The cost stems from `validatePush`'s
-// O(total-events) enumeration on the receive side (see
-// `packages/hub-sessions/src/workflow-run-kind/`); a tracked
-// follow-up shorts the byte-equality check on OID equality, which
-// will make the per-write cost constant. Once that lands the load
-// test can fold back into the default integration enumeration.
+// Held out of `make test`'s default run because it is a
+// sustained-pressure test: it fires a large batch of mails in quick
+// succession to exercise the dispatch loop under load, which is a
+// heavier workload than the routine integration suite carries. The
+// test runs through the dedicated `bun run test:load` script
+// instead; CI invokes that separately.
 //
 // The runtime-coverage rationale matches the 3-mail case: the
 // supervisor's FIFO inbox dispatch loop is the only place these
@@ -69,53 +65,45 @@ const WORKFLOW_RUN_REF = "refs/heads/main";
 // a future change that races markConsumed against the next
 // dispatchOne).
 //
-// The floor of 50 was the target for true sustained-pressure
-// coverage; the current `LOAD_MAIL_COUNT` setting is the
-// CI-tractable approximation until the validatePush short-circuit
-// the comment below names lands.
-// This test fires `LOAD_MAIL_COUNT` mails in quick succession,
-// asserts every one lands in consumed/, and asserts the consumed
-// envelopes' arrival timestamps are non-decreasing across the
-// inbox-arrival order.
+// The sustained-load target is 50 mails, and that is the active
+// `LOAD_MAIL_COUNT` setting. This test fires `LOAD_MAIL_COUNT` mails
+// in quick succession, asserts every one lands in consumed/, and
+// asserts the consumed envelopes' arrival timestamps are
+// non-decreasing across the inbox-arrival order.
 //
-// Empirical throughput observation. With LOAD_MAIL_COUNT >= 20 the
-// test consistently times out in CI: the per-mail wall-clock
-// climbs to ~15-25s under sustained pressure. Two distinct
-// bottlenecks compound:
+// Throughput notes. Two distinct costs once dominated per-mail
+// wall-clock; one remains in force, the other has been eliminated:
 //
-//   1. Pack-push serialisation on the sender. Originally every
-//      supervisor `writeTreePreservingPrefix` awaited the hub's
-//      pack-push ack before returning, so a run with K events
-//      paid K round-trips of latency in series. The boot-edge
-//      facade (`apps/sidecar/src/workflow-run-pack-client.ts`,
-//      `createWorkflowRunPackPushingRepoStore`) now COALESCES
-//      pushes per `(repoId, ref)`: a write returns as soon as the
-//      local commit lands, and pushes that arrive while a prior
-//      push is in flight are squashed into a single follow-up
-//      push that captures every intermediate commit. The
-//      receive-side substrate already accepts multi-commit packs
+//   1. Pack-push serialisation on the sender (still in force).
+//      Originally every supervisor `writeTreePreservingPrefix`
+//      awaited the hub's pack-push ack before returning, so a run
+//      with K events paid K round-trips of latency in series. The
+//      boot-edge facade (`apps/sidecar/src/workflow-run-pack-client.ts`,
+//      `createWorkflowRunPackPushingRepoStore`) COALESCES pushes
+//      per `(repoId, ref)`: a write returns as soon as the local
+//      commit lands, and pushes that arrive while a prior push is
+//      in flight are squashed into a single follow-up push that
+//      captures every intermediate commit. The receive-side
+//      substrate already accepts multi-commit packs
 //      (`packages/hub-sessions/src/repo-store/store.ts` walks the
-//      pack's parent chain and runs `validatePush` per new
-//      commit in topological order), so the on-disk semantics are
+//      pack's parent chain and runs `validatePush` per new commit
+//      in topological order), so the on-disk semantics are
 //      preserved.
 //
-//   2. `validatePush`'s O(total-events) enumeration on the
-//      receive side. The `workflow-run-kind` handler's
-//      `validatePush` walks every `runs/<runId>/events/` entry on
-//      every push and runs `checkPriorByteEquality` per event to
-//      enforce append-only. As the repo accumulates events the
-//      per-write cost rises linearly, so the total cost for N
-//      writes against a repo that ends up at N events is O(N^2).
-//      With 4-5 events per mail x 50 mails the per-write
-//      validatePush walks ~200-250 events; this is the residual
-//      ~15-25s/mail floor the pack-push coalesce cannot move.
+//   2. `validatePush` enumeration on the receive side (eliminated).
+//      The `workflow-run-kind` handler's `validatePush` formerly
+//      walked every `runs/<runId>/events/` entry on every push and
+//      ran `checkPriorByteEquality` per event to enforce
+//      append-only, so the per-write cost rose linearly with the
+//      repo's total event count and the total cost for N writes was
+//      O(N^2). `validatePush` is now scoped to only the run(s) a
+//      given commit touches, so per-commit cost is bounded by that
+//      run's own events (~4-5), not the repo's total event count.
+//      The quadratic receive-side floor is gone.
 //
-// Fixing (2) requires changes to `packages/hub-sessions/`, which
-// the task scope holds out of reach. `LOAD_MAIL_COUNT` therefore
-// stays at 15 (5x the 3-mail baseline), CI-tractable, and the
-// validatePush O(N) finding is the production-readiness follow-up
-// the test comment names above.
-const LOAD_MAIL_COUNT = 15;
+// With the receive-side enumeration bounded to the touched run, 50
+// mails complete well within the `test:load` budget.
+const LOAD_MAIL_COUNT = 50;
 const LOAD_MESSAGE_IDS: readonly string[] = Array.from(
   { length: LOAD_MAIL_COUNT },
   (_unused, i) =>

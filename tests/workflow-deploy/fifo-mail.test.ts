@@ -100,10 +100,10 @@ const MESSAGE_IDS: readonly string[] = [
 // A sustained-load companion in `fifo-mail-load.test.ts` pins the
 // dispatch loop's serial discipline under pressure (the 3-mail case
 // pins that the invariant exists; the load case pins that it
-// survives ~15 concurrent enqueues). The load case is held out of
-// `make test`'s default run because per-mail wall-clock is currently
-// dominated by `validatePush`'s O(N) enumeration on the receive side
-// (tracked separately); it runs via `bun run test:load` instead.
+// survives a sustained batch of concurrent enqueues). The load case
+// is held out of `make test`'s default run because it is a
+// sustained-pressure test rather than a routine integration check;
+// it runs via `bun run test:load` instead.
 
 let env: DeployFlowEnv;
 
