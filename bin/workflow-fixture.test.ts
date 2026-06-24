@@ -29,6 +29,13 @@ describe("workflow fixture", () => {
     expect(approval.name).toBe(WORKFLOW_FIXTURE_SIGNAL_NAME);
     expect(approval.after).toEqual(["draft"]);
     expect(publish?.after).toEqual(["approval"]);
+
+    // publish must consume the drafted content, not the approval node's
+    // signal payload. The default-input convention would wire it to
+    // `steps.approval.output` (the signal payload, `null` for a bare
+    // approval); the fixture overrides that to read the draft.
+    if (publish?.kind !== "step") throw new Error("unreachable");
+    expect(publish.input).toEqual({ from: "steps.draft.output" });
   });
 
   test("step-agents are authored inline with no catalog reference", () => {
