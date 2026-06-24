@@ -361,6 +361,107 @@ describe("RepoStore", () => {
     expect(xPaths).toContain("b");
   });
 
+  test("interleaved writes to two refs of one repo never contaminate either ref's tree", async () => {
+    const dataDir = await makeTempDir("repo-store-ref-switch-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
+
+    const REF_A = "refs/heads/alpha";
+    const REF_B = "refs/heads/beta";
+    const ROUNDS = 3;
+
+    // Each ref owns a disjoint nested top-level prefix and replaces its
+    // whole subtree every round, so a ref switch reconciles a non-trivial
+    // subtree each time. Both the interleaved run and the serial baseline
+    // below stage identical bytes through this, so equal content must
+    // yield equal tree oids unless a ref switch contaminates the tree.
+    const roundWrite = (topPrefix: string, round: number) => ({
+      files: {
+        [`${topPrefix}/state/${round}.json`]: `${topPrefix}-${round}`,
+        [`${topPrefix}/head`]: String(round),
+      },
+      clearPrefix: `${topPrefix}/`,
+      message: `${topPrefix} ${round}`,
+    });
+
+    const treeOf = async (commitSha: string): Promise<string> =>
+      (await git.readCommit({ fs, dir, oid: commitSha })).commit.tree;
+
+    const aTrees: string[] = [];
+    const bTrees: string[] = [];
+    for (let round = 0; round < ROUNDS; round++) {
+      const a = await store.writeTree(
+        principal,
+        repoId,
+        REF_A,
+        roundWrite("alpha", round),
+      );
+      const b = await store.writeTree(
+        principal,
+        repoId,
+        REF_B,
+        roundWrite("beta", round),
+      );
+      aTrees.push(await treeOf(a.commitSha));
+      bTrees.push(await treeOf(b.commitSha));
+    }
+
+    // Direct contamination check: each ref's tip tree carries ONLY its own
+    // top-level prefix. A switch that left stale cross-ref index entries
+    // would union the other ref's subtree into this commit's tree.
+    const aTip = await git.resolveRef({ fs, dir, ref: REF_A });
+    const bTip = await git.resolveRef({ fs, dir, ref: REF_B });
+    expect(await readTreePaths(dir, await treeOf(aTip))).toEqual(["alpha"]);
+    expect(await readTreePaths(dir, await treeOf(bTip))).toEqual(["beta"]);
+
+    // Equivalence to a serial single-ref baseline: writing only one ref's
+    // sequence into a fresh repo never switches refs, so its tree is
+    // contamination-free by construction. Equal tree oids prove the
+    // interleave reconstructed each ref's tree exactly. Tree oids are
+    // asserted rather than commit oids because the signer injects
+    // wall-clock and timezone into the commit, so commit oids are not
+    // reproducible across writes.
+    const serialTrees = async (topPrefix: string): Promise<string[]> => {
+      const baseDataDir = await makeTempDir("repo-store-ref-switch-base-");
+      const baseHandler = createTestHandler();
+      const baseStore = createRepoStore({
+        dataDir: baseDataDir,
+        signingKey,
+        handlers: { "agent-state": baseHandler },
+        authorize: allowAll,
+      });
+      const baseDir = path.join(
+        baseDataDir,
+        baseHandler.directoryPrefix,
+        repoId.id,
+      );
+      const ref = `refs/heads/${topPrefix}`;
+      const trees: string[] = [];
+      for (let round = 0; round < ROUNDS; round++) {
+        const r = await baseStore.writeTree(
+          principal,
+          repoId,
+          ref,
+          roundWrite(topPrefix, round),
+        );
+        trees.push(
+          (await git.readCommit({ fs, dir: baseDir, oid: r.commitSha })).commit
+            .tree,
+        );
+      }
+      return trees;
+    };
+
+    expect(aTrees).toEqual(await serialTrees("alpha"));
+    expect(bTrees).toEqual(await serialTrees("beta"));
+  });
+
   test("receivePack accepts a valid pack and rejects one failing validatePush", async () => {
     const sourceDataDir = await makeTempDir("repo-store-pack-source-");
     const sourceHandler = createTestHandler();
