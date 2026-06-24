@@ -109,7 +109,17 @@ export function buildWorkflowFixture(): WorkflowDefinition {
         name: WORKFLOW_FIXTURE_SIGNAL_NAME,
         after: ["draft"],
       }),
-      publish: step({ agent: publishAgent, after: ["approval"] }),
+      // `publish` runs after `approval`, but it publishes the drafted
+      // content -- not the approval signal's payload. The default-input
+      // convention would wire a single-`after` step to its predecessor's
+      // output; the predecessor here is the `awaitSignal`, whose output
+      // is the signal payload (`null` for a bare approval). Reading the
+      // draft explicitly keeps the approved content flowing to publish.
+      publish: step({
+        agent: publishAgent,
+        after: ["approval"],
+        input: { from: "steps.draft.output" },
+      }),
     },
   });
 }
