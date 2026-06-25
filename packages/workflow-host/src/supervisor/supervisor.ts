@@ -57,6 +57,7 @@ import {
   markConsumed as defaultMarkConsumed,
   replayProcessingToInbox as defaultReplayProcessingToInbox,
   DEFAULT_CONSUMED_RETENTION_MS,
+  type NewlyTerminalRun,
   type Principal,
   type WorkflowRunSupervisorPrincipal,
   type WorkflowRunWorkflowProcessPrincipal,
@@ -956,18 +957,17 @@ export function createWorkflowSupervisor(
       kind: "workflow-process",
       deploymentId: bindings.deploymentId,
     };
-    // Capture the prospective files from each merge round-trip so
-    // the post-commit inspection below can detect terminal-event
-    // writes and synchronously trigger the dispatch loop's
-    // markConsumed before the substrate.write.response unblocks the
-    // child. Holding the response gates the child's
-    // runtime-body progress on the inbox transition landing,
+    // The commit's terminal detection comes from the kind handler's
+    // typed `newlyTerminalRuns` signal (returned below), not a sniff of
+    // the merged files: the handler authoritatively determines, during
+    // validation, which runs reached a terminal event in this commit.
+    // Holding the substrate.write.response on that signal gates the
+    // child's runtime-body progress on the inbox transition landing,
     // closing the window where a downstream consumer observes
     // RunCompleted ahead of the matching consumed/ entry on this
-    // supervisor (the cross-process hub-pack ordering is still
-    // racy, but the local supervisor's state is self-consistent
-    // at the response boundary).
-    let lastMergedFiles: Record<string, string | Uint8Array> | null = null;
+    // supervisor (the cross-process hub-pack ordering is still racy, but
+    // the local supervisor's state is self-consistent at the response
+    // boundary).
     // D2 leg classification (measurement-only). The child proxies two
     // distinct substrate commits through this one handler, discriminated
     // by the write's `preservePrefix`:
@@ -986,63 +986,63 @@ export function createWorkflowSupervisor(
       legMarkStart(legClassification.runId, legClassification.leg);
     }
     try {
-      const { commitSha } = await bindings.repoStore.writeTreePreservingPrefix(
-        writePrincipal,
-        validatedRepoId,
-        data.ref,
-        {
-          preservePrefix: data.preservePrefix,
-          message: data.message,
-          merge: async (existing) => {
-            const sender = activeControlSender();
-            if (sender === null) {
-              throw new Error(
-                "supervisor substrate.write.request: control channel unavailable for merge round-trip",
-              );
-            }
-            const result = await new Promise<
-              | { ok: true; files: Record<string, string | Uint8Array> }
-              | { ok: false; reason: string }
-            >((resolve) => {
-              pendingMerges.set(data.requestId, { resolve });
-              const wireExisting: {
-                path: string;
-                contentBase64: string;
-              }[] = [];
-              for (const [path, bytes] of existing) {
-                wireExisting.push({
-                  path,
-                  contentBase64: bytesToBase64(bytes),
-                });
+      const { commitSha, newlyTerminalRuns } =
+        await bindings.repoStore.writeTreePreservingPrefix(
+          writePrincipal,
+          validatedRepoId,
+          data.ref,
+          {
+            preservePrefix: data.preservePrefix,
+            message: data.message,
+            merge: async (existing) => {
+              const sender = activeControlSender();
+              if (sender === null) {
+                throw new Error(
+                  "supervisor substrate.write.request: control channel unavailable for merge round-trip",
+                );
               }
-              void sender
-                .send({
-                  type: "substrate.merge.request",
-                  data: {
-                    requestId: data.requestId,
-                    existing: wireExisting,
-                  },
-                })
-                .catch((cause) => {
-                  pendingMerges.delete(data.requestId);
-                  const reason =
-                    cause instanceof Error ? cause.message : String(cause);
-                  resolve({
-                    ok: false,
-                    reason: `supervisor substrate.merge.request send failed: ${reason}`,
+              const result = await new Promise<
+                | { ok: true; files: Record<string, string | Uint8Array> }
+                | { ok: false; reason: string }
+              >((resolve) => {
+                pendingMerges.set(data.requestId, { resolve });
+                const wireExisting: {
+                  path: string;
+                  contentBase64: string;
+                }[] = [];
+                for (const [path, bytes] of existing) {
+                  wireExisting.push({
+                    path,
+                    contentBase64: bytesToBase64(bytes),
                   });
-                });
-            });
-            if (!result.ok) {
-              throw new Error(
-                `supervisor substrate.write.request: child merge failed: ${result.reason}`,
-              );
-            }
-            lastMergedFiles = result.files;
-            return result.files;
+                }
+                void sender
+                  .send({
+                    type: "substrate.merge.request",
+                    data: {
+                      requestId: data.requestId,
+                      existing: wireExisting,
+                    },
+                  })
+                  .catch((cause) => {
+                    pendingMerges.delete(data.requestId);
+                    const reason =
+                      cause instanceof Error ? cause.message : String(cause);
+                    resolve({
+                      ok: false,
+                      reason: `supervisor substrate.merge.request send failed: ${reason}`,
+                    });
+                  });
+              });
+              if (!result.ok) {
+                throw new Error(
+                  `supervisor substrate.write.request: child merge failed: ${result.reason}`,
+                );
+              }
+              return result.files;
+            },
           },
-        },
-      );
+        );
       // D2 leg end: the substrate commit (hash objects, write tree,
       // advance ref under the per-repo lock) just resolved. Stamped here,
       // before the terminal-write markConsumed-coupling wait below, so the
@@ -1051,21 +1051,17 @@ export function createWorkflowSupervisor(
       if (legClassification !== null) {
         legMarkEnd(legClassification.runId, legClassification.leg);
       }
-      if (lastMergedFiles !== null) {
-        const watchdog = await synchronouslyDispatchTerminalWrite(
-          data.preservePrefix,
-          lastMergedFiles,
-        );
-        if (!watchdog.ok) {
-          await controlSender.send({
-            type: "substrate.write.response",
-            data: {
-              requestId: data.requestId,
-              result: { ok: false, reason: watchdog.reason },
-            },
-          });
-          return;
-        }
+      const watchdog =
+        await synchronouslyDispatchTerminalWrite(newlyTerminalRuns);
+      if (!watchdog.ok) {
+        await controlSender.send({
+          type: "substrate.write.response",
+          data: {
+            requestId: data.requestId,
+            result: { ok: false, reason: watchdog.reason },
+          },
+        });
+        return;
       }
       await controlSender.send({
         type: "substrate.write.response",
@@ -1110,96 +1106,50 @@ export function createWorkflowSupervisor(
     waiter.resolve();
   }
 
-  // Path-shape sniff. The terminal-write detection couples to the
-  // workflow-run substrate's on-disk run-event path shape
-  // (`runs/<runId>/events/<seq>.json`); the cleaner design is a
-  // typed terminal signal the workflow-run kind handler emits at
-  // commit time, but the handler does not surface that signal
-  // today and the regex matches exactly one well-formed shape the
-  // substrate is already responsible for emitting. If the substrate
-  // ever rearranges that layout, the sniff silently stops firing
-  // and the dispatch-loop sync degrades to "send response
-  // immediately" -- the cross-package contract holds today but is
-  // load-bearing.
-  const RUN_EVENT_PATH_RE = /^runs\/([^/]+)\/events\/[0-9]+\.json$/;
-  const TERMINAL_EVENT_TYPES = new Set([
-    "RunCompleted",
-    "RunFailed",
-    "RunCancelled",
-  ]);
-
   /**
-   * If the supplied merged-files set contains a terminal event blob
-   * for any runId in the active processing/ set, wait for the
-   * dispatch loop's markConsumed to settle before sending the
-   * substrate.write.response. The notification path is the
-   * `notifyMarkConsumed` hook the dispatch loop fires at the end of
-   * dispatchOne; the wait here is per-runId so multiple runs can
-   * proceed concurrently if a future dispatch loop ever processes
-   * more than one mail in parallel.
+   * Hold the substrate.write.response until the dispatch loop's
+   * markConsumed settles for each run the kind handler reports as newly
+   * terminal in this commit. Terminal-ness comes from the handler's typed
+   * `newlyTerminalRuns` signal -- determined authoritatively during
+   * validation -- not re-derived from the committed path shape, so it
+   * survives the run-event layout changing (e.g. compaction folding a
+   * run's per-event files into one combined file). The wait is per-runId
+   * so multiple runs can proceed concurrently if a future dispatch loop
+   * ever processes more than one mail in parallel.
    *
-   * A watchdog timeout (`terminalWriteWatchdogMs`) caps the wait so a
+   * A watchdog timeout (`terminalWriteWatchdogMs`) caps each wait so a
    * never-arming markConsumed (a bug in the dispatch loop, a torn-down
    * cohort, a stalled inbox primitive) does not deadlock the child's
    * write -- and therefore the runtime body, and therefore the dispatch
-   * loop. On expiry the waiter is force-released and a structured
-   * failure propagates back to the child as
+   * loop. On expiry the waiter is force-released and a structured failure
+   * propagates back to the child as
    * `{ ok: false, reason: "terminal-write watchdog timeout: ..." }`.
    */
   async function synchronouslyDispatchTerminalWrite(
-    preservePrefix: string,
-    mergedFiles: Record<string, string | Uint8Array>,
+    newlyTerminalRuns: readonly NewlyTerminalRun[],
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
-    // The preservePrefix shape for run-event writes is
-    // `runs/<runId>/events/`; the substrate accepts any prefix that
-    // ends with `/`, so a write whose prefix does not match the
-    // runs/-events shape is not a terminal-event write and we
-    // short-circuit.
-    if (!preservePrefix.startsWith("runs/")) return { ok: true };
-    let runId: string | null = null;
-    let isTerminal = false;
-    for (const [path, content] of Object.entries(mergedFiles)) {
-      const match = RUN_EVENT_PATH_RE.exec(path);
-      if (match === null) continue;
-      const fromPath = match[1];
-      if (fromPath === undefined) continue;
-      const bytes =
-        typeof content === "string"
-          ? new TextEncoder().encode(content)
-          : content;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(new TextDecoder().decode(bytes));
-      } catch {
-        continue;
-      }
-      if (
-        typeof parsed !== "object" ||
-        parsed === null ||
-        !("type" in parsed)
-      ) {
-        continue;
-      }
-      const t = (parsed as { type?: unknown }).type;
-      if (typeof t !== "string") continue;
-      if (TERMINAL_EVENT_TYPES.has(t)) {
-        runId = fromPath;
-        isTerminal = true;
-      }
+    const holds: Promise<{ ok: true } | { ok: false; reason: string }>[] = [];
+    for (const { runId, terminalEventJson } of newlyTerminalRuns) {
+      if (!inFlightRuns.has(runId)) continue;
+      holds.push(holdResponseForMarkConsumed(runId, terminalEventJson));
     }
-    if (!isTerminal || runId === null) return { ok: true };
-    if (!inFlightRuns.has(runId)) {
-      return { ok: true };
-    }
-    const waiterRunId = runId;
+    if (holds.length === 0) return { ok: true };
+    const results = await Promise.all(holds);
+    return results.find((r) => !r.ok) ?? { ok: true };
+  }
+
+  async function holdResponseForMarkConsumed(
+    runId: string,
+    terminalEventJson: string,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
     const completed = new Promise<void>((resolve, reject) => {
-      markConsumedCompletionWaiters.set(waiterRunId, { resolve, reject });
+      markConsumedCompletionWaiters.set(runId, { resolve, reject });
     });
     const broadcaster = activeTerminalBroadcaster();
     if (broadcaster !== null) {
-      const synthetic = synthesizeTerminalEvent(mergedFiles, waiterRunId);
+      const synthetic = synthesizeTerminalEvent(terminalEventJson);
       if (synthetic !== null) {
-        broadcaster.notify(waiterRunId, synthetic);
+        broadcaster.notify(runId, synthetic);
       }
     }
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -1212,11 +1162,11 @@ export function createWorkflowSupervisor(
         // logged through the package logger so the watchdog is not
         // silent on the host side.
         const stillPending =
-          markConsumedCompletionWaiters.get(waiterRunId) !== undefined;
+          markConsumedCompletionWaiters.get(runId) !== undefined;
         if (stillPending) {
-          markConsumedCompletionWaiters.delete(waiterRunId);
+          markConsumedCompletionWaiters.delete(runId);
         }
-        const reason = `terminal-write watchdog timeout: markConsumed for runId=${waiterRunId} did not settle within ${String(terminalWriteWatchdogMs)}ms`;
+        const reason = `terminal-write watchdog timeout: markConsumed for runId=${runId} did not settle within ${String(terminalWriteWatchdogMs)}ms`;
         logger.error`${reason}`;
         resolve({ ok: false, reason });
       }, terminalWriteWatchdogMs);
@@ -1232,63 +1182,52 @@ export function createWorkflowSupervisor(
   }
 
   function synthesizeTerminalEvent(
-    files: Record<string, string | Uint8Array>,
-    runId: string,
+    terminalEventJson: string,
   ): TerminalRunEvent | null {
-    for (const [path, content] of Object.entries(files)) {
-      const match = RUN_EVENT_PATH_RE.exec(path);
-      if (match === null) continue;
-      if (match[1] !== runId) continue;
-      const bytes =
-        typeof content === "string"
-          ? new TextEncoder().encode(content)
-          : content;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(new TextDecoder().decode(bytes));
-      } catch {
-        continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(terminalEventJson);
+    } catch {
+      return null;
+    }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("type" in parsed) ||
+      !("seq" in parsed)
+    ) {
+      return null;
+    }
+    const body = parsed as {
+      type?: unknown;
+      seq?: unknown;
+      at?: unknown;
+      error?: { message?: unknown };
+    };
+    if (typeof body.seq !== "number") return null;
+    const at = typeof body.at === "string" ? body.at : new Date().toISOString();
+    if (body.type === "RunCompleted") {
+      return { kind: "RunCompleted", seq: body.seq, at };
+    }
+    if (body.type === "RunCancelled") {
+      return { kind: "RunCancelled", seq: body.seq, at };
+    }
+    if (body.type === "RunFailed") {
+      // The wire schema makes `error.message` required when the event
+      // type is `RunFailed`. An event that doesn't carry one is a
+      // contract violation upstream of the supervisor; coercing it to an
+      // empty string would silently hide the producer bug.
+      if (typeof body.error?.message !== "string") {
+        throw new Error(
+          `synthesizeTerminalEvent: RunFailed event missing required error.message`,
+        );
       }
-      if (
-        typeof parsed !== "object" ||
-        parsed === null ||
-        !("type" in parsed) ||
-        !("seq" in parsed)
-      ) {
-        continue;
-      }
-      const body = parsed as {
-        type?: unknown;
-        seq?: unknown;
-        at?: unknown;
-        error?: { message?: unknown };
+      return {
+        kind: "RunFailed",
+        seq: body.seq,
+        at,
+        error: { message: body.error.message },
       };
-      if (typeof body.seq !== "number") continue;
-      const at =
-        typeof body.at === "string" ? body.at : new Date().toISOString();
-      if (body.type === "RunCompleted") {
-        return { kind: "RunCompleted", seq: body.seq, at };
-      }
-      if (body.type === "RunCancelled") {
-        return { kind: "RunCancelled", seq: body.seq, at };
-      }
-      if (body.type === "RunFailed") {
-        // The wire schema makes `error.message` required when the event
-        // type is `RunFailed`. A blob that doesn't carry one is a
-        // contract violation upstream of the supervisor; coercing it
-        // to an empty string would silently hide the producer bug.
-        if (typeof body.error?.message !== "string") {
-          throw new Error(
-            `synthesizeTerminalEvent: RunFailed blob at ${path} missing required error.message`,
-          );
-        }
-        return {
-          kind: "RunFailed",
-          seq: body.seq,
-          at,
-          error: { message: body.error.message },
-        };
-      }
     }
     return null;
   }

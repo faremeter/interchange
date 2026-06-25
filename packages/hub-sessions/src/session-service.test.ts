@@ -1492,7 +1492,10 @@ describe("deployWorkflowDefinition", () => {
           repoId,
           files: Object.keys(content.files),
         });
-        return { commitSha: "wfcommit" + "0".repeat(32) };
+        return {
+          commitSha: "wfcommit" + "0".repeat(32),
+          newlyTerminalRuns: [],
+        };
       },
     };
 

@@ -175,6 +175,7 @@ import {
   UserPrincipal,
   type AuthorizeFn,
   type KindHandler,
+  type NewlyTerminalRun,
   type Principal,
   type RepoId,
   type RepoStore,
@@ -1719,6 +1720,7 @@ export const workflowRunKindHandler: KindHandler = {
       return { ok: false, reason: enumerated.reason };
     }
 
+    const newlyTerminalRuns: NewlyTerminalRun[] = [];
     for (const [runId, entries] of enumerated.runs) {
       if (entries.length === 0) {
         return {
@@ -1794,6 +1796,21 @@ export const workflowRunKindHandler: KindHandler = {
         if (TERMINAL_EVENT_TYPES.has(parsed.parsed.body.type)) {
           terminalSeq = entry.filenameSeq;
           terminalType = parsed.parsed.body.type;
+          // Surface the run as newly terminal only when this commit is
+          // the one that ADDS the terminal event -- i.e. the terminal
+          // blob is absent from the prior tree. A commit that carries an
+          // already-terminal run forward unchanged (a later compaction
+          // commit folding the per-event files into one) finds the
+          // terminal blob already present in the prior tree and emits no
+          // signal, so a downstream consumer keyed on the signal does
+          // not double-fire.
+          if ((await priorReadBlob(entry.blobPath)) === null) {
+            const terminalBytes = await readBlob(entry.blobPath);
+            newlyTerminalRuns.push({
+              runId,
+              terminalEventJson: new TextDecoder().decode(terminalBytes),
+            });
+          }
         }
       }
     }
@@ -1866,7 +1883,7 @@ export const workflowRunKindHandler: KindHandler = {
       };
     }
 
-    return { ok: true };
+    return { ok: true, newlyTerminalRuns };
   },
   onRefUpdated() {
     // No cached index today. Consumers read events through the

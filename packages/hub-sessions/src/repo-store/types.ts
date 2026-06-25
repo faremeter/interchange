@@ -82,7 +82,34 @@ export type AuthorizeFn = (
   action: RepoAction,
 ) => { allowed: true } | { allowed: false; reason: string };
 
-export type ValidatePushResult = { ok: true } | { ok: false; reason: string };
+/**
+ * A run whose terminal event (e.g. `RunCompleted`) is *newly added* by the
+ * commit under validation -- present in the prospective tree and absent from
+ * the prior tree. The kind handler authoritatively detects this during its
+ * validation walk and surfaces it so callers do not re-derive terminal-ness
+ * by sniffing committed path shapes. `terminalEventJson` carries the raw bytes
+ * of the terminal event blob so a caller can reconstruct the event without a
+ * second read. A commit that carries an already-terminal run forward
+ * unchanged (e.g. a later compaction commit) is NOT newly terminal and does
+ * not appear here.
+ */
+export type NewlyTerminalRun = { runId: string; terminalEventJson: string };
+
+export type ValidatePushResult =
+  | { ok: true; newlyTerminalRuns?: NewlyTerminalRun[] }
+  | { ok: false; reason: string };
+
+/**
+ * Result of a `writeTree` / `writeTreePreservingPrefix` commit. `commitSha` is
+ * the new commit. `newlyTerminalRuns` surfaces the kind handler's terminal
+ * detection (empty for handlers and commits that produce none) so callers can
+ * react to a run reaching a terminal event without re-deriving it from the
+ * committed path shape.
+ */
+export type WriteResult = {
+  commitSha: string;
+  newlyTerminalRuns: readonly NewlyTerminalRun[];
+};
 
 /**
  * Per-call options for `initRepo`. Currently a single override —
@@ -254,7 +281,7 @@ export interface RepoStore {
     repoId: RepoId,
     ref: string,
     content: TreeContent,
-  ): Promise<{ commitSha: string }>;
+  ): Promise<WriteResult>;
   /**
    * Read-then-write variant for use cases that mutate a single
    * directory subtree against its current contents (overwrite one
@@ -276,7 +303,7 @@ export interface RepoStore {
     repoId: RepoId,
     ref: string,
     args: WriteTreePreservingPrefixArgs,
-  ): Promise<{ commitSha: string }>;
+  ): Promise<WriteResult>;
   /**
    * Receive a packfile and advance `ref` to `commitSha`.
    *

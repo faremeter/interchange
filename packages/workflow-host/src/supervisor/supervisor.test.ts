@@ -302,7 +302,7 @@ function createStubRepoStore(opts: {
         }
         committed.set(key, next);
       }
-      return { commitSha: "deadbeefcafef00d" };
+      return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
     },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; only the subset the supervisor invokes is implemented and a missing method throws via the proxy below
