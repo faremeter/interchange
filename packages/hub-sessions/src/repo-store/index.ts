@@ -2,6 +2,7 @@ export type {
   AuthorizeFn,
   InitRepoOpts,
   KindHandler,
+  NewlyTerminalRun,
   Principal,
   RefEntry,
   RepoAction,
@@ -11,6 +12,7 @@ export type {
   RepoStoreSubscribeEvent,
   TreeContent,
   ValidatePushResult,
+  WriteResult,
   WriteTreePreservingPrefixArgs,
 } from "./types";
 export { UserPrincipal } from "./types";

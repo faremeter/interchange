@@ -23,6 +23,7 @@ import type {
   RepoStore,
   RepoStoreSubscribeEvent,
   TreeContent,
+  WriteResult,
   WriteTreePreservingPrefixArgs,
 } from "./types";
 import { SAFE_REPO_ID } from "./types";
@@ -933,7 +934,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     repoId: RepoId,
     ref: string,
     content: TreeContent,
-  ): Promise<{ commitSha: string }> {
+  ): Promise<WriteResult> {
     const dir = repoDir(repoId);
     await storageInitRepo(dir, storageOptsFor(repoId, undefined));
 
@@ -1140,7 +1141,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
     await emitRefUpdate(repoId, ref, oldSha, commitSha);
 
-    return { commitSha };
+    return { commitSha, newlyTerminalRuns: validation.newlyTerminalRuns ?? [] };
   }
 
   async function writeTree(
@@ -1148,7 +1149,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     repoId: RepoId,
     ref: string,
     content: TreeContent,
-  ): Promise<{ commitSha: string }> {
+  ): Promise<WriteResult> {
     gateAccess(principal, repoId, ref, "writeTree");
 
     // The lock spans the entire substrate body of writeTree: index
@@ -1218,7 +1219,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     repoId: RepoId,
     ref: string,
     args: WriteTreePreservingPrefixArgs,
-  ): Promise<{ commitSha: string }> {
+  ): Promise<WriteResult> {
     gateAccess(principal, repoId, ref, "writeTree");
     validateClearPrefix(args.preservePrefix);
     return withRepoLock(repoId, async () => {

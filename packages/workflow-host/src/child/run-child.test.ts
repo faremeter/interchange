@@ -164,7 +164,7 @@ function createStubRepoStore(baseDir: string): RepoStore {
       return path.join(baseDir, repoId.kind, repoId.id);
     },
     async writeTreePreservingPrefix(_principal, _repoId, _ref, _args) {
-      return { commitSha: "deadbeefcafef00d" };
+      return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
     },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; missing methods surface as a precise failure via the proxy

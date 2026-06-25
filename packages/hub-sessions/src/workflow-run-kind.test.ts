@@ -350,6 +350,122 @@ describe("workflowRunKindHandler.validatePush — accepts", () => {
   });
 });
 
+describe("workflowRunKindHandler.validatePush — newly-terminal signal", () => {
+  test("reports a run whose terminal event is newly added by this commit", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/1.json`]: eventBody(
+        1,
+        "RunCompleted",
+      ),
+    });
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    expect(r.newlyTerminalRuns).toEqual([
+      { runId: "run-a", terminalEventJson: eventBody(1, "RunCompleted") },
+    ]);
+  });
+
+  test("reports no terminal run for a commit that adds only non-terminal events", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+    });
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    expect(r.newlyTerminalRuns ?? []).toEqual([]);
+  });
+
+  test("does not re-report a terminal event already present in the prior tree", async () => {
+    const files = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/1.json`]: eventBody(
+        1,
+        "RunCompleted",
+      ),
+    };
+    // The prior tree already carries the terminal event, so a no-op
+    // re-validation -- and a later compaction commit that folds the
+    // events forward -- must not re-fire the signal.
+    const r = await validate(files, { priorFiles: files });
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    expect(r.newlyTerminalRuns ?? []).toEqual([]);
+  });
+
+  test("reports every run whose terminal event is newly added in one commit", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/1.json`]: eventBody(
+        1,
+        "RunCompleted",
+      ),
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-b/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-b/events/1.json`]: eventBody(
+        1,
+        "RunCancelled",
+      ),
+    });
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    expect(r.newlyTerminalRuns).toEqual(
+      expect.arrayContaining([
+        { runId: "run-a", terminalEventJson: eventBody(1, "RunCompleted") },
+        { runId: "run-b", terminalEventJson: eventBody(1, "RunCancelled") },
+      ]),
+    );
+    expect(r.newlyTerminalRuns ?? []).toHaveLength(2);
+  });
+
+  test("reports only the run whose terminal event is new when another is carried forward", async () => {
+    const carried = {
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/1.json`]: eventBody(
+        1,
+        "RunCompleted",
+      ),
+    };
+    // run-a's terminal event is already in the prior tree (carried
+    // forward unchanged); only run-b's newly added terminal must fire.
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        ...carried,
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-b/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-b/events/1.json`]: eventBody(
+          1,
+          "RunCompleted",
+        ),
+      },
+      { priorFiles: { [WORKFLOW_RUN_GITIGNORE_PATH]: "", ...carried } },
+    );
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    expect(r.newlyTerminalRuns).toEqual([
+      { runId: "run-b", terminalEventJson: eventBody(1, "RunCompleted") },
+    ]);
+  });
+});
+
 describe("workflowRunKindHandler.validatePush — rejects top-level shape", () => {
   test("rejects any path under control/ (unsupported subtree)", async () => {
     const r = await validate({

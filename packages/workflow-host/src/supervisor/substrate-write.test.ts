@@ -190,6 +190,46 @@ type WriteCapture = {
   message: string;
 };
 
+// Mirror the workflow-run kind handler's terminal detection for the stub
+// substrate: a run is newly terminal when the merge produced a terminal
+// event blob under its `events/` prefix. The real handler scopes this to
+// events newly added against the prior tree; the stub's merge always runs
+// against an empty prior, so every terminal event it emits is new.
+const STUB_TERMINAL_EVENT_TYPES = new Set([
+  "RunCompleted",
+  "RunFailed",
+  "RunCancelled",
+]);
+const STUB_RUN_EVENT_PATH_RE = /^runs\/([^/]+)\/events\/[0-9]+\.json$/;
+function deriveNewlyTerminalRuns(
+  merged: Record<string, string | Uint8Array>,
+): { runId: string; terminalEventJson: string }[] {
+  const out: { runId: string; terminalEventJson: string }[] = [];
+  for (const [blobPath, content] of Object.entries(merged)) {
+    const match = STUB_RUN_EVENT_PATH_RE.exec(blobPath);
+    if (match === null || match[1] === undefined) continue;
+    const json =
+      typeof content === "string" ? content : new TextDecoder().decode(content);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(json);
+    } catch {
+      continue;
+    }
+    if (typeof parsed !== "object" || parsed === null || !("type" in parsed)) {
+      continue;
+    }
+    const eventType = (parsed as { type?: unknown }).type;
+    if (
+      typeof eventType === "string" &&
+      STUB_TERMINAL_EVENT_TYPES.has(eventType)
+    ) {
+      out.push({ runId: match[1], terminalEventJson: json });
+    }
+  }
+  return out;
+}
+
 function createStubRepoStore(opts: {
   baseDir: string;
   /**
@@ -219,14 +259,16 @@ function createStubRepoStore(opts: {
         preservePrefix: args.preservePrefix,
         message: args.message,
       });
+      let newlyTerminalRuns: { runId: string; terminalEventJson: string }[] =
+        [];
       if (opts.invokeMerge !== false) {
         const merged = await args.merge(new Map());
-        // Touch the merged value so the linter knows the round-trip
-        // ran; the substrate would commit these bytes against the
-        // workflow-run repo's ref.
-        void Object.keys(merged).length;
+        // Stand in for the real workflow-run kind handler's terminal
+        // detection: surface any run whose terminal event the merge
+        // produced, the way the handler's validation walk would.
+        newlyTerminalRuns = deriveNewlyTerminalRuns(merged);
       }
-      return { commitSha: "deadbeefcafef00d" };
+      return { commitSha: "deadbeefcafef00d", newlyTerminalRuns };
     },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; missing methods surface as a precise failure via the proxy

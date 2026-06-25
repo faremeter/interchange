@@ -137,6 +137,7 @@ export type {
   CreateRepoStoreConfig,
   InitRepoOpts,
   KindHandler,
+  NewlyTerminalRun,
   Principal,
   RefEntry,
   RepoAction,
@@ -145,5 +146,6 @@ export type {
   SubscribeKindEntry,
   SubscribeKindOpts,
   ValidatePushResult,
+  WriteResult,
 } from "./repo-store";
 export { createRepoStore, subscribeKind, UserPrincipal } from "./repo-store";

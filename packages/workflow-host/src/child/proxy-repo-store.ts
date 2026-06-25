@@ -32,6 +32,7 @@ import type {
   Principal,
   RepoId,
   RepoStore,
+  WriteResult,
 } from "@intx/hub-sessions";
 
 import type { ChildSubstrateWriteBridge } from "./substrate-write-bridge";
@@ -148,7 +149,7 @@ export function createProxyWorkflowRunRepoStore(
       _repoId: RepoId,
       _ref: string,
       _content: WriteTreeArgs,
-    ): Promise<{ commitSha: string }> => {
+    ): Promise<WriteResult> => {
       throw new Error(
         "workflow-child proxy substrate: writeTree is not supported (writes are proxied to the supervisor)",
       );
@@ -170,7 +171,7 @@ export function createProxyWorkflowRunRepoStore(
       repoId: RepoId,
       ref: string,
       args: WriteTreePreservingPrefixArgs,
-    ): Promise<{ commitSha: string }> {
+    ): Promise<WriteResult> {
       if (
         repoId.kind !== workflowRunRepoId.kind ||
         repoId.id !== workflowRunRepoId.id
@@ -192,7 +193,10 @@ export function createProxyWorkflowRunRepoStore(
       });
       lastSha.set(key, result.commitSha);
       notifyRefUpdate(repoId, ref, priorSha, result.commitSha);
-      return result;
+      // The terminal signal is consumed supervisor-side (where the real
+      // substrate write happens); the child-proxied result carries only
+      // the commit, so report no terminal runs to the runtime body.
+      return { commitSha: result.commitSha, newlyTerminalRuns: [] };
     },
     createPack: bareStore.createPack.bind(bareStore),
     resolveRef: bareStore.resolveRef.bind(bareStore),
