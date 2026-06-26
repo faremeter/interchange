@@ -1,7 +1,11 @@
 import { describe, test, expect } from "bun:test";
 import { base64Encode } from "@intx/types";
-import type { InboundMessage, MessageAttachment } from "@intx/types/runtime";
-import { createInboundTurn } from "./turns";
+import type {
+  ConversationTurn,
+  InboundMessage,
+  MessageAttachment,
+} from "@intx/types/runtime";
+import { assertWellFormedToolSequence, createInboundTurn } from "./turns";
 
 function att(contentType: string, bytes: number[]): MessageAttachment {
   return { name: "file", contentType, data: new Uint8Array(bytes) };
@@ -124,5 +128,104 @@ describe("createInboundTurn", () => {
         },
       ],
     });
+  });
+});
+
+function toolCallTurn(ids: string[]): ConversationTurn {
+  return {
+    role: "assistant",
+    content: ids.map((id) => ({
+      type: "tool_call" as const,
+      id,
+      name: "some_tool",
+      arguments: {},
+    })),
+    model: "test-model",
+    timestamp: 0,
+  };
+}
+
+function toolResultTurn(callIds: string[]): ConversationTurn {
+  return {
+    role: "user",
+    content: callIds.map((callId) => ({
+      type: "tool_result" as const,
+      callId,
+      content: [{ type: "text" as const, text: "ok" }],
+    })),
+    timestamp: 0,
+  };
+}
+
+describe("assertWellFormedToolSequence", () => {
+  test("accepts a well-formed multi-cycle conversation", () => {
+    const turns: ConversationTurn[] = [
+      { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 0 },
+      toolCallTurn(["c1", "c2"]),
+      toolResultTurn(["c1", "c2"]),
+      toolCallTurn(["c3"]),
+      toolResultTurn(["c3"]),
+    ];
+    expect(() => assertWellFormedToolSequence(turns)).not.toThrow();
+  });
+
+  test("accepts an unanswered tool_call (halt/abort leaves no result)", () => {
+    const turns: ConversationTurn[] = [toolCallTurn(["c1"])];
+    expect(() => assertWellFormedToolSequence(turns)).not.toThrow();
+  });
+
+  test("accepts empty input", () => {
+    expect(() => assertWellFormedToolSequence([])).not.toThrow();
+  });
+
+  test("throws when a call id is re-emitted after it was answered", () => {
+    // The literal INTR-225 overlap shape: a stale batch re-issues a call id
+    // that already has a result.
+    const turns: ConversationTurn[] = [
+      toolCallTurn(["c1"]),
+      toolResultTurn(["c1"]),
+      toolCallTurn(["c1"]),
+    ];
+    expect(() => assertWellFormedToolSequence(turns)).toThrow(
+      /duplicate tool_call id "c1"/,
+    );
+  });
+
+  test("throws on two results for one call in the same turn", () => {
+    const turns: ConversationTurn[] = [
+      toolCallTurn(["c1"]),
+      toolResultTurn(["c1", "c1"]),
+    ];
+    expect(() => assertWellFormedToolSequence(turns)).toThrow(
+      /duplicate tool_result for "c1"/,
+    );
+  });
+
+  test("throws on a duplicate tool_result for one callId", () => {
+    const turns: ConversationTurn[] = [
+      toolCallTurn(["c1"]),
+      toolResultTurn(["c1"]),
+      toolResultTurn(["c1"]),
+    ];
+    expect(() => assertWellFormedToolSequence(turns)).toThrow(
+      /duplicate tool_result for "c1"/,
+    );
+  });
+
+  test("throws on a tool_result with no preceding tool_call", () => {
+    const turns: ConversationTurn[] = [toolResultTurn(["c1"])];
+    expect(() => assertWellFormedToolSequence(turns)).toThrow(
+      /no preceding tool_call/,
+    );
+  });
+
+  test("throws on a duplicate tool_call id", () => {
+    const turns: ConversationTurn[] = [
+      toolCallTurn(["c1"]),
+      toolCallTurn(["c1"]),
+    ];
+    expect(() => assertWellFormedToolSequence(turns)).toThrow(
+      /duplicate tool_call id "c1"/,
+    );
   });
 });

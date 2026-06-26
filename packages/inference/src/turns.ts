@@ -97,6 +97,54 @@ export function createInboundTurn(
   };
 }
 
+/**
+ * Assert that a prompt's tool_call / tool_result blocks are structurally
+ * well-formed before it is sent to a provider.
+ *
+ * Throws if a tool_call id is emitted twice, if a tool_result references a
+ * callId with no preceding tool_call, or if two tool_result blocks answer the
+ * same callId. None of these are valid in a coherent tool conversation — a
+ * tool call has exactly one result. Catching it here surfaces the corruption
+ * as an internal error at the assembly boundary, with the offending id and
+ * turn index, instead of an opaque downstream provider rejection.
+ *
+ * This deliberately does NOT require every tool_call to have a result: an
+ * unanswered tool_call is left legitimately by an after-inference halt/abort
+ * and is repaired downstream for cross-provider replay.
+ */
+export function assertWellFormedToolSequence(turns: ConversationTurn[]): void {
+  const calledIds = new Set<string>();
+  const answeredIds = new Set<string>();
+
+  for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
+    const turn = turns[turnIndex];
+    if (turn === undefined) continue;
+
+    for (const block of turn.content) {
+      if (block.type === "tool_call") {
+        if (calledIds.has(block.id)) {
+          throw new Error(
+            `Malformed tool sequence: duplicate tool_call id ${JSON.stringify(block.id)} at turn ${String(turnIndex)}`,
+          );
+        }
+        calledIds.add(block.id);
+      } else if (block.type === "tool_result") {
+        if (!calledIds.has(block.callId)) {
+          throw new Error(
+            `Malformed tool sequence: tool_result for ${JSON.stringify(block.callId)} at turn ${String(turnIndex)} has no preceding tool_call`,
+          );
+        }
+        if (answeredIds.has(block.callId)) {
+          throw new Error(
+            `Malformed tool sequence: duplicate tool_result for ${JSON.stringify(block.callId)} at turn ${String(turnIndex)}`,
+          );
+        }
+        answeredIds.add(block.callId);
+      }
+    }
+  }
+}
+
 export function createToolResultTurn(results: ToolResult[]): ConversationTurn {
   const blocks: ContentBlock[] = results.map((r) => {
     const raw =

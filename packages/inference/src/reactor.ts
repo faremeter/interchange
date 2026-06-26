@@ -45,7 +45,11 @@ import { createGateManager } from "./gates";
 import { createCorrelationRegistry } from "./correlation";
 import { createStateManager } from "./state";
 import { validateActions } from "./actions";
-import { createToolResultTurn, createInboundTurn } from "./turns";
+import {
+  createToolResultTurn,
+  createInboundTurn,
+  assertWellFormedToolSequence,
+} from "./turns";
 import type { CorrelationValidator } from "./correlation";
 
 const logger = getLogger(["interchange", "reactor"]);
@@ -441,6 +445,13 @@ export function createReactor(config: ReactorConfig): Reactor {
       manifestBuffer.push(result.record);
       await persistBlobs(result.blobs);
     }
+
+    // Tripwire: a malformed tool sequence is invalid in a coherent tool
+    // conversation and would otherwise surface as an opaque provider rejection.
+    // Catch it here, before the prompt is persisted or sent, so the corruption
+    // fails loud as an internal error at the assembly boundary. Throwing routes
+    // through the reactor's fatal-error path.
+    assertWellFormedToolSequence(prompt);
 
     try {
       await contextStore.writePrompt(prompt);
