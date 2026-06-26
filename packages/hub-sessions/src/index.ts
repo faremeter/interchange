@@ -135,6 +135,7 @@ export {
 export {
   WORKFLOW_RUN_EVENTS_FILE,
   splitCombinedEventLog,
+  encodeCombinedEventLog,
 } from "./workflow-run-event-log";
 export type {
   AuthorizeFn,
