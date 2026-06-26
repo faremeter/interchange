@@ -34,7 +34,11 @@ import type {
   RepoId,
   RepoStore as SubstrateRepoStore,
 } from "@intx/hub-sessions";
-import { subscribeKind } from "@intx/hub-sessions";
+import {
+  subscribeKind,
+  WORKFLOW_RUN_EVENTS_FILE,
+  splitCombinedEventLog,
+} from "@intx/hub-sessions";
 import type { RepoStore, WorkflowEvent } from "@intx/workflow";
 
 /**
@@ -157,7 +161,52 @@ async function readAllEventsForRun(
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
   const dir = opts.substrate.getRepoDir(opts.repoId);
-  const eventsDir = path.join(dir, RUNS_PREFIX, runId, EVENTS_DIR);
+  const runDir = path.join(dir, RUNS_PREFIX, runId);
+  const entries: { seq: number; event: WorkflowEvent }[] = [];
+
+  // A terminated run is sealed into a single combined `events.jsonl`; an
+  // in-flight run keeps per-event `events/<seq>.json` files. The combined
+  // file's presence selects the read path; the two forms are mutually
+  // exclusive in a run directory.
+  let combinedRaw: string | null;
+  try {
+    combinedRaw = await fs.readFile(
+      path.join(runDir, WORKFLOW_RUN_EVENTS_FILE),
+      "utf8",
+    );
+  } catch (cause) {
+    if (!isErrnoNotFound(cause)) throw cause;
+    combinedRaw = null;
+  }
+  if (combinedRaw !== null) {
+    // The two forms are mutually exclusive; a run carrying both is a
+    // botched seal, and silently reading only the combined file would
+    // mask it, so surface it instead.
+    let perEventPresent = false;
+    try {
+      await fs.access(path.join(runDir, EVENTS_DIR));
+      perEventPresent = true;
+    } catch (cause) {
+      if (!isErrnoNotFound(cause)) throw cause;
+    }
+    if (perEventPresent) {
+      throw new Error(
+        `workflow-runtime: run ${runId} carries both a combined ${WORKFLOW_RUN_EVENTS_FILE} and a per-event ${EVENTS_DIR}/ directory`,
+      );
+    }
+    for (const line of splitCombinedEventLog(combinedRaw)) {
+      entries.push(
+        parseEventEnvelope(
+          line,
+          `${opts.repoId.id}/${runId}/${WORKFLOW_RUN_EVENTS_FILE}`,
+        ),
+      );
+    }
+    entries.sort((a, b) => a.seq - b.seq);
+    return entries.map((e) => e.event);
+  }
+
+  const eventsDir = path.join(runDir, EVENTS_DIR);
   let filenames: string[];
   try {
     filenames = await fs.readdir(eventsDir);
@@ -165,7 +214,6 @@ async function readAllEventsForRun(
     if (isErrnoNotFound(cause)) return [];
     throw cause;
   }
-  const entries: { seq: number; event: WorkflowEvent }[] = [];
   for (const name of filenames) {
     const match = EVENT_FILENAME_RE.exec(name);
     if (match === null) continue;
@@ -173,33 +221,42 @@ async function readAllEventsForRun(
     if (seqStr === undefined) continue;
     const seqFromName = Number.parseInt(seqStr, 10);
     const raw = await fs.readFile(path.join(eventsDir, name), "utf8");
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (cause) {
+    const source = `${opts.repoId.id}/${runId}/${EVENTS_DIR}/${name}`;
+    const entry = parseEventEnvelope(raw, source);
+    if (entry.seq !== seqFromName) {
       throw new Error(
-        `workflow-runtime: read ${opts.repoId.id}/${runId}/${EVENTS_DIR}/${name} is not valid JSON`,
-        { cause },
+        `workflow-runtime: read ${source} body.seq ${String(entry.seq)} does not match filename seq ${String(seqFromName)}`,
       );
     }
-    const envelope = OnDiskEnvelope(parsed);
-    if (envelope instanceof type.errors) {
-      throw new Error(
-        `workflow-runtime: read ${opts.repoId.id}/${runId}/${EVENTS_DIR}/${name} envelope invalid: ${envelope.summary}`,
-      );
-    }
-    if (envelope.seq !== seqFromName) {
-      throw new Error(
-        `workflow-runtime: read ${opts.repoId.id}/${runId}/${EVENTS_DIR}/${name} body.seq ${String(envelope.seq)} does not match filename seq ${String(seqFromName)}`,
-      );
-    }
-    entries.push({
-      seq: envelope.seq,
-      event: onDiskToWorkflowEvent(envelope),
-    });
+    entries.push(entry);
   }
   entries.sort((a, b) => a.seq - b.seq);
   return entries.map((e) => e.event);
+}
+
+// Parse one on-disk event envelope -- a per-event file's bytes or one line
+// of a combined `events.jsonl` (which holds the same bytes verbatim). The
+// per-event caller additionally cross-checks the seq against the filename;
+// the combined form carries the seq only in the body.
+function parseEventEnvelope(
+  raw: string,
+  source: string,
+): { seq: number; event: WorkflowEvent } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (cause) {
+    throw new Error(`workflow-runtime: read ${source} is not valid JSON`, {
+      cause,
+    });
+  }
+  const envelope = OnDiskEnvelope(parsed);
+  if (envelope instanceof type.errors) {
+    throw new Error(
+      `workflow-runtime: read ${source} envelope invalid: ${envelope.summary}`,
+    );
+  }
+  return { seq: envelope.seq, event: onDiskToWorkflowEvent(envelope) };
 }
 
 /**

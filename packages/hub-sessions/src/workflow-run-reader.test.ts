@@ -98,6 +98,42 @@ describe("WorkflowRunReader", () => {
     });
   });
 
+  test("reads a combined events.jsonl identically to per-event files", async () => {
+    const events = [
+      { seq: 0, type: "RunStarted", consumedMessageId: "m1" },
+      { seq: 1, type: "SignalAwaited", name: "approve" },
+      { seq: 2, type: "RunCompleted" },
+    ];
+    // run-a holds the per-event form; run-b holds the same events folded
+    // into one `events.jsonl` -- each line the verbatim per-event JSON, in
+    // seq order, with a trailing newline -- the shape the writer produces.
+    const perEvent: Record<string, string> = {};
+    for (const e of events) {
+      perEvent[`runs/run-a/events/${e.seq}.json`] = JSON.stringify(e);
+    }
+    const combined = events.map((e) => JSON.stringify(e)).join("\n") + "\n";
+    await commitFiles(dir, {
+      ...perEvent,
+      "runs/run-b/events.jsonl": combined,
+    });
+
+    const fromPerEvent = await reader.readRunEvents(REPO_ID, REF, "run-a");
+    const fromCombined = await reader.readRunEvents(REPO_ID, REF, "run-b");
+
+    const shape = (e: { seq: number; type: string; body: unknown }) => ({
+      seq: e.seq,
+      type: e.type,
+      body: e.body,
+    });
+    expect(fromCombined.map(shape)).toEqual(fromPerEvent.map(shape));
+    expect(fromCombined.map((e) => e.seq)).toEqual([0, 1, 2]);
+    expect(fromCombined.map((e) => e.type)).toEqual([
+      "RunStarted",
+      "SignalAwaited",
+      "RunCompleted",
+    ]);
+  });
+
   test("ignores non-event blobs in the events dir", async () => {
     await commitFiles(dir, {
       "runs/run-1/events/0.json": JSON.stringify({ type: "RunStarted" }),
