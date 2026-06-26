@@ -147,7 +147,7 @@ verify the environment before each build.
 
 ```bash
 make all       # lint + build + test (full verification)
-make build     # TypeScript type checking (tsc -b --noEmit)
+make build     # TypeScript type checking (tsc -b --noEmit --force)
 make lint      # Prettier + ESLint + API docs freshness
 make format    # Prettier auto-fix
 make test      # All tests

@@ -3,7 +3,7 @@ export PATH := $(PWD)/node_modules/.bin:$(PWD)/bin:$(PATH)
 all: lint build test
 
 build: FORCE
-	tsc -b --noEmit
+	tsc -b --noEmit --force
 
 lint: FORCE
 	prettier -c .

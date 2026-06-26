@@ -77,7 +77,9 @@ the environment via `bin/check-env`. Do not run `tsc`, `eslint`, or `bun
 test` directly in place of `make all` -- the Makefile is the authoritative
 entrypoint and gates on `bin/check-env` first.
 
-- `make build` validates the entire TypeScript project graph via `tsc -b`
+- `make build` runs `tsc -b --noEmit --force`, revalidating the entire
+  TypeScript project graph on every run; an incremental build can pass
+  while a cross-package type break sits latent
 - Individual package builds do not guarantee the full tree will build
 - Type exports and imports may not be available until the full tree is built
 - Tests may fail if dependent packages are not rebuilt
