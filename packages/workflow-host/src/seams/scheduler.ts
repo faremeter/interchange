@@ -386,7 +386,10 @@ type RawEventRecord = {
 /**
  * Walk the workflow-run repo's `runs/<runId>/events/<seq>.json`
  * subtree at the current ref tip and return every event blob's
- * payload, attributed to its run.
+ * payload, attributed to its run. A terminated run whose events have
+ * been compacted into a combined `events.jsonl` (no `events/` subtree)
+ * is skipped: this walk recovers pending timers, and a terminated run
+ * has none.
  */
 async function enumerateEventBlobs(
   opts: SchedulerOpts,
