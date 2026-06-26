@@ -4303,3 +4303,71 @@ describe("createReactor — source failover", () => {
     );
   });
 });
+
+describe("createReactor — prompt well-formedness tripwire", () => {
+  test("rejects a malformed assembled prompt before inferring", async () => {
+    // History with two tool_result blocks for one callId is the shape
+    // OpenAI-compatible providers reject with HTTP 400. executeInfer must
+    // catch it before sending and surface it as a fatal reactor error rather
+    // than letting it reach a provider. This also guards the assertion's
+    // call site: without it, no test would notice the prompt going out.
+    const malformed: ConversationTurn[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_call", id: "tc-1", name: "some_tool", arguments: {} },
+        ],
+        model: "test-model",
+        timestamp: 0,
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            callId: "tc-1",
+            content: [{ type: "text", text: "first" }],
+          },
+          {
+            type: "tool_result",
+            callId: "tc-1",
+            content: [{ type: "text", text: "duplicate" }],
+          },
+        ],
+        timestamp: 0,
+      },
+    ];
+
+    let inferenceRan = false;
+
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makeContextStore(malformed),
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) => caps.infer(),
+      }),
+      inferenceRunner: async function* () {
+        inferenceRan = true;
+        yield {
+          type: "inference.done",
+          seq: 1,
+          data: {
+            turn: makeAssistantTurn("unreachable"),
+            usage: emptyUsage(),
+            source: TEST_SOURCE,
+          },
+        };
+      },
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const error = getEvent(events, "reactor.error");
+    expect(error.data.fatal).toBe(true);
+    expect(error.data.error).toMatch(/Malformed tool sequence/);
+    expect(error.data.error).toMatch(/duplicate tool_result for "tc-1"/);
+    // The prompt never reached the inference runner.
+    expect(inferenceRan).toBe(false);
+  });
+});
