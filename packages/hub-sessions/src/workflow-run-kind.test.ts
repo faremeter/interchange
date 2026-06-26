@@ -466,6 +466,168 @@ describe("workflowRunKindHandler.validatePush — newly-terminal signal", () => 
   });
 });
 
+describe("workflowRunKindHandler.validatePush — compaction (events.jsonl)", () => {
+  const RUN = "run-a";
+  const eventsDir = `${WORKFLOW_RUN_RUNS_PREFIX}/${RUN}/events`;
+  const combinedPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${RUN}/events.jsonl`;
+  const e0 = eventBody(0, "RunStarted");
+  const e1 = eventBody(1, "RunCompleted");
+  const perEventPrior: Record<string, string> = {
+    [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+    [`${eventsDir}/0.json`]: e0,
+    [`${eventsDir}/1.json`]: e1,
+  };
+  const fold = (...lines: string[]) => lines.join("\n") + "\n";
+
+  test("accepts a faithful byte-for-byte fold of the prior per-event files", async () => {
+    const r = await validate(
+      { [WORKFLOW_RUN_GITIGNORE_PATH]: "", [combinedPath]: fold(e0, e1) },
+      { priorFiles: perEventPrior },
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  test("rejects a fold that mutates a historical event's bytes", async () => {
+    const tampered = fold(e0.replace("}", ',"tampered":1}'), e1);
+    const r = await validate(
+      { [WORKFLOW_RUN_GITIGNORE_PATH]: "", [combinedPath]: tampered },
+      { priorFiles: perEventPrior },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/does not fold its prior events verbatim/);
+  });
+
+  test("rejects a fold that drops a prior event", async () => {
+    const r = await validate(
+      { [WORKFLOW_RUN_GITIGNORE_PATH]: "", [combinedPath]: fold(e1) },
+      { priorFiles: perEventPrior },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/does not fold its prior events verbatim/);
+  });
+
+  test("rejects a fold that adds an event not in the prior tree", async () => {
+    const extra = fold(
+      e0,
+      eventBody(1, "StepStarted"),
+      eventBody(2, "RunCompleted"),
+    );
+    const r = await validate(
+      { [WORKFLOW_RUN_GITIGNORE_PATH]: "", [combinedPath]: extra },
+      { priorFiles: perEventPrior },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/does not fold its prior events verbatim/);
+  });
+
+  test("rejects a run carrying both a combined file and a per-event directory", async () => {
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [combinedPath]: fold(e0, e1),
+        [`${eventsDir}/0.json`]: e0,
+        [`${eventsDir}/1.json`]: e1,
+      },
+      { priorFiles: perEventPrior },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/carries both/);
+  });
+
+  test("a re-pushed sealed run is immutable", async () => {
+    const sealedPrior = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [combinedPath]: fold(e0, e1),
+    };
+    const unchanged = await validate(
+      { [WORKFLOW_RUN_GITIGNORE_PATH]: "", [combinedPath]: fold(e0, e1) },
+      { priorFiles: sealedPrior },
+    );
+    expect(unchanged.ok).toBe(true);
+    const mutated = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [combinedPath]: fold(e0.replace("}", ',"x":1}'), e1),
+      },
+      { priorFiles: sealedPrior },
+    );
+    expect(mutated.ok).toBe(false);
+  });
+
+  test("rejects a freshly-sealed run with no terminal event", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [combinedPath]: fold(
+        eventBody(0, "RunStarted"),
+        eventBody(1, "StepStarted"),
+      ),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/no terminal event/);
+  });
+
+  test("the compaction commit reports no newly-terminal run", async () => {
+    const r = await validate(
+      { [WORKFLOW_RUN_GITIGNORE_PATH]: "", [combinedPath]: fold(e0, e1) },
+      { priorFiles: perEventPrior },
+    );
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    expect(r.newlyTerminalRuns ?? []).toEqual([]);
+  });
+
+  test("rejects a fold whose bytes differ from the prior blobs even if it decodes to the same content", async () => {
+    // The fold gate is BYTE equality, not decoded-string equality: each
+    // event is signed over its own bytes, so a sealed file that merely
+    // decodes to the prior content (here, a UTF-8 BOM prepended to the true
+    // fold) must be rejected. The string-based `validate` harness cannot
+    // express this, so drive the handler with raw bytes.
+    const enc = new TextEncoder();
+    const prospectiveKeys: Record<string, string> = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [combinedPath]: "",
+    };
+    const priorKeys: Record<string, string> = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${eventsDir}/0.json`]: "",
+      [`${eventsDir}/1.json`]: "",
+    };
+    const priorBytes: Record<string, Uint8Array> = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: enc.encode(""),
+      [`${eventsDir}/0.json`]: enc.encode(e0),
+      [`${eventsDir}/1.json`]: enc.encode(e1),
+    };
+    const trueFold = enc.encode(`${e0}\n${e1}\n`);
+    const bomFold = new Uint8Array([0xef, 0xbb, 0xbf, ...trueFold]);
+    const prospectiveBytes: Record<string, Uint8Array> = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: enc.encode(""),
+      [combinedPath]: bomFold,
+    };
+    const r = await workflowRunKindHandler.validatePush({
+      repoId: uniqueRepoId("wfr"),
+      ref: REF,
+      principal: HUB_PRINCIPAL,
+      topLevelTreePaths: topLevels(prospectiveKeys),
+      readBlob: async (p) => {
+        const b = prospectiveBytes[p];
+        if (b === undefined) throw new Error(`readBlob: ${p} not found`);
+        return b;
+      },
+      listDir: makeListDir(prospectiveKeys),
+      priorReadBlob: async (p) => priorBytes[p] ?? null,
+      priorListDir: makeListDir(priorKeys),
+      changedPathPrefixes: undefined,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/does not fold its prior events verbatim/);
+  });
+});
+
 describe("workflowRunKindHandler.validatePush — rejects top-level shape", () => {
   test("rejects any path under control/ (unsupported subtree)", async () => {
     const r = await validate({

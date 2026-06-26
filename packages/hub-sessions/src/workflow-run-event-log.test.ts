@@ -1,6 +1,9 @@
 import { describe, test, expect } from "bun:test";
 
-import { splitCombinedEventLog } from "./workflow-run-event-log";
+import {
+  splitCombinedEventLog,
+  encodeCombinedEventLog,
+} from "./workflow-run-event-log";
 
 describe("splitCombinedEventLog", () => {
   test("returns no entries for an empty file", () => {
@@ -39,5 +42,32 @@ describe("splitCombinedEventLog", () => {
     ];
     const combined = perEvent.join("\n") + "\n";
     expect(splitCombinedEventLog(combined)).toEqual(perEvent);
+  });
+});
+
+describe("encodeCombinedEventLog", () => {
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+
+  test("concatenates each blob followed by a newline", () => {
+    const out = encodeCombinedEventLog([
+      enc.encode('{"seq":0}'),
+      enc.encode('{"seq":1}'),
+    ]);
+    expect(dec.decode(out)).toBe('{"seq":0}\n{"seq":1}\n');
+  });
+
+  test("an empty input yields an empty file", () => {
+    expect(encodeCombinedEventLog([]).byteLength).toBe(0);
+  });
+
+  test("preserves the exact blob bytes with no decode round-trip", () => {
+    // A byte sequence that decoding would normalise (a lone 0x80 maps to
+    // U+FFFD): the encoder must carry it verbatim, since events are signed
+    // over their own bytes.
+    const blob = new Uint8Array([0x7b, 0x80, 0x7d]);
+    expect(Array.from(encodeCombinedEventLog([blob]))).toEqual([
+      0x7b, 0x80, 0x7d, 0x0a,
+    ]);
   });
 });

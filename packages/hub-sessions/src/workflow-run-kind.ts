@@ -181,6 +181,11 @@ import {
   type RepoStore,
   type ValidatePushResult,
 } from "./repo-store";
+import {
+  WORKFLOW_RUN_EVENTS_FILE,
+  splitCombinedEventLog,
+  encodeCombinedEventLog,
+} from "./workflow-run-event-log";
 
 const logger = getLogger(["hub-sessions", "workflow-run-kind"]);
 
@@ -304,6 +309,9 @@ const BLOB_FILENAME_RE = /^[0-9a-f]{64}$/;
 const RUN_DIR_ALLOWED_CHILDREN = new Set<string>([
   WORKFLOW_RUN_EVENTS_DIR,
   WORKFLOW_RUN_BLOBS_DIR,
+  // A terminated run's event log, sealed from the per-event `events/`
+  // files into one combined file by a compaction commit.
+  WORKFLOW_RUN_EVENTS_FILE,
 ]);
 
 /**
@@ -549,10 +557,21 @@ async function enumerateEventBlobs(
     if (offender !== undefined) {
       return {
         ok: false,
-        reason: `run directory ${runDirPath} contains unexpected entry ${JSON.stringify(offender)}; only "${WORKFLOW_RUN_EVENTS_DIR}" and "${WORKFLOW_RUN_BLOBS_DIR}" are allowed`,
+        reason: `run directory ${runDirPath} contains unexpected entry ${JSON.stringify(offender)}; only "${WORKFLOW_RUN_EVENTS_DIR}", "${WORKFLOW_RUN_BLOBS_DIR}", and "${WORKFLOW_RUN_EVENTS_FILE}" are allowed`,
       };
     }
-    if (!runChildren.includes(WORKFLOW_RUN_EVENTS_DIR)) {
+    const hasCombined = runChildren.includes(WORKFLOW_RUN_EVENTS_FILE);
+    const hasPerEvent = runChildren.includes(WORKFLOW_RUN_EVENTS_DIR);
+    if (hasCombined && hasPerEvent) {
+      return {
+        ok: false,
+        reason: `run directory ${runDirPath} carries both a combined "${WORKFLOW_RUN_EVENTS_FILE}" and a per-event "${WORKFLOW_RUN_EVENTS_DIR}" subtree`,
+      };
+    }
+    // A sealed (combined) run carries no per-event entries; it is validated
+    // by the combined-form path, not this per-event enumeration.
+    if (hasCombined) continue;
+    if (!hasPerEvent) {
       return {
         ok: false,
         reason: `run directory ${runDirPath} is missing required "${WORKFLOW_RUN_EVENTS_DIR}" subdirectory`,
@@ -587,6 +606,194 @@ async function enumerateEventBlobs(
     runs.set(runId, entries);
   }
   return { ok: true, runs };
+}
+
+/**
+ * Validate the prospective tree's combined-form (sealed) runs and return
+ * the set of run ids that legitimately carry a combined `events.jsonl`.
+ * The deletion-direction guard uses that set to allow a run's per-event
+ * files to disappear when (and only when) they were folded into the
+ * combined file under this same validation.
+ *
+ * Three prior states are accepted:
+ *   - prior already combined  -> the sealed file is immutable; prospective
+ *     bytes must equal prior bytes.
+ *   - prior per-event         -> the compaction transition; the combined
+ *     file must be the byte-for-byte fold of the prior per-event blobs in
+ *     seq order. This is the audit-integrity boundary: a loose check here
+ *     would let compaction silently rewrite history.
+ *   - prior absent            -> a freshly-delivered sealed run (e.g. a
+ *     pack receive); its own structure is validated.
+ */
+async function validateCombinedEventRuns(
+  listDir: (path: string) => Promise<string[]>,
+  readBlob: (path: string) => Promise<Uint8Array>,
+  priorListDir: (path: string) => Promise<string[]>,
+  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
+  scopeRunIds: ReadonlySet<string> | undefined,
+): Promise<
+  { ok: true; combinedRunIds: Set<string> } | { ok: false; reason: string }
+> {
+  const combinedRunIds = new Set<string>();
+  const runIds =
+    scopeRunIds === undefined
+      ? await listDir(WORKFLOW_RUN_RUNS_PREFIX)
+      : Array.from(scopeRunIds);
+  for (const runId of runIds) {
+    const runDirPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
+    const children = await listDir(runDirPath);
+    if (!children.includes(WORKFLOW_RUN_EVENTS_FILE)) continue;
+    const combinedPath = `${runDirPath}/${WORKFLOW_RUN_EVENTS_FILE}`;
+    const combinedBytes = await readBlob(combinedPath);
+    const content = new TextDecoder().decode(combinedBytes);
+
+    const priorChildren = await priorListDir(runDirPath);
+    if (priorChildren.includes(WORKFLOW_RUN_EVENTS_FILE)) {
+      // Sealed once, immutable thereafter.
+      const immutable = await checkPriorByteEquality(
+        combinedPath,
+        readBlob,
+        priorReadBlob,
+      );
+      if (!immutable.ok) return immutable;
+    } else if (priorChildren.includes(WORKFLOW_RUN_EVENTS_DIR)) {
+      const structure = checkCombinedStructure(runId, combinedPath, content);
+      if (!structure.ok) return structure;
+      const fold = await checkCompactionFold(
+        runId,
+        runDirPath,
+        combinedBytes,
+        priorListDir,
+        priorReadBlob,
+      );
+      if (!fold.ok) return fold;
+    } else {
+      const structure = checkCombinedStructure(runId, combinedPath, content);
+      if (!structure.ok) return structure;
+    }
+    combinedRunIds.add(runId);
+  }
+  return { ok: true, combinedRunIds };
+}
+
+/**
+ * The audit-integrity bridge. A compaction commit replaces a run's prior
+ * `events/<seq>.json` files with one combined file; this asserts the
+ * combined file reproduces those prior blobs' bytes verbatim, in seq
+ * order, with nothing added, dropped, reordered, or mutated. It rebuilds
+ * the expected combined bytes from the prior tree through the same encoder
+ * the writer uses, so the two cannot drift, and compares for exact
+ * equality.
+ */
+async function checkCompactionFold(
+  runId: string,
+  runDirPath: string,
+  combinedBytes: Uint8Array,
+  priorListDir: (path: string) => Promise<string[]>,
+  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
+): Promise<ValidatePushResult> {
+  const priorEventsDir = `${runDirPath}/${WORKFLOW_RUN_EVENTS_DIR}`;
+  const priorEntries: { seq: number; path: string }[] = [];
+  for (const filename of await priorListDir(priorEventsDir)) {
+    const match = EVENT_FILENAME_RE.exec(filename);
+    if (match === null || match[1] === undefined) {
+      return {
+        ok: false,
+        reason: `prior event filename ${priorEventsDir}/${filename} does not match <seq>.json; cannot validate compaction of run ${runId}`,
+      };
+    }
+    priorEntries.push({
+      seq: Number.parseInt(match[1], 10),
+      path: `${priorEventsDir}/${filename}`,
+    });
+  }
+  priorEntries.sort((a, b) => a.seq - b.seq);
+  const priorBlobs: Uint8Array[] = [];
+  for (const entry of priorEntries) {
+    const bytes = await priorReadBlob(entry.path);
+    if (bytes === null) {
+      return {
+        ok: false,
+        reason: `prior event ${entry.path} is unreadable; cannot validate compaction of run ${runId}`,
+      };
+    }
+    priorBlobs.push(bytes);
+  }
+  // Byte equality, not decoded-string equality: each event is signed over
+  // its own bytes, so the sealed file must be the verbatim concatenation
+  // of the prior blobs, not merely decode-equivalent to it.
+  const expected = encodeCombinedEventLog(priorBlobs);
+  const sameBytes =
+    combinedBytes.byteLength === expected.byteLength &&
+    combinedBytes.every((b, i) => b === expected[i]);
+  if (!sameBytes) {
+    return {
+      ok: false,
+      reason: `run ${runId} compaction does not fold its prior events verbatim: ${runDirPath}/${WORKFLOW_RUN_EVENTS_FILE} must equal the run's prior events/<seq>.json blobs joined in seq order`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Validate a combined event log's own structure: every line a valid event
+ * envelope, contiguous seqs, exactly one terminal event and it is last
+ * (so a sealed run is genuinely terminal). Used for a sealed run with no
+ * prior per-event form to bridge against.
+ */
+function checkCombinedStructure(
+  runId: string,
+  combinedPath: string,
+  content: string,
+): ValidatePushResult {
+  const lines = splitCombinedEventLog(content);
+  if (lines.length === 0) {
+    return { ok: false, reason: `combined event log ${combinedPath} is empty` };
+  }
+  let baseSeq: number | null = null;
+  let terminalSeq: number | null = null;
+  for (const [i, line] of lines.entries()) {
+    let body: unknown;
+    try {
+      body = JSON.parse(line);
+    } catch {
+      return {
+        ok: false,
+        reason: `combined event log ${combinedPath} line ${String(i)} is not valid JSON`,
+      };
+    }
+    const validated = EventEnvelope(body);
+    if (validated instanceof type.errors) {
+      return {
+        ok: false,
+        reason: `combined event log ${combinedPath} line ${String(i)} envelope invalid: ${validated.summary}`,
+      };
+    }
+    if (baseSeq === null) {
+      baseSeq = validated.seq;
+    } else if (validated.seq !== baseSeq + i) {
+      return {
+        ok: false,
+        reason: `combined event log ${combinedPath} has a sequence gap at line ${String(i)} (expected seq ${String(baseSeq + i)}, got ${String(validated.seq)})`,
+      };
+    }
+    if (terminalSeq !== null) {
+      return {
+        ok: false,
+        reason: `combined event log ${combinedPath} has an event at seq ${String(validated.seq)} after terminal at seq ${String(terminalSeq)}`,
+      };
+    }
+    if (TERMINAL_EVENT_TYPES.has(validated.type)) {
+      terminalSeq = validated.seq;
+    }
+  }
+  if (terminalSeq === null) {
+    return {
+      ok: false,
+      reason: `combined event log ${combinedPath} for run ${runId} has no terminal event; only a terminated run is sealed`,
+    };
+  }
+  return { ok: true };
 }
 
 type RunBlobEntry = {
@@ -1815,6 +2022,18 @@ export const workflowRunKindHandler: KindHandler = {
       }
     }
 
+    const combinedRuns = await validateCombinedEventRuns(
+      listDir,
+      readBlob,
+      priorListDir,
+      priorReadBlob,
+      scopeRunIds,
+    );
+    if (!combinedRuns.ok) {
+      logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${combinedRuns.reason}`;
+      return { ok: false, reason: combinedRuns.reason };
+    }
+
     const blobsEnumerated = await enumerateRunBlobs(listDir, scopeRunIds);
     if (!blobsEnumerated.ok) {
       logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${blobsEnumerated.reason}`;
@@ -1856,6 +2075,10 @@ export const workflowRunKindHandler: KindHandler = {
     for (const entries of priorEnumerated.runs.values()) {
       for (const e of entries) {
         if (prospectiveEventPaths.has(e.blobPath)) continue;
+        // A run sealed into its combined events.jsonl by this commit
+        // legitimately drops its per-event files; the fold was validated
+        // byte-for-byte against these same prior blobs above.
+        if (combinedRuns.combinedRunIds.has(e.runId)) continue;
         return {
           ok: false,
           reason: `event ${e.blobPath} present in the prior tree is missing from the prospective tree; event blobs are append-only`,

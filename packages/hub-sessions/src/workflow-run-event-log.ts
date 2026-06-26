@@ -25,3 +25,30 @@ export function splitCombinedEventLog(content: string): string[] {
   }
   return out;
 }
+
+/**
+ * Join per-event blobs (in seq order) into a combined event-log file: each
+ * blob's exact bytes followed by a newline. Operating on bytes -- not
+ * decoded strings -- keeps the sealed file a *verbatim* concatenation of
+ * the per-event blobs, which matters because each event is signed over its
+ * own bytes; a decode/re-encode round-trip could alter them. This is the
+ * single source of the combined-file byte layout shared by the compaction
+ * writer and the validator's byte-equality bridge, so the two cannot
+ * drift. An empty input yields an empty file.
+ */
+export function encodeCombinedEventLog(
+  perEventBlobs: readonly Uint8Array[],
+): Uint8Array {
+  const NEWLINE = 0x0a;
+  let total = 0;
+  for (const blob of perEventBlobs) total += blob.byteLength + 1;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const blob of perEventBlobs) {
+    out.set(blob, offset);
+    offset += blob.byteLength;
+    out[offset] = NEWLINE;
+    offset += 1;
+  }
+  return out;
+}
