@@ -12,7 +12,7 @@
 // sustained-pressure test: it fires a large batch of mails in quick
 // succession to exercise the dispatch loop under load, which is a
 // heavier workload than the routine integration suite carries. The
-// test runs through the dedicated `bun run test:load` script
+// test runs through the dedicated `make test-load` target
 // instead; CI invokes that separately.
 //
 // The runtime-coverage rationale matches the 3-mail case: the
@@ -102,7 +102,7 @@ const WORKFLOW_RUN_REF = "refs/heads/main";
 //      The quadratic receive-side floor is gone.
 //
 // With the receive-side enumeration bounded to the touched run, 50
-// mails complete well within the `test:load` budget.
+// mails complete well within the `make test-load` budget.
 const LOAD_MAIL_COUNT = 50;
 const LOAD_MESSAGE_IDS: readonly string[] = Array.from(
   { length: LOAD_MAIL_COUNT },

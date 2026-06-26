@@ -402,12 +402,12 @@ const generated = lines.join("\n") + "\n";
 
 if (check) {
   if (!existsSync(outPath)) {
-    log.error("docs/API.md does not exist. Run: bun run docs");
+    log.error("docs/API.md does not exist. Run: make docs");
     process.exit(1);
   }
   const current = readFileSync(outPath, "utf-8");
   if (generated !== current) {
-    log.error("docs/API.md is stale. Run: bun run docs");
+    log.error("docs/API.md is stale. Run: make docs");
     process.exit(1);
   }
   log.info("docs/API.md is up to date");
