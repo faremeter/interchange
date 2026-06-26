@@ -130,8 +130,8 @@ reset recipes.
 
 Build, lint, test, and format go through the `Makefile` at the repo
 root, which verifies the environment via
-[`bin/check-env`](./bin/check-env) before delegating to the
-underlying `bun run` scripts.
+[`bin/check-env`](./bin/check-env) before running each command
+directly.
 
 | Target        | Description                                  |
 | ------------- | -------------------------------------------- |

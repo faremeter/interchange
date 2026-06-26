@@ -49,8 +49,9 @@ The remaining command gets a clean, running system with seed data. It drops and 
 | Regenerate API docs           | `make docs`                    |
 
 Use the `make` targets above for build, lint, test, format, and docs.
-Do not invoke the underlying `bun run` scripts directly -- the Makefile
-also runs `bin/check-env` to verify the environment before each build.
+The Makefile is the authoritative entrypoint: it runs each command
+directly and runs `bin/check-env` to verify the environment before each
+build.
 
 `bin/db-reset` only resets postgres. `--clean` additionally wipes
 `HUB_DATA_DIR` and `SIDECAR_DATA_DIR` so the sidecar does not try to
@@ -72,8 +73,9 @@ make all
 ```
 
 This runs lint, type check (`tsc -b`), and tests in order, after verifying
-the environment via `bin/check-env`. Do not substitute `bun run check`,
-`bun run lint`, or `bun run test` for `make all`.
+the environment via `bin/check-env`. Do not run `tsc`, `eslint`, or `bun
+test` directly in place of `make all` -- the Makefile is the authoritative
+entrypoint and gates on `bin/check-env` first.
 
 - `make build` validates the entire TypeScript project graph via `tsc -b`
 - Individual package builds do not guarantee the full tree will build

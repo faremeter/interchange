@@ -141,9 +141,9 @@ bin/db-migrate
 
 ## Build Pipeline
 
-The Makefile is the canonical entry point for the build verbs. It also
-runs `bin/check-env` (via `.env-checked`) to verify the environment
-before each build, which the raw `bun run` scripts do not.
+The Makefile is the canonical entry point for the build verbs. It runs
+each command directly and runs `bin/check-env` (via `.env-checked`) to
+verify the environment before each build.
 
 ```bash
 make all       # lint + build + test (full verification)

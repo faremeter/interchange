@@ -103,7 +103,7 @@ const MESSAGE_IDS: readonly string[] = [
 // survives a sustained batch of concurrent enqueues). The load case
 // is held out of `make test`'s default run because it is a
 // sustained-pressure test rather than a routine integration check;
-// it runs via `bun run test:load` instead.
+// it runs via `make test-load` instead.
 
 let env: DeployFlowEnv;
 

@@ -27,7 +27,7 @@ fi
 
 step::10::type_check() {
 	log::info "running type check..."
-	bun run check || log::fatal "type check failed, fix errors before migrating"
+	(cd "$REPODIR" && make build) || log::fatal "type check failed, fix errors before migrating"
 }
 
 step::20::generate() {

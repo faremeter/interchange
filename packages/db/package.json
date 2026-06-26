@@ -13,10 +13,6 @@
       "default": "./src/schema/index.ts"
     }
   },
-  "scripts": {
-    "db:generate": "drizzle-kit generate --config=drizzle.config.ts",
-    "db:migrate": "drizzle-kit migrate --config=drizzle.config.ts"
-  },
   "dependencies": {
     "@intx/log": "workspace:*",
     "@intx/types": "workspace:*",
