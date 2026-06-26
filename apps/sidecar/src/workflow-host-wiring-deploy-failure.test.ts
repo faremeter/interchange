@@ -172,7 +172,10 @@ describe("deploy-failure registry leak", () => {
           mkdirSync(dirname(full), { recursive: true });
           writeFileSync(full, contents);
         }
-        return Promise.resolve({ commitSha: "stub-sha" });
+        return Promise.resolve({
+          commitSha: "stub-sha",
+          newlyTerminalRuns: [],
+        });
       },
     };
 

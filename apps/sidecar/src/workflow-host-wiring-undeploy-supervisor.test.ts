@@ -133,7 +133,7 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
     },
     async writeTreePreservingPrefix(_p, _id, _ref, args) {
       await args.merge(new Map());
-      return { commitSha: "stub-sha" };
+      return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
     // The deploy router's grants bridge writes `state/grants.json` to
     // each step's agent-state repo before `spawn()`. Mirror the
@@ -146,7 +146,7 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
         await fs.mkdir(path.dirname(full), { recursive: true });
         await fs.writeFile(full, contents);
       }
-      return { commitSha: "stub-sha" };
+      return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub

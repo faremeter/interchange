@@ -44,7 +44,7 @@ function createMinimalStubRepoStore(): RepoStore {
       // requestCancel; the merge callback runs once with an empty
       // pre-image.
       await args.merge(new Map());
-      return { commitSha: "stub-sha" };
+      return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; the wiring test exercises only getRepoDir + writeTreePreservingPrefix
@@ -284,7 +284,10 @@ describe("createSidecarDeployRouter wires the InferenceEvent subscription to rec
               writtenEvents.push(parsed.type);
             }
           }
-          return { commitSha: `c-${String(writtenEvents.length)}` };
+          return {
+            commitSha: `c-${String(writtenEvents.length)}`,
+            newlyTerminalRuns: [],
+          };
         },
       };
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- in-test stub; the unused RepoStore methods are guarded by the Proxy below
@@ -527,7 +530,7 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
     },
     async writeTreePreservingPrefix(_p, _id, _ref, args) {
       await args.merge(new Map());
-      return { commitSha: "stub-sha" };
+      return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
     // The deploy router's grants bridge writes `state/grants.json` to
     // each step's agent-state repo before `spawn()`. Mirror the
@@ -540,7 +543,7 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
         await fs.mkdir(path.dirname(full), { recursive: true });
         await fs.writeFile(full, contents);
       }
-      return { commitSha: "stub-sha" };
+      return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; only getRepoDir + writeTreePreservingPrefix + writeTree exercised

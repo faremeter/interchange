@@ -37,7 +37,10 @@ function createRecordingUnderlyingRepoStore(): {
     async writeTreePreservingPrefix(principal, repoId, ref, args) {
       preserveCalls.push({ principal, repoId, ref });
       await args.merge(new Map());
-      return { commitSha: `sha-${String(preserveCalls.length)}` };
+      return {
+        commitSha: `sha-${String(preserveCalls.length)}`,
+        newlyTerminalRuns: [],
+      };
     },
     async createPack(principal, repoId, ref) {
       packs.push({ principal, repoId, ref });

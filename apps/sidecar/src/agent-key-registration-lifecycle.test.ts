@@ -126,7 +126,7 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
     },
     async writeTreePreservingPrefix(_p, _id, _ref, args) {
       await args.merge(new Map());
-      return { commitSha: "stub-sha" };
+      return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
     async writeTree(_p, repoId, _ref, content) {
       const dir = path.join(tempBase, repoId.kind, repoId.id);
@@ -135,7 +135,7 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
         await fs.mkdir(path.dirname(full), { recursive: true });
         await fs.writeFile(full, contents);
       }
-      return { commitSha: "stub-sha" };
+      return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
