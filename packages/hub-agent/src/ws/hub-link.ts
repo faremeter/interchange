@@ -44,7 +44,19 @@ import type {
 const logger = getLogger(["interchange", "hub-agent", "ws"]);
 
 const DEFAULT_PING_INTERVAL_MS = 30_000;
-const DEFAULT_RECONNECT_DELAY_MS = 3_000;
+// Initial/floor reconnect delay. Kept short so a brief hub absence (a
+// staging redeploy window) reconnects near-instantly rather than idling.
+const DEFAULT_RECONNECT_DELAY_MS = 300;
+// Cap for the exponential backoff. Deliberately low: the complaint this
+// path serves is "reconnect right away", so we never want a backed-off
+// link sitting idle for many seconds after the hub returns. Backoff
+// here only exists to avoid a tight hammer loop while the hub is down.
+const DEFAULT_MAX_RECONNECT_DELAY_MS = 3_000;
+// Once the link has been unable to reach the hub continuously for this
+// long, escalate from debug-level retry breadcrumbs to a single WARN so
+// a genuine outage is visible without every expected redeploy blip
+// looking like an incident.
+const SUSTAINED_FAILURE_WARN_MS = 30_000;
 
 /**
  * Schedules a deferred callback and returns a cancel function. Injection
@@ -229,7 +241,10 @@ export type HubLinkConfig = {
    */
   drainInboundRouter?: DrainInboundRouter;
   pingIntervalMs?: number;
+  /** Initial/floor reconnect delay; backoff grows from here. */
   reconnectDelayMs?: number;
+  /** Upper bound the exponential backoff is clamped to. */
+  maxReconnectDelayMs?: number;
   scheduleReconnect?: ReconnectScheduler;
 };
 
@@ -282,6 +297,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     drainInboundRouter,
     pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
     reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
+    maxReconnectDelayMs = DEFAULT_MAX_RECONNECT_DELAY_MS,
     scheduleReconnect = defaultScheduleReconnect,
   } = config;
 
@@ -290,6 +306,63 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   let pingTimer: ReturnType<typeof setInterval> | null = null;
   let cancelReconnect: (() => void) | null = null;
   let lastPongAt = 0;
+  // Backoff state, persisted across reconnect attempts and reset on a
+  // successful `open`. `reconnectAttempt` drives the exponential delay;
+  // `firstFailureAt` anchors the sustained-failure escalation window;
+  // `sustainedWarnEmitted` keeps the escalation to a single WARN per
+  // outage rather than one per attempt.
+  let reconnectAttempt = 0;
+  let firstFailureAt = 0;
+  let sustainedWarnEmitted = false;
+
+  /**
+   * Schedule the next reconnect, idempotently. Both the WebSocket
+   * `error` and `close` handlers call this: Bun's event ordering on a
+   * failed connect is spec-divergent (it may emit `error` without a
+   * matching `close`, or either first), so driving reconnect from a
+   * single guarded path -- rather than from `close` alone -- structurally
+   * removes the "error fired, close didn't, link never retries" failure
+   * mode. The `cancelReconnect !== null` guard makes a second call within
+   * the same disconnect a no-op, so an error+close pair schedules exactly
+   * one timer. Delay grows exponentially from `reconnectDelayMs` to
+   * `maxReconnectDelayMs` with +/-20% jitter, and connect-phase failures
+   * stay at debug until the link has been down past
+   * SUSTAINED_FAILURE_WARN_MS, at which point a single WARN fires.
+   */
+  function scheduleReconnectOnce(): void {
+    if (closed || cancelReconnect !== null) return;
+
+    const now = Date.now();
+    if (firstFailureAt === 0) firstFailureAt = now;
+    const downForMs = now - firstFailureAt;
+
+    if (downForMs >= SUSTAINED_FAILURE_WARN_MS && !sustainedWarnEmitted) {
+      sustainedWarnEmitted = true;
+      logger.warn`Hub unreachable for ${String(Math.round(downForMs / 1000))}s, still retrying`;
+    }
+
+    const base = Math.min(
+      reconnectDelayMs * 2 ** reconnectAttempt,
+      maxReconnectDelayMs,
+    );
+    // +/-20% jitter so a fleet of sidecars recovering from the same hub
+    // redeploy spread their retries instead of landing in lockstep.
+    const jitter = base * 0.2 * (Math.random() * 2 - 1);
+    const delay = Math.max(0, Math.round(base + jitter));
+    reconnectAttempt += 1;
+
+    logger.debug`Scheduling hub reconnect in ${String(delay)}ms (attempt ${String(reconnectAttempt)})`;
+
+    cancelReconnect = scheduleReconnect(() => {
+      cancelReconnect = null;
+      // Defense in depth for fake or misbehaving schedulers whose cancel
+      // function is a no-op: re-check `closed` before re-entering
+      // connect() so a fired-but-not-yet-executed callback after close()
+      // does not propagate the "called after close" throw.
+      if (closed) return;
+      connect();
+    }, delay);
+  }
 
   const packReceiver = createPackReceiver();
   // One sender owns the agent-state push path (`handleSyncRequest`,
@@ -997,7 +1070,19 @@ export function createHubLink(config: HubLinkConfig): HubLink {
 
     ws = new WebSocket(hubURL);
 
+    // Whether this particular socket ever reached `open`. Distinguishes a
+    // real established-then-dropped disconnect (worth an info log) from a
+    // connect attempt that never succeeded (expected during a redeploy
+    // window, kept at debug).
+    let everOpened = false;
+
     ws.addEventListener("open", () => {
+      everOpened = true;
+      // A healthy connection resets the backoff so the next disconnect
+      // starts fast again, and clears the sustained-failure escalation.
+      reconnectAttempt = 0;
+      firstFailureAt = 0;
+      sustainedWarnEmitted = false;
       logger.info`Connected to hub at ${hubURL}`;
 
       lastPongAt = Date.now();
@@ -1088,28 +1173,30 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     });
 
     ws.addEventListener("close", () => {
-      logger.info`Disconnected from hub`;
+      // An established connection dropping is worth an info breadcrumb; a
+      // connect attempt that never opened is the expected redeploy-window
+      // case and stays at debug so it does not read as an incident.
+      if (everOpened) {
+        logger.info`Disconnected from hub`;
+      } else {
+        logger.debug`Hub connect attempt closed before opening`;
+      }
       ws = null;
       if (pingTimer !== null) {
         clearInterval(pingTimer);
         pingTimer = null;
       }
-      if (!closed) {
-        cancelReconnect = scheduleReconnect(() => {
-          cancelReconnect = null;
-          // Defense in depth for fake or misbehaving schedulers whose
-          // cancel function is a no-op: re-check `closed` before
-          // re-entering connect() so a fired-but-not-yet-executed
-          // callback after close() does not propagate the
-          // "called after close" throw out of the scheduler.
-          if (closed) return;
-          connect();
-        }, reconnectDelayMs);
-      }
+      scheduleReconnectOnce();
     });
 
     ws.addEventListener("error", (event) => {
-      logger.warn`WebSocket error: ${String(event)}`;
+      // Expected while the hub is briefly unreachable (redeploy). Kept at
+      // debug; the sustained-failure WARN in scheduleReconnectOnce is the
+      // signal that a real outage is underway. Routing reconnect through
+      // scheduleReconnectOnce here too covers Bun emitting `error`
+      // without a following `close` on a failed connect.
+      logger.debug`WebSocket error: ${String(event)}`;
+      scheduleReconnectOnce();
     });
   }
 

@@ -345,11 +345,29 @@ if (hostTmpdir !== undefined) {
   multistepSubstrateEnv["TMPDIR"] = hostTmpdir;
 }
 
+// Optional reconnect tuning, overridable via env without a code change.
+// Defaults (short initial delay, low backoff cap) live in hub-link.
+function readPositiveIntEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer (got "${raw}")`);
+  }
+  return Math.floor(value);
+}
+const reconnectDelayMs = readPositiveIntEnv("SIDECAR_RECONNECT_DELAY_MS");
+const maxReconnectDelayMs = readPositiveIntEnv(
+  "SIDECAR_MAX_RECONNECT_DELAY_MS",
+);
+
 const orchestrator = createSidecarOrchestrator({
   hubURL: hubWsUrl,
   sidecarId,
   token: sidecarToken,
   dataDir,
+  ...(reconnectDelayMs !== undefined ? { reconnectDelayMs } : {}),
+  ...(maxReconnectDelayMs !== undefined ? { maxReconnectDelayMs } : {}),
   transport,
   buildHarness: createDefaultHarnessBuilder({
     cacheRoot,

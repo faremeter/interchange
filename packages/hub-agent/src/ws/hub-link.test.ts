@@ -1278,6 +1278,136 @@ describe("sidecar↔hub integration", () => {
     }
   });
 
+  test("a failed connect schedules exactly one reconnect with a backoff delay", async () => {
+    // Both the WebSocket `error` and `close` events fire on a failed
+    // connect; the idempotent scheduleReconnectOnce guard must collapse
+    // them into a single scheduled timer.
+    const delays: number[] = [];
+    let pendingReconnect: (() => void) | null = null;
+    const fakeScheduleReconnect: ReconnectScheduler = (cb, delayMs) => {
+      delays.push(delayMs);
+      pendingReconnect = cb;
+      return () => {
+        pendingReconnect = null;
+      };
+    };
+
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const client = createHubLink({
+      // Port 1 is unbound, so the connect fails fast.
+      hubURL: "ws://127.0.0.1:1/ws",
+      sidecarId: "sc-backoff-one",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(sessions),
+      reconnectDelayMs: 300,
+      maxReconnectDelayMs: 3000,
+      scheduleReconnect: fakeScheduleReconnect,
+    });
+
+    try {
+      client.connect();
+      await waitFor(() => pendingReconnect !== null);
+
+      expect(delays).toHaveLength(1);
+      // First attempt: base 300ms with +/-20% jitter.
+      expect(delays[0]!).toBeGreaterThanOrEqual(240);
+      expect(delays[0]!).toBeLessThanOrEqual(360);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("backoff grows across consecutive failed reconnects", async () => {
+    const delays: number[] = [];
+    let pendingReconnect: (() => void) | null = null;
+    const fakeScheduleReconnect: ReconnectScheduler = (cb, delayMs) => {
+      delays.push(delayMs);
+      pendingReconnect = cb;
+      return () => {
+        pendingReconnect = null;
+      };
+    };
+
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const client = createHubLink({
+      hubURL: "ws://127.0.0.1:1/ws",
+      sidecarId: "sc-backoff-grows",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(sessions),
+      reconnectDelayMs: 300,
+      maxReconnectDelayMs: 3000,
+      scheduleReconnect: fakeScheduleReconnect,
+    });
+
+    try {
+      client.connect();
+      await waitFor(() => delays.length === 1);
+
+      // Fire the scheduled reconnect; it re-enters connect(), fails
+      // again, and schedules a second (longer) attempt.
+      const fire = pendingReconnect!;
+      pendingReconnect = null;
+      fire();
+      await waitFor(() => delays.length === 2);
+
+      // Attempt 1 base 300 (<=360 with jitter), attempt 2 base 600
+      // (>=480 with jitter): non-overlapping, so strictly increasing.
+      expect(delays[1]!).toBeGreaterThan(delays[0]!);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("backoff resets after a successful open", async () => {
+    const reconnectEnv = startTestServer();
+    const delays: number[] = [];
+    const fakeScheduleReconnect: ReconnectScheduler = (_cb, delayMs) => {
+      delays.push(delayMs);
+      return () => {
+        // No cancellation needed: the test never fires the callback.
+      };
+    };
+
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const client = createHubLink({
+      hubURL: `ws://localhost:${reconnectEnv.server.port}/ws`,
+      sidecarId: "sc-backoff-reset",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(sessions),
+      reconnectDelayMs: 300,
+      maxReconnectDelayMs: 3000,
+      scheduleReconnect: fakeScheduleReconnect,
+    });
+
+    try {
+      client.connect();
+      await waitFor(() =>
+        reconnectEnv.router.getConnectedSidecars().includes("sc-backoff-reset"),
+      );
+
+      // Drop the established connection. Because `open` reset the
+      // attempt counter, the scheduled delay must be a first-attempt
+      // (base 300ms +/-20%) value, not a backed-off one.
+      reconnectEnv.server.stop(true);
+      await waitFor(() => delays.length === 1);
+
+      expect(delays[0]!).toBeGreaterThanOrEqual(240);
+      expect(delays[0]!).toBeLessThanOrEqual(360);
+    } finally {
+      client.close();
+      reconnectEnv.server.stop(true);
+    }
+  });
+
   test("mailInboundRouter claims an address and skips the legacy fallback", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
