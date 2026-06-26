@@ -167,7 +167,40 @@ export function createReactor(config: ReactorConfig): Reactor {
   const queue: ReactorInboundEvent[] = [];
   let queueResolve: (() => void) | null = null;
 
+  // A tool cycle spans from the moment the reactor dispatches an inference or
+  // a tool batch until the director has consumed every completion event that
+  // operation produces. While a cycle is in flight, admitting a new inbound
+  // message — and the inference it triggers — ahead of the outstanding
+  // completion events corrupts the prompt: an assistant tool_call turn must be
+  // immediately followed by its tool results, and a new inference would
+  // instead interleave fresh turns and re-infer against a half-finished batch,
+  // which providers reject.
+  //
+  // pendingContinuations is the authoritative count of dispatched operations
+  // whose completion events have not yet been consumed. Every cycle event is
+  // counted as it is enqueued and uncounted as it is dequeued, so the count
+  // always equals the number of cycle events waiting in the queue. While it is
+  // positive, dequeueNext drains cycle events ahead of inbound mail; at zero
+  // the cycle is quiescent and processing reverts to FIFO.
+  //
+  // An earlier design inferred "mid-cycle" from history shape — whether the
+  // last turn was an assistant tool_call turn. That underreports in-flight
+  // work: a finished tool batch appends its tool-result turn to history before
+  // its tool.done events are consumed, flipping the last turn away from the
+  // assistant tool_call turn while completion events are still queued, which
+  // let inbound mail start an overlapping inference.
+  const CYCLE_EVENT_TYPES = new Set<ReactorInboundEvent["type"]>([
+    "inference.done",
+    "inference.error",
+    "tool.done",
+  ]);
+
+  let pendingContinuations = 0;
+
   function enqueue(event: ReactorInboundEvent): void {
+    if (CYCLE_EVENT_TYPES.has(event.type)) {
+      pendingContinuations += 1;
+    }
     queue.push(event);
     if (queueResolve !== null) {
       const resolve = queueResolve;
@@ -183,34 +216,6 @@ export function createReactor(config: ReactorConfig): Reactor {
     });
   }
 
-  // When the last message in history is an assistant message with tool_calls
-  // whose results haven't been appended yet, the conversation is in a
-  // transient state. Inserting a user text message (from message.received)
-  // at this point violates the provider's protocol: an assistant tool_call
-  // must be immediately followed by the corresponding tool result messages.
-  //
-  // To prevent this, we check whether the history has pending tool_calls
-  // and, if so, prioritize inference-cycle events (inference.done,
-  // inference.error, tool.done) so the cycle completes before inbound
-  // messages are interleaved. Once the tool results are in history, we
-  // revert to FIFO so inbound messages are processed promptly.
-  const CYCLE_EVENT_TYPES = new Set<ReactorInboundEvent["type"]>([
-    "inference.done",
-    "inference.error",
-    "tool.done",
-  ]);
-
-  function historyHasPendingToolCalls(): boolean {
-    if (stateManager === null) return false;
-    const turns = stateManager.getTurns();
-    if (turns.length === 0) return false;
-
-    const last = turns.at(-1);
-    if (last === undefined || last.role !== "assistant") return false;
-
-    return last.content.some((b) => b.type === "tool_call");
-  }
-
   function dequeueNext(): ReactorInboundEvent | undefined {
     if (queue.length === 0) return undefined;
 
@@ -220,9 +225,10 @@ export function createReactor(config: ReactorConfig): Reactor {
       return queue.splice(abortIdx, 1)[0];
     }
 
-    // When mid-cycle (assistant tool_calls without tool results), drain
-    // inference-cycle events before anything else.
-    if (historyHasPendingToolCalls()) {
+    // Mid-cycle: drain inference-cycle events before anything else so the
+    // outstanding inference or tool batch completes before new mail can start
+    // an overlapping inference.
+    if (pendingContinuations > 0) {
       const idx = queue.findIndex((e) => CYCLE_EVENT_TYPES.has(e.type));
       if (idx !== -1) {
         return queue.splice(idx, 1)[0];
@@ -827,6 +833,13 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       const event = dequeueNext();
       if (event === undefined) continue;
+
+      // A dequeued cycle event is one fewer in-flight continuation. Pairs with
+      // the increment in enqueue(); both key off CYCLE_EVENT_TYPES so they
+      // cannot drift.
+      if (CYCLE_EVENT_TYPES.has(event.type)) {
+        pendingContinuations -= 1;
+      }
 
       // Handle abort events: initiate shutdown regardless of director.
       if (event.type === "abort") {
