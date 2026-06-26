@@ -7,6 +7,10 @@ import {
   WORKFLOW_RUN_EVENTS_DIR,
   WORKFLOW_RUN_RUNS_PREFIX,
 } from "./workflow-run-kind";
+import {
+  WORKFLOW_RUN_EVENTS_FILE,
+  splitCombinedEventLog,
+} from "./workflow-run-event-log";
 
 /**
  * A workflow-run event as committed under
@@ -125,7 +129,43 @@ export function createWorkflowRunReader(
     if (dir === null) return [];
     const oid = await resolveRefOrNull(dir, ref);
     if (oid === null) return [];
-    const eventsDir = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_EVENTS_DIR}`;
+    const runDir = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
+    let runTree: Awaited<ReturnType<typeof git.readTree>>;
+    try {
+      runTree = await git.readTree({ fs, dir, oid, filepath: runDir });
+    } catch (cause) {
+      if (cause instanceof git.Errors.NotFoundError) return [];
+      throw cause;
+    }
+    // A terminated run is sealed into a single combined `events.jsonl`;
+    // an in-flight run keeps per-event `events/<seq>.json` files. The two
+    // forms are mutually exclusive in a run directory; a run carrying both
+    // is a botched seal, and silently preferring one would mask it, so
+    // surface it instead.
+    const combined = runTree.tree.find(
+      (e) => e.type === "blob" && e.path === WORKFLOW_RUN_EVENTS_FILE,
+    );
+    const perEventDir = runTree.tree.find(
+      (e) => e.type === "tree" && e.path === WORKFLOW_RUN_EVENTS_DIR,
+    );
+    if (combined !== undefined && perEventDir !== undefined) {
+      throw new Error(
+        `workflow-run reader: run ${runId} carries both a combined ${WORKFLOW_RUN_EVENTS_FILE} and a per-event ${WORKFLOW_RUN_EVENTS_DIR}/ directory`,
+      );
+    }
+    if (combined !== undefined) {
+      const blob = await git.readBlob({ fs, dir, oid: combined.oid });
+      const source = `${runDir}/${WORKFLOW_RUN_EVENTS_FILE}`;
+      const events: WorkflowRunEvent[] = [];
+      for (const line of splitCombinedEventLog(
+        new TextDecoder().decode(blob.blob),
+      )) {
+        events.push(parseRunEventLine(line, source));
+      }
+      events.sort((a, b) => a.seq - b.seq);
+      return events;
+    }
+    const eventsDir = `${runDir}/${WORKFLOW_RUN_EVENTS_DIR}`;
     let tree: Awaited<ReturnType<typeof git.readTree>>;
     try {
       tree = await git.readTree({ fs, dir, oid, filepath: eventsDir });
@@ -140,27 +180,67 @@ export function createWorkflowRunReader(
       if (m === null || m[1] === undefined) continue;
       const seq = Number.parseInt(m[1], 10);
       const blob = await git.readBlob({ fs, dir, oid: entry.oid });
-      const parsed: unknown = JSON.parse(new TextDecoder().decode(blob.blob));
-      if (
-        typeof parsed !== "object" ||
-        parsed === null ||
-        Array.isArray(parsed)
-      ) {
-        throw new Error(
-          `workflow-run reader: event at ${entry.path} is not a JSON object`,
-        );
-      }
-      const body: Record<string, unknown> = { ...parsed };
-      const type = body["type"];
+      const path = `${eventsDir}/${entry.path}`;
+      const parsed = parseEventObject(
+        new TextDecoder().decode(blob.blob),
+        path,
+      );
+      const type = parsed["type"];
       if (typeof type !== "string") {
         throw new Error(
-          `workflow-run reader: event at ${entry.path} is missing a string \`type\` field`,
+          `workflow-run reader: event at ${path} is missing a string \`type\` field`,
         );
       }
-      events.push({ seq, type, body });
+      // The per-event form carries the seq in the filename; when the body
+      // also carries one, the two must agree (the combined form reads the
+      // seq from the body, so a disagreement would make the forms diverge).
+      const bodySeq = parsed["seq"];
+      if (typeof bodySeq === "number" && bodySeq !== seq) {
+        throw new Error(
+          `workflow-run reader: event at ${path} body seq ${String(bodySeq)} does not match filename seq ${String(seq)}`,
+        );
+      }
+      events.push({ seq, type, body: parsed });
     }
     events.sort((a, b) => a.seq - b.seq);
     return events;
+  }
+
+  // Parse one combined-log line (the verbatim text of a former
+  // `events/<seq>.json` blob): the seq is read from the body, since the
+  // combined form drops the per-event filename that carried it.
+  function parseRunEventLine(line: string, source: string): WorkflowRunEvent {
+    const parsed = parseEventObject(line, source);
+    const seq = parsed["seq"];
+    const type = parsed["type"];
+    if (typeof seq !== "number") {
+      throw new Error(
+        `workflow-run reader: event in ${source} is missing a numeric \`seq\` field`,
+      );
+    }
+    if (typeof type !== "string") {
+      throw new Error(
+        `workflow-run reader: event in ${source} is missing a string \`type\` field`,
+      );
+    }
+    return { seq, type, body: parsed };
+  }
+
+  function parseEventObject(
+    text: string,
+    source: string,
+  ): Record<string, unknown> {
+    const parsed: unknown = JSON.parse(text);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      throw new Error(
+        `workflow-run reader: event at ${source} is not a JSON object`,
+      );
+    }
+    return { ...parsed };
   }
 
   return { listRunIds, readRunEvents };

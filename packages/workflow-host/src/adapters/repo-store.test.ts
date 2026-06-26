@@ -119,6 +119,60 @@ describe("workflow-host RepoStore adapter — happy path", () => {
     expect(events[1]?.seq).toBe(2);
   });
 
+  test("read folds a combined events.jsonl identically to the per-event files", async () => {
+    const dataDir = await makeTempDir("repo-store-adapter-combined-");
+    const repoId: RepoId = { kind: "workflow-run", id: "deployment-combined" };
+    const substrate = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "workflow-run": workflowRunKindHandler },
+      authorize: allowAll,
+    });
+    await substrate.writeTree({ kind: "hub" }, repoId, REF, {
+      files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" },
+      message: "genesis",
+    });
+    const adapter = createWorkflowRunRepoStore({
+      substrate,
+      repoId,
+      principal: WORKFLOW_PROCESS_PRINCIPAL,
+      ref: REF,
+    });
+
+    const perEventRun = "run-perevent";
+    await adapter.append(perEventRun, freshRunStarted(perEventRun, 1));
+    await adapter.append(perEventRun, freshStepStarted(2));
+
+    // Fold the per-event run's on-disk blobs into a sibling run's combined
+    // events.jsonl -- byte-for-byte, one line per event in seq order, with
+    // a trailing newline -- the exact shape the compaction writer produces.
+    const dir = substrate.getRepoDir(repoId);
+    const fsp = await import("node:fs/promises");
+    const eventsDir = path.join(dir, "runs", perEventRun, "events");
+    const names = (await fsp.readdir(eventsDir))
+      .filter((n) => /^(0|[1-9][0-9]*)\.json$/.test(n))
+      .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
+    const lines: string[] = [];
+    for (const n of names) {
+      lines.push(await fsp.readFile(path.join(eventsDir, n), "utf8"));
+    }
+    const combinedRun = "run-combined";
+    await fsp.mkdir(path.join(dir, "runs", combinedRun), { recursive: true });
+    await fsp.writeFile(
+      path.join(dir, "runs", combinedRun, "events.jsonl"),
+      lines.join("\n") + "\n",
+    );
+
+    const fromPerEvent = await adapter.read(perEventRun);
+    const fromCombined = await adapter.read(combinedRun);
+    expect(fromCombined).toEqual(fromPerEvent);
+    expect(fromCombined.map((e) => e.kind)).toEqual([
+      "RunStarted",
+      "StepStarted",
+    ]);
+    expect(fromCombined.map((e) => e.seq)).toEqual([1, 2]);
+  });
+
   test("on-disk envelope carries top-level seq and type matching the workflow-run kind handler contract", async () => {
     const dataDir = await makeTempDir("repo-store-adapter-envelope-");
     const repoId: RepoId = { kind: "workflow-run", id: "deployment-envelope" };

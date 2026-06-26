@@ -132,6 +132,10 @@ export {
   type WorkflowRunReader,
   type WorkflowRunEvent,
 } from "./workflow-run-reader";
+export {
+  WORKFLOW_RUN_EVENTS_FILE,
+  splitCombinedEventLog,
+} from "./workflow-run-event-log";
 export type {
   AuthorizeFn,
   CreateRepoStoreConfig,
