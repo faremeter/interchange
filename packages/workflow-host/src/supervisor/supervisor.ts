@@ -83,7 +83,7 @@ import {
   type CredentialsSnapshot,
 } from "./credentials";
 import { commitCancelRequested } from "./cancel-signing";
-import { commitRunEvent } from "./run-event-signing";
+import { commitRunEvent, compactRunEvents } from "./run-event-signing";
 import {
   createDrainTimeoutAccumulator,
   DEFAULT_DRAIN_TIMEOUT_MS,
@@ -1070,6 +1070,27 @@ export function createWorkflowSupervisor(
           result: { ok: true, commitSha },
         },
       });
+      // Seal each run that reached a terminal event in this commit: fold
+      // its per-event files into one combined events.jsonl. Off the hot
+      // path -- the child's write has already been acknowledged above -- so
+      // a failure is logged and does not block dispatch; the run is left in
+      // per-event form, which readers handle. There is no later trigger for
+      // a run whose fold is interrupted here (e.g. by a crash before the
+      // fold commits): the terminal signal fires once. A bounded recovery
+      // sweep is tracked as INTR-229; until then such a run stays
+      // per-event. The fold commit carries no newly-added terminal event,
+      // so it does not re-fire this terminal-write coupling.
+      for (const { runId } of newlyTerminalRuns) {
+        void compactRunEvents({
+          substrate: bindings.repoStore,
+          repoId: validatedRepoId,
+          ref: data.ref,
+          deploymentId: bindings.deploymentId,
+          runId,
+        }).catch((cause) => {
+          logger.warn`compaction of run ${runId} failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+        });
+      }
     } catch (cause) {
       // Clean up any merge awaiter that the substrate may not have
       // reached (e.g. the write threw before invoking the merge
