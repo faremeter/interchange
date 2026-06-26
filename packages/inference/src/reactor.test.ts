@@ -1796,9 +1796,10 @@ describe("createReactor — abort handling", () => {
 describe("createReactor — dequeue priority", () => {
   test("tool.done is prioritized over message.received when tool calls are pending", async () => {
     // Pre-seed history with an assistant message containing a tool_call
-    // block. Using addToHistory=false on executeTools keeps this as the
-    // last message, so historyHasPendingToolCalls() stays true when the
-    // loop calls dequeueNext() after tools complete.
+    // block, then run tools with addToHistory=false so no tool-result turn is
+    // appended. pendingContinuations keeps the cycle pending regardless of
+    // history shape: the enqueued tool.done is drained before the message
+    // delivered mid-run.
     const seededTurns: ConversationTurn[] = [
       {
         role: "assistant",
@@ -1817,9 +1818,8 @@ describe("createReactor — dequeue priority", () => {
 
     const order: string[] = [];
 
-    // Empty content prevents the reactor from appending a user text
-    // message to history, preserving the assistant tool_call as the
-    // last entry so historyHasPendingToolCalls() stays true.
+    // A minimal inbound message; its content is irrelevant to the cycle-event
+    // drain ordering this test exercises.
     const emptyMessage: InboundMessage = {
       ref: { uid: 1, mailbox: "INBOX" },
       headers: {
@@ -1868,14 +1868,232 @@ describe("createReactor — dequeue priority", () => {
     reactor.deliver(emptyMessage);
     await waitFor("reactor.done");
 
-    // tool.done should appear before the second message.received in the
-    // order array, because dequeueNext prioritizes cycle events when
-    // the last history message has pending tool_calls.
+    // tool.done should appear before the second message.received in the order
+    // array, because dequeueNext drains cycle events while
+    // pendingContinuations is positive.
     const toolDoneIdx = order.indexOf("tool.done");
     const secondMessageIdx = order.lastIndexOf("message.received");
     expect(toolDoneIdx).toBeGreaterThan(-1);
     expect(secondMessageIdx).toBeGreaterThan(-1);
     expect(toolDoneIdx).toBeLessThan(secondMessageIdx);
+  });
+
+  function assistantToolCallTurn(ids: string[]): ConversationTurn {
+    return {
+      role: "assistant",
+      content: ids.map((id) => ({
+        type: "tool_call" as const,
+        id,
+        name: "some_tool",
+        arguments: {},
+      })),
+      model: "test-model",
+      timestamp: 1000,
+    };
+  }
+
+  test("tool.done is prioritized over message.received with addToHistory=true", async () => {
+    // The production path uses addToHistory=true, so executeTools appends the
+    // tool-result turn to history before its tool.done events are consumed.
+    // The pendingContinuations counter, not history shape, must keep the
+    // cycle pending so mail delivered mid-batch cannot start an overlapping
+    // inference. Against the old history-shape gate the appended tool-result
+    // turn flips the gate false, the queued message.received jumps ahead, the
+    // director shuts down on it, and tool.done is never processed.
+    const order: string[] = [];
+
+    const { reactor, waitFor } = createTestReactor({
+      contextStore: makeContextStore([assistantToolCallTurn(["tc-pending"])]),
+      director: {
+        async decide(event, _state, caps) {
+          order.push(event.type);
+          if (event.type === "message.received") {
+            if (order.filter((t) => t === "message.received").length >= 2) {
+              return caps.done();
+            }
+            return caps.executeTools(
+              [{ id: "tc-pending", name: "some_tool", arguments: {} }],
+              true,
+              true,
+            );
+          }
+          if (event.type === "tool.done") {
+            return caps.wait();
+          }
+          return caps.done();
+        },
+      },
+      toolRunner: makeToolRunner(async (call) => {
+        // Deliver a second message while the tool runs, then yield to a real
+        // timer so deliver()'s async enqueue lands before executeTools
+        // enqueues tool.done. This pins the queue order to
+        // [message.received, tool.done] — the interleave that triggers the bug.
+        reactor.deliver(makeInboundMessage());
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return { callId: call.id, content: "ok" };
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const toolDoneIdx = order.indexOf("tool.done");
+    const secondMessageIdx = order.lastIndexOf("message.received");
+    expect(toolDoneIdx).toBeGreaterThan(-1);
+    expect(secondMessageIdx).toBeGreaterThan(-1);
+    expect(toolDoneIdx).toBeLessThan(secondMessageIdx);
+  });
+
+  // Both tool.done events of a two-call batch must be drained before mail
+  // delivered mid-batch. pendingContinuations must track the full batch count,
+  // not a single in-cycle flag. Run for both parallel and sequential
+  // execution since those take different enqueue paths in executeTools.
+  async function collectBatchDrainOrder(parallel: boolean): Promise<string[]> {
+    const order: string[] = [];
+    let toolDoneCount = 0;
+
+    const { reactor, waitFor } = createTestReactor({
+      contextStore: makeContextStore([assistantToolCallTurn(["tc-a", "tc-b"])]),
+      director: {
+        async decide(event, _state, caps) {
+          order.push(event.type);
+          if (event.type === "message.received") {
+            if (order.filter((t) => t === "message.received").length >= 2) {
+              return caps.done();
+            }
+            return caps.executeTools(
+              [
+                { id: "tc-a", name: "some_tool", arguments: {} },
+                { id: "tc-b", name: "some_tool", arguments: {} },
+              ],
+              parallel,
+              true,
+            );
+          }
+          if (event.type === "tool.done") {
+            toolDoneCount += 1;
+            return toolDoneCount >= 2 ? caps.wait() : [];
+          }
+          return caps.done();
+        },
+      },
+      toolRunner: makeToolRunner(async (call) => {
+        reactor.deliver(makeInboundMessage());
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return { callId: call.id, content: "ok" };
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+    return order;
+  }
+
+  test("drains an entire parallel tool batch before inbound mail", async () => {
+    const order = await collectBatchDrainOrder(true);
+    expect(order.filter((t) => t === "tool.done").length).toBe(2);
+    expect(order.lastIndexOf("tool.done")).toBeLessThan(
+      order.lastIndexOf("message.received"),
+    );
+  });
+
+  test("drains an entire sequential tool batch before inbound mail", async () => {
+    const order = await collectBatchDrainOrder(false);
+    expect(order.filter((t) => t === "tool.done").length).toBe(2);
+    expect(order.lastIndexOf("tool.done")).toBeLessThan(
+      order.lastIndexOf("message.received"),
+    );
+  });
+
+  test("abort during a tool batch shuts down cleanly", async () => {
+    // An abort preempts a cycle, leaving pendingContinuations positive. The
+    // reactor must still terminate: abort takes priority over cycle draining
+    // and the leftover count is never read after shutdown.
+    const { reactor, waitFor } = createTestReactor({
+      contextStore: makeContextStore([assistantToolCallTurn(["tc-pending"])]),
+      director: {
+        async decide(event, _state, caps) {
+          if (event.type === "message.received") {
+            return caps.executeTools(
+              [{ id: "tc-pending", name: "some_tool", arguments: {} }],
+              true,
+              true,
+            );
+          }
+          return caps.done();
+        },
+      },
+      toolRunner: makeToolRunner(async (call) => {
+        reactor.abort("admin_kill");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return { callId: call.id, content: "ok" };
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    // Reaching reactor.done is the assertion: abort preempted the queued
+    // tool.done and the reactor terminated despite a positive count.
+    await waitFor("reactor.done");
+  });
+
+  test("inference.done is processed before mail delivered mid-inference", async () => {
+    // The overlapping-inference window for a plain (no-tool) response: mail
+    // arriving while an inference runs must not start a second inference ahead
+    // of the first inference's own completion event. The counter defers it;
+    // the old history-shape gate would have let the mail jump ahead, since a
+    // plain-text assistant turn is not a pending tool_call turn.
+    const order: string[] = [];
+    let inferenceCount = 0;
+
+    const { reactor, waitFor } = createTestReactor({
+      director: {
+        async decide(event, _state, caps) {
+          order.push(event.type);
+          if (event.type === "message.received") {
+            if (order.filter((t) => t === "message.received").length >= 2) {
+              return caps.done();
+            }
+            return caps.infer();
+          }
+          if (event.type === "inference.done") {
+            return caps.wait();
+          }
+          return caps.done();
+        },
+      },
+      inferenceRunner: async function* (opts) {
+        inferenceCount += 1;
+        // Deliver mail mid-inference, then yield to a real timer so the
+        // message is enqueued before inference.done.
+        reactor.deliver(makeInboundMessage());
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        yield {
+          type: "inference.done",
+          seq: opts.nextSeq(),
+          data: {
+            turn: makeAssistantTurn("plain reply"),
+            usage: emptyUsage(),
+            source: TEST_SOURCE,
+          },
+        };
+      },
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const inferenceDoneIdx = order.indexOf("inference.done");
+    const secondMessageIdx = order.lastIndexOf("message.received");
+    expect(inferenceDoneIdx).toBeGreaterThan(-1);
+    expect(secondMessageIdx).toBeGreaterThan(-1);
+    expect(inferenceDoneIdx).toBeLessThan(secondMessageIdx);
+    // Sanity check: exactly one inference ran for the single inferring
+    // message. The ordering assertions above are what guard the regression.
+    expect(inferenceCount).toBe(1);
   });
 });
 
