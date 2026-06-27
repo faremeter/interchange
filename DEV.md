@@ -146,13 +146,14 @@ each command directly and runs `bin/check-env` (via `.env-checked`) to
 verify the environment before each build.
 
 ```bash
-make all       # lint + build + test (full verification)
-make build     # TypeScript type checking (tsc -b --noEmit --force)
-make lint      # Prettier + ESLint + API docs freshness
-make format    # Prettier auto-fix
-make test      # All tests
-make docs      # Regenerate API documentation
-make clean     # Remove tsbuildinfo, dist directories, env stamp
+make all            # lint + build + admin-ui bundle + test
+make build          # TypeScript type checking (tsc -b --noEmit --force)
+make build-admin-ui # admin-ui production bundle (vite build)
+make lint           # Prettier + ESLint + API docs freshness
+make format         # Prettier auto-fix
+make test           # All tests
+make docs           # Regenerate API documentation
+make clean          # Remove tsbuildinfo, dist directories, env stamp
 ```
 
 The pre-commit hook checks out the staged tree into a temporary

@@ -1,9 +1,12 @@
 export PATH := $(PWD)/node_modules/.bin:$(PWD)/bin:$(PATH)
 
-all: lint build test
+all: lint build build-admin-ui test
 
 build: FORCE
 	tsc -b --noEmit --force
+
+build-admin-ui: FORCE
+	cd apps/admin-ui && vite build
 
 lint: FORCE
 	prettier -c .
@@ -41,5 +44,5 @@ clean:
 
 include .env-checked
 
-.PHONY: all build lint test test-load format docs clean builtins publish-builtins
+.PHONY: all build build-admin-ui lint test test-load format docs clean builtins publish-builtins
 FORCE:

@@ -133,15 +133,16 @@ root, which verifies the environment via
 [`bin/check-env`](./bin/check-env) before running each command
 directly.
 
-| Target        | Description                                  |
-| ------------- | -------------------------------------------- |
-| `make all`    | lint + build + test (full verification)      |
-| `make build`  | type check (`tsc -b --noEmit --force`)       |
-| `make lint`   | prettier + eslint + API docs freshness       |
-| `make format` | auto-format                                  |
-| `make test`   | run tests                                    |
-| `make docs`   | regenerate [`docs/API.md`](./docs/API.md)    |
-| `make clean`  | remove `tsbuildinfo`, `dist/`, and env stamp |
+| Target                | Description                                  |
+| --------------------- | -------------------------------------------- |
+| `make all`            | lint + build + admin-ui bundle + test        |
+| `make build`          | type check (`tsc -b --noEmit --force`)       |
+| `make build-admin-ui` | bundle the admin UI (`vite build`)           |
+| `make lint`           | prettier + eslint + API docs freshness       |
+| `make format`         | auto-format                                  |
+| `make test`           | run tests                                    |
+| `make docs`           | regenerate [`docs/API.md`](./docs/API.md)    |
+| `make clean`          | remove `tsbuildinfo`, `dist/`, and env stamp |
 
 Run `make all` before declaring a change correct; individual
 package builds do not guarantee the full project graph compiles.

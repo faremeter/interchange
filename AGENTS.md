@@ -43,6 +43,7 @@ The remaining command gets a clean, running system with seed data. It drops and 
 | Seed (requires running hub)   | `bun bin/seed.ts`              |
 | Full build verification       | `make all`                     |
 | Type check only               | `make build`                   |
+| Bundle the admin UI           | `make build-admin-ui`          |
 | Lint only                     | `make lint`                    |
 | Run tests only                | `make test`                    |
 | Auto-format                   | `make format`                  |
@@ -72,14 +73,18 @@ You must run the full build pipeline before declaring any task complete:
 make all
 ```
 
-This runs lint, type check (`tsc -b`), and tests in order, after verifying
-the environment via `bin/check-env`. Do not run `tsc`, `eslint`, or `bun
-test` directly in place of `make all` -- the Makefile is the authoritative
-entrypoint and gates on `bin/check-env` first.
+This runs lint, type check (`tsc -b`), the admin-ui production bundle
+(`vite build`), and tests in order, after verifying the environment via
+`bin/check-env`. Do not run `tsc`, `eslint`, or `bun test` directly in
+place of `make all` -- the Makefile is the authoritative entrypoint and
+gates on `bin/check-env` first.
 
 - `make build` runs `tsc -b --noEmit --force`, revalidating the entire
   TypeScript project graph on every run; an incremental build can pass
   while a cross-package type break sits latent
+- `make build-admin-ui` runs `vite build`, catching production-bundle
+  breaks that pass the type-check (the bundler resolves assets, CSS, and
+  imports that `tsc` does not exercise)
 - Individual package builds do not guarantee the full tree will build
 - Type exports and imports may not be available until the full tree is built
 - Tests may fail if dependent packages are not rebuilt
