@@ -48,11 +48,12 @@ each build and runs each command directly.
 make all
 
 # Individual targets
-make build     # tsc -b --noEmit --force (revalidates the entire graph)
-make lint      # Prettier + ESLint + API docs freshness
-make format    # Auto-format with Prettier
-make test      # Run bun tests
-make docs      # Regenerate API documentation
+make build           # tsc -b --noEmit --force (revalidates the entire graph)
+make build-admin-ui  # admin-ui production bundle (vite build)
+make lint            # Prettier + ESLint + API docs freshness
+make format          # Auto-format with Prettier
+make test            # Run bun tests
+make docs            # Regenerate API documentation
 ```
 
 `make build` runs `tsc -b --noEmit --force`. The `--force` flag rebuilds every project from scratch, so each run revalidates the entire monorepo dependency graph rather than trusting incremental `tsconfig.tsbuildinfo` caches. Changes to shared packages (types, authz, log) may break downstream consumers; a forced build catches them, where an unforced incremental build can pass while the break sits latent.
