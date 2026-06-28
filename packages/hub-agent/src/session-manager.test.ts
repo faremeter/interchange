@@ -469,3 +469,168 @@ describe("SessionManager.onAgentEvent per-agent fan-out", () => {
     expect(bobEvents).toEqual([bobTick, bobTick]);
   });
 });
+
+async function seedAgentsOnDisk(
+  dataDir: string,
+  addresses: string[],
+): Promise<void> {
+  const seed = makeManagerHarness(dataDir);
+  for (const address of addresses) {
+    await seed.manager.provisionAgent(makeConfig(address));
+    await seed.manager.startSession(address);
+  }
+}
+
+function makeRestoredBundle(): HarnessBundle {
+  return {
+    harness: makeHarnessStub(),
+    mailStore: makeMailStoreStub(),
+    updateGrants() {
+      /* no-op: restore tests do not assert on grants */
+    },
+    disposers: [],
+  };
+}
+
+function makeRestoreStores(dataDir: string): {
+  repoStore: ReturnType<typeof createAgentRepoStore>;
+  keyStore: ReturnType<typeof createAgentKeyStore>;
+} {
+  return {
+    repoStore: createAgentRepoStore({ dataDir }),
+    keyStore: createAgentKeyStore({
+      dataDir,
+      generateKeyPair: async () => makeKeyPair(11),
+      signEd25519: () => new Uint8Array(64),
+      verifySSHSig: () => true,
+    }),
+  };
+}
+
+describe("SessionManager.restoreSessions bounded parallelism", () => {
+  test("rejects a non-positive restoreConcurrency", async () => {
+    const dataDir = await tempDir();
+    const { repoStore, keyStore } = makeRestoreStores(dataDir);
+    expect(() =>
+      createSessionManager({
+        transport: createInMemoryTransport(),
+        repoStore,
+        keyStore,
+        buildHarness: makeRecordingBuilder({}),
+        createAgentCrypto: (kp) => makeCrypto(kp),
+        onEvent: () => {
+          /* no-op */
+        },
+        onConnectorStateChanged: () => {
+          /* no-op */
+        },
+        restoreConcurrency: 0,
+      }),
+    ).toThrow(/restoreConcurrency must be a positive integer/);
+  });
+
+  test("restores up to restoreConcurrency agents at once, no more", async () => {
+    const dataDir = await tempDir();
+    const addresses = ["a@local", "b@local", "c@local"];
+    await seedAgentsOnDisk(dataDir, addresses);
+
+    // Fresh stores + transport stand in for a restarted process that
+    // restores the seeded agents from disk.
+    const { repoStore, keyStore } = makeRestoreStores(dataDir);
+
+    const buildStarts: string[] = [];
+    let startedCount = 0;
+    let signalBoundReached!: () => void;
+    const boundReached = new Promise<void>((resolve) => {
+      signalBoundReached = resolve;
+    });
+    let releaseBuilds!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseBuilds = resolve;
+    });
+    const builder: HarnessBuilder = {
+      canBuildSource() {
+        /* accept every source */
+      },
+      async build(args) {
+        buildStarts.push(args.agentAddress);
+        startedCount += 1;
+        if (startedCount === 2) signalBoundReached();
+        await gate;
+        return makeRestoredBundle();
+      },
+    };
+
+    const manager = createSessionManager({
+      transport: createInMemoryTransport(),
+      repoStore,
+      keyStore,
+      buildHarness: builder,
+      createAgentCrypto: (kp) => makeCrypto(kp),
+      onEvent: () => {
+        /* no-op */
+      },
+      onConnectorStateChanged: () => {
+        /* no-op */
+      },
+      restoreConcurrency: 2,
+    });
+
+    const restorePromise = manager.restoreSessions();
+    // Two builds run at once; the third cannot start until a worker
+    // slot frees, which needs the gate to release. A serial restore
+    // would hold at one started build and this await would never settle.
+    await boundReached;
+    expect(buildStarts.length).toBe(2);
+
+    releaseBuilds();
+    const result = await restorePromise;
+    // All three eventually build once slots free up.
+    expect(buildStarts.length).toBe(3);
+    expect(result.failed).toEqual([]);
+    expect(result.restored.map((r) => r.address).sort()).toEqual(
+      [...addresses].sort(),
+    );
+  });
+
+  test("reports a failing agent as failed without blocking the rest", async () => {
+    const dataDir = await tempDir();
+    const addresses = ["healthy1@local", "wedged@local", "healthy2@local"];
+    await seedAgentsOnDisk(dataDir, addresses);
+
+    const { repoStore, keyStore } = makeRestoreStores(dataDir);
+
+    const builder: HarnessBuilder = {
+      canBuildSource() {
+        /* accept every source */
+      },
+      async build(args) {
+        if (args.agentAddress === "wedged@local") {
+          throw new Error("registry fetch exceeded the timeout");
+        }
+        return makeRestoredBundle();
+      },
+    };
+
+    const manager = createSessionManager({
+      transport: createInMemoryTransport(),
+      repoStore,
+      keyStore,
+      buildHarness: builder,
+      createAgentCrypto: (kp) => makeCrypto(kp),
+      onEvent: () => {
+        /* no-op */
+      },
+      onConnectorStateChanged: () => {
+        /* no-op */
+      },
+    });
+
+    const result = await manager.restoreSessions();
+    expect(result.failed).toEqual(["wedged@local"]);
+    expect(result.restored.map((r) => r.address).sort()).toEqual([
+      "healthy1@local",
+      "healthy2@local",
+    ]);
+  });
+});

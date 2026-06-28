@@ -95,7 +95,21 @@ export type SessionManagerConfig = {
    * distribution can omit this.
    */
   onDeployApplyError?: DeployApplyErrorSink;
+  /**
+   * Maximum number of agents whose sessions `restoreSessions` restores
+   * concurrently. Restore work is per-agent isolated (per-agent git dir,
+   * per-address repo lock), so agents restore in parallel up to this
+   * bound and a single slow or wedged agent no longer gates the rest.
+   * Defaults to `DEFAULT_RESTORE_CONCURRENCY`.
+   */
+  restoreConcurrency?: number;
 };
+
+/**
+ * Default `restoreConcurrency`: how many agents `restoreSessions`
+ * restores in parallel when the caller does not override it.
+ */
+const DEFAULT_RESTORE_CONCURRENCY = 4;
 
 export type ProvisionResult = {
   publicKey: string;
@@ -203,7 +217,13 @@ export function createSessionManager(
     onEvent,
     onConnectorStateChanged,
     onDeployApplyError,
+    restoreConcurrency = DEFAULT_RESTORE_CONCURRENCY,
   } = config;
+  if (!Number.isInteger(restoreConcurrency) || restoreConcurrency < 1) {
+    throw new Error(
+      `createSessionManager: restoreConcurrency must be a positive integer; got ${String(restoreConcurrency)}`,
+    );
+  }
 
   const sessions = new Map<string, LiveSession>();
   const provisioned = new Map<string, ProvisionedAgent>();
@@ -547,17 +567,27 @@ export function createSessionManager(
       repoStore.scanConfigs(),
     ]);
 
-    const restored: RestoredAgent[] = [];
-    const failed: string[] = [];
+    // Restore agents with bounded parallelism. Each agent's provision +
+    // startSession is per-agent isolated (per-agent git dir, per-address
+    // repo lock), so running several at once cannot corrupt shared
+    // state, and one slow or wedged agent no longer gates the rest.
+    // Outcomes are written into per-index slots so the returned order is
+    // independent of completion order.
+    type Outcome =
+      | { kind: "restored"; agent: RestoredAgent }
+      | { kind: "failed"; address: string };
+    const outcomes = new Array<Outcome | undefined>(configEntries.length);
 
-    for (const entry of configEntries) {
+    async function restoreOne(index: number): Promise<void> {
+      const entry = configEntries[index];
+      if (entry === undefined) return;
       const keyEntry: AgentKeyEntry | undefined = keysByAddress.get(
         entry.address,
       );
       if (keyEntry === undefined) {
         logger.error`Cannot restore "${entry.address}": agent.json exists but key pair is missing`;
-        failed.push(entry.address);
-        continue;
+        outcomes[index] = { kind: "failed", address: entry.address };
+        return;
       }
 
       const agent: RestoredAgent = {
@@ -569,8 +599,8 @@ export function createSessionManager(
       }
 
       if (sessions.has(entry.address)) {
-        restored.push(agent);
-        continue;
+        outcomes[index] = { kind: "restored", agent };
+        return;
       }
       try {
         await provisionAgent(entry.config);
@@ -578,13 +608,36 @@ export function createSessionManager(
           await repoStore.persistPairing(entry.address, entry.hubPublicKey);
         }
         await startSession(entry.address);
-        restored.push(agent);
+        outcomes[index] = { kind: "restored", agent };
         logger.info`Restored session for ${entry.address}`;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        failed.push(entry.address);
+        outcomes[index] = { kind: "failed", address: entry.address };
         logger.error`Failed to restore session for ${entry.address}: ${msg}`;
       }
+    }
+
+    // Worker pool: each worker pulls the next index until the list
+    // drains. Reading and advancing `cursor` is synchronous (no await
+    // between), so each index is handed to exactly one worker.
+    let cursor = 0;
+    async function worker(): Promise<void> {
+      for (;;) {
+        const index = cursor;
+        cursor += 1;
+        if (index >= configEntries.length) return;
+        await restoreOne(index);
+      }
+    }
+    const workerCount = Math.min(restoreConcurrency, configEntries.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+    const restored: RestoredAgent[] = [];
+    const failed: string[] = [];
+    for (const outcome of outcomes) {
+      if (outcome === undefined) continue;
+      if (outcome.kind === "restored") restored.push(outcome.agent);
+      else failed.push(outcome.address);
     }
 
     return { restored, failed };
