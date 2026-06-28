@@ -2,6 +2,7 @@ import type {
   ConversationTurn,
   InferenceEvent,
   InferenceOptions,
+  LastCycleSource,
 } from "@intx/types/runtime";
 
 // The request shape the harness passes to fetch.
@@ -55,3 +56,50 @@ export type ProviderAdapter = {
   extractRetryAfterMs?: RetryAfterExtractor;
   extractPacingDelayMs?: PacingExtractor;
 };
+
+// Builds a fresh adapter for one inference call. Invoked per call so the
+// returned adapter's per-request parser state never leaks across calls.
+export type AdapterFactory = (source: LastCycleSource) => ProviderAdapter;
+
+// Resolves an inference source to a provider adapter. Membership is keyed by
+// the source's `provider` identifier; resolution mints a fresh adapter so the
+// per-instance stateful parser is isolated per call and per failover attempt.
+export type AdapterRegistry = {
+  has(provider: string): boolean;
+  resolve(source: LastCycleSource): ProviderAdapter;
+};
+
+/**
+ * Builds an adapter registry from a map of provider identifier to adapter
+ * factory. The registry closes over a private copy of the map, so callers
+ * cannot mutate the set after construction. The copy is a `Map`, whose
+ * lookups never consult `Object.prototype`, so an untrusted provider string
+ * (e.g. `"toString"`) cannot reach an inherited member and be invoked as a
+ * factory — it resolves to the loud `Unknown inference provider` error.
+ *
+ * `resolve` invokes the matching factory fresh on every call and never
+ * memoizes the adapter instance. That per-call freshness is load-bearing:
+ * the response parser holds per-request state, so a cached adapter would
+ * leak that state across inference calls and across failover attempts.
+ *
+ * @param factories - Map of provider identifier to adapter factory
+ * @returns A registry exposing membership and per-call resolution
+ */
+export function createAdapterRegistry(
+  factories: Readonly<Record<string, AdapterFactory>>,
+): AdapterRegistry {
+  const byProvider = new Map<string, AdapterFactory>(Object.entries(factories));
+
+  return {
+    has(provider: string): boolean {
+      return byProvider.has(provider);
+    },
+    resolve(source: LastCycleSource): ProviderAdapter {
+      const factory = byProvider.get(source.provider);
+      if (factory === undefined) {
+        throw new Error(`Unknown inference provider: ${source.provider}`);
+      }
+      return factory(source);
+    },
+  };
+}
