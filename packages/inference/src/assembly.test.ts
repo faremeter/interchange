@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
 import { createReactorAssembly } from "./assembly";
+import { createDefaultDependencies } from "./providers";
 import { createInboundMessage } from "@intx/mime";
 import type { AuthzCallResult } from "./authz-extension";
 import type { ReactorEmittedEvent } from "./reactor";
@@ -22,6 +23,13 @@ import type {
 } from "@intx/types/runtime";
 
 import type { AuditRecord } from "@intx/types/audit";
+
+// Built-in-backed dependencies shared across the assembly tests. The
+// assembly used to default `deps` internally; now that the field is
+// required, the canonical built-in default is supplied explicitly. These
+// tests drive tool execution rather than real inference, so the bound
+// `globalThis.fetch` is never reached.
+const defaultDeps = createDefaultDependencies();
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -265,6 +273,7 @@ describe("createReactorAssembly", () => {
     const big = "x".repeat(200);
 
     const { reactor } = createReactorAssembly({
+      deps: defaultDeps,
       sessionId: "s1",
       director: makeToolExecDirector("t", {}, { callId: "c1" }),
       source: source(),
@@ -320,6 +329,7 @@ describe("createReactorAssembly", () => {
     const big = "y".repeat(200);
 
     const { reactor } = createReactorAssembly({
+      deps: defaultDeps,
       sessionId: "s2",
       director: makeToolExecDirector("t", {}, { callId: "c2" }),
       source: source(),
@@ -351,6 +361,7 @@ describe("createReactorAssembly", () => {
     const payload = "z".repeat(50);
 
     const { reactor } = createReactorAssembly({
+      deps: defaultDeps,
       sessionId: "s3",
       director: makeToolExecDirector("t", {}, { callId: "c3" }),
       source: source(),
@@ -379,6 +390,7 @@ describe("createReactorAssembly", () => {
     const auditStore = makeRecordingAuditStore();
 
     const { reactor } = createReactorAssembly({
+      deps: defaultDeps,
       sessionId: "s4",
       director: makeToolExecDirector("forbidden", {}, { callId: "c4" }),
       source: source(),
@@ -434,6 +446,7 @@ describe("createReactorAssembly", () => {
     };
 
     const { reactor } = createReactorAssembly({
+      deps: defaultDeps,
       sessionId: "s5",
       director: makeToolExecDirector("t", {}, { callId: "c5" }),
       source: source(),
@@ -459,6 +472,7 @@ describe("createReactorAssembly", () => {
     const auditStore = makeRecordingAuditStore();
 
     const { reactor, auditCollector } = createReactorAssembly({
+      deps: defaultDeps,
       sessionId: "s6",
       director: makeToolExecDirector(
         "t",
@@ -497,6 +511,7 @@ describe("createReactorAssembly", () => {
     const auditStore = makeRecordingAuditStore();
 
     const { reactor } = createReactorAssembly({
+      deps: defaultDeps,
       sessionId: "s7",
       director: makeToolExecDirector(
         "t",
@@ -545,6 +560,7 @@ describe("createReactorAssembly", () => {
       };
 
     const { reactor } = createReactorAssembly({
+      deps: defaultDeps,
       sessionId: "s8",
       director: makeToolExecDirector(
         "t",
@@ -606,6 +622,7 @@ describe("createReactorAssembly", () => {
     };
 
     const { reactor } = createReactorAssembly({
+      deps: defaultDeps,
       sessionId: "s9",
       director,
       source: source(),
@@ -630,6 +647,7 @@ describe("createReactorAssembly", () => {
   test("blobReader is wired against the supplied contextStore", async () => {
     const contextStore = makeContextStore();
     const { blobReader } = createReactorAssembly({
+      deps: defaultDeps,
       sessionId: "s10",
       director: {
         async decide(_e, _s, caps) {
@@ -657,6 +675,7 @@ describe("createReactorAssembly", () => {
     let callerAfterCheckpointCalls = 0;
 
     const { auditCollector, reactor } = createReactorAssembly({
+      deps: defaultDeps,
       sessionId: "s11",
       director: makeToolExecDirector(
         "t",
@@ -702,6 +721,7 @@ describe("createReactorAssembly", () => {
     };
 
     const { reactor } = createReactorAssembly({
+      deps: defaultDeps,
       sessionId: "s12",
       director: makeToolExecDirector("t", {}, { callId: "c12" }),
       source: source(),

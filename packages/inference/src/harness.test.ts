@@ -1,13 +1,13 @@
 import { describe, test, expect } from "bun:test";
 
 import {
-  createDefaultDependencies,
   createDefaultScheduler,
   HarnessId,
   runInference,
   type Dependencies,
   type InferenceHarnessOptions,
 } from "./harness";
+import { createDefaultDependencies } from "./providers";
 import type {
   ConversationTurn,
   InferenceEvent,

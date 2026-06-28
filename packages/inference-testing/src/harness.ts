@@ -1,10 +1,12 @@
 import {
   HarnessId,
   runInference,
+  type AdapterRegistry,
   type Dependencies,
   type InferenceHarnessOptions,
   type Scheduler,
 } from "@intx/inference";
+import { createBuiltinRegistry } from "@intx/inference/providers";
 import type { InferenceEvent } from "@intx/types/runtime";
 
 import {
@@ -171,6 +173,13 @@ export type SetupHarnessOpts = {
    * `InferenceOptions.inactivityTimeoutMs` / `totalTimeoutMs`.
    */
   enableInferenceTimers?: boolean;
+  /**
+   * Override the adapter registry exposed via `harness.deps.adapters`.
+   * Defaults to `createBuiltinRegistry()` so the harness resolves the same
+   * shipped provider set production uses. Tests exercising a custom adapter
+   * pass their own registry.
+   */
+  adapters?: AdapterRegistry;
 };
 
 /**
@@ -852,6 +861,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
   const deps: Dependencies = {
     fetch: stubFetch,
     scheduler,
+    adapters: opts.adapters ?? createBuiltinRegistry(),
     [HarnessId]: harnessSymbol,
   };
 

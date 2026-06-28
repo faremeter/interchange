@@ -4,7 +4,7 @@ import { validateActions } from "./actions";
 import { createGateManager } from "./gates";
 import { createCorrelationRegistry } from "./correlation";
 import { createReactor } from "./reactor";
-import { createDefaultDependencies } from "./harness";
+import { createDefaultDependencies } from "./providers";
 import { createInboundMessage } from "@intx/mime";
 
 import type {

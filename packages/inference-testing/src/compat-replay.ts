@@ -21,11 +21,8 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
-import {
-  createDefaultDependencies,
-  runInference,
-  type Dependencies,
-} from "@intx/inference";
+import { runInference, type Dependencies } from "@intx/inference";
+import { createDefaultDependencies } from "@intx/inference/providers";
 import {
   SUPPORT_MATRIX,
   getFixtureDir,

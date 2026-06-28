@@ -1,7 +1,7 @@
 export { parseSSE } from "./sse";
 export {
   runInference,
-  createDefaultDependencies,
+  createDependencies,
   createDefaultScheduler,
   HarnessId,
 } from "./harness";
