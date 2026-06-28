@@ -3238,6 +3238,13 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
 
   // Gate 4: after N >> horizon-worth of messages with advancing time,
   // consumed/ holds ~one horizon's worth, not N.
+  // This case drives ~180 real isogit commits (60 messages, each through
+  // enqueue/dequeue/markConsumed). The boundedness logic keeps the work
+  // per commit small -- that is what it asserts -- but the commit count
+  // alone can exceed the 5s fast-suite default on a loaded machine, where
+  // pure-JS git commits slow down. Give it an explicit ceiling well above
+  // its normal sub-second runtime so load cannot turn a passing assertion
+  // into a timeout.
   test("consumed/ stays bounded under many messages with advancing time", async () => {
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-bounded-");
@@ -3275,7 +3282,7 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
     expect(wm).not.toBeNull();
     if (wm === null) throw new Error("unreachable");
     expect(wm).toBeGreaterThan(10_000);
-  });
+  }, 30_000);
 
   // The watermark is monotonic across real commits: a later commit
   // with an earlier consumedAt does not move it backward.
