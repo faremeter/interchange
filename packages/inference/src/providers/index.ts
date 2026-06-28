@@ -1,5 +1,6 @@
 import { createAdapterRegistry } from "../adapter";
 import type { AdapterFactory, AdapterRegistry } from "../adapter";
+import { createDependencies, type Dependencies } from "../harness";
 import { loadAdapterFactories } from "../manifest";
 import type { AdapterManifest, ModuleImporter } from "../manifest";
 import { createAnthropicAdapter } from "./anthropic";
@@ -28,6 +29,19 @@ function builtinFactories(): Record<string, AdapterFactory> {
  */
 export function createBuiltinRegistry(): AdapterRegistry {
   return createAdapterRegistry(builtinFactories());
+}
+
+/**
+ * Construct runtime dependencies wired to the built-in adapter registry. This
+ * is the honest zero-arg default for hosts that need the shipped provider set:
+ * it binds `globalThis.fetch` and the production scheduler via
+ * {@link createDependencies}. Hosts with custom adapters build a registry
+ * through {@link loadAdapterRegistry} and pass it to `createDependencies`.
+ *
+ * @returns Dependencies resolving the built-in providers
+ */
+export function createDefaultDependencies(): Dependencies {
+  return createDependencies(createBuiltinRegistry());
 }
 
 /**

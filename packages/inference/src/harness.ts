@@ -35,6 +35,7 @@ import type {
 
 import { getLogger } from "@intx/log";
 
+import type { AdapterRegistry } from "./adapter";
 import { parseSSE } from "./sse";
 import { lookupProvider } from "./providers/registry";
 import { injectCredentials } from "./auth";
@@ -100,6 +101,14 @@ export type Dependencies = {
    * `createDefaultScheduler()` for the production default.
    */
   readonly scheduler: Scheduler;
+  /**
+   * Registry resolving an inference source to its provider adapter. Optional
+   * today: `runInference` still resolves adapters through the package-global
+   * provider registry, so this field is carried but not yet consulted.
+   * Construct it via `createDependencies` (core) or, for the built-in set,
+   * `@intx/inference/providers`' `createDefaultDependencies()`.
+   */
+  readonly adapters?: AdapterRegistry;
   readonly [HarnessId]?: symbol;
 };
 
@@ -136,10 +145,22 @@ export function createDefaultScheduler(): Scheduler {
   };
 }
 
-export function createDefaultDependencies(): Dependencies {
+/**
+ * Construct runtime dependencies for `runInference` from an explicit adapter
+ * registry, binding `fetch` to `globalThis.fetch` and `scheduler` to the
+ * production wrapper. The registry is required so the caller makes an explicit
+ * choice of provider set; `@intx/inference/providers`' zero-arg
+ * `createDefaultDependencies()` is the honest default that supplies the
+ * built-in registry.
+ *
+ * @param adapters - Registry resolving inference sources to provider adapters
+ * @returns Fully-populated dependencies
+ */
+export function createDependencies(adapters: AdapterRegistry): Dependencies {
   return {
     fetch: globalThis.fetch.bind(globalThis),
     scheduler: createDefaultScheduler(),
+    adapters,
   };
 }
 

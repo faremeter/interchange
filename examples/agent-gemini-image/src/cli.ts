@@ -23,7 +23,8 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { createDefaultDependencies, runInference } from "@intx/inference";
+import { runInference } from "@intx/inference";
+import { createDefaultDependencies } from "@intx/inference/providers";
 import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 export interface MainOptions {

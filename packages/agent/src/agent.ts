@@ -46,6 +46,7 @@ import {
   type Dependencies,
   type ReactorEmittedEvent,
 } from "@intx/inference";
+import { createDefaultDependencies } from "@intx/inference/providers";
 import { getLogger } from "@intx/log";
 import { createInboundMessage } from "@intx/mime";
 import type { ErrorRecord } from "@intx/types/audit";
@@ -376,7 +377,7 @@ export async function createAgent<EnvReq extends BaseEnv>(
     const contextStore: ContextStore = env.storage;
     const auditStore = env.audit;
     const authorize = env.authorize;
-    const deps: Dependencies | undefined = env.deps;
+    const deps: Dependencies = env.deps ?? createDefaultDependencies();
 
     const sessionId = env.sessionId ?? crypto.randomUUID();
     const streamBufferMax = env.streamBufferMax ?? DEFAULT_STREAM_BUFFER_MAX;
@@ -637,7 +638,7 @@ export async function createAgent<EnvReq extends BaseEnv>(
       ...(env.sizeCapMaxChars !== undefined
         ? { sizeCapMaxChars: env.sizeCapMaxChars }
         : {}),
-      ...(deps !== undefined ? { deps } : {}),
+      deps,
       ...(env.compactors !== undefined ? { compactors: env.compactors } : {}),
     });
 

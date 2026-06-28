@@ -114,13 +114,15 @@ export interface BaseEnv {
   compactors?: Record<string, Compactor>;
 
   /**
-   * Inference dependencies (notably `fetch`) for the reactor's
-   * underlying `runInference` call.
+   * Inference dependencies (notably `fetch` and the adapter registry) for
+   * the reactor's underlying `runInference` call.
    *
-   * Production callers omit this field -- the assembly falls back to
-   * `createDefaultDependencies()` which binds `globalThis.fetch`. Tests
-   * pass `setupHarness().deps` from `@intx/inference-testing` to swap
-   * the fetch implementation for a deterministic stub.
+   * Production callers omit this field -- `createAgent` fills it from
+   * `@intx/inference/providers`' `createDefaultDependencies()`, which binds
+   * `globalThis.fetch` and the built-in adapter registry. Pass an explicit
+   * `Dependencies` to override: tests supply `setupHarness().deps` from
+   * `@intx/inference-testing` for a deterministic stub fetch, and hosts with
+   * custom adapters pass a registry built via `loadAdapterRegistry`.
    *
    * Optional; do not require this field on the production path.
    */

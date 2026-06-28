@@ -29,7 +29,7 @@ import {
   type AuthzExtensionOptions,
 } from "./authz-extension";
 import type { CorrelationValidator } from "./correlation";
-import { createDefaultDependencies, type Dependencies } from "./harness";
+import type { Dependencies } from "./harness";
 import {
   createReactor,
   type Reactor,
@@ -80,7 +80,7 @@ export type ReactorAssemblyConfig = {
   afterCheckpoint?: () => Promise<void>;
   onShutdown?: () => Promise<void>;
 
-  deps?: Dependencies;
+  deps: Dependencies;
   correlationValidator?: CorrelationValidator;
   inferenceRunner?: ReactorConfig["inferenceRunner"];
   gateTimeout?: number;
@@ -222,10 +222,6 @@ export function createReactorAssembly(
         }
       : callerOnShutdown;
 
-  // ReactorConfig.deps is required; default to createDefaultDependencies()
-  // when the caller did not supply one so we never pass `undefined`.
-  const resolvedDeps: Dependencies = deps ?? createDefaultDependencies();
-
   // exactOptionalPropertyTypes is on: only set optional keys when defined.
   const reactorConfig: ReactorConfig = {
     sessionId,
@@ -236,7 +232,7 @@ export function createReactorAssembly(
     toolRunner,
     contextStore,
     onEvent: composedOnEvent,
-    deps: resolvedDeps,
+    deps,
     toolResultTransforms: composedToolResultTransforms,
     ...(composedBeforeToolExtensions !== undefined
       ? { beforeToolExtensions: composedBeforeToolExtensions }

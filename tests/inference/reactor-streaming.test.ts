@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
-import { createReactor, createDefaultDependencies } from "@intx/inference";
+import { createReactor } from "@intx/inference";
+import { createDefaultDependencies } from "@intx/inference/providers";
 import type {
   ReactorConfig,
   Reactor,

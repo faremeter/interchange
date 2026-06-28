@@ -15,13 +15,13 @@ import git from "isomorphic-git";
 
 import { createIsogitStore, initAgentRepo } from "@intx/storage-isogit";
 import {
-  createDefaultDependencies,
   createReactor,
   createSizeCapTransform,
   type Reactor,
   type ReactorEmittedEvent,
   type Dependencies,
 } from "@intx/inference";
+import { createDefaultDependencies } from "@intx/inference/providers";
 import type {
   AuditStore,
   ContextStore,
