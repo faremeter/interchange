@@ -35,6 +35,12 @@ import type {
 } from "@intx/types/runtime";
 import { evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
+import {
+  AdapterManifest,
+  createDependencies,
+  type AdapterRegistry,
+} from "@intx/inference";
+import { loadAdapterRegistry } from "@intx/inference/providers";
 import type { DirectorRegistry } from "@intx/agent";
 import { createDefaultDirectorRegistry } from "@intx/agent";
 import { createSSHSignature } from "@intx/crypto-node";
@@ -122,6 +128,7 @@ export const SIDECAR_SUBSTRATE_CONFIG_KEYS = [
   "STEP_INFERENCE_SOURCES",
   "SIDECAR_CACHE_MAX_BYTES",
   "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
+  "SIDECAR_ADAPTER_MANIFEST",
 ] as const;
 
 const SubstrateConfig = type({
@@ -143,6 +150,14 @@ const SubstrateConfig = type({
   // as positive-finite-number strings at this boundary.
   SIDECAR_CACHE_MAX_BYTES: "string > 0",
   SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "string > 0",
+  // JSON-encoded custom inference adapter manifest. Required: the boot
+  // edge always serializes it into `substrateEnv` (defaulting to "[]"
+  // when no custom adapters are configured), so a missing key child-side
+  // is a serialization bug and must fail loud here, exactly like the
+  // byte-cap fields. Validated as a non-empty string at this boundary;
+  // its JSON shape is re-validated against `AdapterManifest` in
+  // `parseAdapterManifest` before any module is imported.
+  SIDECAR_ADAPTER_MANIFEST: "string > 0",
 }).onUndeclaredKey("ignore");
 
 /**
@@ -198,6 +213,47 @@ function parseStepInferenceSources(raw: string): StepInferenceSourceTable {
   if (validated instanceof type.errors) {
     throw new Error(
       `sidecar workflow-child substrate config: STEP_INFERENCE_SOURCES failed validation: ${validated.summary}`,
+    );
+  }
+  return validated;
+}
+
+/**
+ * Parse and validate the JSON-encoded `SIDECAR_ADAPTER_MANIFEST` entry
+ * the supervisor threaded through `substrateEnv` from the boot edge's
+ * `readAdapterManifest`.
+ *
+ * Trust boundary: the child's substrate config is operator-supplied
+ * (the supervisor's `Bun.spawn` env), so this re-validation is
+ * defense-in-depth at the deserialization boundary, NOT a trust
+ * upgrade. The manifest was already trusted operator config on the
+ * parent side; the same channel already carries the sidecar's signing
+ * private key, so it is not a lower-trust surface. Re-asserting the
+ * shape here keeps the typed-config contract honest rather than
+ * importing modules off an unvalidated wire value.
+ *
+ * Host contract for custom adapters: a manifest `specifier` must
+ * resolve from BOTH the sidecar's and this child's module-resolution
+ * roots (the child is a separate `bun` process spawned by the
+ * supervisor), and an adapter module MUST be import-side-effect-free —
+ * it is imported once per process by `loadAdapterRegistry`, and any
+ * top-level side effect would run independently in the parent and in
+ * every child.
+ */
+export function parseAdapterManifest(raw: string): AdapterManifest {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (cause) {
+    throw new Error(
+      "sidecar workflow-child substrate config: SIDECAR_ADAPTER_MANIFEST is not valid JSON",
+      { cause },
+    );
+  }
+  const validated = AdapterManifest(parsed);
+  if (validated instanceof type.errors) {
+    throw new Error(
+      `sidecar workflow-child substrate config: SIDECAR_ADAPTER_MANIFEST failed validation: ${validated.summary}`,
     );
   }
   return validated;
@@ -399,6 +455,17 @@ export interface SidecarStepBuildEnvDeps {
   /** Per-step tool-loader caps (cache + registry tarball size). */
   cache: StepToolCacheConfig;
   /**
+   * Adapter registry the step agent resolves inference adapters through.
+   * The child builds this eagerly at boot from the validated
+   * `SIDECAR_ADAPTER_MANIFEST` (built-ins merged with operator custom
+   * adapters) and the env builder sets it on `env.deps`, so a step whose
+   * source names a custom provider resolves in the child exactly as it
+   * does on the sidecar main path. Without it the step agent would fall
+   * back to `createAgent`'s built-ins-only default and a custom-provider
+   * source would fail to resolve at run time.
+   */
+  adapters: AdapterRegistry;
+  /**
    * Durable-conversation registry for the warm single-step agent
    * (design §3c). When present, the env builder swaps the per-run isogit
    * `ContextStore` for a per-agent durable store whose conversation is
@@ -541,6 +608,12 @@ export function createSidecarStepBuildEnv(
         workdir,
         audit: storage,
         directors: createDefaultDirectorRegistry(),
+        // Resolve inference adapters through the child's boot-built
+        // registry (built-ins + operator custom adapters), so a
+        // custom-provider step source resolves in the child the same way
+        // it does on the sidecar main path rather than hitting
+        // `createAgent`'s built-ins-only default.
+        deps: createDependencies(deps.adapters),
         transport,
         address: deps.mailboxAddress,
       };
@@ -825,6 +898,17 @@ export function createSidecarSubstrateFactory(
       validated.STEP_INFERENCE_SOURCES,
     );
 
+    // Build the child's adapter registry eagerly at boot from the
+    // operator-supplied manifest. `loadAdapterRegistry` imports every
+    // custom module now, so a bad specifier crashes the child loudly at
+    // construction rather than silently degrading to built-ins-only at
+    // first resolve. The closure registry the sidecar built at its own
+    // boot edge cannot cross the fork; the child rebuilds an equivalent
+    // one from the serialized-and-revalidated manifest.
+    const childAdapterRegistry = await loadAdapterRegistry(
+      parseAdapterManifest(validated.SIDECAR_ADAPTER_MANIFEST),
+    );
+
     const signingKey = {
       publicKey: hexDecode(
         validated.SIDECAR_SIGNING_PUBLIC_KEY,
@@ -934,6 +1018,7 @@ export function createSidecarSubstrateFactory(
       mailboxAddress: env.spawn.mailboxAddress,
       outboundMailBridge: env.outboundMailBridge,
       cache: stepToolCache,
+      adapters: childAdapterRegistry,
       ...(durableConversation !== undefined ? { durableConversation } : {}),
     });
 

@@ -30,6 +30,7 @@ import type {
   InferenceSource,
 } from "@intx/types/runtime";
 import type { RepoId } from "@intx/hub-sessions";
+import { createBuiltinRegistry } from "@intx/inference/providers";
 import type { ChildOutboundMailBridge, StepEnvBase } from "@intx/workflow-host";
 import type { StepInvokeRequest } from "@intx/workflow";
 
@@ -94,6 +95,7 @@ function buildDeps(opts: {
     mailboxAddress: "ins_deployment-keying@example.com",
     outboundMailBridge: stubOutboundMailBridge(),
     cache: { cacheMaxBytes: 1_000_000, registryMaxTarballBytes: 1_000_000 },
+    adapters: createBuiltinRegistry(),
     ...(opts.durableConversation !== undefined
       ? { durableConversation: opts.durableConversation }
       : {}),
