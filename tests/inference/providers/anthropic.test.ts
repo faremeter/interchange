@@ -3,10 +3,10 @@ import { describe, test, expect } from "bun:test";
 import { wire } from "@intx/inference-testing";
 import {
   parseSSE,
-  createAnthropicAdapter,
   ProtocolMismatchError,
   type ProviderAdapter,
 } from "@intx/inference";
+import { createAnthropicAdapter } from "@intx/inference/providers";
 import type { ConversationTurn, InferenceEvent } from "@intx/types/runtime";
 
 const adapter = createAnthropicAdapter();

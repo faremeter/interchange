@@ -10,11 +10,6 @@ export type {
   InferenceHarnessOptions,
   Scheduler,
 } from "./harness";
-export {
-  hasProvider,
-  lookupProvider,
-  registerProvider,
-} from "./providers/registry";
 export type {
   ProviderAdapter,
   RequestBuilder,
@@ -41,9 +36,6 @@ export type {
   RetrySituation,
   RetryDecision,
 } from "@intx/types/runtime";
-export { createAnthropicAdapter } from "./providers/anthropic";
-export { createOpenAIAdapter } from "./providers/openai";
-export { createGoogleGenAIAdapter } from "./providers/google-genai";
 export { uploadGoogleGenAIFile } from "./providers/google-genai-files";
 export type {
   UploadGoogleGenAIFileOpts,

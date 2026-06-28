@@ -1,10 +1,10 @@
 import { describe, test, expect } from "bun:test";
 
+import { parseSSE } from "@intx/inference";
 import {
   createAnthropicAdapter,
   createOpenAIAdapter,
-  parseSSE,
-} from "@intx/inference";
+} from "@intx/inference/providers";
 import type { InferenceEvent, LastCycleSource } from "@intx/types/runtime";
 
 const ANTHROPIC_SOURCE: LastCycleSource = {

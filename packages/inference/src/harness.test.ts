@@ -7,7 +7,12 @@ import {
   type Dependencies,
   type InferenceHarnessOptions,
 } from "./harness";
-import { createDefaultDependencies } from "./providers";
+import {
+  createBuiltinRegistry,
+  createDefaultDependencies,
+  loadAdapterRegistry,
+} from "./providers";
+import type { AdapterFactory } from "./adapter";
 import type {
   ConversationTurn,
   InferenceEvent,
@@ -71,6 +76,7 @@ describe("runInference — Dependencies parameter", () => {
         );
       },
       scheduler: createDefaultScheduler(),
+      adapters: createBuiltinRegistry(),
     };
 
     const originalFetch = globalThis.fetch;
@@ -113,6 +119,7 @@ describe("runInference — Dependencies parameter", () => {
     const deps: Dependencies = {
       fetch: () => Promise.reject(new Error("simulated network failure")),
       scheduler: createDefaultScheduler(),
+      adapters: createBuiltinRegistry(),
     };
 
     const originalFetch = globalThis.fetch;
@@ -308,6 +315,7 @@ describe("runInference — source.defaults merge precedence", () => {
         );
       },
       scheduler: createDefaultScheduler(),
+      adapters: createBuiltinRegistry(),
     };
     let seq = 0;
     await collect(
@@ -368,14 +376,14 @@ describe("runInference — providerOptions merge precedence", () => {
     sourceProviderOptions?: Record<string, unknown>;
     perCallProviderOptions?: Record<string, unknown>;
   }): Promise<Record<string, unknown> | undefined> {
-    // Use a fresh provider name per call so concurrent test runs don't
-    // race on the global registry. The `registerProvider` API has no
-    // unregister counterpart; leaked test providers are inert.
+    // A fresh provider name per call keeps independent runs isolated. The
+    // custom adapter is injected through `deps.adapters`: a manifest entry
+    // points at a synthetic module that `loadAdapterRegistry` resolves via
+    // an injected importer, so nothing is loaded from disk.
     const providerName = `test-provideroptions-${Math.random().toString(36).slice(2)}`;
     let captured: Record<string, unknown> | undefined | "absent" = "absent";
 
-    const { registerProvider } = await import("./providers/registry");
-    registerProvider(providerName, () => ({
+    const make: AdapterFactory = () => ({
       buildRequest: (_messages, _model, options) => {
         captured = isRecord(options.providerOptions)
           ? options.providerOptions
@@ -387,7 +395,11 @@ describe("runInference — providerOptions merge precedence", () => {
         };
       },
       parseResponse: () => [],
-    }));
+    });
+    const adapters = await loadAdapterRegistry(
+      [{ provider: providerName, specifier: "x", export: "make" }],
+      { import: () => Promise.resolve({ make }) },
+    );
 
     const source: InferenceSource = {
       id: `${providerName}:test-model`,
@@ -409,6 +421,7 @@ describe("runInference — providerOptions merge precedence", () => {
           }),
         ),
       scheduler: createDefaultScheduler(),
+      adapters,
     };
 
     let seq = 0;
@@ -465,6 +478,7 @@ describe("Dependencies — reflective exposure of HarnessId", () => {
     return {
       fetch: () => Promise.resolve(new Response("")),
       scheduler: createDefaultScheduler(),
+      adapters: createBuiltinRegistry(),
       [HarnessId]: Symbol("test-harness"),
     };
   }
@@ -516,6 +530,7 @@ describe("runInference — source-identity stamping", () => {
           }),
         ),
       scheduler: createDefaultScheduler(),
+      adapters: createBuiltinRegistry(),
     };
     let seq = 0;
     const events = await collect(
@@ -560,6 +575,7 @@ describe("runInference — source-identity stamping", () => {
           }),
         ),
       scheduler: createDefaultScheduler(),
+      adapters: createBuiltinRegistry(),
     };
 
     let seq = 0;
@@ -632,6 +648,7 @@ describe("runInference — source-identity stamping", () => {
         );
       },
       scheduler: createDefaultScheduler(),
+      adapters: createBuiltinRegistry(),
     };
 
     let seq = 0;

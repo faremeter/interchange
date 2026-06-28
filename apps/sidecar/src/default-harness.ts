@@ -21,7 +21,7 @@ import {
   type HarnessBuilder,
   type HarnessBundle,
 } from "@intx/hub-agent";
-import { hasProvider } from "@intx/inference";
+import { createBuiltinRegistry } from "@intx/inference/providers";
 import { getLogger } from "@intx/log";
 import { createIsogitStore, createMailAuditStore } from "@intx/storage-isogit";
 import type { InferenceSource } from "@intx/types/runtime";
@@ -56,7 +56,7 @@ export function createDefaultHarnessBuilder(
 ): HarnessBuilder {
   return {
     canBuildSource(source: InferenceSource): void {
-      if (!hasProvider(source.provider)) {
+      if (!createBuiltinRegistry().has(source.provider)) {
         throw new Error(
           `Source provider "${source.provider}" is not registered`,
         );

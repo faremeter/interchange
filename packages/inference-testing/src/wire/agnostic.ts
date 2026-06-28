@@ -16,8 +16,8 @@ import * as anthropic from "./anthropic";
 import * as openai from "./openai";
 
 /**
- * Identifier of the wire format to generate. Matches the keys in
- * `@intx/inference/providers/registry`:
+ * Identifier of the wire format to generate. Matches the built-in provider
+ * keys from `@intx/inference/providers`' `createBuiltinRegistry()`:
  * - `"anthropic"` — Anthropic Messages API SSE
  * - `"openai"` — OpenAI Chat Completions SSE (also covers
  *   `openai-compatible`, which shares the same wire shape)

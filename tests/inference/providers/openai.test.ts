@@ -3,10 +3,10 @@ import { beforeEach, describe, test, expect } from "bun:test";
 import { wire } from "@intx/inference-testing";
 import {
   parseSSE,
-  createOpenAIAdapter,
   ProtocolMismatchError,
   type ProviderAdapter,
 } from "@intx/inference";
+import { createOpenAIAdapter } from "@intx/inference/providers";
 import type { ConversationTurn, InferenceEvent } from "@intx/types/runtime";
 
 // A fresh adapter per test: the OpenAI parser holds per-request

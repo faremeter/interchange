@@ -23,6 +23,7 @@ import {
   type Dependencies,
   type InferenceHarnessOptions,
 } from "@intx/inference";
+import { createBuiltinRegistry } from "@intx/inference/providers";
 import type { InferenceEvent } from "@intx/types/runtime";
 
 import { writeSessionManifest, type SessionManifest } from "./session-manifest";
@@ -438,6 +439,7 @@ export function createRecordingHarness(
       // monotonic source matches the `setTimeout` domain above.
       now: () => performance.now(),
     },
+    adapters: createBuiltinRegistry(),
     [HarnessId]: harnessSymbol,
   };
 

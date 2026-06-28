@@ -25,7 +25,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { runCompatReplay } from "@intx/inference-testing";
-import { createOpenAIAdapter, createGoogleGenAIAdapter } from "@intx/inference";
+import {
+  createOpenAIAdapter,
+  createGoogleGenAIAdapter,
+} from "@intx/inference/providers";
 import { INTENTS } from "@intx/inference-discovery/catalog";
 import type {
   ConversationTurn,

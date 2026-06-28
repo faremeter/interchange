@@ -17,11 +17,15 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  registerProvider,
   runInference,
   type Dependencies,
   type Scheduler,
+  type AdapterRegistry,
 } from "@intx/inference";
+import {
+  createBuiltinRegistry,
+  loadAdapterRegistry,
+} from "@intx/inference/providers";
 import { wire } from "@intx/inference-testing";
 import type {
   ConversationTurn,
@@ -73,10 +77,12 @@ function streamingFetch(chunks: Uint8Array[]): Dependencies["fetch"] {
 async function runWithChunks(
   source: InferenceSource,
   chunks: Uint8Array[],
+  adapters: AdapterRegistry = createBuiltinRegistry(),
 ): Promise<InferenceEvent[]> {
   const deps: Dependencies = {
     fetch: streamingFetch(chunks),
     scheduler: inertScheduler,
+    adapters,
   };
   let seq = 0;
   return drain(
@@ -237,7 +243,7 @@ describe("runInference — citation interleaving", () => {
     // the defensive posture used elsewhere (e.g., an unmatched
     // tool_use callId throws via the same error type).
     const providerName = `test-orphan-citation-${Math.random().toString(36).slice(2)}`;
-    registerProvider(providerName, () => ({
+    const make = () => ({
       buildRequest: () => ({
         url: "/stub",
         headers: { "content-type": "application/json" },
@@ -283,7 +289,12 @@ describe("runInference — citation interleaving", () => {
           },
         ];
       },
-    }));
+    });
+
+    const adapters = await loadAdapterRegistry(
+      [{ provider: providerName, specifier: "x", export: "make" }],
+      { import: () => Promise.resolve({ make }) },
+    );
 
     const source: InferenceSource = {
       id: `${providerName}:test-model`,
@@ -302,7 +313,7 @@ describe("runInference — citation interleaving", () => {
     // matching the existing tool_use-marker-missing throw pattern at
     // the same finalize layer rather than being classified to an
     // inference.error event.
-    await expect(runWithChunks(source, chunks)).rejects.toThrow(
+    await expect(runWithChunks(source, chunks, adapters)).rejects.toThrow(
       /no matching emitted block.*42|42.*no matching emitted block/,
     );
   });
@@ -313,12 +324,12 @@ describe("runInference — citation interleaving", () => {
     // block indices. The harness must append unindexed citations at
     // the end of `content[]` per the CitationBlock attribution rule.
     // A stub adapter exercises this path directly: emit a text block
-    // and a citation event without `index`.
-    // The `registerProvider` API has no unregister counterpart; using
-    // a fresh provider name per test run keeps concurrent runs from
-    // racing on the global registry. Leaked test providers are inert.
+    // and a citation event without `index`. The adapter is injected
+    // through `deps.adapters` as a per-test registry, so a fresh
+    // provider name per run keeps independent runs isolated with no
+    // shared global state.
     const providerName = `test-citations-no-index-${Math.random().toString(36).slice(2)}`;
-    registerProvider(providerName, () => ({
+    const make = () => ({
       buildRequest: () => ({
         url: "/stub",
         headers: { "content-type": "application/json" },
@@ -367,7 +378,12 @@ describe("runInference — citation interleaving", () => {
           },
         ];
       },
-    }));
+    });
+
+    const adapters = await loadAdapterRegistry(
+      [{ provider: providerName, specifier: "x", export: "make" }],
+      { import: () => Promise.resolve({ make }) },
+    );
 
     const source: InferenceSource = {
       id: `${providerName}:test-model`,
@@ -380,7 +396,7 @@ describe("runInference — citation interleaving", () => {
     const encoder = new TextEncoder();
     const chunks: Uint8Array[] = [encoder.encode("data: go\n\n")];
 
-    const events = await runWithChunks(source, chunks);
+    const events = await runWithChunks(source, chunks, adapters);
     const turn = finalTurn(events);
     const kinds = turn.content.map((b) => b.type);
     expect(kinds).toEqual(["text", "citation"]);

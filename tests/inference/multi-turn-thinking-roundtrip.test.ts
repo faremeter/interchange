@@ -22,11 +22,14 @@ import * as path from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import {
-  createAnthropicAdapter,
   runInference,
   type Dependencies,
   type Scheduler,
 } from "@intx/inference";
+import {
+  createAnthropicAdapter,
+  createBuiltinRegistry,
+} from "@intx/inference/providers";
 import type {
   AssistantTurn,
   ConversationTurn,
@@ -112,6 +115,7 @@ describe("multi-turn integration: function-calling-with-thinking-streaming", () 
     const deps: Dependencies = {
       fetch: streamingFetchFromBytes(turn1Sse),
       scheduler: inertScheduler,
+      adapters: createBuiltinRegistry(),
     };
     let seq = 0;
     const events = await drain(
