@@ -1017,6 +1017,23 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       packReceiver.reset();
       packSender.cancelAll("Connection lost");
 
+      // Register the connection for routing before the restore loop runs. The
+      // hub learns of a sidecar only from a register/reconnect frame, and
+      // connections is the map sendAgentDeploy consults to route a new
+      // provision. An empty-address register here populates that map
+      // immediately, so a provision arriving during restore routes instead of
+      // hitting an empty map and failing with "No sidecar available". The
+      // address list must stay empty: carrying addresses through register
+      // writes addressIndex with no challenge and discards disconnect queues,
+      // so restored sessions enter addressIndex through the challenged
+      // reconnect frame below instead.
+      send({
+        type: "register",
+        sidecarId,
+        token,
+        agentAddresses: [],
+      });
+
       void (async () => {
         try {
           const { restored, failed } = await sessions.restoreSessions();
@@ -1049,12 +1066,24 @@ export function createHubLink(config: HubLinkConfig): HubLink {
               logger.info`Sent reconnect with ${String(restored.length)} agent(s)`;
             }
           } else {
-            send({
-              type: "register",
-              sidecarId,
-              token,
-              agentAddresses: sessions.getAddresses(),
-            });
+            // Reached only when nothing was restored from disk. The
+            // empty register on open already established routability, so
+            // skip a second empty frame. Any address present here belongs
+            // to an agent provisioned during the restore window —
+            // provisions route on that open register — which the hub
+            // already placed in addressIndex when it routed the deploy.
+            // Re-announcing those is consistent with that entry, not an
+            // unchallenged write of a disk-restored address; those take
+            // the reconnect branch above.
+            const addresses = sessions.getAddresses();
+            if (addresses.length > 0) {
+              send({
+                type: "register",
+                sidecarId,
+                token,
+                agentAddresses: addresses,
+              });
+            }
           }
 
           flush();

@@ -507,15 +507,18 @@ export function createSidecarRouter(
       return;
     }
 
-    // If this sidecar was already connected, clean up old state.
+    // If this same ws is re-registering, drop its addressIndex entries so
+    // the new register/reconnect rebuilds the owned set (handleReconnect
+    // and the loop below re-add the addresses that remain owned). Do not
+    // drop connectorStates here: this branch is reached only on a same-ws
+    // re-register, where the harness is live and its connector state is
+    // current. A genuinely restarting harness opens a new ws (so existing
+    // is undefined) and its stale state is cleared by the cross-ws ghost
+    // loop below and by handleClose.
     const existing = connections.get(ws);
     if (existing !== undefined) {
       for (const addr of existing.agentAddresses) {
         addressIndex.delete(addr);
-        // The harness on this ws is restarting; the cached connector
-        // state from its previous incarnation is now stale. The new
-        // harness will bootstrap via restore-fires-callback.
-        connectorStates.delete(addr);
       }
     }
 
@@ -603,12 +606,31 @@ export function createSidecarRouter(
       pendingChallenges.delete(ws);
     }
 
+    // Capture the addresses this live connection already owns. The
+    // internal register below clears them, but ones the reconnect is not
+    // re-challenging are still valid — an agent provisioned during the
+    // sidecar's restore window is routed into addressIndex by its deploy
+    // and is not part of the disk-restored set this reconnect carries.
+    // Without preserving them, the reconnect silently drops a
+    // freshly-deployed agent from routing.
+    const previouslyOwned = new Set(connections.get(ws)?.agentAddresses);
+
     // Register the sidecar connection immediately (with no addresses)
     // so it can receive frames while the challenge is pending.
     handleRegister(ws, sidecarId, token, []);
 
     const conn = connections.get(ws);
     if (conn === undefined) return;
+
+    // Re-add the still-owned addresses the register cleared but this
+    // reconnect is not re-challenging. The challenged addresses below
+    // re-enter addressIndex through the verified path instead.
+    const claimedAddresses = new Set(agentAddresses);
+    for (const addr of previouslyOwned) {
+      if (claimedAddresses.has(addr)) continue;
+      conn.agentAddresses.add(addr);
+      addressIndex.set(addr, ws);
+    }
 
     // Look up stored public keys for all claimed addresses.
     const keyLookups = await Promise.all(

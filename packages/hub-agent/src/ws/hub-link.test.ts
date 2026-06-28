@@ -1623,3 +1623,98 @@ describe("sidecar↔hub integration", () => {
     }
   });
 });
+
+describe("routability decoupled from restore", () => {
+  test("empty register ships before restore resolves; reconnect-with-addresses only after", async () => {
+    const frames: string[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") {
+            frames.push(evt.data);
+          }
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+
+    type RestoreResult = Awaited<ReturnType<SessionManager["restoreSessions"]>>;
+    let releaseRestore!: (result: RestoreResult) => void;
+    const pendingRestore = new Promise<RestoreResult>((resolve) => {
+      releaseRestore = resolve;
+    });
+    sessions.restoreSessions = () => pendingRestore;
+    sessions.getDeployRef = async () => "a".repeat(40);
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-early-register",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(sessions),
+    });
+
+    client.connect();
+    try {
+      // The empty-address register reaches the hub while restoreSessions is
+      // still pending: routability no longer waits on restore.
+      await waitFor(() =>
+        frames
+          .map((s) => JSON.parse(s))
+          .some((f: { type: string }) => f.type === "register"),
+      );
+      const beforeResolve = frames.map((s) => JSON.parse(s));
+      const registerFrames = beforeResolve.filter(
+        (f: { type: string }) => f.type === "register",
+      );
+      expect(registerFrames).toHaveLength(1);
+      expect(registerFrames[0].agentAddresses).toEqual([]);
+      // No reconnect yet: addresses enter addressIndex only after restore.
+      expect(
+        beforeResolve.some((f: { type: string }) => f.type === "reconnect"),
+      ).toBe(false);
+
+      releaseRestore({
+        restored: [
+          {
+            address: "agent-1@test.interchange",
+            keyPair: {
+              publicKey: new Uint8Array(32),
+              privateKey: new Uint8Array(32),
+            },
+          },
+        ],
+        failed: [],
+      });
+
+      // The challenged reconnect frame, carrying the restored address, ships
+      // only after restore resolves.
+      await waitFor(() =>
+        frames
+          .map((s) => JSON.parse(s))
+          .some((f: { type: string }) => f.type === "reconnect"),
+      );
+      const parsed = frames.map((s) => JSON.parse(s));
+      const reconnectFrame = parsed.find(
+        (f: { type: string }) => f.type === "reconnect",
+      );
+      expect(reconnectFrame.agentAddresses).toEqual([
+        "agent-1@test.interchange",
+      ]);
+      expect(
+        parsed.findIndex((f: { type: string }) => f.type === "register"),
+      ).toBeLessThan(
+        parsed.findIndex((f: { type: string }) => f.type === "reconnect"),
+      );
+    } finally {
+      client.close();
+      server.stop(true);
+    }
+  });
+});

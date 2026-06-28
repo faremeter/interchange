@@ -1328,6 +1328,189 @@ describe("SidecarRouter", () => {
   });
 
   describe("challenge/response reconnect", () => {
+    test("a provision routed during the restore window survives a reconnect", async () => {
+      // An agent provisioned while the sidecar is restoring must stay
+      // routable after the reconnect frame for the disk-restored agents
+      // lands. lookupPublicKey returns null so the challenge
+      // short-circuits; the eviction under test happens in
+      // handleReconnect's internal register before any challenge work.
+      const router = createSidecarRouter({
+        requestTimeoutMs: 500,
+        hubPublicKey: TEST_HUB_KEY,
+        lookups: {
+          lookupPublicKey: async () => null,
+        },
+      });
+
+      const config = {
+        sessionId: "ses_test",
+        agentId: "a1",
+        tenantId: "t1",
+        principalId: "prin_test",
+        agentAddress: "window-agent@local",
+        systemPrompt: "test",
+        tools: [],
+        grants: [],
+        sources: [
+          {
+            id: "anthropic:claude-sonnet-4-20250514",
+            provider: "anthropic",
+            baseURL: "https://api.anthropic.com",
+            apiKey: "sk-test",
+            model: "claude-sonnet-4-20250514",
+          },
+        ],
+        defaultSource: "anthropic:claude-sonnet-4-20250514",
+      };
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+
+      // Empty register on socket open establishes routability before restore.
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+
+      // A fresh provision routes to this sidecar during the restore window.
+      const deployPromise = router.sendAgentDeploy(
+        "window-agent@local",
+        config,
+      );
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.deploy.ack",
+          agentAddress: "window-agent@local",
+          publicKey: "deadbeef",
+        }),
+      );
+      await deployPromise;
+      expect(router.getRoutableAddresses()).toContain("window-agent@local");
+
+      // Restore finishes; the sidecar reconnects with only its
+      // disk-restored addresses.
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["restored@local"],
+          deployRefs: {},
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 50));
+
+      // The window-provisioned agent stays routable.
+      expect(router.getRoutableAddresses()).toContain("window-agent@local");
+    });
+
+    test("a window-provisioned agent's connector state survives a reconnect", async () => {
+      // The same eviction that drops routing also drops the cached
+      // connector thread state. A window agent that established a thread
+      // during the restore window must keep it across the reconnect, or a
+      // following no-history user message forks a new thread instead of
+      // continuing the agent's active one.
+      const router = createSidecarRouter({
+        requestTimeoutMs: 500,
+        hubPublicKey: TEST_HUB_KEY,
+        lookups: {
+          lookupPublicKey: async () => null,
+        },
+      });
+
+      const config = {
+        sessionId: "ses_test",
+        agentId: "a1",
+        tenantId: "t1",
+        principalId: "prin_test",
+        agentAddress: "window-agent@local",
+        systemPrompt: "test",
+        tools: [],
+        grants: [],
+        sources: [
+          {
+            id: "anthropic:claude-sonnet-4-20250514",
+            provider: "anthropic",
+            baseURL: "https://api.anthropic.com",
+            apiKey: "sk-test",
+            model: "claude-sonnet-4-20250514",
+          },
+        ],
+        defaultSource: "anthropic:claude-sonnet-4-20250514",
+      };
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+
+      const deployPromise = router.sendAgentDeploy(
+        "window-agent@local",
+        config,
+      );
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.deploy.ack",
+          agentAddress: "window-agent@local",
+          publicKey: "deadbeef",
+        }),
+      );
+      await deployPromise;
+
+      // The window agent establishes a connector thread during the window.
+      const connectorState = {
+        threadRoot: "<root@example.com>",
+        lastMessageId: "<last@example.com>",
+        replyTo: "user@example.com",
+        cc: [],
+      };
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "connector.state.changed",
+          agentAddress: "window-agent@local",
+          connectorState,
+        }),
+      );
+      expect(router.getConnectorState("window-agent@local")).toEqual(
+        connectorState,
+      );
+
+      // Restore finishes; the sidecar reconnects with only its
+      // disk-restored addresses.
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["restored@local"],
+          deployRefs: {},
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 50));
+
+      // The window agent's connector thread state survives.
+      expect(router.getConnectorState("window-agent@local")).toEqual(
+        connectorState,
+      );
+    });
+
     test("reconnect issues challenge and verifies signature", async () => {
       const kp = await generateKeyPair();
       const publicKeyHex = hexEncode(kp.publicKey);
