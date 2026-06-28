@@ -14,7 +14,13 @@ import { createSidecarOrchestrator, type HubLink } from "@intx/hub-agent";
 import { createAgentRepoStore } from "@intx/hub-sessions";
 import { createTarballCache } from "@intx/tool-packaging";
 
-import { readCacheMaxBytes, readRegistryMaxTarballBytes } from "./config";
+import { loadAdapterRegistry } from "@intx/inference/providers";
+
+import {
+  readAdapterManifest,
+  readCacheMaxBytes,
+  readRegistryMaxTarballBytes,
+} from "./config";
 import { createDefaultHarnessBuilder } from "./default-harness";
 // Pull the workflow-host wiring factory into the sidecar's module
 // graph so the supervisor surface is reachable from this binary.
@@ -60,6 +66,20 @@ const cacheRoot =
     : path.join(dataDir, "cache", "tarballs");
 const cacheMaxBytes = readCacheMaxBytes();
 const registryMaxTarballBytes = readRegistryMaxTarballBytes();
+
+// Operator-configured custom inference adapters, resolved once at the
+// boot edge. `loadAdapterRegistry` merges the statically-linked
+// built-ins with any custom adapters the manifest names, importing each
+// custom module eagerly here so a bad specifier fails the sidecar at
+// boot rather than at first inference. The SAME registry is threaded
+// into the in-process single-agent harness builder below; the workflow
+// child cannot receive this object across the fork, so the validated
+// manifest is serialized into the child's spawn env (see
+// `multistepSubstrateEnv`) and the child rebuilds an equivalent
+// registry from it. Specifiers are operator-config-only — the agent
+// deploy tree never contributes one.
+const adapterManifest = readAdapterManifest();
+const adapters = await loadAdapterRegistry(adapterManifest);
 
 // Phase 4.7 latency-gate hook. When `SIDECAR_LATENCY_BENCH_FILE` names a
 // path, the deploy router wires the supervisor's `onDispatchTiming`
@@ -335,6 +355,15 @@ const multistepSubstrateEnv: Record<string, string> = {
   // config so the child does not re-read env at a non-boundary site.
   SIDECAR_CACHE_MAX_BYTES: String(cacheMaxBytes),
   SIDECAR_REGISTRY_MAX_TARBALL_BYTES: String(registryMaxTarballBytes),
+  // Serialize the parent's ALREADY-VALIDATED manifest (the object
+  // `readAdapterManifest` returned), not the raw env string, so the
+  // child rebuilds the same custom-adapter set. Always present (defaults
+  // to "[]" when no custom adapters are configured); the child treats a
+  // missing key as a serialization bug and fails loud. The child
+  // re-validates the shape before importing any module — defense in
+  // depth at the deserialization boundary, since the child env is
+  // operator-controlled via Bun.spawn.
+  SIDECAR_ADAPTER_MANIFEST: JSON.stringify(adapterManifest),
 };
 const hostHome = process.env["HOME"];
 if (hostHome !== undefined) {
@@ -355,6 +384,7 @@ const orchestrator = createSidecarOrchestrator({
     cacheRoot,
     cacheMaxBytes,
     registryMaxTarballBytes,
+    adapters,
   }),
   createAgentCrypto: createNodeCrypto,
   cryptoOps: {

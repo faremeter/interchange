@@ -21,7 +21,7 @@ import {
   type HarnessBuilder,
   type HarnessBundle,
 } from "@intx/hub-agent";
-import { createBuiltinRegistry } from "@intx/inference/providers";
+import { createDependencies, type AdapterRegistry } from "@intx/inference";
 import { getLogger } from "@intx/log";
 import { createIsogitStore, createMailAuditStore } from "@intx/storage-isogit";
 import type { InferenceSource } from "@intx/types/runtime";
@@ -49,6 +49,15 @@ export interface DefaultHarnessBuilderConfig {
    * per-apply loader receives a concrete value.
    */
   readonly registryMaxTarballBytes: number;
+  /**
+   * Adapter registry resolved once at the boot edge (built-ins merged
+   * with any operator-configured custom adapters). It backs both the
+   * `canBuildSource` membership check and the per-agent
+   * `env.deps.adapters` used to resolve inference adapters at run time,
+   * so the single-agent in-process path resolves the same provider set
+   * the operator configured.
+   */
+  readonly adapters: AdapterRegistry;
 }
 
 export function createDefaultHarnessBuilder(
@@ -56,7 +65,7 @@ export function createDefaultHarnessBuilder(
 ): HarnessBuilder {
   return {
     canBuildSource(source: InferenceSource): void {
-      if (!createBuiltinRegistry().has(source.provider)) {
+      if (!config.adapters.has(source.provider)) {
         throw new Error(
           `Source provider "${source.provider}" is not registered`,
         );
@@ -173,6 +182,12 @@ export function createDefaultHarnessBuilder(
         audit: storage,
         authorize,
         directors: createDefaultDirectorRegistry(),
+        // Resolve inference adapters through the boot-edge registry
+        // (built-ins + operator custom adapters). Without this the agent
+        // would fall back to the built-ins-only default and a
+        // custom-provider source would fail to resolve at run time even
+        // though `canBuildSource` admitted it.
+        deps: createDependencies(config.adapters),
         transport: agentTransport,
         address: agentAddress,
         onConnectorStateChanged,
