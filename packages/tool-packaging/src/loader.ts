@@ -138,6 +138,15 @@ export interface LoaderConfig {
    */
   readonly maxRegistryTarballBytes?: number;
   /**
+   * Deadline in milliseconds for a single HTTP-registry tarball fetch,
+   * spanning the request and the streamed body read. A stalled registry
+   * cannot block the fetch -- and the restoring `startSession` awaiting
+   * it -- past this bound. Defaults to
+   * `DEFAULT_REGISTRY_FETCH_TIMEOUT_MS`. Asset-sourced tarballs read from
+   * the local filesystem and are not subject to it.
+   */
+  readonly registryFetchTimeoutMs?: number;
+  /**
    * Test seam for tarball fetching. Production omits this and the
    * loader uses npm-registry-fetch + filesystem reads.
    */
@@ -160,6 +169,19 @@ export interface LoaderConfig {
  * mirror replays it.
  */
 export const DEFAULT_MAX_REGISTRY_TARBALL_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Default deadline for a single HTTP-registry tarball fetch, covering
+ * both the request and the streamed body read. `readResponseWithLimit`
+ * consumes the body through a manual reader loop, so the byte cap bounds
+ * size but nothing bounds time: a registry that accepts the connection
+ * and then stalls mid-stream would block the fetch -- and the
+ * `startSession` awaiting it during a sidecar restore -- indefinitely.
+ * The deadline is generous so a legitimately large tarball on a slow
+ * link still completes within it. Callers that need a different bound
+ * pass `registryFetchTimeoutMs` to `createToolLoader`.
+ */
+export const DEFAULT_REGISTRY_FETCH_TIMEOUT_MS = 120 * 1000;
 
 export type TarballFetcher = (
   entry: ToolPackageManifestEntry,
@@ -222,6 +244,13 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
   ) {
     throw new Error(
       `createToolLoader: maxRegistryTarballBytes must be a positive finite number; got ${String(maxRegistryTarballBytes)}`,
+    );
+  }
+  const registryFetchTimeoutMs =
+    config.registryFetchTimeoutMs ?? DEFAULT_REGISTRY_FETCH_TIMEOUT_MS;
+  if (!Number.isFinite(registryFetchTimeoutMs) || registryFetchTimeoutMs <= 0) {
+    throw new Error(
+      `createToolLoader: registryFetchTimeoutMs must be a positive finite number; got ${String(registryFetchTimeoutMs)}`,
     );
   }
   const fetchTarball = config.fetchTarball ?? makeDefaultTarballFetcher();
@@ -696,9 +725,19 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
       const tarballUrl =
         entry.tarballUrl ??
         defaultTarballUrl(registry.url, entry.name, entry.version);
+      // Bound the whole fetch -- request and streamed body read -- so a
+      // stalled registry cannot block the awaiting startSession forever.
+      // npm-registry-fetch honors the signal for the request phase;
+      // readResponseWithLimit honors it for the manual body read. The
+      // timer spans both phases and is cleared only once the read settles.
+      const controller = new AbortController();
+      const timer = setTimeout(() => {
+        controller.abort();
+      }, registryFetchTimeoutMs);
       try {
         const res = await npmRegistryFetch(tarballUrl, {
           ...buildRegistryFetchOpts(registry),
+          signal: controller.signal,
         });
         if (res.status === 401 || res.status === 403) {
           throw new ToolLoaderError({
@@ -714,18 +753,32 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
             package: { name: entry.name, version: entry.version },
           });
         }
-        return await readResponseWithLimit(res, maxRegistryTarballBytes, {
-          registry: entry.source.registry,
-          name: entry.name,
-          version: entry.version,
-        });
+        return await readResponseWithLimit(
+          res,
+          maxRegistryTarballBytes,
+          {
+            registry: entry.source.registry,
+            name: entry.name,
+            version: entry.version,
+          },
+          controller.signal,
+        );
       } catch (err) {
         if (err instanceof ToolLoaderError) throw err;
+        if (controller.signal.aborted) {
+          throw new ToolLoaderError({
+            category: "registry.fetch.failed",
+            message: `registry "${entry.source.registry}" fetch for ${entry.name}@${entry.version} exceeded the ${String(registryFetchTimeoutMs)}ms timeout`,
+            package: { name: entry.name, version: entry.version },
+          });
+        }
         throw new ToolLoaderError({
           category: "registry.fetch.failed",
           message: `registry "${entry.source.registry}" fetch failed for ${entry.name}@${entry.version}: ${describeError(err)}`,
           package: { name: entry.name, version: entry.version },
         });
+      } finally {
+        clearTimeout(timer);
       }
     };
   }
@@ -776,7 +829,12 @@ function defaultTarballUrl(
  *      the read when the running total crosses the cap. This catches
  *      the missing-or-lying header case.
  *
- * Both rejections surface as `registry.fetch.failed` so the apply layer
+ * An optional `signal` adds a time guard: when it aborts (the caller's
+ * fetch deadline), the in-flight read is cancelled and the call rejects,
+ * so a registry that streams the body slowly or stalls mid-stream cannot
+ * outlast the deadline while staying under the byte cap.
+ *
+ * All rejections surface as `registry.fetch.failed` so the apply layer
  * routes them the same as any other registry-side fetch defect.
  *
  * Exported for direct unit testing.
@@ -789,6 +847,7 @@ export async function readResponseWithLimit(
     readonly name: string;
     readonly version: string;
   },
+  signal?: AbortSignal,
 ): Promise<Buffer> {
   const declaredLengthRaw = res.headers.get("content-length");
   if (declaredLengthRaw !== null) {
@@ -820,9 +879,26 @@ export async function readResponseWithLimit(
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  // Cancelling the reader settles any pending read() as done, so the
+  // post-read check below surfaces the timeout even when the underlying
+  // body stream does not itself observe the abort signal.
+  let timedOut = false;
+  const onAbort = () => {
+    timedOut = true;
+    void reader.cancel();
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted === true) onAbort();
   try {
     for (;;) {
       const { value, done } = await reader.read();
+      if (timedOut) {
+        throw new ToolLoaderError({
+          category: "registry.fetch.failed",
+          message: `tarball read for ${ctx.name}@${ctx.version} exceeded the registry fetch timeout`,
+          package: { name: ctx.name, version: ctx.version },
+        });
+      }
       if (done) break;
       if (value === undefined) continue;
       total += value.byteLength;
@@ -841,6 +917,7 @@ export async function readResponseWithLimit(
       chunks.push(value);
     }
   } finally {
+    signal?.removeEventListener("abort", onAbort);
     reader.releaseLock();
   }
   const out = Buffer.allocUnsafe(total);

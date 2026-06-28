@@ -229,6 +229,21 @@ describe("createToolLoader", () => {
     expect(loaded[0]?.factories[0]?.id).toBe("@vendor/leaf/main");
   });
 
+  test("rejects a non-positive registryFetchTimeoutMs", () => {
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    expect(() =>
+      createToolLoader({
+        cache,
+        registries: new Map([["npmjs", { url: "https://r.test" }]]),
+        host: { os: "linux", cpu: "x64" },
+        registryFetchTimeoutMs: 0,
+      }),
+    ).toThrow(/registryFetchTimeoutMs must be a positive finite number/);
+  });
+
   test("skips entries whose os does not match the host", async () => {
     const cache = createTarballCache({
       rootDir: cacheDir,
@@ -2580,6 +2595,33 @@ describe("readResponseWithLimit", () => {
     const buf = await readResponseWithLimit(res, cap, stubCtx);
     expect(buf.byteLength).toBe(payload.byteLength);
     expect(buf[0]).toBe(0x7f);
+  });
+
+  test("aborts a stalled body when the fetch deadline signal fires", async () => {
+    // A body that never produces a chunk and never closes: reader.read()
+    // stays pending until the deadline cancels it. Without the signal
+    // guard this would block forever under the byte cap.
+    const stream = new ReadableStream<Uint8Array>({
+      start() {
+        // never enqueue, never close
+      },
+    });
+    const res = new Response(stream);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20);
+    let caught: unknown;
+    try {
+      await readResponseWithLimit(res, 1024, stubCtx, controller.signal);
+    } catch (err) {
+      caught = err;
+    } finally {
+      clearTimeout(timer);
+    }
+    expect(caught).toBeInstanceOf(ToolLoaderError);
+    if (caught instanceof ToolLoaderError) {
+      expect(caught.category).toBe("registry.fetch.failed");
+      expect(caught.message).toMatch(/exceeded the registry fetch timeout/);
+    }
   });
 });
 
