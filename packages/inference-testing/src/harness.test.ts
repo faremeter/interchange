@@ -149,6 +149,7 @@ describe("setupHarness", () => {
       const untagged: Dependencies = {
         fetch: a.deps.fetch,
         scheduler: a.deps.scheduler,
+        adapters: a.deps.adapters,
       };
       let caught: unknown;
       try {

@@ -22,12 +22,12 @@ import {
   type MessageHeaders,
 } from "@intx/mime";
 import { createInMemoryTransport } from "@intx/mail-memory";
+import { createInboundTurn } from "@intx/inference";
 import {
-  createInboundTurn,
   createAnthropicAdapter,
   createOpenAIAdapter,
   createGoogleGenAIAdapter,
-} from "@intx/inference";
+} from "@intx/inference/providers";
 import type { ProviderAdapter } from "@intx/inference";
 import { base64Encode } from "@intx/types";
 import type {

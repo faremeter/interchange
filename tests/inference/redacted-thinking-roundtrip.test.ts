@@ -14,11 +14,14 @@
 import { describe, test, expect } from "bun:test";
 
 import {
-  createAnthropicAdapter,
   runInference,
   type Dependencies,
   type Scheduler,
 } from "@intx/inference";
+import {
+  createAnthropicAdapter,
+  createBuiltinRegistry,
+} from "@intx/inference/providers";
 import { wire } from "@intx/inference-testing";
 import type {
   AssistantTurn,
@@ -90,6 +93,7 @@ describe("runInference — Anthropic redacted_thinking round-trip", () => {
     const deps: Dependencies = {
       fetch: streamingFetch(chunks),
       scheduler: inertScheduler,
+      adapters: createBuiltinRegistry(),
     };
     const turns: ConversationTurn[] = [
       {
@@ -160,6 +164,7 @@ describe("runInference — Anthropic redacted_thinking round-trip", () => {
     const deps: Dependencies = {
       fetch: streamingFetch(chunks),
       scheduler: inertScheduler,
+      adapters: createBuiltinRegistry(),
     };
 
     let seq = 0;

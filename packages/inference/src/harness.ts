@@ -37,7 +37,6 @@ import { getLogger } from "@intx/log";
 
 import type { AdapterRegistry } from "./adapter";
 import { parseSSE } from "./sse";
-import { lookupProvider } from "./providers/registry";
 import { injectCredentials } from "./auth";
 import {
   classifyHTTPError,
@@ -102,13 +101,13 @@ export type Dependencies = {
    */
   readonly scheduler: Scheduler;
   /**
-   * Registry resolving an inference source to its provider adapter. Optional
-   * today: `runInference` still resolves adapters through the package-global
-   * provider registry, so this field is carried but not yet consulted.
-   * Construct it via `createDependencies` (core) or, for the built-in set,
-   * `@intx/inference/providers`' `createDefaultDependencies()`.
+   * Registry resolving an inference source to its provider adapter.
+   * `runSingleAttempt` consults this on every call via `adapters.resolve`,
+   * so it is required — the caller makes an explicit choice of provider set.
+   * Construct it via `createDependencies(adapters)` (core) or, for the
+   * built-in set, `@intx/inference/providers`' `createDefaultDependencies()`.
    */
-  readonly adapters?: AdapterRegistry;
+  readonly adapters: AdapterRegistry;
   readonly [HarnessId]?: symbol;
 };
 
@@ -276,7 +275,7 @@ async function* runSingleAttempt(
 
   let adapter;
   try {
-    adapter = lookupProvider(lastCycleSource.provider, lastCycleSource);
+    adapter = deps.adapters.resolve(lastCycleSource);
   } catch (cause) {
     yield {
       type: "inference.error",
@@ -1237,13 +1236,13 @@ async function* runSingleAttempt(
 export async function* runInference(
   opts: InferenceHarnessOptions,
 ): AsyncIterable<InferenceEvent> {
-  // Crash-loudly guards. The wrapper accesses both `deps.fetch`
-  // (passed into each `runSingleAttempt` invocation) and
-  // `deps.scheduler` (read here for the monotonic time source) before
-  // any event yields. A malformed `deps` from a JS caller would
-  // otherwise surface as a confusing `Cannot read properties of
-  // undefined`. The wrapper is the single public entrypoint to the
-  // harness; this is the right layer to own the `deps` shape check.
+  // Crash-loudly guards. The wrapper and the attempts it drives access
+  // `deps.fetch` and `deps.adapters` (per `runSingleAttempt` invocation)
+  // and `deps.scheduler` (read here for the monotonic time source) before
+  // any event yields. A malformed `deps` from a JS caller would otherwise
+  // surface as a confusing `Cannot read properties of undefined`. The
+  // wrapper is the single public entrypoint to the harness; this is the
+  // right layer to own the `deps` shape check.
   if (typeof opts.deps?.fetch !== "function") {
     throw new Error(
       `runInference: deps.fetch must be a function (got ${typeof opts.deps?.fetch}); pass createDefaultDependencies() or a test harness Dependencies object`,
@@ -1257,6 +1256,16 @@ export async function* runInference(
         : `got ${schedulerType}`;
     throw new Error(
       `runInference: deps.scheduler must implement now() (${detail}); pass createDefaultDependencies() or a test harness Dependencies object`,
+    );
+  }
+  if (typeof opts.deps.adapters?.resolve !== "function") {
+    const adaptersType = typeof opts.deps.adapters;
+    const detail =
+      adaptersType === "object"
+        ? "adapters is missing the resolve() method"
+        : `got ${adaptersType}`;
+    throw new Error(
+      `runInference: deps.adapters must implement resolve() (${detail}); pass createDependencies(adapters), createDefaultDependencies(), or a test harness Dependencies object`,
     );
   }
   const policy =

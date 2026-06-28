@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
-import { createOpenAIAdapter, parseSSE } from "@intx/inference";
+import { parseSSE } from "@intx/inference";
+import { createOpenAIAdapter } from "@intx/inference/providers";
 import type { InferenceEvent, LastCycleSource } from "@intx/types/runtime";
 
 const TEST_SOURCE: LastCycleSource = {

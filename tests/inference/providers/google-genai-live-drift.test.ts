@@ -21,6 +21,7 @@ import { describe, expect, test } from "bun:test";
 
 import { runInference } from "@intx/inference";
 import type { Dependencies, Scheduler } from "@intx/inference";
+import { createBuiltinRegistry } from "@intx/inference/providers";
 import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -62,6 +63,7 @@ describe("Google GenAI adapter: live drift", () => {
       const deps: Dependencies = {
         fetch: globalThis.fetch.bind(globalThis),
         scheduler: inertScheduler,
+        adapters: createBuiltinRegistry(),
       };
 
       let seq = 0;

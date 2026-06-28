@@ -22,6 +22,7 @@ import {
   type Dependencies,
   type Scheduler,
 } from "@intx/inference";
+import { createBuiltinRegistry } from "@intx/inference/providers";
 import { wire } from "@intx/inference-testing";
 import type {
   ContentBlock,
@@ -77,6 +78,7 @@ async function runWithChunks(chunks: Uint8Array[]): Promise<InferenceEvent[]> {
   const deps: Dependencies = {
     fetch: streamingFetch(chunks),
     scheduler: inertScheduler,
+    adapters: createBuiltinRegistry(),
   };
   let seq = 0;
   return drain(

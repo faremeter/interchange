@@ -17,6 +17,7 @@ import { describe, test, expect } from "bun:test";
 
 import { runInference } from "@intx/inference";
 import type { Dependencies, Scheduler } from "@intx/inference";
+import { createBuiltinRegistry } from "@intx/inference/providers";
 import type {
   InferenceEvent,
   InferenceError,
@@ -84,6 +85,7 @@ async function runAgainst(
   const deps: Dependencies = {
     fetch: streamingFetch(sseBody),
     scheduler: inertScheduler,
+    adapters: createBuiltinRegistry(),
   };
   let seq = 0;
   const events = await drain(

@@ -21,7 +21,6 @@ import { beforeEach, describe, expect, test } from "bun:test";
 
 import {
   CREDENTIAL_SENTINEL,
-  createGoogleGenAIAdapter,
   parseSSE,
   ProtocolMismatchError,
   runInference,
@@ -29,6 +28,11 @@ import {
   type ProviderAdapter,
   type Scheduler,
 } from "@intx/inference";
+import {
+  createBuiltinRegistry,
+  createGoogleGenAIAdapter,
+  loadAdapterRegistry,
+} from "@intx/inference/providers";
 import type {
   ConversationTurn,
   InferenceEvent,
@@ -1706,7 +1710,11 @@ describe("Google GenAI adapter: harness round trip", () => {
       ],
       source: SOURCE,
       nextSeq: () => seq++,
-      deps: { fetch: fetchImpl, scheduler: inertScheduler },
+      deps: {
+        fetch: fetchImpl,
+        scheduler: inertScheduler,
+        adapters: createBuiltinRegistry(),
+      },
     })) {
       events.push(ev);
     }
@@ -2736,7 +2744,11 @@ describe("Google GenAI adapter: harness round trip with thinking + tool_call", (
       ],
       source: SOURCE,
       nextSeq: () => seq++,
-      deps: { fetch: fetchImpl, scheduler: inertScheduler },
+      deps: {
+        fetch: fetchImpl,
+        scheduler: inertScheduler,
+        adapters: createBuiltinRegistry(),
+      },
     })) {
       events.push(ev);
     }
@@ -3113,7 +3125,11 @@ describe("Google GenAI adapter: harness round trip with image output", () => {
       ],
       source: SOURCE,
       nextSeq: () => seq++,
-      deps: { fetch: fetchImpl, scheduler: inertScheduler },
+      deps: {
+        fetch: fetchImpl,
+        scheduler: inertScheduler,
+        adapters: createBuiltinRegistry(),
+      },
     })) {
       events.push(ev);
     }
@@ -3462,7 +3478,11 @@ describe("Google GenAI adapter: harness round trip with grounding", () => {
       ],
       source: SOURCE,
       nextSeq: () => seq++,
-      deps: { fetch: fetchImpl, scheduler: inertScheduler },
+      deps: {
+        fetch: fetchImpl,
+        scheduler: inertScheduler,
+        adapters: createBuiltinRegistry(),
+      },
     })) {
       events.push(ev);
     }
@@ -3895,7 +3915,11 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
       ],
       source: SOURCE,
       nextSeq: () => seq++,
-      deps: { fetch: fetchImpl, scheduler: inertScheduler },
+      deps: {
+        fetch: fetchImpl,
+        scheduler: inertScheduler,
+        adapters: createBuiltinRegistry(),
+      },
     })) {
       events.push(ev);
     }
@@ -4053,10 +4077,13 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
         ),
       );
 
-    // Register the synthetic adapter on a unique provider id so this
-    // test doesn't disturb the production registration.
-    const { registerProvider } = await import("@intx/inference");
-    registerProvider("synthetic-code-exec", () => syntheticAdapter);
+    // Inject the synthetic adapter on a unique provider id via the
+    // per-call dependency registry so this test doesn't disturb the
+    // built-in adapters.
+    const adapters = await loadAdapterRegistry(
+      [{ provider: "synthetic-code-exec", specifier: "x", export: "make" }],
+      { import: () => Promise.resolve({ make: () => syntheticAdapter }) },
+    );
 
     let seq = 0;
     const events: InferenceEvent[] = [];
@@ -4076,7 +4103,7 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
         model: "test",
       },
       nextSeq: () => seq++,
-      deps: { fetch: fetchImpl, scheduler: inertScheduler },
+      deps: { fetch: fetchImpl, scheduler: inertScheduler, adapters },
     })) {
       events.push(ev);
     }

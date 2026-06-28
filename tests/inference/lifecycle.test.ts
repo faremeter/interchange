@@ -16,6 +16,7 @@ import { describe, test, expect } from "bun:test";
 
 import { runInference } from "@intx/inference";
 import type { Dependencies, Scheduler } from "@intx/inference";
+import { createBuiltinRegistry } from "@intx/inference/providers";
 import type {
   ConversationTurn,
   InferenceEvent,
@@ -88,7 +89,11 @@ describe("runInference — timer cancellation on non-streaming exit paths", () =
           headers: { "content-type": "application/json" },
         }),
       );
-    const deps: Dependencies = { fetch: fetchStub, scheduler };
+    const deps: Dependencies = {
+      fetch: fetchStub,
+      scheduler,
+      adapters: createBuiltinRegistry(),
+    };
 
     let seq = 0;
     const events = await drain(
@@ -112,7 +117,11 @@ describe("runInference — timer cancellation on non-streaming exit paths", () =
     const { scheduler, entries } = recordingScheduler();
     const fetchStub: Dependencies["fetch"] = () =>
       Promise.resolve(new Response(null, { status: 204 }));
-    const deps: Dependencies = { fetch: fetchStub, scheduler };
+    const deps: Dependencies = {
+      fetch: fetchStub,
+      scheduler,
+      adapters: createBuiltinRegistry(),
+    };
 
     let seq = 0;
     const events = await drain(
@@ -170,7 +179,11 @@ describe("runInference — timer cancellation on consumer abandonment", () => {
         ),
       );
     };
-    const deps: Dependencies = { fetch: fetchStub, scheduler };
+    const deps: Dependencies = {
+      fetch: fetchStub,
+      scheduler,
+      adapters: createBuiltinRegistry(),
+    };
 
     const controller = new AbortController();
     let seq = 0;
@@ -265,6 +278,7 @@ describe("runInference — caller-signal listener accounting", () => {
     const deps: Dependencies = {
       fetch: successfulFetch,
       scheduler: inertScheduler,
+      adapters: createBuiltinRegistry(),
     };
 
     let seq = 0;
