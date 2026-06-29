@@ -33,6 +33,7 @@ export {
   countPackFiles,
   type RepoDiskUsage,
 } from "./repo-disk";
+export { runGC, type RetentionPolicy, type GCResult } from "./gc";
 export {
   createMailAuditStore,
   listMail,
