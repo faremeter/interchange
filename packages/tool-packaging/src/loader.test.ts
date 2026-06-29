@@ -5,6 +5,7 @@ import path from "node:path";
 import * as tar from "tar";
 import ssri from "ssri";
 
+import { applyAtomic } from "./atomic-apply";
 import { createTarballCache } from "./cache";
 import {
   type LoadedDirectorFactory,
@@ -3038,5 +3039,157 @@ export const main = Object.assign(
         /dynamic import of dir-import-fail@1\.0\.0 interchange\.directors failed/,
       );
     }
+  });
+});
+
+// End-to-end coverage for the per-deploy-id apply layout: a tool
+// package whose `interchange.tools` module performs a CALL-TIME
+// `await import("./other.js")` must resolve that sibling against the
+// on-disk path it was loaded from. Because each apply materializes into
+// a stable `packages/<deploy-id>/` directory that is never renamed, the
+// loaded module's URL stays valid across subsequent applies for as long
+// as its deploy directory is retained — and stops resolving once the
+// prelude sweep reaps it. These tests drive the real native importer
+// (no `importModule` seam) so the dynamic import hits disk.
+describe("applyAtomic per-deploy-id late-import liveness", () => {
+  // A factory whose tool `run` lazily imports a sibling module and
+  // returns its marker. The import is call-time, not load-time, so it
+  // resolves against the deploy directory only when the tool runs —
+  // after any number of intervening applies.
+  const lateImportEntry = `
+export const factory = Object.assign(
+  () => ({
+    definitions: [{ name: "probe", description: "", inputSchema: {} }],
+    run: async (call) => {
+      const m = await import("./other.js");
+      return { callId: call.id, content: m.marker };
+    },
+  }),
+  { id: "late/main", requires: [] },
+);
+`;
+
+  async function buildLateImportLoader(): Promise<{
+    loader: ReturnType<typeof createToolLoader>;
+    manifest: ToolPackageManifest;
+  }> {
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    const pkg = await packFixture({
+      name: "@late/pkg",
+      version: "1.0.0",
+      interchangeToolsRelPath: "./index.js",
+      entryModuleSource: lateImportEntry,
+      type: "module",
+      extraFiles: { "other.js": `export const marker = "late-import-ok";` },
+    });
+    await cache.put(pkg.integrity, pkg.bytes);
+    const loader = createToolLoader({
+      cache,
+      registries: new Map([["test", { url: "https://example.test" }]]),
+      host: { os: process.platform, cpu: process.arch },
+      fetchTarball: async () => pkg.bytes,
+    });
+    const manifest: ToolPackageManifest = {
+      schemaVersion: "1",
+      topLevel: [{ name: "@late/pkg", version: "1.0.0" }],
+      entries: [
+        {
+          name: "@late/pkg",
+          version: "1.0.0",
+          integrity: pkg.integrity,
+          source: { kind: "registry", registry: "test" },
+        },
+      ],
+    };
+    return { loader, manifest };
+  }
+
+  function applyArgs(
+    loader: ReturnType<typeof createToolLoader>,
+    manifest: ToolPackageManifest,
+    previousDeployId: string,
+    newDeployId: string,
+  ) {
+    return {
+      manifest,
+      loader,
+      instanceDir,
+      assetRoot,
+      assetMounts: new Map<string, string>(),
+      attemptId: `atp-${newDeployId}`,
+      previousDeployId,
+      newDeployId,
+    };
+  }
+
+  // Invoke the loaded factory's `probe` tool, whose `run` performs the
+  // call-time sibling import. The namespaced tool name carries the
+  // bundle-id prefix the loader applied.
+  function runProbe(factory: LoadedToolFactory): Promise<{ content: unknown }> {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- BaseEnv is satisfied by an empty object for this stub; the factory does not read env, only the call-time sibling import.
+    const bundle = factory({} as Parameters<typeof factory>[0]);
+    return bundle.run(
+      { id: "c1", name: "late/main:probe", arguments: {} },
+      new AbortController().signal,
+    );
+  }
+
+  async function deployDirExists(id: string): Promise<boolean> {
+    try {
+      await fs.stat(path.join(instanceDir, "packages", id));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  test("a retained previous deploy still resolves a call-time sibling import", async () => {
+    const { loader, manifest } = await buildLateImportLoader();
+
+    const first = await applyAtomic(applyArgs(loader, manifest, "none", "d1"));
+    expect(first.status).toBe("ok");
+    if (first.status !== "ok") return;
+    const d1Factory = first.loaded[0]?.factories[0];
+    if (d1Factory === undefined) throw new Error("expected a loaded factory");
+
+    // A second apply makes d1 the retained previous deploy. The prelude
+    // keeps {d2, d1}, so d1's tree survives.
+    const second = await applyAtomic(applyArgs(loader, manifest, "d1", "d2"));
+    expect(second.status).toBe("ok");
+    expect(await deployDirExists("d1")).toBe(true);
+
+    // d1's tool runs for the first time AFTER the second apply; its
+    // call-time `import("./other.js")` resolves against the still-present
+    // packages/d1/ tree.
+    const result = await runProbe(d1Factory);
+    expect(result.content).toBe("late-import-ok");
+  });
+
+  test("a reaped deploy can no longer resolve a call-time sibling import", async () => {
+    const { loader, manifest } = await buildLateImportLoader();
+
+    const first = await applyAtomic(applyArgs(loader, manifest, "none", "d1"));
+    expect(first.status).toBe("ok");
+    if (first.status !== "ok") return;
+    const d1Factory = first.loaded[0]?.factories[0];
+    if (d1Factory === undefined) throw new Error("expected a loaded factory");
+
+    // d2 retains d1; d3 then reaps d1 (keep-set becomes {d3, d2}).
+    const second = await applyAtomic(applyArgs(loader, manifest, "d1", "d2"));
+    expect(second.status).toBe("ok");
+    const third = await applyAtomic(applyArgs(loader, manifest, "d2", "d3"));
+    expect(third.status).toBe("ok");
+
+    // d1's tree is gone, bounding disk to the two retained deploys.
+    expect(await deployDirExists("d1")).toBe(false);
+
+    // d1's tool runs for the FIRST time only now — its sibling module
+    // was never imported before the reap, so the ESM cache cannot mask
+    // the missing file. The call-time import fails against the absent
+    // packages/d1/ tree.
+    await expect(runProbe(d1Factory)).rejects.toThrow();
   });
 });
