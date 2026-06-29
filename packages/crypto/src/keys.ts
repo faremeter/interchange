@@ -133,6 +133,51 @@ export async function importPublicKeyBytes(
 }
 
 /**
+ * Derive the raw 32-byte Ed25519 public key from a 32-byte private key
+ * seed.
+ *
+ * Web Crypto offers no direct public-from-private export: `subtle` cannot
+ * export a public key from an imported private `CryptoKey`. Round-trip
+ * through JWK instead — a private Ed25519 JWK carries the public point in
+ * its `x` member (RFC 8037 §2), which re-imports as a public key whose
+ * SubjectPublicKeyInfo export yields the raw point in the trailing 32
+ * bytes, the same slice `generateKeyPair` takes.
+ */
+export async function derivePublicKeyBytes(
+  seed: Uint8Array,
+): Promise<Uint8Array> {
+  if (seed.length !== 32) {
+    throw new Error(`Ed25519 private key must be 32 bytes, got ${seed.length}`);
+  }
+  const pkcs8 = new Uint8Array(PKCS8_ED25519_PREFIX.length + 32);
+  pkcs8.set(PKCS8_ED25519_PREFIX);
+  pkcs8.set(seed, PKCS8_ED25519_PREFIX.length);
+  const privateKey = await crypto.subtle.importKey(
+    "pkcs8",
+    asArrayBuffer(pkcs8),
+    ED25519,
+    true,
+    ["sign"],
+  );
+  const jwk = await crypto.subtle.exportKey("jwk", privateKey);
+  if (typeof jwk.x !== "string") {
+    throw new Error("Ed25519 private JWK did not carry a public x member");
+  }
+  const publicKey = await crypto.subtle.importKey(
+    "jwk",
+    { kty: "OKP", crv: "Ed25519", x: jwk.x },
+    ED25519,
+    true,
+    ["verify"],
+  );
+  const spki = new Uint8Array(await crypto.subtle.exportKey("spki", publicKey));
+  if (spki.length < 32) {
+    throw new Error(`Unexpected Ed25519 SPKI export length ${spki.length}`);
+  }
+  return spki.slice(spki.length - 32);
+}
+
+/**
  * Produce a raw 64-byte Ed25519 signature over `message` using the
  * 32-byte private key seed.
  *
