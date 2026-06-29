@@ -10,18 +10,21 @@
 // `signEd25519`/`verifyEd25519` primitives produce and check the bare
 // 64-byte RFC 8032 signature without the PGP packet framing and ASCII
 // armor the package's envelope helpers add — exactly the wire format
-// this channel wants. HMAC-SHA256 still comes from Node's built-in
-// `node:crypto`. The wire format here is the raw 64-byte Ed25519
+// this channel wants. HMAC-SHA256 uses the Web Crypto `subtle` API; its
+// tag is verified by recomputing the tag with `subtle.sign` and
+// comparing under an explicit constant-time XOR-accumulate rather than
+// `subtle.verify`, because the Web Crypto spec does not guarantee
+// `verify` runs in constant time and this channel keeps ownership of
+// that property. The wire format here is the raw 64-byte Ed25519
 // signature and the raw 32-byte HMAC-SHA256 tag concatenated with the
 // canonical-JSON payload bytes. Anything fancier would just pay PGP
 // overhead per frame.
-
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 import {
   signEd25519 as ed25519Sign,
   verifyEd25519 as ed25519Verify,
 } from "@intx/crypto";
+import { hexEncode } from "@intx/types";
 
 const ED25519_SIGNATURE_BYTES = 64;
 const ED25519_KEY_BYTES = 32;
@@ -36,18 +39,18 @@ const CHANNEL_ID_BYTES = 16;
  * key the supervisor uses on the control channel.
  */
 export function generateHmacKey(): Uint8Array {
-  return new Uint8Array(randomBytes(HMAC_KEY_BYTES));
+  return crypto.getRandomValues(new Uint8Array(HMAC_KEY_BYTES));
 }
 
 /**
  * Mint a fresh channelId per the channel-identity contract: 16 bytes
- * from `crypto.randomBytes`, hex-encoded. The supervisor mints one at
+ * from `crypto.getRandomValues`, hex-encoded. The supervisor mints one at
  * every spawn and every recycle, passes it to the child in spawn-time
  * env, and rotates it on the next respawn. The hex encoding keeps the
  * value safe to log and round-trips cleanly through JSON.
  */
 export function generateChannelId(): string {
-  return Buffer.from(randomBytes(CHANNEL_ID_BYTES)).toString("hex");
+  return hexEncode(crypto.getRandomValues(new Uint8Array(CHANNEL_ID_BYTES)));
 }
 
 /**
@@ -94,37 +97,69 @@ export async function verifyEd25519(
  * envelope bytes under the shared key. Same primitive on both sides
  * of the event channel.
  */
-export function signHmac(bytes: Uint8Array, key: Uint8Array): Uint8Array {
+export async function signHmac(
+  bytes: Uint8Array,
+  key: Uint8Array,
+): Promise<Uint8Array> {
   if (key.length !== HMAC_KEY_BYTES) {
     throw new Error(
       `IPC HMAC key must be ${HMAC_KEY_BYTES} bytes, got ${key.length}`,
     );
   }
-  const mac = createHmac("sha256", key);
-  mac.update(bytes);
-  return new Uint8Array(mac.digest());
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- ArrayBuffer-backed at the call site; Web Crypto's BufferSource type rejects Uint8Array<ArrayBufferLike> under TS 5.9 (microsoft/TypeScript#62240)
+    key as Uint8Array<ArrayBuffer>,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const tag = await crypto.subtle.sign(
+    "HMAC",
+    cryptoKey,
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- ArrayBuffer-backed at the call site; Web Crypto's BufferSource type rejects Uint8Array<ArrayBufferLike> under TS 5.9 (microsoft/TypeScript#62240)
+    bytes as Uint8Array<ArrayBuffer>,
+  );
+  return new Uint8Array(tag);
 }
 
 /**
- * Constant-time tag comparison for HMAC verification. A non-constant
- * comparison would leak the position of the first mismatched byte in
- * a timing side channel.
+ * Constant-time byte comparison. A non-constant comparison would leak
+ * the position of the first mismatched byte through a timing side
+ * channel. The XOR accumulate is branch-free over the byte range; the
+ * only early return is on a length mismatch, which is not secret-
+ * dependent.
  */
-export function verifyHmac(
+function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let acc = 0;
+  for (let i = 0; i < a.length; i++) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- i is bounds-checked by the loop guard and a.length === b.length above
+    acc |= (a[i] as number) ^ (b[i] as number);
+  }
+  return acc === 0;
+}
+
+/**
+ * Verify an HMAC tag by recomputing it and comparing in constant time.
+ * Deliberately avoids `subtle.verify`, whose constant-time behavior the
+ * Web Crypto spec does not guarantee; this channel owns that property
+ * via `constantTimeEqual`.
+ */
+export async function verifyHmac(
   bytes: Uint8Array,
   tag: Uint8Array,
   key: Uint8Array,
-): boolean {
+): Promise<boolean> {
   if (tag.length !== HMAC_TAG_BYTES) {
     throw new Error(
       `IPC HMAC tag must be ${HMAC_TAG_BYTES} bytes, got ${tag.length}`,
     );
   }
-  const expected = signHmac(bytes, key);
-  if (expected.length !== tag.length) {
-    return false;
-  }
-  return timingSafeEqual(expected, tag);
+  const expected = await signHmac(bytes, key);
+  return constantTimeEqual(expected, tag);
 }
 
 export const IPC_CRYPTO = Object.freeze({

@@ -73,7 +73,7 @@
 //    InferenceEvent volume profile (delta events at token rate).
 //
 // 3. ChannelId rotation on every spawn AND every recycle.
-//    The channelId is 16 bytes from `crypto.randomBytes`, hex-encoded
+//    The channelId is 16 bytes from `crypto.getRandomValues`, hex-encoded
 //    (interface-decisions Bonus 2). The supervisor mints it at every
 //    spawn, places it in spawn-time env (`IPC_CHANNEL_ID`), and mints
 //    a fresh one at every recycle. Receivers track the current
