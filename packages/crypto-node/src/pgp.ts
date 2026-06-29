@@ -24,6 +24,8 @@
  *   where no key fingerprint is available
  */
 
+import { base64Encode, base64Decode } from "@intx/types";
+
 // RFC 4880 §9.1: public-key algorithm IDs
 const PK_ALGO_EDDSA = 22;
 
@@ -514,17 +516,15 @@ const ARMOR_FOOTER = "-----END PGP SIGNATURE-----";
  * existing OpenPGP implementations.
  */
 export function armorEncode(data: Uint8Array): string {
-  const b64 = Buffer.from(data).toString("base64");
+  const b64 = base64Encode(data);
   const lines: string[] = [];
   for (let i = 0; i < b64.length; i += 76) {
     lines.push(b64.slice(i, i + 76));
   }
   const crc = crc24(data);
-  const crcB64 = Buffer.from([
-    (crc >> 16) & 0xff,
-    (crc >> 8) & 0xff,
-    crc & 0xff,
-  ]).toString("base64");
+  const crcB64 = base64Encode(
+    new Uint8Array([(crc >> 16) & 0xff, (crc >> 8) & 0xff, crc & 0xff]),
+  );
   return [ARMOR_HEADER, "", ...lines, `=${crcB64}`, ARMOR_FOOTER].join("\n");
 }
 
@@ -574,10 +574,10 @@ export function armorDecode(armor: string): Uint8Array {
     }
   }
 
-  const data = new Uint8Array(Buffer.from(bodyLines.join(""), "base64"));
+  const data = base64Decode(bodyLines.join(""));
 
   if (crcLine !== undefined) {
-    const expectedCRCBytes = new Uint8Array(Buffer.from(crcLine, "base64"));
+    const expectedCRCBytes = base64Decode(crcLine);
     if (expectedCRCBytes.length === 3) {
       const expected =
         ((expectedCRCBytes[0]! << 16) |

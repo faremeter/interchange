@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test";
+import { hexEncode } from "@intx/types";
 
 import { generateKeyPair } from "./keys";
 import { NodeCrypto, createNodeCrypto } from "./provider";
@@ -24,9 +25,7 @@ describe("generateKeyPair", () => {
   test("each call produces a different key pair", async () => {
     const a = await generateKeyPair();
     const b = await generateKeyPair();
-    expect(Buffer.from(a.publicKey).toString("hex")).not.toBe(
-      Buffer.from(b.publicKey).toString("hex"),
-    );
+    expect(hexEncode(a.publicKey)).not.toBe(hexEncode(b.publicKey));
   });
 });
 
@@ -70,9 +69,7 @@ describe("NodeCrypto", () => {
     const kp = await generateKeyPair();
     const crypto = createNodeCrypto(kp);
     const pk = crypto.getPublicKey();
-    expect(Buffer.from(pk).toString("hex")).toBe(
-      Buffer.from(kp.publicKey).toString("hex"),
-    );
+    expect(hexEncode(pk)).toBe(hexEncode(kp.publicKey));
   });
 
   test("rejects private key of wrong length", async () => {
@@ -173,8 +170,20 @@ describe("armorEncode / armorDecode", () => {
     expect(armored).toContain("-----BEGIN PGP SIGNATURE-----");
     expect(armored).toContain("-----END PGP SIGNATURE-----");
     const decoded = armorDecode(armored);
-    expect(Buffer.from(decoded).toString("hex")).toBe(
-      Buffer.from(data).toString("hex"),
+    expect(hexEncode(decoded)).toBe(hexEncode(data));
+  });
+
+  test("encodes a fixed payload to a known armor block", () => {
+    const data = new Uint8Array(64);
+    for (let i = 0; i < 64; i++) data[i] = i;
+    const armored = armorEncode(data);
+    expect(armored).toBe(
+      "-----BEGIN PGP SIGNATURE-----\n" +
+        "\n" +
+        "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4\n" +
+        "OTo7PD0+Pw==\n" +
+        "=r2Q7\n" +
+        "-----END PGP SIGNATURE-----",
     );
   });
 
@@ -190,9 +199,7 @@ describe("armorEncode / armorDecode", () => {
     crypto.getRandomValues(data);
     const armored = armorEncode(data);
     const decoded = armorDecode(armored);
-    expect(Buffer.from(decoded).toString("hex")).toBe(
-      Buffer.from(data).toString("hex"),
-    );
+    expect(hexEncode(decoded)).toBe(hexEncode(data));
   });
 
   test("rejects missing header", () => {
@@ -247,9 +254,7 @@ describe("encodeMPI / decodeMPI", () => {
     // The decoded bytes may have stripped trailing zeros, so compare trimmed.
     let len = orig.length;
     while (len > 0 && orig[len - 1] === 0) len--;
-    expect(Buffer.from(bytes).toString("hex")).toBe(
-      Buffer.from(orig.subarray(0, len)).toString("hex"),
-    );
+    expect(hexEncode(bytes)).toBe(hexEncode(orig.subarray(0, len)));
   });
 
   test("decodeMPI throws on truncated input", () => {
