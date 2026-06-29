@@ -1,7 +1,12 @@
 import { describe, test, expect } from "bun:test";
 import { hexDecode, hexEncode } from "@intx/types";
 
-import { asArrayBuffer, signEd25519, verifyEd25519 } from "./keys";
+import {
+  asArrayBuffer,
+  derivePublicKeyBytes,
+  signEd25519,
+  verifyEd25519,
+} from "./keys";
 import {
   buildSignatureHashInput,
   buildSignaturePacket,
@@ -20,6 +25,11 @@ const seed = hexDecode(kat.SEED_HEX);
 const publicKey = hexDecode(kat.PUBLIC_KEY_HEX);
 
 describe("known-answer vectors (wire compatibility)", () => {
+  test("derivePublicKeyBytes recovers the fixture public key", async () => {
+    const derived = await derivePublicKeyBytes(seed);
+    expect(hexEncode(derived)).toBe(kat.PUBLIC_KEY_HEX);
+  });
+
   test("raw Ed25519 signature matches the fixture", async () => {
     const sig = await signEd25519(
       seed,

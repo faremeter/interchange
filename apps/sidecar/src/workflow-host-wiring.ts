@@ -7,14 +7,13 @@
 // Any logic that would benefit a future alternative-sidecar
 // implementation lives inside `@intx/workflow-host`, not here.
 
-import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join as pathJoin } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { type } from "arktype";
 
-import { signEd25519 } from "@intx/crypto";
+import { derivePublicKeyBytes, signEd25519 } from "@intx/crypto";
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
 import {
@@ -51,6 +50,7 @@ import {
   type TrivialLaunch,
   type WorkflowSupervisor,
 } from "@intx/workflow-host";
+import { hexEncode } from "@intx/types";
 import {
   parseInferenceEvent,
   type CryptoProvider,
@@ -624,9 +624,15 @@ function canonicalJsonStringify(value: unknown): string {
  * round-trip the hub for a hash the orchestrator's hand-off task will
  * also derive deterministically from the same canonical form.
  */
-export function computeWireDefinitionHash(definition: unknown): string {
+export async function computeWireDefinitionHash(
+  definition: unknown,
+): Promise<string> {
   const canonical = canonicalJsonStringify(definition);
-  return createHash("sha256").update(canonical, "utf8").digest("hex");
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(canonical),
+  );
+  return hexEncode(new Uint8Array(digest));
 }
 
 /**
@@ -635,38 +641,10 @@ export function computeWireDefinitionHash(definition: unknown): string {
  * with this key; the multi-step branch surfaces it to the link so the
  * hub records the verifying key for the deployment's signed events.
  */
-function derivePrincipalPublicKeyHex(signingKeySeed: Uint8Array): string {
-  if (signingKeySeed.length !== 32) {
-    throw new Error(
-      `sidecar deploy router: Ed25519 signing seed must be 32 bytes, got ${signingKeySeed.length}`,
-    );
-  }
-  // Deriving the public half from a raw seed is the one signing-wiring step
-  // Web Crypto cannot do (`subtle` cannot export a public key from an
-  // imported private key), so it stays on node:crypto: wrap the seed in the
-  // fixed Ed25519 PKCS#8 DER framing (RFC 8410) and let Node derive the
-  // public key.
-  const pkcs8 = new Uint8Array(16 + 32);
-  pkcs8.set([
-    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70,
-    0x04, 0x22, 0x04, 0x20,
-  ]);
-  pkcs8.set(signingKeySeed, 16);
-  const privateKey = createPrivateKey({
-    key: Buffer.from(pkcs8),
-    format: "der",
-    type: "pkcs8",
-  });
-  const publicKey = createPublicKey(privateKey);
-  // Node exports Ed25519 SPKI in DER; the raw 32-byte point is the
-  // last 32 bytes of the structure (RFC 8410).
-  const der = publicKey.export({ type: "spki", format: "der" });
-  if (der.length < 32) {
-    throw new Error(
-      `sidecar deploy router: unexpected SPKI DER length ${String(der.length)} for Ed25519 public key`,
-    );
-  }
-  return der.subarray(der.length - 32).toString("hex");
+async function derivePrincipalPublicKeyHex(
+  signingKeySeed: Uint8Array,
+): Promise<string> {
+  return hexEncode(await derivePublicKeyBytes(signingKeySeed));
 }
 
 export function createSidecarDeployRouter(deps: {
@@ -841,9 +819,15 @@ export function createSidecarDeployRouter(deps: {
    */
   consumedRetentionMs?: number;
 }): DeployRouter {
-  const principalPublicKeyHex = derivePrincipalPublicKeyHex(
-    deps.signingKeySeed,
-  );
+  // Validate the signing seed at construction so a malformed key fails
+  // sidecar boot rather than the first multi-step deploy, where the
+  // public key is derived from it (`derivePrincipalPublicKeyHex`). The
+  // seed also signs every workflow-run event via the supervisor.
+  if (deps.signingKeySeed.length !== 32) {
+    throw new Error(
+      `sidecar deploy router: Ed25519 signing seed must be 32 bytes, got ${deps.signingKeySeed.length}`,
+    );
+  }
   const publishInferenceEvent =
     deps.publishWorkflowInferenceEvent ??
     ((
@@ -952,7 +936,9 @@ export function createSidecarDeployRouter(deps: {
     let routersRegistered = false;
     let agentTransportRegistered = false;
     try {
-      const definitionHash = computeWireDefinitionHash(projection.definition);
+      const definitionHash = await computeWireDefinitionHash(
+        projection.definition,
+      );
 
       // Per-deployment substrate-config keys the workflow-substrate-factory
       // validator requires (`SIDECAR_SUBSTRATE_CONFIG_KEYS` /
@@ -1259,7 +1245,9 @@ export function createSidecarDeployRouter(deps: {
       });
 
       claimedSlugSucceeded = true;
-      return { publicKey: principalPublicKeyHex };
+      return {
+        publicKey: await derivePrincipalPublicKeyHex(deps.signingKeySeed),
+      };
     } finally {
       if (!claimedSlugSucceeded) {
         // Unwind in reverse registration order so each step undoes

@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { hexEncode, base64Encode, base64Decode } from "@intx/types";
 
-import { generateKeyPair, signEd25519 } from "./keys";
+import { derivePublicKeyBytes, generateKeyPair, signEd25519 } from "./keys";
 import { NodeCrypto, createNodeCrypto } from "./provider";
 import { canonicalizeText, canonicalizeBytes } from "./canonicalize";
 import { createDetachedSignature } from "./sign";
@@ -32,6 +32,21 @@ describe("generateKeyPair", () => {
     const a = await generateKeyPair();
     const b = await generateKeyPair();
     expect(hexEncode(a.publicKey)).not.toBe(hexEncode(b.publicKey));
+  });
+});
+
+describe("derivePublicKeyBytes", () => {
+  test("recovers the public key from a generated seed", async () => {
+    const kp = await generateKeyPair();
+    const derived = await derivePublicKeyBytes(kp.privateKey);
+    expect(derived.length).toBe(32);
+    expect(hexEncode(derived)).toBe(hexEncode(kp.publicKey));
+  });
+
+  test("rejects a seed of the wrong length", async () => {
+    await expect(derivePublicKeyBytes(new Uint8Array(16))).rejects.toThrow(
+      /32 bytes/,
+    );
   });
 });
 

@@ -688,16 +688,20 @@ describe("validateWorkflowProjection", () => {
 });
 
 describe("computeWireDefinitionHash", () => {
-  test("is stable across key-ordering differences", () => {
+  test("is stable across key-ordering differences", async () => {
     const a = { id: "w-1", stepOrder: ["s1"], steps: { s1: { kind: "step" } } };
     const b = { steps: { s1: { kind: "step" } }, stepOrder: ["s1"], id: "w-1" };
-    expect(computeWireDefinitionHash(a)).toBe(computeWireDefinitionHash(b));
+    expect(await computeWireDefinitionHash(a)).toBe(
+      await computeWireDefinitionHash(b),
+    );
   });
 
-  test("differs across different definitions", () => {
+  test("differs across different definitions", async () => {
     const a = { id: "w-1", stepOrder: ["s1"], steps: { s1: {} } };
     const b = { id: "w-2", stepOrder: ["s1"], steps: { s1: {} } };
-    expect(computeWireDefinitionHash(a)).not.toBe(computeWireDefinitionHash(b));
+    expect(await computeWireDefinitionHash(a)).not.toBe(
+      await computeWireDefinitionHash(b),
+    );
   });
 });
 
@@ -1267,7 +1271,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       DEPLOYMENT_ID: "multi-example-com",
       MAILBOX_ADDRESS: "multi@example.com",
     });
-    expect(env.DEFINITION_HASH).toBe(computeWireDefinitionHash(definition));
+    expect(env.DEFINITION_HASH).toBe(
+      await computeWireDefinitionHash(definition),
+    );
     expect(env[STEP_INFERENCE_SOURCES_ENV_KEY]).toBe(JSON.stringify(sources));
     expect(env.IPC_CHANNEL_ID).toMatch(/^[0-9a-f]{32}$/);
 

@@ -1,5 +1,6 @@
 export {
   generateKeyPair,
+  derivePublicKeyBytes,
   importPrivateKeyBytes,
   importPublicKeyBytes,
   signEd25519,
