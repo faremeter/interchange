@@ -11,10 +11,14 @@ import type { DB } from "@intx/db";
 import {
   asset,
   credential,
+  model,
+  modelOffering,
+  modelProvider,
   oauthClient,
   principal,
   provider,
   tenant,
+  wallet,
 } from "@intx/db/schema";
 
 type Db = DB["db"];
@@ -166,5 +170,98 @@ export async function seedCredential(db: Db, c: SeedCredential): Promise<void> {
     principalId: c.principalId ?? null,
     scopes: c.scopes ?? null,
     oauthClientId: c.oauthClientId ?? null,
+  });
+}
+
+export type SeedWallet = {
+  id: string;
+  tenantId: string;
+  name?: string;
+  backendType?: "crypto" | "fiat" | "credits";
+  currency?: string;
+};
+
+export async function seedWallet(db: Db, w: SeedWallet): Promise<void> {
+  await db.insert(wallet).values({
+    id: w.id,
+    tenantId: w.tenantId,
+    name: w.name ?? w.id,
+    backendType: w.backendType ?? "credits",
+    currency: w.currency ?? "USD",
+  });
+}
+
+export type SeedModel = {
+  id: string;
+  tenantId: string;
+  canonicalName: string;
+  displayName?: string | null;
+  description?: string | null;
+  disabled?: boolean;
+};
+
+export async function seedModel(db: Db, m: SeedModel): Promise<void> {
+  await db.insert(model).values({
+    id: m.id,
+    tenantId: m.tenantId,
+    canonicalName: m.canonicalName,
+    displayName: m.displayName ?? null,
+    description: m.description ?? null,
+    disabled: m.disabled ?? false,
+  });
+}
+
+export type SeedModelProvider = {
+  id: string;
+  tenantId: string;
+  name: string;
+  plugin?: "anthropic" | "openai" | "openai-compatible" | "google-genai";
+  baseURL?: string;
+  // The schema's XOR check requires exactly one of these; callers supply one.
+  credentialId?: string | null;
+  walletId?: string | null;
+  disabled?: boolean;
+};
+
+export async function seedModelProvider(
+  db: Db,
+  p: SeedModelProvider,
+): Promise<void> {
+  await db.insert(modelProvider).values({
+    id: p.id,
+    tenantId: p.tenantId,
+    name: p.name,
+    plugin: p.plugin ?? "anthropic",
+    baseURL: p.baseURL ?? "https://api.anthropic.com",
+    credentialId: p.credentialId ?? null,
+    walletId: p.walletId ?? null,
+    disabled: p.disabled ?? false,
+  });
+}
+
+export type SeedModelOffering = {
+  id: string;
+  tenantId: string;
+  modelId: string;
+  providerId: string;
+  priority?: number;
+  capabilities?: string[];
+  deploymentTags?: string[];
+  disabled?: boolean;
+};
+
+export async function seedModelOffering(
+  db: Db,
+  o: SeedModelOffering,
+): Promise<void> {
+  await db.insert(modelOffering).values({
+    id: o.id,
+    tenantId: o.tenantId,
+    modelId: o.modelId,
+    providerId: o.providerId,
+    priority: o.priority ?? 0,
+    capabilities: o.capabilities ?? [],
+    deploymentTags: o.deploymentTags ?? [],
+    disabled: o.disabled ?? false,
   });
 }
