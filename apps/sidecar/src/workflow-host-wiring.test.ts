@@ -263,31 +263,47 @@ describe("createSidecarDeployRouter wires the InferenceEvent subscription to rec
     // back out and snapshot their `type` discriminator.
     const writtenEvents: string[] = [];
     const repoStore: RepoStore = ((): RepoStore => {
+      // Mirror the real store's per-repo serialization (withRepoLock) so
+      // concurrent recordRunEvent writes land in invocation order even
+      // though the per-event signature is async.
+      let writeTail: Promise<void> = Promise.resolve();
       const stub: Partial<RepoStore> = {
         getRepoDir(_repoId: RepoId): string {
           return "/tmp/unused";
         },
-        async writeTreePreservingPrefix(_p, _id, _ref, args) {
-          const files = await args.merge(new Map());
-          for (const value of Object.values(files)) {
-            const text =
-              value instanceof Uint8Array
-                ? new TextDecoder().decode(value)
-                : value;
-            const parsed: unknown = JSON.parse(text);
-            if (
-              typeof parsed === "object" &&
-              parsed !== null &&
-              "type" in parsed &&
-              typeof parsed.type === "string"
-            ) {
-              writtenEvents.push(parsed.type);
+        writeTreePreservingPrefix(_p, _id, _ref, args) {
+          const previous = writeTail;
+          let release: () => void = () => undefined;
+          writeTail = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          return (async () => {
+            await previous;
+            try {
+              const files = await args.merge(new Map());
+              for (const value of Object.values(files)) {
+                const text =
+                  value instanceof Uint8Array
+                    ? new TextDecoder().decode(value)
+                    : value;
+                const parsed: unknown = JSON.parse(text);
+                if (
+                  typeof parsed === "object" &&
+                  parsed !== null &&
+                  "type" in parsed &&
+                  typeof parsed.type === "string"
+                ) {
+                  writtenEvents.push(parsed.type);
+                }
+              }
+              return {
+                commitSha: `c-${String(writtenEvents.length)}`,
+                newlyTerminalRuns: [],
+              };
+            } finally {
+              release();
             }
-          }
-          return {
-            commitSha: `c-${String(writtenEvents.length)}`,
-            newlyTerminalRuns: [],
-          };
+          })();
         },
       };
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- in-test stub; the unused RepoStore methods are guarded by the Proxy below
@@ -400,9 +416,11 @@ describe("createSidecarDeployRouter wires the InferenceEvent subscription to rec
       data: { messageRunId: "r-1", messageId: "m-1", status: "completed" },
     });
 
-    // recordRunEvent fires are sequenced through Promises; await a
-    // microtask drain before snapshot.
-    await new Promise<void>((r) => setTimeout(r, 0));
+    // recordRunEvent fires are sequenced through Promises and the
+    // per-event signature is async; poll until all four events land.
+    for (let i = 0; i < 200 && writtenEvents.length < 4; i++) {
+      await new Promise<void>((r) => setTimeout(r, 1));
+    }
 
     expect(writtenEvents).toEqual([
       "RunStarted",

@@ -501,7 +501,7 @@ async function buildBindings(opts: {
   });
   return {
     repoStore,
-    signAsPrincipal: (kind, payload) => opts.signSpy(kind, payload),
+    signAsPrincipal: async (kind, payload) => opts.signSpy(kind, payload),
     mailBus: opts.mailBus,
     subprocessSpawner: opts.spawner,
     binaryPath: "/fake/bin/workflow-child",
@@ -1977,7 +1977,7 @@ describe("commitCancelRequested (low-level)", () => {
       origin: "self",
       reason: "tests pass",
       at: "2026-01-01T00:00:00.000Z",
-      signAsPrincipal: (kind, payload) => {
+      signAsPrincipal: async (kind, payload) => {
         expect(kind).toBe("supervisor");
         const sig = new Uint8Array(64);
         // Embed the payload length so we can verify it was signed.

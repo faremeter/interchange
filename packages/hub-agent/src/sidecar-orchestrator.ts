@@ -41,12 +41,12 @@ const log = getLogger(["interchange", "hub-agent", "orchestrator"]);
 
 export type SidecarCryptoOps = {
   generateKeyPair(): Promise<KeyPair>;
-  signEd25519(privateKey: Uint8Array, payload: Uint8Array): Uint8Array;
+  signEd25519(privateKey: Uint8Array, payload: Uint8Array): Promise<Uint8Array>;
   verifySSHSig(
     payload: string,
     signature: string,
     publicKey: Uint8Array,
-  ): boolean;
+  ): Promise<boolean>;
 };
 
 /**

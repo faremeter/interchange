@@ -433,7 +433,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
 
     const bindings: WorkflowSupervisorBindings = {
       repoStore: createStubRepoStore(baseDir),
-      signAsPrincipal: (): SignedPayload => ({
+      signAsPrincipal: async (): Promise<SignedPayload> => ({
         sig: new Uint8Array(64),
         principalKind: "supervisor",
       }),

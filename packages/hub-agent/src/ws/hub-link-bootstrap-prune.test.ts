@@ -26,9 +26,8 @@ import {
   type SidecarRouter,
   type WsHandle,
 } from "@intx/hub-sessions";
-import { sign as nodeSign } from "node:crypto";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { importPrivateKeyBytes, verifySSHSignature } from "@intx/crypto-node";
+import { signEd25519, verifySSHSignature } from "@intx/crypto-node";
 import type {
   HarnessConfig,
   InboundMessage,
@@ -62,11 +61,10 @@ function createTestKeyStore(): AgentKeyStore & {
         keyPair,
       }));
     },
-    signChallenge(address, payload) {
+    async signChallenge(address, payload) {
       const kp = agentKeys.get(address);
       if (kp === undefined) return null;
-      const key = importPrivateKeyBytes(kp.privateKey);
-      return new Uint8Array(nodeSign(null, payload, key));
+      return await signEd25519(kp.privateKey, payload);
     },
     recordHubKey(address, hexHubPublicKey) {
       hubKeys.set(address, hexDecode(hexHubPublicKey));

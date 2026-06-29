@@ -7,14 +7,14 @@
 // Any logic that would benefit a future alternative-sidecar
 // implementation lives inside `@intx/workflow-host`, not here.
 
-import { createHash, createPublicKey, sign as nodeSign } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join as pathJoin } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { type } from "arktype";
 
-import { importPrivateKeyBytes } from "@intx/crypto-node";
+import { signEd25519 } from "@intx/crypto-node";
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
 import {
@@ -636,12 +636,30 @@ export function computeWireDefinitionHash(definition: unknown): string {
  * hub records the verifying key for the deployment's signed events.
  */
 function derivePrincipalPublicKeyHex(signingKeySeed: Uint8Array): string {
-  const privateKey = importPrivateKeyBytes(signingKeySeed);
+  if (signingKeySeed.length !== 32) {
+    throw new Error(
+      `sidecar deploy router: Ed25519 signing seed must be 32 bytes, got ${signingKeySeed.length}`,
+    );
+  }
+  // Deriving the public half from a raw seed is the one signing-wiring step
+  // Web Crypto cannot do (`subtle` cannot export a public key from an
+  // imported private key), so it stays on node:crypto: wrap the seed in the
+  // fixed Ed25519 PKCS#8 DER framing (RFC 8410) and let Node derive the
+  // public key.
+  const pkcs8 = new Uint8Array(16 + 32);
+  pkcs8.set([
+    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70,
+    0x04, 0x22, 0x04, 0x20,
+  ]);
+  pkcs8.set(signingKeySeed, 16);
+  const privateKey = createPrivateKey({
+    key: Buffer.from(pkcs8),
+    format: "der",
+    type: "pkcs8",
+  });
   const publicKey = createPublicKey(privateKey);
   // Node exports Ed25519 SPKI in DER; the raw 32-byte point is the
-  // last 32 bytes of the structure (RFC 8410). The export keeps this
-  // module independent of `exportPublicKeyBytes` from `@intx/crypto-node`,
-  // which is not part of the package's public surface.
+  // last 32 bytes of the structure (RFC 8410).
   const der = publicKey.export({ type: "spki", format: "der" });
   if (der.length < 32) {
     throw new Error(
@@ -1605,10 +1623,9 @@ export function createSidecarWorkflowSupervisor(
   };
   const supervisor = createWorkflowSupervisor({
     repoStore: opts.repoStore,
-    signAsPrincipal: (kind, payload) => {
-      const key = importPrivateKeyBytes(opts.signingKeySeed);
-      const sig = nodeSign(null, payload, key);
-      return { sig: new Uint8Array(sig), principalKind: kind };
+    signAsPrincipal: async (kind, payload) => {
+      const sig = await signEd25519(opts.signingKeySeed, payload);
+      return { sig, principalKind: kind };
     },
     mailBus,
     subprocessSpawner: opts.subprocessSpawner ?? defaultSubprocessSpawner,

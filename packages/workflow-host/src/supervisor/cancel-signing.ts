@@ -179,7 +179,7 @@ export async function commitCancelRequested(
           origin: opts.origin,
           at: opts.at,
         });
-        const signature = opts.signAsPrincipal(
+        const signature = await opts.signAsPrincipal(
           SUPERVISOR_PRINCIPAL_KIND,
           payloadBytes,
         );

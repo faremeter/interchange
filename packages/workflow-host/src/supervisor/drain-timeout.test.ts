@@ -77,12 +77,15 @@ function createStubRepoStore(opts: {
 }
 
 function makeSignSpy(): {
-  signAsPrincipal: (kind: string, payload: Uint8Array) => SignedPayload;
+  signAsPrincipal: (
+    kind: string,
+    payload: Uint8Array,
+  ) => Promise<SignedPayload>;
   calls: { kind: string; payload: Uint8Array }[];
 } {
   const calls: { kind: string; payload: Uint8Array }[] = [];
   return {
-    signAsPrincipal: (kind, payload) => {
+    signAsPrincipal: async (kind, payload) => {
       calls.push({ kind, payload });
       const sig = new Uint8Array(64);
       sig.fill(7);

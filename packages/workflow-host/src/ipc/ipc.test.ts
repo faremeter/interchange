@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test";
+import { type } from "arktype";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -31,7 +32,6 @@ import type {
   NdjsonReader,
   NdjsonWriter,
 } from "./index";
-import { type } from "arktype";
 
 /**
  * Synthetic `childPublicKey` hex used to populate `ready` payloads
@@ -198,23 +198,23 @@ describe("Ed25519 primitives", () => {
   test("sign + verify round-trip", async () => {
     const kp = await generateKeyPair();
     const bytes = new TextEncoder().encode("hello");
-    const sig = signEd25519(bytes, kp.privateKey);
-    expect(verifyEd25519(bytes, sig, kp.publicKey)).toBe(true);
+    const sig = await signEd25519(bytes, kp.privateKey);
+    expect(await verifyEd25519(bytes, sig, kp.publicKey)).toBe(true);
   });
 
   test("rejects a tampered payload", async () => {
     const kp = await generateKeyPair();
     const bytes = new TextEncoder().encode("hello");
-    const sig = signEd25519(bytes, kp.privateKey);
+    const sig = await signEd25519(bytes, kp.privateKey);
     const tampered = new TextEncoder().encode("hellO");
-    expect(verifyEd25519(tampered, sig, kp.publicKey)).toBe(false);
+    expect(await verifyEd25519(tampered, sig, kp.publicKey)).toBe(false);
   });
 
   test("rejects an Ed25519 signature of the wrong length", async () => {
     const kp = await generateKeyPair();
-    expect(() =>
+    await expect(
       verifyEd25519(new Uint8Array(4), new Uint8Array(63), kp.publicKey),
-    ).toThrow(/signature must be 64 bytes/);
+    ).rejects.toThrow(/signature must be 64 bytes/);
   });
 });
 
@@ -310,6 +310,68 @@ describe("Control channel", () => {
     ]);
   });
 
+  test("serializes concurrent sends so frames keep seq order", async () => {
+    // Signing is async; without the sender's internal lock two concurrent
+    // sends could assign seq, suspend on the signer, and write in
+    // signature-resolution order. A deferred writer proves the lock: the
+    // second send must not reach the writer until the first send's write
+    // resolves, and the wire order must be seq 1 then seq 2.
+    const kp = await generateKeyPair();
+    const channelId = generateChannelId();
+    const writes: string[] = [];
+    const gates: (() => void)[] = [];
+    const writer = {
+      write(line: string): Promise<void> {
+        writes.push(line);
+        return new Promise<void>((resolve) => {
+          gates.push(resolve);
+        });
+      },
+    };
+    const sender = createControlChannelSender({
+      privateKeySeed: kp.privateKey,
+      channelId,
+      writer,
+    });
+
+    const waitForWrites = async (n: number) => {
+      for (let i = 0; i < 200; i++) {
+        if (writes.length >= n) return;
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      throw new Error(
+        `timed out waiting for ${n} writes, got ${writes.length}`,
+      );
+    };
+
+    // Fire both sends without awaiting either.
+    const first = sender.send({ type: "drain", data: { deadlineMs: 1 } });
+    const second = sender.send({ type: "drain", data: { deadlineMs: 2 } });
+
+    // After signing settles, only the first send has written; the second
+    // is held at the lock behind the first send's unresolved write.
+    await waitForWrites(1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(writes.length).toBe(1);
+
+    // Releasing the first write lets the second send proceed.
+    gates[0]?.();
+    await waitForWrites(2);
+    expect(writes.length).toBe(2);
+    gates[1]?.();
+    await Promise.all([first, second]);
+
+    const seqs = writes.map((line) => {
+      const parsed: unknown = JSON.parse(line);
+      const validated = SignedEnvelope(parsed);
+      if (validated instanceof type.errors) {
+        throw new Error(`unexpected wire shape: ${validated.summary}`);
+      }
+      return validated.envelope.seq;
+    });
+    expect(seqs).toEqual([1, 2]);
+  });
+
   test("crashes on a forged frame whose signature does not verify", async () => {
     const kp = await generateKeyPair();
     const stream = createMemoryNdjsonStream();
@@ -398,7 +460,7 @@ describe("Control channel", () => {
       }
     })();
 
-    function emitSignedFrame(seq: number) {
+    async function emitSignedFrame(seq: number) {
       const envelope: FrameEnvelope = {
         seq,
         channelId,
@@ -407,14 +469,14 @@ describe("Control channel", () => {
           data: { childPid: seq, childPublicKey: TEST_CHILD_PUBKEY_HEX },
         },
       };
-      const sig = signEd25519(encodeEnvelope(envelope), kp.privateKey);
+      const sig = await signEd25519(encodeEnvelope(envelope), kp.privateKey);
       const signed: SignedEnvelope = { envelope, sig: hexEncode(sig) };
       stream.inject(JSON.stringify(signed));
     }
 
-    emitSignedFrame(1);
-    emitSignedFrame(2);
-    emitSignedFrame(2);
+    await emitSignedFrame(1);
+    await emitSignedFrame(2);
+    await emitSignedFrame(2);
     stream.close();
     await consumer;
 
@@ -439,7 +501,7 @@ describe("Control channel", () => {
       }
     })();
 
-    function emitSignedFrame(seq: number) {
+    async function emitSignedFrame(seq: number) {
       const envelope: FrameEnvelope = {
         seq,
         channelId,
@@ -448,13 +510,13 @@ describe("Control channel", () => {
           data: { childPid: seq, childPublicKey: TEST_CHILD_PUBKEY_HEX },
         },
       };
-      const sig = signEd25519(encodeEnvelope(envelope), kp.privateKey);
+      const sig = await signEd25519(encodeEnvelope(envelope), kp.privateKey);
       const signed: SignedEnvelope = { envelope, sig: hexEncode(sig) };
       stream.inject(JSON.stringify(signed));
     }
 
-    emitSignedFrame(1);
-    emitSignedFrame(3);
+    await emitSignedFrame(1);
+    await emitSignedFrame(3);
     stream.close();
     await consumer;
 
@@ -976,8 +1038,8 @@ describe("Spawn-time trust-anchor bootstrap", () => {
     const childHmacKey = hexDecode(childHmacKeyHex);
 
     const controlBytes = new TextEncoder().encode("control");
-    const sig = signEd25519(controlBytes, kp.privateKey);
-    expect(verifyEd25519(controlBytes, sig, hostPubKey)).toBe(true);
+    const sig = await signEd25519(controlBytes, kp.privateKey);
+    expect(await verifyEd25519(controlBytes, sig, hostPubKey)).toBe(true);
 
     const eventBytes = new TextEncoder().encode("event");
     const tag = signHmac(eventBytes, hmacKey);

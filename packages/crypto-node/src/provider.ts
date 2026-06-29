@@ -1,6 +1,5 @@
-import { sign as nodeSign, verify as nodeVerify } from "node:crypto";
 import type { CryptoProvider, KeyPair } from "@intx/types/runtime";
-import { importPrivateKeyBytes, importPublicKeyBytes } from "./keys";
+import { signEd25519, verifyEd25519 } from "./keys";
 import { createSSHSignature } from "./sshsig";
 
 /**
@@ -45,9 +44,7 @@ export class NodeCrypto implements CryptoProvider {
    * wrapping this in PGP packet format when needed.
    */
   async sign(content: Uint8Array): Promise<Uint8Array> {
-    const privateKey = importPrivateKeyBytes(this.#privateKeyBytes);
-    const sig = nodeSign(null, content, privateKey);
-    return new Uint8Array(sig);
+    return signEd25519(this.#privateKeyBytes, content);
   }
 
   /**
@@ -57,7 +54,7 @@ export class NodeCrypto implements CryptoProvider {
    * public key.
    */
   async signSSH(payload: string): Promise<string> {
-    return createSSHSignature(
+    return await createSSHSignature(
       payload,
       this.#privateKeyBytes,
       this.#publicKeyBytes,
@@ -83,8 +80,7 @@ export class NodeCrypto implements CryptoProvider {
         `Ed25519 public key must be 32 bytes, got ${publicKey.length}`,
       );
     }
-    const pubKey = importPublicKeyBytes(publicKey);
-    return nodeVerify(null, content, pubKey, signature);
+    return verifyEd25519(content, signature, publicKey);
   }
 
   /** The raw 32-byte Ed25519 public key for this instance. */

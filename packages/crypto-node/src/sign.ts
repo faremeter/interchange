@@ -1,5 +1,4 @@
-import { sign as nodeSign, createHash } from "node:crypto";
-import { importPrivateKeyBytes } from "./keys";
+import { asArrayBuffer, signEd25519 } from "./keys";
 import {
   buildSignatureHashInput,
   buildSignaturePacket,
@@ -16,9 +15,9 @@ import {
  * Signing process (MESSAGE.md §Cryptographic Signing):
  *   1. Build the OpenPGP v4 signature header (with creation time subpacket)
  *   2. Concatenate content || sig_header || trailer to form the hash input
- *   3. Sign the hash input with Ed25519 — Node's crypto.sign(null, data, key)
- *      invokes Ed25519 which internally hashes data with SHA-512. The OpenPGP
- *      hash algorithm field (10 = SHA-512) documents this external hash step.
+ *   3. Sign the hash input with Ed25519 — Web Crypto's subtle.sign invokes
+ *      Ed25519, which internally hashes data with SHA-512. The OpenPGP hash
+ *      algorithm field (10 = SHA-512) documents this external hash step.
  *   4. Assemble the packet with MPI-encoded r and s components
  *   5. Wrap in ASCII armor
  *
@@ -32,13 +31,16 @@ export async function createDetachedSignature(
   const creationTime = Math.floor(Date.now() / 1000);
   const { hashInput, header } = buildSignatureHashInput(content, creationTime);
 
-  // Sign the full hash input with Ed25519. Node handles SHA-512 internally.
-  const privateKey = importPrivateKeyBytes(privateKeyBytes);
-  const rawSig = nodeSign(null, hashInput, privateKey);
+  // Sign the full hash input with Ed25519, which hashes with SHA-512
+  // internally. The OpenPGP hash-algorithm field (10 = SHA-512)
+  // documents that external hash step.
+  const rawSig = await signEd25519(privateKeyBytes, hashInput);
 
   // Compute SHA-512 separately to extract the left-16-bits field.
-  const digest = createHash("sha512").update(hashInput).digest();
-  const leftHash = new Uint8Array(digest.buffer, digest.byteOffset, 2);
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-512", asArrayBuffer(hashInput)),
+  );
+  const leftHash = digest.subarray(0, 2);
 
   const packet = buildSignaturePacket(header, rawSig, leftHash);
   const armored = armorEncode(packet);

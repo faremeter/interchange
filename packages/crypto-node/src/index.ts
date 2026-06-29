@@ -2,6 +2,7 @@ export {
   generateKeyPair,
   importPrivateKeyBytes,
   importPublicKeyBytes,
+  signEd25519,
   verifyEd25519,
 } from "./keys";
 export { NodeCrypto, createNodeCrypto } from "./provider";

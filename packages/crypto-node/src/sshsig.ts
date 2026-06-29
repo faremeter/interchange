@@ -1,10 +1,5 @@
-import {
-  sign as nodeSign,
-  verify as nodeVerify,
-  createHash,
-} from "node:crypto";
 import { base64Encode, base64Decode } from "@intx/types";
-import { importPrivateKeyBytes, importPublicKeyBytes } from "./keys";
+import { signEd25519, verifyEd25519 } from "./keys";
 
 const MAGIC_PREAMBLE = new TextEncoder().encode("SSHSIG");
 const SIG_VERSION = 1;
@@ -114,21 +109,22 @@ function dearmorSSHSig(armored: string): Uint8Array {
  * in a git commit's gpgsig header. Compatible with `git verify-commit`
  * when the allowed_signers file lists the corresponding public key.
  */
-export function createSSHSignature(
+export async function createSSHSignature(
   payload: string,
   privateKeyBytes: Uint8Array,
   publicKeyBytes: Uint8Array,
-): string {
+): Promise<string> {
   const payloadBytes = new TextEncoder().encode(payload);
-  const messageHash = createHash("sha512").update(payloadBytes).digest();
+  const messageHash = new Uint8Array(
+    await crypto.subtle.digest("SHA-512", payloadBytes),
+  );
 
   const publicKeyBlob = buildPublicKeyBlob(publicKeyBytes);
-  const signedData = buildSignedData(new Uint8Array(messageHash));
+  const signedData = buildSignedData(messageHash);
 
-  const privateKey = importPrivateKeyBytes(privateKeyBytes);
-  const rawSignature = nodeSign(null, signedData, privateKey);
+  const rawSignature = await signEd25519(privateKeyBytes, signedData);
 
-  const signatureBlob = buildSignatureBlob(new Uint8Array(rawSignature));
+  const signatureBlob = buildSignatureBlob(rawSignature);
 
   const outputParts = [
     MAGIC_PREAMBLE,
@@ -158,11 +154,11 @@ export function createSSHSignature(
  * version or algorithm). Returns false only when the signature is
  * structurally valid but cryptographically incorrect.
  */
-export function verifySSHSignature(
+export async function verifySSHSignature(
   payload: string,
   signature: string,
   publicKeyBytes: Uint8Array,
-): boolean {
+): Promise<boolean> {
   const blob = dearmorSSHSig(signature);
 
   let offset = 0;
@@ -265,9 +261,10 @@ export function verifySSHSignature(
 
   // Reconstruct signed data and verify
   const payloadBytes = new TextEncoder().encode(payload);
-  const messageHash = createHash("sha512").update(payloadBytes).digest();
-  const signedData = buildSignedData(new Uint8Array(messageHash));
+  const messageHash = new Uint8Array(
+    await crypto.subtle.digest("SHA-512", payloadBytes),
+  );
+  const signedData = buildSignedData(messageHash);
 
-  const pubKey = importPublicKeyBytes(publicKeyBytes);
-  return nodeVerify(null, signedData, pubKey, rawSig);
+  return verifyEd25519(signedData, rawSig, publicKeyBytes);
 }

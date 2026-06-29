@@ -32,9 +32,9 @@ function makeKeyPair(seed: number): KeyPair {
 }
 
 const stubCrypto = {
-  signEd25519: (_privateKey: Uint8Array, _payload: Uint8Array) =>
+  signEd25519: async (_privateKey: Uint8Array, _payload: Uint8Array) =>
     new Uint8Array(64),
-  verifySSHSig: (
+  verifySSHSig: async (
     _payload: string,
     _signature: string,
     _publicKey: Uint8Array,

@@ -508,7 +508,7 @@ async function bootSupervisor(opts: {
 
   const bindings: WorkflowSupervisorBindings = {
     repoStore,
-    signAsPrincipal: (): SignedPayload => ({
+    signAsPrincipal: async (): Promise<SignedPayload> => ({
       sig: new Uint8Array(64),
       principalKind: "supervisor",
     }),

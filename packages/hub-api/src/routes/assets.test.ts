@@ -548,9 +548,9 @@ describe("POST /api/tenants/:tenantId/assets", () => {
     }
     const payload =
       content.substring(0, gpgsigIdx) + "\n" + content.substring(endIdx);
-    expect(verifySSHSignature(payload, signature, signingKey.publicKey)).toBe(
-      true,
-    );
+    expect(
+      await verifySSHSignature(payload, signature, signingKey.publicKey),
+    ).toBe(true);
   });
 
   test("HEAD points at refs/heads/main after init", async () => {

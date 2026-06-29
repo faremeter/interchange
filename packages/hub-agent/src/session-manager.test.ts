@@ -193,8 +193,8 @@ function makeManagerHarness(
   const keyStore = createAgentKeyStore({
     dataDir,
     generateKeyPair: async () => makeKeyPair(11),
-    signEd25519: () => new Uint8Array(64),
-    verifySSHSig: () => true,
+    signEd25519: async () => new Uint8Array(64),
+    verifySSHSig: async () => true,
   });
   const builder = makeRecordingBuilder(opts);
   const transport = createInMemoryTransport();
@@ -501,8 +501,8 @@ function makeRestoreStores(dataDir: string): {
     keyStore: createAgentKeyStore({
       dataDir,
       generateKeyPair: async () => makeKeyPair(11),
-      signEd25519: () => new Uint8Array(64),
-      verifySSHSig: () => true,
+      signEd25519: async () => new Uint8Array(64),
+      verifySSHSig: async () => true,
     }),
   };
 }
@@ -666,8 +666,8 @@ function makeManagerWithRepoStore(
     keyStore: createAgentKeyStore({
       dataDir,
       generateKeyPair: async () => makeKeyPair(11),
-      signEd25519: () => new Uint8Array(64),
-      verifySSHSig: () => true,
+      signEd25519: async () => new Uint8Array(64),
+      verifySSHSig: async () => true,
     }),
     buildHarness: makeRecordingBuilder({}),
     createAgentCrypto: (kp) => makeCrypto(kp),

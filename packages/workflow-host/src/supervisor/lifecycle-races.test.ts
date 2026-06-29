@@ -334,7 +334,7 @@ async function buildBindings(opts: {
 }): Promise<WorkflowSupervisorBindings> {
   return {
     repoStore: createStubRepoStore(opts.baseDir),
-    signAsPrincipal: (): SignedPayload => ({
+    signAsPrincipal: async (): Promise<SignedPayload> => ({
       sig: new Uint8Array(64),
       principalKind: "supervisor",
     }),
