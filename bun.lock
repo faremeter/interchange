@@ -9,6 +9,7 @@
         "@types/bun": "1.3.9",
         "arktype": "catalog:",
         "drizzle-kit": "^0.31.9",
+        "drizzle-orm": "catalog:",
         "eslint": "9.34.0",
         "hono": "catalog:",
         "isomorphic-git": "catalog:",
@@ -601,6 +602,7 @@
       "version": "0.1.2",
       "dependencies": {
         "@intx/db": "workspace:*",
+        "drizzle-orm": "catalog:",
       },
     },
   },
