@@ -1,12 +1,18 @@
 import { describe, test, expect } from "bun:test";
 import { hexEncode, base64Encode, base64Decode } from "@intx/types";
 
-import { generateKeyPair } from "./keys";
+import { generateKeyPair, signEd25519 } from "./keys";
 import { NodeCrypto, createNodeCrypto } from "./provider";
 import { canonicalizeText, canonicalizeBytes } from "./canonicalize";
 import { createDetachedSignature } from "./sign";
 import { verifyDetachedSignature } from "./verify";
-import { armorEncode, armorDecode, encodeMPI, decodeMPI } from "./pgp";
+import {
+  armorEncode,
+  armorDecode,
+  encodeMPI,
+  decodeMPI,
+  createDetachedSignatureWithSigner,
+} from "./pgp";
 import { createSSHSignature, verifySSHSignature } from "./sshsig";
 
 // ---------------------------------------------------------------------------
@@ -360,6 +366,39 @@ describe("createDetachedSignature / verifyDetachedSignature", () => {
     // Verify the raw reassembled signature is valid
     // Check reconstructed signature length
     expect(reassembled.length).toBe(64);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PGP detached signature — signer-function primitive
+// ---------------------------------------------------------------------------
+
+describe("createDetachedSignatureWithSigner", () => {
+  test("signs the OpenPGP hash input, not the raw content", async () => {
+    const kp = await generateKeyPair();
+    const content = new TextEncoder().encode("delegated\r\nsigner");
+
+    let signerInput: Uint8Array | undefined;
+    const sigBytes = await createDetachedSignatureWithSigner(
+      content,
+      async (input) => {
+        signerInput = input;
+        return signEd25519(kp.privateKey, input);
+      },
+    );
+
+    // The signer receives content || sig_header || trailer, so its input is
+    // strictly longer than the bare content.
+    expect(signerInput).toBeInstanceOf(Uint8Array);
+    if (signerInput === undefined) {
+      throw new Error("signer was never invoked");
+    }
+    expect(signerInput.length).toBeGreaterThan(content.length);
+
+    const armored = new TextDecoder().decode(sigBytes);
+    expect(armored).toContain("-----BEGIN PGP SIGNATURE-----");
+    const ok = await verifyDetachedSignature(content, sigBytes, kp.publicKey);
+    expect(ok).toBe(true);
   });
 });
 
