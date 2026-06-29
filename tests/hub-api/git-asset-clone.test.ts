@@ -14,7 +14,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  harnessDbEnvAvailable,
+  harnessHubEnvAvailable,
   installSshAllowedSigner,
   runGit,
   startHub,
@@ -124,7 +124,7 @@ function withBasicAuth(
   return u.toString();
 }
 
-describe.skipIf(!harnessDbEnvAvailable())("anonymous clone", () => {
+describe.skipIf(!harnessHubEnvAvailable())("anonymous clone", () => {
   test("rejects with 401 + WWW-Authenticate Basic", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);
@@ -160,7 +160,7 @@ describe.skipIf(!harnessDbEnvAvailable())("anonymous clone", () => {
   }, 90_000);
 });
 
-describe.skipIf(!harnessDbEnvAvailable())("authorized clone", () => {
+describe.skipIf(!harnessHubEnvAvailable())("authorized clone", () => {
   test("clone succeeds and fsck reports a clean tree", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);

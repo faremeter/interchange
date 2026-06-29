@@ -1,0 +1,20 @@
+{
+  "name": "@intx/test-harness",
+  "version": "0.1.2",
+  "license": "LGPL-2.1-only",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./env": {
+      "types": "./env.ts",
+      "default": "./env.ts"
+    },
+    "./db-harness": {
+      "types": "./db-harness.ts",
+      "default": "./db-harness.ts"
+    }
+  },
+  "dependencies": {
+    "@intx/db": "workspace:*"
+  }
+}

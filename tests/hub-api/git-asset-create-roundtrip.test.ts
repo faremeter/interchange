@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  harnessDbEnvAvailable,
+  harnessHubEnvAvailable,
   runGit,
   startHub,
   type HubHandle,
@@ -45,7 +45,7 @@ async function startHubTracked(): Promise<HubHandle> {
   return hub;
 }
 
-describe.skipIf(!harnessDbEnvAvailable())(
+describe.skipIf(!harnessHubEnvAvailable())(
   "REST create → immediate clone",
   () => {
     test("the clone returns a signed genesis on refs/heads/main", async () => {

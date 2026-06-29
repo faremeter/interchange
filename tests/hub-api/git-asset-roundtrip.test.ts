@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  harnessDbEnvAvailable,
+  harnessHubEnvAvailable,
   runGit,
   startHub,
   type HubHandle,
@@ -53,7 +53,7 @@ function withBasicAuth(url: string, user: string, pass: string): string {
   return u.toString();
 }
 
-describe.skipIf(!harnessDbEnvAvailable())(
+describe.skipIf(!harnessHubEnvAvailable())(
   "clone → push → re-clone roundtrip",
   () => {
     test("the second clone observes the pushed commit byte-for-byte", async () => {

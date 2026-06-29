@@ -33,12 +33,12 @@ import { type } from "arktype";
 import postgres from "postgres";
 
 import {
-  harnessDbEnvAvailable,
-  loadHarnessDbConfig,
+  harnessHubEnvAvailable,
   runGit,
   startHub,
   type HubHandle,
 } from "./lib/git-harness";
+import { loadHarnessDbConfig } from "@intx/test-harness/db-harness";
 import {
   apiCall,
   assetSmartHttpUrl,
@@ -124,7 +124,7 @@ async function probeInfoRefs(
   return { status: res.status, body: parsed };
 }
 
-describe.skipIf(!harnessDbEnvAvailable())(
+describe.skipIf(!harnessHubEnvAvailable())(
   "git-bearer failure modes against /usr/bin/git",
   () => {
     test("token_expired: expired token is rejected with 403", async () => {

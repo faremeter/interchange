@@ -24,7 +24,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  harnessDbEnvAvailable,
+  harnessHubEnvAvailable,
   runGit,
   startHub,
   type HubHandle,
@@ -144,7 +144,7 @@ function definitionStateGitUrl(
   return `${hubUrl}/api/tenants/${tenantId}/agents/definitions/${agentId}/state.git`;
 }
 
-describe.skipIf(!harnessDbEnvAvailable())(
+describe.skipIf(!harnessHubEnvAvailable())(
   "agent-state per-definition clone",
   () => {
     test("creator clones deploy/prompt.md history", async () => {

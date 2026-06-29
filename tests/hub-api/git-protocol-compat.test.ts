@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  harnessDbEnvAvailable,
+  harnessHubEnvAvailable,
   runGit,
   startHub,
   type HubHandle,
@@ -49,7 +49,7 @@ async function startHubTracked(): Promise<HubHandle> {
   return hub;
 }
 
-describe.skipIf(!harnessDbEnvAvailable())(
+describe.skipIf(!harnessHubEnvAvailable())(
   "smart-HTTP capability advertisement",
   () => {
     test("protocol.version=2 fetch terminates and surfaces the advertised refs", async () => {
