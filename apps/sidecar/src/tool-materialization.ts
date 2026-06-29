@@ -229,20 +229,20 @@ export async function materializeToolPackages(args: {
   const activeIdFile = path.join(instanceDir, "active-deploy-id");
   const activeIdDirtyFile = `${activeIdFile}.dirty`;
   // The dirty marker is written by `persistActiveDeployId`'s catch
-  // path when the post-swap persist (the normal write + fsync + dir
+  // path when the commit persist (the normal write + fsync + dir
   // fsync) failed on the prior apply and even the no-fsync fallback
-  // failed. Its presence means the on-disk apply state (the active
-  // tree) is newer than `active-deploy-id` and the marker carries the
-  // id that belongs there. Read it first so a degraded prior boot
-  // doesn't surface as `previousDeployId="none"` and silently demote
-  // the in-place active tree to "fresh instance".
+  // failed. Its presence means the staged deploy was committed but the
+  // recorded `active-deploy-id` is stale, and the marker carries the id
+  // that belongs there. Read it first so a degraded prior boot doesn't
+  // surface as `previousDeployId="none"` and silently demote the
+  // committed deploy to "fresh instance".
   let previousDeployId = NO_PRIOR_DEPLOY_ID;
   try {
     const dirtyRaw = (
       await fs.promises.readFile(activeIdDirtyFile, "utf-8")
     ).trim();
     const dirtyId = parseActiveDeployId(dirtyRaw, activeIdDirtyFile);
-    logger.warn`active-deploy-id dirty marker present at ${activeIdDirtyFile}; the prior apply could not durably record the post-swap deploy id and the boot is reconciling from ${dirtyId}`;
+    logger.warn`active-deploy-id dirty marker present at ${activeIdDirtyFile}; the prior apply could not durably record the committed deploy id and the boot is reconciling from ${dirtyId}`;
     previousDeployId = dirtyId;
   } catch (err) {
     if (!(hasCode(err) && err.code === "ENOENT")) {
@@ -339,26 +339,13 @@ export async function materializeToolPackages(args: {
   });
   if (result.status === "failed") {
     logger.warn`tool-package apply rejected for ${args.agentAddress}: ${result.category} — ${result.message}`;
-    // For `apply.previous-rotation.failed`, the swap committed: the new
-    // deploy is live on disk and `result.previousDeployId` carries the
-    // newDeployId (see ApplyAtomicFailure docs for that category).
-    // Durably record the new active id before emitting the failure so
-    // a crash or a hub-side abort after this point sees the on-disk
-    // state and the recorded id agree. The next apply will then read
-    // the new id as `previousDeployId` rather than the pre-apply one.
-    if (result.category === "apply.previous-rotation.failed") {
-      // The atomic-apply layer already finished the swap before the
-      // rotation failure; the new deploy is live and the failure frame
-      // carries the new id in `previousDeployId`. Use the same
-      // degradation ladder as the post-swap persist site below so a
-      // disk-full or EIO at this layer still writes either a no-fsync
-      // record or a dirty marker the next boot can reconcile.
-      await persistActiveDeployIdWithFallback(
-        instanceDir,
-        activeIdFile,
-        result.previousDeployId,
-      );
-    }
+    // A failed apply never wrote `active-deploy-id`: `applyAtomic`
+    // stages into a per-deploy-id directory and the commit is the
+    // persist below, which only runs on success. So the prior deploy is
+    // trivially still live and `result.previousDeployId` carries the
+    // unchanged prior id. There is no committed-but-failed swap to
+    // reconcile here — that case existed only under the old rename
+    // protocol.
     await writeRejectedApplyAudit({
       storeDir: args.storeDir,
       attemptId: result.attemptId,
@@ -385,20 +372,21 @@ export async function materializeToolPackages(args: {
     );
   }
 
-  // Apply committed: the new active tree is live on disk. Persisting
-  // the new active id is the last step that makes the on-disk state
-  // and the recorded id agree. If the write or its fsync fails (disk
-  // full, EIO, EROFS), the on-disk apply state has already diverged
-  // from the recorded id: the active tree is the new deploy, but the
-  // active-deploy-id file still points at the prior id (or is
-  // missing). Route this through the same `apply.previous-rotation.failed`
-  // shape used when the post-swap rotation cannot complete — the wire
-  // contract for that category already says `previousDeployId` carries
-  // the **new** deploy id (i.e. the one now live on disk) so the hub
-  // records the on-disk truth. Emit the failure frame and the audit
-  // entry, then throw so the harness tears down: the disk-vs-recorded
-  // divergence means the next apply cannot trust `previousDeployId`
-  // until the next boot reconciles by reading the active tree.
+  // Apply staged: the loader built the new deploy at
+  // `packages/<newDeployId>/`. Persisting the new active id is the
+  // commit — the single write that advances the live deploy from the
+  // prior id to this one. If the write or its fsync fails (disk full,
+  // EIO, EROFS), the on-disk state has diverged from the recorded id:
+  // `persistActiveDeployIdWithFallback` has already written the new id
+  // through its no-fsync / dirty-marker degradation ladder, so the new
+  // deploy is logically committed, but the id was not durably flushed.
+  // Route this through `apply.previous-rotation.failed` — the wire
+  // contract for that category says `previousDeployId` carries the
+  // **new** deploy id (the one now live) so the hub records the on-disk
+  // truth. Emit the failure frame and the audit entry, then throw so
+  // the harness tears down: the durability gap means the next apply
+  // cannot trust `previousDeployId` until the next boot reconciles via
+  // the dirty marker.
   const persistOutcome = await persistActiveDeployIdWithFallback(
     instanceDir,
     activeIdFile,
@@ -407,7 +395,7 @@ export async function materializeToolPackages(args: {
   if (persistOutcome.degraded) {
     const err = persistOutcome.error;
     const occurredAt = new Date().toISOString();
-    const message = `active-deploy-id persist failed after pending→active swap: ${err instanceof Error ? err.message : String(err)}`;
+    const message = `active-deploy-id persist failed after staging deploy: ${err instanceof Error ? err.message : String(err)}`;
     logger.error`tool-package apply: ${message}; active deploy ${result.activeDeployId} is live on disk but the recorded id was not durably written`;
     await writeRejectedApplyAudit({
       storeDir: args.storeDir,
@@ -446,17 +434,17 @@ export async function materializeToolPackages(args: {
  * file's own data/metadata and the parent directory entry. POSIX does
  * not guarantee a parent-directory entry is durably linked from a
  * file's own fsync alone, so the dir handle is opened and synced
- * separately. Without that, a crash between the first apply's swap and
- * the next boot could leave the active tree present while
+ * separately. Without that, a crash between a deploy's commit and the
+ * next boot could leave the staged deploy directory present while
  * active-deploy-id is not yet visible — the next apply would then read
- * previousDeployId="none" and treat the in-place active tree as
- * belonging to a fresh, deploy-less instance.
+ * previousDeployId="none" and treat the committed deploy as belonging
+ * to a fresh, deploy-less instance.
  *
  * Dir-fsync is best-effort durability hardening, not part of the
  * apply's structural success contract. Some filesystems (notably
  * FAT/exFAT, certain network mounts) do not support fsync on a
- * directory handle and will surface EINVAL / ENOTSUP. The apply has
- * already swapped on disk and the deploy-id file's own fsync has
+ * directory handle and will surface EINVAL / ENOTSUP. The deploy is
+ * already staged on disk and the deploy-id file's own fsync has
  * landed; tearing the harness down at this point would force a
  * restart for a degraded-durability condition the operator has no
  * way to act on. Log it and continue.
@@ -533,7 +521,7 @@ async function persistActiveDeployId(
       await dirHandle.close();
     }
   } catch (err) {
-    logger.warn`parent-dir fsync failed for ${instanceDir} after deploy-id persist; deploy-id durability is degraded but the active tree is in place — ${err instanceof Error ? err.message : String(err)}`;
+    logger.warn`parent-dir fsync failed for ${instanceDir} after deploy-id persist; deploy-id durability is degraded but the committed deploy is staged on disk — ${err instanceof Error ? err.message : String(err)}`;
   }
   await clearDirtyMarker(activeIdFile, "successful persist");
 }

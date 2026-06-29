@@ -592,47 +592,46 @@ export type PackRejectFrame = typeof PackRejectFrame.infer;
  *                              cross-bundle case (two pinned packages
  *                              share a bundle id, producing colliding
  *                              prefixed tool names) is rejected at
- *                              apply time, before the swap. The
- *                              intra-bundle case (one package exports
- *                              two definitions sharing a raw name)
- *                              surfaces at first agent construction
- *                              with the same category instead of
- *                              apply rejection: the loader cannot see
- *                              `bundle.definitions` without invoking
- *                              the factory, and the `BaseEnv` the
- *                              factory needs is constructed by the
- *                              sidecar harness AFTER the swap. Both
+ *                              apply time, before the caller commits.
+ *                              The intra-bundle case (one package
+ *                              exports two definitions sharing a raw
+ *                              name) surfaces at first agent
+ *                              construction with the same category
+ *                              instead of apply rejection: the loader
+ *                              cannot see `bundle.definitions` without
+ *                              invoking the factory, and the `BaseEnv`
+ *                              the factory needs is constructed by the
+ *                              sidecar harness AFTER the commit. Both
  *                              paths carry the same category so the
  *                              operator-facing failure shape is
  *                              uniform regardless of which check
  *                              fired; only the channel (apply.error
  *                              frame vs runtime construct failure)
  *                              differs.
- *   apply.swap.failed        — every loaded factory validated, but the
- *                              pending→active filesystem rename failed
- *                              (e.g. EXDEV, EPERM). The prior active
- *                              tree was restored via rollback, so the
- *                              instance still runs `previousDeployId`.
- *                              A double-rename failure where rollback
- *                              also fails does not surface as this
- *                              category — the sidecar throws and tears
- *                              the harness down, because no structured
- *                              failure can honestly report
- *                              `previousDeployId` once on-disk state
- *                              has diverged from it.
+ *   apply.swap.failed        — DEPRECATED, no longer emitted. The apply
+ *                              protocol stages each deploy into a stable
+ *                              per-deploy-id directory and commits via a
+ *                              single `active-deploy-id` file write, so
+ *                              there is no filesystem rename that can
+ *                              fail. The value is retained in the enum
+ *                              for wire compatibility: during a rolling
+ *                              upgrade an older sidecar can still emit
+ *                              it, and dropping the member would make a
+ *                              newer hub's frame validator reject that
+ *                              frame.
  *   apply.previous-rotation.failed
- *                            — the pending→active swap succeeded (the
- *                              new deploy is live on disk), but the
- *                              post-swap rotation that retires the
- *                              prior-previous tree and promotes the
- *                              just-staged prior-active into the
- *                              previous slot failed. The instance is
- *                              now running the new deploy, so
- *                              `previousDeployId` on this failure
- *                              carries the NEW deploy id rather than
- *                              the pre-apply one. The on-disk
- *                              leftover (`previous.staged`) is swept
- *                              by the next apply's pending-clear step.
+ *                            — every loaded factory validated and the
+ *                              new deploy was staged, but persisting the
+ *                              instance's `active-deploy-id` file (the
+ *                              commit) degraded: the id was written
+ *                              through the no-fsync / dirty-marker
+ *                              fallback ladder rather than durably
+ *                              flushed. The new deploy is logically
+ *                              live, so `previousDeployId` on this
+ *                              failure carries the NEW deploy id rather
+ *                              than the pre-apply one. The next boot
+ *                              reconciles the recorded id from the dirty
+ *                              marker.
  */
 export const DeployApplyErrorCategory = type.enumerated(
   "tarball.missing",
@@ -661,13 +660,14 @@ export type DeployApplyErrorCategory = typeof DeployApplyErrorCategory.infer;
  * frame is emitted the instance continues to run that deploy untouched.
  *
  * For `apply.previous-rotation.failed` the field has inverted meaning.
- * The pending→active swap committed before the post-swap rotation
- * failed, so the new deploy is live on disk; the field carries the
- * **new** deploy id so the hub can record the on-disk truth rather
+ * The new deploy was staged and its `active-deploy-id` commit was
+ * written through the degradation ladder (so the new deploy is live)
+ * before the persist was found to be non-durable; the field carries
+ * the **new** deploy id so the hub can record the on-disk truth rather
  * than a stale pre-apply id. The atomicity contract is preserved in
  * the sense that the field always reflects the deploy id the instance
  * is now running — what shifts is whether "now" is pre-apply or
- * post-apply, depending on whether the swap committed before the
+ * post-apply, depending on whether the commit landed before the
  * failure. Renaming the field to make this explicit would break the
  * wire shape; the category's semantics document the override instead.
  *
