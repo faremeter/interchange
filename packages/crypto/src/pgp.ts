@@ -26,6 +26,8 @@
 
 import { base64Encode, base64Decode } from "@intx/types";
 
+import { asArrayBuffer } from "./keys";
+
 // RFC 4880 §9.1: public-key algorithm IDs
 const PK_ALGO_EDDSA = 22;
 
@@ -291,6 +293,44 @@ function encodeNewFormatPacket(tag: number, body: Uint8Array): Uint8Array {
   packet.set(lengthBytes, 1);
   packet.set(body, 1 + lengthBytes.length);
   return packet;
+}
+
+/**
+ * Sign a hash input with Ed25519, producing a raw 64-byte detached
+ * signature (r || s, native little-endian per RFC 8032).
+ *
+ * This is the seam that lets callers holding only a signing capability —
+ * rather than raw private key bytes — share this module's packet assembly.
+ */
+export type Ed25519Signer = (input: Uint8Array) => Promise<Uint8Array>;
+
+/**
+ * Build a complete ASCII-armored OpenPGP v4 detached signature for the
+ * given content, delegating the raw Ed25519 signing step to `sign`.
+ *
+ * The signer receives the OpenPGP hash input (content || sig_header ||
+ * trailer per RFC 4880 §5.2.4) and must return the raw 64-byte signature
+ * over it. Web Crypto's Ed25519 hashes that input with SHA-512 internally;
+ * the OpenPGP hash-algorithm field (10 = SHA-512) documents that step. The
+ * "left 16 bits of signed hash" field is taken from a separate SHA-512
+ * digest of the same hash input (RFC 4880 §5.2.3).
+ */
+export async function createDetachedSignatureWithSigner(
+  content: Uint8Array,
+  sign: Ed25519Signer,
+): Promise<Uint8Array> {
+  const creationTime = Math.floor(Date.now() / 1000);
+  const { hashInput, header } = buildSignatureHashInput(content, creationTime);
+
+  const rawSig = await sign(hashInput);
+
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-512", asArrayBuffer(hashInput)),
+  );
+  const leftHash = digest.subarray(0, 2);
+
+  const packet = buildSignaturePacket(header, rawSig, leftHash);
+  return new TextEncoder().encode(armorEncode(packet));
 }
 
 /**
