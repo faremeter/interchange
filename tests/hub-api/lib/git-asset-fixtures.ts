@@ -12,10 +12,9 @@
 // status the helper throws with the server's response body so the
 // test failure is actionable.
 
-import { randomBytes } from "node:crypto";
-
 import { type } from "arktype";
 
+import { hexEncode } from "@intx/types";
 import type { RepoAction } from "@intx/types/sidecar";
 
 import { tokenAskpassEnv } from "./git-harness";
@@ -99,7 +98,7 @@ export async function apiCall(
 }
 
 function randomSuffix(): string {
-  return randomBytes(4).toString("hex");
+  return hexEncode(crypto.getRandomValues(new Uint8Array(4)));
 }
 
 function jsonSummary(value: unknown): string {

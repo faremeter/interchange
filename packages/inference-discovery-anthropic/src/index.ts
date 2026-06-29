@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
 import {
   resolveMediaPath,
   type Capability,
@@ -113,7 +112,7 @@ function buildMultipartUpload(opts: {
   // Byte-diffing regenerated fixtures against committed ones will
   // always differ on the boundary; structural comparison is the right
   // tool for files-api fixture equivalence.
-  const boundary = `----intx-anthropic-${randomUUID().replace(/-/g, "")}`;
+  const boundary = `----intx-anthropic-${crypto.randomUUID().replace(/-/g, "")}`;
   const encoder = new TextEncoder();
   const preamble = encoder.encode(
     `--${boundary}\r\n` +

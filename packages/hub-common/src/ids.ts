@@ -1,4 +1,4 @@
-import { randomBytes } from "crypto";
+import { hexEncode } from "@intx/types";
 
 const PREFIXES = {
   tenant: "tnt_",
@@ -33,7 +33,7 @@ type IDKind = keyof typeof PREFIXES;
 
 export function generateId(kind: IDKind): string {
   const prefix = PREFIXES[kind];
-  const bytes = randomBytes(16).toString("hex");
+  const bytes = hexEncode(crypto.getRandomValues(new Uint8Array(16)));
   return `${prefix}${bytes}`;
 }
 

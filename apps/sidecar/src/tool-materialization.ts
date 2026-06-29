@@ -15,7 +15,6 @@
 // dependency so the workflow-process child does not drag the
 // in-process harness's transport/reactor ownership into its graph.
 
-import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { type } from "arktype";
@@ -258,8 +257,8 @@ export async function materializeToolPackages(args: {
     }
   }
 
-  const attemptId = randomUUID();
-  const newDeployId = randomUUID();
+  const attemptId = crypto.randomUUID();
+  const newDeployId = crypto.randomUUID();
 
   // Validate the manifest at the loader boundary. Both JSON parse
   // failures and arktype schema failures route through the same
