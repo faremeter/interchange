@@ -41,6 +41,7 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
+import { hexEncode } from "@intx/types";
 import {
   createDefaultDirectorRegistry,
   type Agent,
@@ -100,10 +101,6 @@ const STUB_SOURCE: InferenceSource = {
   apiKey: "sk-stub",
   model: "stub-model",
 };
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("hex");
-}
 
 // The step-invoker forwarder reads only `.type` off each stream item.
 type StreamEvent = Agent["stream"] extends () => AsyncIterable<infer E>
@@ -620,8 +617,8 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
 
       const env = parseSpawnTimeEnv({
         IPC_CHANNEL_ID: channelId,
-        IPC_HMAC_KEY: bytesToHex(hmacKey),
-        HOST_PUBKEY: bytesToHex(supervisorKeyPair.publicKey),
+        IPC_HMAC_KEY: hexEncode(hmacKey),
+        HOST_PUBKEY: hexEncode(supervisorKeyPair.publicKey),
         DEPLOYMENT_ID,
         DEFINITION_HASH: "definition-hash",
         MAILBOX_ADDRESS: MAILBOX,

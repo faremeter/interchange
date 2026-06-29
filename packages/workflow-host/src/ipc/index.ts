@@ -169,8 +169,6 @@ export {
   SignedEnvelope,
   decodeEnvelope,
   encodeEnvelope,
-  hexDecode,
-  hexEncode,
 } from "./envelope";
 
 export {

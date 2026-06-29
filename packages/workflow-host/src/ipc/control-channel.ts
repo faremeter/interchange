@@ -36,14 +36,13 @@
 
 import { type } from "arktype";
 
+import { hexDecode, hexEncode } from "@intx/types";
 import { InterchangeType } from "@intx/types/runtime";
 
 import {
   decodeEnvelope,
   encodeEnvelope,
   FrameEnvelope,
-  hexDecode,
-  hexEncode,
   SignedEnvelope,
 } from "./envelope";
 import { signEd25519, verifyEd25519 } from "./crypto";

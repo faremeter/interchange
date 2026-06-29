@@ -25,14 +25,13 @@
 
 import { type } from "arktype";
 
+import { hexDecode, hexEncode } from "@intx/types";
 import { InferenceEvent } from "@intx/types/runtime";
 
 import {
   decodeEnvelope,
   encodeEnvelope,
   FrameEnvelope,
-  hexDecode,
-  hexEncode,
   MacedEnvelope,
 } from "./envelope";
 import { signHmac, verifyHmac } from "./crypto";

@@ -1337,8 +1337,8 @@ export function createWorkflowSupervisor(
     const env: Record<string, string> = {
       ...bindings.substrateEnv,
       IPC_CHANNEL_ID: channelId,
-      IPC_HMAC_KEY: bytesToHex(hmacKey),
-      HOST_PUBKEY: bytesToHex(ipcKeypair.publicKey),
+      IPC_HMAC_KEY: hexEncode(hmacKey),
+      HOST_PUBKEY: hexEncode(ipcKeypair.publicKey),
       DEPLOYMENT_ID: bindings.deploymentId,
       DEFINITION_HASH: opts.definitionHash,
       MAILBOX_ADDRESS: bindings.deploymentMailAddress,
@@ -2594,10 +2594,6 @@ function parseMessageIdHeader(rawMessage: Uint8Array): string | null {
     return line.slice(colon + 1).trim();
   }
   return null;
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("hex");
 }
 
 /**

@@ -83,6 +83,7 @@
 import { getLogger } from "@intx/log";
 
 import { generateKeyPair } from "@intx/crypto";
+import { hexEncode } from "@intx/types";
 
 import {
   createControlChannelSender,
@@ -318,8 +319,8 @@ export async function triggerRecycle(
   const env: Record<string, string> = {
     ...ctx.bindings.substrateEnv,
     IPC_CHANNEL_ID: channelId,
-    IPC_HMAC_KEY: bytesToHex(hmacKey),
-    HOST_PUBKEY: bytesToHex(ipcKeypair.publicKey),
+    IPC_HMAC_KEY: hexEncode(hmacKey),
+    HOST_PUBKEY: hexEncode(ipcKeypair.publicKey),
     DEPLOYMENT_ID: ctx.bindings.deploymentId,
     DEFINITION_HASH: ctx.definitionHash,
     MAILBOX_ADDRESS: ctx.bindings.deploymentMailAddress,
@@ -495,10 +496,6 @@ async function pumpEvents(
   for await (const event of iter) {
     onInferenceEvent(event);
   }
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("hex");
 }
 
 // =============================================================

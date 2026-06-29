@@ -6,6 +6,7 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
+import { hexDecode } from "@intx/types";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
@@ -36,7 +37,6 @@ import {
   SignedEnvelope,
   generateHmacKey,
   generateChannelId,
-  hexDecode,
   type FrameReader,
   type NdjsonReader,
   type NdjsonWriter,

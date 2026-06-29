@@ -23,6 +23,7 @@ import {
   WORKFLOW_RUN_EVENTS_FILE,
   encodeCombinedEventLog,
 } from "@intx/hub-sessions";
+import { hexEncode } from "@intx/types";
 
 import { SUPERVISOR_PRINCIPAL_KIND } from "./cancel-signing";
 import type { PrincipalSigner, SignedPayload } from "./types";
@@ -358,10 +359,6 @@ function serializeSignedPayload(signed: SignedPayload): {
 } {
   return {
     principalKind: signed.principalKind,
-    sig: bytesToHex(signed.sig),
+    sig: hexEncode(signed.sig),
   };
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("hex");
 }
