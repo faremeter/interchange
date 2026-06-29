@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { hexEncode, base64Encode, base64Decode } from "@intx/types";
 
 import { derivePublicKeyBytes, generateKeyPair, signEd25519 } from "./keys";
-import { NodeCrypto, createNodeCrypto } from "./provider";
+import { Ed25519Crypto, createEd25519Crypto } from "./provider";
 import { canonicalizeText, canonicalizeBytes } from "./canonicalize";
 import { createDetachedSignature } from "./sign";
 import { verifyDetachedSignature } from "./verify";
@@ -51,13 +51,13 @@ describe("derivePublicKeyBytes", () => {
 });
 
 // ---------------------------------------------------------------------------
-// NodeCrypto — raw sign / verify round-trip
+// Ed25519Crypto — raw sign / verify round-trip
 // ---------------------------------------------------------------------------
 
-describe("NodeCrypto", () => {
+describe("Ed25519Crypto", () => {
   test("sign and verify round-trip", async () => {
     const kp = await generateKeyPair();
-    const crypto = createNodeCrypto(kp);
+    const crypto = createEd25519Crypto(kp);
     const content = new TextEncoder().encode("hello world");
     const sig = await crypto.sign(content);
     expect(sig).toBeInstanceOf(Uint8Array);
@@ -68,7 +68,7 @@ describe("NodeCrypto", () => {
 
   test("verify fails when content is modified", async () => {
     const kp = await generateKeyPair();
-    const crypto = createNodeCrypto(kp);
+    const crypto = createEd25519Crypto(kp);
     const content = new TextEncoder().encode("hello world");
     const sig = await crypto.sign(content);
     const tampered = new TextEncoder().encode("hello WORLD");
@@ -79,7 +79,7 @@ describe("NodeCrypto", () => {
   test("verify fails with wrong public key", async () => {
     const kp1 = await generateKeyPair();
     const kp2 = await generateKeyPair();
-    const crypto = createNodeCrypto(kp1);
+    const crypto = createEd25519Crypto(kp1);
     const content = new TextEncoder().encode("test message");
     const sig = await crypto.sign(content);
     const ok = await crypto.verify(content, sig, kp2.publicKey);
@@ -88,7 +88,7 @@ describe("NodeCrypto", () => {
 
   test("getPublicKey returns the correct key", async () => {
     const kp = await generateKeyPair();
-    const crypto = createNodeCrypto(kp);
+    const crypto = createEd25519Crypto(kp);
     const pk = crypto.getPublicKey();
     expect(hexEncode(pk)).toBe(hexEncode(kp.publicKey));
   });
@@ -97,7 +97,7 @@ describe("NodeCrypto", () => {
     const kp = await generateKeyPair();
     expect(
       () =>
-        new NodeCrypto({
+        new Ed25519Crypto({
           privateKey: new Uint8Array(16),
           publicKey: kp.publicKey,
         }),
@@ -108,7 +108,7 @@ describe("NodeCrypto", () => {
     const kp = await generateKeyPair();
     expect(
       () =>
-        new NodeCrypto({
+        new Ed25519Crypto({
           privateKey: kp.privateKey,
           publicKey: new Uint8Array(16),
         }),

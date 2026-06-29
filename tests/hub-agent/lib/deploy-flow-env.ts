@@ -63,7 +63,7 @@ import {
   type WsHandle,
 } from "@intx/hub-sessions";
 import { hexEncode } from "@intx/types";
-import { createNodeCrypto, generateKeyPair } from "@intx/crypto";
+import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import {
   createWorkflowDeployOrchestrator,
   type LaunchSessionFn,
@@ -1329,7 +1329,7 @@ export async function fireMailTrigger(
   const from = opts.from ?? "user@integration.interchange";
 
   const keyPair = await generateKeyPair();
-  const crypto = createNodeCrypto(keyPair);
+  const crypto = createEd25519Crypto(keyPair);
   const headers: MessageHeaders = {
     from,
     to: [address],

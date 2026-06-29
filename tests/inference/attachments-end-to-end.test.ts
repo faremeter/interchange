@@ -14,7 +14,7 @@
 // per-adapter unit tests (mocking the upstream surface) cannot catch.
 
 import { describe, test, expect, beforeAll } from "bun:test";
-import { generateKeyPair, createNodeCrypto } from "@intx/crypto";
+import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import {
   assembleSignedContent,
   assembleMessage,
@@ -114,8 +114,8 @@ async function deliverAndBuild(
   attachment: MessageAttachment,
 ): Promise<{ inbound: InboundMessage; turn: ConversationTurn }> {
   const transport = createInMemoryTransport();
-  const senderCrypto = createNodeCrypto(await generateKeyPair());
-  const agentCrypto = createNodeCrypto(await generateKeyPair());
+  const senderCrypto = createEd25519Crypto(await generateKeyPair());
+  const agentCrypto = createEd25519Crypto(await generateKeyPair());
   transport.register(SENDER, senderCrypto);
   transport.register(AGENT, agentCrypto);
 

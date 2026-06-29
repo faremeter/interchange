@@ -21,7 +21,7 @@ import { dirname, join as pathJoin } from "node:path";
 
 import { describe, test, expect } from "bun:test";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { createNodeCrypto, generateKeyPair } from "@intx/crypto";
+import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 import type { SubprocessSpawner } from "@intx/workflow-host";
@@ -103,7 +103,7 @@ describe("deploy-failure registry leak", () => {
         typeof createSidecarDeployRouter
       >[0]["repoStore"],
       signingKeySeed: new Uint8Array(32),
-      createAgentCrypto: createNodeCrypto,
+      createAgentCrypto: createEd25519Crypto,
       registerDeployment: ({ deploymentId, agentAddress }) => {
         registry.record(deploymentId, agentAddress);
       },
@@ -187,7 +187,7 @@ describe("deploy-failure registry leak", () => {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only getRepoDir + writeTree are exercised before the spawn-time failure
       repoStore: repoStoreStub as RepoStore,
       signingKeySeed: new Uint8Array(32),
-      createAgentCrypto: createNodeCrypto,
+      createAgentCrypto: createEd25519Crypto,
       registerDeployment: ({ deploymentId, agentAddress }) => {
         registry.record(deploymentId, agentAddress);
       },

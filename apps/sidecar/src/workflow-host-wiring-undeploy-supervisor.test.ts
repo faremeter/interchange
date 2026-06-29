@@ -15,7 +15,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { createNodeCrypto, generateKeyPair } from "@intx/crypto";
+import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
@@ -264,7 +264,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
-      createAgentCrypto: createNodeCrypto,
+      createAgentCrypto: createEd25519Crypto,
       registerDeployment: () => {
         /* no-op */
       },

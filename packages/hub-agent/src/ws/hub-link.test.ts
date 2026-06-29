@@ -569,9 +569,11 @@ describe("sidecar↔hub integration", () => {
     // The agent must be in the session manager's address list so the
     // register frame includes it in the routing table.
     sessions.addresses.push("agent-1@test.interchange");
-    const { generateKeyPair, createNodeCrypto } = await import("@intx/crypto");
+    const { generateKeyPair, createEd25519Crypto } = await import(
+      "@intx/crypto"
+    );
     const kp = await generateKeyPair();
-    transport.register("agent-1@test.interchange", createNodeCrypto(kp));
+    transport.register("agent-1@test.interchange", createEd25519Crypto(kp));
 
     const client = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
@@ -617,9 +619,11 @@ describe("sidecar↔hub integration", () => {
   test("sidecar forwards outbound mail to hub", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const { generateKeyPair, createNodeCrypto } = await import("@intx/crypto");
+    const { generateKeyPair, createEd25519Crypto } = await import(
+      "@intx/crypto"
+    );
     const kp = await generateKeyPair();
-    transport.register("sender@test.interchange", createNodeCrypto(kp));
+    transport.register("sender@test.interchange", createEd25519Crypto(kp));
 
     const startLength = env.outboundMail.length;
     const client = createHubLink({
@@ -659,21 +663,23 @@ describe("sidecar↔hub integration", () => {
   });
 
   test("mail routes between two sidecars via hub", async () => {
-    const { generateKeyPair, createNodeCrypto } = await import("@intx/crypto");
+    const { generateKeyPair, createEd25519Crypto } = await import(
+      "@intx/crypto"
+    );
 
     // Sidecar A
     const transportA = createInMemoryTransport();
     const sessionsA = createMockSessionManager();
     sessionsA.addresses.push("alice@test.interchange");
     const kpA = await generateKeyPair();
-    transportA.register("alice@test.interchange", createNodeCrypto(kpA));
+    transportA.register("alice@test.interchange", createEd25519Crypto(kpA));
 
     // Sidecar B
     const transportB = createInMemoryTransport();
     const sessionsB = createMockSessionManager();
     sessionsB.addresses.push("bob@test.interchange");
     const kpB = await generateKeyPair();
-    transportB.register("bob@test.interchange", createNodeCrypto(kpB));
+    transportB.register("bob@test.interchange", createEd25519Crypto(kpB));
 
     const clientA = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
@@ -1345,9 +1351,11 @@ describe("sidecar↔hub integration", () => {
     const sessions = createMockSessionManager();
     const address = "agent-fallback@test.interchange";
     sessions.addresses.push(address);
-    const { generateKeyPair, createNodeCrypto } = await import("@intx/crypto");
+    const { generateKeyPair, createEd25519Crypto } = await import(
+      "@intx/crypto"
+    );
     const kp = await generateKeyPair();
-    transport.register(address, createNodeCrypto(kp));
+    transport.register(address, createEd25519Crypto(kp));
 
     const consulted: string[] = [];
     const mailInboundRouter = {

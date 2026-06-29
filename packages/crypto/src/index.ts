@@ -6,7 +6,7 @@ export {
   signEd25519,
   verifyEd25519,
 } from "./keys";
-export { NodeCrypto, createNodeCrypto } from "./provider";
+export { Ed25519Crypto, createEd25519Crypto } from "./provider";
 export { canonicalizeText, canonicalizeBytes } from "./canonicalize";
 export { createDetachedSignature } from "./sign";
 export { verifyDetachedSignature } from "./verify";

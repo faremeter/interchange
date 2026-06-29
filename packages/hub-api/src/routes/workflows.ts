@@ -12,7 +12,7 @@ import {
   createDetachedSignatureFromProvider,
   type MessageHeaders,
 } from "@intx/mime";
-import { generateKeyPair, createNodeCrypto } from "@intx/crypto";
+import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import { ErrorResponse, SendMessage } from "@intx/types";
 import { InferenceSource } from "@intx/types/runtime";
 import type { HarnessConfig } from "@intx/types/runtime";
@@ -515,7 +515,7 @@ export function createWorkflowRoutes({
       // interchangeSessionId/agentId headers that scope the message to an
       // agent session; a workflow run trigger has no such session.
       const keyPair = await generateKeyPair();
-      const crypto = createNodeCrypto(keyPair);
+      const crypto = createEd25519Crypto(keyPair);
       const headers: MessageHeaders = {
         from,
         to: [address],

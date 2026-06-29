@@ -23,7 +23,7 @@ import {
   createDetachedSignatureFromProvider,
   type MessageHeaders,
 } from "@intx/mime";
-import { generateKeyPair, createNodeCrypto } from "@intx/crypto";
+import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import { parseAgentId } from "@intx/hub-sessions";
 import { createAgentRepoStore as createSidecarRepoStore } from "@intx/hub-agent";
 import type { HarnessConfig } from "@intx/types/runtime";
@@ -104,7 +104,7 @@ beforeAll(async () => {
   setupAgentEventsBeforeMessage = env.hub.agentEvents.length;
 
   const messageKeyPair = await generateKeyPair();
-  const messageCrypto = createNodeCrypto(messageKeyPair);
+  const messageCrypto = createEd25519Crypto(messageKeyPair);
   const messageHeaders: MessageHeaders = {
     from: "user@integration.interchange",
     to: [AGENT_ADDRESS],

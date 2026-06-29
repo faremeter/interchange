@@ -657,7 +657,7 @@ export function createSidecarDeployRouter(deps: {
   /**
    * Per-agent crypto factory. Receives the agent's raw key pair and
    * returns a `CryptoProvider` bound to it (production wires
-   * `@intx/crypto`'s `createNodeCrypto`). The multi-step branch
+   * `@intx/crypto`'s `createEd25519Crypto`). The multi-step branch
    * uses this to register the spawned single-step agent's signing key on
    * the host transport before `spawn()`, so the supervisor's outbound
    * mail path (`MailBusBindings.sendOutbound`) signs the agent's replies
