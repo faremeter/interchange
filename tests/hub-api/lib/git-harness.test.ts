@@ -15,12 +15,12 @@ import postgres from "postgres";
 
 import {
   discoverGitBinary,
-  harnessDbEnvAvailable,
+  harnessHubEnvAvailable,
   runGit,
   startHub,
   tokenAskpassEnv,
-  loadHarnessDbConfig,
 } from "./git-harness";
+import { loadHarnessDbConfig } from "@intx/test-harness/db-harness";
 
 const stopHandles: (() => Promise<void>)[] = [];
 const tempDirs: string[] = [];
@@ -103,7 +103,7 @@ describe("tokenAskpassEnv", () => {
   });
 });
 
-describe.skipIf(!harnessDbEnvAvailable())("startHub", () => {
+describe.skipIf(!harnessHubEnvAvailable())("startHub", () => {
   test("spawns a hub against an isolated schema, drops the schema on stop", async () => {
     const harnessConfig = loadHarnessDbConfig();
 

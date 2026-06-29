@@ -32,10 +32,11 @@
 //   file and configure the repo to verify SSH signatures against
 //   it. Required for `git log --show-signature` to render a
 //   meaningful verdict on hub-signed commits in downstream tests.
-// - `loadHarnessDbConfig`: resolve the postgres connection a test
-//   should use, by reading the repo's `.env` and `.env.migrate`
-//   directly. The harness never falls back to invented values
-//   deep in the call graph; if a required var is missing, the
+// - The postgres connection a test should use, and the per-test
+//   schema-name generator, come from the shared `../../lib/db-harness`
+//   module (`loadHarnessDbConfig`, `harnessDbEnvAvailable`,
+//   `randomSchemaName`). The harness never falls back to invented
+//   values deep in the call graph; if a required var is missing, the
 //   loader raises.
 //
 // Lifecycle contract
@@ -84,54 +85,26 @@
 // the spawned hub, it was deliberately set here.
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile, chmod } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, writeFile, chmod } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import postgres from "postgres";
 
 import { runMigrations, dropSchema, type DBConfig } from "@intx/db";
-
-// ---------------------------------------------------------------------------
-// Repo-root resolution
-// ---------------------------------------------------------------------------
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-// tests/hub-api/lib/git-harness.ts → repo root is three up.
-const REPO_ROOT = path.resolve(HERE, "..", "..", "..");
-
-// ---------------------------------------------------------------------------
-// .env loading
-// ---------------------------------------------------------------------------
-
-function parseEnvFile(content: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "" || trimmed.startsWith("#")) continue;
-    const stripped = trimmed.startsWith("export ") ? trimmed.slice(7) : trimmed;
-    const eq = stripped.indexOf("=");
-    if (eq < 0) continue;
-    const k = stripped.slice(0, eq).trim();
-    let v = stripped.slice(eq + 1).trim();
-    if (
-      (v.startsWith('"') && v.endsWith('"')) ||
-      (v.startsWith("'") && v.endsWith("'"))
-    ) {
-      v = v.slice(1, -1);
-    }
-    out[k] = v;
-  }
-  return out;
-}
-
-async function loadEnvFile(p: string): Promise<Record<string, string>> {
-  if (!existsSync(p)) return {};
-  return parseEnvFile(await readFile(p, "utf-8"));
-}
+import {
+  REPO_ROOT,
+  loadEnvFile,
+  optionalKey,
+  requireKey,
+} from "@intx/test-harness/env";
+import {
+  harnessDbEnvAvailable,
+  loadHarnessDbConfig,
+  randomSchemaName,
+} from "@intx/test-harness/db-harness";
 
 /**
  * Required hub-side env. The harness writes these explicitly into
@@ -143,74 +116,20 @@ type HarnessEnv = {
   betterAuthSecret: string;
 };
 
-function requireKey(
-  source: Record<string, string>,
-  key: string,
-  origin: string,
-): string {
-  const v = source[key];
-  if (v === undefined || v === "") {
-    throw new Error(
-      `git-harness: required env var ${key} is missing from ${origin}; ` +
-        `populate ${origin} (see .env*.example) before running integration tests`,
-    );
-  }
-  return v;
-}
-
-// DB_PASSWORD is auth material whose required-ness depends on the
-// server's pg_hba.conf. Under `trust` or `peer` the server never asks
-// for a password and an empty value is correct; under `md5`/`scram`
-// the empty value will surface as a real libpq authentication error
-// at connect time, which is more informative than a synthetic env-var
-// check here.
-function optionalKey(source: Record<string, string>, key: string): string {
-  return source[key] ?? "";
-}
-
 /**
- * Returns true when the repo has the three `.env` files the
- * integration harness reads (`.env`, `.env.migrate`, `.env.hub`).
- * Test files use this with `describe.skipIf(...)` so a fresh
- * checkout without a configured database can still run `make all`.
+ * Returns true when the repo has every `.env` file a spawned hub needs:
+ * the database files (`.env`, `.env.migrate`) plus `.env.hub` for the
+ * hub's runtime role and auth secret. Hub integration tests gate on this
+ * with `describe.skipIf(...)` so a checkout without hub env still runs
+ * `make all`.
  *
- * Absence-only: files that exist but lack required keys still
- * surface a loud error from `loadHarnessDbConfig`/`loadHubEnv`.
- * The gate is specifically for the "no env at all" case.
+ * Absence-only: a file that exists but lacks a required key still
+ * surfaces a loud error from `loadHarnessDbConfig`/`loadHubEnv`.
  */
-export function harnessDbEnvAvailable(): boolean {
+export function harnessHubEnvAvailable(): boolean {
   return (
-    existsSync(path.join(REPO_ROOT, ".env")) &&
-    existsSync(path.join(REPO_ROOT, ".env.migrate")) &&
-    existsSync(path.join(REPO_ROOT, ".env.hub"))
+    harnessDbEnvAvailable() && existsSync(path.join(REPO_ROOT, ".env.hub"))
   );
-}
-
-/**
- * Read the repo's `.env` + `.env.migrate` and surface the migration
- * user's credentials. The migration user is what the harness uses
- * to create schemas and apply DDL; the spawned hub still runs as
- * the hub user (loaded from `.env.hub`).
- */
-export function loadHarnessDbConfig(): DBConfig {
-  // Synchronous reader for the test bootstrap; we tolerate the
-  // synchronous I/O here because this runs once per test file.
-  const sharedPath = path.join(REPO_ROOT, ".env");
-  const migratePath = path.join(REPO_ROOT, ".env.migrate");
-  const shared = existsSync(sharedPath)
-    ? parseEnvFile(readFileSync(sharedPath, "utf-8"))
-    : {};
-  const migrate = existsSync(migratePath)
-    ? parseEnvFile(readFileSync(migratePath, "utf-8"))
-    : {};
-  const merged = { ...shared, ...migrate };
-  return {
-    host: requireKey(merged, "DB_HOST", ".env"),
-    port: Number(requireKey(merged, "DB_PORT", ".env")),
-    user: requireKey(merged, "DB_USER", ".env.migrate"),
-    password: optionalKey(merged, "DB_PASSWORD"),
-    database: requireKey(merged, "DB_NAME", ".env"),
-  };
 }
 
 async function loadHubEnv(): Promise<HarnessEnv> {
@@ -459,7 +378,7 @@ export async function installSshAllowedSigner(
 }
 
 // ---------------------------------------------------------------------------
-// Random port and schema name allocation
+// Random port allocation
 // ---------------------------------------------------------------------------
 
 async function allocateRandomPort(): Promise<number> {
@@ -480,13 +399,6 @@ async function allocateRandomPort(): Promise<number> {
       }
     });
   });
-}
-
-function randomSchemaName(): string {
-  // Postgres schema names allowed by our identifier quoter are
-  // permissive, but we keep this conservative for diagnostics.
-  const rand = Math.random().toString(36).slice(2, 10);
-  return `t_${Date.now().toString(36)}_${rand}`;
 }
 
 // ---------------------------------------------------------------------------

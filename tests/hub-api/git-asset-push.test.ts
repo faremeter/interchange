@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  harnessDbEnvAvailable,
+  harnessHubEnvAvailable,
   runGit,
   startHub,
   type HubHandle,
@@ -102,7 +102,7 @@ function withBasicAuth(url: string, user: string, pass: string): string {
   return u.toString();
 }
 
-describe.skipIf(!harnessDbEnvAvailable())("authorized push", () => {
+describe.skipIf(!harnessHubEnvAvailable())("authorized push", () => {
   test("fast-forward push succeeds against a permissive token", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);
@@ -206,7 +206,7 @@ describe.skipIf(!harnessDbEnvAvailable())("authorized push", () => {
   }, 90_000);
 });
 
-describe.skipIf(!harnessDbEnvAvailable())("refPattern-forbidden push", () => {
+describe.skipIf(!harnessHubEnvAvailable())("refPattern-forbidden push", () => {
   test("push to refs/heads/secret is rejected as (forbidden)", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);
@@ -272,7 +272,7 @@ describe.skipIf(!harnessDbEnvAvailable())("refPattern-forbidden push", () => {
   }, 90_000);
 });
 
-describe.skipIf(!harnessDbEnvAvailable())("read-only token push", () => {
+describe.skipIf(!harnessHubEnvAvailable())("read-only token push", () => {
   test("push with a token lacking receivePack is denied", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);

@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  harnessDbEnvAvailable,
+  harnessHubEnvAvailable,
   runGit,
   startHub,
   type HubHandle,
@@ -124,7 +124,7 @@ function definitionStateGitUrl(
   return `${hubUrl}/api/tenants/${tenantId}/agents/definitions/${agentId}/state.git`;
 }
 
-describe.skipIf(!harnessDbEnvAvailable())("agent-state push denied", () => {
+describe.skipIf(!harnessHubEnvAvailable())("agent-state push denied", () => {
   test("advertise deny body names read-only", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);

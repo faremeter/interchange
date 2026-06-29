@@ -28,12 +28,12 @@ import postgres from "postgres";
 import { generateId } from "@intx/hub-common";
 
 import {
-  harnessDbEnvAvailable,
-  loadHarnessDbConfig,
+  harnessHubEnvAvailable,
   runGit,
   startHub,
   type HubHandle,
 } from "./lib/git-harness";
+import { loadHarnessDbConfig } from "@intx/test-harness/db-harness";
 import {
   apiCall,
   createTenant,
@@ -181,7 +181,7 @@ function instanceStateGitUrl(
   return `${hubUrl}/api/tenants/${tenantId}/agents/instances/${instanceId}/state.git`;
 }
 
-describe.skipIf(!harnessDbEnvAvailable())(
+describe.skipIf(!harnessHubEnvAvailable())(
   "agent-state per-instance clone",
   () => {
     test("creator clones an empty per-instance repo", async () => {

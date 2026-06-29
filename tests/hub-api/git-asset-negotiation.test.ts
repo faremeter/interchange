@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  harnessDbEnvAvailable,
+  harnessHubEnvAvailable,
   runGit,
   startHub,
   type HubHandle,
@@ -75,7 +75,7 @@ function parseCountObjects(out: string): {
   };
 }
 
-describe.skipIf(!harnessDbEnvAvailable())("incremental fetch", () => {
+describe.skipIf(!harnessHubEnvAvailable())("incremental fetch", () => {
   test("a second fetch after a remote-side push transfers only the delta", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);

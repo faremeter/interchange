@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  harnessDbEnvAvailable,
+  harnessHubEnvAvailable,
   runGit,
   startHub,
   type HubHandle,
@@ -53,7 +53,7 @@ function withBasicAuth(url: string, user: string, pass: string): string {
   return u.toString();
 }
 
-describe.skipIf(!harnessDbEnvAvailable())("multi-commit push", () => {
+describe.skipIf(!harnessHubEnvAvailable())("multi-commit push", () => {
   test("a pack carrying multiple delta-related commits indexes cleanly", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);

@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  harnessDbEnvAvailable,
+  harnessHubEnvAvailable,
   runGit,
   startHub,
   type HubHandle,
@@ -87,7 +87,7 @@ async function setupWorker(
   return { cloneDir };
 }
 
-describe.skipIf(!harnessDbEnvAvailable())("concurrent push race", () => {
+describe.skipIf(!harnessHubEnvAvailable())("concurrent push race", () => {
   test("one push wins; the other reports non-fast-forward", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);
