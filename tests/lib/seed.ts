@@ -8,7 +8,14 @@
 // assertions actually depend on.
 
 import type { DB } from "@intx/db";
-import { asset, tenant } from "@intx/db/schema";
+import {
+  asset,
+  credential,
+  oauthClient,
+  principal,
+  provider,
+  tenant,
+} from "@intx/db/schema";
 
 type Db = DB["db"];
 
@@ -74,5 +81,90 @@ export async function seedAsset(db: Db, a: SeedAsset): Promise<void> {
     name: a.name,
     displayName: a.displayName ?? null,
     creatorPrincipalId: null,
+  });
+}
+
+export type SeedPrincipal = {
+  id: string;
+  tenantId: string;
+  kind?: "user" | "agent";
+  refId?: string;
+  status?: "active" | "suspended" | "invited" | "deactivated";
+};
+
+export async function seedPrincipal(db: Db, p: SeedPrincipal): Promise<void> {
+  await db.insert(principal).values({
+    id: p.id,
+    tenantId: p.tenantId,
+    kind: p.kind ?? "user",
+    refId: p.refId ?? p.id,
+    status: p.status ?? "active",
+  });
+}
+
+export type SeedProvider = {
+  id: string;
+  tenantId: string;
+  name: string;
+  plugin?: string;
+};
+
+export async function seedProvider(db: Db, p: SeedProvider): Promise<void> {
+  await db.insert(provider).values({
+    id: p.id,
+    tenantId: p.tenantId,
+    name: p.name,
+    plugin: p.plugin ?? "test-plugin",
+  });
+}
+
+export type SeedOAuthClient = {
+  id: string;
+  tenantId: string;
+  providerId: string;
+  name?: string;
+  clientId?: string;
+  clientSecret?: string;
+};
+
+export async function seedOAuthClient(
+  db: Db,
+  c: SeedOAuthClient,
+): Promise<void> {
+  await db.insert(oauthClient).values({
+    id: c.id,
+    tenantId: c.tenantId,
+    providerId: c.providerId,
+    name: c.name ?? c.id,
+    clientId: c.clientId ?? `${c.id}-client`,
+    clientSecret: c.clientSecret ?? `${c.id}-secret`,
+  });
+}
+
+export type SeedCredential = {
+  id: string;
+  tenantId: string;
+  providerId: string;
+  name: string;
+  type?: "api_key" | "oauth_token" | "certificate" | "other";
+  secret?: string;
+  status?: "active" | "expired" | "revoked" | "error";
+  principalId?: string | null;
+  scopes?: string[] | null;
+  oauthClientId?: string | null;
+};
+
+export async function seedCredential(db: Db, c: SeedCredential): Promise<void> {
+  await db.insert(credential).values({
+    id: c.id,
+    tenantId: c.tenantId,
+    providerId: c.providerId,
+    name: c.name,
+    type: c.type ?? "api_key",
+    secret: c.secret ?? `${c.id}-secret`,
+    status: c.status ?? "active",
+    principalId: c.principalId ?? null,
+    scopes: c.scopes ?? null,
+    oauthClientId: c.oauthClientId ?? null,
   });
 }
