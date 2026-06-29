@@ -24,6 +24,7 @@ import { AUTHOR } from "./init";
 import type { CommitSigner } from "./signer";
 import { buildSigningArgs } from "./commit-helpers";
 import { withRepoDirLock } from "./repo-lock";
+import { maybeGCUnderLock, type GCPolicy } from "./gc";
 
 const TURNS_FILE = "turns.jsonl";
 const PROMPT_FILE = "prompt.jsonl";
@@ -99,11 +100,49 @@ function parseMetadata(raw: unknown): MetadataData {
   };
 }
 
+/**
+ * Walk the first-parent commit chain from HEAD, newest-first, stopping at
+ * `limit` entries or at the first parent that is not present on disk.
+ *
+ * `git.log` throws `NotFoundError` the moment it reaches a missing commit,
+ * which is the steady state under `tip-only` GC: the collector prunes
+ * ancestry, leaving the tip's older parents absent. The durable conversation
+ * lives in the working-tree files at the tip, not in this history, so the
+ * commit log is a best-effort time-travel surface — degrade to the surviving
+ * slice rather than throwing into a caller (e.g. the agent's `checkpoints`
+ * tool). Any non-absence read error still surfaces.
+ */
+async function tolerantLog(
+  dir: string,
+  limit: number,
+): Promise<Awaited<ReturnType<typeof git.readCommit>>[]> {
+  const out: Awaited<ReturnType<typeof git.readCommit>>[] = [];
+  let oid: string | undefined;
+  try {
+    oid = await git.resolveRef({ fs, dir, ref: "HEAD" });
+  } catch {
+    return out;
+  }
+  while (oid !== undefined && out.length < limit) {
+    let entry: Awaited<ReturnType<typeof git.readCommit>>;
+    try {
+      entry = await git.readCommit({ fs, dir, oid });
+    } catch (err) {
+      if (err instanceof Error && "code" in err && err.code === "NotFoundError")
+        break;
+      throw err;
+    }
+    out.push(entry);
+    oid = entry.commit.parent[0];
+  }
+  return out;
+}
+
 async function readCommitLog(
   dir: string,
   limit: number,
 ): Promise<ContextCommit[]> {
-  const entries = await git.log({ fs, dir, depth: limit });
+  const entries = await tolerantLog(dir, limit);
   return entries.map((e) => {
     const base = {
       hash: e.oid,
@@ -216,15 +255,24 @@ function parseTurns(text: string): ConversationTurn[] {
 export class IsogitStore implements ContextStore, AuditStore {
   private readonly dir: string;
   private readonly signer: CommitSigner | undefined;
+  private readonly gcPolicy: GCPolicy | undefined;
   private pendingConnectorState: ConnectorThreadState | null = null;
 
-  constructor(dir: string, signer?: CommitSigner) {
+  constructor(dir: string, signer?: CommitSigner, gcPolicy?: GCPolicy) {
     this.dir = dir;
     this.signer = signer;
+    this.gcPolicy = gcPolicy;
   }
 
   private signingArgs() {
     return buildSigningArgs(this.signer);
+  }
+
+  // Reclaim after a write while the per-directory lock is still held, per
+  // the configured policy. A no-op when no policy was supplied.
+  private async maybeGC(): Promise<void> {
+    if (this.gcPolicy === undefined) return;
+    await maybeGCUnderLock(this.dir, this.gcPolicy);
   }
 
   setConnectorState(state: ConnectorThreadState | null): void {
@@ -301,7 +349,9 @@ export class IsogitStore implements ContextStore, AuditStore {
         ...this.signingArgs(),
       });
 
-      return this.describeHead(oid, options.message);
+      const described = await this.describeHead(oid, options.message);
+      await this.maybeGC();
+      return described;
     });
   }
 
@@ -452,7 +502,7 @@ export class IsogitStore implements ContextStore, AuditStore {
     _signal?: AbortSignal,
   ): Promise<TransformRecordType[]> {
     if (limit <= 0) return [];
-    const entries = await git.log({ fs, dir: this.dir, depth: limit });
+    const entries = await tolerantLog(this.dir, limit);
     const collected: TransformRecordType[] = [];
     for (const entry of entries) {
       let blob: Uint8Array;
@@ -536,6 +586,7 @@ export class IsogitStore implements ContextStore, AuditStore {
         author: AUTHOR,
         ...this.signingArgs(),
       });
+      await this.maybeGC();
     });
   }
 
@@ -598,6 +649,7 @@ export class IsogitStore implements ContextStore, AuditStore {
         author: AUTHOR,
         ...this.signingArgs(),
       });
+      await this.maybeGC();
     });
   }
 

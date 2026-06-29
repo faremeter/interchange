@@ -274,4 +274,31 @@ describe("runGC", () => {
     const reachable = await collectReachableObjects(dir, head);
     expect(reachable.length).toBeGreaterThan(0);
   });
+
+  test("history reads degrade to the surviving slice after a tip-only GC", async () => {
+    const dir = await tempDir();
+    await initAgentRepo(dir);
+    const store = new IsogitStore(dir);
+
+    for (let i = 0; i < 4; i += 1) {
+      await fs.promises.writeFile(
+        path.join(dir, "turns.jsonl"),
+        `${JSON.stringify({ role: "user", content: [], timestamp: i })}\n`,
+      );
+      await fs.promises.writeFile(path.join(dir, "manifest.jsonl"), "");
+      await store.commit({ message: `cycle ${i.toString()}` });
+    }
+    const before = await store.log(10);
+    expect(before.length).toBeGreaterThan(1);
+
+    await runGC(dir, { retention: "tip-only" });
+
+    // tip-only prunes the older commits. The reads must not throw into the
+    // caller (the agent's checkpoints tool) — they return the surviving
+    // slice from the tip, which is itself intact.
+    const after = await store.log(10);
+    expect(after.length).toBeGreaterThanOrEqual(1);
+    expect(after[0]?.hash).toBe(before[0]?.hash);
+    await store.readManifestHistory(10);
+  });
 });

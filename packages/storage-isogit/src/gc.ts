@@ -2,10 +2,19 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import git from "isomorphic-git";
+import { getLogger } from "@intx/log";
 import { collectReachableObjects } from "./object-walk";
 import { publishPackAtomically } from "./pack-receive";
-import { listRepoRefs, repoDiskUsage, type RepoDiskUsage } from "./repo-disk";
+import {
+  gitBytes,
+  listRepoRefs,
+  repoDiskUsage,
+  repoObjectCounts,
+  type RepoDiskUsage,
+} from "./repo-disk";
 import { withRepoDirLock } from "./repo-lock";
+
+const logger = getLogger(["interchange", "storage-isogit", "gc"]);
 
 /**
  * How much commit history a GC pass preserves.
@@ -25,6 +34,24 @@ export type GCResult = {
   after: RepoDiskUsage;
   reclaimedBytes: number;
   keptObjects: number;
+};
+
+/**
+ * Write-path reclaim policy. A writer holding the per-directory lock samples
+ * the repo's object counts after its mutation and repacks under `retention`
+ * once the pack count reaches `packThreshold` OR the loose-object count
+ * reaches `looseThreshold`. Both triggers matter: a hub repo accumulates
+ * packs as it receives state, while a sidecar repo accumulates loose objects
+ * as the reactor commits. When a reclaim runs, the `.git` byte size is
+ * checked against `warnBytes` and a disk-pressure warning is emitted if it
+ * is reached — surfacing runaway accumulation that survives a reclaim — so
+ * the byte check rides the reclaim rather than every write.
+ */
+export type GCPolicy = {
+  packThreshold: number;
+  looseThreshold: number;
+  warnBytes: number;
+  retention: RetentionPolicy;
 };
 
 /**
@@ -225,4 +252,60 @@ export async function runGC(
   opts: { retention: RetentionPolicy },
 ): Promise<GCResult> {
   return withRepoDirLock(dir, () => gcUnderLock(dir, opts));
+}
+
+function warnIfOverBudget(dir: string, bytes: number, warnBytes: number): void {
+  if (bytes >= warnBytes) {
+    logger.warn`disk pressure on ${dir}: .git is ${String(bytes)} bytes, at or above the ${String(warnBytes)} byte threshold`;
+  }
+}
+
+/**
+ * Apply a write-path reclaim policy to the repo at `dir`. Reclaims when the
+ * pack count or the loose-object count has reached its threshold. Intended
+ * to be called by a writer that has just mutated the repo and is still
+ * holding the per-directory lock, so the reclaim itself runs without
+ * re-entering the lock.
+ *
+ * The trigger samples only the object counts — two directory reads — on
+ * every write; the full `.git` byte walk that feeds the disk-pressure
+ * warning runs only when a reclaim does (the collector computes it for its
+ * before/after delta anyway, and the failure path walks it once). So the
+ * warning is evaluated at reclaim time, not on every write, and the common
+ * below-threshold write pays no byte walk.
+ *
+ * A reclaim failure is logged, not propagated: the write that triggered this
+ * has already committed, so failing the caller would falsely report the
+ * write as failed. The disk-pressure warning still fires on a failed reclaim
+ * — the case where accumulation is most likely runaway.
+ */
+export async function maybeGCUnderLock(
+  dir: string,
+  policy: GCPolicy,
+): Promise<void> {
+  const counts = repoObjectCounts(dir);
+  if (
+    counts.packCount < policy.packThreshold &&
+    counts.looseObjectCount < policy.looseThreshold
+  ) {
+    return;
+  }
+  try {
+    const result = await gcUnderLock(dir, { retention: policy.retention });
+    logger.info`reclaimed ${String(result.reclaimedBytes)} bytes from ${dir}: packs ${String(result.before.packCount)} to ${String(result.after.packCount)}, loose ${String(result.before.looseObjectCount)} to ${String(result.after.looseObjectCount)}`;
+    warnIfOverBudget(dir, result.after.gitBytes, policy.warnBytes);
+  } catch (err) {
+    logger.warn`GC of ${dir} failed; the repo is unchanged but unreclaimed — ${err instanceof Error ? err.message : String(err)}`;
+    warnIfOverBudget(dir, gitBytes(dir), policy.warnBytes);
+  }
+}
+
+/**
+ * {@link maybeGCUnderLock} for callers that do not already hold the repo's
+ * per-directory lock — it acquires the lock for the duration. The hub's
+ * substrate uses this from inside its own higher-level lock; sidecar writers
+ * that already hold the per-directory lock call `maybeGCUnderLock` directly.
+ */
+export async function maybeGC(dir: string, policy: GCPolicy): Promise<void> {
+  return withRepoDirLock(dir, () => maybeGCUnderLock(dir, policy));
 }

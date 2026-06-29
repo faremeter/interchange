@@ -18,6 +18,7 @@ import { loadAdapterRegistry } from "@intx/inference/providers";
 
 import {
   readAdapterManifest,
+  readAgentGCPolicy,
   readCacheMaxBytes,
   readRegistryMaxTarballBytes,
 } from "./config";
@@ -66,6 +67,7 @@ const cacheRoot =
     : path.join(dataDir, "cache", "tarballs");
 const cacheMaxBytes = readCacheMaxBytes();
 const registryMaxTarballBytes = readRegistryMaxTarballBytes();
+const agentGCPolicy = readAgentGCPolicy();
 
 // Operator-configured custom inference adapters, resolved once at the
 // boot edge. `loadAdapterRegistry` merges the statically-linked
@@ -385,6 +387,7 @@ const orchestrator = createSidecarOrchestrator({
     cacheMaxBytes,
     registryMaxTarballBytes,
     adapters,
+    gcPolicy: agentGCPolicy,
   }),
   createAgentCrypto: createNodeCrypto,
   cryptoOps: {
