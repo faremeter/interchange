@@ -14,7 +14,7 @@ import type {
 } from "@intx/types/runtime";
 
 import { createAgentKeyStore } from "./agent-key-store";
-import { createAgentRepoStore } from "./agent-repo-store";
+import { createAgentRepoStore, type AgentRepoStore } from "./agent-repo-store";
 import { createSessionManager } from "./session-manager";
 import type {
   BuildHarnessArgs,
@@ -632,5 +632,156 @@ describe("SessionManager.restoreSessions bounded parallelism", () => {
       "healthy1@local",
       "healthy2@local",
     ]);
+  });
+});
+
+function makeStubRepoStore(opts: {
+  dataDir: string;
+  createStatePack: AgentRepoStore["createStatePack"];
+  remove: AgentRepoStore["remove"];
+}): AgentRepoStore {
+  const unused = (name: string) => (): never => {
+    throw new Error(`${name} is not exercised by this test`);
+  };
+  return {
+    getAgentDir: (address) => path.join(opts.dataDir, address),
+    initRepo: unused("initRepo"),
+    applyDeployPack: unused("applyDeployPack"),
+    createStatePack: opts.createStatePack,
+    getDeployRef: unused("getDeployRef"),
+    remove: opts.remove,
+    persistConfig: unused("persistConfig"),
+    persistPairing: unused("persistPairing"),
+    scanConfigs: unused("scanConfigs"),
+  };
+}
+
+function makeManagerWithRepoStore(
+  dataDir: string,
+  repoStore: AgentRepoStore,
+): ReturnType<typeof createSessionManager> {
+  return createSessionManager({
+    transport: createInMemoryTransport(),
+    repoStore,
+    keyStore: createAgentKeyStore({
+      dataDir,
+      generateKeyPair: async () => makeKeyPair(11),
+      signEd25519: () => new Uint8Array(64),
+      verifySSHSig: () => true,
+    }),
+    buildHarness: makeRecordingBuilder({}),
+    createAgentCrypto: (kp) => makeCrypto(kp),
+    onEvent: () => {
+      /* no-op */
+    },
+    onConnectorStateChanged: () => {
+      /* no-op */
+    },
+  });
+}
+
+describe("SessionManager repo-operation serialization", () => {
+  test("deleteAgentDir removes the directory only after an in-flight state-pack read completes", async () => {
+    const dataDir = await tempDir();
+    const events: string[] = [];
+
+    let releaseStatePack!: () => void;
+    const statePackGate = new Promise<void>((resolve) => {
+      releaseStatePack = resolve;
+    });
+
+    const repoStore = makeStubRepoStore({
+      dataDir,
+      async createStatePack() {
+        events.push("createStatePack:start");
+        await statePackGate;
+        events.push("createStatePack:end");
+        return {
+          pack: new Uint8Array(),
+          commitSha: "0".repeat(40),
+          ref: "refs/heads/main",
+        };
+      },
+      async remove() {
+        events.push("remove");
+      },
+    });
+
+    const manager = makeManagerWithRepoStore(dataDir, repoStore);
+
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const statePack = manager.createStatePack("agent@local");
+      const deletion = manager.deleteAgentDir("agent@local");
+
+      // Let the state-pack read enter its gate and the deletion reach its
+      // drain await. With the gate still closed, the removal must not run.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(events).toEqual(["createStatePack:start"]);
+
+      releaseStatePack();
+      await Promise.all([statePack, deletion]);
+
+      expect(events).toEqual([
+        "createStatePack:start",
+        "createStatePack:end",
+        "remove",
+      ]);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+
+    // A pending unhandled rejection surfaces on the next macrotask.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(rejections).toEqual([]);
+  });
+
+  test("a rejecting repo operation propagates to its caller without poisoning the chain", async () => {
+    const dataDir = await tempDir();
+    let calls = 0;
+
+    const repoStore = makeStubRepoStore({
+      dataDir,
+      async createStatePack() {
+        calls += 1;
+        if (calls === 1) {
+          throw new Error("state pack boom");
+        }
+        return {
+          pack: new Uint8Array(),
+          commitSha: "1".repeat(40),
+          ref: "refs/heads/main",
+        };
+      },
+      async remove() {
+        /* unused in this test */
+      },
+    });
+
+    const manager = makeManagerWithRepoStore(dataDir, repoStore);
+
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      // The failing op's rejection reaches its own caller.
+      await expect(manager.createStatePack("agent@local")).rejects.toThrow(
+        "state pack boom",
+      );
+
+      // The chain is not poisoned: the next op runs and resolves normally.
+      const second = await manager.createStatePack("agent@local");
+      expect(second.commitSha).toBe("1".repeat(40));
+      expect(calls).toBe(2);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+
+    // The rejection-swallowing tail must not surface as an unhandled
+    // rejection on the next macrotask.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(rejections).toEqual([]);
   });
 });
