@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
@@ -173,8 +171,10 @@ function generateSecret(kind: "pat" | "svc"): string {
   return `${prefix}${Buffer.from(bytes).toString("base64url")}`;
 }
 
-function sha256(input: string): Uint8Array {
-  return new Uint8Array(createHash("sha256").update(input, "utf8").digest());
+async function sha256(input: string): Promise<Uint8Array> {
+  return new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input)),
+  );
 }
 
 /**
@@ -254,7 +254,7 @@ export async function mintGitToken(
 
   const id = generateId("gitToken");
   const secret = generateSecret(input.kind);
-  const tokenHashSha256 = sha256(secret);
+  const tokenHashSha256 = await sha256(secret);
 
   await db.insert(gitToken).values({
     id,

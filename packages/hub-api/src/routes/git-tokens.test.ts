@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import { describe, test, expect } from "bun:test";
 import { Hono } from "hono";
 import { type } from "arktype";
@@ -293,8 +291,10 @@ function createTestApp(opts: TestAppOpts) {
   };
 }
 
-function sha256(input: string): Uint8Array {
-  return new Uint8Array(createHash("sha256").update(input, "utf8").digest());
+async function sha256(input: string): Promise<Uint8Array> {
+  return new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input)),
+  );
 }
 
 function futureISOString(offsetMs = 1000 * 60 * 60): string {
@@ -368,7 +368,7 @@ describe("POST /api/me/git-tokens", () => {
     expect(state.gitTokens).toHaveLength(1);
     const row = state.gitTokens[0];
     if (!row) throw new Error("expected inserted row");
-    expect(row.tokenHashSha256).toEqual(sha256(body.secret));
+    expect(row.tokenHashSha256).toEqual(await sha256(body.secret));
     // Spot-check that the secret string itself never appears in the row.
     for (const value of Object.values(row)) {
       if (typeof value === "string") {
@@ -577,7 +577,7 @@ describe("DELETE /api/me/git-tokens/:id", () => {
           tenantId: null,
           name: "laptop",
           kind: "pat",
-          tokenHashSha256: sha256("itx_pat_xxx"),
+          tokenHashSha256: await sha256("itx_pat_xxx"),
           resource: "asset:def_xyz",
           refPattern: "**",
           actions: ["createPack", "resolveRef"],
@@ -607,7 +607,7 @@ describe("DELETE /api/me/git-tokens/:id", () => {
           tenantId: null,
           name: "other-laptop",
           kind: "pat",
-          tokenHashSha256: sha256("itx_pat_other"),
+          tokenHashSha256: await sha256("itx_pat_other"),
           resource: "asset:def_xyz",
           refPattern: "**",
           actions: ["createPack", "resolveRef"],
@@ -641,7 +641,7 @@ describe("DELETE /api/tenants/:tid/git-tokens/:id", () => {
           tenantId: OTHER_TENANT_ID,
           name: "ci",
           kind: "svc",
-          tokenHashSha256: sha256("itx_svc_xxx"),
+          tokenHashSha256: await sha256("itx_svc_xxx"),
           resource: "asset:def_xyz",
           refPattern: "**",
           actions: ["receivePack"],
@@ -680,7 +680,7 @@ describe("integration with the bearer middleware", () => {
       tenantId: TENANT_ID,
       name: "laptop",
       kind: "pat",
-      tokenHashSha256: sha256(secret),
+      tokenHashSha256: await sha256(secret),
       resource: "asset:def_xyz",
       refPattern: "**",
       actions: ["createPack", "resolveRef"],

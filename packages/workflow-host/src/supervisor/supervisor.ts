@@ -62,6 +62,7 @@ import {
   type WorkflowRunSupervisorPrincipal,
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
+import { hexEncode } from "@intx/types";
 import { RepoId } from "@intx/types/sidecar";
 import type { OutboundMessage } from "@intx/types/runtime";
 import type { CancelOrigin } from "@intx/workflow";
@@ -2553,8 +2554,12 @@ async function deriveMessageId(rawMessage: Uint8Array): Promise<string> {
   if (messageIdFromHeader !== null) {
     return messageIdFromHeader;
   }
-  const crypto = await import("node:crypto");
-  return crypto.createHash("sha256").update(rawMessage).digest("hex");
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- ArrayBuffer-backed at the call site; Web Crypto's BufferSource type rejects Uint8Array<ArrayBufferLike> under TS 5.9 (microsoft/TypeScript#62240)
+    rawMessage as Uint8Array<ArrayBuffer>,
+  );
+  return hexEncode(new Uint8Array(digest));
 }
 
 function parseMessageIdHeader(rawMessage: Uint8Array): string | null {

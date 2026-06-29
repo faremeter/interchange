@@ -1,5 +1,4 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -748,9 +747,9 @@ describe("SessionService", () => {
     expect(greetRow.sourceCommitSha).toBe("c".repeat(40));
     expect(greetRow.instanceId).toBe(INSTANCE_ID);
     expect(greetRow.assetPackSha).toBe(
-      createHash("sha256")
-        .update(new Uint8Array([10, 11, 12]))
-        .digest("hex"),
+      Buffer.from(
+        await crypto.subtle.digest("SHA-256", new Uint8Array([10, 11, 12])),
+      ).toString("hex"),
     );
 
     const searchRow = captured.find((r) => r.agentAssetId === "aas_search");
@@ -1142,9 +1141,9 @@ describe("SessionService", () => {
     expect(row.sourceCommitSha).toBe("e".repeat(40));
     expect(row.instanceId).toBe(INSTANCE_ID);
     expect(row.assetPackSha).toBe(
-      createHash("sha256")
-        .update(new Uint8Array([42, 43, 44]))
-        .digest("hex"),
+      Buffer.from(
+        await crypto.subtle.digest("SHA-256", new Uint8Array([42, 43, 44])),
+      ).toString("hex"),
     );
   });
 

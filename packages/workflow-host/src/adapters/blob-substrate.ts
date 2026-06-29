@@ -26,8 +26,7 @@
 // `ephemeral: false` -- blob refs survive instance turnover because
 // they resolve back to bytes on the workflow-run repo.
 
-import { createHash } from "node:crypto";
-
+import { hexEncode } from "@intx/types";
 import type {
   Principal,
   RepoId,
@@ -110,7 +109,7 @@ export function createWorkflowRunBlobSubstrate(
         return { ref: `${INLINE_PREFIX}${encoded}` };
       }
       const bytes = new TextEncoder().encode(encoded);
-      const key = sha256Hex(bytes);
+      const key = await sha256Hex(bytes);
       await writeBlob(opts, key, bytes);
       return { ref: `${BLOB_PREFIX}${key}` };
     },
@@ -132,10 +131,16 @@ function blobsPrefixFor(runId: string): string {
   return `${RUNS_PREFIX}/${runId}/${BLOBS_DIR}/`;
 }
 
-function sha256Hex(bytes: Uint8Array): string {
-  const hash = createHash("sha256");
-  hash.update(bytes);
-  const hex = hash.digest("hex");
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- ArrayBuffer-backed at the call site; Web Crypto's BufferSource type rejects Uint8Array<ArrayBufferLike> under TS 5.9 (microsoft/TypeScript#62240)
+    bytes as Uint8Array<ArrayBuffer>,
+  );
+  const hex = hexEncode(new Uint8Array(digest));
+  // A SHA-256 hex string is always 64 chars, so this is unreachable
+  // today; kept as a cheap invariant pinning the on-disk blob-key
+  // shape should the digest width ever change.
   if (hex.length !== SHA256_PREFIX_BYTES * 2) {
     throw new Error(
       `unexpected sha256 hex length ${String(hex.length)}; expected ${String(SHA256_PREFIX_BYTES * 2)}`,

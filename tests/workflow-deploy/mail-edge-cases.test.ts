@@ -541,8 +541,8 @@ function routeRaw(env: DeployFlowEnv, address: string, raw: Uint8Array): void {
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const crypto = await import("node:crypto");
-  return crypto.createHash("sha256").update(bytes).digest("hex");
+  const digest = await crypto.subtle.digest("SHA-256", new Uint8Array(bytes));
+  return Buffer.from(digest).toString("hex");
 }
 
 /**

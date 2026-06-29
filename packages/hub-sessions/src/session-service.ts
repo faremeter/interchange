@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import { type } from "arktype";
 import { and, eq } from "drizzle-orm";
 
@@ -300,8 +298,13 @@ type ResolvedAttachment = {
   ref: string;
 };
 
-function createPackSha(pack: Uint8Array): string {
-  return createHash("sha256").update(pack).digest("hex");
+async function createPackSha(pack: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- ArrayBuffer-backed at the call site; Web Crypto's BufferSource type rejects Uint8Array<ArrayBufferLike> under TS 5.9 (microsoft/TypeScript#62240)
+    pack as Uint8Array<ArrayBuffer>,
+  );
+  return hexEncode(new Uint8Array(digest));
 }
 
 /**
@@ -1059,7 +1062,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       ref,
     } = attachment;
 
-    const assetPackSha = createPackSha(pack);
+    const assetPackSha = await createPackSha(pack);
 
     // Insert manifest row before the pack send so we never end up in
     // the materialized-without-manifest state. Both direct and
