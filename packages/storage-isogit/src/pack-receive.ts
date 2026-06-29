@@ -481,10 +481,11 @@ export async function receivePackObjects(
 
   // Post-publish validation runs inside a try so any rejection path
   // (sha mismatch, CAS non-fast-forward, tree validator) unpublishes
-  // the pack before re-throwing. Without this, repeated rejections
-  // would accumulate orphan `.pack` + `.idx` pairs in objects/pack/
-  // unbounded by anything internal — iso-git does not run periodic
-  // GC, and the hub does not invoke git gc on agent repos.
+  // the pack before re-throwing. This removes a rejected pack
+  // immediately, at the moment of rejection. Write-path GC (`runGC`)
+  // also reclaims unreferenced packs, but only when a later accepted
+  // write crosses its threshold; the immediate unpublish keeps a flood
+  // of rejected packs from accumulating in the window before that.
   try {
     if (!oids.includes(expectedSha)) {
       throw new Error(
@@ -625,10 +626,10 @@ export async function applyPack(
     // Post-publish validation runs inside a try so any rejection path
     // (sha mismatch, missing signature, signature failure) unpublishes
     // the pack before re-throwing. Sidecar `applyPack` is the last line
-    // of defence against a compromised hub or transport; without the
-    // unpublish, a flood of rejected-signature packs would accumulate
-    // orphan commits in the local agent repo unbounded by anything
-    // internal to this process.
+    // of defence against a compromised hub or transport; the unpublish
+    // removes a rejected pack at the moment of rejection, before the
+    // reactor's write-path GC would next reclaim it, so a flood of
+    // rejected-signature packs cannot accumulate in the meantime.
     try {
       if (!oids.includes(expectedSha)) {
         throw new Error(
