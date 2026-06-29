@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
+import { hexDecode, hexEncode } from "@intx/types";
 
 import {
   ControlPayload,
@@ -15,8 +16,6 @@ import {
   FrameEnvelope,
   generateChannelId,
   generateHmacKey,
-  hexDecode,
-  hexEncode,
   MacedEnvelope,
   receiveControlChannel,
   receiveEventChannel,

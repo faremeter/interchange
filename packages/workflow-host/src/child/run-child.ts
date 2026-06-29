@@ -52,6 +52,7 @@ import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
 import { generateKeyPair } from "@intx/crypto";
+import { hexEncode } from "@intx/types";
 
 import type {
   Principal,
@@ -95,7 +96,6 @@ import { createWorkflowRunBlobSubstrate } from "../adapters/blob-substrate";
 import {
   createControlChannelSender,
   createEventChannelSender,
-  hexEncode,
   receiveControlChannel,
   type ControlChannelSender,
   type ControlPayload,

@@ -32,6 +32,7 @@ import type {
   WorkflowRunSupervisorPrincipal,
 } from "@intx/hub-sessions";
 import type { CancelOrigin } from "@intx/workflow";
+import { hexEncode } from "@intx/types";
 
 import type {
   PrincipalSigner,
@@ -223,12 +224,8 @@ function serializeSignedPayload(signed: SignedPayload): {
 } {
   return {
     principalKind: signed.principalKind,
-    sig: bytesToHex(signed.sig),
+    sig: hexEncode(signed.sig),
   };
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("hex");
 }
 
 export { OnDiskEnvelope as CancelRequestedOnDiskEnvelopeForTest };

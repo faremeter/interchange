@@ -111,8 +111,6 @@ export {
   encodeEnvelope,
   generateChannelId,
   generateHmacKey,
-  hexDecode,
-  hexEncode,
   receiveControlChannel,
   receiveEventChannel,
   signEd25519,

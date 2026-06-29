@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
+import { hexEncode } from "@intx/types";
 import type { KeyPair } from "@intx/types/runtime";
 import type {
   AuthorizeFn,
@@ -349,10 +350,6 @@ function makeSpawnEnv(opts: {
   };
 }
 
-function bytesToHex(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("hex");
-}
-
 describe("parseSpawnTimeEnv", () => {
   test("validates the required spawn-time env keys", () => {
     const channelId = generateChannelId();
@@ -364,8 +361,8 @@ describe("parseSpawnTimeEnv", () => {
     const env = parseSpawnTimeEnv(
       makeSpawnEnv({
         channelId,
-        hmacKeyHex: bytesToHex(hmacKey),
-        hostPubKeyHex: bytesToHex(keypair.publicKey),
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(keypair.publicKey),
       }),
     );
     expect(env.channelId).toBe(channelId);
@@ -381,10 +378,10 @@ describe("parseSpawnTimeEnv", () => {
   test("parses WARM_KEEP=true as warm-keep on, any other value as off", () => {
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    const hostPubKeyHex = bytesToHex(new Uint8Array(32));
+    const hostPubKeyHex = hexEncode(new Uint8Array(32));
     const base = makeSpawnEnv({
       channelId,
-      hmacKeyHex: bytesToHex(hmacKey),
+      hmacKeyHex: hexEncode(hmacKey),
       hostPubKeyHex,
     });
     expect(parseSpawnTimeEnv({ ...base, WARM_KEEP: "true" }).warmKeep).toBe(
@@ -401,8 +398,8 @@ describe("parseSpawnTimeEnv", () => {
     expect(() =>
       parseSpawnTimeEnv({
         IPC_CHANNEL_ID: generateChannelId(),
-        IPC_HMAC_KEY: bytesToHex(generateHmacKey()),
-        HOST_PUBKEY: bytesToHex(new Uint8Array(32)),
+        IPC_HMAC_KEY: hexEncode(generateHmacKey()),
+        HOST_PUBKEY: hexEncode(new Uint8Array(32)),
         DEPLOYMENT_ID: "d",
         DEFINITION_HASH: "h",
       }),
@@ -415,7 +412,7 @@ describe("parseSpawnTimeEnv", () => {
         makeSpawnEnv({
           channelId: generateChannelId(),
           hmacKeyHex: "deadbeef",
-          hostPubKeyHex: bytesToHex(new Uint8Array(32)),
+          hostPubKeyHex: hexEncode(new Uint8Array(32)),
         }),
       ),
     ).toThrow(/HMAC_KEY|decode to/);
@@ -426,7 +423,7 @@ describe("parseSpawnTimeEnv", () => {
       parseSpawnTimeEnv(
         makeSpawnEnv({
           channelId: generateChannelId(),
-          hmacKeyHex: bytesToHex(generateHmacKey()),
+          hmacKeyHex: hexEncode(generateHmacKey()),
           hostPubKeyHex: "deadbeef",
         }),
       ),
@@ -438,8 +435,8 @@ describe("parseSpawnTimeEnv", () => {
       parseSpawnTimeEnv(
         makeSpawnEnv({
           channelId: "short",
-          hmacKeyHex: bytesToHex(generateHmacKey()),
-          hostPubKeyHex: bytesToHex(new Uint8Array(32)),
+          hmacKeyHex: hexEncode(generateHmacKey()),
+          hostPubKeyHex: hexEncode(new Uint8Array(32)),
         }),
       ),
     ).toThrow(/IPC_CHANNEL_ID/);
@@ -479,8 +476,8 @@ describe("runWorkflowChild", () => {
     const env = parseSpawnTimeEnv(
       makeSpawnEnv({
         channelId,
-        hmacKeyHex: bytesToHex(hmacKey),
-        hostPubKeyHex: bytesToHex(supervisorKeyPair.publicKey),
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
       }),
     );
 
@@ -565,8 +562,8 @@ describe("runWorkflowChild", () => {
     const env = parseSpawnTimeEnv(
       makeSpawnEnv({
         channelId,
-        hmacKeyHex: bytesToHex(hmacKey),
-        hostPubKeyHex: bytesToHex(supervisorKeyPair.publicKey),
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
       }),
     );
 
@@ -662,8 +659,8 @@ describe("runWorkflowChild", () => {
     const env = parseSpawnTimeEnv({
       ...makeSpawnEnv({
         channelId,
-        hmacKeyHex: bytesToHex(hmacKey),
-        hostPubKeyHex: bytesToHex(supervisorKeyPair.publicKey),
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
       }),
       WARM_KEEP: "true",
     });
@@ -798,8 +795,8 @@ describe("runWorkflowChild", () => {
     const env = parseSpawnTimeEnv(
       makeSpawnEnv({
         channelId,
-        hmacKeyHex: bytesToHex(hmacKey),
-        hostPubKeyHex: bytesToHex(supervisorKeyPair.publicKey),
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
       }),
     );
 
@@ -851,8 +848,8 @@ describe("runWorkflowChild", () => {
     const env = parseSpawnTimeEnv(
       makeSpawnEnv({
         channelId,
-        hmacKeyHex: bytesToHex(hmacKey),
-        hostPubKeyHex: bytesToHex(supervisorKeyPair.publicKey),
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
       }),
     );
 
@@ -926,8 +923,8 @@ describe("runWorkflowChild", () => {
     const env = parseSpawnTimeEnv(
       makeSpawnEnv({
         channelId,
-        hmacKeyHex: bytesToHex(hmacKey),
-        hostPubKeyHex: bytesToHex(supervisorKeyPair.publicKey),
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
       }),
     );
 
@@ -1003,8 +1000,8 @@ describe("runWorkflowChild", () => {
     const env = parseSpawnTimeEnv(
       makeSpawnEnv({
         channelId,
-        hmacKeyHex: bytesToHex(hmacKey),
-        hostPubKeyHex: bytesToHex(supervisorKeyPair.publicKey),
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
       }),
     );
 
@@ -1436,8 +1433,8 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
     const env = parseSpawnTimeEnv({
       ...makeSpawnEnv({
         channelId,
-        hmacKeyHex: bytesToHex(hmacKey),
-        hostPubKeyHex: bytesToHex(supervisorKeyPair.publicKey),
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
       }),
       WARM_KEEP: "true",
     });

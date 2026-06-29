@@ -97,26 +97,3 @@ export function decodeEnvelope(bytes: Uint8Array): FrameEnvelope {
   }
   return validated;
 }
-
-/**
- * Hex-encode a byte string. Centralized helper so the channel
- * implementations don't depend on `Buffer` directly.
- */
-export function hexEncode(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("hex");
-}
-
-/**
- * Decode a hex string back into bytes. Throws on non-hex input rather
- * than producing a truncated buffer the verifier would reject with a
- * less-clear error.
- */
-export function hexDecode(hex: string): Uint8Array {
-  if (!/^[0-9a-fA-F]*$/.test(hex)) {
-    throw new Error("IPC hex value contains non-hex characters");
-  }
-  if (hex.length % 2 !== 0) {
-    throw new Error("IPC hex value has odd length");
-  }
-  return new Uint8Array(Buffer.from(hex, "hex"));
-}

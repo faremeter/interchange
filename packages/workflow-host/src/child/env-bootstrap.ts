@@ -15,7 +15,8 @@
 
 import { type } from "arktype";
 
-import { hexDecode, IPC_CRYPTO } from "../ipc/index";
+import { hexDecode } from "@intx/types";
+import { IPC_CRYPTO } from "../ipc/index";
 
 /**
  * Required env keys carried by the supervisor at spawn time. The
