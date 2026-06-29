@@ -205,9 +205,9 @@ export function buildSignatureHashInput(
 /**
  * Assemble a complete OpenPGP v4 signature packet.
  *
- * The 64-byte Ed25519 signature from Node crypto is split into the 32-byte
- * R and 32-byte S components (both native little-endian per RFC 8032) and
- * encoded as OpenPGP MPIs.
+ * The 64-byte Ed25519 signature is split into the 32-byte R and 32-byte S
+ * components (both native little-endian per RFC 8032) and encoded as
+ * OpenPGP MPIs.
  *
  * No unhashed subpackets are included — for detached signatures we have no
  * key fingerprint or key ID to embed, and none are required by the spec.
