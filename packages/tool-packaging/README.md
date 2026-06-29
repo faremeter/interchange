@@ -95,27 +95,20 @@ A follow-up that snapshots the asset's commit SHA at resolution time
 and replays against it at apply time is in scope if this shows up in
 operator practice; it is not implemented today.
 
-## Author constraint: `import.meta.url` after the swap
+## Call-time imports and `import.meta.url`
 
-Tool packages MUST NOT perform call-time dynamic imports relative to
-`import.meta.url`. The loader imports each top-level package's
-`interchange.tools` entry from a path under `<instanceDir>/pending/`
-which the atomic-apply swap step renames to `<instanceDir>/active/`
-once the load succeeds. Modules loaded that way therefore carry the
-pending path on `import.meta.url`; an `await import(new URL(...,
-import.meta.url))` evaluated after the swap completes will fail
-because the original path is gone.
+Tool packages may resolve files relative to their own on-disk location
+at run time — `import.meta.url`, `require.resolve()`, or an
+`await import(new URL("./sibling.js", import.meta.url))` evaluated long
+after the module first loaded. The loader imports each top-level
+package's `interchange.tools` entry from a path under
+`<instanceDir>/packages/<deploy-id>/` that is never renamed, so a
+module's `import.meta.url` stays valid for the life of the deploy.
 
-Top-level `import` declarations are unaffected — they resolve at
-module-init time, before the swap fires — and bare-specifier dynamic
-imports that flow through Node's `node_modules` resolver are
-unaffected as well. The constraint is specific to URLs derived from
-`import.meta.url` at call time.
-
-A future loader change can lift this constraint by realpath-resolving
-the entry path or by re-loading the entry from the post-swap
-`active/` path; until then, package authors should keep dynamic
-imports module-relative through bundlers or package exports.
+The prior deploy's directory is retained across the next apply, so a
+session still draining against an older deploy keeps resolving its own
+files until a further apply supersedes it. See `ASSET-LAYOUT.md` for
+the on-disk layout and retention rules.
 
 ## Follow-up reference
 

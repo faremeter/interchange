@@ -292,7 +292,7 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
 
   test("boot reconciliation reads the dirty marker as previousDeployId", async () => {
     // Seed an instance where the prior apply could not durably record
-    // the post-swap deploy id and a dirty marker carries the truth.
+    // the committed deploy id and a dirty marker carries the truth.
     // The next apply (any apply — here, a manifest-invalid one) must
     // surface the marker's id as `previousDeployId` in the failure
     // frame, not the stale recorded id and not "none".

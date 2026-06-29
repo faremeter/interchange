@@ -19,8 +19,9 @@
 //       store keyed by SRI integrity.
 //       createToolLoader({ cache, registries, host, … }) — fetches,
 //       extracts, and dynamic-imports each pinned package.
-//       applyAtomic({ manifest, loader, … }) — stage-and-swap apply
-//       protocol that maps every loader failure category onto an
+//       applyAtomic({ manifest, loader, … }) — per-deploy-id apply
+//       protocol that stages each deploy into its own never-renamed
+//       directory and maps every loader failure category onto an
 //       `ApplyAtomicFailure` the caller routes to the
 //       `deploy.apply.error` frame channel.
 

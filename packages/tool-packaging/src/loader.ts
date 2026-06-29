@@ -1526,7 +1526,7 @@ function applyNamespacePrefix(
         // (agent construction at sidecar boot), NOT at apply time. The
         // loader cannot read `bundle.definitions` without invoking the
         // factory, and the `BaseEnv` the factory needs is constructed
-        // by the sidecar harness only after the swap completes. As a
+        // by the sidecar harness only after the apply commits. As a
         // consequence, an intra-bundle duplicate surfaces on the
         // runtime construct-failure channel rather than as an
         // apply-error frame. The cross-bundle case (in atomic-apply.ts)
