@@ -33,7 +33,6 @@
 // workspace tree the harness's tool dispatcher can read against.
 
 import { describe, test, expect, afterEach } from "bun:test";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -532,9 +531,9 @@ describe("skill attachment flow (end-to-end)", () => {
       repoId,
       ASSET_REF,
     );
-    const assetPackSha = createHash("sha256")
-      .update(packResult.pack)
-      .digest("hex");
+    const assetPackSha = Buffer.from(
+      await crypto.subtle.digest("SHA-256", new Uint8Array(packResult.pack)),
+    ).toString("hex");
     expect(assetPackSha).toMatch(/^[0-9a-f]{64}$/);
 
     const workspaceRoot = await mkTemp("intr95-ws-");

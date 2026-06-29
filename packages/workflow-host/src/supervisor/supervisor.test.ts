@@ -1915,7 +1915,7 @@ describe("assembleCredentialsSnapshot", () => {
       { resource: "alpha-thing", action: "read" },
     ]);
     expect(snapshot.steps[0]?.contentHash).toBe(
-      hashGrants([{ resource: "alpha-thing", action: "read" }]),
+      await hashGrants([{ resource: "alpha-thing", action: "read" }]),
     );
     expect(snapshot.steps[1]?.stepId).toBe("beta");
     expect(snapshot.steps[1]?.grants).toHaveLength(2);
@@ -1936,7 +1936,7 @@ describe("assembleCredentialsSnapshot", () => {
     });
     expect(snapshot.steps).toHaveLength(1);
     expect(snapshot.steps[0]?.grants).toEqual([]);
-    expect(snapshot.steps[0]?.contentHash).toBe(hashGrants([]));
+    expect(snapshot.steps[0]?.contentHash).toBe(await hashGrants([]));
   });
 
   test("a malformed grants file fails loudly rather than silently treating it as empty", async () => {

@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import {
   afterAll,
   beforeAll,
@@ -107,8 +105,10 @@ function createMockDB(opts: MockDBOpts): DB["db"] {
   return mock as unknown as DB["db"];
 }
 
-function sha256(input: string): Uint8Array {
-  return new Uint8Array(createHash("sha256").update(input, "utf8").digest());
+async function sha256(input: string): Promise<Uint8Array> {
+  return new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input)),
+  );
 }
 
 const NOW = new Date("2025-01-15T00:00:00Z");
@@ -144,7 +144,9 @@ function makePrincipal(
   };
 }
 
-function makeToken(overrides: Partial<GitTokenRow> = {}): GitTokenRow {
+async function makeToken(
+  overrides: Partial<GitTokenRow> = {},
+): Promise<GitTokenRow> {
   const secret = overrides.id ? `${overrides.id}_secret` : "default_secret";
   return {
     id: "tok_1",
@@ -153,7 +155,7 @@ function makeToken(overrides: Partial<GitTokenRow> = {}): GitTokenRow {
     tenantId: "ten_a",
     name: "laptop",
     kind: "pat",
-    tokenHashSha256: sha256(`itx_pat_${secret}`),
+    tokenHashSha256: await sha256(`itx_pat_${secret}`),
     resource: "asset:def_xyz",
     refPattern: "**",
     actions: ["createPack", "resolveRef"],
@@ -335,9 +337,9 @@ describe("createGitTokenAuth", () => {
 
   describe("revoked token", () => {
     test("returns 403 token_revoked", async () => {
-      const token = makeToken({
+      const token = await makeToken({
         id: "tok_revoked",
-        tokenHashSha256: sha256("itx_pat_revoked_secret"),
+        tokenHashSha256: await sha256("itx_pat_revoked_secret"),
         revokedAt: PAST,
       });
       const app = buildApp(
@@ -358,9 +360,9 @@ describe("createGitTokenAuth", () => {
 
   describe("expired token", () => {
     test("returns 403 token_expired", async () => {
-      const token = makeToken({
+      const token = await makeToken({
         id: "tok_expired",
-        tokenHashSha256: sha256("itx_pat_expired_secret"),
+        tokenHashSha256: await sha256("itx_pat_expired_secret"),
         expiresAt: PAST,
       });
       const app = buildApp(
@@ -381,9 +383,9 @@ describe("createGitTokenAuth", () => {
 
   describe("tenant mismatch", () => {
     test("tenant-bound token with mismatched URL tenant returns 403 tenant_mismatch", async () => {
-      const token = makeToken({
+      const token = await makeToken({
         id: "tok_bound_a",
-        tokenHashSha256: sha256("itx_svc_bound_secret"),
+        tokenHashSha256: await sha256("itx_svc_bound_secret"),
         kind: "svc",
         tenantId: "ten_a",
       });
@@ -405,9 +407,9 @@ describe("createGitTokenAuth", () => {
 
   describe("personal token principal resolution from (userId, :tid)", () => {
     test("returns 403 principal_not_found when no principal exists for (userId, :tid)", async () => {
-      const token = makeToken({
+      const token = await makeToken({
         id: "tok_personal",
-        tokenHashSha256: sha256("itx_pat_personal_secret"),
+        tokenHashSha256: await sha256("itx_pat_personal_secret"),
         tenantId: null,
         principalId: null,
       });
@@ -428,9 +430,9 @@ describe("createGitTokenAuth", () => {
     });
 
     test("succeeds when principalByRef resolves", async () => {
-      const token = makeToken({
+      const token = await makeToken({
         id: "tok_personal",
-        tokenHashSha256: sha256("itx_pat_personal_ok"),
+        tokenHashSha256: await sha256("itx_pat_personal_ok"),
         tenantId: null,
         principalId: null,
       });
@@ -455,9 +457,9 @@ describe("createGitTokenAuth", () => {
 
   describe("suspended principal", () => {
     test("returns 403 principal_suspended", async () => {
-      const token = makeToken({
+      const token = await makeToken({
         id: "tok_susp",
-        tokenHashSha256: sha256("itx_pat_susp_secret"),
+        tokenHashSha256: await sha256("itx_pat_susp_secret"),
       });
       const app = buildApp(
         createMockDB({
@@ -477,9 +479,9 @@ describe("createGitTokenAuth", () => {
 
   describe("success path", () => {
     test("sets principal, tenant, and git-token-claims; logs success", async () => {
-      const token = makeToken({
+      const token = await makeToken({
         id: "tok_ok",
-        tokenHashSha256: sha256("itx_pat_ok_secret"),
+        tokenHashSha256: await sha256("itx_pat_ok_secret"),
         resource: "asset:def_xyz",
         refPattern: "refs/heads/main",
         actions: ["createPack", "resolveRef"],
@@ -515,9 +517,9 @@ describe("createGitTokenAuth", () => {
     });
 
     test("Basic auth: username variance does not affect gating", async () => {
-      const token = makeToken({
+      const token = await makeToken({
         id: "tok_basic",
-        tokenHashSha256: sha256("itx_pat_basic_secret"),
+        tokenHashSha256: await sha256("itx_pat_basic_secret"),
       });
       const db = createMockDB({
         gitToken: token,
@@ -537,9 +539,9 @@ describe("createGitTokenAuth", () => {
     });
 
     test("Basic auth: username is logged for forensics", async () => {
-      const token = makeToken({
+      const token = await makeToken({
         id: "tok_log_user",
-        tokenHashSha256: sha256("itx_pat_log_user_secret"),
+        tokenHashSha256: await sha256("itx_pat_log_user_secret"),
       });
       const app = buildApp(
         createMockDB({
@@ -566,8 +568,8 @@ describe("createGitTokenAuth", () => {
   describe("SHA-256 hash round-trip", () => {
     test("the secret stored as SHA-256 matches the secret on the wire", async () => {
       const secret = "itx_pat_roundtrip_secret";
-      const hash = sha256(secret);
-      const token = makeToken({
+      const hash = await sha256(secret);
+      const token = await makeToken({
         id: "tok_rt",
         tokenHashSha256: hash,
       });

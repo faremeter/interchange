@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import { and, eq } from "drizzle-orm";
 import { createMiddleware } from "hono/factory";
 import type { Context, Env, MiddlewareHandler } from "hono";
@@ -92,7 +90,7 @@ export function createGitTokenAuth({
       return unauthorized(c, "Authentication required");
     }
 
-    const tokenHash = sha256(secret);
+    const tokenHash = await sha256(secret);
 
     const tokenRowRaw = await db.query.gitToken.findFirst({
       where: eq(gitToken.tokenHashSha256, tokenHash),
@@ -270,10 +268,10 @@ function hasKnownPrefix(secret: string): boolean {
   return secret.startsWith(PAT_PREFIX) || secret.startsWith(SVC_PREFIX);
 }
 
-function sha256(input: string): Uint8Array {
-  const hash = createHash("sha256");
-  hash.update(input, "utf8");
-  return new Uint8Array(hash.digest());
+async function sha256(input: string): Promise<Uint8Array> {
+  return new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input)),
+  );
 }
 
 async function resolvePrincipal(
