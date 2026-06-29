@@ -219,27 +219,45 @@ describe("Ed25519 primitives", () => {
 });
 
 describe("HMAC primitives", () => {
-  test("sign + verify round-trip", () => {
+  test("sign + verify round-trip", async () => {
     const key = generateHmacKey();
     const bytes = new TextEncoder().encode("hello");
-    const tag = signHmac(bytes, key);
-    expect(verifyHmac(bytes, tag, key)).toBe(true);
+    const tag = await signHmac(bytes, key);
+    expect(await verifyHmac(bytes, tag, key)).toBe(true);
   });
 
-  test("rejects a tampered tag", () => {
+  test("rejects a tampered tag", async () => {
     const key = generateHmacKey();
     const bytes = new TextEncoder().encode("hello");
-    const tag = signHmac(bytes, key);
+    const tag = await signHmac(bytes, key);
     const first = tag[0];
     if (first === undefined) throw new Error("tag empty");
     tag[0] = first ^ 0x01;
-    expect(verifyHmac(bytes, tag, key)).toBe(false);
+    expect(await verifyHmac(bytes, tag, key)).toBe(false);
   });
 
-  test("rejects an HMAC key of the wrong length", () => {
-    expect(() => signHmac(new Uint8Array(4), new Uint8Array(16))).toThrow(
-      /HMAC key must be 32 bytes/,
-    );
+  test("rejects an HMAC key of the wrong length", async () => {
+    await expect(
+      signHmac(new Uint8Array(4), new Uint8Array(16)),
+    ).rejects.toThrow(/HMAC key must be 32 bytes/);
+  });
+
+  test("rejects every single-bit flip of a valid tag", async () => {
+    // The constant-time compare must reject a mismatch in any bit of any
+    // byte, not just the first. Sweep all 256 single-bit flips.
+    const key = generateHmacKey();
+    const bytes = new TextEncoder().encode("hello");
+    const tag = await signHmac(bytes, key);
+    expect(await verifyHmac(bytes, tag, key)).toBe(true);
+    for (let byteIdx = 0; byteIdx < tag.length; byteIdx++) {
+      for (let bit = 0; bit < 8; bit++) {
+        const flipped = new Uint8Array(tag);
+        const original = flipped[byteIdx];
+        if (original === undefined) throw new Error("tag too short");
+        flipped[byteIdx] = original ^ (1 << bit);
+        expect(await verifyHmac(bytes, flipped, key)).toBe(false);
+      }
+    }
   });
 });
 
@@ -641,6 +659,119 @@ describe("Event channel", () => {
     expect(received.length).toBe(2);
   });
 
+  test("serializes concurrent sends so frames keep seq order", async () => {
+    // signHmac is async, so without the sender's internal lock two
+    // concurrent fire-and-forget sends could assign seq, suspend on the
+    // HMAC, and write in resolution order. A deferred writer proves the
+    // lock: the second send must not reach the writer until the first
+    // send's write resolves, and the wire order must be seq 1 then seq 2.
+    const hmacKey = generateHmacKey();
+    const channelId = generateChannelId();
+    const writes: Uint8Array[] = [];
+    const gates: (() => void)[] = [];
+    const writer = {
+      write(bytes: Uint8Array): Promise<void> {
+        writes.push(bytes);
+        return new Promise<void>((resolve) => {
+          gates.push(resolve);
+        });
+      },
+    };
+    const sender = createEventChannelSender({ hmacKey, channelId, writer });
+
+    const waitForWrites = async (n: number) => {
+      for (let i = 0; i < 200; i++) {
+        if (writes.length >= n) return;
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      throw new Error(
+        `timed out waiting for ${n} writes, got ${writes.length}`,
+      );
+    };
+
+    // Fire both sends without awaiting either.
+    const first = sender.send({
+      type: "inference.start",
+      seq: 1,
+      data: { model: "x" },
+    });
+    const second = sender.send({
+      type: "inference.start",
+      seq: 2,
+      data: { model: "y" },
+    });
+
+    // After signing settles, only the first send has written; the second
+    // is held at the lock behind the first send's unresolved write.
+    await waitForWrites(1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(writes.length).toBe(1);
+
+    // Releasing the first write lets the second send proceed.
+    gates[0]?.();
+    await waitForWrites(2);
+    expect(writes.length).toBe(2);
+    gates[1]?.();
+    await Promise.all([first, second]);
+
+    const seqs = writes.map((bytes) => {
+      const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+      const validated = MacedEnvelope(parsed);
+      if (validated instanceof type.errors) {
+        throw new Error(`unexpected wire shape: ${validated.summary}`);
+      }
+      return validated.envelope.seq;
+    });
+    expect(seqs).toEqual([1, 2]);
+  });
+
+  test("a rejecting write does not wedge subsequent sends", async () => {
+    // The sender releases its serialization lock in a `finally`, so a
+    // frame whose write rejects must not stall the frames behind it. The
+    // failed send still rejects to its caller; the next send proceeds and
+    // the wire order is preserved.
+    const hmacKey = generateHmacKey();
+    const channelId = generateChannelId();
+    const writes: Uint8Array[] = [];
+    let failNext = true;
+    const writer = {
+      write(bytes: Uint8Array): Promise<void> {
+        writes.push(bytes);
+        if (failNext) {
+          failNext = false;
+          return Promise.reject(new Error("write failed"));
+        }
+        return Promise.resolve();
+      },
+    };
+    const sender = createEventChannelSender({ hmacKey, channelId, writer });
+
+    const first = sender.send({
+      type: "inference.start",
+      seq: 1,
+      data: { model: "x" },
+    });
+    const second = sender.send({
+      type: "inference.start",
+      seq: 2,
+      data: { model: "y" },
+    });
+
+    await expect(first).rejects.toThrow(/write failed/);
+    await second;
+    expect(writes.length).toBe(2);
+
+    const seqs = writes.map((bytes) => {
+      const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+      const validated = MacedEnvelope(parsed);
+      if (validated instanceof type.errors) {
+        throw new Error(`unexpected wire shape: ${validated.summary}`);
+      }
+      return validated.envelope.seq;
+    });
+    expect(seqs).toEqual([1, 2]);
+  });
+
   test("crashes on a forged HMAC", async () => {
     const key = generateHmacKey();
     const channelId = generateChannelId();
@@ -727,20 +858,20 @@ describe("Event channel", () => {
       }
     })();
 
-    function emitMacedFrame(seq: number) {
+    async function emitMacedFrame(seq: number) {
       const envelope: FrameEnvelope = {
         seq,
         channelId,
         payload: { type: "inference.start", seq, data: { model: "x" } },
       };
-      const tag = signHmac(encodeEnvelope(envelope), key);
+      const tag = await signHmac(encodeEnvelope(envelope), key);
       const maced: MacedEnvelope = { envelope, mac: hexEncode(tag) };
       stream.inject(new TextEncoder().encode(JSON.stringify(maced)));
     }
 
-    emitMacedFrame(1);
-    emitMacedFrame(2);
-    emitMacedFrame(2);
+    await emitMacedFrame(1);
+    await emitMacedFrame(2);
+    await emitMacedFrame(2);
     stream.close();
     await consumer;
 
@@ -771,19 +902,19 @@ describe("Event channel", () => {
     })();
     expect(consumerStarted).toBe(true);
 
-    function emitMacedFrame(seq: number) {
+    async function emitMacedFrame(seq: number) {
       const envelope: FrameEnvelope = {
         seq,
         channelId,
         payload: { type: "inference.start", seq, data: { model: "x" } },
       };
-      const tag = signHmac(encodeEnvelope(envelope), key);
+      const tag = await signHmac(encodeEnvelope(envelope), key);
       const maced: MacedEnvelope = { envelope, mac: hexEncode(tag) };
       stream.inject(new TextEncoder().encode(JSON.stringify(maced)));
     }
 
     for (let i = 1; i <= limit + 2; i++) {
-      emitMacedFrame(i);
+      await emitMacedFrame(i);
     }
 
     // Give the pump a chance to read and crash.
@@ -819,7 +950,7 @@ describe("Event channel", () => {
       channelId,
       payload: { type: "drain", data: { deadlineMs: 5_000 } },
     };
-    const tag = signHmac(encodeEnvelope(envelope), key);
+    const tag = await signHmac(encodeEnvelope(envelope), key);
     const maced: MacedEnvelope = { envelope, mac: hexEncode(tag) };
     stream.inject(new TextEncoder().encode(JSON.stringify(maced)));
     stream.close();
@@ -852,20 +983,22 @@ describe("Event channel", () => {
       }
     })();
 
-    function macedLine(seq: number): string {
+    async function macedLine(seq: number): Promise<string> {
       const envelope: FrameEnvelope = {
         seq,
         channelId,
         payload: { type: "inference.start", seq, data: { model: "x" } },
       };
-      const tag = signHmac(encodeEnvelope(envelope), key);
+      const tag = await signHmac(encodeEnvelope(envelope), key);
       const maced: MacedEnvelope = { envelope, mac: hexEncode(tag) };
       return `${JSON.stringify(maced)}\n`;
     }
 
     // Three frames in a single chunk.
     stream.injectRaw(
-      new TextEncoder().encode(macedLine(1) + macedLine(2) + macedLine(3)),
+      new TextEncoder().encode(
+        (await macedLine(1)) + (await macedLine(2)) + (await macedLine(3)),
+      ),
     );
     stream.close();
     await consumer;
@@ -900,7 +1033,7 @@ describe("Event channel", () => {
       channelId,
       payload: { type: "inference.start", seq: 1, data: { model: "x" } },
     };
-    const tag = signHmac(encodeEnvelope(envelope), key);
+    const tag = await signHmac(encodeEnvelope(envelope), key);
     const maced: MacedEnvelope = { envelope, mac: hexEncode(tag) };
     const wire = new TextEncoder().encode(`${JSON.stringify(maced)}\n`);
     const cut = Math.floor(wire.length / 2);
@@ -967,7 +1100,7 @@ describe("Event channel", () => {
       channelId,
       payload: { type: "inference.start", seq: 1, data: { model: "x" } },
     };
-    const tag = signHmac(encodeEnvelope(envelope), key);
+    const tag = await signHmac(encodeEnvelope(envelope), key);
     const maced: MacedEnvelope = { envelope, mac: hexEncode(tag) };
     // No trailing newline: a truncated frame.
     stream.injectRaw(new TextEncoder().encode(JSON.stringify(maced)));
@@ -1042,8 +1175,8 @@ describe("Spawn-time trust-anchor bootstrap", () => {
     expect(await verifyEd25519(controlBytes, sig, hostPubKey)).toBe(true);
 
     const eventBytes = new TextEncoder().encode("event");
-    const tag = signHmac(eventBytes, hmacKey);
-    expect(verifyHmac(eventBytes, tag, childHmacKey)).toBe(true);
+    const tag = await signHmac(eventBytes, hmacKey);
+    expect(await verifyHmac(eventBytes, tag, childHmacKey)).toBe(true);
 
     expect(childChannelId).toBe(channelId);
   });
