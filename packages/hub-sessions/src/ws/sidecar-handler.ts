@@ -740,7 +740,7 @@ export function createSidecarRouter(
         payload.set(addressBytes, nonceBytes.length);
 
         const sigBytes = hexDecode(signature);
-        valid = verifyEd25519(payload, sigBytes, entry.publicKey);
+        valid = await verifyEd25519(payload, sigBytes, entry.publicKey);
       } catch (err) {
         logger.warn`Challenge failed for ${address}: ${err instanceof Error ? err.message : String(err)}`;
       }

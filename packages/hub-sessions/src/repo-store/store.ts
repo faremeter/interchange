@@ -1152,7 +1152,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       ref,
       signingKey: "sshsig",
       onSign: async ({ payload }) => ({
-        signature: createSSHSignature(
+        signature: await createSSHSignature(
           payload,
           signingKey.privateKey,
           signingKey.publicKey,

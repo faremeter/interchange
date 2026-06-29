@@ -1,23 +1,21 @@
-import { sign as nodeSign } from "node:crypto";
 import { describe, test, expect, beforeEach } from "bun:test";
-import { generateKeyPair, importPrivateKeyBytes } from "@intx/crypto-node";
+import { generateKeyPair, signEd25519 } from "@intx/crypto-node";
 import { hexDecode, hexEncode, parseAgentAddress } from "@intx/types";
 import { chunkPack } from "@intx/pack-transport";
 import type { PackRejectReason, RepoId } from "@intx/types/sidecar";
 import { createSidecarRouter, type WsHandle } from "./sidecar-handler";
 
-function signChallenge(
+async function signChallenge(
   nonce: string,
   address: string,
   privateKeyBytes: Uint8Array,
-): string {
+): Promise<string> {
   const nonceBytes = hexDecode(nonce);
   const addressBytes = new TextEncoder().encode(address);
   const payload = new Uint8Array(nonceBytes.length + addressBytes.length);
   payload.set(nonceBytes);
   payload.set(addressBytes, nonceBytes.length);
-  const privateKey = importPrivateKeyBytes(privateKeyBytes);
-  const sig = nodeSign(null, payload, privateKey);
+  const sig = await signEd25519(privateKeyBytes, payload);
   return hexEncode(new Uint8Array(sig));
 }
 
@@ -1549,7 +1547,7 @@ describe("SidecarRouter", () => {
       expect(address).toBe("agent@local");
 
       // Sign and respond.
-      const signature = signChallenge(nonce, address, kp.privateKey);
+      const signature = await signChallenge(nonce, address, kp.privateKey);
       router.handleMessage(
         ws,
         JSON.stringify({
@@ -1557,6 +1555,8 @@ describe("SidecarRouter", () => {
           responses: [{ address, signature }],
         }),
       );
+
+      await new Promise((r) => setTimeout(r, 50));
 
       expect(router.getRoutableAddresses()).toContain("agent@local");
     });
@@ -1595,7 +1595,7 @@ describe("SidecarRouter", () => {
       const { address, nonce } = challengeFrame.challenges[0];
 
       // Sign with wrong key.
-      const badSig = signChallenge(nonce, address, wrongKp.privateKey);
+      const badSig = await signChallenge(nonce, address, wrongKp.privateKey);
       router.handleMessage(
         ws,
         JSON.stringify({
@@ -1603,6 +1603,8 @@ describe("SidecarRouter", () => {
           responses: [{ address, signature: badSig }],
         }),
       );
+
+      await new Promise((r) => setTimeout(r, 50));
 
       expect(router.getRoutableAddresses()).not.toContain("agent@local");
 
@@ -1679,21 +1681,27 @@ describe("SidecarRouter", () => {
         .find((f: { type: string }) => f.type === "challenge");
       expect(challengeFrame.challenges).toHaveLength(2);
 
-      const responses = challengeFrame.challenges.map(
-        (c: { address: string; nonce: string }) => {
-          const key =
-            c.address === "agent-a@local" ? kp1.privateKey : wrongKp.privateKey;
-          return {
-            address: c.address,
-            signature: signChallenge(c.nonce, c.address, key),
-          };
-        },
+      const responses = await Promise.all(
+        challengeFrame.challenges.map(
+          async (c: { address: string; nonce: string }) => {
+            const key =
+              c.address === "agent-a@local"
+                ? kp1.privateKey
+                : wrongKp.privateKey;
+            return {
+              address: c.address,
+              signature: await signChallenge(c.nonce, c.address, key),
+            };
+          },
+        ),
       );
 
       router.handleMessage(
         ws,
         JSON.stringify({ type: "challenge.response", responses }),
       );
+
+      await new Promise((r) => setTimeout(r, 50));
 
       expect(router.getRoutableAddresses()).toContain("agent-a@local");
       expect(router.getRoutableAddresses()).not.toContain("agent-b@local");
@@ -1742,7 +1750,7 @@ describe("SidecarRouter", () => {
           responses: [
             {
               address,
-              signature: signChallenge(nonce, address, kp.privateKey),
+              signature: await signChallenge(nonce, address, kp.privateKey),
             },
           ],
         }),
@@ -1795,7 +1803,7 @@ describe("SidecarRouter", () => {
           responses: [
             {
               address,
-              signature: signChallenge(nonce, address, kp.privateKey),
+              signature: await signChallenge(nonce, address, kp.privateKey),
             },
           ],
         }),
@@ -1847,7 +1855,7 @@ describe("SidecarRouter", () => {
           responses: [
             {
               address,
-              signature: signChallenge(nonce, address, kp.privateKey),
+              signature: await signChallenge(nonce, address, kp.privateKey),
             },
           ],
         }),
@@ -1897,7 +1905,7 @@ describe("SidecarRouter", () => {
           responses: [
             {
               address,
-              signature: signChallenge(nonce, address, kp.privateKey),
+              signature: await signChallenge(nonce, address, kp.privateKey),
             },
           ],
         }),
@@ -1991,17 +1999,21 @@ describe("SidecarRouter", () => {
         .map((s) => JSON.parse(s))
         .find((f: { type: string }) => f.type === "challenge");
 
-      const responses = challengeFrame.challenges.map(
-        (c: { address: string; nonce: string }) => ({
-          address: c.address,
-          signature: signChallenge(c.nonce, c.address, kp.privateKey),
-        }),
+      const responses = await Promise.all(
+        challengeFrame.challenges.map(
+          async (c: { address: string; nonce: string }) => ({
+            address: c.address,
+            signature: await signChallenge(c.nonce, c.address, kp.privateKey),
+          }),
+        ),
       );
 
       router.handleMessage(
         ws2,
         JSON.stringify({ type: "challenge.response", responses }),
       );
+
+      await new Promise((r) => setTimeout(r, 50));
 
       // The queued mail should have been flushed to the new connection.
       const flushed = ws2.sent
@@ -2064,17 +2076,21 @@ describe("SidecarRouter", () => {
         .map((s) => JSON.parse(s))
         .find((f: { type: string }) => f.type === "challenge");
 
-      const responses = challengeFrame.challenges.map(
-        (c: { address: string; nonce: string }) => ({
-          address: c.address,
-          signature: signChallenge(c.nonce, c.address, kp.privateKey),
-        }),
+      const responses = await Promise.all(
+        challengeFrame.challenges.map(
+          async (c: { address: string; nonce: string }) => ({
+            address: c.address,
+            signature: await signChallenge(c.nonce, c.address, kp.privateKey),
+          }),
+        ),
       );
 
       router.handleMessage(
         ws2,
         JSON.stringify({ type: "challenge.response", responses }),
       );
+
+      await new Promise((r) => setTimeout(r, 50));
 
       const flushed = ws2.sent
         .map((s) => JSON.parse(s))
@@ -2216,7 +2232,7 @@ describe("SidecarRouter", () => {
         .map((s) => JSON.parse(s))
         .find((f: { type: string }) => f.type === "challenge");
       const { address, nonce } = challengeFrame.challenges[0];
-      const signature = signChallenge(nonce, address, kp.privateKey);
+      const signature = await signChallenge(nonce, address, kp.privateKey);
 
       router.handleMessage(
         ws,
@@ -2267,7 +2283,7 @@ describe("SidecarRouter", () => {
         .map((s) => JSON.parse(s))
         .find((f: { type: string }) => f.type === "challenge");
       const { address, nonce } = challengeFrame.challenges[0];
-      const signature = signChallenge(nonce, address, wrongKp.privateKey);
+      const signature = await signChallenge(nonce, address, wrongKp.privateKey);
 
       router.handleMessage(
         ws,
@@ -2320,15 +2336,17 @@ describe("SidecarRouter", () => {
         .map((s) => JSON.parse(s))
         .find((f: { type: string }) => f.type === "challenge");
 
-      const responses = challengeFrame.challenges.map(
-        (c: { address: string; nonce: string }) => ({
-          address: c.address,
-          signature: signChallenge(
-            c.nonce,
-            c.address,
-            c.address === "agent1@local" ? kp1.privateKey : kp2.privateKey,
-          ),
-        }),
+      const responses = await Promise.all(
+        challengeFrame.challenges.map(
+          async (c: { address: string; nonce: string }) => ({
+            address: c.address,
+            signature: await signChallenge(
+              c.nonce,
+              c.address,
+              c.address === "agent1@local" ? kp1.privateKey : kp2.privateKey,
+            ),
+          }),
+        ),
       );
 
       router.handleMessage(

@@ -6,23 +6,22 @@
 // 32-byte secret and the cost-per-frame of HMAC over per-frame Ed25519
 // is what keeps the event stream affordable at InferenceEvent rates.
 //
-// Both algorithms come from Node's built-in `node:crypto`. The
-// repository's `@intx/crypto-node` package wraps Ed25519 for PGP-shaped
-// signature envelopes, which carry packet framing and ASCII armor we
-// don't want on every IPC frame. The wire format here is the raw
-// 64-byte Ed25519 signature (RFC 8032) and the raw 32-byte HMAC-SHA256
-// tag concatenated with the canonical-JSON payload bytes. Anything
-// fancier would just pay PGP overhead per frame.
+// Ed25519 sign/verify come from `@intx/crypto-node`, whose raw
+// `signEd25519`/`verifyEd25519` primitives produce and check the bare
+// 64-byte RFC 8032 signature without the PGP packet framing and ASCII
+// armor the package's envelope helpers add — exactly the wire format
+// this channel wants. HMAC-SHA256 still comes from Node's built-in
+// `node:crypto`. The wire format here is the raw 64-byte Ed25519
+// signature and the raw 32-byte HMAC-SHA256 tag concatenated with the
+// canonical-JSON payload bytes. Anything fancier would just pay PGP
+// overhead per frame.
+
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 import {
-  createHmac,
-  randomBytes,
-  sign as nodeSign,
-  timingSafeEqual,
-  verify as nodeVerify,
-} from "node:crypto";
-
-import { importPrivateKeyBytes, importPublicKeyBytes } from "@intx/crypto-node";
+  signEd25519 as ed25519Sign,
+  verifyEd25519 as ed25519Verify,
+} from "@intx/crypto-node";
 
 const ED25519_SIGNATURE_BYTES = 64;
 const ED25519_KEY_BYTES = 32;
@@ -56,29 +55,27 @@ export function generateChannelId(): string {
  * Ed25519 private key. Caller is responsible for canonicalization;
  * this primitive does not see the structured envelope.
  *
- * The private-key bytes are the 32-byte Ed25519 seed. Importing the
- * KeyObject lives in `@intx/crypto-node/keys`; this module imports the
- * minimal subset it needs to keep the IPC layer self-contained.
+ * The private-key bytes are the 32-byte Ed25519 seed. The raw signing
+ * primitive lives in `@intx/crypto-node`; this module wraps it with the
+ * channel's fixed-length validation.
  */
-export function signEd25519(
+export async function signEd25519(
   bytes: Uint8Array,
   privateKeySeed: Uint8Array,
-): Uint8Array {
+): Promise<Uint8Array> {
   if (privateKeySeed.length !== ED25519_KEY_BYTES) {
     throw new Error(
       `IPC Ed25519 private key seed must be ${ED25519_KEY_BYTES} bytes, got ${privateKeySeed.length}`,
     );
   }
-  const key = importPrivateKeyBytes(privateKeySeed);
-  const sig = nodeSign(null, bytes, key);
-  return new Uint8Array(sig);
+  return ed25519Sign(privateKeySeed, bytes);
 }
 
-export function verifyEd25519(
+export async function verifyEd25519(
   bytes: Uint8Array,
   signature: Uint8Array,
   publicKey: Uint8Array,
-): boolean {
+): Promise<boolean> {
   if (signature.length !== ED25519_SIGNATURE_BYTES) {
     throw new Error(
       `IPC Ed25519 signature must be ${ED25519_SIGNATURE_BYTES} bytes, got ${signature.length}`,
@@ -89,8 +86,7 @@ export function verifyEd25519(
       `IPC Ed25519 public key must be ${ED25519_KEY_BYTES} bytes, got ${publicKey.length}`,
     );
   }
-  const key = importPublicKeyBytes(publicKey);
-  return nodeVerify(null, bytes, key, signature);
+  return ed25519Verify(bytes, signature, publicKey);
 }
 
 /**

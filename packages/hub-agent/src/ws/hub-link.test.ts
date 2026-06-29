@@ -7,9 +7,8 @@ import {
   type SidecarRouter,
   type WsHandle,
 } from "@intx/hub-sessions";
-import { sign as nodeSign } from "node:crypto";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { importPrivateKeyBytes, verifySSHSignature } from "@intx/crypto-node";
+import { signEd25519, verifySSHSignature } from "@intx/crypto-node";
 import { base64Encode, hexEncode } from "@intx/types";
 import type {
   HarnessConfig,
@@ -96,11 +95,10 @@ function createTestKeyStore(): AgentKeyStore & {
         keyPair,
       }));
     },
-    signChallenge(address, payload) {
+    async signChallenge(address, payload) {
       const kp = agentKeys.get(address);
       if (kp === undefined) return null;
-      const key = importPrivateKeyBytes(kp.privateKey);
-      return new Uint8Array(nodeSign(null, payload, key));
+      return await signEd25519(kp.privateKey, payload);
     },
     recordHubKey(address, hexHubPublicKey) {
       hubKeys.set(address, hexDecode(hexHubPublicKey));
@@ -1035,14 +1033,16 @@ describe("sidecar↔hub integration", () => {
 
       // Capture the verifyCommit callback to prove the correct hub key
       // was restored — not just any key.
-      let capturedVerifyCommit: ((p: string, s: string) => boolean) | undefined;
+      let capturedVerifyCommit:
+        | ((p: string, s: string) => Promise<boolean>)
+        | undefined;
       sessions.applyDeployPack = async (
         _addr: string,
         _pack: Uint8Array,
         _ref: string,
         _sha: string,
         _tid: string,
-        verifyCommit?: (payload: string, signature: string) => boolean,
+        verifyCommit?: (payload: string, signature: string) => Promise<boolean>,
       ) => {
         capturedVerifyCommit = verifyCommit;
       };
@@ -1059,22 +1059,22 @@ describe("sidecar↔hub integration", () => {
       // Create a real signature with the hub's private key and verify
       // it round-trips through the restored verifyCommit callback.
       const payload = "tree abc\nauthor t <t@t> 0 +0000\n\ntest\n";
-      const sig = createSSHSignature(
+      const sig = await createSSHSignature(
         payload,
         hubKp.privateKey,
         hubKp.publicKey,
       );
-      expect(capturedVerifyCommit!(payload, sig)).toBe(true);
+      expect(await capturedVerifyCommit!(payload, sig)).toBe(true);
 
       // A signature from a different key must fail, proving the callback
       // is bound to the specific hub key that was restored.
       const wrongKp = await generateKeyPair();
-      const wrongSig = createSSHSignature(
+      const wrongSig = await createSSHSignature(
         payload,
         wrongKp.privateKey,
         wrongKp.publicKey,
       );
-      expect(capturedVerifyCommit!(payload, wrongSig)).toBe(false);
+      expect(await capturedVerifyCommit!(payload, wrongSig)).toBe(false);
     } finally {
       client.close();
       reconnectServer.stop(true);

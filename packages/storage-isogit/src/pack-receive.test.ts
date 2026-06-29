@@ -431,7 +431,7 @@ async function makeSignedSourceRepo(keyPair: {
     author: { name: "Test", email: "test@test.dev" },
     signingKey: "sshsig",
     onSign: async ({ payload }) => ({
-      signature: createSSHSignature(
+      signature: await createSSHSignature(
         payload,
         keyPair.privateKey,
         keyPair.publicKey,

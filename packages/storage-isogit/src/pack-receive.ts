@@ -14,7 +14,10 @@ import { withRepoDirLock } from "./repo-lock";
  * Returns true when the signature is valid. Should throw on malformed
  * input and return false on cryptographic failure.
  */
-export type CommitVerifier = (payload: string, signature: string) => boolean;
+export type CommitVerifier = (
+  payload: string,
+  signature: string,
+) => Promise<boolean>;
 
 export type TreeValidatorResult = true | { ok: false; reason: string };
 
@@ -655,7 +658,7 @@ export async function applyPack(
         const { object: rawBytes } = await readRawObject(dir, expectedSha);
         const payload = stripGpgsig(new TextDecoder().decode(rawBytes));
 
-        if (!verifyCommit(payload, commit.gpgsig)) {
+        if (!(await verifyCommit(payload, commit.gpgsig))) {
           throw new Error(
             `signature_invalid: commit ${expectedSha} signature verification failed`,
           );

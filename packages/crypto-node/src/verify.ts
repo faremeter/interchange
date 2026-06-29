@@ -1,5 +1,4 @@
-import { verify as nodeVerify } from "node:crypto";
-import { importPublicKeyBytes } from "./keys";
+import { verifyEd25519 } from "./keys";
 import {
   armorDecode,
   parseNewFormatPacket,
@@ -55,8 +54,7 @@ export async function verifyDetachedSignature(
   rawSig.set(rPadded, 0);
   rawSig.set(sPadded, 32);
 
-  const publicKey = importPublicKeyBytes(publicKeyBytes);
-  return nodeVerify(null, hashInput, publicKey, rawSig);
+  return verifyEd25519(hashInput, rawSig, publicKeyBytes);
 }
 
 /**

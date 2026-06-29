@@ -132,7 +132,7 @@ describe("runGC", () => {
       unsignedSource.dir,
       unsignedSource.tipOids,
     );
-    const verifier: CommitVerifier = () => true;
+    const verifier: CommitVerifier = async () => true;
     await expect(
       applyPack(
         dir,

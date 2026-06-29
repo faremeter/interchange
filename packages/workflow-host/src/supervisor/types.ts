@@ -100,7 +100,7 @@ export type SignedPayload = {
 export type PrincipalSigner = (
   kind: WorkflowSupervisorPrincipalKind,
   payload: Uint8Array,
-) => SignedPayload;
+) => Promise<SignedPayload>;
 
 /**
  * Mail-bus interface the supervisor needs. The shape is the minimal

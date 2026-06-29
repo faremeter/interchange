@@ -504,7 +504,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     logger.info`Undeployed agent ${frame.agentAddress}: ${frame.reason}`;
   }
 
-  function handleChallenge(frame: ChallengeFrame): void {
+  async function handleChallenge(frame: ChallengeFrame): Promise<void> {
     const responses: { address: string; signature: string }[] = [];
 
     for (const { address, nonce } of frame.challenges) {
@@ -514,7 +514,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       payload.set(nonceBytes);
       payload.set(addressBytes, nonceBytes.length);
 
-      const sig = keyStore.signChallenge(address, payload);
+      const sig = await keyStore.signChallenge(address, payload);
       if (sig === null) {
         logger.warn`No key pair for challenged address ${address}`;
         continue;
@@ -935,7 +935,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         await handleAgentUndeploy(frame);
         break;
       case "challenge":
-        handleChallenge(frame);
+        await handleChallenge(frame);
         break;
       case "pong":
         lastPongAt = Date.now();

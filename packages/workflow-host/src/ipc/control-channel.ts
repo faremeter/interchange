@@ -410,24 +410,43 @@ export function createControlChannelSender(
   opts: ControlChannelSenderOpts,
 ): ControlChannelSender {
   let seq = 0;
+  // Serialize sends. Signing is async, so without a lock two concurrent
+  // callers could each assign seq, suspend on `signEd25519`, and resume in
+  // signature-resolution order — writing frames out of seq order, which the
+  // receiver rejects as a gap and crashes the channel. The promise chain
+  // makes each send await the previous send's completion before it assigns
+  // seq, signs, and writes, keeping that critical section atomic.
+  let tail: Promise<void> = Promise.resolve();
   return {
     get seq() {
       return seq;
     },
-    async send(payload: ControlPayload) {
-      seq += 1;
-      const envelope: FrameEnvelope = {
-        seq,
-        channelId: opts.channelId,
-        payload,
-      };
-      const envelopeBytes = encodeEnvelope(envelope);
-      const sig = signEd25519(envelopeBytes, opts.privateKeySeed);
-      const signed: SignedEnvelope = {
-        envelope,
-        sig: hexEncode(sig),
-      };
-      await opts.writer.write(JSON.stringify(signed) + "\n");
+    send(payload: ControlPayload): Promise<void> {
+      const previous = tail;
+      let release: () => void = () => undefined;
+      tail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return (async () => {
+        await previous;
+        try {
+          seq += 1;
+          const envelope: FrameEnvelope = {
+            seq,
+            channelId: opts.channelId,
+            payload,
+          };
+          const envelopeBytes = encodeEnvelope(envelope);
+          const sig = await signEd25519(envelopeBytes, opts.privateKeySeed);
+          const signed: SignedEnvelope = {
+            envelope,
+            sig: hexEncode(sig),
+          };
+          await opts.writer.write(JSON.stringify(signed) + "\n");
+        } finally {
+          release();
+        }
+      })();
     },
   };
 }
@@ -545,7 +564,7 @@ export async function* receiveControlChannel(
       activePublicKey = bootstrapKey;
     }
 
-    const ok = verifyEd25519(envelopeBytes, sigBytes, activePublicKey);
+    const ok = await verifyEd25519(envelopeBytes, sigBytes, activePublicKey);
     if (!ok) {
       opts.onCrash(
         `control channel signature did not verify (seq=${String(signed.envelope.seq)}, channelId=${signed.envelope.channelId}${bootstrapping ? "; bootstrap" : ""})`,

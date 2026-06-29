@@ -208,7 +208,7 @@ export async function commitRunEvent(
           seq: nextSeq,
           event: opts.event,
         });
-        const signature = opts.signAsPrincipal(
+        const signature = await opts.signAsPrincipal(
           SUPERVISOR_PRINCIPAL_KIND,
           payloadBytes,
         );

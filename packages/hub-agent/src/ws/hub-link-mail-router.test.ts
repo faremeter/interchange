@@ -29,8 +29,7 @@ import type {
   KeyPair,
 } from "@intx/types/runtime";
 import type { GrantRule } from "@intx/types/authz";
-import { sign as nodeSign } from "node:crypto";
-import { importPrivateKeyBytes, verifySSHSignature } from "@intx/crypto-node";
+import { signEd25519, verifySSHSignature } from "@intx/crypto-node";
 import { hexDecode } from "@intx/types";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
@@ -57,11 +56,10 @@ function createTestKeyStore(): AgentKeyStore & {
         keyPair,
       }));
     },
-    signChallenge(address, payload) {
+    async signChallenge(address, payload) {
       const kp = agentKeys.get(address);
       if (kp === undefined) return null;
-      const key = importPrivateKeyBytes(kp.privateKey);
-      return new Uint8Array(nodeSign(null, payload, key));
+      return await signEd25519(kp.privateKey, payload);
     },
     recordHubKey(address, hexHubPublicKey) {
       hubKeys.set(address, hexDecode(hexHubPublicKey));

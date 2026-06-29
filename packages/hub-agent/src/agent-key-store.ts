@@ -42,7 +42,10 @@ export type AgentKeyStoreDeps = {
    * Sign `payload` with the supplied raw Ed25519 private key. Returns
    * the raw 64-byte detached signature. Used by signChallenge.
    */
-  signEd25519: (privateKey: Uint8Array, payload: Uint8Array) => Uint8Array;
+  signEd25519: (
+    privateKey: Uint8Array,
+    payload: Uint8Array,
+  ) => Promise<Uint8Array>;
   /**
    * Verify an SSH signature block against the supplied public key.
    * Used by verifyDeployCommit.
@@ -51,7 +54,7 @@ export type AgentKeyStoreDeps = {
     payload: string,
     signature: string,
     publicKey: Uint8Array,
-  ) => boolean;
+  ) => Promise<boolean>;
 };
 
 export type AgentKeyStore = {
@@ -77,7 +80,10 @@ export type AgentKeyStore = {
    * Returns null when no key is cached for the address — the caller
    * (HubLink) treats that as "skip this challenge."
    */
-  signChallenge(address: string, payload: Uint8Array): Uint8Array | null;
+  signChallenge(
+    address: string,
+    payload: Uint8Array,
+  ): Promise<Uint8Array | null>;
   /**
    * Record the hub public key the agent has been paired with. Cached
    * in memory only; on-disk persistence of the pairing record lives in
@@ -93,7 +99,7 @@ export type AgentKeyStore = {
     address: string,
     payload: string,
     signature: string,
-  ): boolean;
+  ): Promise<boolean>;
   /**
    * Drop the in-memory caches for an agent. Called on undeploy and on
    * challenge.failed.
@@ -204,10 +210,10 @@ export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
     return results;
   }
 
-  function signChallenge(
+  async function signChallenge(
     address: string,
     payload: Uint8Array,
-  ): Uint8Array | null {
+  ): Promise<Uint8Array | null> {
     const keyPair = agentKeys.get(address);
     if (keyPair === undefined) return null;
     return signEd25519(keyPair.privateKey, payload);
@@ -217,11 +223,11 @@ export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
     hubKeys.set(address, hexDecode(hexHubPublicKey));
   }
 
-  function verifyDeployCommit(
+  async function verifyDeployCommit(
     address: string,
     payload: string,
     signature: string,
-  ): boolean {
+  ): Promise<boolean> {
     const hubKey = hubKeys.get(address);
     if (hubKey === undefined) {
       throw new Error(

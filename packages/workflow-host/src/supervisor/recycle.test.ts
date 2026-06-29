@@ -459,7 +459,7 @@ async function buildBindings(opts: {
   const repoStore = createStubRepoStore(opts.baseDir);
   return {
     repoStore,
-    signAsPrincipal: (): SignedPayload => ({
+    signAsPrincipal: async (): Promise<SignedPayload> => ({
       sig: new Uint8Array(64),
       principalKind: "supervisor",
     }),

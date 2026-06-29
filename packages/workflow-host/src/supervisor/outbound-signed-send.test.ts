@@ -238,7 +238,7 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
     let observedEnv: Record<string, string> | undefined;
     const supervisor = createWorkflowSupervisor({
       repoStore: createStubRepoStore(baseDir),
-      signAsPrincipal: () => ({
+      signAsPrincipal: async () => ({
         sig: new Uint8Array(64),
         principalKind: "supervisor",
       }),

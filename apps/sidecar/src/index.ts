@@ -1,13 +1,12 @@
 import fs from "node:fs/promises";
 import { appendFileSync } from "node:fs";
-import { sign as nodeSign } from "node:crypto";
 import path from "node:path";
 import { setup } from "@intx/log";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import {
   createNodeCrypto,
   generateKeyPair,
-  importPrivateKeyBytes,
+  signEd25519,
   verifySSHSignature,
 } from "@intx/crypto-node";
 import { createSidecarOrchestrator, type HubLink } from "@intx/hub-agent";
@@ -392,10 +391,7 @@ const orchestrator = createSidecarOrchestrator({
   createAgentCrypto: createNodeCrypto,
   cryptoOps: {
     generateKeyPair,
-    signEd25519(privateKey, payload) {
-      const key = importPrivateKeyBytes(privateKey);
-      return new Uint8Array(nodeSign(null, payload, key));
-    },
+    signEd25519,
     verifySSHSig: verifySSHSignature,
   },
   mailInboundRouter: multistepMailRouter,
