@@ -46,6 +46,7 @@
     { "path": "examples/agent-gemini-image" },
     { "path": "examples/posix-demo" },
     { "path": "examples/ring-demo" },
+    { "path": "tests/db" },
     { "path": "tests/hub-agent" },
     { "path": "tests/hub-api" },
     { "path": "tests/lib" },

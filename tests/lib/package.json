@@ -12,9 +12,14 @@
     "./db-harness": {
       "types": "./db-harness.ts",
       "default": "./db-harness.ts"
+    },
+    "./seed": {
+      "types": "./seed.ts",
+      "default": "./seed.ts"
     }
   },
   "dependencies": {
-    "@intx/db": "workspace:*"
+    "@intx/db": "workspace:*",
+    "drizzle-orm": "catalog:"
   }
 }

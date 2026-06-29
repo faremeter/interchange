@@ -9,7 +9,14 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-import type { DBConfig } from "@intx/db";
+import {
+  createDB,
+  dropSchema,
+  runMigrations,
+  type DB,
+  type DBConfig,
+} from "@intx/db";
+import { sql } from "drizzle-orm";
 
 import { REPO_ROOT, optionalKey, parseEnvFileSync, requireKey } from "./env";
 
@@ -56,4 +63,62 @@ export function randomSchemaName(): string {
   // permissive, but we keep this conservative for diagnostics.
   const rand = Math.random().toString(36).slice(2, 10);
   return `t_${Date.now().toString(36)}_${rand}`;
+}
+
+function quoteIdent(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
+/**
+ * A migrated, isolated postgres schema with a drizzle client bound to
+ * it, for tests that exercise real query behaviour instead of mocking
+ * the drizzle client.
+ *
+ * Lifecycle: `createTestDb` migrates a fresh schema once; `reset`
+ * truncates every table between cases so each test starts empty;
+ * `close` drops the schema and ends the connection. The client
+ * connects as the migration role (which owns the schema), so no
+ * grants are needed and no hub subprocess is involved.
+ */
+export type TestDb = {
+  db: DB["db"];
+  schema: string;
+  reset: () => Promise<void>;
+  close: () => Promise<void>;
+};
+
+export async function createTestDb(): Promise<TestDb> {
+  const config = loadHarnessDbConfig();
+  const schema = randomSchemaName();
+  await runMigrations(config, { schema });
+  const handle = createDB({ ...config, schema });
+  const db = handle.db;
+
+  const reset = async (): Promise<void> => {
+    const rows = await db.execute(
+      sql`SELECT tablename FROM pg_tables WHERE schemaname = ${schema}`,
+    );
+    const targets: string[] = [];
+    for (const row of rows) {
+      const name = row["tablename"];
+      if (typeof name !== "string") {
+        throw new Error(
+          `createTestDb.reset: unexpected pg_tables row: ${JSON.stringify(row)}`,
+        );
+      }
+      targets.push(`${quoteIdent(schema)}.${quoteIdent(name)}`);
+    }
+    if (targets.length > 0) {
+      await db.execute(
+        sql.raw(`TRUNCATE ${targets.join(", ")} RESTART IDENTITY CASCADE`),
+      );
+    }
+  };
+
+  const close = async (): Promise<void> => {
+    await handle.close();
+    await dropSchema(config, { schema });
+  };
+
+  return { db, schema, reset, close };
 }
