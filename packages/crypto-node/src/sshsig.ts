@@ -3,6 +3,7 @@ import {
   verify as nodeVerify,
   createHash,
 } from "node:crypto";
+import { base64Encode, base64Decode } from "@intx/types";
 import { importPrivateKeyBytes, importPublicKeyBytes } from "./keys";
 
 const MAGIC_PREAMBLE = new TextEncoder().encode("SSHSIG");
@@ -84,7 +85,7 @@ function buildSignedData(messageHash: Uint8Array): Uint8Array {
 }
 
 function armorSSHSig(binaryBlob: Uint8Array): string {
-  const b64 = Buffer.from(binaryBlob).toString("base64");
+  const b64 = base64Encode(binaryBlob);
   const lines: string[] = ["-----BEGIN SSH SIGNATURE-----"];
   for (let i = 0; i < b64.length; i += 70) {
     lines.push(b64.slice(i, i + 70));
@@ -103,7 +104,7 @@ function dearmorSSHSig(armored: string): Uint8Array {
   }
   const body = armored.slice(beginIdx + beginMarker.length, endIdx).trim();
   const b64 = body.replace(/\s+/g, "");
-  return new Uint8Array(Buffer.from(b64, "base64"));
+  return base64Decode(b64);
 }
 
 /**
