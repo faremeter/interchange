@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { createNodeCrypto, generateKeyPair } from "@intx/crypto";
+import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
@@ -368,7 +368,7 @@ describe("createSidecarDeployRouter wires the InferenceEvent subscription to rec
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
-      createAgentCrypto: createNodeCrypto,
+      createAgentCrypto: createEd25519Crypto,
       registerDeployment: () => {
         /* the in-test repoStore is a stub; the pack-push facade is exercised separately */
       },
@@ -751,7 +751,7 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
-      createAgentCrypto: createNodeCrypto,
+      createAgentCrypto: createEd25519Crypto,
       registerDeployment: () => {
         /* no-op */
       },
@@ -824,7 +824,7 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
-      createAgentCrypto: createNodeCrypto,
+      createAgentCrypto: createEd25519Crypto,
       registerDeployment: () => {
         /* no-op */
       },
@@ -912,7 +912,7 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
-      createAgentCrypto: createNodeCrypto,
+      createAgentCrypto: createEd25519Crypto,
       registerDeployment: () => undefined,
       unregisterDeployment: () => undefined,
       multistepSubprocessSpawner: () => {
@@ -987,7 +987,7 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
-      createAgentCrypto: createNodeCrypto,
+      createAgentCrypto: createEd25519Crypto,
       registerDeployment: () => undefined,
       unregisterDeployment: () => undefined,
       multistepSubprocessSpawner: () => {
@@ -1072,7 +1072,7 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
-      createAgentCrypto: createNodeCrypto,
+      createAgentCrypto: createEd25519Crypto,
       registerDeployment: () => undefined,
       unregisterDeployment: () => undefined,
       multistepSubprocessSpawner: () => {
@@ -1178,7 +1178,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
-      createAgentCrypto: createNodeCrypto,
+      createAgentCrypto: createEd25519Crypto,
       registerDeployment: opts.registerDeployment ?? (() => undefined),
       unregisterDeployment: () => {
         /* no-op */

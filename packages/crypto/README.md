@@ -4,7 +4,7 @@ Web Crypto-backed cryptographic provider. Ed25519 key generation,
 import, sign, and verify; canonicalisation of text and byte
 payloads; SSH and PGP detached signature formats; ASCII armoring.
 
-The exported `NodeCrypto` implements the `CryptoProvider` contract
+The exported `Ed25519Crypto` implements the `CryptoProvider` contract
 that the mail and storage layers depend on. Consumed by
 `@intx/mime` (detached PGP signatures on outbound mail),
 `@intx/storage-isogit` (commit signing), `@intx/mail-memory`
@@ -12,10 +12,10 @@ that the mail and storage layers depend on. Consumed by
 `@intx/hub-sessions` (per-agent key material).
 
 ```ts
-import { generateKeyPair, createNodeCrypto } from "@intx/crypto";
+import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 
 const keyPair = await generateKeyPair();
-const provider = createNodeCrypto(keyPair);
+const provider = createEd25519Crypto(keyPair);
 
 const signature = await provider.sign(new TextEncoder().encode("hello"));
 ```

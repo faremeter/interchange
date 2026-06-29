@@ -3,7 +3,7 @@ import path from "node:path";
 import { setup } from "@intx/log";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import {
-  createNodeCrypto,
+  createEd25519Crypto,
   generateKeyPair,
   signEd25519,
   verifySSHSignature,
@@ -336,7 +336,7 @@ const orchestrator = createSidecarOrchestrator({
     adapters,
     gcPolicy: agentGCPolicy,
   }),
-  createAgentCrypto: createNodeCrypto,
+  createAgentCrypto: createEd25519Crypto,
   cryptoOps: {
     generateKeyPair,
     signEd25519,
@@ -358,7 +358,7 @@ const orchestrator = createSidecarOrchestrator({
       transport,
       repoStore: wrappedRepoStore,
       signingKeySeed: sidecarSigningKey.privateKey,
-      createAgentCrypto: createNodeCrypto,
+      createAgentCrypto: createEd25519Crypto,
       registerDeployment: ({ deploymentId, agentAddress }) => {
         deploymentAddressRegistry.record(deploymentId, agentAddress);
       },

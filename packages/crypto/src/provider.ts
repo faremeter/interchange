@@ -3,7 +3,7 @@ import { signEd25519, verifyEd25519 } from "./keys";
 import { createSSHSignature } from "./sshsig";
 
 /**
- * Node.js implementation of CryptoProvider backed by Ed25519.
+ * Ed25519 implementation of CryptoProvider, backed by Web Crypto.
  *
  * Each instance is key-bound: constructed with a specific agent's Ed25519
  * key pair and holds the private key internally. `sign` uses the instance's
@@ -17,7 +17,7 @@ import { createSSHSignature } from "./sshsig";
  * This separation allows the CryptoProvider to serve as the low-level
  * signing primitive while the message transport handles PGP framing.
  */
-export class NodeCrypto implements CryptoProvider {
+export class Ed25519Crypto implements CryptoProvider {
   readonly #privateKeyBytes: Uint8Array;
   readonly #publicKeyBytes: Uint8Array;
 
@@ -90,8 +90,8 @@ export class NodeCrypto implements CryptoProvider {
 }
 
 /**
- * Factory function for creating a NodeCrypto instance.
+ * Factory function for creating an Ed25519Crypto instance.
  */
-export function createNodeCrypto(keyPair: KeyPair): NodeCrypto {
-  return new NodeCrypto(keyPair);
+export function createEd25519Crypto(keyPair: KeyPair): Ed25519Crypto {
+  return new Ed25519Crypto(keyPair);
 }

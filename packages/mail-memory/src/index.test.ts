@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- test refs[0]! always follows expect(refs.length) checks */
 import { describe, test, expect } from "bun:test";
-import { generateKeyPair, createNodeCrypto } from "@intx/crypto";
+import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import {
   assembleSignedContent,
   assembleMessage,
@@ -47,8 +47,8 @@ async function createTestTransport() {
 
   const kpA = await generateKeyPair();
   const kpB = await generateKeyPair();
-  const cryptoA = createNodeCrypto(kpA);
-  const cryptoB = createNodeCrypto(kpB);
+  const cryptoA = createEd25519Crypto(kpA);
+  const cryptoB = createEd25519Crypto(kpB);
 
   transport.register("alpha@test.interchange", cryptoA);
   transport.register("beta@test.interchange", cryptoB);
@@ -548,7 +548,7 @@ describe("error handling", () => {
   test("register throws on duplicate registration", async () => {
     const transport = createInMemoryTransport();
     const kp = await generateKeyPair();
-    const crypto = createNodeCrypto(kp);
+    const crypto = createEd25519Crypto(kp);
     transport.register("alpha@test.interchange", crypto);
     expect(() => transport.register("alpha@test.interchange", crypto)).toThrow(
       /already registered/,
@@ -571,7 +571,7 @@ describe("registration lifecycle", () => {
   test("unregister then re-register works (entry is fully removed)", async () => {
     const transport = createInMemoryTransport();
     const kp = await generateKeyPair();
-    const crypto = createNodeCrypto(kp);
+    const crypto = createEd25519Crypto(kp);
 
     transport.register("alpha@test.interchange", crypto);
     transport.unregister("alpha@test.interchange");

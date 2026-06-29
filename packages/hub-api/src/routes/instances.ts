@@ -24,7 +24,7 @@ import { evaluateGrants, authorize } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import { parseMailToEmail, extractPartByPath } from "@intx/mime";
 
-import { generateKeyPair, createNodeCrypto } from "@intx/crypto";
+import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import {
   CreateAgentInstance,
   AgentInstanceResponse,
@@ -1325,7 +1325,7 @@ export function createInstanceRoutes({
   ): Promise<CryptoProvider> {
     let pending = instanceKeyCache.get(instanceId);
     if (pending !== undefined) return pending;
-    pending = generateKeyPair().then((kp) => createNodeCrypto(kp));
+    pending = generateKeyPair().then((kp) => createEd25519Crypto(kp));
     instanceKeyCache.set(instanceId, pending);
     return pending;
   }

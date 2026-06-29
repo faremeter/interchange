@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import {
   generateKeyPair,
-  createNodeCrypto,
+  createEd25519Crypto,
   verifyDetachedSignature,
 } from "@intx/crypto";
 import {
@@ -520,7 +520,7 @@ describe("extractPartByPath", () => {
 describe("createDetachedSignatureFromProvider", () => {
   test("signature verifies against the signed content", async () => {
     const kp = await generateKeyPair();
-    const provider = createNodeCrypto(kp);
+    const provider = createEd25519Crypto(kp);
     const content = assembleSignedContent({
       kind: "conversation",
       text: "Round-trip test",
@@ -537,7 +537,7 @@ describe("createDetachedSignatureFromProvider", () => {
 
   test("signature is ASCII-armored", async () => {
     const kp = await generateKeyPair();
-    const provider = createNodeCrypto(kp);
+    const provider = createEd25519Crypto(kp);
     const content = assembleSignedContent({
       kind: "conversation",
       text: "test",
@@ -552,8 +552,8 @@ describe("createDetachedSignatureFromProvider", () => {
   test("verification fails with wrong public key", async () => {
     const kp1 = await generateKeyPair();
     const kp2 = await generateKeyPair();
-    const provider = createNodeCrypto(kp1);
-    const wrongKey = createNodeCrypto(kp2);
+    const provider = createEd25519Crypto(kp1);
+    const wrongKey = createEd25519Crypto(kp2);
     const content = assembleSignedContent({
       kind: "conversation",
       text: "test",
@@ -570,7 +570,7 @@ describe("createDetachedSignatureFromProvider", () => {
 
   test("verification fails with tampered content", async () => {
     const kp = await generateKeyPair();
-    const provider = createNodeCrypto(kp);
+    const provider = createEd25519Crypto(kp);
     const content = assembleSignedContent({
       kind: "conversation",
       text: "original",
@@ -907,7 +907,7 @@ describe("parseMailToEmail", () => {
 describe("assemble then parse round-trip", () => {
   test("conversation message survives assemble/parse cycle", async () => {
     const kp = await generateKeyPair();
-    const provider = createNodeCrypto(kp);
+    const provider = createEd25519Crypto(kp);
     const content = assembleSignedContent({
       kind: "conversation",
       text: "Hello from the round-trip test",
@@ -956,7 +956,7 @@ describe("assemble then parse round-trip", () => {
 
   test("structured message survives assemble/parse cycle", async () => {
     const kp = await generateKeyPair();
-    const provider = createNodeCrypto(kp);
+    const provider = createEd25519Crypto(kp);
     const payload = { action: "deploy", target: "prod" };
     const content = assembleSignedContent({
       kind: "structured",
@@ -1101,7 +1101,7 @@ describe("conversation attachments round-trip", () => {
 
   test("conversation message with attachments produces a verifiable signature", async () => {
     const kp = await generateKeyPair();
-    const provider = createNodeCrypto(kp);
+    const provider = createEd25519Crypto(kp);
     const content = assembleSignedContent({
       kind: "conversation",
       text: "signed with an image",

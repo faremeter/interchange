@@ -14,11 +14,11 @@ modification.
 
 ```ts
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { createNodeCrypto, generateKeyPair } from "@intx/crypto";
+import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 
 const transport = createInMemoryTransport();
-const alpha = createNodeCrypto(await generateKeyPair());
-const beta = createNodeCrypto(await generateKeyPair());
+const alpha = createEd25519Crypto(await generateKeyPair());
+const beta = createEd25519Crypto(await generateKeyPair());
 
 transport.register("alpha@local.interchange", alpha);
 transport.register("beta@local.interchange", beta);

@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { createNodeCrypto, generateKeyPair } from "@intx/crypto";
+import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 
 import { wrapHubTransportAsMailBus } from "./hub-transport-adapter";
 
@@ -66,10 +66,13 @@ describe("wrapHubTransportAsMailBus", () => {
     const transport = createInMemoryTransport();
     const senderKeyPair = await generateKeyPair();
     const recipientKeyPair = await generateKeyPair();
-    transport.register("sender@example.com", createNodeCrypto(senderKeyPair));
+    transport.register(
+      "sender@example.com",
+      createEd25519Crypto(senderKeyPair),
+    );
     transport.register(
       "recipient@example.com",
-      createNodeCrypto(recipientKeyPair),
+      createEd25519Crypto(recipientKeyPair),
     );
 
     const adapter = wrapHubTransportAsMailBus(transport);

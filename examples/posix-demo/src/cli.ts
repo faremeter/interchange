@@ -11,7 +11,7 @@ import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
 import type { ReactorEmittedEvent } from "@intx/inference";
 import { setup, getLogger } from "@intx/log";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { generateKeyPair, createNodeCrypto } from "@intx/crypto";
+import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import { createIsogitStore } from "@intx/storage-isogit";
 import { createPosixTools } from "@intx/tools-posix";
 import { createMailTools } from "@intx/tools-mail";
@@ -135,9 +135,9 @@ const [alphaKeyPair, betaKeyPair, userKeyPair] = await Promise.all([
   generateKeyPair(),
 ]);
 
-const cryptoAlpha = createNodeCrypto(alphaKeyPair);
-const cryptoBeta = createNodeCrypto(betaKeyPair);
-const cryptoUser = createNodeCrypto(userKeyPair);
+const cryptoAlpha = createEd25519Crypto(alphaKeyPair);
+const cryptoBeta = createEd25519Crypto(betaKeyPair);
+const cryptoUser = createEd25519Crypto(userKeyPair);
 
 const ALPHA_ADDRESS = "alpha@local.interchange";
 const BETA_ADDRESS = "beta@local.interchange";

@@ -12,7 +12,7 @@ import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
 import type { ReactorEmittedEvent } from "@intx/inference";
 import { setup, getLogger } from "@intx/log";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { generateKeyPair, createNodeCrypto } from "@intx/crypto";
+import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import { createIsogitStore } from "@intx/storage-isogit";
 import { createPosixTools } from "@intx/tools-posix";
 import { createMailTools } from "@intx/tools-mail";
@@ -127,7 +127,7 @@ const keyPairs = await Promise.all(
   [...AGENT_NAMES, "user"].map(() => generateKeyPair()),
 );
 
-const cryptoInstances = keyPairs.map((kp) => createNodeCrypto(kp));
+const cryptoInstances = keyPairs.map((kp) => createEd25519Crypto(kp));
 
 // Register all agents and the user.
 for (const [i, name] of AGENT_NAMES.entries()) {
