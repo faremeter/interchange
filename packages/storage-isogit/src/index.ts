@@ -26,6 +26,14 @@ export {
 } from "./pack-send";
 export { collectReachableObjects } from "./object-walk";
 export {
+  repoDiskUsage,
+  listRepoRefs,
+  gitBytes,
+  countLooseObjects,
+  countPackFiles,
+  type RepoDiskUsage,
+} from "./repo-disk";
+export {
   createMailAuditStore,
   listMail,
   type MailAuditStore,
