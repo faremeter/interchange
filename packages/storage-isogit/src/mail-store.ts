@@ -6,6 +6,7 @@ import { parseHeaderSection } from "@intx/mime";
 import { AUTHOR } from "./init";
 import type { CommitSigner } from "./signer";
 import { buildSigningArgs } from "./commit-helpers";
+import { withRepoDirLock } from "./repo-lock";
 
 const MAIL_DIR = "state/mail";
 
@@ -115,43 +116,50 @@ export async function createMailAuditStore(
     direction: MailDirection,
     options?: MailCommitOptions,
   ): Promise<MailCommitResult | null> {
-    const { messageId, inReplyTo, references } =
-      parseThreadingHeaders(rawMessage);
+    // The whole body runs under the per-directory lock: the ordinal peek,
+    // the commit, and the in-memory index/ordinal advance must be atomic
+    // against a concurrent reactor commit or GC pass sharing this repo.
+    return withRepoDirLock(dir, async () => {
+      const { messageId, inReplyTo, references } =
+        parseThreadingHeaders(rawMessage);
 
-    if (messageIndex.has(messageId)) {
-      if (options?.ignoreDuplicate === true) return null;
-      throw new Error(`Duplicate mail: Message-ID ${messageId} already stored`);
-    }
+      if (messageIndex.has(messageId)) {
+        if (options?.ignoreDuplicate === true) return null;
+        throw new Error(
+          `Duplicate mail: Message-ID ${messageId} already stored`,
+        );
+      }
 
-    const threadId = resolveThread(inReplyTo, references);
-    const ordinal = peekNextOrdinal(threadId);
-    const filename = `${formatOrdinal(ordinal)}-${direction}.eml`;
-    const filepath = path.join(MAIL_DIR, threadId, filename);
+      const threadId = resolveThread(inReplyTo, references);
+      const ordinal = peekNextOrdinal(threadId);
+      const filename = `${formatOrdinal(ordinal)}-${direction}.eml`;
+      const filepath = path.join(MAIL_DIR, threadId, filename);
 
-    const fullDir = path.join(dir, MAIL_DIR, threadId);
-    await fs.promises.mkdir(fullDir, { recursive: true });
+      const fullDir = path.join(dir, MAIL_DIR, threadId);
+      await fs.promises.mkdir(fullDir, { recursive: true });
 
-    const fullPath = path.join(dir, filepath);
-    await fs.promises.writeFile(fullPath, rawMessage);
-    await git.add({ fs, dir, filepath });
+      const fullPath = path.join(dir, filepath);
+      await fs.promises.writeFile(fullPath, rawMessage);
+      await git.add({ fs, dir, filepath });
 
-    const label = direction === "in" ? "inbound" : "outbound";
-    const subject = `Record ${label} mail ${messageId}`;
-    const message =
-      options?.checkpointHash !== undefined
-        ? `${subject}\n\nCheckpoint: ${options.checkpointHash}`
-        : subject;
-    await git.commit({
-      fs,
-      dir,
-      message,
-      author: AUTHOR,
-      ...signingArgs,
+      const label = direction === "in" ? "inbound" : "outbound";
+      const subject = `Record ${label} mail ${messageId}`;
+      const message =
+        options?.checkpointHash !== undefined
+          ? `${subject}\n\nCheckpoint: ${options.checkpointHash}`
+          : subject;
+      await git.commit({
+        fs,
+        dir,
+        message,
+        author: AUTHOR,
+        ...signingArgs,
+      });
+
+      advanceOrdinal(threadId);
+      messageIndex.set(messageId, threadId);
+      return { threadId, messageId, filepath };
     });
-
-    advanceOrdinal(threadId);
-    messageIndex.set(messageId, threadId);
-    return { threadId, messageId, filepath };
   }
 
   return { commitMail };

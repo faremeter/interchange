@@ -5,6 +5,7 @@ import git from "isomorphic-git";
 import { collectReachableObjects } from "./object-walk";
 import { publishPackAtomically } from "./pack-receive";
 import { listRepoRefs, repoDiskUsage, type RepoDiskUsage } from "./repo-disk";
+import { withRepoDirLock } from "./repo-lock";
 
 /**
  * How much commit history a GC pass preserves.
@@ -146,18 +147,23 @@ async function removeLooseObjects(dir: string): Promise<void> {
  *
  * # Concurrency
  *
- * The caller must hold the repo's write lock (`withRepoLock` on the hub,
- * `runRepoOp` on the sidecar). The lock excludes concurrent writers, so the
- * keep set computed from the refs cannot be invalidated by a commit landing
- * mid-pass. Removal of a superseded pack or loose object races only with
- * unlocked readers, the same POSIX window `unpublishPack` already accepts —
- * and strictly safer here, since every removed-but-reachable object is also
- * in the freshly published consolidated pack.
+ * The caller MUST already hold the repo's per-directory lock
+ * (`withRepoDirLock`). This is the lock-free core: writers trigger reclaim
+ * inline after a commit/apply while still holding that lock, and external
+ * callers not already under it use {@link runGC}, which acquires it. The
+ * lock excludes concurrent writers, so the keep set computed from the refs
+ * cannot be invalidated by a commit landing mid-pass. Removal of a
+ * superseded pack or loose object races only with unlocked readers, the same
+ * POSIX window `unpublishPack` already accepts — and strictly safer here,
+ * since every removed-but-reachable object is also in the freshly published
+ * consolidated pack.
  *
  * Returns the disk usage before and after plus the reclaimed byte delta. A
- * repo with no resolvable refs is left untouched.
+ * repo with no resolvable refs is left untouched. Exported for use within
+ * the storage package only — it is intentionally absent from the package's
+ * public barrel.
  */
-export async function runGC(
+export async function gcUnderLock(
   dir: string,
   opts: { retention: RetentionPolicy },
 ): Promise<GCResult> {
@@ -205,4 +211,18 @@ export async function runGC(
     reclaimedBytes: before.gitBytes - after.gitBytes,
     keptObjects: keep.size,
   };
+}
+
+/**
+ * Garbage-collect the agent repo at `dir`, acquiring the repo's
+ * per-directory lock for the duration. Use this from callers that are not
+ * already holding the lock (e.g. the hub's substrate, which holds its own
+ * higher-level lock but not the storage lock). Writers that trigger reclaim
+ * while already under the lock call {@link gcUnderLock} directly.
+ */
+export async function runGC(
+  dir: string,
+  opts: { retention: RetentionPolicy },
+): Promise<GCResult> {
+  return withRepoDirLock(dir, () => gcUnderLock(dir, opts));
 }

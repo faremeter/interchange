@@ -13,6 +13,7 @@ import {
 import { collectReachableObjects } from "./object-walk";
 import { repoDiskUsage } from "./repo-disk";
 import { runGC } from "./gc";
+import { IsogitStore } from "./store";
 
 const author = { name: "Test", email: "test@test.dev" };
 
@@ -246,5 +247,31 @@ describe("runGC", () => {
     expect((await git.readCommit({ fs, dir, oid: deployTip })).oid).toBe(
       deployTip,
     );
+  });
+
+  test("serializes concurrent commits against GC without corruption", async () => {
+    const dir = await tempDir();
+    await initAgentRepo(dir);
+    const store = new IsogitStore(dir);
+
+    // Fire context commits and GC passes against the same repo concurrently.
+    // Every commit and every GC acquires the per-directory lock, so they run
+    // one-at-a-time and the object store is never observed mid-mutation.
+    const ops: Promise<unknown>[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      await fs.promises.writeFile(
+        path.join(dir, "turns.jsonl"),
+        `${JSON.stringify({ role: "user", content: [], timestamp: i })}\n`,
+      );
+      ops.push(store.commit({ message: `cycle ${i.toString()}` }));
+      ops.push(runGC(dir, { retention: "tip-only" }));
+    }
+    await Promise.all(ops);
+
+    // The repo is intact: HEAD resolves and walking its entire tree-reachable
+    // closure re-reads every commit and tree without a missing object.
+    const head = await git.resolveRef({ fs, dir, ref: "refs/heads/main" });
+    const reachable = await collectReachableObjects(dir, head);
+    expect(reachable.length).toBeGreaterThan(0);
   });
 });

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import git from "isomorphic-git";
 import { readRawObject } from "./isogit-helpers";
+import { withRepoDirLock } from "./repo-lock";
 
 /**
  * Verifies the signature embedded in a git commit object.
@@ -614,54 +615,60 @@ export async function applyPack(
   transferId: string,
   verifyCommit?: CommitVerifier,
 ): Promise<void> {
-  const oids = await publishPackAtomically(dir, pack, transferId);
+  // The deploy apply shares the agent repo's object store with the
+  // reactor's context commits, the mail-audit commits, and GC. Hold the
+  // per-directory lock across the publish, validation, checkout, and ref
+  // write so none of them interleave with this apply.
+  await withRepoDirLock(dir, async () => {
+    const oids = await publishPackAtomically(dir, pack, transferId);
 
-  // Post-publish validation runs inside a try so any rejection path
-  // (sha mismatch, missing signature, signature failure) unpublishes
-  // the pack before re-throwing. Sidecar `applyPack` is the last line
-  // of defence against a compromised hub or transport; without the
-  // unpublish, a flood of rejected-signature packs would accumulate
-  // orphan commits in the local agent repo unbounded by anything
-  // internal to this process.
-  try {
-    if (!oids.includes(expectedSha)) {
-      throw new Error(
-        `sha_mismatch: expected commit ${expectedSha} not found in pack`,
-      );
-    }
-
-    if (verifyCommit !== undefined) {
-      const { commit } = await git.readCommit({
-        fs,
-        dir,
-        oid: expectedSha,
-      });
-      if (commit.gpgsig === undefined) {
+    // Post-publish validation runs inside a try so any rejection path
+    // (sha mismatch, missing signature, signature failure) unpublishes
+    // the pack before re-throwing. Sidecar `applyPack` is the last line
+    // of defence against a compromised hub or transport; without the
+    // unpublish, a flood of rejected-signature packs would accumulate
+    // orphan commits in the local agent repo unbounded by anything
+    // internal to this process.
+    try {
+      if (!oids.includes(expectedSha)) {
         throw new Error(
-          `signature_unsigned: commit ${expectedSha} has no signature`,
+          `sha_mismatch: expected commit ${expectedSha} not found in pack`,
         );
       }
 
-      // Reconstruct the signing payload from the raw object bytes.
-      // readCommit().payload is unreliable for SSH signatures because
-      // isogit's withoutSignature() only handles PGP armor markers.
-      const { object: rawBytes } = await readRawObject(dir, expectedSha);
-      const payload = stripGpgsig(new TextDecoder().decode(rawBytes));
+      if (verifyCommit !== undefined) {
+        const { commit } = await git.readCommit({
+          fs,
+          dir,
+          oid: expectedSha,
+        });
+        if (commit.gpgsig === undefined) {
+          throw new Error(
+            `signature_unsigned: commit ${expectedSha} has no signature`,
+          );
+        }
 
-      if (!verifyCommit(payload, commit.gpgsig)) {
-        throw new Error(
-          `signature_invalid: commit ${expectedSha} signature verification failed`,
-        );
+        // Reconstruct the signing payload from the raw object bytes.
+        // readCommit().payload is unreliable for SSH signatures because
+        // isogit's withoutSignature() only handles PGP armor markers.
+        const { object: rawBytes } = await readRawObject(dir, expectedSha);
+        const payload = stripGpgsig(new TextDecoder().decode(rawBytes));
+
+        if (!verifyCommit(payload, commit.gpgsig)) {
+          throw new Error(
+            `signature_invalid: commit ${expectedSha} signature verification failed`,
+          );
+        }
       }
-    }
 
-    // Checkout reads from the now-published pack; ref is written last
-    // so it never references a commit whose working tree is not
-    // materialized.
-    await checkoutTree(dir, expectedSha, ref);
-    await git.writeRef({ fs, dir, ref, value: expectedSha, force: true });
-  } catch (err) {
-    await unpublishPack(dir, transferId);
-    throw err;
-  }
+      // Checkout reads from the now-published pack; ref is written last
+      // so it never references a commit whose working tree is not
+      // materialized.
+      await checkoutTree(dir, expectedSha, ref);
+      await git.writeRef({ fs, dir, ref, value: expectedSha, force: true });
+    } catch (err) {
+      await unpublishPack(dir, transferId);
+      throw err;
+    }
+  });
 }
