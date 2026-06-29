@@ -7,7 +7,10 @@ import {
   createDeployPack,
   receivePackObjects,
   collectReachableObjects,
+  repoDiskUsage,
+  runGC,
   type CommitSigner,
+  type RetentionPolicy,
 } from "@intx/storage-isogit";
 import { hasCode } from "@intx/types";
 import { getLogger } from "@intx/log";
@@ -108,10 +111,27 @@ export type CreateRepoStoreConfig = {
    * back to the unsigned harness-authored genesis.
    */
   signingCallback?: (repoId: RepoId) => CommitSigner | undefined;
+  /**
+   * Optional write-path garbage-collection policy. When supplied, after
+   * every successful write under the repo lock the substrate samples the
+   * repo's disk usage and, for repos whose kind is in `kinds`, repacks
+   * once the pack count reaches `packThreshold` and warns once the `.git`
+   * byte size reaches `warnBytes`. Omitted entirely, the substrate never
+   * reclaims and never warns. The `kinds` allowlist keeps the policy
+   * scoped to the kinds the caller intends (e.g. `agent-state`) rather
+   * than every kind the store happens to service.
+   */
+  gc?: {
+    kinds: readonly RepoKind[];
+    packThreshold: number;
+    warnBytes: number;
+    retention: RetentionPolicy;
+  };
 };
 
 export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
-  const { dataDir, signingKey, handlers, authorize, signingCallback } = config;
+  const { dataDir, signingKey, handlers, authorize, signingCallback, gc } =
+    config;
 
   // Per-(repoId, ref) seq cache. Value is the seq of the ref's
   // current tip; the next commit on the ref gets `cached + 1`. The
@@ -305,6 +325,31 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     }
     const handler = handlerFor(repoId);
     return path.join(dataDir, handler.directoryPrefix, repoId.id);
+  }
+
+  // Write-path reclaim. Called at the end of every successful write while
+  // the repo lock is still held — the lock excludes concurrent writers, so
+  // the keep set runGC computes from the refs cannot be invalidated
+  // mid-pass. A GC failure is logged, not propagated: the write that
+  // triggered it has already committed durably, so failing the caller here
+  // would falsely report the write as failed. Surfacing the failure through
+  // a warn keeps it visible without corrupting the completed write.
+  async function maybeRunGC(repoId: RepoId): Promise<void> {
+    if (gc === undefined || !gc.kinds.includes(repoId.kind)) return;
+    const dir = repoDir(repoId);
+    try {
+      let usage = repoDiskUsage(dir);
+      if (usage.packCount >= gc.packThreshold) {
+        const result = await runGC(dir, { retention: gc.retention });
+        logger.info`repo-store reclaimed ${String(result.reclaimedBytes)} bytes from ${repoId.kind}/${repoId.id}: packs ${String(result.before.packCount)} to ${String(result.after.packCount)}, loose ${String(result.before.looseObjectCount)} to ${String(result.after.looseObjectCount)}`;
+        usage = result.after;
+      }
+      if (usage.gitBytes >= gc.warnBytes) {
+        logger.warn`repo-store disk pressure on ${repoId.kind}/${repoId.id}: .git is ${String(usage.gitBytes)} bytes, at or above the ${String(gc.warnBytes)} byte threshold`;
+      }
+    } catch (err) {
+      logger.warn`repo-store GC of ${repoId.kind}/${repoId.id} failed; the repo is unchanged but unreclaimed — ${err instanceof Error ? err.message : String(err)}`;
+    }
   }
 
   function gateAccess(
@@ -1141,6 +1186,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
     await emitRefUpdate(repoId, ref, oldSha, commitSha);
 
+    await maybeRunGC(repoId);
+
     return { commitSha, newlyTerminalRuns: validation.newlyTerminalRuns ?? [] };
   }
 
@@ -1378,6 +1425,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       for (const sha of newCommitsFromPack) existingCommits.add(sha);
       await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
       await emitRefUpdate(repoId, ref, oldSha, commitSha);
+
+      await maybeRunGC(repoId);
     });
   }
 

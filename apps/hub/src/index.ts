@@ -64,9 +64,43 @@ if (!Number.isFinite(hubMaxTarballBytes) || hubMaxTarballBytes <= 0) {
 const hubSigningKey = await generateKeyPair();
 log.info("Generated hub deploy signing key");
 
+// Write-path GC for the hub's agent-state repos. Each accepted state
+// pack strands the prior tip's objects and adds a pack; left alone the
+// repo grows without bound. The hub reclaims on the write path once a
+// repo crosses HUB_AGENT_GC_PACK_THRESHOLD packs, and warns once it
+// crosses HUB_AGENT_GC_WARN_BYTES. Retention is fixed to keep-history
+// and not operator-configurable: the hub is the long-term archive of
+// an agent's state graph, and tip-only would prune the ancestry its
+// history replay derives from.
+const DEFAULT_HUB_AGENT_GC_PACK_THRESHOLD = 64;
+const DEFAULT_HUB_AGENT_GC_WARN_BYTES = 256 * 1024 * 1024;
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(
+      `${name} must be a positive integer; got ${JSON.stringify(raw)}`,
+    );
+  }
+  return value;
+}
+
 const agentRepoStore = createAgentRepoStore({
   dataDir: hubDataDir,
   signingKey: hubSigningKey,
+  gc: {
+    packThreshold: readPositiveIntEnv(
+      "HUB_AGENT_GC_PACK_THRESHOLD",
+      DEFAULT_HUB_AGENT_GC_PACK_THRESHOLD,
+    ),
+    warnBytes: readPositiveIntEnv(
+      "HUB_AGENT_GC_WARN_BYTES",
+      DEFAULT_HUB_AGENT_GC_WARN_BYTES,
+    ),
+    retention: "keep-history",
+  },
 });
 
 const lookups = createHubSessionLookups({ db, agentRepoStore });

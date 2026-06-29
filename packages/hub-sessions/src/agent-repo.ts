@@ -1,4 +1,5 @@
 import { createSSHSignature } from "@intx/crypto-node";
+import type { RetentionPolicy } from "@intx/storage-isogit";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
 import { createRepoStore } from "./repo-store";
@@ -115,8 +116,18 @@ export type AgentRepoStore = {
 export function createAgentRepoStore(config: {
   dataDir: string;
   signingKey: { privateKey: Uint8Array; publicKey: Uint8Array };
+  /**
+   * Optional write-path GC policy for the agent-state repos this store
+   * owns. Scoped to the `agent-state` kind; the other kinds the
+   * underlying substrate services are left untouched.
+   */
+  gc?: {
+    packThreshold: number;
+    warnBytes: number;
+    retention: RetentionPolicy;
+  };
 }): AgentRepoStore {
-  const { dataDir, signingKey } = config;
+  const { dataDir, signingKey, gc } = config;
 
   const authorize: AuthorizeFn = (principal, incomingRepoId, ref, action) => {
     switch (incomingRepoId.kind) {
@@ -161,6 +172,7 @@ export function createAgentRepoStore(config: {
     },
     authorize,
     signingCallback: () => signer,
+    ...(gc === undefined ? {} : { gc: { kinds: ["agent-state"], ...gc } }),
   });
 
   const hub: AgentStateHubPrincipal = { kind: "hub" };
