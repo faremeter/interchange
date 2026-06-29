@@ -311,7 +311,18 @@ describe("deploy flow integration", () => {
     expect(commit.tree).toMatch(/^[0-9a-f]{40}$/);
   });
 
-  test("endSession undeploys agent and cleans up sidecar", async () => {
+  test("endSession drains an in-flight state read before tearing down the sidecar agent dir", async () => {
+    const failuresBefore = env.hub.statePackReceiveFailures.filter(
+      (f) => f.agentAddress === AGENT_ADDRESS,
+    ).length;
+    const packCountBefore = env.hub.statePacks.length;
+    const sidecarLogBefore = env.sidecar.stderr.length;
+
+    // Race the teardown: the sync request makes the sidecar read the agent
+    // repo (createStatePack) at the same moment endSession deletes that
+    // repo's directory. The drain serializes the read ahead of the rm, so
+    // the read runs against a live directory instead of a vanishing one.
+    env.hub.router.sendSyncRequest(AGENT_ADDRESS);
     await env.hub.sessionService.endSession(AGENT_ADDRESS, "test_complete");
 
     // Agent should no longer be routable after ack.
@@ -327,5 +338,28 @@ describe("deploy flow integration", () => {
       .then(() => true)
       .catch(() => false);
     expect(dirExists).toBe(false);
+
+    // Teardown still pushes agent state to the hub; wait for it to land so
+    // any sidecar-side read failure has had time to drain into the log.
+    await waitFor(() => env.hub.statePacks.length > packCountBefore, {
+      timeoutMs: 30_000,
+      diagnostics: env.sidecarDiagnostics,
+    });
+
+    // Teardown must log no state-push read failure. Both the undeploy push
+    // and the sync push log "State push failed for <address>" when their read
+    // hits a deleted directory; the drain keeps the read ahead of the rm, so
+    // with the fix this log never appears. This is a one-sided guard: on a
+    // fast machine the sync read can finish before the rm regardless, so a
+    // pass does not prove the read raced -- but a build that drops the drain
+    // and loses the race fails here. The deterministic ordering check is the
+    // session-manager unit test. The hub-side counter stays flat too, since a
+    // sidecar-side read throw never reaches the receive boundary.
+    const newSidecarLog = env.sidecar.stderr.slice(sidecarLogBefore).join("");
+    expect(newSidecarLog).not.toContain("State push failed");
+    const failuresAfter = env.hub.statePackReceiveFailures.filter(
+      (f) => f.agentAddress === AGENT_ADDRESS,
+    ).length;
+    expect(failuresAfter).toBe(failuresBefore);
   });
 });
