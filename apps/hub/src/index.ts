@@ -65,14 +65,17 @@ const hubSigningKey = await generateKeyPair();
 log.info("Generated hub deploy signing key");
 
 // Write-path GC for the hub's agent-state repos. Each accepted state
-// pack strands the prior tip's objects and adds a pack; left alone the
-// repo grows without bound. The hub reclaims on the write path once a
-// repo crosses HUB_AGENT_GC_PACK_THRESHOLD packs, and warns once it
-// crosses HUB_AGENT_GC_WARN_BYTES. Retention is fixed to keep-history
-// and not operator-configurable: the hub is the long-term archive of
-// an agent's state graph, and tip-only would prune the ancestry its
-// history replay derives from.
+// pack strands the prior tip's objects and adds a pack, and each deploy
+// commit strands loose objects; left alone the repo grows without bound.
+// The hub reclaims on the write path once a repo crosses
+// HUB_AGENT_GC_PACK_THRESHOLD packs or HUB_AGENT_GC_LOOSE_THRESHOLD loose
+// objects, and warns once it crosses HUB_AGENT_GC_WARN_BYTES. Retention
+// is fixed to keep-history and not operator-configurable: the hub is the
+// long-term archive of an agent's state graph, and tip-only would prune
+// the commit ancestry the hub's subscriber-seq and history replay derive
+// from git.log.
 const DEFAULT_HUB_AGENT_GC_PACK_THRESHOLD = 64;
+const DEFAULT_HUB_AGENT_GC_LOOSE_THRESHOLD = 2048;
 const DEFAULT_HUB_AGENT_GC_WARN_BYTES = 256 * 1024 * 1024;
 
 function readPositiveIntEnv(name: string, fallback: number): number {
@@ -94,6 +97,10 @@ const agentRepoStore = createAgentRepoStore({
     packThreshold: readPositiveIntEnv(
       "HUB_AGENT_GC_PACK_THRESHOLD",
       DEFAULT_HUB_AGENT_GC_PACK_THRESHOLD,
+    ),
+    looseThreshold: readPositiveIntEnv(
+      "HUB_AGENT_GC_LOOSE_THRESHOLD",
+      DEFAULT_HUB_AGENT_GC_LOOSE_THRESHOLD,
     ),
     warnBytes: readPositiveIntEnv(
       "HUB_AGENT_GC_WARN_BYTES",

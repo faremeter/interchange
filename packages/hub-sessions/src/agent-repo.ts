@@ -1,5 +1,5 @@
 import { createSSHSignature } from "@intx/crypto-node";
-import type { RetentionPolicy } from "@intx/storage-isogit";
+import type { GCPolicy } from "@intx/storage-isogit";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
 import { createRepoStore } from "./repo-store";
@@ -121,11 +121,7 @@ export function createAgentRepoStore(config: {
    * owns. Scoped to the `agent-state` kind; the other kinds the
    * underlying substrate services are left untouched.
    */
-  gc?: {
-    packThreshold: number;
-    warnBytes: number;
-    retention: RetentionPolicy;
-  };
+  gc?: GCPolicy;
 }): AgentRepoStore {
   const { dataDir, signingKey, gc } = config;
 

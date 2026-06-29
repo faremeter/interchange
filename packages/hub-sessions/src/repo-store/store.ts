@@ -7,10 +7,9 @@ import {
   createDeployPack,
   receivePackObjects,
   collectReachableObjects,
-  repoDiskUsage,
-  runGC,
+  maybeGC,
   type CommitSigner,
-  type RetentionPolicy,
+  type GCPolicy,
 } from "@intx/storage-isogit";
 import { hasCode } from "@intx/types";
 import { getLogger } from "@intx/log";
@@ -113,20 +112,14 @@ export type CreateRepoStoreConfig = {
   signingCallback?: (repoId: RepoId) => CommitSigner | undefined;
   /**
    * Optional write-path garbage-collection policy. When supplied, after
-   * every successful write under the repo lock the substrate samples the
-   * repo's disk usage and, for repos whose kind is in `kinds`, repacks
-   * once the pack count reaches `packThreshold` and warns once the `.git`
-   * byte size reaches `warnBytes`. Omitted entirely, the substrate never
-   * reclaims and never warns. The `kinds` allowlist keeps the policy
-   * scoped to the kinds the caller intends (e.g. `agent-state`) rather
-   * than every kind the store happens to service.
+   * every successful write under the repo lock the substrate applies the
+   * shared reclaim policy to repos whose kind is in `kinds`. Omitted
+   * entirely, the substrate never reclaims and never warns. The `kinds`
+   * allowlist keeps the policy scoped to the kinds the caller intends
+   * (e.g. `agent-state`) rather than every kind the store happens to
+   * service.
    */
-  gc?: {
-    kinds: readonly RepoKind[];
-    packThreshold: number;
-    warnBytes: number;
-    retention: RetentionPolicy;
-  };
+  gc?: GCPolicy & { kinds: readonly RepoKind[] };
 };
 
 export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
@@ -327,29 +320,15 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return path.join(dataDir, handler.directoryPrefix, repoId.id);
   }
 
-  // Write-path reclaim. Called at the end of every successful write while
-  // the repo lock is still held — the lock excludes concurrent writers, so
-  // the keep set runGC computes from the refs cannot be invalidated
-  // mid-pass. A GC failure is logged, not propagated: the write that
-  // triggered it has already committed durably, so failing the caller here
-  // would falsely report the write as failed. Surfacing the failure through
-  // a warn keeps it visible without corrupting the completed write.
+  // Write-path reclaim. Called at the end of every successful write for an
+  // allowlisted kind, from inside the substrate's `withRepoLock`. The shared
+  // evaluator acquires the storage per-directory lock, applies the policy
+  // (reclaim over threshold, warn over byte budget), and logs rather than
+  // propagates a reclaim failure — the triggering write has already
+  // committed durably, so failing the caller would misreport it.
   async function maybeRunGC(repoId: RepoId): Promise<void> {
     if (gc === undefined || !gc.kinds.includes(repoId.kind)) return;
-    const dir = repoDir(repoId);
-    try {
-      let usage = repoDiskUsage(dir);
-      if (usage.packCount >= gc.packThreshold) {
-        const result = await runGC(dir, { retention: gc.retention });
-        logger.info`repo-store reclaimed ${String(result.reclaimedBytes)} bytes from ${repoId.kind}/${repoId.id}: packs ${String(result.before.packCount)} to ${String(result.after.packCount)}, loose ${String(result.before.looseObjectCount)} to ${String(result.after.looseObjectCount)}`;
-        usage = result.after;
-      }
-      if (usage.gitBytes >= gc.warnBytes) {
-        logger.warn`repo-store disk pressure on ${repoId.kind}/${repoId.id}: .git is ${String(usage.gitBytes)} bytes, at or above the ${String(gc.warnBytes)} byte threshold`;
-      }
-    } catch (err) {
-      logger.warn`repo-store GC of ${repoId.kind}/${repoId.id} failed; the repo is unchanged but unreclaimed — ${err instanceof Error ? err.message : String(err)}`;
-    }
+    await maybeGC(repoDir(repoId), gc);
   }
 
   function gateAccess(
