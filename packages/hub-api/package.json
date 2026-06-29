@@ -12,7 +12,7 @@
   "dependencies": {
     "@hono/standard-validator": "^0.2.2",
     "@intx/authz": "workspace:*",
-    "@intx/crypto-node": "workspace:*",
+    "@intx/crypto": "workspace:*",
     "@intx/db": "workspace:*",
     "@intx/hub-common": "workspace:*",
     "@intx/hub-sessions": "workspace:*",

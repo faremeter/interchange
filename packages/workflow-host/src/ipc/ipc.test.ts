@@ -3,7 +3,7 @@ import { type } from "arktype";
 import fs from "node:fs";
 import path from "node:path";
 
-import { generateKeyPair } from "@intx/crypto-node";
+import { generateKeyPair } from "@intx/crypto";
 
 import {
   ControlPayload,

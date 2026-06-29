@@ -57,9 +57,9 @@ Each package implements an interface defined in `@intx/types`. The harness accep
 
 **Cryptographic Identity** (implements `CryptoProvider`):
 
-| Package             | Environment | Implementation                                                                                      |
-| ------------------- | ----------- | --------------------------------------------------------------------------------------------------- |
-| `@intx/crypto-node` | Server      | Node `crypto` module. Ed25519 key generation, signing, verification. SSH/PGP/X.509 format handling. |
+| Package        | Environment | Implementation                                                                                       |
+| -------------- | ----------- | ---------------------------------------------------------------------------------------------------- |
+| `@intx/crypto` | Server      | Web Crypto (`subtle`). Ed25519 key generation, signing, verification. SSH/PGP/X.509 format handling. |
 
 **Message Transport** (implements `MessageTransport`):
 
@@ -104,11 +104,11 @@ The portable core packages (`inference`, `harness`, `agent`) never import enviro
 
 Deployable processes under `apps/`. Each wires packages from one deployment context into a runnable artifact; none is published as a library. See each app's README for its startup contract and environment variables.
 
-| App             | Context       | Purpose                                                                                                                                                                                                                                         |
-| --------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/hub`      | Control plane | Bun server entry point. Wires `hub-api`, `hub-sessions`, and `db` into a Hono app, mounts the sidecar WebSocket, and exports the Bun `fetch`/`websocket` server. The control-plane process operators run.                                       |
-| `apps/sidecar`  | Agent runtime | Bun host process for hub-orchestrated agents. Boots the tarball cache and starts an `@intx/hub-agent` orchestrator wired with the default server harness builder (`@intx/tools-posix`/`tools-lsp`/`tools-mail`, `crypto-node`, isogit storage). |
-| `apps/admin-ui` | Control plane | React 19 single-page admin UI built with Vite. Renders the TanStack Router tenant-management console (agents, principals, roles, grants, credentials, wallets, instances, offerings) against the hub API through `@intx/hub-client`.            |
+| App             | Context       | Purpose                                                                                                                                                                                                                                    |
+| --------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `apps/hub`      | Control plane | Bun server entry point. Wires `hub-api`, `hub-sessions`, and `db` into a Hono app, mounts the sidecar WebSocket, and exports the Bun `fetch`/`websocket` server. The control-plane process operators run.                                  |
+| `apps/sidecar`  | Agent runtime | Bun host process for hub-orchestrated agents. Boots the tarball cache and starts an `@intx/hub-agent` orchestrator wired with the default server harness builder (`@intx/tools-posix`/`tools-lsp`/`tools-mail`, `crypto`, isogit storage). |
+| `apps/admin-ui` | Control plane | React 19 single-page admin UI built with Vite. Renders the TanStack Router tenant-management console (agents, principals, roles, grants, credentials, wallets, instances, offerings) against the hub API through `@intx/hub-client`.       |
 
 ## Dependency Rules
 

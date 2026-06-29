@@ -67,8 +67,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type } from "arktype";
 
 import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
-import { generateKeyPair } from "@intx/crypto-node";
-import { createSSHSignature } from "@intx/crypto-node";
+import { generateKeyPair } from "@intx/crypto";
+import { createSSHSignature } from "@intx/crypto";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import { WireGrantRule } from "@intx/types/grant-wire";

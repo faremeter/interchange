@@ -31,7 +31,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { generateKeyPair } from "@intx/crypto-node";
+import { generateKeyPair } from "@intx/crypto";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {

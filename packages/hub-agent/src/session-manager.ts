@@ -83,7 +83,7 @@ export type SessionManagerConfig = {
   /**
    * Per-agent crypto factory. Receives the agent's raw key pair and
    * returns a CryptoProvider bound to it. Keeps the package free of
-   * `@intx/crypto-node`.
+   * `@intx/crypto`.
    */
   createAgentCrypto: (keyPair: KeyPair) => CryptoProvider;
   onEvent: SessionEventSink;

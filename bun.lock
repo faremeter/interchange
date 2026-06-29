@@ -60,7 +60,7 @@
       "name": "@intx/hub-app",
       "version": "0.1.2",
       "dependencies": {
-        "@intx/crypto-node": "workspace:*",
+        "@intx/crypto": "workspace:*",
         "@intx/db": "workspace:*",
         "@intx/hub-api": "workspace:*",
         "@intx/hub-sessions": "workspace:*",
@@ -78,7 +78,7 @@
       "dependencies": {
         "@intx/agent": "workspace:*",
         "@intx/authz": "workspace:*",
-        "@intx/crypto-node": "workspace:*",
+        "@intx/crypto": "workspace:*",
         "@intx/harness": "workspace:*",
         "@intx/hub-agent": "workspace:*",
         "@intx/hub-sessions": "workspace:*",
@@ -220,7 +220,7 @@
       "version": "0.1.2",
       "dependencies": {
         "@intx/agent": "workspace:*",
-        "@intx/crypto-node": "workspace:*",
+        "@intx/crypto": "workspace:*",
         "@intx/harness": "workspace:*",
         "@intx/inference": "workspace:*",
         "@intx/log": "workspace:*",
@@ -236,7 +236,7 @@
       "version": "0.1.2",
       "dependencies": {
         "@intx/agent": "workspace:*",
-        "@intx/crypto-node": "workspace:*",
+        "@intx/crypto": "workspace:*",
         "@intx/harness": "workspace:*",
         "@intx/inference": "workspace:*",
         "@intx/log": "workspace:*",
@@ -268,8 +268,8 @@
         "@intx/types": "workspace:*",
       },
     },
-    "packages/crypto-node": {
-      "name": "@intx/crypto-node",
+    "packages/crypto": {
+      "name": "@intx/crypto",
       "version": "0.1.2",
       "dependencies": {
         "@intx/types": "workspace:*",
@@ -318,7 +318,7 @@
         "isomorphic-git": "catalog:",
       },
       "devDependencies": {
-        "@intx/crypto-node": "workspace:*",
+        "@intx/crypto": "workspace:*",
         "@intx/hub-sessions": "workspace:*",
         "hono": "catalog:",
       },
@@ -329,7 +329,7 @@
       "dependencies": {
         "@hono/standard-validator": "^0.2.2",
         "@intx/authz": "workspace:*",
-        "@intx/crypto-node": "workspace:*",
+        "@intx/crypto": "workspace:*",
         "@intx/db": "workspace:*",
         "@intx/hub-common": "workspace:*",
         "@intx/hub-sessions": "workspace:*",
@@ -371,7 +371,7 @@
       "version": "0.1.2",
       "dependencies": {
         "@intx/agent": "workspace:*",
-        "@intx/crypto-node": "workspace:*",
+        "@intx/crypto": "workspace:*",
         "@intx/db": "workspace:*",
         "@intx/hub-common": "workspace:*",
         "@intx/log": "workspace:*",
@@ -459,7 +459,7 @@
       "name": "@intx/mail-memory",
       "version": "0.1.2",
       "dependencies": {
-        "@intx/crypto-node": "workspace:*",
+        "@intx/crypto": "workspace:*",
         "@intx/log": "workspace:*",
         "@intx/mime": "workspace:*",
         "@intx/types": "workspace:*",
@@ -470,7 +470,7 @@
       "name": "@intx/mime",
       "version": "0.1.2",
       "dependencies": {
-        "@intx/crypto-node": "workspace:*",
+        "@intx/crypto": "workspace:*",
         "@intx/types": "workspace:*",
         "arktype": "catalog:",
       },
@@ -493,7 +493,7 @@
         "isomorphic-git": "catalog:",
       },
       "devDependencies": {
-        "@intx/crypto-node": "workspace:*",
+        "@intx/crypto": "workspace:*",
       },
     },
     "packages/tool-packaging": {
@@ -585,7 +585,7 @@
       "version": "0.0.1",
       "dependencies": {
         "@intx/agent": "workspace:*",
-        "@intx/crypto-node": "workspace:*",
+        "@intx/crypto": "workspace:*",
         "@intx/hub-sessions": "workspace:*",
         "@intx/inference": "workspace:*",
         "@intx/log": "workspace:*",
@@ -822,7 +822,7 @@
 
     "@intx/authz": ["@intx/authz@workspace:packages/authz"],
 
-    "@intx/crypto-node": ["@intx/crypto-node@workspace:packages/crypto-node"],
+    "@intx/crypto": ["@intx/crypto@workspace:packages/crypto"],
 
     "@intx/db": ["@intx/db@workspace:packages/db"],
 

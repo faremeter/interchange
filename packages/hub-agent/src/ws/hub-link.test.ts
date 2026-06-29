@@ -8,7 +8,7 @@ import {
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { signEd25519, verifySSHSignature } from "@intx/crypto-node";
+import { signEd25519, verifySSHSignature } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
 import type {
   HarnessConfig,
@@ -73,7 +73,7 @@ import { hexDecode } from "@intx/types";
 // In-memory AgentKeyStore for tests. Tests that exercise challenge
 // response or deploy-commit verification register keys via the public
 // AgentKeyStore methods (loadOrGenerateKey, recordHubKey); the stub
-// satisfies the interface and uses real crypto-node primitives so
+// satisfies the interface and uses real @intx/crypto primitives so
 // signatures round-trip through the production verify path.
 function createTestKeyStore(): AgentKeyStore & {
   registerKey(address: string, kp: KeyPair): void;
@@ -569,9 +569,7 @@ describe("sidecar↔hub integration", () => {
     // The agent must be in the session manager's address list so the
     // register frame includes it in the routing table.
     sessions.addresses.push("agent-1@test.interchange");
-    const { generateKeyPair, createNodeCrypto } = await import(
-      "@intx/crypto-node"
-    );
+    const { generateKeyPair, createNodeCrypto } = await import("@intx/crypto");
     const kp = await generateKeyPair();
     transport.register("agent-1@test.interchange", createNodeCrypto(kp));
 
@@ -619,9 +617,7 @@ describe("sidecar↔hub integration", () => {
   test("sidecar forwards outbound mail to hub", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const { generateKeyPair, createNodeCrypto } = await import(
-      "@intx/crypto-node"
-    );
+    const { generateKeyPair, createNodeCrypto } = await import("@intx/crypto");
     const kp = await generateKeyPair();
     transport.register("sender@test.interchange", createNodeCrypto(kp));
 
@@ -663,9 +659,7 @@ describe("sidecar↔hub integration", () => {
   });
 
   test("mail routes between two sidecars via hub", async () => {
-    const { generateKeyPair, createNodeCrypto } = await import(
-      "@intx/crypto-node"
-    );
+    const { generateKeyPair, createNodeCrypto } = await import("@intx/crypto");
 
     // Sidecar A
     const transportA = createInMemoryTransport();
@@ -931,7 +925,7 @@ describe("sidecar↔hub integration", () => {
 
   test("reconnect restores hubPublicKey into hubKeys map", async () => {
     const { generateKeyPair, createSSHSignature } = await import(
-      "@intx/crypto-node"
+      "@intx/crypto"
     );
 
     // Agent keypair — used for challenge/response signing.
@@ -1351,9 +1345,7 @@ describe("sidecar↔hub integration", () => {
     const sessions = createMockSessionManager();
     const address = "agent-fallback@test.interchange";
     sessions.addresses.push(address);
-    const { generateKeyPair, createNodeCrypto } = await import(
-      "@intx/crypto-node"
-    );
+    const { generateKeyPair, createNodeCrypto } = await import("@intx/crypto");
     const kp = await generateKeyPair();
     transport.register(address, createNodeCrypto(kp));
 

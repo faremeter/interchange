@@ -43,7 +43,7 @@ import {
 import { loadAdapterRegistry } from "@intx/inference/providers";
 import type { DirectorRegistry } from "@intx/agent";
 import { createDefaultDirectorRegistry } from "@intx/agent";
-import { createSSHSignature } from "@intx/crypto-node";
+import { createSSHSignature } from "@intx/crypto";
 import {
   createAgentRepoStore,
   type Principal,

@@ -51,7 +51,7 @@
 import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
-import { generateKeyPair } from "@intx/crypto-node";
+import { generateKeyPair } from "@intx/crypto";
 
 import type {
   Principal,
@@ -308,7 +308,7 @@ export interface RunWorkflowChildBindings {
    * in its own address space, signs every upstream control frame
    * with it, and publishes the public half in the `ready` frame so
    * the supervisor can verify subsequent upstream frames. Production
-   * wires this against `@intx/crypto-node`'s `generateKeyPair`;
+   * wires this against `@intx/crypto`'s `generateKeyPair`;
    * tests inject a deterministic factory so they can assert on the
    * published key. The supervisor's private key is NEVER threaded
    * into the child -- the child holds only its own private half.

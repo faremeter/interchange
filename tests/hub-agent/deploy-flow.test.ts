@@ -23,7 +23,7 @@ import {
   createDetachedSignatureFromProvider,
   type MessageHeaders,
 } from "@intx/mime";
-import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
+import { generateKeyPair, createNodeCrypto } from "@intx/crypto";
 import { parseAgentId } from "@intx/hub-sessions";
 import { createAgentRepoStore as createSidecarRepoStore } from "@intx/hub-agent";
 import type { HarnessConfig } from "@intx/types/runtime";

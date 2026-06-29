@@ -12,7 +12,7 @@ import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
 import type { ReactorEmittedEvent } from "@intx/inference";
 import { setup, getLogger } from "@intx/log";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
+import { generateKeyPair, createNodeCrypto } from "@intx/crypto";
 import { createIsogitStore } from "@intx/storage-isogit";
 import { createPosixTools } from "@intx/tools-posix";
 import { createMailTools } from "@intx/tools-mail";

@@ -25,7 +25,7 @@ import path from "node:path";
 
 import { type } from "arktype";
 
-import { createNodeCrypto, generateKeyPair } from "@intx/crypto-node";
+import { createNodeCrypto, generateKeyPair } from "@intx/crypto";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 

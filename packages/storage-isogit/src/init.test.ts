@@ -7,7 +7,7 @@ import {
   generateKeyPair,
   createSSHSignature,
   verifySSHSignature,
-} from "@intx/crypto-node";
+} from "@intx/crypto";
 import { initRepo } from "./init";
 import type { CommitSigner } from "./signer";
 

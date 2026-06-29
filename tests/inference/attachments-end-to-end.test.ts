@@ -14,7 +14,7 @@
 // per-adapter unit tests (mocking the upstream surface) cannot catch.
 
 import { describe, test, expect, beforeAll } from "bun:test";
-import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
+import { generateKeyPair, createNodeCrypto } from "@intx/crypto";
 import {
   assembleSignedContent,
   assembleMessage,

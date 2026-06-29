@@ -40,7 +40,7 @@ import path from "node:path";
 
 import { type } from "arktype";
 
-import { generateKeyPair } from "@intx/crypto-node";
+import { generateKeyPair } from "@intx/crypto";
 import {
   createDefaultDirectorRegistry,
   type Agent,
@@ -48,7 +48,7 @@ import {
   type BaseEnv,
   type SendResult,
 } from "@intx/agent";
-import { createSSHSignature } from "@intx/crypto-node";
+import { createSSHSignature } from "@intx/crypto";
 import type {
   KeyPair,
   ConversationTurn,

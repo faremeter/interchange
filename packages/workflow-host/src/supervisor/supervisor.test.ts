@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { type } from "arktype";
 
-import { generateKeyPair } from "@intx/crypto-node";
+import { generateKeyPair } from "@intx/crypto";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {

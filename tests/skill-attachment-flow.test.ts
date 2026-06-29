@@ -40,7 +40,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { applyAssetPack } from "@intx/hub-agent";
-import { generateKeyPair } from "@intx/crypto-node";
+import { generateKeyPair } from "@intx/crypto";
 import { generateId } from "@intx/hub-common";
 import {
   buildAvailableSkillsStanza,

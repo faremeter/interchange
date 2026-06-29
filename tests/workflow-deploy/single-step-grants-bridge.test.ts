@@ -58,7 +58,7 @@ import {
   type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
 import { deriveTrivialDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import { generateKeyPair } from "@intx/crypto-node";
+import { generateKeyPair } from "@intx/crypto";
 import {
   assembleCredentialsSnapshot,
   type CredentialsSnapshot,

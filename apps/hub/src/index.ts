@@ -11,7 +11,7 @@ import {
   WORKSPACE_BUILTINS_REGISTRY,
   type WsHandle,
 } from "@intx/hub-sessions";
-import { generateKeyPair } from "@intx/crypto-node";
+import { generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import { setup, getLogger } from "@intx/log";

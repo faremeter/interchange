@@ -10,7 +10,7 @@
     }
   },
   "dependencies": {
-    "@intx/crypto-node": "workspace:*",
+    "@intx/crypto": "workspace:*",
     "@intx/types": "workspace:*",
     "arktype": "catalog:"
   }
