@@ -484,6 +484,7 @@
       "name": "@intx/storage-isogit",
       "version": "0.1.2",
       "dependencies": {
+        "@intx/log": "workspace:*",
         "@intx/mime": "workspace:*",
         "@intx/types": "workspace:*",
         "arktype": "catalog:",

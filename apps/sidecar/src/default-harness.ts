@@ -23,7 +23,11 @@ import {
 } from "@intx/hub-agent";
 import { createDependencies, type AdapterRegistry } from "@intx/inference";
 import { getLogger } from "@intx/log";
-import { createIsogitStore, createMailAuditStore } from "@intx/storage-isogit";
+import {
+  createIsogitStore,
+  createMailAuditStore,
+  type GCPolicy,
+} from "@intx/storage-isogit";
 import type { InferenceSource } from "@intx/types/runtime";
 
 import { materializeToolPackages } from "./tool-materialization";
@@ -58,6 +62,12 @@ export interface DefaultHarnessBuilderConfig {
    * the operator configured.
    */
   readonly adapters: AdapterRegistry;
+  /**
+   * Write-path GC policy for the per-agent context repo. Resolved at the
+   * boot edge and handed to `createIsogitStore` so the reactor's commits
+   * reclaim the repo once it crosses the policy's thresholds.
+   */
+  readonly gcPolicy: GCPolicy;
 }
 
 export function createDefaultHarnessBuilder(
@@ -86,7 +96,11 @@ export function createDefaultHarnessBuilder(
     }): Promise<HarnessBundle> {
       const signer = (payload: string) => crypto.signSSH(payload);
 
-      const storage = await createIsogitStore(storeDir, signer);
+      const storage = await createIsogitStore(
+        storeDir,
+        signer,
+        config.gcPolicy,
+      );
       const mailStore = await createMailAuditStore(storeDir, signer);
 
       const deployTree = await readDeployTree(storeDir);

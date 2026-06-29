@@ -10,6 +10,7 @@
     }
   },
   "dependencies": {
+    "@intx/log": "workspace:*",
     "@intx/mime": "workspace:*",
     "@intx/types": "workspace:*",
     "arktype": "catalog:",
