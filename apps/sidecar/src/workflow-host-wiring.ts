@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import { type } from "arktype";
 
-import { signEd25519 } from "@intx/crypto-node";
+import { signEd25519 } from "@intx/crypto";
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
 import {
@@ -679,7 +679,7 @@ export function createSidecarDeployRouter(deps: {
   /**
    * Per-agent crypto factory. Receives the agent's raw key pair and
    * returns a `CryptoProvider` bound to it (production wires
-   * `@intx/crypto-node`'s `createNodeCrypto`). The multi-step branch
+   * `@intx/crypto`'s `createNodeCrypto`). The multi-step branch
    * uses this to register the spawned single-step agent's signing key on
    * the host transport before `spawn()`, so the supervisor's outbound
    * mail path (`MailBusBindings.sendOutbound`) signs the agent's replies

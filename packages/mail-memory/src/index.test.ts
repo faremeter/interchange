@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- test refs[0]! always follows expect(refs.length) checks */
 import { describe, test, expect } from "bun:test";
-import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
+import { generateKeyPair, createNodeCrypto } from "@intx/crypto";
 import {
   assembleSignedContent,
   assembleMessage,

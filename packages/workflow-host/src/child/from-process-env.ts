@@ -19,7 +19,7 @@ import fs from "node:fs";
 
 import { type } from "arktype";
 
-import { generateKeyPair } from "@intx/crypto-node";
+import { generateKeyPair } from "@intx/crypto";
 
 import { parseSpawnTimeEnv, type SpawnTimeEnv } from "./env-bootstrap";
 import {

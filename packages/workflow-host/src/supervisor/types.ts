@@ -432,7 +432,7 @@ export interface WorkflowSupervisorBindings {
    * that needs to assert on the env's HOST_PUBKEY, or a wiring path
    * that wants the keypair lifecycle to flow through its own crypto
    * boundary). Production wires it against the same
-   * `@intx/crypto-node` generator the supervisor would have used.
+   * `@intx/crypto` generator the supervisor would have used.
    */
   ipcKeyPairFactory?: () => Promise<{
     privateKey: Uint8Array;

@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { createNodeCrypto, generateKeyPair } from "@intx/crypto-node";
+import { createNodeCrypto, generateKeyPair } from "@intx/crypto";
 
 import { wrapHubTransportAsMailBus } from "./hub-transport-adapter";
 

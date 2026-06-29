@@ -1,6 +1,6 @@
 // Generator for kat-vectors.ts.
 //
-// Run with: bun run packages/crypto-node/src/kat-vectors.gen.ts
+// Run with: bun run packages/crypto/src/kat-vectors.gen.ts
 //
 // Recomputes the known-answer vectors from this package's own Web Crypto
 // implementation and rewrites kat-vectors.ts. The committed vectors were
@@ -57,7 +57,7 @@ const lines = [
   "// Known-answer test vectors for the Ed25519 / OpenPGP / SSHSIG path.",
   "//",
   "// GENERATED FILE — do not edit by hand. Regenerate with:",
-  "//   bun run packages/crypto-node/src/kat-vectors.gen.ts",
+  "//   bun run packages/crypto/src/kat-vectors.gen.ts",
   "//",
   "// The expected outputs were first captured from the pre-port node:crypto",
   "// implementation at commit 76f4c96e and are reproduced by the Web Crypto",

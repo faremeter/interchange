@@ -8,7 +8,7 @@ import {
   generateKeyPair,
   signEd25519,
   verifySSHSignature,
-} from "@intx/crypto-node";
+} from "@intx/crypto";
 import { createSidecarOrchestrator, type HubLink } from "@intx/hub-agent";
 import { createAgentRepoStore } from "@intx/hub-sessions";
 import { createTarballCache } from "@intx/tool-packaging";

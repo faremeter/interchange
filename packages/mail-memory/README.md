@@ -14,7 +14,7 @@ modification.
 
 ```ts
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { createNodeCrypto, generateKeyPair } from "@intx/crypto-node";
+import { createNodeCrypto, generateKeyPair } from "@intx/crypto";
 
 const transport = createInMemoryTransport();
 const alpha = createNodeCrypto(await generateKeyPair());

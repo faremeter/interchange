@@ -10,7 +10,7 @@
   "dependencies": {
     "@intx/agent": "workspace:*",
     "@intx/authz": "workspace:*",
-    "@intx/crypto-node": "workspace:*",
+    "@intx/crypto": "workspace:*",
     "@intx/harness": "workspace:*",
     "@intx/hub-agent": "workspace:*",
     "@intx/hub-sessions": "workspace:*",

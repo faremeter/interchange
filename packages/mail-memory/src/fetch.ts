@@ -21,7 +21,7 @@ import {
   extractAttachments,
 } from "@intx/mime";
 import { buildMessageHeaders } from "./headers";
-import { verifyDetachedSignature } from "@intx/crypto-node";
+import { verifyDetachedSignature } from "@intx/crypto";
 
 const MessagePayload = type({
   type: InterchangeType,

@@ -10,7 +10,7 @@ import {
   generateKeyPair,
   createSSHSignature,
   verifySSHSignature,
-} from "@intx/crypto-node";
+} from "@intx/crypto";
 import type { KeyPair } from "@intx/types/runtime";
 import type { GrantRule } from "@intx/types/authz";
 import type { AssetRow as DBAssetRow, DB } from "@intx/db";

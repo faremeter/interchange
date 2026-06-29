@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { generateKeyPair, signEd25519 } from "@intx/crypto-node";
+import { generateKeyPair, signEd25519 } from "@intx/crypto";
 import { hexDecode, hexEncode, parseAgentAddress } from "@intx/types";
 import { chunkPack } from "@intx/pack-transport";
 import type { PackRejectReason, RepoId } from "@intx/types/sidecar";

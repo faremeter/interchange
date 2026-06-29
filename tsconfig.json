@@ -2,7 +2,7 @@
   "files": [],
   "references": [
     { "path": "packages/types" },
-    { "path": "packages/crypto-node" },
+    { "path": "packages/crypto" },
     { "path": "packages/inference" },
     { "path": "packages/storage-isogit" },
     { "path": "packages/log" },

@@ -32,7 +32,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { generateKeyPair } from "@intx/crypto-node";
+import { generateKeyPair } from "@intx/crypto";
 import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
 import type { KeyPair } from "@intx/types/runtime";
 import {

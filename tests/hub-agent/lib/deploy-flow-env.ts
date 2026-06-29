@@ -63,7 +63,7 @@ import {
   type WsHandle,
 } from "@intx/hub-sessions";
 import { hexEncode } from "@intx/types";
-import { createNodeCrypto, generateKeyPair } from "@intx/crypto-node";
+import { createNodeCrypto, generateKeyPair } from "@intx/crypto";
 import {
   createWorkflowDeployOrchestrator,
   type LaunchSessionFn,

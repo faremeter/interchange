@@ -6,7 +6,7 @@
 // 32-byte secret and the cost-per-frame of HMAC over per-frame Ed25519
 // is what keeps the event stream affordable at InferenceEvent rates.
 //
-// Ed25519 sign/verify come from `@intx/crypto-node`, whose raw
+// Ed25519 sign/verify come from `@intx/crypto`, whose raw
 // `signEd25519`/`verifyEd25519` primitives produce and check the bare
 // 64-byte RFC 8032 signature without the PGP packet framing and ASCII
 // armor the package's envelope helpers add — exactly the wire format
@@ -21,7 +21,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   signEd25519 as ed25519Sign,
   verifyEd25519 as ed25519Verify,
-} from "@intx/crypto-node";
+} from "@intx/crypto";
 
 const ED25519_SIGNATURE_BYTES = 64;
 const ED25519_KEY_BYTES = 32;
@@ -56,7 +56,7 @@ export function generateChannelId(): string {
  * this primitive does not see the structured envelope.
  *
  * The private-key bytes are the 32-byte Ed25519 seed. The raw signing
- * primitive lives in `@intx/crypto-node`; this module wraps it with the
+ * primitive lives in `@intx/crypto`; this module wraps it with the
  * channel's fixed-length validation.
  */
 export async function signEd25519(

@@ -1,6 +1,6 @@
-# @intx/crypto-node
+# @intx/crypto
 
-Node-backed cryptographic provider. Ed25519 key generation,
+Web Crypto-backed cryptographic provider. Ed25519 key generation,
 import, sign, and verify; canonicalisation of text and byte
 payloads; SSH and PGP detached signature formats; ASCII armoring.
 
@@ -12,7 +12,7 @@ that the mail and storage layers depend on. Consumed by
 `@intx/hub-sessions` (per-agent key material).
 
 ```ts
-import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
+import { generateKeyPair, createNodeCrypto } from "@intx/crypto";
 
 const keyPair = await generateKeyPair();
 const provider = createNodeCrypto(keyPair);

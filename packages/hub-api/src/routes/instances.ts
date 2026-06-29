@@ -24,7 +24,7 @@ import { evaluateGrants, authorize } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import { parseMailToEmail, extractPartByPath } from "@intx/mime";
 
-import { generateKeyPair, createNodeCrypto } from "@intx/crypto-node";
+import { generateKeyPair, createNodeCrypto } from "@intx/crypto";
 import {
   CreateAgentInstance,
   AgentInstanceResponse,

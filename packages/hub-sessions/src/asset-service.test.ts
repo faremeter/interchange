@@ -8,7 +8,7 @@ import {
   agentAsset as agentAssetTable,
   asset as assetTable,
 } from "@intx/db/schema";
-import { generateKeyPair } from "@intx/crypto-node";
+import { generateKeyPair } from "@intx/crypto";
 import type { KeyPair } from "@intx/types/runtime";
 
 import {

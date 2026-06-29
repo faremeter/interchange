@@ -6,7 +6,7 @@
 
 import { randomBytes } from "node:crypto";
 import { getLogger } from "@intx/log";
-import { verifyEd25519 } from "@intx/crypto-node";
+import { verifyEd25519 } from "@intx/crypto";
 import { chunkPack, createPackReceiver } from "@intx/pack-transport";
 import { hexDecode, hexEncode } from "@intx/types";
 import { type } from "arktype";

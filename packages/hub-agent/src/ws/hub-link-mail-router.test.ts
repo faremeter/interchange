@@ -29,7 +29,7 @@ import type {
   KeyPair,
 } from "@intx/types/runtime";
 import type { GrantRule } from "@intx/types/authz";
-import { signEd25519, verifySSHSignature } from "@intx/crypto-node";
+import { signEd25519, verifySSHSignature } from "@intx/crypto";
 import { hexDecode } from "@intx/types";
 
 import { createHubLink, type DeployRouter } from "./hub-link";

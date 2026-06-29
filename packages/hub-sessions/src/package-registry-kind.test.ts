@@ -4,7 +4,7 @@ import path from "node:path";
 import nodeFs, { promises as fsp } from "node:fs";
 import * as tar from "tar";
 import git from "isomorphic-git";
-import { generateKeyPair } from "@intx/crypto-node";
+import { generateKeyPair } from "@intx/crypto";
 import { collectReachableObjects } from "@intx/storage-isogit";
 import type { KeyPair } from "@intx/types/runtime";
 

@@ -7,8 +7,8 @@ hub.
 `src/index.ts` resolves the tarball cache configuration, sweeps any
 orphaned staging directories left by a crashed apply, then starts a
 `@intx/hub-agent` sidecar orchestrator. The orchestrator is wired
-with an in-memory mail transport (`@intx/mail-memory`), the Node
-crypto provider (`@intx/crypto-node`), and the default server
+with an in-memory mail transport (`@intx/mail-memory`), the Web
+Crypto provider (`@intx/crypto`), and the default server
 harness builder from `src/default-harness.ts`, which composes the
 POSIX, LSP, and mail tool sets with isomorphic-git context storage.
 

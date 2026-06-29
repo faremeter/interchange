@@ -1,4 +1,4 @@
-import { createSSHSignature } from "@intx/crypto-node";
+import { createSSHSignature } from "@intx/crypto";
 import type { GCPolicy } from "@intx/storage-isogit";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 

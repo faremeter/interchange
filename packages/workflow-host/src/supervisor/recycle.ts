@@ -82,7 +82,7 @@
 
 import { getLogger } from "@intx/log";
 
-import { generateKeyPair } from "@intx/crypto-node";
+import { generateKeyPair } from "@intx/crypto";
 
 import {
   createControlChannelSender,
