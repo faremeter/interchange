@@ -1,8 +1,8 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import git from "isomorphic-git";
 import { parseHeaderSection } from "@intx/mime";
+import { hexEncode } from "@intx/types";
 import { AUTHOR } from "./init";
 import type { CommitSigner } from "./signer";
 import { buildSigningArgs } from "./commit-helpers";
@@ -44,7 +44,7 @@ type ThreadState = {
 };
 
 function generateThreadId(): string {
-  return crypto.randomBytes(4).toString("hex");
+  return hexEncode(crypto.getRandomValues(new Uint8Array(4)));
 }
 
 function formatOrdinal(n: number): string {

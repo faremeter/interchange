@@ -19,7 +19,6 @@
  * - Message-IDs: <uuid@domain> — valid per RFC 2822 §3.6.4 (dot-atom local-part)
  */
 
-import { randomUUID } from "node:crypto";
 import { base64Decode, base64Encode } from "@intx/types";
 import type { MessageAttachment } from "@intx/types/runtime";
 
@@ -120,7 +119,7 @@ export type JMAPEmail = {
 
 export function generateMessageId(address: string): string {
   const domain = address.includes("@") ? address.split("@")[1]! : "local";
-  const uuid = randomUUID();
+  const uuid = crypto.randomUUID();
   return `<${uuid}@${domain}>`;
 }
 

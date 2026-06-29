@@ -4,7 +4,6 @@
 // table of agentAddress → sidecar connection, and dispatches frames between
 // sidecars and the hub's internal systems.
 
-import { randomBytes } from "node:crypto";
 import { getLogger } from "@intx/log";
 import { verifyEd25519 } from "@intx/crypto";
 import { chunkPack, createPackReceiver } from "@intx/pack-transport";
@@ -673,7 +672,7 @@ export function createSidecarRouter(
         continue;
       }
 
-      const nonce = randomBytes(32);
+      const nonce = crypto.getRandomValues(new Uint8Array(32));
       challenges.set(address, { nonce, publicKey });
       challengeEntries.push({ address, nonce: hexEncode(nonce) });
     }

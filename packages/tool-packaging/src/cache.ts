@@ -29,13 +29,13 @@
 // every apply. The unpack is gated by a per-integrity tmp-and-rename
 // dance with the same crash-safety properties as `put`.
 
-import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import ssri from "ssri";
 import * as tar from "tar";
 
 import { getLogger } from "@intx/log";
+import { hexEncode } from "@intx/types";
 
 const logger = getLogger(["sidecar", "tool-packaging", "cache"]);
 
@@ -535,7 +535,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
       // Add per-call randomness so two concurrent put()s for the same
       // integrity (e.g. two agents on the same sidecar racing into the
       // first apply) do not collide on the temp path.
-      const tmp = `${file}.tmp.${String(process.pid)}.${randomBytes(8).toString("hex")}`;
+      const tmp = `${file}.tmp.${String(process.pid)}.${hexEncode(crypto.getRandomValues(new Uint8Array(8)))}`;
       await fs.writeFile(tmp, bytes);
       // No fsync before rename: the cache is content-addressable and
       // rebuildable. A crash between write and rename leaves an orphaned
@@ -693,7 +693,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
         // mid-unpack leaves an orphaned `.tmp.*` directory that
         // `sweepOrphans` clears on the next boot; a crash after the
         // rename leaves a valid extraction for the next caller.
-        const stagingDir = `${finalDir}.tmp.${String(process.pid)}.${randomBytes(8).toString("hex")}`;
+        const stagingDir = `${finalDir}.tmp.${String(process.pid)}.${hexEncode(crypto.getRandomValues(new Uint8Array(8)))}`;
         await fs.mkdir(stagingDir, { recursive: true });
         try {
           await new Promise<void>((resolve, reject) => {
