@@ -352,7 +352,7 @@ async function writeTreeEntries(
  * source-line references above are the verification anchor for the
  * next reader deciding whether the dance is still needed.
  */
-async function publishPackAtomically(
+export async function publishPackAtomically(
   dir: string,
   pack: Uint8Array,
   transferId: string,

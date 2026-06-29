@@ -23,6 +23,8 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+import { countLooseObjects, gitBytes } from "@intx/storage-isogit";
+
 import type { DispatchStructuralCounters } from "./types";
 
 const RUNS_DIR = "runs";
@@ -77,76 +79,6 @@ function countConsumed(repoDir: string): number {
   let total = 0;
   for (const segment of segments) {
     total += countEntries(path.join(addressesDir, segment, CONSUMED_DIR));
-  }
-  return total;
-}
-
-/**
- * Count loose git objects under `.git/objects/<xx>/`. Loose objects are
- * the un-packed per-commit objects isogit writes on each commit; their
- * count rising with message index (and collapsing after a repack) is the
- * pack-growth signature the §10c A/B looks for. The two-hex-char fan-out
- * dirs plus `pack`/`info` are the only children of `objects/`; the latter
- * two are skipped.
- */
-function countLooseObjects(repoDir: string): number {
-  const objectsDir = path.join(repoDir, ".git", "objects");
-  let fanoutDirs: string[];
-  try {
-    fanoutDirs = fs.readdirSync(objectsDir);
-  } catch (cause) {
-    if (
-      cause instanceof Error &&
-      (cause as NodeJS.ErrnoException).code === "ENOENT"
-    ) {
-      return 0;
-    }
-    throw cause;
-  }
-  let total = 0;
-  for (const name of fanoutDirs) {
-    if (name === "pack" || name === "info") continue;
-    // Loose-object fan-out dirs are exactly two lowercase hex chars.
-    if (!/^[0-9a-f]{2}$/.test(name)) continue;
-    total += countEntries(path.join(objectsDir, name));
-  }
-  return total;
-}
-
-/**
- * Total byte size of the repo's `.git` directory (loose + pack + refs +
- * logs). A coarse repo-size proxy: if a leg's time tracks this
- * sublinearly-but-growing while loose-object count stays bounded, the
- * cost is pack growth; if it tracks `runs/`/`consumed/` fan-out linearly,
- * it is tree-rewrite. Walks the tree with `fs.statSync`; bounded by the
- * repo size, which is the thing being measured.
- */
-function gitBytes(repoDir: string): number {
-  const gitDir = path.join(repoDir, ".git");
-  let total = 0;
-  const stack: string[] = [gitDir];
-  while (stack.length > 0) {
-    const current = stack.pop();
-    if (current === undefined) break;
-    let stat: fs.Stats;
-    try {
-      stat = fs.lstatSync(current);
-    } catch (cause) {
-      if (
-        cause instanceof Error &&
-        (cause as NodeJS.ErrnoException).code === "ENOENT"
-      ) {
-        continue;
-      }
-      throw cause;
-    }
-    if (stat.isDirectory()) {
-      for (const child of fs.readdirSync(current)) {
-        stack.push(path.join(current, child));
-      }
-    } else if (stat.isFile()) {
-      total += stat.size;
-    }
   }
   return total;
 }

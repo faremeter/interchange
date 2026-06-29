@@ -17,6 +17,7 @@
     "@intx/log": "workspace:*",
     "@intx/mail-memory": "workspace:*",
     "@intx/mime": "workspace:*",
+    "@intx/storage-isogit": "workspace:*",
     "@intx/types": "workspace:*",
     "@intx/workflow": "workspace:*",
     "arktype": "catalog:"
