@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import { appendFileSync } from "node:fs";
 import path from "node:path";
 import { setup } from "@intx/log";
@@ -43,6 +42,7 @@ import {
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
+import { loadOrMintSidecarKeypair } from "./signing-keypair";
 
 await setup();
 
@@ -181,60 +181,8 @@ await createTarballCache({
 // `SIDECAR_SIGNING_*` spawn-time env vars. One key, one identity for
 // the sidecar process.
 const SIDECAR_SIGNING_DIR = path.join(dataDir, ".sidecar-signing");
-const SIDECAR_PRIVATE_KEY_PATH = path.join(
-  SIDECAR_SIGNING_DIR,
-  "ed25519.private",
-);
-const SIDECAR_PUBLIC_KEY_PATH = path.join(
-  SIDECAR_SIGNING_DIR,
-  "ed25519.public",
-);
 
-async function loadOrMintSidecarKeypair(): Promise<{
-  publicKey: Uint8Array;
-  privateKey: Uint8Array;
-}> {
-  let havePriv = false;
-  let havePub = false;
-  try {
-    await fs.access(SIDECAR_PRIVATE_KEY_PATH);
-    havePriv = true;
-  } catch {
-    havePriv = false;
-  }
-  try {
-    await fs.access(SIDECAR_PUBLIC_KEY_PATH);
-    havePub = true;
-  } catch {
-    havePub = false;
-  }
-  if (havePriv !== havePub) {
-    throw new Error(
-      `sidecar signing keypair under ${SIDECAR_SIGNING_DIR} is partial: privateKey=${String(havePriv)} publicKey=${String(havePub)}; remove the directory to reset`,
-    );
-  }
-  if (havePriv && havePub) {
-    const [priv, pub] = await Promise.all([
-      fs.readFile(SIDECAR_PRIVATE_KEY_PATH),
-      fs.readFile(SIDECAR_PUBLIC_KEY_PATH),
-    ]);
-    return {
-      privateKey: new Uint8Array(priv),
-      publicKey: new Uint8Array(pub),
-    };
-  }
-  const keyPair = await generateKeyPair();
-  await fs.mkdir(SIDECAR_SIGNING_DIR, { recursive: true });
-  await Promise.all([
-    fs.writeFile(SIDECAR_PRIVATE_KEY_PATH, keyPair.privateKey, {
-      mode: 0o600,
-    }),
-    fs.writeFile(SIDECAR_PUBLIC_KEY_PATH, keyPair.publicKey),
-  ]);
-  return keyPair;
-}
-
-const sidecarSigningKey = await loadOrMintSidecarKeypair();
+const sidecarSigningKey = await loadOrMintSidecarKeypair(SIDECAR_SIGNING_DIR);
 
 // Construct the substrate-backed RepoStore at the boot edge. The
 // supervisor consumes this through the deploy router; the trivial
