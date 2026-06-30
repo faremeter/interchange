@@ -1,6 +1,12 @@
 #!/usr/bin/env bun
 /* eslint-disable no-console */
 
+// Seed script for the local development database.
+//
+// This module is Node-bound: it spawns child processes via
+// `node:child_process`, so it cannot run under a non-Node runtime
+// regardless of whether it references Buffer.
+
 import { spawn } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { readdirSync, readFileSync } from "node:fs";
@@ -1345,11 +1351,11 @@ async function runGit(
     });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (c: Buffer) => {
-      stdout += c.toString("utf-8");
+    child.stdout.on("data", (c: Uint8Array) => {
+      stdout += new TextDecoder().decode(c);
     });
-    child.stderr.on("data", (c: Buffer) => {
-      stderr += c.toString("utf-8");
+    child.stderr.on("data", (c: Uint8Array) => {
+      stderr += new TextDecoder().decode(c);
     });
     child.on("error", reject);
     child.on("close", (code) => {

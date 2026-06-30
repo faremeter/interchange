@@ -7,6 +7,10 @@
 // server in the correct order, with colored log prefixes and graceful
 // shutdown.
 //
+// This module is Node-bound: it spawns child processes via zx (which
+// wraps `node:child_process`), so it cannot run under a non-Node
+// runtime regardless of whether it references Buffer.
+//
 // Usage:
 //   bun bin/dev.ts                       # start hub + sidecar + admin-ui
 //   bun bin/dev.ts --seed                # also seed the database after hub is ready
@@ -126,14 +130,14 @@ function spawnLabeled(
 
   const prefix = `${color}[${label}]\x1b[0m`;
 
-  proc.stdout.on("data", (chunk: Buffer) => {
-    for (const line of chunk.toString().split("\n")) {
+  proc.stdout.on("data", (chunk: Uint8Array) => {
+    for (const line of new TextDecoder().decode(chunk).split("\n")) {
       if (line) process.stdout.write(`${prefix} ${line}\n`);
     }
   });
 
-  proc.stderr.on("data", (chunk: Buffer) => {
-    for (const line of chunk.toString().split("\n")) {
+  proc.stderr.on("data", (chunk: Uint8Array) => {
+    for (const line of new TextDecoder().decode(chunk).split("\n")) {
       if (line) process.stderr.write(`${prefix} ${line}\n`);
     }
   });
