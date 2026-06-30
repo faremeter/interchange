@@ -17,7 +17,7 @@ import {
   grant as grantTable,
   workflowDeployment as workflowDeploymentTable,
 } from "@intx/db/schema";
-import { hexEncode } from "@intx/types";
+import { base64Encode, hexEncode } from "@intx/types";
 import { generateId } from "@intx/hub-common";
 import {
   sessionAsset as sessionAssetTable,
@@ -1380,7 +1380,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       cryptoProvider,
     );
     const rawMessage = assembleMessage(headers, signedContent, signature);
-    const base64 = Buffer.from(rawMessage).toString("base64");
+    const base64 = base64Encode(rawMessage);
 
     const delivered = sidecarRouter.routeMail(agentAddress, base64);
     if (!delivered) {

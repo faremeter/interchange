@@ -8,6 +8,7 @@ import type {
   HarnessConfig,
   MessageAttachment,
 } from "@intx/types/runtime";
+import { base64Decode, hexEncode } from "@intx/types";
 import { extractAttachments } from "@intx/mime";
 import {
   grant as grantTable,
@@ -548,7 +549,7 @@ describe("SessionService", () => {
 
     const rawArg = call.args[1];
     if (typeof rawArg !== "string") throw new Error("expected string arg");
-    const decoded = Buffer.from(rawArg, "base64").toString("utf-8");
+    const decoded = new TextDecoder().decode(base64Decode(rawArg));
     expect(decoded).toContain("From: user@test.local");
     expect(decoded).toContain(`To: ${AGENT_ADDRESS}`);
     expect(decoded).toContain("Message-ID: <msg-1@test.local>");
@@ -575,7 +576,7 @@ describe("SessionService", () => {
 
     const rawArg1 = call.args[1];
     if (typeof rawArg1 !== "string") throw new Error("expected string arg");
-    const decoded = Buffer.from(rawArg1, "base64").toString("utf-8");
+    const decoded = new TextDecoder().decode(base64Decode(rawArg1));
     expect(decoded).toContain("In-Reply-To: <prev@test.local>");
     expect(decoded).toContain(
       "References: <root@test.local> <prev@test.local>",
@@ -602,7 +603,7 @@ describe("SessionService", () => {
     if (call === undefined) throw new Error("unreachable");
     const rawArg = call.args[1];
     if (typeof rawArg !== "string") throw new Error("expected string arg");
-    const raw = new Uint8Array(Buffer.from(rawArg, "base64"));
+    const raw = base64Decode(rawArg);
 
     const extracted = extractAttachments(raw);
     expect(extracted).toHaveLength(1);
@@ -747,9 +748,11 @@ describe("SessionService", () => {
     expect(greetRow.sourceCommitSha).toBe("c".repeat(40));
     expect(greetRow.instanceId).toBe(INSTANCE_ID);
     expect(greetRow.assetPackSha).toBe(
-      Buffer.from(
-        await crypto.subtle.digest("SHA-256", new Uint8Array([10, 11, 12])),
-      ).toString("hex"),
+      hexEncode(
+        new Uint8Array(
+          await crypto.subtle.digest("SHA-256", new Uint8Array([10, 11, 12])),
+        ),
+      ),
     );
 
     const searchRow = captured.find((r) => r.agentAssetId === "aas_search");
@@ -1141,9 +1144,11 @@ describe("SessionService", () => {
     expect(row.sourceCommitSha).toBe("e".repeat(40));
     expect(row.instanceId).toBe(INSTANCE_ID);
     expect(row.assetPackSha).toBe(
-      Buffer.from(
-        await crypto.subtle.digest("SHA-256", new Uint8Array([42, 43, 44])),
-      ).toString("hex"),
+      hexEncode(
+        new Uint8Array(
+          await crypto.subtle.digest("SHA-256", new Uint8Array([42, 43, 44])),
+        ),
+      ),
     );
   });
 
