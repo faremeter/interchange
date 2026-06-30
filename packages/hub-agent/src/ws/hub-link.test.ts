@@ -347,8 +347,8 @@ function startTestServer(): TestEnv {
 
 const env = startTestServer();
 
-afterAll(() => {
-  env.server.stop(true);
+afterAll(async () => {
+  await env.server.stop(true);
 });
 
 describe("sidecar↔hub integration", () => {
@@ -925,7 +925,7 @@ describe("sidecar↔hub integration", () => {
       ).rejects.toThrow("odd-length");
     } finally {
       client.close();
-      badServer.stop(true);
+      await badServer.stop(true);
     }
   });
 
@@ -1077,7 +1077,7 @@ describe("sidecar↔hub integration", () => {
       expect(await capturedVerifyCommit!(payload, wrongSig)).toBe(false);
     } finally {
       client.close();
-      reconnectServer.stop(true);
+      await reconnectServer.stop(true);
     }
   });
 
@@ -1111,7 +1111,7 @@ describe("sidecar↔hub integration", () => {
       expect(pingEnv.router.getConnectedSidecars()).toContain("sc-ping");
     } finally {
       client.close();
-      pingEnv.server.stop(true);
+      await pingEnv.server.stop(true);
     }
   });
 
@@ -1264,7 +1264,7 @@ describe("sidecar↔hub integration", () => {
       // Force a disconnect by stopping the server. The WebSocket fires
       // its close event on the client, which schedules a reconnect
       // through the fake scheduler.
-      reconnectEnv.server.stop(true);
+      await reconnectEnv.server.stop(true);
       await waitFor(() => pendingReconnect !== null);
 
       // close() must cancel the scheduled reconnect. Without the fix
@@ -1274,7 +1274,7 @@ describe("sidecar↔hub integration", () => {
       expect(pendingReconnect).toBeNull();
     } finally {
       client.close();
-      reconnectEnv.server.stop(true);
+      await reconnectEnv.server.stop(true);
     }
   });
 
@@ -1619,7 +1619,7 @@ describe("sidecar↔hub integration", () => {
         () =>
           !wfrRouter.getConnectedSidecars().includes("sc-wfr-bootstrap-race"),
       );
-      wfrServer.stop(true);
+      await wfrServer.stop(true);
     }
   });
 });
@@ -1714,7 +1714,7 @@ describe("routability decoupled from restore", () => {
       );
     } finally {
       client.close();
-      server.stop(true);
+      await server.stop(true);
     }
   });
 });

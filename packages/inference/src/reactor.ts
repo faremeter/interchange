@@ -609,7 +609,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       }
     })();
 
-    track(p);
+    void track(p);
     await p;
   }
 
@@ -689,13 +689,13 @@ export function createReactor(config: ReactorConfig): Reactor {
     let results: ToolResult[];
     if (parallel) {
       const p = Promise.all(calls.map((c) => runOne(c)));
-      track(p);
+      void track(p);
       results = await p;
     } else {
       results = [];
       for (const call of calls) {
         const p = runOne(call);
-        track(p);
+        void track(p);
         results.push(await p);
       }
     }

@@ -289,8 +289,8 @@ function startTestServer(): TestEnv {
 
 const env = startTestServer();
 
-afterAll(() => {
-  env.server.stop(true);
+afterAll(async () => {
+  await env.server.stop(true);
 });
 
 describe("hub-link mail.inbound throwing router", () => {

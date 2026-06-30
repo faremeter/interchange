@@ -944,8 +944,8 @@ export async function startDeployFlowEnv(
     deployments.clear();
     sidecar.proc.kill();
     await sidecar.proc.exited;
-    hub.server.stop(true);
-    inference.server.stop(true);
+    await hub.server.stop(true);
+    await inference.server.stop(true);
     for (const d of tempDirs.splice(0)) {
       await fs.promises.rm(d, { recursive: true, force: true });
     }
