@@ -12,6 +12,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { base64Encode } from "@intx/types";
 import {
   harnessHubEnvAvailable,
   runGit,
@@ -93,7 +94,7 @@ describe.skipIf(!harnessHubEnvAvailable())(
       // first ref line carries the advertised v0 capabilities.
       const info = await fetch(`${url}/info/refs?service=git-upload-pack`, {
         headers: {
-          Authorization: `Basic ${Buffer.from(`x:${token.secret}`).toString("base64")}`,
+          Authorization: `Basic ${base64Encode(new TextEncoder().encode(`x:${token.secret}`))}`,
         },
       });
       expect(info.status).toBe(200);

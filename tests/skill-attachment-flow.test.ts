@@ -41,6 +41,7 @@ import path from "node:path";
 import { applyAssetPack } from "@intx/hub-agent";
 import { generateKeyPair } from "@intx/crypto";
 import { generateId } from "@intx/hub-common";
+import { hexEncode } from "@intx/types";
 import {
   buildAvailableSkillsStanza,
   createAgentRepoStore,
@@ -531,9 +532,11 @@ describe("skill attachment flow (end-to-end)", () => {
       repoId,
       ASSET_REF,
     );
-    const assetPackSha = Buffer.from(
-      await crypto.subtle.digest("SHA-256", new Uint8Array(packResult.pack)),
-    ).toString("hex");
+    const assetPackSha = hexEncode(
+      new Uint8Array(
+        await crypto.subtle.digest("SHA-256", new Uint8Array(packResult.pack)),
+      ),
+    );
     expect(assetPackSha).toMatch(/^[0-9a-f]{64}$/);
 
     const workspaceRoot = await mkTemp("intr95-ws-");

@@ -26,6 +26,7 @@ import {
 import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import { parseAgentId } from "@intx/hub-sessions";
 import { createAgentRepoStore as createSidecarRepoStore } from "@intx/hub-agent";
+import { base64Encode } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 import git from "isomorphic-git";
 
@@ -138,10 +139,7 @@ beforeAll(async () => {
     messageSignedContent,
     messageSignature,
   );
-  env.hub.router.routeMail(
-    AGENT_ADDRESS,
-    Buffer.from(messageRaw).toString("base64"),
-  );
+  env.hub.router.routeMail(AGENT_ADDRESS, base64Encode(messageRaw));
 
   // Wait for the FULL message lifecycle to land so the downstream
   // sync test sees populated agent state on disk. The inference

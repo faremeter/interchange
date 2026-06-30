@@ -13,6 +13,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { base64Decode, base64Encode } from "@intx/types";
 import {
   harnessHubEnvAvailable,
   installSshAllowedSigner,
@@ -83,7 +84,7 @@ function extractOpenSshPublicKey(armored: string): string {
   const body = armored
     .slice(begin + SSHSIG_BEGIN.length, end)
     .replace(/\s+/g, "");
-  const blob = new Uint8Array(Buffer.from(body, "base64"));
+  const blob = base64Decode(body);
 
   let off = 0;
   // magic "SSHSIG"
@@ -105,7 +106,7 @@ function extractOpenSshPublicKey(armored: string): string {
   if (new TextDecoder().decode(keyType) !== "ssh-ed25519") {
     throw new Error("only ssh-ed25519 keys are supported");
   }
-  return `ssh-ed25519 ${Buffer.from(pubKeyBlob).toString("base64")}`;
+  return `ssh-ed25519 ${base64Encode(pubKeyBlob)}`;
 }
 
 /**
