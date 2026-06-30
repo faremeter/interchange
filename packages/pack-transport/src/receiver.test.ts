@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { createPackReceiver } from "./receiver";
+import { base64Encode } from "@intx/types";
 import type { PackPushFrame, PackDoneFrame } from "@intx/types/sidecar";
 
 function makePush(overrides: Partial<PackPushFrame> = {}): PackPushFrame {
@@ -10,7 +11,7 @@ function makePush(overrides: Partial<PackPushFrame> = {}): PackPushFrame {
     repoId: { kind: "agent-state", id: agentAddress },
     transferId: "t1",
     seq: 0,
-    data: Buffer.from("chunk-data").toString("base64"),
+    data: base64Encode(new TextEncoder().encode("chunk-data")),
     ...overrides,
   };
 }
@@ -45,8 +46,8 @@ describe("PackReceiver", () => {
 
   test("handleDone assembles chunks into a single pack", () => {
     const receiver = createPackReceiver();
-    const chunk1 = Buffer.from("hello").toString("base64");
-    const chunk2 = Buffer.from(" world").toString("base64");
+    const chunk1 = base64Encode(new TextEncoder().encode("hello"));
+    const chunk2 = base64Encode(new TextEncoder().encode(" world"));
 
     receiver.handlePush(makePush({ seq: 0, data: chunk1 }));
     receiver.handlePush(makePush({ seq: 1, data: chunk2 }));
@@ -95,6 +96,28 @@ describe("PackReceiver", () => {
     // New transfer for same agent is now allowed
     const reason = receiver.handlePush(makePush({ transferId: "t2", seq: 0 }));
     expect(reason).toBeNull();
+  });
+
+  test("returns corrupt for malformed base64 data instead of throwing", () => {
+    const receiver = createPackReceiver();
+    let reason: string | null = null;
+    let threw = false;
+    try {
+      reason = receiver.handlePush(
+        makePush({ seq: 0, data: "@@@not-valid@@@" }),
+      );
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(false);
+    expect(reason).toBe("corrupt");
+
+    // The malformed frame cleaned the transfer up, mirroring the seq-gap
+    // path, so a fresh transfer for the same agent is accepted.
+    expect(receiver.hasTransfer("t1")).toBe(false);
+    expect(
+      receiver.handlePush(makePush({ transferId: "t2", seq: 0 })),
+    ).toBeNull();
   });
 
   test("cleans up after seq gap rejection", () => {
