@@ -12,12 +12,12 @@ import { agentInstance } from "./instances";
 import { agentSession } from "./sessions";
 import { tenant } from "./tenants";
 
-const bytea = customType<{ data: Uint8Array; driverData: Buffer }>({
+const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
   dataType() {
     return "bytea";
   },
   toDriver(value) {
-    return Buffer.from(value);
+    return value;
   },
   fromDriver(value) {
     return new Uint8Array(value);
