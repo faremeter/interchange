@@ -37,7 +37,14 @@ import type {
   ConversationTurn,
   InferenceEvent,
   InferenceSource,
+  LastCycleSource,
 } from "@intx/types/runtime";
+
+const TEST_SOURCE: LastCycleSource = {
+  sourceId: "test-google-genai",
+  provider: "google-genai",
+  model: "test-google-genai-model",
+};
 
 const FIXTURE_ROOT = join(
   import.meta.dir,
@@ -92,7 +99,7 @@ const SystemInstruction = type({
 // prior one regardless of how the parser surface grows.
 let adapter: ProviderAdapter;
 beforeEach(() => {
-  adapter = createGoogleGenAIAdapter();
+  adapter = createGoogleGenAIAdapter(TEST_SOURCE);
 });
 
 describe("Google GenAI adapter: URL and headers", () => {
@@ -3300,12 +3307,12 @@ describe("Google GenAI adapter: parseResponse grounding", () => {
         },
       ],
     });
-    expect(() => createGoogleGenAIAdapter().parseResponse(bad)).toThrow(
-      ProtocolMismatchError,
-    );
-    expect(() => createGoogleGenAIAdapter().parseResponse(bad)).toThrow(
-      /without a current text block/,
-    );
+    expect(() =>
+      createGoogleGenAIAdapter(TEST_SOURCE).parseResponse(bad),
+    ).toThrow(ProtocolMismatchError);
+    expect(() =>
+      createGoogleGenAIAdapter(TEST_SOURCE).parseResponse(bad),
+    ).toThrow(/without a current text block/);
   });
 
   test("out-of-range groundingChunkIndex throws ProtocolMismatchError", () => {
@@ -3326,12 +3333,12 @@ describe("Google GenAI adapter: parseResponse grounding", () => {
         },
       ],
     });
-    expect(() => createGoogleGenAIAdapter().parseResponse(bad)).toThrow(
-      ProtocolMismatchError,
-    );
-    expect(() => createGoogleGenAIAdapter().parseResponse(bad)).toThrow(
-      /chunk index 99/,
-    );
+    expect(() =>
+      createGoogleGenAIAdapter(TEST_SOURCE).parseResponse(bad),
+    ).toThrow(ProtocolMismatchError);
+    expect(() =>
+      createGoogleGenAIAdapter(TEST_SOURCE).parseResponse(bad),
+    ).toThrow(/chunk index 99/);
   });
 
   test("non-web chunk kinds are skipped without throwing", async () => {
@@ -3643,7 +3650,7 @@ describe("Google GenAI adapter: parseResponse code execution", () => {
     expect(failedResult.data.result.providerOutcome).toBe("OUTCOME_FAILED");
 
     // Fresh adapter to reset per-request state for the second case.
-    const adapter2 = createGoogleGenAIAdapter();
+    const adapter2 = createGoogleGenAIAdapter(TEST_SOURCE);
     const timeout = await parseWire(adapter2, [
       sseFrame({
         candidates: [
@@ -3694,7 +3701,7 @@ describe("Google GenAI adapter: parseResponse code execution", () => {
     // ...)` call needs a fresh adapter so the second call does not
     // see the first throw's residue.
     function buildPendingAdapter(): ProviderAdapter {
-      const a = createGoogleGenAIAdapter();
+      const a = createGoogleGenAIAdapter(TEST_SOURCE);
       a.parseResponse(
         JSON.stringify({
           candidates: [
@@ -3795,12 +3802,12 @@ describe("Google GenAI adapter: parseResponse code execution", () => {
     // Fresh adapter per `toThrow` so the first call's mid-mutation
     // throw doesn't leave residue that changes the error message on
     // the second call.
-    expect(() => createGoogleGenAIAdapter().parseResponse(bad)).toThrow(
-      ProtocolMismatchError,
-    );
-    expect(() => createGoogleGenAIAdapter().parseResponse(bad)).toThrow(
-      /unmatched code-execution request/,
-    );
+    expect(() =>
+      createGoogleGenAIAdapter(TEST_SOURCE).parseResponse(bad),
+    ).toThrow(ProtocolMismatchError);
+    expect(() =>
+      createGoogleGenAIAdapter(TEST_SOURCE).parseResponse(bad),
+    ).toThrow(/unmatched code-execution request/);
   });
 
   test("code-execution-streaming fixture replay produces start, result, two text deltas, and usage", async () => {
@@ -4024,6 +4031,7 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
             cacheWrite: 0,
             thinking: 0,
           },
+          source: TEST_SOURCE,
         },
       },
     ];

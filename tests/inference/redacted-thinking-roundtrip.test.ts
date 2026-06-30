@@ -28,7 +28,14 @@ import type {
   ConversationTurn,
   InferenceEvent,
   InferenceSource,
+  LastCycleSource,
 } from "@intx/types/runtime";
+
+const TEST_SOURCE: LastCycleSource = {
+  sourceId: "test-anthropic",
+  provider: "anthropic",
+  model: "test-anthropic-model",
+};
 
 // Adversarial payload: includes characters that an over-eager
 // normalizer would touch (newlines, padding, internal whitespace,
@@ -190,7 +197,7 @@ describe("runInference — Anthropic redacted_thinking round-trip", () => {
     const assistantTurn: ConversationTurn = doneEvent.data.turn;
 
     // Build the next request with the assistant turn back in history.
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const req = adapter.buildRequest(
       [
         {

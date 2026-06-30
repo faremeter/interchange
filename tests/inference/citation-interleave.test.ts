@@ -31,7 +31,14 @@ import type {
   ConversationTurn,
   InferenceEvent,
   InferenceSource,
+  LastCycleSource,
 } from "@intx/types/runtime";
+
+const TEST_SOURCE: LastCycleSource = {
+  sourceId: "test-anthropic",
+  provider: "anthropic",
+  model: "test-anthropic-model",
+};
 
 const ANTHROPIC_SOURCE: InferenceSource = {
   id: "anthropic:claude-test",
@@ -285,6 +292,7 @@ describe("runInference — citation interleaving", () => {
                 cacheWrite: 0,
                 thinking: 0,
               },
+              source: TEST_SOURCE,
             },
           },
         ];
@@ -374,6 +382,7 @@ describe("runInference — citation interleaving", () => {
                 cacheWrite: 0,
                 thinking: 0,
               },
+              source: TEST_SOURCE,
             },
           },
         ];
