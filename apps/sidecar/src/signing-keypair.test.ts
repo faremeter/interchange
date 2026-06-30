@@ -59,6 +59,30 @@ describe("loadOrMintSidecarKeypair", () => {
     );
   });
 
+  test("rejects a truncated public key file", async () => {
+    const dataDir = await makeTempDir();
+    const signingDir = path.join(dataDir, ".sidecar-signing");
+
+    await loadOrMintSidecarKeypair(signingDir);
+    await fs.writeFile(PUBLIC_KEY_PATH(signingDir), new Uint8Array(5));
+
+    await expect(loadOrMintSidecarKeypair(signingDir)).rejects.toThrow(
+      /does not match the key derived from the seed/,
+    );
+  });
+
+  test("rejects an empty public key file", async () => {
+    const dataDir = await makeTempDir();
+    const signingDir = path.join(dataDir, ".sidecar-signing");
+
+    await loadOrMintSidecarKeypair(signingDir);
+    await fs.writeFile(PUBLIC_KEY_PATH(signingDir), new Uint8Array(0));
+
+    await expect(loadOrMintSidecarKeypair(signingDir)).rejects.toThrow(
+      /does not match the key derived from the seed/,
+    );
+  });
+
   test("rejects a seed that is not a valid Ed25519 seed", async () => {
     const dataDir = await makeTempDir();
     const signingDir = path.join(dataDir, ".sidecar-signing");
