@@ -1,8 +1,9 @@
 import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
 import { SendMessage, AttachmentError } from "./sessions";
+import { base64Encode } from "./base64";
 
-const okData = Buffer.from("hello world").toString("base64");
+const okData = base64Encode(new TextEncoder().encode("hello world"));
 
 describe("SendMessage attachments schema", () => {
   test("accepts a message with no attachments", () => {

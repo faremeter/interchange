@@ -163,7 +163,7 @@ describe("hashDefinition", () => {
     });
     const h1 = hashDefinition(def);
     const h2 = hashDefinition(def);
-    expect(Buffer.from(h1).equals(Buffer.from(h2))).toBe(true);
+    expect(h1).toEqual(h2);
   });
 
   test("hashes a definition whose agent carries tool factories", () => {

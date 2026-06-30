@@ -25,6 +25,7 @@ import { join } from "node:path";
 
 import { runInference } from "@intx/inference";
 import { createDefaultDependencies } from "@intx/inference/providers";
+import { base64Decode } from "@intx/types";
 import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 export interface MainOptions {
@@ -171,7 +172,7 @@ function handleEvent(
       const ext = mimeToExtension(src.mimeType);
       const filename = `gemini-image-${String(Date.now())}-${String(index)}${ext}`;
       const path = join(outputDir, filename);
-      const bytes = Buffer.from(src.data, "base64");
+      const bytes = base64Decode(src.data);
       writeFileSync(path, bytes);
       process.stdout.write(
         `\nagent-gemini-image: wrote ${String(bytes.length)} bytes ` +

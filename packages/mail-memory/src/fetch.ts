@@ -10,6 +10,7 @@ import type {
   MessageRef,
 } from "@intx/types/runtime";
 import { InterchangeType } from "@intx/types/runtime";
+import { base64Decode } from "@intx/types";
 import type { MailboxStore } from "./mailbox";
 import { requireMessage } from "./mailbox";
 import {
@@ -72,7 +73,7 @@ export function fetchPart(
 
   if (enc.toLowerCase() === "base64") {
     const b64 = new TextDecoder().decode(part.body).replace(/\s/g, "");
-    content = new Uint8Array(Buffer.from(b64, "base64"));
+    content = base64Decode(b64);
   } else {
     content = part.body;
   }
