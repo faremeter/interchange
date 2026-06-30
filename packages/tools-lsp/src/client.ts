@@ -231,10 +231,10 @@ export async function createLSPClient(
     throw new LSPInitializeError(serverID, { cause: err });
   }
 
-  connection.sendNotification("initialized", {});
+  void connection.sendNotification("initialized", {});
 
   if (server.initialization !== undefined) {
-    connection.sendNotification("workspace/didChangeConfiguration", {
+    void connection.sendNotification("workspace/didChangeConfiguration", {
       settings: server.initialization,
     });
   }
@@ -259,7 +259,7 @@ export async function createLSPClient(
     if (existing === undefined) {
       const version = 1;
       files.set(filePath, { version, text });
-      connection.sendNotification("textDocument/didOpen", {
+      void connection.sendNotification("textDocument/didOpen", {
         textDocument: {
           uri,
           languageId: languageId(ext),
@@ -273,11 +273,11 @@ export async function createLSPClient(
     const version = existing.version + 1;
     files.set(filePath, { version, text });
 
-    connection.sendNotification("workspace/didChangeWatchedFiles", {
+    void connection.sendNotification("workspace/didChangeWatchedFiles", {
       changes: [{ uri, type: 2 }],
     });
 
-    connection.sendNotification("textDocument/didChange", {
+    void connection.sendNotification("textDocument/didChange", {
       textDocument: { uri, version },
       contentChanges: [{ text }],
     });
@@ -405,7 +405,7 @@ export async function createLSPClient(
         5_000,
         `shutdown ${serverID}`,
       );
-      connection.sendNotification("exit");
+      void connection.sendNotification("exit");
     } catch {
       // Best-effort shutdown.
     }

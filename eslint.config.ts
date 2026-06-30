@@ -15,6 +15,8 @@ export default defineConfig(
     },
     rules: {
       "no-console": "error",
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
       "@typescript-eslint/no-unused-expressions": [
         "error",
         { allowTaggedTemplates: true },

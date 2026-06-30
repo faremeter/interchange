@@ -773,7 +773,7 @@ describe("createGateManager", () => {
 
   test("duplicate gate ID throws", () => {
     const manager = createGateManager();
-    manager.register("g", "approval", 5000, undefined, () => {
+    void manager.register("g", "approval", 5000, undefined, () => {
       /* noop */
     });
     expect(() =>
@@ -785,7 +785,7 @@ describe("createGateManager", () => {
 
   test("findByCorrelationId returns the gate", () => {
     const manager = createGateManager();
-    manager.register("g-corr", "message_response", 5000, "corr-42", () => {
+    void manager.register("g-corr", "message_response", 5000, "corr-42", () => {
       /* noop */
     });
     const found = manager.findByCorrelationId("corr-42");

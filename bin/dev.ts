@@ -158,7 +158,7 @@ async function shutdown(code: number): Promise<never> {
 
   for (const child of children) {
     try {
-      child.kill("SIGTERM");
+      void child.kill("SIGTERM");
     } catch {
       // Already exited.
     }
@@ -169,7 +169,7 @@ async function shutdown(code: number): Promise<never> {
 
   for (const child of children) {
     try {
-      child.kill("SIGKILL");
+      void child.kill("SIGKILL");
     } catch {
       // Already exited.
     }
@@ -178,8 +178,8 @@ async function shutdown(code: number): Promise<never> {
   process.exit(pendingExitCode);
 }
 
-process.on("SIGINT", () => shutdown(0));
-process.on("SIGTERM", () => shutdown(0));
+process.on("SIGINT", () => void shutdown(0));
+process.on("SIGTERM", () => void shutdown(0));
 
 // Tear down everything if any long-running process exits unexpectedly.
 function watchProcess(label: string, proc: ProcessPromise): void {

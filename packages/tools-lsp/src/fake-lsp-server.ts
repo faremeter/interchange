@@ -57,7 +57,7 @@ connection.onNotification(
     // Simulate publishDiagnostics after a short delay
     setTimeout(() => {
       const diagnostics = generateDiagnostics(uri, text);
-      connection.sendNotification("textDocument/publishDiagnostics", {
+      void connection.sendNotification("textDocument/publishDiagnostics", {
         uri,
         version,
         diagnostics,
@@ -79,7 +79,7 @@ connection.onNotification(
 
       setTimeout(() => {
         const diagnostics = generateDiagnostics(uri, lastChange.text);
-        connection.sendNotification("textDocument/publishDiagnostics", {
+        void connection.sendNotification("textDocument/publishDiagnostics", {
           uri,
           version,
           diagnostics,

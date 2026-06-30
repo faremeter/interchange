@@ -620,7 +620,7 @@ async function main(): Promise<void> {
       inferenceURL: `http://localhost:${String(port)}`,
     });
   } finally {
-    baselineInference.server.stop(true);
+    await baselineInference.server.stop(true);
   }
 
   const timingFile = path.join(opts.outDir, "supervisor-timing.log");

@@ -76,7 +76,7 @@ async function startSmokeEnv(): Promise<{
     deployments,
     registerDeployment,
     teardown: async () => {
-      hub.server.stop(true);
+      await hub.server.stop(true);
       for (const d of tempDirs.splice(0)) {
         await fs.promises.rm(d, { recursive: true, force: true }).catch(() => {
           /* best effort cleanup */
