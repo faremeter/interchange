@@ -8,6 +8,7 @@ import { gitToken, principal, tenant } from "@intx/db/schema";
 import { PAT_PREFIX, SVC_PREFIX } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
 import type { RepoAction } from "@intx/hub-sessions";
+import { base64Decode } from "@intx/types";
 
 import type { AppEnv, PrincipalRow, TenantRow } from "../context";
 
@@ -258,7 +259,7 @@ function parseAuthorizationHeader(
 
 function decodeBase64Utf8(input: string): string | null {
   try {
-    return Buffer.from(input, "base64").toString("utf8");
+    return new TextDecoder().decode(base64Decode(input));
   } catch {
     return null;
   }

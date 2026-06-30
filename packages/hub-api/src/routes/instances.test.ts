@@ -7,6 +7,7 @@ import {
   type MessageHeaders,
 } from "@intx/mime";
 import type { GrantRule } from "@intx/types/authz";
+import { base64Encode } from "@intx/types";
 import type { SessionStatus } from "@intx/types";
 import type {
   ConnectorThreadState,
@@ -868,9 +869,9 @@ describe("POST /agents/instances/:instanceId/mail attachments", () => {
       sessionService: service,
     });
 
-    const data = Buffer.from(
+    const data = base64Encode(
       new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]),
-    ).toString("base64");
+    );
     const res = await postMailWith(app, [
       { mimeType: "image/png", data, name: "shot.png" },
     ]);
@@ -899,7 +900,7 @@ describe("POST /agents/instances/:instanceId/mail attachments", () => {
       sessionService: service,
     });
 
-    const data = Buffer.from(new Uint8Array([1, 2, 3])).toString("base64");
+    const data = base64Encode(new Uint8Array([1, 2, 3]));
     const res = await postMailWith(app, [{ mimeType: "image/tiff", data }]);
 
     expect(res.status).toBe(400);
@@ -936,7 +937,7 @@ describe("POST /agents/instances/:instanceId/mail attachments", () => {
       sessionService: service,
     });
 
-    const data = Buffer.from(new Uint8Array([1, 2, 3])).toString("base64");
+    const data = base64Encode(new Uint8Array([1, 2, 3]));
     const res = await postMailWith(app, [
       { mimeType: "image/png", data, name: 'a"b.png' },
     ]);
@@ -958,8 +959,8 @@ describe("POST /agents/instances/:instanceId/mail attachments", () => {
       sessionService: service,
     });
 
-    const small = Buffer.from(new Uint8Array([1, 2, 3])).toString("base64");
-    const oversize = Buffer.alloc(11 * 1024 * 1024, 0x61).toString("base64");
+    const small = base64Encode(new Uint8Array([1, 2, 3]));
+    const oversize = base64Encode(new Uint8Array(11 * 1024 * 1024).fill(0x61));
     const res = await postMailWith(app, [
       { mimeType: "image/png", data: small },
       { mimeType: "image/png", data: oversize },
@@ -981,7 +982,7 @@ describe("POST /agents/instances/:instanceId/mail attachments", () => {
 
     // A disallowed attachment would be a 400 if validation ran first; with
     // no write grant the route must reject with its auth failure instead.
-    const data = Buffer.from(new Uint8Array([1, 2, 3])).toString("base64");
+    const data = base64Encode(new Uint8Array([1, 2, 3]));
     const res = await postMailWith(app, [{ mimeType: "image/tiff", data }]);
 
     expect(res.status).toBe(403);
