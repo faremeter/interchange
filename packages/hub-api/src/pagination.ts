@@ -10,6 +10,8 @@ import {
 } from "drizzle-orm";
 import { type } from "arktype";
 
+import { base64urlDecode, base64urlEncode } from "@intx/types";
+
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
@@ -21,12 +23,12 @@ type CursorData = typeof CursorData.infer;
 
 function encodeCursor(createdAt: Date, id: string): string {
   const data: CursorData = { t: createdAt.toISOString(), id };
-  return Buffer.from(JSON.stringify(data)).toString("base64url");
+  return base64urlEncode(new TextEncoder().encode(JSON.stringify(data)));
 }
 
 function decodeCursor(cursor: string): CursorData | null {
   try {
-    const json = Buffer.from(cursor, "base64url").toString();
+    const json = new TextDecoder().decode(base64urlDecode(cursor));
     const parsed: unknown = JSON.parse(json);
     const data = CursorData(parsed);
     if (data instanceof type.errors) return null;
