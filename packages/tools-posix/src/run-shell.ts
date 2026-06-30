@@ -1,3 +1,6 @@
+// This module is Node-bound: it spawns subprocesses through node:child_process
+// and is not portable to environments without that API.
+
 import { spawn } from "node:child_process";
 
 export type RunShellArgs = {
@@ -34,12 +37,12 @@ export async function runShell(
     // same collector as data arrives. Node emits data events from both streams
     // on the same event loop tick order that the OS delivers them, so appending
     // to a shared array preserves temporal ordering.
-    child.stdout.on("data", (chunk: Buffer) => {
-      chunks.push(chunk.toString("utf8"));
+    child.stdout.on("data", (chunk: Uint8Array) => {
+      chunks.push(new TextDecoder().decode(chunk));
     });
 
-    child.stderr.on("data", (chunk: Buffer) => {
-      chunks.push(chunk.toString("utf8"));
+    child.stderr.on("data", (chunk: Uint8Array) => {
+      chunks.push(new TextDecoder().decode(chunk));
     });
 
     let settled = false;

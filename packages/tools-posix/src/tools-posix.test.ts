@@ -912,7 +912,7 @@ describe("grep", () => {
     const grepDir = join(tmpDir, "grep-binary");
     await mkdir(grepDir);
     await writeFile(join(grepDir, "text.txt"), "findme\n");
-    await writeFile(join(grepDir, "binary.bin"), Buffer.from([0x00, 0x01]));
+    await writeFile(join(grepDir, "binary.bin"), new Uint8Array([0x00, 0x01]));
 
     const result = await tools.run(
       {
