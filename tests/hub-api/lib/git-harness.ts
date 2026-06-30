@@ -1,6 +1,10 @@
 // Integration-test harness for hub-API tests that need a real hub
 // subprocess plus per-test postgres-schema isolation.
 //
+// This module is Node-bound: it spawns child processes via
+// `node:child_process`, so it cannot run under a non-Node runtime
+// regardless of whether it references Buffer.
+//
 // Purpose
 // -------
 // Hub-API integration tests exercise the running hub end-to-end
@@ -288,11 +292,11 @@ export async function runGit(
       });
       let stdout = "";
       let stderr = "";
-      child.stdout.on("data", (c: Buffer) => {
-        stdout += c.toString("utf-8");
+      child.stdout.on("data", (c: Uint8Array) => {
+        stdout += new TextDecoder().decode(c);
       });
-      child.stderr.on("data", (c: Buffer) => {
-        stderr += c.toString("utf-8");
+      child.stderr.on("data", (c: Uint8Array) => {
+        stderr += new TextDecoder().decode(c);
       });
       child.on("error", (e: Error) => {
         reject(e);
@@ -515,11 +519,11 @@ export async function startHub(
 
   // Bucket stdout/stderr for diagnostics on failure.
   const logs: string[] = [];
-  child.stdout.on("data", (c: Buffer) => {
-    logs.push(c.toString("utf-8"));
+  child.stdout.on("data", (c: Uint8Array) => {
+    logs.push(new TextDecoder().decode(c));
   });
-  child.stderr.on("data", (c: Buffer) => {
-    logs.push(c.toString("utf-8"));
+  child.stderr.on("data", (c: Uint8Array) => {
+    logs.push(new TextDecoder().decode(c));
   });
 
   let exited = false;
