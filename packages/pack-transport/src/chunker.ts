@@ -2,6 +2,8 @@
 //
 // Splits a packfile into base64-encoded chunks suitable for repo.pack.push frames.
 
+import { base64Encode } from "@intx/types";
+
 export const PACK_CHUNK_SIZE = 64 * 1024;
 
 export type PackChunk = {
@@ -20,7 +22,7 @@ export function chunkPack(pack: Uint8Array): PackChunk[] {
     const slice = pack.slice(offset, offset + PACK_CHUNK_SIZE);
     chunks.push({
       seq: seq++,
-      data: Buffer.from(slice).toString("base64"),
+      data: base64Encode(slice),
     });
   }
   return chunks;

@@ -5,6 +5,7 @@
 // frames followed by a repo.pack.done. The receiver validates seq continuity
 // and rejects concurrent transfers for the same agent.
 
+import { base64Decode } from "@intx/types";
 import type {
   PackPushFrame,
   PackDoneFrame,
@@ -59,8 +60,20 @@ export function createPackReceiver(): PackReceiver {
       return "corrupt";
     }
 
-    const chunk = Buffer.from(frame.data, "base64");
-    transfer.chunks.push(new Uint8Array(chunk));
+    // `base64Decode` throws on malformed input. `handlePush` is a wire-
+    // boundary validator whose contract is to RETURN a reject reason for a
+    // bad frame, so a peer-controlled decode failure is converted to
+    // "corrupt" the same way the seq-gap path above is, rather than
+    // escaping past the caller's reject reply.
+    let chunk: Uint8Array;
+    try {
+      chunk = base64Decode(frame.data);
+    } catch {
+      cleanup(frame.transferId, frame.agentAddress);
+      return "corrupt";
+    }
+
+    transfer.chunks.push(chunk);
     transfer.nextSeq++;
     return null;
   }
