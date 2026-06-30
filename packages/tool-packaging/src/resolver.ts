@@ -33,8 +33,6 @@
 //     walk so validation does not require a second pass over the
 //     network.
 
-import { Buffer } from "node:buffer";
-
 import npmPickManifest from "npm-pick-manifest";
 import npmRegistryFetch from "npm-registry-fetch";
 import npmPackageArg from "npm-package-arg";
@@ -384,7 +382,7 @@ export class AssetRegistrySource implements RegistrySource {
       const repoPath = `tarballs/${filename}`;
       const bytes = await this.#readBlob(repoPath);
       const integrity = ssri
-        .fromData(Buffer.from(bytes), { algorithms: ["sha512"] })
+        .fromData(bytes, { algorithms: ["sha512"] })
         .toString();
       const extracted = await extractPackageJSON(this.name, filename, bytes);
       const validated = extracted.parsed;

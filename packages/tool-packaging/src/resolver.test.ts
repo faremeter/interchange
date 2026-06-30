@@ -1,5 +1,4 @@
 import { describe, test, expect } from "bun:test";
-import { Buffer } from "node:buffer";
 import ssri from "ssri";
 import * as tar from "tar";
 import { promises as fs } from "node:fs";
@@ -965,7 +964,7 @@ describe("AssetRegistrySource", () => {
       }
       const bytes = await fixture.readBlob(entry.source.path);
       const expected = ssri
-        .fromData(Buffer.from(bytes), { algorithms: ["sha512"] })
+        .fromData(bytes, { algorithms: ["sha512"] })
         .toString();
       expect(entry.integrity).toBe(expected);
     }
