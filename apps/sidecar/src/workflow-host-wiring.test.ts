@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
+import { hexEncode } from "@intx/types";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
@@ -1296,7 +1297,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       type: "ready",
       data: {
         childPid: 7321,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
       },
     });
 
@@ -1308,9 +1309,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     // Sanity check: re-deriving the public key from the keypair lines
     // up with the router's returned value.
-    expect(result.publicKey).toBe(
-      Buffer.from(keyPair.publicKey).toString("hex"),
-    );
+    expect(result.publicKey).toBe(hexEncode(keyPair.publicKey));
 
     // Teardown: kill the child so the spawn-time pumps unwind.
     // Use unused supervisorToChild to silence the linter.
@@ -1393,7 +1392,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       type: "ready",
       data: {
         childPid: 9123,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
       },
     });
 
@@ -1604,9 +1603,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         type: "ready",
         data: {
           childPid: 4400 + spawns.length,
-          childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString(
-            "hex",
-          ),
+          childPublicKey: hexEncode(childIpcKeyPair.publicKey),
         },
       });
       if (opts.sendRecycleRequest) {
@@ -1720,7 +1717,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       type: "ready",
       data: {
         childPid: 7600,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
       },
     });
     await deployPromise;
@@ -1823,9 +1820,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         type: "ready",
         data: {
           childPid,
-          childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString(
-            "hex",
-          ),
+          childPublicKey: hexEncode(childIpcKeyPair.publicKey),
         },
       });
     }
