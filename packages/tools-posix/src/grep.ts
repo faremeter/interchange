@@ -1,3 +1,6 @@
+// This module is Node-bound: it reads the filesystem through node:fs and is
+// not portable to environments without that API.
+
 import type { Dirent } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { resolve, relative, join } from "node:path";
@@ -27,7 +30,7 @@ type FileSearchResult = {
   lines: string[];
 };
 
-function isBinary(buf: Buffer): boolean {
+function isBinary(buf: Uint8Array): boolean {
   return buf.includes(0);
 }
 
@@ -38,7 +41,7 @@ async function searchFile(
 ): Promise<FileSearchResult | null> {
   signal.throwIfAborted();
 
-  let buf: Buffer;
+  let buf: Uint8Array;
   try {
     buf = await readFile(filePath, { signal });
   } catch (err) {
@@ -53,7 +56,7 @@ async function searchFile(
 
   if (isBinary(buf)) return null;
 
-  const lines = buf.toString("utf8").split("\n");
+  const lines = new TextDecoder().decode(buf).split("\n");
   const matches: Match[] = [];
 
   for (let i = 0; i < lines.length; i++) {

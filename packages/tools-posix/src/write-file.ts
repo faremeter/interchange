@@ -28,7 +28,7 @@ export async function runWriteFile(
 
   signal.throwIfAborted();
 
-  const bytes = Buffer.byteLength(args.content, "utf8");
+  const bytes = new TextEncoder().encode(args.content).length;
 
   try {
     await writeFile(args.path, args.content, { encoding: "utf8", signal });
