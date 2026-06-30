@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
+import { hexEncode } from "@intx/types";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
@@ -336,7 +337,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       type: "ready",
       data: {
         childPid: spawn.handle.pid,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
       },
     });
 

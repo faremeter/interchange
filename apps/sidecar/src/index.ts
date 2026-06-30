@@ -9,6 +9,7 @@ import {
   verifySSHSignature,
 } from "@intx/crypto";
 import { createSidecarOrchestrator, type HubLink } from "@intx/hub-agent";
+import { hexEncode } from "@intx/types";
 import { createAgentRepoStore } from "@intx/hub-sessions";
 import { createTarballCache } from "@intx/tool-packaging";
 
@@ -288,12 +289,8 @@ const sidecarToken = requireEnv("SIDECAR_TOKEN");
 // lookup but invisible to the typed `SubstrateConfig` shape.
 const multistepSubstrateEnv: Record<string, string> = {
   SIDECAR_DATA_DIR: dataDir,
-  SIDECAR_SIGNING_PUBLIC_KEY: Buffer.from(sidecarSigningKey.publicKey).toString(
-    "hex",
-  ),
-  SIDECAR_SIGNING_PRIVATE_KEY: Buffer.from(
-    sidecarSigningKey.privateKey,
-  ).toString("hex"),
+  SIDECAR_SIGNING_PUBLIC_KEY: hexEncode(sidecarSigningKey.publicKey),
+  SIDECAR_SIGNING_PRIVATE_KEY: hexEncode(sidecarSigningKey.privateKey),
   HUB_WS_URL: hubWsUrl,
   SIDECAR_ID: sidecarId,
   SIDECAR_TOKEN: sidecarToken,
