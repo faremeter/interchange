@@ -61,7 +61,11 @@ const permissiveHandler: KindHandler = {
 
 const TEST_PRINCIPAL: Principal = { kind: "test" };
 
-async function makeAdapter(runId: string, deploymentId: string) {
+async function makeAdapter(
+  runId: string,
+  deploymentId: string,
+  inlineMaxBytes?: number,
+) {
   const dataDir = await makeTempDir("blob-substrate-adapter-");
   const repoId: RepoId = { kind: "agent-state", id: deploymentId };
   const substrate = createRepoStore({
@@ -76,6 +80,7 @@ async function makeAdapter(runId: string, deploymentId: string) {
     principal: TEST_PRINCIPAL,
     runId,
     ref: REF,
+    ...(inlineMaxBytes !== undefined ? { inlineMaxBytes } : {}),
   });
   return { adapter, substrate, repoId };
 }
@@ -160,6 +165,32 @@ describe("workflow-host BlobSubstrate adapter — blob path", () => {
     expect(ref.startsWith("blob:")).toBe(true);
     const restored = await adapter.resolveRef(ref);
     expect(restored).toEqual(original);
+  });
+
+  test("blob key is the independently-derived sha256 of the encoded JSON", async () => {
+    // The blob key is the hex SHA-256 of the encoded JSON bytes the
+    // adapter writes (`sha256Hex` in blob-substrate.ts). A drift in the
+    // digest or hex encoding silently relocates every blob and breaks
+    // resolveRef. The spill tests above recompute nothing against a
+    // fixed input, so they would survive such a drift. Force the blob
+    // path with a tiny inline threshold and a fixed value, then pin the
+    // key to a literal from an independent oracle:
+    //
+    //   printf '%s' '"golden-blob-value"' | shasum -a 256
+    //   printf '%s' '"golden-blob-value"' | openssl dgst -sha256
+    //
+    // The value JSON-stringifies to `"golden-blob-value"` (the quotes
+    // are part of the JSON string), which is exactly the byte string
+    // hashed above.
+    const { adapter } = await makeAdapter("run-golden", "deployment-golden", 4);
+    const { ref } = await adapter.recordOutput(
+      "step-golden",
+      1,
+      "golden-blob-value",
+    );
+    expect(ref).toBe(
+      "blob:78ce07de13438e422f61d9b6b6391bcb766700c15646da6710af80438dab24eb",
+    );
   });
 
   test("resolveRef rejects an unrecognized ref shape", async () => {

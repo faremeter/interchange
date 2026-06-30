@@ -389,6 +389,49 @@ describe("Control channel", () => {
     expect(seqs).toEqual([1, 2]);
   });
 
+  test("a rejecting write does not wedge subsequent sends", async () => {
+    // The sender releases its serialization lock in a `finally`, so a
+    // frame whose write rejects must not stall the frames behind it. The
+    // failed send still rejects to its caller; the next send proceeds and
+    // the wire order is preserved.
+    const kp = await generateKeyPair();
+    const channelId = generateChannelId();
+    const writes: string[] = [];
+    let failNext = true;
+    const writer = {
+      write(line: string): Promise<void> {
+        writes.push(line);
+        if (failNext) {
+          failNext = false;
+          return Promise.reject(new Error("write failed"));
+        }
+        return Promise.resolve();
+      },
+    };
+    const sender = createControlChannelSender({
+      privateKeySeed: kp.privateKey,
+      channelId,
+      writer,
+    });
+
+    const first = sender.send({ type: "drain", data: { deadlineMs: 1 } });
+    const second = sender.send({ type: "drain", data: { deadlineMs: 2 } });
+
+    await expect(first).rejects.toThrow(/write failed/);
+    await second;
+    expect(writes.length).toBe(2);
+
+    const seqs = writes.map((line) => {
+      const parsed: unknown = JSON.parse(line);
+      const validated = SignedEnvelope(parsed);
+      if (validated instanceof type.errors) {
+        throw new Error(`unexpected wire shape: ${validated.summary}`);
+      }
+      return validated.envelope.seq;
+    });
+    expect(seqs).toEqual([1, 2]);
+  });
+
   test("crashes on a forged frame whose signature does not verify", async () => {
     const kp = await generateKeyPair();
     const stream = createMemoryNdjsonStream();
@@ -613,6 +656,140 @@ describe("Control channel", () => {
         data: { childPid: 2, childPublicKey: TEST_CHILD_PUBKEY_HEX },
       },
     ]);
+  });
+
+  describe("bootstrap mode (bootstrapFromReady)", () => {
+    test("crashes when the first frame is not a ready frame", async () => {
+      // The supervisor's upstream receiver opens with no pinned key and
+      // must see `ready` first so it can extract the child's public key.
+      // A non-`ready` first frame is rejected before any signature check.
+      const kp = await generateKeyPair();
+      const channelId = generateChannelId();
+      const stream = createMemoryNdjsonStream();
+      const sender = createControlChannelSender({
+        privateKeySeed: kp.privateKey,
+        channelId,
+        writer: stream.writer,
+      });
+      const crashes: string[] = [];
+      const received: ControlPayload[] = [];
+
+      const consumer = (async () => {
+        for await (const payload of receiveControlChannel({
+          publicKey: { bootstrapFromReady: true },
+          channelId,
+          reader: stream.reader,
+          onCrash: (reason) => crashes.push(reason),
+        })) {
+          received.push(payload);
+        }
+      })();
+
+      await sender.send({ type: "drain", data: { deadlineMs: 5_000 } });
+      stream.close();
+      await consumer;
+
+      expect(received).toEqual([]);
+      expect(crashes.length).toBe(1);
+      expect(crashes[0]).toMatch(/expected a ready frame/);
+    });
+
+    test("crashes when the ready frame's childPublicKey is malformed hex", async () => {
+      // Bootstrap extracts and hex-decodes `childPublicKey` from the
+      // ready payload before verifying the frame. A non-hex value crashes
+      // the receiver at the decode step.
+      const kp = await generateKeyPair();
+      const channelId = generateChannelId();
+      const stream = createMemoryNdjsonStream();
+      const sender = createControlChannelSender({
+        privateKeySeed: kp.privateKey,
+        channelId,
+        writer: stream.writer,
+      });
+      const crashes: string[] = [];
+      const received: ControlPayload[] = [];
+
+      const consumer = (async () => {
+        for await (const payload of receiveControlChannel({
+          publicKey: { bootstrapFromReady: true },
+          channelId,
+          reader: stream.reader,
+          onCrash: (reason) => crashes.push(reason),
+        })) {
+          received.push(payload);
+        }
+      })();
+
+      await sender.send({
+        type: "ready",
+        data: { childPid: 1, childPublicKey: "zz" },
+      });
+      stream.close();
+      await consumer;
+
+      expect(received).toEqual([]);
+      expect(crashes.length).toBe(1);
+      expect(crashes[0]).toMatch(/bootstrap childPublicKey decode failed/);
+    });
+
+    test("pins the child key so a later frame signed by a different key is rejected", async () => {
+      // Bootstrap is not TOFU-per-frame: the key carried on the ready
+      // frame pins every subsequent frame. The first frame bootstraps the
+      // receiver onto childA's key; a second well-formed, in-order frame
+      // signed by a DIFFERENT key (childB) must fail to verify. The
+      // signature check runs before the seq checks, so the rejection
+      // proves the pin rather than an ordering artifact.
+      const childA = await generateKeyPair();
+      const childB = await generateKeyPair();
+      const channelId = generateChannelId();
+      const stream = createMemoryNdjsonStream();
+      const senderA = createControlChannelSender({
+        privateKeySeed: childA.privateKey,
+        channelId,
+        writer: stream.writer,
+      });
+      const crashes: string[] = [];
+      const received: ControlPayload[] = [];
+
+      const consumer = (async () => {
+        for await (const payload of receiveControlChannel({
+          publicKey: { bootstrapFromReady: true },
+          channelId,
+          reader: stream.reader,
+          onCrash: (reason) => crashes.push(reason),
+        })) {
+          received.push(payload);
+        }
+      })();
+
+      await senderA.send({
+        type: "ready",
+        data: { childPid: 1, childPublicKey: hexEncode(childA.publicKey) },
+      });
+
+      const envelope: FrameEnvelope = {
+        seq: 2,
+        channelId,
+        payload: { type: "drain", data: { deadlineMs: 1 } },
+      };
+      const sig = await signEd25519(
+        encodeEnvelope(envelope),
+        childB.privateKey,
+      );
+      const signed: SignedEnvelope = { envelope, sig: hexEncode(sig) };
+      stream.inject(JSON.stringify(signed));
+      stream.close();
+      await consumer;
+
+      expect(received).toEqual([
+        {
+          type: "ready",
+          data: { childPid: 1, childPublicKey: hexEncode(childA.publicKey) },
+        },
+      ]);
+      expect(crashes.length).toBe(1);
+      expect(crashes[0]).toMatch(/signature did not verify/);
+    });
   });
 });
 
