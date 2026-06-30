@@ -78,8 +78,12 @@ export function TenantModelDetailPage() {
   const updateMut = useMutation({
     ...updateCatalogModelMutation(tenantId, modelId, queryClient),
     onSuccess: () => {
-      updateCatalogModelMutation(tenantId, modelId, queryClient).onSuccess();
-      queryClient.invalidateQueries({
+      void updateCatalogModelMutation(
+        tenantId,
+        modelId,
+        queryClient,
+      ).onSuccess();
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "catalog-models", modelId],
       });
       setEditing(false);
@@ -89,8 +93,12 @@ export function TenantModelDetailPage() {
   const deleteMut = useMutation({
     ...deleteCatalogModelMutation(tenantId, modelId, queryClient),
     onSuccess: () => {
-      deleteCatalogModelMutation(tenantId, modelId, queryClient).onSuccess();
-      navigate({ to: "/tenants/$tenantId/models", params: { tenantId } });
+      void deleteCatalogModelMutation(
+        tenantId,
+        modelId,
+        queryClient,
+      ).onSuccess();
+      void navigate({ to: "/tenants/$tenantId/models", params: { tenantId } });
     },
   });
 

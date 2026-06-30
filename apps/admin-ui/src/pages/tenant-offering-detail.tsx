@@ -73,8 +73,12 @@ export function TenantOfferingDetailPage() {
   const updateMut = useMutation({
     ...updateOfferingMutation(tenantId, offeringId, queryClient),
     onSuccess: () => {
-      updateOfferingMutation(tenantId, offeringId, queryClient).onSuccess();
-      queryClient.invalidateQueries({
+      void updateOfferingMutation(
+        tenantId,
+        offeringId,
+        queryClient,
+      ).onSuccess();
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "offerings", offeringId],
       });
       setEditing(false);
@@ -84,8 +88,15 @@ export function TenantOfferingDetailPage() {
   const deleteMut = useMutation({
     ...deleteOfferingMutation(tenantId, offeringId, queryClient),
     onSuccess: () => {
-      deleteOfferingMutation(tenantId, offeringId, queryClient).onSuccess();
-      navigate({ to: "/tenants/$tenantId/offerings", params: { tenantId } });
+      void deleteOfferingMutation(
+        tenantId,
+        offeringId,
+        queryClient,
+      ).onSuccess();
+      void navigate({
+        to: "/tenants/$tenantId/offerings",
+        params: { tenantId },
+      });
     },
   });
 

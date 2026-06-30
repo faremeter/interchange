@@ -65,7 +65,7 @@ export function TenantPrincipalsPage() {
   const inviteMut = useMutation({
     ...inviteMemberMutation(tenantId, queryClient),
     onSuccess: () => {
-      inviteMemberMutation(tenantId, queryClient).onSuccess();
+      void inviteMemberMutation(tenantId, queryClient).onSuccess();
       setInviteOpen(false);
       setInviteEmail("");
       setInviteRoleId("");
@@ -105,7 +105,7 @@ export function TenantPrincipalsPage() {
                   key={p.id}
                   className="cursor-pointer"
                   onClick={() =>
-                    navigate({
+                    void navigate({
                       to: "/tenants/$tenantId/principals/$principalId",
                       params: { tenantId, principalId: p.id },
                     })

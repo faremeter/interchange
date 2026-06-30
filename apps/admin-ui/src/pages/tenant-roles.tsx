@@ -44,7 +44,7 @@ export function TenantRolesPage() {
   const createMut = useMutation({
     ...createRoleMutation(tenantId, queryClient),
     onSuccess: () => {
-      createRoleMutation(tenantId, queryClient).onSuccess();
+      void createRoleMutation(tenantId, queryClient).onSuccess();
       setCreateOpen(false);
       resetCreateForm();
     },
@@ -83,7 +83,7 @@ export function TenantRolesPage() {
                   key={r.id}
                   className="cursor-pointer"
                   onClick={() =>
-                    navigate({
+                    void navigate({
                       to: "/tenants/$tenantId/roles/$roleId",
                       params: { tenantId, roleId: r.id },
                     })

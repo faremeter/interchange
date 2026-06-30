@@ -90,8 +90,12 @@ export function TenantPrincipalDetailPage() {
   const updateMut = useMutation({
     ...updatePrincipalMutation(tenantId, principalId, queryClient),
     onSuccess: () => {
-      updatePrincipalMutation(tenantId, principalId, queryClient).onSuccess();
-      queryClient.invalidateQueries({
+      void updatePrincipalMutation(
+        tenantId,
+        principalId,
+        queryClient,
+      ).onSuccess();
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "principals", principalId],
       });
       setSelectedStatus("");
@@ -101,8 +105,8 @@ export function TenantPrincipalDetailPage() {
   const assignMut = useMutation({
     ...assignRoleMutation(tenantId, principalId, queryClient),
     onSuccess: () => {
-      assignRoleMutation(tenantId, principalId, queryClient).onSuccess();
-      queryClient.invalidateQueries({
+      void assignRoleMutation(tenantId, principalId, queryClient).onSuccess();
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "principals", principalId],
       });
       setSelectedRoleId("");
@@ -112,8 +116,8 @@ export function TenantPrincipalDetailPage() {
   const removeMut = useMutation({
     ...removeRoleMutation(tenantId, principalId, queryClient),
     onSuccess: () => {
-      removeRoleMutation(tenantId, principalId, queryClient).onSuccess();
-      queryClient.invalidateQueries({
+      void removeRoleMutation(tenantId, principalId, queryClient).onSuccess();
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "principals", principalId],
       });
     },
@@ -122,8 +126,12 @@ export function TenantPrincipalDetailPage() {
   const deleteMut = useMutation({
     ...deletePrincipalMutation(tenantId, principalId, queryClient),
     onSuccess: () => {
-      deletePrincipalMutation(tenantId, principalId, queryClient).onSuccess();
-      navigate({
+      void deletePrincipalMutation(
+        tenantId,
+        principalId,
+        queryClient,
+      ).onSuccess();
+      void navigate({
         to: "/tenants/$tenantId/principals",
         params: { tenantId },
       });

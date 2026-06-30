@@ -87,8 +87,8 @@ export function TenantWalletDetailPage() {
   const updateMut = useMutation({
     ...updateWalletMutation(tenantId, walletId, queryClient),
     onSuccess: () => {
-      updateWalletMutation(tenantId, walletId, queryClient).onSuccess();
-      queryClient.invalidateQueries({
+      void updateWalletMutation(tenantId, walletId, queryClient).onSuccess();
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "wallets", walletId],
       });
       setEditing(false);
@@ -98,8 +98,8 @@ export function TenantWalletDetailPage() {
   const deleteMut = useMutation({
     ...deleteWalletMutation(tenantId, walletId, queryClient),
     onSuccess: () => {
-      deleteWalletMutation(tenantId, walletId, queryClient).onSuccess();
-      navigate({ to: "/tenants/$tenantId/wallets", params: { tenantId } });
+      void deleteWalletMutation(tenantId, walletId, queryClient).onSuccess();
+      void navigate({ to: "/tenants/$tenantId/wallets", params: { tenantId } });
     },
   });
 

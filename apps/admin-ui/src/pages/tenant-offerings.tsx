@@ -62,7 +62,7 @@ export function TenantOfferingsPage() {
   const createMut = useMutation({
     ...createOfferingMutation(tenantId, queryClient),
     onSuccess: () => {
-      createOfferingMutation(tenantId, queryClient).onSuccess();
+      void createOfferingMutation(tenantId, queryClient).onSuccess();
       setCreateOpen(false);
       resetCreateForm();
     },
@@ -103,7 +103,7 @@ export function TenantOfferingsPage() {
                   key={ofr.id}
                   className="cursor-pointer"
                   onClick={() =>
-                    navigate({
+                    void navigate({
                       to: "/tenants/$tenantId/offerings/$offeringId",
                       params: { tenantId, offeringId: ofr.id },
                     })

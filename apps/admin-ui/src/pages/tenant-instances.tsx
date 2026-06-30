@@ -39,7 +39,7 @@ function InstanceRow({
     <TableRow
       className="cursor-pointer"
       onClick={() =>
-        navigate({
+        void navigate({
           to: "/tenants/$tenantId/instances/$instanceId",
           params: { tenantId, instanceId: instance.id },
         })

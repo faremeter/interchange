@@ -71,8 +71,8 @@ export function TenantRoleDetailPage() {
   const updateMut = useMutation({
     ...updateRoleMutation(tenantId, roleId, queryClient),
     onSuccess: () => {
-      updateRoleMutation(tenantId, roleId, queryClient).onSuccess();
-      queryClient.invalidateQueries({
+      void updateRoleMutation(tenantId, roleId, queryClient).onSuccess();
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "roles", roleId],
       });
       setEditing(false);
@@ -82,8 +82,8 @@ export function TenantRoleDetailPage() {
   const deleteMut = useMutation({
     ...deleteRoleMutation(tenantId, roleId, queryClient),
     onSuccess: () => {
-      deleteRoleMutation(tenantId, roleId, queryClient).onSuccess();
-      navigate({ to: "/tenants/$tenantId/roles", params: { tenantId } });
+      void deleteRoleMutation(tenantId, roleId, queryClient).onSuccess();
+      void navigate({ to: "/tenants/$tenantId/roles", params: { tenantId } });
     },
   });
 

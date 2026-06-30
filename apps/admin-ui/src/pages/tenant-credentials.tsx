@@ -98,7 +98,7 @@ export function TenantCredentialsPage() {
   const createMut = useMutation({
     ...createCredentialMutation(tenantId, queryClient),
     onSuccess: () => {
-      createCredentialMutation(tenantId, queryClient).onSuccess();
+      void createCredentialMutation(tenantId, queryClient).onSuccess();
       setCreateOpen(false);
       resetCreateForm();
     },
@@ -139,7 +139,7 @@ export function TenantCredentialsPage() {
                   key={cred.id}
                   className="cursor-pointer"
                   onClick={() =>
-                    navigate({
+                    void navigate({
                       to: "/tenants/$tenantId/credentials/$credentialId",
                       params: { tenantId, credentialId: cred.id },
                     })
