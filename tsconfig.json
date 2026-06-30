@@ -52,6 +52,17 @@
     { "path": "tests/lib" },
     { "path": "tests/tool-packaging" },
     { "path": "tests/workflow-deploy" },
+    { "path": "tests/agent" },
+    { "path": "tests/agent-audit-log" },
+    { "path": "tests/agent-blob-spill" },
+    { "path": "tests/agent-common" },
+    { "path": "tests/agent-multi-provider" },
+    { "path": "tests/agent-quickstart" },
+    { "path": "tests/agent-resume" },
+    { "path": "tests/agent-rewind" },
+    { "path": "tests/agent-rich-tool" },
+    { "path": "tests/agent-structured-payload" },
+    { "path": "tests/coding-agent" },
     { "path": "bin" }
   ]
 }
