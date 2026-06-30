@@ -12,7 +12,7 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { createInMemoryGrantStore } from "@intx/authz";
-import { createSSHSignature, generateKeyPair } from "@intx/crypto-node";
+import { createSSHSignature, generateKeyPair } from "@intx/crypto";
 import { createApp, type GetSession } from "@intx/hub-api";
 import {
   createAssetService,
