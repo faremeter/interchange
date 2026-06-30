@@ -14,13 +14,16 @@
 // reason string on the kind-handler side) without losing the
 // failure-class distinction.
 
-import { Buffer } from "node:buffer";
+// This module is Node-bound: it streams through node:stream and the tar
+// library, which are not portable to environments without those APIs.
+
 import { Readable } from "node:stream";
 
 import { type } from "arktype";
 import { Parser as TarParser } from "tar/parse";
 import type { ReadEntry } from "tar/read-entry";
 
+import { concatBytes } from "@intx/types";
 import { PackageJSON } from "@intx/types/package-json";
 
 /**
@@ -70,8 +73,8 @@ export async function extractTarballPackageJSON(
 ): Promise<ExtractPackageJSONOutcome> {
   return new Promise<ExtractPackageJSONOutcome>((resolve) => {
     let resolved = false;
-    let pkgJsonBuf: Buffer | null = null;
-    const collectChunks: Buffer[] = [];
+    let pkgJsonBuf: Uint8Array | null = null;
+    const collectChunks: Uint8Array[] = [];
     // Capture every top-level `<seg>/package.json` path we see during
     // the walk so the kind handler can reject ambiguous archives. The
     // hub's resolver and the sidecar's tarball extractor resolve
@@ -84,7 +87,7 @@ export async function extractTarballPackageJSON(
     // resolved at the validation boundary by refusing the upload.
     const topLevelPackageJSONPaths: string[] = [];
 
-    const source = Readable.from(Buffer.from(bytes));
+    const source = Readable.from([bytes]);
 
     const finalize = (outcome: ExtractPackageJSONOutcome): void => {
       if (resolved) return;
@@ -101,11 +104,11 @@ export async function extractTarballPackageJSON(
         topLevelPackageJSONPaths.push(entry.path);
       }
       if (isTopLevelPackageJSON && pkgJsonBuf === null) {
-        entry.on("data", (chunk: Buffer) => {
+        entry.on("data", (chunk: Uint8Array) => {
           collectChunks.push(chunk);
         });
         entry.on("end", () => {
-          pkgJsonBuf = Buffer.concat(collectChunks);
+          pkgJsonBuf = concatBytes(collectChunks);
         });
       } else {
         entry.resume();
@@ -129,7 +132,7 @@ export async function extractTarballPackageJSON(
       }
       let raw: unknown;
       try {
-        raw = JSON.parse(pkgJsonBuf.toString("utf-8"));
+        raw = JSON.parse(new TextDecoder().decode(pkgJsonBuf));
       } catch (cause) {
         finalize({
           kind: "json-error",

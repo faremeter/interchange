@@ -22,6 +22,7 @@ export * from "./agent-data";
 export * from "./hex";
 export * from "./base64";
 export * from "./base64url";
+export * from "./concat";
 export * from "./has-code";
 export * from "./audit";
 export * from "./sidecars";
