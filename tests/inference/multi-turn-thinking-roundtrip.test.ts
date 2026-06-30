@@ -35,7 +35,14 @@ import type {
   ConversationTurn,
   InferenceEvent,
   InferenceSource,
+  LastCycleSource,
 } from "@intx/types/runtime";
+
+const TEST_SOURCE: LastCycleSource = {
+  sourceId: "test-anthropic",
+  provider: "anthropic",
+  model: "test-anthropic-model",
+};
 
 const WORKSPACE_ROOT = path.resolve(__dirname, "../..");
 const CORPUS_ROOT = path.join(
@@ -169,7 +176,7 @@ describe("multi-turn integration: function-calling-with-thinking-streaming", () 
     //    The wire's turn-2 request has [user, assistant, user-with-
     //    tool_result]. Mirror that with the reconstructed assistant
     //    turn in the middle slot.
-    const adapter = createAnthropicAdapter();
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
     const turns: ConversationTurn[] = [
       {
         role: "user",

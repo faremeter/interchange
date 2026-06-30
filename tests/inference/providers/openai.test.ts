@@ -7,7 +7,17 @@ import {
   type ProviderAdapter,
 } from "@intx/inference";
 import { createOpenAIAdapter } from "@intx/inference/providers";
-import type { ConversationTurn, InferenceEvent } from "@intx/types/runtime";
+import type {
+  ConversationTurn,
+  InferenceEvent,
+  LastCycleSource,
+} from "@intx/types/runtime";
+
+const TEST_SOURCE: LastCycleSource = {
+  sourceId: "test-openai",
+  provider: "openai",
+  model: "test-openai-model",
+};
 
 // A fresh adapter per test: the OpenAI parser holds per-request
 // indexer state (text/thinking/tool_call block indices allocated in
@@ -17,7 +27,7 @@ import type { ConversationTurn, InferenceEvent } from "@intx/types/runtime";
 // against that footgun.
 let adapter: ProviderAdapter;
 beforeEach(() => {
-  adapter = createOpenAIAdapter();
+  adapter = createOpenAIAdapter(TEST_SOURCE);
 });
 
 const OpenAIFunctionCall = type({

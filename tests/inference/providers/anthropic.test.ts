@@ -7,9 +7,19 @@ import {
   type ProviderAdapter,
 } from "@intx/inference";
 import { createAnthropicAdapter } from "@intx/inference/providers";
-import type { ConversationTurn, InferenceEvent } from "@intx/types/runtime";
+import type {
+  ConversationTurn,
+  InferenceEvent,
+  LastCycleSource,
+} from "@intx/types/runtime";
 
-const adapter = createAnthropicAdapter();
+const TEST_SOURCE: LastCycleSource = {
+  sourceId: "test-anthropic",
+  provider: "anthropic",
+  model: "test-anthropic-model",
+};
+
+const adapter = createAnthropicAdapter(TEST_SOURCE);
 
 const AnthropicContentBlock = type({
   type: "string",
@@ -892,7 +902,7 @@ describe("Anthropic adapter: parseResponse", () => {
     // content_block_start carrying an opaque `data` blob — no delta
     // stream. The parser must surface it as inference.thinking.redacted
     // with the index propagated for downstream routing.
-    const a = createAnthropicAdapter();
+    const a = createAnthropicAdapter(TEST_SOURCE);
     const events = await parseWire(
       a,
       wire.anthropic.redactedThinkingBlock("OpaqueBlobXYZ==", 0),
@@ -912,7 +922,7 @@ describe("Anthropic adapter: parseResponse", () => {
   test("parses input_json_delta for tool arguments", async () => {
     // Per-test adapter instance: state for tool_use block index 1 must
     // come from the same adapter consuming the start event.
-    const a = createAnthropicAdapter();
+    const a = createAnthropicAdapter(TEST_SOURCE);
     const events = await parseWire(a, [
       wire.anthropic.contentBlockStart({
         index: 1,
@@ -1009,7 +1019,7 @@ describe("Anthropic adapter: parseResponse", () => {
   });
 
   test("tool call delta uses real callId when text precedes tool call", async () => {
-    const a = createAnthropicAdapter();
+    const a = createAnthropicAdapter(TEST_SOURCE);
     const events = await parseWire(a, [
       wire.anthropic.messageStart({
         usage: {
