@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
-import { hexEncode } from "@intx/types";
+import { base64Encode, hexEncode } from "@intx/types";
 import type { KeyPair } from "@intx/types/runtime";
 import type {
   AuthorizeFn,
@@ -256,7 +256,7 @@ async function seedProcessingEntry(
     receivedAt: opts.receivedAt,
     address: opts.address,
     mailAuditRef: { store: "test", path: opts.messageId },
-    rawMessage: Buffer.from(rawMessage).toString("base64"),
+    rawMessage: base64Encode(rawMessage),
   };
   await fs.writeFile(
     path.join(dir, `${String(opts.receivedAt)}-${opts.messageId}.json`),
@@ -962,7 +962,7 @@ describe("runWorkflowChild", () => {
     }
     expect(readyPayload?.type).toBe("ready");
     expect(readyPayload?.childPublicKey).toBe(
-      Buffer.from(childKeyPair.publicKey).toString("hex"),
+      hexEncode(childKeyPair.publicKey),
     );
     expect(crashes).toHaveLength(0);
 
@@ -1063,8 +1063,8 @@ describe("runWorkflowChildFromProcessEnv", () => {
     const hostKeypair = await generateKeyPair();
     const env = makeSpawnEnv({
       channelId,
-      hmacKeyHex: Buffer.from(hmacKey).toString("hex"),
-      hostPubKeyHex: Buffer.from(hostKeypair.publicKey).toString("hex"),
+      hmacKeyHex: hexEncode(hmacKey),
+      hostPubKeyHex: hexEncode(hostKeypair.publicKey),
     });
     const { runWorkflowChildFromProcessEnv } = await import("./index");
     await expect(
@@ -1270,7 +1270,7 @@ async function seedProcessingEntryInDir(
     receivedAt: opts.receivedAt,
     address: opts.address,
     mailAuditRef: { store: "test", path: opts.messageId },
-    rawMessage: Buffer.from(rawMessage).toString("base64"),
+    rawMessage: base64Encode(rawMessage),
   };
   await fs.writeFile(
     path.join(dir, `${String(opts.receivedAt)}-${opts.messageId}.json`),

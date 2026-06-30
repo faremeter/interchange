@@ -34,6 +34,7 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
+import { hexEncode } from "@intx/types";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
@@ -588,7 +589,7 @@ async function boot(opts: { prefix: string }): Promise<
   while (!mailBus.registered().includes(deploymentMailAddress)) {
     await new Promise((r) => setTimeout(r, 1));
   }
-  const childPublicKey = Buffer.from(childIpcKeyPair.publicKey).toString("hex");
+  const childPublicKey = hexEncode(childIpcKeyPair.publicKey);
   return {
     supervisor,
     childSender,

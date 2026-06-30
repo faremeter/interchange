@@ -2,6 +2,8 @@ import { describe, test, expect } from "bun:test";
 
 import { type } from "arktype";
 
+import { base64Decode } from "@intx/types";
+
 import { createChildOutboundMailBridge } from "./outbound-mail-bridge";
 import { createSupervisorBackedTransport } from "./supervisor-backed-transport";
 import {
@@ -120,7 +122,7 @@ describe("createChildOutboundMailBridge", () => {
     const att = frame.message.attachments?.[0];
     if (att === undefined) throw new Error("attachment not projected");
     expect(att.name).toBe("f.bin");
-    expect(Buffer.from(att.dataBase64, "base64")).toEqual(Buffer.from(data));
+    expect(base64Decode(att.dataBase64)).toEqual(data);
   });
 });
 

@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
+import { hexEncode } from "@intx/types";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
@@ -470,7 +471,7 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
       type: "ready",
       data: {
         childPid: first.pid,
-        childPublicKey: Buffer.from(childIpcKeypair.publicKey).toString("hex"),
+        childPublicKey: hexEncode(childIpcKeypair.publicKey),
       },
     });
     await childSender.send({
@@ -511,7 +512,7 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
       type: "ready",
       data: {
         childPid: second.pid,
-        childPublicKey: Buffer.from(childIpcKeypair.publicKey).toString("hex"),
+        childPublicKey: hexEncode(childIpcKeypair.publicKey),
       },
     });
 

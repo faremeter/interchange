@@ -32,6 +32,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
+import { hexEncode } from "@intx/types";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
@@ -402,7 +403,7 @@ async function driveReady(
     type: "ready",
     data: {
       childPid: child.pid,
-      childPublicKey: Buffer.from(ipcKp.publicKey).toString("hex"),
+      childPublicKey: hexEncode(ipcKp.publicKey),
     },
   });
   return sender;

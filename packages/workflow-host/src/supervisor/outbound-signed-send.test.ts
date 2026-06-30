@@ -26,6 +26,7 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
+import { hexEncode } from "@intx/types";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
@@ -307,7 +308,7 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
       type: "ready",
       data: {
         childPid: 9100,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
       },
     });
     await spawnPromise;

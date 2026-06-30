@@ -33,6 +33,7 @@
 
 import { getLogger } from "@intx/log";
 
+import { base64Encode } from "@intx/types";
 import type { OutboundMessage, SendReceipt } from "@intx/types/runtime";
 
 import type {
@@ -188,7 +189,7 @@ function projectOutboundMessage(
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64");
+  return base64Encode(bytes);
 }
 
 function defaultRequestIdAllocator(): () => string {
