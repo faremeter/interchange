@@ -33,12 +33,12 @@ import type {
   Principal,
   RepoId,
   RepoStore as SubstrateRepoStore,
-} from "@intx/hub-sessions";
+} from "@intx/hub-sessions/substrate";
 import {
   subscribeKind,
   WORKFLOW_RUN_EVENTS_FILE,
   splitCombinedEventLog,
-} from "@intx/hub-sessions";
+} from "@intx/hub-sessions/substrate";
 import type { RepoStore, WorkflowEvent } from "@intx/workflow";
 
 /**

@@ -18,11 +18,11 @@ import type {
   RepoId,
   RepoStore as SubstrateRepoStore,
   WorkflowRunSupervisorPrincipal,
-} from "@intx/hub-sessions";
+} from "@intx/hub-sessions/substrate";
 import {
   WORKFLOW_RUN_EVENTS_FILE,
   encodeCombinedEventLog,
-} from "@intx/hub-sessions";
+} from "@intx/hub-sessions/substrate";
 import { hexEncode } from "@intx/types";
 
 import { SUPERVISOR_PRINCIPAL_KIND } from "./cancel-signing";

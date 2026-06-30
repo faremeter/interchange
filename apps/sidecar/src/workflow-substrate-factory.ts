@@ -50,7 +50,7 @@ import {
   type RepoId,
   type RepoStore,
   type WorkflowRunWorkflowProcessPrincipal,
-} from "@intx/hub-sessions";
+} from "@intx/hub-sessions/substrate";
 import { createIsogitStore } from "@intx/storage-isogit";
 import {
   adaptHostScheduler,

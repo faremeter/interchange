@@ -18,7 +18,7 @@ import type {
   RepoId,
   RepoStore as SubstrateRepoStore,
   ReplayProcessingToInboxResult,
-} from "@intx/hub-sessions";
+} from "@intx/hub-sessions/substrate";
 import type {
   InferenceSource,
   OutboundMessage,

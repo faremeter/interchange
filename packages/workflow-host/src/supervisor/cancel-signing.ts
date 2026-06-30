@@ -30,7 +30,7 @@ import type {
   RepoId,
   RepoStore as SubstrateRepoStore,
   WorkflowRunSupervisorPrincipal,
-} from "@intx/hub-sessions";
+} from "@intx/hub-sessions/substrate";
 import type { CancelOrigin } from "@intx/workflow";
 import { hexEncode } from "@intx/types";
 

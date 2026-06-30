@@ -31,7 +31,7 @@ import type {
   Principal,
   RepoId,
   RepoStore as SubstrateRepoStore,
-} from "@intx/hub-sessions";
+} from "@intx/hub-sessions/substrate";
 import type { BlobSubstrate } from "@intx/workflow";
 
 const ONE_MIB = 1024 * 1024;

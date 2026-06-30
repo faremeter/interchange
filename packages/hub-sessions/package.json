@@ -7,6 +7,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./substrate": {
+      "types": "./src/substrate.ts",
+      "default": "./src/substrate.ts"
     }
   },
   "dependencies": {
