@@ -163,12 +163,12 @@ export function TenantModelOfferingDetailPage() {
   const updateMut = useMutation({
     ...updateModelOfferingMutation(tenantId, offeringId, queryClient),
     onSuccess: () => {
-      updateModelOfferingMutation(
+      void updateModelOfferingMutation(
         tenantId,
         offeringId,
         queryClient,
       ).onSuccess();
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "model-offerings", offeringId],
       });
       setEditing(false);
@@ -178,12 +178,12 @@ export function TenantModelOfferingDetailPage() {
   const deleteMut = useMutation({
     ...deleteModelOfferingMutation(tenantId, offeringId, queryClient),
     onSuccess: () => {
-      deleteModelOfferingMutation(
+      void deleteModelOfferingMutation(
         tenantId,
         offeringId,
         queryClient,
       ).onSuccess();
-      navigate({
+      void navigate({
         to: "/tenants/$tenantId/model-offerings",
         params: { tenantId },
       });
@@ -193,7 +193,11 @@ export function TenantModelOfferingDetailPage() {
   const priceMut = useMutation({
     ...createPricingRowMutation(tenantId, offeringId, queryClient),
     onSuccess: () => {
-      createPricingRowMutation(tenantId, offeringId, queryClient).onSuccess();
+      void createPricingRowMutation(
+        tenantId,
+        offeringId,
+        queryClient,
+      ).onSuccess();
       setPriceOpen(false);
       resetPriceForm();
     },

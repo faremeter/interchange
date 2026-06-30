@@ -92,8 +92,12 @@ export function TenantCredentialDetailPage() {
   const updateMut = useMutation({
     ...updateCredentialMutation(tenantId, credentialId, queryClient),
     onSuccess: () => {
-      updateCredentialMutation(tenantId, credentialId, queryClient).onSuccess();
-      queryClient.invalidateQueries({
+      void updateCredentialMutation(
+        tenantId,
+        credentialId,
+        queryClient,
+      ).onSuccess();
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "credentials", credentialId],
       });
       setEditing(false);
@@ -103,8 +107,12 @@ export function TenantCredentialDetailPage() {
   const deleteMut = useMutation({
     ...deleteCredentialMutation(tenantId, credentialId, queryClient),
     onSuccess: () => {
-      deleteCredentialMutation(tenantId, credentialId, queryClient).onSuccess();
-      navigate({
+      void deleteCredentialMutation(
+        tenantId,
+        credentialId,
+        queryClient,
+      ).onSuccess();
+      void navigate({
         to: "/tenants/$tenantId/credentials",
         params: { tenantId },
       });

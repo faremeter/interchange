@@ -78,12 +78,12 @@ export function TenantModelProviderDetailPage() {
   const updateMut = useMutation({
     ...updateModelProviderMutation(tenantId, providerId, queryClient),
     onSuccess: () => {
-      updateModelProviderMutation(
+      void updateModelProviderMutation(
         tenantId,
         providerId,
         queryClient,
       ).onSuccess();
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "model-providers", providerId],
       });
       setEditing(false);
@@ -93,12 +93,12 @@ export function TenantModelProviderDetailPage() {
   const deleteMut = useMutation({
     ...deleteModelProviderMutation(tenantId, providerId, queryClient),
     onSuccess: () => {
-      deleteModelProviderMutation(
+      void deleteModelProviderMutation(
         tenantId,
         providerId,
         queryClient,
       ).onSuccess();
-      navigate({
+      void navigate({
         to: "/tenants/$tenantId/model-providers",
         params: { tenantId },
       });

@@ -145,7 +145,7 @@ export function TenantInstanceDetailPage() {
       transport,
       onChange: () => forceRender((n) => n + 1),
       onSessionEnded: () => {
-        queryClient.invalidateQueries({
+        void queryClient.invalidateQueries({
           queryKey: ["tenants", tenantId, "instances"],
         });
       },
@@ -162,10 +162,10 @@ export function TenantInstanceDetailPage() {
   const stopMut = useMutation({
     ...stopInstanceMutation(tenantId, queryClient),
     onSuccess: () => {
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "instances"],
       });
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "agents"],
       });
     },
@@ -485,7 +485,10 @@ export function TenantInstanceDetailPage() {
               })()}
             </div>
 
-            <form onSubmit={handleSendChat} className="flex gap-2">
+            <form
+              onSubmit={(e) => void handleSendChat(e)}
+              className="flex gap-2"
+            >
               <Input
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}

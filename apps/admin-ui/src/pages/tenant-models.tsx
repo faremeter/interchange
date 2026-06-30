@@ -54,7 +54,7 @@ export function TenantModelsPage() {
   const createMut = useMutation({
     ...createCatalogModelMutation(tenantId, queryClient),
     onSuccess: () => {
-      createCatalogModelMutation(tenantId, queryClient).onSuccess();
+      void createCatalogModelMutation(tenantId, queryClient).onSuccess();
       setCreateOpen(false);
       resetCreateForm();
     },
@@ -95,7 +95,7 @@ export function TenantModelsPage() {
                   key={m.id}
                   className="cursor-pointer"
                   onClick={() =>
-                    navigate({
+                    void navigate({
                       to: "/tenants/$tenantId/models/$modelId",
                       params: { tenantId, modelId: m.id },
                     })

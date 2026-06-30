@@ -555,8 +555,8 @@ export function updateTenantMutation(tenantId: string, qc: QueryClient) {
     mutationFn: (body: { name?: string; config?: Record<string, unknown> }) =>
       api<TenantResponse>("PATCH", `/api/tenants/${tenantId}`, body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["tenants", tenantId] });
-      qc.invalidateQueries({ queryKey: ["me", "principals"] });
+      void qc.invalidateQueries({ queryKey: ["tenants", tenantId] });
+      void qc.invalidateQueries({ queryKey: ["me", "principals"] });
     },
   };
 }
@@ -745,8 +745,8 @@ export function deployInstanceMutation(tenantId: string, qc: QueryClient) {
         body,
       ),
     onSuccess: () => {
-      invalidate(qc, tenantId, "instances");
-      invalidate(qc, tenantId, "agents");
+      void invalidate(qc, tenantId, "instances");
+      void invalidate(qc, tenantId, "agents");
     },
   };
 }
@@ -759,8 +759,8 @@ export function stopInstanceMutation(tenantId: string, qc: QueryClient) {
         `/api/tenants/${tenantId}/agents/instances/${instanceId}`,
       ),
     onSuccess: () => {
-      invalidate(qc, tenantId, "instances");
-      invalidate(qc, tenantId, "agents");
+      void invalidate(qc, tenantId, "instances");
+      void invalidate(qc, tenantId, "agents");
     },
   };
 }

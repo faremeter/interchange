@@ -29,7 +29,7 @@ function WorkflowRow({
     <TableRow
       className="cursor-pointer"
       onClick={() =>
-        navigate({
+        void navigate({
           to: "/tenants/$tenantId/workflows/$workflowId",
           params: { tenantId, workflowId: workflow.id },
         })

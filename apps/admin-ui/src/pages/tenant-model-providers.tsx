@@ -87,7 +87,7 @@ export function TenantModelProvidersPage() {
   const createMut = useMutation({
     ...createModelProviderMutation(tenantId, queryClient),
     onSuccess: () => {
-      createModelProviderMutation(tenantId, queryClient).onSuccess();
+      void createModelProviderMutation(tenantId, queryClient).onSuccess();
       setCreateOpen(false);
       resetCreateForm();
     },
@@ -128,7 +128,7 @@ export function TenantModelProvidersPage() {
                   key={p.id}
                   className="cursor-pointer"
                   onClick={() =>
-                    navigate({
+                    void navigate({
                       to: "/tenants/$tenantId/model-providers/$providerId",
                       params: { tenantId, providerId: p.id },
                     })

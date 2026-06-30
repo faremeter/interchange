@@ -175,7 +175,7 @@ export function TenantAgentDetailPage() {
   const updateMut = useMutation({
     ...updateAgentMutation(tenantId, agentId, queryClient),
     onSuccess: () => {
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "agents", agentId],
       });
     },
@@ -184,20 +184,20 @@ export function TenantAgentDetailPage() {
   const deleteMut = useMutation({
     ...deleteAgentMutation(tenantId, agentId, queryClient),
     onSuccess: () => {
-      navigate({ to: "/tenants/$tenantId/agents", params: { tenantId } });
+      void navigate({ to: "/tenants/$tenantId/agents", params: { tenantId } });
     },
   });
 
   const deployMut = useMutation({
     ...deployInstanceMutation(tenantId, queryClient),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "instances"],
       });
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "agents"],
       });
-      navigate({
+      void navigate({
         to: "/tenants/$tenantId/instances/$instanceId",
         params: { tenantId, instanceId: data.id },
       });
@@ -486,7 +486,7 @@ export function TenantAgentDetailPage() {
                     key={inst.id}
                     className="cursor-pointer"
                     onClick={() =>
-                      navigate({
+                      void navigate({
                         to: "/tenants/$tenantId/instances/$instanceId",
                         params: { tenantId, instanceId: inst.id },
                       })

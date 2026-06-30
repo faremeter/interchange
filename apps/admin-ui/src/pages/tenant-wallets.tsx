@@ -77,7 +77,7 @@ export function TenantWalletsPage() {
   const createMut = useMutation({
     ...createWalletMutation(tenantId, queryClient),
     onSuccess: () => {
-      createWalletMutation(tenantId, queryClient).onSuccess();
+      void createWalletMutation(tenantId, queryClient).onSuccess();
       setCreateOpen(false);
       resetCreateForm();
     },
@@ -117,7 +117,7 @@ export function TenantWalletsPage() {
                   key={w.id}
                   className="cursor-pointer"
                   onClick={() =>
-                    navigate({
+                    void navigate({
                       to: "/tenants/$tenantId/wallets/$walletId",
                       params: { tenantId, walletId: w.id },
                     })

@@ -62,7 +62,7 @@ function AgentRow({
     <TableRow
       className="cursor-pointer"
       onClick={() =>
-        navigate({
+        void navigate({
           to: "/tenants/$tenantId/agents/$agentId",
           params: { tenantId, agentId: agent.id },
         })
@@ -108,7 +108,7 @@ export function TenantAgentsPage() {
   const createMut = useMutation({
     ...createAgentMutation(tenantId, queryClient),
     onSuccess: () => {
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "agents"],
       });
       setCreateOpen(false);

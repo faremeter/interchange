@@ -94,7 +94,7 @@ export function TenantGrantsPage() {
   const createMut = useMutation({
     ...createGrantMutation(tenantId, queryClient),
     onSuccess: () => {
-      createGrantMutation(tenantId, queryClient).onSuccess();
+      void createGrantMutation(tenantId, queryClient).onSuccess();
       setCreateOpen(false);
       resetCreateForm();
     },
@@ -134,7 +134,7 @@ export function TenantGrantsPage() {
                   key={g.id}
                   className="cursor-pointer"
                   onClick={() =>
-                    navigate({
+                    void navigate({
                       to: "/tenants/$tenantId/grants/$grantId",
                       params: { tenantId, grantId: g.id },
                     })

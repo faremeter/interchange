@@ -98,8 +98,8 @@ export function TenantGrantDetailPage() {
   const updateMut = useMutation({
     ...updateGrantMutation(tenantId, grantId, queryClient),
     onSuccess: () => {
-      updateGrantMutation(tenantId, grantId, queryClient).onSuccess();
-      queryClient.invalidateQueries({
+      void updateGrantMutation(tenantId, grantId, queryClient).onSuccess();
+      void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "grants", grantId],
       });
       setEditing(false);
@@ -109,8 +109,8 @@ export function TenantGrantDetailPage() {
   const deleteMut = useMutation({
     ...deleteGrantMutation(tenantId, grantId, queryClient),
     onSuccess: () => {
-      deleteGrantMutation(tenantId, grantId, queryClient).onSuccess();
-      navigate({ to: "/tenants/$tenantId/grants", params: { tenantId } });
+      void deleteGrantMutation(tenantId, grantId, queryClient).onSuccess();
+      void navigate({ to: "/tenants/$tenantId/grants", params: { tenantId } });
     },
   });
 
