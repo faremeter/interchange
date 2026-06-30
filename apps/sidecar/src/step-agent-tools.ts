@@ -41,7 +41,7 @@ import {
   readDeployTree,
   sanitizeAddress,
   type DeployApplyErrorEmitter,
-} from "@intx/hub-agent";
+} from "@intx/hub-agent/paths";
 import { getLogger } from "@intx/log";
 import type { LoadedToolFactory } from "@intx/tool-packaging";
 import { deriveStepAddress } from "@intx/workflow-deploy";

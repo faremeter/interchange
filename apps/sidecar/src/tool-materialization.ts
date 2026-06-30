@@ -19,7 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { type } from "arktype";
 import { type AnnotatedPluginFactory } from "@intx/agent";
-import { type DeployApplyErrorEmitter } from "@intx/hub-agent";
+import { type DeployApplyErrorEmitter } from "@intx/hub-agent/paths";
 import { getLogger } from "@intx/log";
 import {
   type LoadedToolFactory,
