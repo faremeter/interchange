@@ -41,7 +41,7 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
-import { hexEncode } from "@intx/types";
+import { base64Encode, hexEncode } from "@intx/types";
 import {
   createDefaultDirectorRegistry,
   type Agent,
@@ -285,7 +285,7 @@ async function seedProcessingEntry(
     receivedAt: opts.receivedAt,
     address: MAILBOX,
     mailAuditRef: { store: "test", path: opts.messageId },
-    rawMessage: Buffer.from(rawMessage).toString("base64"),
+    rawMessage: base64Encode(rawMessage),
   };
   await fs.writeFile(
     path.join(dir, `${String(opts.receivedAt)}-${opts.messageId}.json`),

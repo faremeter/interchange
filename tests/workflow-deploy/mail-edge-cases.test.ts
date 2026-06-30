@@ -53,6 +53,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
+import { base64Encode, hexEncode } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
@@ -531,7 +532,7 @@ function buildMinimalMail(opts: {
  * sidecar's hub-link decode unchanged.
  */
 function routeRaw(env: DeployFlowEnv, address: string, raw: Uint8Array): void {
-  const base64 = Buffer.from(raw).toString("base64");
+  const base64 = base64Encode(raw);
   const delivered = env.hub.router.routeMail(address, base64);
   if (!delivered) {
     throw new Error(
@@ -542,7 +543,7 @@ function routeRaw(env: DeployFlowEnv, address: string, raw: Uint8Array): void {
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new Uint8Array(bytes));
-  return Buffer.from(digest).toString("hex");
+  return hexEncode(new Uint8Array(digest));
 }
 
 /**

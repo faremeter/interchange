@@ -39,6 +39,7 @@ import {
   type HubHandle,
 } from "./lib/git-harness";
 import { loadHarnessDbConfig } from "@intx/test-harness/db-harness";
+import { base64Encode } from "@intx/types";
 import {
   apiCall,
   assetSmartHttpUrl,
@@ -108,8 +109,8 @@ async function probeInfoRefs(
   assetUrl: string,
   token: string,
 ): Promise<{ status: number; body: typeof ErrorBody.infer }> {
-  const basic = Buffer.from(`x-access-token:${token}`, "utf-8").toString(
-    "base64",
+  const basic = base64Encode(
+    new TextEncoder().encode(`x-access-token:${token}`),
   );
   const res = await fetch(`${assetUrl}/info/refs?service=git-upload-pack`, {
     headers: { authorization: `Basic ${basic}` },

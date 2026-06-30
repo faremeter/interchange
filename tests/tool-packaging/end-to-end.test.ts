@@ -69,7 +69,7 @@ afterEach(async () => {
 interface Fixture {
   name: string;
   version: string;
-  bytes: Buffer;
+  bytes: Uint8Array;
   integrity: string;
   tarballUrl: string;
 }
@@ -258,7 +258,8 @@ describe("hub→sidecar pipeline (failure paths)", () => {
       registries,
       host: { os: "linux", cpu: "x64" },
       // Hand back bytes that do not match the pinned integrity.
-      fetchTarball: async () => Buffer.from("definitely the wrong bytes"),
+      fetchTarball: async () =>
+        new TextEncoder().encode("definitely the wrong bytes"),
     });
 
     const result = await applyAtomic({

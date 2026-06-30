@@ -62,7 +62,7 @@ import {
   type WorkflowRunHubPrincipal,
   type WsHandle,
 } from "@intx/hub-sessions";
-import { hexEncode } from "@intx/types";
+import { base64Encode, hexEncode } from "@intx/types";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import {
   createWorkflowDeployOrchestrator,
@@ -1359,7 +1359,7 @@ export async function fireMailTrigger(
     crypto,
   );
   const rawMessage = assembleMessage(headers, signedContent, signature);
-  const base64 = Buffer.from(rawMessage).toString("base64");
+  const base64 = base64Encode(rawMessage);
   const delivered = env.hub.router.routeMail(address, base64);
   if (!delivered) {
     throw new Error(

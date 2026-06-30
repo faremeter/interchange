@@ -135,7 +135,7 @@ describe("build-builtins determinism", () => {
 
     const bytesA = await fs.readFile(outA);
     const bytesB = await fs.readFile(outB);
-    expect(Buffer.compare(bytesA, bytesB)).toBe(0);
+    expect(bytesA).toEqual(bytesB);
   });
 
   test("packing two staging trees with different mtimes still yields identical SRI", async () => {
