@@ -175,23 +175,19 @@ describe("ChildSubstrateWriteBridge: malformed substrate.merge.response", () => 
     expect(bridge.pendingCount).toBe(0);
   });
 
-  test("a merge response shape that fails base64 decoding throws inside the awaiter's merge callback", async () => {
+  test("a substrate.merge.request carrying malformed base64 replies with a structured failure", async () => {
     const mock = createMockSender();
     const bridge = createChildSubstrateWriteBridge({
       upstreamSender: mock.sender,
       allocateRequestId: () => "rid-merge",
     });
 
-    // The bridge stores the caller's merge closure. When the
-    // supervisor emits `substrate.merge.request`, the bridge invokes
-    // the closure with the decoded existing entries. If the
-    // supervisor's payload carries a non-base64 string for
-    // `contentBase64`, `Buffer.from(value, "base64")` silently
-    // ignores invalid characters -- but a downstream consumer that
-    // expected specific bytes will see corruption. Pin the bridge's
-    // observable contract: the merge closure receives whatever the
-    // standard decoder produces, and the awaiter resolves through
-    // the merge round-trip without leaving a leaked pending entry.
+    // The supervisor ships the existing tree as base64. A non-base64
+    // string is a corrupt payload: the shared decoder throws rather
+    // than silently yielding garbage bytes, so the bridge never runs
+    // the caller's merge closure on bad input. It converts the decode
+    // failure into a structured merge response the supervisor can act
+    // on, leaving the write pending for its terminal response.
     let observedExisting: ReadonlyMap<string, Uint8Array> | null = null;
     const submitPromise = bridge.submit({
       repoId: { kind: "workflow-run", id: "deployment-x" },
@@ -214,12 +210,27 @@ describe("ChildSubstrateWriteBridge: malformed substrate.merge.response", () => 
     // settles. The bridge's fire-and-forget body uses awaits, so
     // multiple microtask cycles are required to flush the chain.
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
-    expect(observedExisting).not.toBeNull();
-    if (observedExisting === null) throw new Error("merge closure missed");
-    const captured: ReadonlyMap<string, Uint8Array> = observedExisting;
-    expect(captured.has("runs/r-3/events/prior.json")).toBe(true);
 
-    // Terminate the write so the test does not leak a pending entry.
+    // The corrupt base64 short-circuits before the merge closure runs.
+    expect(observedExisting).toBeNull();
+
+    const mergeResponse = mock.sent.find(
+      (s) => s.type === "substrate.merge.response",
+    );
+    if (mergeResponse === undefined) {
+      throw new Error("merge.response not emitted");
+    }
+    const validated = MergeResponseFailureShape(mergeResponse.data);
+    if (validated instanceof type.errors) {
+      throw new Error(
+        `merge.response payload failed shape check: ${validated.summary}`,
+      );
+    }
+    expect(validated.requestId).toBe("rid-merge");
+    expect(validated.result.ok).toBe(false);
+
+    // The pending write survives the merge failure. Terminate it so
+    // the test does not leak a pending entry.
     bridge.handleWriteResponse({
       requestId: "rid-merge",
       result: { ok: true, commitSha: "deadbeef" },

@@ -6,7 +6,7 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
-import { hexDecode } from "@intx/types";
+import { hexDecode, hexEncode } from "@intx/types";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
@@ -666,7 +666,7 @@ describe("createWorkflowSupervisor", () => {
       type: "ready",
       data: {
         childPid: 4321,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
       },
     });
 
@@ -880,7 +880,7 @@ describe("createWorkflowSupervisor", () => {
       type: "ready",
       data: {
         childPid: 9999,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
       },
     });
     await spawnPromise;
@@ -1089,7 +1089,7 @@ describe("createWorkflowSupervisor", () => {
       type: "ready",
       data: {
         childPid: 8888,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
       },
     });
     await spawnPromise;
@@ -1579,7 +1579,7 @@ describe("createWorkflowSupervisor", () => {
       type: "ready",
       data: {
         childPid: 7777,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
       },
     });
     await spawnPromise;
@@ -1736,7 +1736,7 @@ describe("createWorkflowSupervisor", () => {
       type: "ready",
       data: {
         childPid: 6666,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
       },
     });
     await spawnPromise;
@@ -2029,7 +2029,7 @@ describe("IPC integration smoke", () => {
       type: "ready",
       data: {
         childPid: 1,
-        childPublicKey: Buffer.from(keyPair.publicKey).toString("hex"),
+        childPublicKey: hexEncode(keyPair.publicKey),
       },
     });
     expect(upstream.flushed()).toHaveLength(1);
@@ -2167,7 +2167,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       type: "ready",
       data: {
         childPid: 11111,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
       },
     });
     await spawnPromise;

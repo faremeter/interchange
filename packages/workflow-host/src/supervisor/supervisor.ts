@@ -62,7 +62,7 @@ import {
   type WorkflowRunSupervisorPrincipal,
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions/substrate";
-import { hexEncode } from "@intx/types";
+import { base64Decode, base64Encode, hexEncode } from "@intx/types";
 import { RepoId } from "@intx/types/sidecar";
 import type { OutboundMessage } from "@intx/types/runtime";
 import type { CancelOrigin } from "@intx/workflow";
@@ -671,7 +671,7 @@ export function createWorkflowSupervisor(
     // and has no separate durable byte store the child reads; the bytes
     // survive the inbox->processing transition verbatim and are dropped
     // when `markConsumed` writes the dedup index.
-    const rawMessageBase64 = Buffer.from(rawMessage).toString("base64");
+    const rawMessageBase64 = base64Encode(rawMessage);
     // D2 leg: `enqueueInbox` runs in `onMailMessage` BEFORE dispatch, so
     // it is paid OUTSIDE the dispatch-start..reply-produced window -- its
     // growth is invisible to the 4.7 bracket. The leg mark, keyed by the
@@ -835,8 +835,24 @@ export function createWorkflowSupervisor(
     pendingMerges.delete(data.requestId);
     if (data.result.ok) {
       const files: Record<string, string | Uint8Array> = {};
-      for (const file of data.result.files) {
-        files[file.path] = base64ToBytes(file.contentBase64);
+      try {
+        for (const file of data.result.files) {
+          files[file.path] = base64ToBytes(file.contentBase64);
+        }
+      } catch (cause) {
+        // `base64ToBytes` throws loudly on malformed child-supplied
+        // content. This runs synchronously from `pumpUpstreamControl`'s
+        // `for await`, so an escaping throw would tear the pump down and
+        // stop draining every other upstream control frame for the
+        // cohort. Mirror the child-side `decodeMergeRequest` hardening:
+        // resolve the pending merge as a failure so the write handler
+        // surfaces it as a structured substrate.write.response.
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        entry.resolve({
+          ok: false,
+          reason: `supervisor substrate.merge.response: decode failed: ${reason}`,
+        });
+        return;
       }
       entry.resolve({ ok: true, files });
       return;
@@ -2671,9 +2687,9 @@ function outboundMessageFromPayload(
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64");
+  return base64Encode(bytes);
 }
 
 function base64ToBytes(value: string): Uint8Array {
-  return new Uint8Array(Buffer.from(value, "base64"));
+  return base64Decode(value);
 }

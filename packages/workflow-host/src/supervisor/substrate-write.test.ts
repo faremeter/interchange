@@ -35,6 +35,7 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
+import { base64Encode, hexEncode } from "@intx/types";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
@@ -565,7 +566,7 @@ async function bootSupervisor(opts: {
     type: "ready",
     data: {
       childPid: 7777,
-      childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
     },
   });
   const spawnResult = await spawnPromise;
@@ -709,7 +710,9 @@ describe("substrate-write watchdog", () => {
           files: [
             {
               path: `runs/${runId}/events/0.json`,
-              contentBase64: Buffer.from(terminalBlob).toString("base64"),
+              contentBase64: base64Encode(
+                new TextEncoder().encode(terminalBlob),
+              ),
             },
           ],
         },
@@ -1068,7 +1071,9 @@ describe("substrate-write cohort abort cleanup", () => {
           files: [
             {
               path: `runs/${runId}/events/0.json`,
-              contentBase64: Buffer.from(terminalBlob).toString("base64"),
+              contentBase64: base64Encode(
+                new TextEncoder().encode(terminalBlob),
+              ),
             },
           ],
         },
@@ -1110,5 +1115,153 @@ describe("substrate-write cohort abort cleanup", () => {
     expect(abortResponse.result.reason).toMatch(/cohort aborted|markConsumed/);
 
     await shutdownPromise;
+  });
+});
+
+describe("substrate-write malformed merge response", () => {
+  test("a malformed contentBase64 fails the pending merge without tearing down the upstream pump", async () => {
+    // The supervisor decodes the child's `substrate.merge.response`
+    // `contentBase64` from inside `pumpUpstreamControl`'s `for await`.
+    // A malformed value makes the decoder throw; that throw must be
+    // caught and surfaced as a FAILED merge (a structured
+    // substrate.write.response) instead of escaping the loop and
+    // stopping the supervisor from draining every other upstream
+    // control frame for the cohort.
+    const harness = await bootSupervisor({
+      prefix: "supv-merge-decode-",
+      invokeMerge: true,
+    });
+
+    // First write: drive its merge round-trip, then answer with a
+    // malformed contentBase64.
+    const badRequestId = "merge-decode-bad-1";
+    await harness.childSender.send({
+      type: "substrate.write.request",
+      data: {
+        requestId: badRequestId,
+        repoId: { kind: "workflow-run", id: "deployment-x" },
+        ref: "refs/heads/main",
+        preservePrefix: "state/some-step/",
+        message: "write whose merge response carries malformed base64",
+      },
+    });
+    const badMergeDeadline = Date.now() + 2_000;
+    let badMergeSeen = false;
+    while (!badMergeSeen && Date.now() < badMergeDeadline) {
+      const merges = readPayloadsOfType(
+        harness.supervisorToChild.flushed(),
+        "substrate.merge.request",
+      );
+      if (merges.some((m) => m.data.requestId === badRequestId)) {
+        badMergeSeen = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(badMergeSeen).toBe(true);
+    await harness.childSender.send({
+      type: "substrate.merge.response",
+      data: {
+        requestId: badRequestId,
+        result: {
+          ok: true,
+          files: [
+            { path: "state/some-step/x", contentBase64: "@@@not-valid@@@" },
+          ],
+        },
+      },
+    });
+
+    const badResponseDeadline = Date.now() + 2_000;
+    let badResponse: {
+      requestId: string;
+      result: { ok: boolean; reason?: string };
+    } | null = null;
+    while (badResponse === null && Date.now() < badResponseDeadline) {
+      const responses = readPayloadsOfType(
+        harness.supervisorToChild.flushed(),
+        "substrate.write.response",
+      );
+      const matched = responses.find((r) => r.data.requestId === badRequestId);
+      if (matched !== undefined) {
+        badResponse = {
+          requestId: matched.data.requestId,
+          result: matched.data.result,
+        };
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    if (badResponse === null) {
+      throw new Error(
+        "supervisor did not surface a substrate.write.response for the malformed merge in time",
+      );
+    }
+    expect(badResponse.result.ok).toBe(false);
+    expect(badResponse.result.reason).toMatch(/decode failed/);
+
+    // Liveness: a SUBSEQUENT upstream frame must still be processed. If
+    // the malformed decode had escaped the `for await`, the pump would
+    // be dead and this second write would never receive a merge.request.
+    const goodRequestId = "merge-decode-good-1";
+    await harness.childSender.send({
+      type: "substrate.write.request",
+      data: {
+        requestId: goodRequestId,
+        repoId: { kind: "workflow-run", id: "deployment-x" },
+        ref: "refs/heads/main",
+        preservePrefix: "state/other-step/",
+        message: "subsequent write proving the pump survived",
+      },
+    });
+    const goodMergeDeadline = Date.now() + 2_000;
+    let goodMergeSeen = false;
+    while (!goodMergeSeen && Date.now() < goodMergeDeadline) {
+      const merges = readPayloadsOfType(
+        harness.supervisorToChild.flushed(),
+        "substrate.merge.request",
+      );
+      if (merges.some((m) => m.data.requestId === goodRequestId)) {
+        goodMergeSeen = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(goodMergeSeen).toBe(true);
+    await harness.childSender.send({
+      type: "substrate.merge.response",
+      data: {
+        requestId: goodRequestId,
+        result: { ok: true, files: [] },
+      },
+    });
+    const goodResponseDeadline = Date.now() + 2_000;
+    let goodResponse: {
+      requestId: string;
+      result: { ok: boolean; reason?: string };
+    } | null = null;
+    while (goodResponse === null && Date.now() < goodResponseDeadline) {
+      const responses = readPayloadsOfType(
+        harness.supervisorToChild.flushed(),
+        "substrate.write.response",
+      );
+      const matched = responses.find((r) => r.data.requestId === goodRequestId);
+      if (matched !== undefined) {
+        goodResponse = {
+          requestId: matched.data.requestId,
+          result: matched.data.result,
+        };
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    if (goodResponse === null) {
+      throw new Error(
+        "upstream pump did not process the subsequent write; it appears to have torn down",
+      );
+    }
+    expect(goodResponse.result.ok).toBe(true);
+
+    await harness.supervisor.shutdown();
   });
 });

@@ -18,6 +18,7 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
+import { hexEncode } from "@intx/types";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
@@ -328,7 +329,7 @@ async function driveReady(
     type: "ready",
     data: {
       childPid: child.pid,
-      childPublicKey: Buffer.from(ipcKeypair.publicKey).toString("hex"),
+      childPublicKey: hexEncode(ipcKeypair.publicKey),
     },
   });
   return childSender;

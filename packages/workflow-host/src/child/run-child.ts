@@ -52,7 +52,7 @@ import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
 import { generateKeyPair } from "@intx/crypto";
-import { hexEncode } from "@intx/types";
+import { base64Decode, hexEncode } from "@intx/types";
 
 import type {
   Principal,
@@ -1138,7 +1138,7 @@ async function resolveTriggerPayload(args: {
       `workflow-child trigger.fire: processing entry for messageId ${args.messageId} carries no inlined rawMessage; the supervisor must inline the inbound mail bytes for the child to deliver them as the step input`,
     );
   }
-  const raw = new Uint8Array(Buffer.from(rawMessageBase64, "base64"));
+  const raw = base64Decode(rawMessageBase64);
   return extractConversationText(raw, args.messageId);
 }
 

@@ -35,6 +35,7 @@
 // the closure produces, both base64-encoded.
 
 import { getLogger } from "@intx/log";
+import { base64Decode, base64Encode } from "@intx/types";
 
 import type {
   ControlChannelSender,
@@ -266,11 +267,11 @@ function encodeFiles(
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64");
+  return base64Encode(bytes);
 }
 
 function base64ToBytes(value: string): Uint8Array {
-  return new Uint8Array(Buffer.from(value, "base64"));
+  return base64Decode(value);
 }
 
 function defaultRequestIdAllocator(): () => string {
