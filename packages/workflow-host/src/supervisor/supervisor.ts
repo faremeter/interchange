@@ -61,7 +61,7 @@ import {
   type Principal,
   type WorkflowRunSupervisorPrincipal,
   type WorkflowRunWorkflowProcessPrincipal,
-} from "@intx/hub-sessions";
+} from "@intx/hub-sessions/substrate";
 import { hexEncode } from "@intx/types";
 import { RepoId } from "@intx/types/sidecar";
 import type { OutboundMessage } from "@intx/types/runtime";

@@ -130,8 +130,12 @@ import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import { createConnectorRouter } from "@intx/harness";
 import { createIsogitStore } from "@intx/storage-isogit";
-import type { Principal, RepoId, RepoStore } from "@intx/hub-sessions";
-import { WORKFLOW_RUN_AGENT_STATE_PREFIX } from "@intx/hub-sessions";
+import type {
+  Principal,
+  RepoId,
+  RepoStore,
+} from "@intx/hub-sessions/substrate";
+import { WORKFLOW_RUN_AGENT_STATE_PREFIX } from "@intx/hub-sessions/substrate";
 import {
   ConnectorThreadState,
   TokenUsage,

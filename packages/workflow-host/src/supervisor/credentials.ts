@@ -30,7 +30,11 @@
 import { type } from "arktype";
 
 import { hexEncode } from "@intx/types";
-import type { Principal, RepoId, RepoStore } from "@intx/hub-sessions";
+import type {
+  Principal,
+  RepoId,
+  RepoStore,
+} from "@intx/hub-sessions/substrate";
 
 /**
  * Path inside each step's `agent-state` repo that carries the step's

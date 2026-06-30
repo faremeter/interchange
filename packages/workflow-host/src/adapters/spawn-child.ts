@@ -62,8 +62,8 @@
 
 import { type } from "arktype";
 
-import type { Principal, RepoStore } from "@intx/hub-sessions";
-import { workflowDefinitionEnvelopeSchema } from "@intx/hub-sessions";
+import type { Principal, RepoStore } from "@intx/hub-sessions/substrate";
+import { workflowDefinitionEnvelopeSchema } from "@intx/hub-sessions/substrate";
 import type { SpawnChildWorkflow, WorkflowDefinition } from "@intx/workflow";
 
 const WORKFLOW_JSON_PATH = "workflow.json";

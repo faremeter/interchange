@@ -38,8 +38,12 @@
 
 import { type } from "arktype";
 
-import type { Principal, RepoId, RepoStore } from "@intx/hub-sessions";
-import { subscribeKind } from "@intx/hub-sessions";
+import type {
+  Principal,
+  RepoId,
+  RepoStore,
+} from "@intx/hub-sessions/substrate";
+import { subscribeKind } from "@intx/hub-sessions/substrate";
 
 /**
  * Substrate-shape envelope for the workflow-event blob committed to

@@ -58,11 +58,11 @@ import type {
   Principal,
   RepoId,
   RepoStore as SubstrateRepoStore,
-} from "@intx/hub-sessions";
+} from "@intx/hub-sessions/substrate";
 import {
   readProcessingEntry,
   workflowDefinitionEnvelopeSchema,
-} from "@intx/hub-sessions";
+} from "@intx/hub-sessions/substrate";
 import {
   extractPartByPath,
   parseHeaderSection,

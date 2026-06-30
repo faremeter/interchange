@@ -34,7 +34,7 @@ import type { PrincipalSigner, TerminalEventSource } from "./types";
 import type {
   RepoId,
   RepoStore as SubstrateRepoStore,
-} from "@intx/hub-sessions";
+} from "@intx/hub-sessions/substrate";
 
 const logger = getLogger(["workflow-host", "supervisor", "drain-timeout"]);
 
