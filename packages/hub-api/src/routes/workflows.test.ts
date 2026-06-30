@@ -6,7 +6,7 @@ import git from "isomorphic-git";
 import { type, type Type } from "arktype";
 
 import { createInMemoryGrantStore } from "@intx/authz";
-import { ErrorResponse } from "@intx/types";
+import { base64Decode, ErrorResponse } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
   deriveDeploymentAddress,
@@ -699,7 +699,7 @@ describe("POST /workflows/:deploymentId/mail", () => {
     if (call === undefined) throw new Error("missing routeMail call");
     expect(call.address).toBe(`ins_${DEPLOYMENT_ID}@${DOMAIN}`);
     // The wire payload is base64-encoded MIME carrying the body text.
-    const decoded = Buffer.from(call.rawMessage, "base64").toString("utf8");
+    const decoded = new TextDecoder().decode(base64Decode(call.rawMessage));
     expect(decoded).toContain("kick off");
     // A run trigger is threading-less: no In-Reply-To / References.
     expect(decoded).not.toContain("In-Reply-To");

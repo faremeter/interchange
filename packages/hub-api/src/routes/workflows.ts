@@ -13,7 +13,7 @@ import {
   type MessageHeaders,
 } from "@intx/mime";
 import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
-import { ErrorResponse, SendMessage } from "@intx/types";
+import { base64Encode, ErrorResponse, SendMessage } from "@intx/types";
 import { InferenceSource } from "@intx/types/runtime";
 import type { HarnessConfig } from "@intx/types/runtime";
 import {
@@ -548,7 +548,7 @@ export function createWorkflowRoutes({
         crypto,
       );
       const rawMessage = assembleMessage(headers, signedContent, signature);
-      const base64 = Buffer.from(rawMessage).toString("base64");
+      const base64 = base64Encode(rawMessage);
 
       const delivered = sidecarRouter.routeMail(address, base64);
       if (!delivered) {

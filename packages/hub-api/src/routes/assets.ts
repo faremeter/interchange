@@ -29,7 +29,6 @@ import { Hono, type Context } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import { type } from "arktype";
 
-import { Buffer } from "node:buffer";
 import ssri from "ssri";
 
 import { authorize } from "@intx/authz";
@@ -754,7 +753,7 @@ export function createAssetRoutes({
       // post-commit blob; otherwise the value returned here lies
       // about what the asset will serve back on GET.
       const integrity = ssri
-        .fromData(Buffer.from(bytes), { algorithms: ["sha512"] })
+        .fromData(bytes, { algorithms: ["sha512"] })
         .toString();
 
       // Read-then-write happens inside the substrate's per-repo lock so
@@ -855,7 +854,7 @@ export function createAssetRoutes({
           path: `${TARBALLS_PREFIX}${name}`,
         });
         const integrity = ssri
-          .fromData(Buffer.from(blob), { algorithms: ["sha512"] })
+          .fromData(blob, { algorithms: ["sha512"] })
           .toString();
         out.push({ filename: name, size: blob.byteLength, integrity });
       }

@@ -10,6 +10,7 @@ import { Hono } from "hono";
 
 import type { DB } from "@intx/db";
 import { configureSync, getConfig, resetSync } from "@intx/log";
+import { base64Encode } from "@intx/types";
 
 import { createGitTokenAuth, type GitTokenAuthEnv } from "./git-token-auth";
 
@@ -189,7 +190,7 @@ function buildApp(db: DB["db"]) {
 
 function basicAuthHeader(username: string, password: string): string {
   return (
-    "Basic " + Buffer.from(`${username}:${password}`, "utf8").toString("base64")
+    "Basic " + base64Encode(new TextEncoder().encode(`${username}:${password}`))
   );
 }
 

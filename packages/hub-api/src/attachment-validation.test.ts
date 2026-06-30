@@ -1,4 +1,7 @@
 import { describe, test, expect } from "bun:test";
+
+import { base64Encode } from "@intx/types";
+
 import {
   validateAttachments,
   type AttachmentInput,
@@ -6,11 +9,11 @@ import {
 } from "./attachment-validation";
 
 function b64(bytes: number[]): string {
-  return Buffer.from(new Uint8Array(bytes)).toString("base64");
+  return base64Encode(new Uint8Array(bytes));
 }
 
 function bytesOfLength(n: number): string {
-  return Buffer.alloc(n, 0x61).toString("base64");
+  return base64Encode(new Uint8Array(n).fill(0x61));
 }
 
 // Small limits so oversize cases need only tiny buffers.
