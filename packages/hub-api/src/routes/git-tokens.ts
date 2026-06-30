@@ -16,7 +16,7 @@ import {
 } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
 import type { RepoAction } from "@intx/types/sidecar";
-import { ErrorResponse, paginatedSchema } from "@intx/types";
+import { base64urlEncode, ErrorResponse, paginatedSchema } from "@intx/types";
 
 import type { AppEnv, TenantEnv } from "../context";
 import { ts } from "../format";
@@ -168,7 +168,7 @@ function generateSecret(kind: "pat" | "svc"): string {
   // `crypto.getRandomValues` is the Web Crypto API and is exposed on
   // the global `crypto` object in both Node and Bun.
   crypto.getRandomValues(bytes);
-  return `${prefix}${Buffer.from(bytes).toString("base64url")}`;
+  return `${prefix}${base64urlEncode(bytes)}`;
 }
 
 async function sha256(input: string): Promise<Uint8Array> {
