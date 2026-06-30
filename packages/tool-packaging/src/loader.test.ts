@@ -63,7 +63,7 @@ interface FixtureSpec {
  */
 async function packFixture(
   spec: FixtureSpec,
-): Promise<{ bytes: Buffer; integrity: string }> {
+): Promise<{ bytes: Uint8Array; integrity: string }> {
   const stagingDir = path.join(
     fixtureSourceRoot,
     `${spec.name.replace("/", "_")}-${spec.version}`,
@@ -799,7 +799,7 @@ describe("loader error categories", () => {
       version: "1.0.0",
       entryModuleSource: "",
     });
-    const wrongBytes = Buffer.from("not the right bytes");
+    const wrongBytes = new TextEncoder().encode("not the right bytes");
     await expectCategory(
       {
         manifest: {
@@ -832,7 +832,7 @@ describe("loader error categories", () => {
       rootDir: cacheDir,
       maxBytes: 10_000_000,
     });
-    const garbage = Buffer.from("definitely not a tarball");
+    const garbage = new TextEncoder().encode("definitely not a tarball");
     const integrity = ssri
       .fromData(garbage, { algorithms: ["sha512"] })
       .toString();
@@ -1064,7 +1064,7 @@ describe("loader error categories", () => {
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => Buffer.from(bytes),
+      fetchTarball: async () => bytes,
     });
     let caught: unknown;
     try {
@@ -1129,7 +1129,7 @@ describe("loader error categories", () => {
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => Buffer.from(bytes),
+      fetchTarball: async () => bytes,
     });
     let caught: unknown;
     try {
@@ -1191,7 +1191,7 @@ describe("loader error categories", () => {
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => Buffer.from(bytes),
+      fetchTarball: async () => bytes,
     });
     let caught: unknown;
     try {
@@ -2005,7 +2005,7 @@ describe("entry-path containment", () => {
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => Buffer.from(finalBytes),
+      fetchTarball: async () => finalBytes,
     });
 
     const manifest: ToolPackageManifest = {
@@ -2075,7 +2075,7 @@ describe("entry-path containment", () => {
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => Buffer.from(fixture.bytes),
+      fetchTarball: async () => fixture.bytes,
     });
 
     const manifest: ToolPackageManifest = {
@@ -2156,7 +2156,7 @@ describe("entry-path containment", () => {
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => Buffer.from(fixture.bytes),
+      fetchTarball: async () => fixture.bytes,
     });
 
     const manifest: ToolPackageManifest = {
@@ -2232,7 +2232,7 @@ export const main = Object.assign(
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => Buffer.from(fixture.bytes),
+      fetchTarball: async () => fixture.bytes,
     });
 
     const manifest: ToolPackageManifest = {
@@ -2291,7 +2291,7 @@ export const main = Object.assign(
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => Buffer.from(fixture.bytes),
+      fetchTarball: async () => fixture.bytes,
     });
 
     const manifest: ToolPackageManifest = {
@@ -2803,7 +2803,7 @@ describe("interchange.directors walker", () => {
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => Buffer.from(bytes),
+      fetchTarball: async () => bytes,
     });
     let caught: unknown;
     try {
@@ -2872,7 +2872,7 @@ describe("interchange.directors walker", () => {
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => Buffer.from(finalBytes),
+      fetchTarball: async () => finalBytes,
       importModule: async () => ({
         main: makeFakeFactory("@vendor/tools-stub"),
       }),
@@ -2943,7 +2943,7 @@ export const main = Object.assign(
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => Buffer.from(fixture.bytes),
+      fetchTarball: async () => fixture.bytes,
       importModule: async () => ({
         main: makeFakeFactory("@vendor/evil-dir-symlink"),
       }),

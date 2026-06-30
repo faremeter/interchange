@@ -190,7 +190,7 @@ export type TarballFetcher = (
     assetRoot: string;
     assetMounts: ReadonlyMap<string, string>;
   },
-) => Promise<Buffer>;
+) => Promise<Uint8Array>;
 
 export interface LoadManifestArgs {
   readonly manifest: ToolPackageManifest;
@@ -817,7 +817,7 @@ function defaultTarballUrl(
 }
 
 /**
- * Read an HTTP-registry tarball response into a Buffer while enforcing
+ * Read an HTTP-registry tarball response into a Uint8Array while enforcing
  * `maxBytes`. Two guards:
  *
  *   1. If the upstream sent a `Content-Length` header, parse it (digit-
@@ -848,7 +848,7 @@ export async function readResponseWithLimit(
     readonly version: string;
   },
   signal?: AbortSignal,
-): Promise<Buffer> {
+): Promise<Uint8Array> {
   const declaredLengthRaw = res.headers.get("content-length");
   if (declaredLengthRaw !== null) {
     if (!/^\d+$/.test(declaredLengthRaw)) {
@@ -874,7 +874,7 @@ export async function readResponseWithLimit(
     // tarball. The cache and tar-extract layers will reject the
     // resulting bytes as non-tar content, but the fetch itself didn't
     // fail — keep this path simple rather than over-rejecting.
-    return Buffer.alloc(0);
+    return new Uint8Array(0);
   }
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
@@ -920,7 +920,7 @@ export async function readResponseWithLimit(
     signal?.removeEventListener("abort", onAbort);
     reader.releaseLock();
   }
-  const out = Buffer.allocUnsafe(total);
+  const out = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
     out.set(chunk, offset);
