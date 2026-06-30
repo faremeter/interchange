@@ -58,7 +58,7 @@ export interface TarballCacheConfig {
 }
 
 export interface TarballCache {
-  get(integrity: string): Promise<Buffer | null>;
+  get(integrity: string): Promise<Uint8Array | null>;
   /**
    * Presence probe. Returns true when an entry for `integrity` is
    * resident on disk. Cheaper than `get` for callers that only need
@@ -66,7 +66,7 @@ export interface TarballCache {
    * existence without reading bytes or touching atime.
    */
   has(integrity: string): Promise<boolean>;
-  put(integrity: string, bytes: Buffer): Promise<void>;
+  put(integrity: string, bytes: Uint8Array): Promise<void>;
   /**
    * Mark the cache entry for `integrity` as poisoned and remove its
    * tarball bytes immediately so a subsequent `extractTarball` call
@@ -489,7 +489,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
   return {
     async get(integrity) {
       const file = entryPath(integrity);
-      let bytes: Buffer;
+      let bytes: Uint8Array;
       try {
         bytes = await fs.readFile(file);
       } catch (err) {

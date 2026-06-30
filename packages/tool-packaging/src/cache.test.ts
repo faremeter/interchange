@@ -17,8 +17,8 @@ afterEach(async () => {
   await fs.rm(scratch, { recursive: true, force: true });
 });
 
-function makeBytes(seed: string): { bytes: Buffer; integrity: string } {
-  const bytes = Buffer.from(`tarball-bytes-${seed}`);
+function makeBytes(seed: string): { bytes: Uint8Array; integrity: string } {
+  const bytes = new TextEncoder().encode(`tarball-bytes-${seed}`);
   const integrity = ssri.fromData(bytes, { algorithms: ["sha512"] }).toString();
   return { bytes, integrity };
 }
@@ -38,7 +38,7 @@ describe("get / put round-trip", () => {
     await cache.put(integrity, bytes);
     const fetched = await cache.get(integrity);
     expect(fetched).not.toBeNull();
-    expect(fetched?.equals(bytes)).toBe(true);
+    expect(fetched).toEqual(bytes);
   });
 
   test("get returns null on miss", async () => {
@@ -50,7 +50,7 @@ describe("get / put round-trip", () => {
   test("put with mismatched bytes throws TarballIntegrityMismatchError", async () => {
     const cache = createTarballCache({ rootDir: scratch, maxBytes: 10_000 });
     const { integrity } = makeBytes("a");
-    const wrongBytes = Buffer.from("not the right bytes");
+    const wrongBytes = new TextEncoder().encode("not the right bytes");
     let caught: unknown;
     try {
       await cache.put(integrity, wrongBytes);
@@ -356,7 +356,7 @@ async function probeEntrySize(scratch: string): Promise<number> {
 async function packFixtureTarball(
   cwd: string,
   files: Record<string, string>,
-): Promise<{ bytes: Buffer; integrity: string }> {
+): Promise<{ bytes: Uint8Array; integrity: string }> {
   const staging = await fs.mkdtemp(path.join(cwd, "stage-"));
   const packageDir = path.join(staging, "package");
   await fs.mkdir(packageDir, { recursive: true });
