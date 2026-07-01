@@ -735,6 +735,21 @@ describe("deliver", () => {
     expect(headers.from).toBe("sender@remote");
   });
 
+  test("does NOT dedup by Message-ID: redelivery appends a second copy", async () => {
+    // The federation inbound path performs NO Message-ID dedup:
+    // appendToMailbox appends unconditionally, so delivering the same
+    // Message-ID twice yields two INBOX messages. This pins the baseline
+    // the supervisor FIFO + markConsumed dedup improves on.
+    const { transport } = await createTestTransport();
+    const alphaTransport = transport.getTransportFor("alpha@test.interchange");
+
+    transport.deliver("alpha@test.interchange", VALID_MESSAGE);
+    transport.deliver("alpha@test.interchange", VALID_MESSAGE);
+
+    const refs = await alphaTransport.search("INBOX", {});
+    expect(refs).toHaveLength(2);
+  });
+
   test("fires watch callback on delivery", async () => {
     const { transport } = await createTestTransport();
     const alphaTransport = transport.getTransportFor("alpha@test.interchange");
