@@ -47,14 +47,7 @@ export default defineConfig(
     },
     languageOptions: {
       parserOptions: {
-        projectService: {
-          allowDefaultProject: [
-            "eslint.config.ts",
-            "apps/admin-ui/vite.config.ts",
-            "packages/db/drizzle.config.ts",
-          ],
-          maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 40,
-        },
+        projectService: true,
         tsconfigRootDir: import.meta.dirname,
       },
     },
