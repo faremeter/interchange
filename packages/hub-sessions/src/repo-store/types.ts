@@ -270,9 +270,15 @@ export interface KindHandler {
    * already carries the OID). A handler that validates a large retained
    * subtree by its per-commit delta uses it to prove a retained entry is
    * byte-unchanged by OID equality instead of re-reading the blob. It is
-   * `undefined` when no prior commit exists; a handler that needs OIDs
-   * for a prospective-side compare hashes the (usually in-memory)
-   * prospective bytes itself.
+   * `undefined` when no prior commit exists.
+   *
+   * `listDirOids` is the prospective-side mirror of `priorListDirOids`:
+   * each child entry's OID read straight from the prospective tree's
+   * listing, so a handler comparing a retained subtree by OID gets the
+   * prospective OID without re-reading and hashing every entry's bytes.
+   * It is `undefined` on paths that do not surface it (a hand-built
+   * validatePush in a test), in which case the handler falls back to
+   * hashing the prospective bytes.
    */
   validatePush: (args: {
     repoId: RepoId;
@@ -281,6 +287,7 @@ export interface KindHandler {
     topLevelTreePaths: string[];
     readBlob: (path: string) => Promise<Uint8Array>;
     listDir: (path: string) => Promise<string[]>;
+    listDirOids?: (path: string) => Promise<{ name: string; oid: string }[]>;
     priorReadBlob: (path: string) => Promise<Uint8Array | null>;
     priorListDir: (path: string) => Promise<string[]>;
     priorListDirOids?: (

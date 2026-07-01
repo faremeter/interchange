@@ -1076,6 +1076,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     topLevelTreePaths: () => Promise<string[]>;
     readBlob: (relPath: string) => Promise<Uint8Array>;
     listDir: (relPath: string) => Promise<string[]>;
+    listDirOids: (relPath: string) => Promise<{ name: string; oid: string }[]>;
   } {
     const topLevelTreePaths = async (): Promise<string[]> => {
       const { tree } = await git.readTree({
@@ -1115,7 +1116,29 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       });
       return tree.map((e) => e.path);
     };
-    return { topLevelTreePaths, readBlob, listDir };
+    // Same walk as `listDir` but carries each child's git object id out of
+    // the assembled tree's listing, mirroring the prior side's
+    // `priorListDirOids`. A handler validating a large retained subtree by
+    // its per-commit delta (workflow-run's consumed dedup index) reads the
+    // prospective OID straight from here instead of re-reading and hashing
+    // every retained blob.
+    const listDirOids = async (
+      relPath: string,
+    ): Promise<{ name: string; oid: string }[]> => {
+      const oid =
+        relPath === ""
+          ? rootTreeOid
+          : await resolveTreeOid(dir, rootTreeOid, relPath, "tree");
+      if (oid === null) return [];
+      const { tree } = await git.readTree({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid,
+      });
+      return tree.map((e) => ({ name: e.path, oid: e.oid }));
+    };
+    return { topLevelTreePaths, readBlob, listDir, listDirOids };
   }
 
   // Unlocked body of writeTree. The caller is responsible for
@@ -1216,6 +1239,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       topLevelTreePaths: await prospective.topLevelTreePaths(),
       readBlob: prospective.readBlob,
       listDir: prospective.listDir,
+      listDirOids: prospective.listDirOids,
       priorReadBlob,
       priorListDir,
       priorListDirOids,

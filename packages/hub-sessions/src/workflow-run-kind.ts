@@ -1435,32 +1435,32 @@ async function hashConsumedBlobOid(bytes: Uint8Array): Promise<string> {
 }
 
 /**
- * Build the resolver that surfaces each PRIOR consumed entry's git blob
- * OID for the delta-scoped path. When the substrate supplies
- * `priorListDirOids` the OID comes straight from the prior commit's tree
- * listing (one `readTree` per consumed directory, cached), so the prior
- * side is not re-read blob-by-blob. When it is absent (a hand-built
- * validatePush in a unit test) the resolver falls back to hashing the
- * prior bytes via `priorReadBlob`; that fallback is O(retained) rather
- * than free but preserves identical semantics, which is all a
- * correctness test needs.
+ * Resolve each consumed entry's git blob OID for the delta-scoped path.
+ * When the substrate supplies a directory OID listing (`listDirOids`) the
+ * OID comes straight from the tree — one `readTree` per consumed
+ * directory, cached — so that side is not re-read blob-by-blob. When the
+ * listing is absent (a hand-built validatePush in a unit test) each OID
+ * falls back to hashing the entry's bytes, which preserves identical
+ * semantics at O(retained) cost. Both the prior and prospective sides use
+ * this; `sideLabel` distinguishes them in the missing-OID error.
  */
-function makePriorConsumedOidResolver(
-  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
-  priorListDirOids:
+function makeListingOidResolver(
+  sideLabel: string,
+  listDirOids:
     | ((path: string) => Promise<{ name: string; oid: string }[]>)
     | undefined,
+  hashFallback: (blobPath: string) => Promise<string>,
 ): (blobPath: string) => Promise<string> {
   const dirOidCache = new Map<string, Map<string, string>>();
   return async (blobPath) => {
-    if (priorListDirOids !== undefined) {
+    if (listDirOids !== undefined) {
       const slash = blobPath.lastIndexOf("/");
       const dir = blobPath.slice(0, slash);
       const name = blobPath.slice(slash + 1);
       let byName = dirOidCache.get(dir);
       if (byName === undefined) {
         byName = new Map<string, string>();
-        for (const entry of await priorListDirOids(dir)) {
+        for (const entry of await listDirOids(dir)) {
           byName.set(entry.name, entry.oid);
         }
         dirOidCache.set(dir, byName);
@@ -1468,11 +1468,22 @@ function makePriorConsumedOidResolver(
       const oid = byName.get(name);
       if (oid === undefined) {
         throw new Error(
-          `delta claim-check: prior tree listing has no OID for enumerated consumed entry ${blobPath}`,
+          `delta claim-check: ${sideLabel} tree listing has no OID for enumerated consumed entry ${blobPath}`,
         );
       }
       return oid;
     }
+    return hashFallback(blobPath);
+  };
+}
+
+function makePriorConsumedOidResolver(
+  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
+  priorListDirOids:
+    | ((path: string) => Promise<{ name: string; oid: string }[]>)
+    | undefined,
+): (blobPath: string) => Promise<string> {
+  return makeListingOidResolver("prior", priorListDirOids, async (blobPath) => {
     const bytes = await priorReadBlob(blobPath);
     if (bytes === null) {
       throw new Error(
@@ -1480,7 +1491,7 @@ function makePriorConsumedOidResolver(
       );
     }
     return hashConsumedBlobOid(bytes);
-  };
+  });
 }
 
 /**
@@ -1496,9 +1507,10 @@ function makePriorConsumedOidResolver(
  * by re-walking the whole retained set: retained entries (same filename,
  * same blob OID) are skipped as already-validated-and-immutable, added
  * entries are parsed and validated, and removed entries are checked
- * against the retention watermark. `priorListDirOids`, when supplied by
- * the substrate, surfaces prior consumed OIDs straight from the prior
- * commit's tree so the prior side is not re-read blob-by-blob.
+ * against the retention watermark. `priorListDirOids` and `listDirOids`,
+ * when supplied by the substrate, surface the prior and prospective
+ * consumed OIDs straight from their tree listings so neither side is
+ * re-read blob-by-blob.
  */
 async function validateClaimCheckSubtree(
   listDir: (path: string) => Promise<string[]>,
@@ -1506,14 +1518,17 @@ async function validateClaimCheckSubtree(
   priorReadBlob: (path: string) => Promise<Uint8Array | null>,
   priorListDir: (path: string) => Promise<string[]>,
   priorListDirOids?: (path: string) => Promise<{ name: string; oid: string }[]>,
+  listDirOids?: (path: string) => Promise<{ name: string; oid: string }[]>,
 ): Promise<ValidatePushResult> {
   // When the delta path is on, surface each consumed entry's git blob
-  // OID during enumeration: prospective OIDs by hashing the (in the
-  // measured writeTree path, in-memory) prospective bytes, prior OIDs
-  // from the substrate tree listing when available. The resolvers are
-  // omitted entirely on the exhaustive path so it stays byte-identical.
+  // OID during enumeration straight from the tree listing on both sides
+  // when the substrate provides it, falling back to hashing the bytes
+  // otherwise. The resolvers are omitted entirely on the exhaustive path
+  // so it stays byte-identical.
   const prospectiveConsumedOid = BENCH_DELTA_SCOPE_CLAIMCHECK
-    ? async (blobPath: string) => hashConsumedBlobOid(await readBlob(blobPath))
+    ? makeListingOidResolver("prospective", listDirOids, async (blobPath) =>
+        hashConsumedBlobOid(await readBlob(blobPath)),
+      )
     : undefined;
   const priorConsumedOid = BENCH_DELTA_SCOPE_CLAIMCHECK
     ? makePriorConsumedOidResolver(priorReadBlob, priorListDirOids)
@@ -2054,6 +2069,7 @@ export const workflowRunKindHandler: KindHandler = {
     topLevelTreePaths,
     readBlob,
     listDir,
+    listDirOids,
     priorReadBlob,
     priorListDir,
     priorListDirOids,
@@ -2126,6 +2142,7 @@ export const workflowRunKindHandler: KindHandler = {
         priorReadBlob,
         priorListDir,
         priorListDirOids,
+        listDirOids,
       );
       if (!claimCheck.ok) {
         logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${claimCheck.reason}`;
