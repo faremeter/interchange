@@ -26,6 +26,7 @@ import {
   createMatcherTable,
   scanWaitingSet,
   type BodyAwareRequestPredicate,
+  type HarnessRequest,
   type ReplyOnceOpts,
   type ReplyOnceToolCall,
   type RequestPredicate,
@@ -257,11 +258,7 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
   // clone taken at route time and held purely as a clone-source — the
   // entry itself is never consumed, so `matchedRequests()` can re-clone
   // it on every call without exhausting its body.
-  // Type widened to satisfy the gap between Bun's global Request and
-  // the undici Request the fetch stub builds; both have the methods
-  // the public surface needs (clone, json, text, headers).
-  const matchedRequestsList: ReturnType<WaitingFetch["request"]["clone"]>[] =
-    [];
+  const matchedRequestsList: HarnessRequest[] = [];
 
   const routeWaitingFetch = (
     wf: WaitingFetch,
@@ -615,17 +612,14 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
     });
   };
 
-  const matchedRequests = (): Request[] =>
+  const matchedRequests = (): HarnessRequest[] =>
     // Re-clone every stored Request on each call so the returned objects
     // are fully independent — both from one another AND across repeat
     // calls. The stored route-time clone is never consumed (it's only
     // used as a source for further `.clone()` calls), so subsequent
     // body reads against the returned Requests succeed even if a prior
-    // call already drained one. The (undici-typed) WaitingFetch.request
-    // clone is structurally identical to the platform's global Request;
-    // the cast bridges the type-only gap.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- type-only bridge between undici Request and Bun's global Request
-    matchedRequestsList.map((r) => r.clone()) as Request[];
+    // call already drained one.
+    matchedRequestsList.map((r) => r.clone());
 
   let nextAutoCallId = 0;
   // The `call_auto_` prefix is reserved for ids the harness mints on
@@ -731,12 +725,20 @@ export function setupHarness(opts: SetupHarnessOpts = {}): Harness {
   const buildRequest = (
     input: string | URL | Request,
     init: RequestInit | undefined,
-  ): Request => {
-    if (input instanceof Request) {
-      return init === undefined ? input : new Request(input, init);
-    }
-    const url = input instanceof URL ? input.toString() : input;
-    return new Request(url, init);
+  ): HarnessRequest => {
+    // Single owned bridge between the undici-typed `new Request()` the stub
+    // mints and the harness's public `HarnessRequest` (Bun's global shape).
+    // Concentrating the cast here means the waiting set, predicates, and
+    // `matchedRequests()` all speak one consistent request type downstream.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- type-only bridge between undici Request and the harness's Bun-global-shaped HarnessRequest
+    const built = (
+      input instanceof Request
+        ? init === undefined
+          ? input
+          : new Request(input, init)
+        : new Request(input instanceof URL ? input.toString() : input, init)
+    ) as HarnessRequest;
+    return built;
   };
 
   const extractSignal = (

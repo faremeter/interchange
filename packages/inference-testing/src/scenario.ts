@@ -13,6 +13,26 @@ import type { Provider } from "./wire/agnostic";
 export type WireEventPredicate = (event: ChunkFiredEvent) => boolean;
 
 /**
+ * The request type the harness hands to predicates and returns from
+ * `matchedRequests()`. It mirrors Bun's global `Request` and adds a
+ * self-returning `clone()` (Bun does not override `clone()`, so a plain
+ * `Request.clone()` yields undici's `Request`).
+ *
+ * Why extend `Bun.__internal.BunRequestOverride` instead of naming
+ * `Request`: in this package's compilation undici's `@types/node` global
+ * augmentation wins global `Request` resolution, so writing `Request` here
+ * would pin the harness's public surface to undici's type — the collision
+ * that leaks into Bun-typed consumers. Bun's global `Request` itself
+ * extends this same override interface, so naming it directly reproduces
+ * the platform type regardless of which global augmentation wins in a
+ * given file. This depends on `bun-types`' internal namespace; a bun-types
+ * upgrade that restructures it breaks this line at build time.
+ */
+export interface HarnessRequest extends Bun.__internal.BunRequestOverride {
+  clone(): HarnessRequest;
+}
+
+/**
  * Predicate run against a constructed `Request` to decide whether a matcher
  * applies. The signature is sync-only on purpose: predicates run on every
  * scan pass and must be referentially transparent. Reading mutable state
@@ -20,7 +40,7 @@ export type WireEventPredicate = (event: ChunkFiredEvent) => boolean;
  * bug — the type system enforces that predicates cannot await, but it
  * cannot enforce purity.
  */
-export type RequestPredicate = (req: Request) => boolean;
+export type RequestPredicate = (req: HarnessRequest) => boolean;
 
 /**
  * Predicate variant for `scenario.whenRequestBodyMatches`. Receives the
@@ -36,7 +56,7 @@ export type RequestPredicate = (req: Request) => boolean;
  */
 export type BodyAwareRequestPredicate = (
   bodyText: string,
-  req: Request,
+  req: HarnessRequest,
 ) => boolean;
 
 /**
@@ -286,7 +306,7 @@ export type Scenario = {
    *
    * To read only the most-recent request, use `matchedRequests().at(-1)`.
    */
-  matchedRequests(): Request[];
+  matchedRequests(): HarnessRequest[];
   /**
    * Convenience wrapper that creates a stream, builds a complete
    * single-turn response for `provider`, enqueues it at the next safe
@@ -403,7 +423,7 @@ export type Matcher =
  * stays `undefined` for those.
  */
 export type WaitingFetch = {
-  readonly request: Request;
+  readonly request: HarnessRequest;
   readonly signal: AbortSignal | undefined;
   readonly resolve: (response: Response) => void;
   readonly reject: (err: unknown) => void;
