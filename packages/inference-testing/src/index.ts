@@ -20,6 +20,7 @@ export type {
 
 export type {
   Scenario,
+  HarnessRequest,
   ReplyOnceOpts,
   ReplyOnceToolCall,
   RequestPredicate,
