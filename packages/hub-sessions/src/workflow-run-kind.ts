@@ -122,23 +122,19 @@
 //     DELETED only as a watermark-consistent retention prune (see the
 //     watermark invariants below); any other deletion is rejected.
 //   - Retention prune (the bounded-`consumed/` contract): the consumed
-//     dedup index may shrink only by a watermark-passed SUFFIX prune.
-//     A consumed entry present in the prior tree may be absent from the
+//     dedup index may shrink only by a watermark-passed prune. A
+//     consumed entry present in the prior tree may be absent from the
 //     prospective tree only when (a) its `receivedAt` is strictly
 //     below the prospective `watermark.json` value (you may prune only
-//     what the watermark passed), (b) the watermark did not regress
-//     (`prospective watermark >= prior watermark`), and (c) it is older
-//     than every retained prior consumed entry (`max receivedAt of
-//     dropped <= min receivedAt of retained`) -- the suffix relation,
-//     so a writer can trim only the oldest age-ordered tail and can
-//     never selectively delete a recent messageId to sneak a reprocess
-//     past dedup. A RETAINED entry is NOT required to sit at or above
-//     the watermark: a message consumed long after receipt (or one
-//     replayed back in-flight after a crash) may legitimately carry a
-//     below-watermark `receivedAt` and survive until a later commit
-//     prunes it. Retaining it gives only EXTRA dedup -- a re-submission
-//     at or above the watermark still hits the entry, one below it is
-//     stale-rejected at enqueue -- so it never weakens exactly-once.
+//     what the watermark passed) and (b) the watermark did not regress
+//     (`prospective watermark >= prior watermark`). A RETAINED entry is
+//     NOT required to sit at or above the watermark: a message consumed
+//     long after receipt (or one replayed back in-flight after a crash)
+//     may legitimately carry a below-watermark `receivedAt` and survive
+//     until a later commit prunes it. Retaining it gives only EXTRA
+//     dedup -- a re-submission at or above the watermark still hits the
+//     entry, one below it is stale-rejected at enqueue -- so it never
+//     weakens exactly-once.
 //   - Inbox→processing transition: a processing entry that is newly
 //     added (not present in the prior tree) must be backed by a
 //     matching inbox entry in the prior tree at the same
@@ -189,33 +185,6 @@ import {
 } from "./workflow-run-event-log";
 
 const logger = getLogger(["hub-sessions", "workflow-run-kind"]);
-
-/**
- * Experiment flag (latency gate, default OFF). When set, the claim-check
- * validation walk in `validateClaimCheckSubtree` validates only the
- * per-commit DELTA of the consumed dedup index against the prior tree --
- * keyed by (filename, blob OID) -- instead of re-reading, re-parsing and
- * re-validating the ENTIRE retained consumed set on every commit. Read
- * once at module load; OFF reproduces the exhaustive walk byte-for-byte,
- * so nothing changes unless the flag is explicitly set.
- *
- * A second, independent experiment flag (commit batching) is intended to
- * live alongside this one; it is deliberately NOT defined here yet.
- */
-const BENCH_DELTA_SCOPE_CLAIMCHECK =
-  process.env.BENCH_DELTA_SCOPE_CLAIMCHECK === "1";
-
-/**
- * The resolved delta-scope claim-check state for the process that loaded
- * this module. Exported so the process actually running `validatePush`
- * (the sidecar's supervisor, which owns every workflow-run write) can
- * emit an unambiguous startup marker reflecting the ACTUAL module const,
- * rather than a fresh `process.env` read that could diverge from what the
- * validation walk observes. This is the observable that proves whether
- * the delta path is live for a given process, so a benchmark run can be
- * read directly rather than inferred from its timing slopes.
- */
-export const claimCheckDeltaScopeEnabled = BENCH_DELTA_SCOPE_CLAIMCHECK;
 
 export type WorkflowRunHubPrincipal = { readonly kind: "hub" };
 
@@ -1062,13 +1031,13 @@ type ClaimCheckBlob = {
   messageIdFromFilename: string;
   blobPath: string;
   /**
-   * Git blob object id of the entry, populated only for `consumed`
-   * entries and only when the delta-scoped claim-check path is enabled
-   * (`BENCH_DELTA_SCOPE_CLAIMCHECK`). Two entries at the same path whose
-   * OIDs match are byte-identical (git trees are content-addressed), so
-   * the delta path skips the immutability byte-comparison for retained
-   * consumed entries. Left `undefined` on the exhaustive (flag-OFF) path
-   * and on inbox/processing entries, which the delta path does not scope.
+   * Git blob object id of the entry, resolved for `consumed` entries
+   * when the enumeration is given an OID resolver. Two entries at the
+   * same path whose OIDs match are byte-identical (git trees are
+   * content-addressed), so the consumed immutability check compares
+   * OIDs instead of re-reading both blobs for retained entries. Left
+   * `undefined` on inbox/processing entries, which the resolver does
+   * not cover.
    */
   oid?: string;
 };
@@ -1396,32 +1365,6 @@ async function parseQueueBlob(
   return { ok: true, body: validated };
 }
 
-async function checkPriorBytesImmutable(
-  blobPath: string,
-  readBlob: (path: string) => Promise<Uint8Array>,
-  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
-  label: string,
-): Promise<ValidatePushResult> {
-  const prior = await priorReadBlob(blobPath);
-  if (prior === null) return { ok: true };
-  const prospective = await readBlob(blobPath);
-  if (prior.byteLength !== prospective.byteLength) {
-    return {
-      ok: false,
-      reason: `${label} ${blobPath} bytes diverge from the prior tree (lengths ${String(prior.byteLength)} vs ${String(prospective.byteLength)}); ${label} entries are immutable once written`,
-    };
-  }
-  for (let i = 0; i < prior.byteLength; i++) {
-    if (prior[i] !== prospective[i]) {
-      return {
-        ok: false,
-        reason: `${label} ${blobPath} bytes diverge from the prior tree at offset ${String(i)}; ${label} entries are immutable once written`,
-      };
-    }
-  }
-  return { ok: true };
-}
-
 /**
  * Compute the git blob OID of a consumed entry from a byte reader,
  * used only when the delta-scoped path lacks a substrate-provided prior
@@ -1499,19 +1442,18 @@ function makePriorConsumedOidResolver(
  * Validate the `addresses/<urlEncoded>/{inbox,processing,consumed}`
  * subtree as a whole. The walk enforces filename shape, JSON envelope
  * structure, address round-trip, per-messageId atomicity across the
- * three queue states, consumed-blob immutability via prior-bytes
- * equality, and the inbox→processing / processing→consumed
- * transition invariants against the prior tree.
+ * three queue states, consumed-blob immutability, and the
+ * inbox→processing / processing→consumed transition invariants against
+ * the prior tree.
  *
- * When `BENCH_DELTA_SCOPE_CLAIMCHECK` is set the consumed dedup index is
- * validated by its per-commit DELTA against the prior tree rather than
- * by re-walking the whole retained set: retained entries (same filename,
- * same blob OID) are skipped as already-validated-and-immutable, added
- * entries are parsed and validated, and removed entries are checked
- * against the retention watermark. `priorListDirOids` and `listDirOids`,
- * when supplied by the substrate, surface the prior and prospective
- * consumed OIDs straight from their tree listings so neither side is
- * re-read blob-by-blob.
+ * The consumed dedup index is validated by its per-commit DELTA against
+ * the prior tree rather than by re-walking the whole retained set:
+ * retained entries (same filename, same blob OID) are skipped as
+ * already-validated-and-immutable, added entries are parsed and
+ * validated, and removed entries are checked against the retention
+ * watermark. `priorListDirOids` and `listDirOids`, when supplied by the
+ * substrate, surface the prior and prospective consumed OIDs straight
+ * from their tree listings so neither side is re-read blob-by-blob.
  */
 async function validateClaimCheckSubtree(
   listDir: (path: string) => Promise<string[]>,
@@ -1521,19 +1463,18 @@ async function validateClaimCheckSubtree(
   priorListDirOids?: (path: string) => Promise<{ name: string; oid: string }[]>,
   listDirOids?: (path: string) => Promise<{ name: string; oid: string }[]>,
 ): Promise<ValidatePushResult> {
-  // When the delta path is on, surface each consumed entry's git blob
-  // OID during enumeration straight from the tree listing on both sides
-  // when the substrate provides it, falling back to hashing the bytes
-  // otherwise. The resolvers are omitted entirely on the exhaustive path
-  // so it stays byte-identical.
-  const prospectiveConsumedOid = BENCH_DELTA_SCOPE_CLAIMCHECK
-    ? makeListingOidResolver("prospective", listDirOids, async (blobPath) =>
-        hashConsumedBlobOid(await readBlob(blobPath)),
-      )
-    : undefined;
-  const priorConsumedOid = BENCH_DELTA_SCOPE_CLAIMCHECK
-    ? makePriorConsumedOidResolver(priorReadBlob, priorListDirOids)
-    : undefined;
+  // Surface each consumed entry's git blob OID during enumeration
+  // straight from the tree listing on both sides when the substrate
+  // provides it, falling back to hashing the bytes otherwise.
+  const prospectiveConsumedOid = makeListingOidResolver(
+    "prospective",
+    listDirOids,
+    async (blobPath) => hashConsumedBlobOid(await readBlob(blobPath)),
+  );
+  const priorConsumedOid = makePriorConsumedOidResolver(
+    priorReadBlob,
+    priorListDirOids,
+  );
 
   const enumerated = await enumerateClaimCheckBlobs(
     listDir,
@@ -1602,16 +1543,11 @@ async function validateClaimCheckSubtree(
     }
     for (const entry of bucket.consumed) {
       // Cross-state atomicity needs each consumed messageId in the map;
-      // the messageId is the filename stem, so on the delta path this
-      // needs no blob read. Retained consumed entries are not re-parsed
-      // (their envelope was validated when first written and their bytes
-      // are proven immutable by the OID compare below); added consumed
-      // entries are parsed and validated by the transition check further
-      // down. The exhaustive path re-parses every consumed entry here.
-      if (!BENCH_DELTA_SCOPE_CLAIMCHECK) {
-        const parsed = await parseConsumedBlob(entry, readBlob);
-        if (!parsed.ok) return parsed;
-      }
+      // the messageId is the filename stem, so this needs no blob read.
+      // Retained consumed entries are not re-parsed (their envelope was
+      // validated when first written and their bytes are proven
+      // immutable by the OID compare below); added consumed entries are
+      // parsed and validated by the transition check further down.
       const list = messageIdToLocations.get(entry.messageIdFromFilename) ?? [];
       list.push({ kind: entry.kind, filename: entry.filename });
       messageIdToLocations.set(entry.messageIdFromFilename, list);
@@ -1640,51 +1576,37 @@ async function validateClaimCheckSubtree(
       }
     }
 
-    // Consumed entries are immutable. The exhaustive path re-reads both
-    // the prospective and the prior bytes of every retained consumed
-    // entry and compares them. The delta path instead compares the git
-    // blob OID the enumeration surfaced: a consumed entry present in the
-    // prior tree at the same path must carry the same OID (git trees are
+    // Consumed entries are immutable. Compare the git blob OID the
+    // enumeration surfaced: a consumed entry present in the prior tree
+    // at the same path must carry the same OID (git trees are
     // content-addressed, so equal OID proves byte-equality without
-    // reading either blob). A diverging OID is the same immutability
-    // violation the byte compare catches. Immutability is load-bearing
-    // for exactly-once: a mutated `receivedAt` on a retained consumed
-    // entry could fake it below the watermark, get it pruned, and let a
-    // re-submission miss dedup -- so this compare is not optional.
-    if (BENCH_DELTA_SCOPE_CLAIMCHECK) {
-      const priorConsumedOidByPath = new Map<string, string>();
-      for (const e of priorBucket?.consumed ?? []) {
-        if (e.oid === undefined) {
-          throw new Error(
-            `delta claim-check: prior consumed entry ${e.blobPath} was enumerated without an OID`,
-          );
-        }
-        priorConsumedOidByPath.set(e.blobPath, e.oid);
-      }
-      for (const entry of bucket.consumed) {
-        const priorOid = priorConsumedOidByPath.get(entry.blobPath);
-        if (priorOid === undefined) continue; // newly added; validated below
-        if (entry.oid === undefined) {
-          throw new Error(
-            `delta claim-check: prospective consumed entry ${entry.blobPath} was enumerated without an OID`,
-          );
-        }
-        if (entry.oid !== priorOid) {
-          return {
-            ok: false,
-            reason: `consumed ${entry.blobPath} bytes diverge from the prior tree (blob OID ${entry.oid} vs ${priorOid}); consumed entries are immutable once written`,
-          };
-        }
-      }
-    } else {
-      for (const entry of bucket.consumed) {
-        const immutability = await checkPriorBytesImmutable(
-          entry.blobPath,
-          readBlob,
-          priorReadBlob,
-          "consumed",
+    // reading either blob). A diverging OID is an immutability
+    // violation. Immutability is load-bearing for exactly-once: a
+    // mutated `receivedAt` on a retained consumed entry could fake it
+    // below the watermark, get it pruned, and let a re-submission miss
+    // dedup -- so this compare is not optional.
+    const priorConsumedOidByPath = new Map<string, string>();
+    for (const e of priorBucket?.consumed ?? []) {
+      if (e.oid === undefined) {
+        throw new Error(
+          `delta claim-check: prior consumed entry ${e.blobPath} was enumerated without an OID`,
         );
-        if (!immutability.ok) return immutability;
+      }
+      priorConsumedOidByPath.set(e.blobPath, e.oid);
+    }
+    for (const entry of bucket.consumed) {
+      const priorOid = priorConsumedOidByPath.get(entry.blobPath);
+      if (priorOid === undefined) continue; // newly added; validated below
+      if (entry.oid === undefined) {
+        throw new Error(
+          `delta claim-check: prospective consumed entry ${entry.blobPath} was enumerated without an OID`,
+        );
+      }
+      if (entry.oid !== priorOid) {
+        return {
+          ok: false,
+          reason: `consumed ${entry.blobPath} bytes diverge from the prior tree (blob OID ${entry.oid} vs ${priorOid}); consumed entries are immutable once written`,
+        };
       }
     }
 
@@ -1741,93 +1663,38 @@ async function validateClaimCheckSubtree(
     }
 
     if (priorBucket !== undefined) {
-      // The consumed dedup index may shrink ONLY by a watermark-passed
-      // SUFFIX prune: the entries dropped from the prior tree must be
-      // the oldest age-ordered tail, every one of them strictly below
-      // the prospective watermark, and never younger than any entry
-      // that survives. Expressed as two structural facts the handler
-      // can check without wall-clock policy:
-      //   (1) every DROPPED prior consumed entry has receivedAt <
-      //       watermark (you may prune only what the watermark passed);
-      //   (2) every dropped entry is older than every RETAINED prior
-      //       entry (max receivedAt of dropped <= min receivedAt of
-      //       retained) -- the suffix relation, so a writer cannot
-      //       selectively delete a recent messageId while keeping an
-      //       older one to sneak a reprocess past dedup.
-      // A RETAINED entry is NOT required to sit at or above the
-      // watermark: a message consumed long after receipt (or replayed
-      // back in-flight) may legitimately carry a below-watermark
-      // receivedAt and survive until a later commit prunes it. Holding
-      // it gives only EXTRA dedup (a re-submission at or above the
-      // watermark still hits the retained entry; one below is
-      // stale-rejected at enqueue), so it never weakens exactly-once.
-      // The receivedAt lives in the body; read it from the prior tree
-      // (retained bytes are immutable, so prior and prospective agree).
-      //
-      // The delta path reads ONLY the dropped entries. A retained entry
-      // (present in both trees) is proven byte-identical by the OID
-      // compare above, so its receivedAt is unchanged and need not be
-      // read -- the O(retained) prior read the exhaustive path pays is
-      // exactly what the delta path exists to avoid. It also omits the
-      // suffix relation (2): computing `minRetainedReceivedAt` would
-      // require reading every retained entry, and the relation is
-      // redundant for exactly-once here -- every dropped entry is below
-      // the watermark (check 1), and a retained entry below the
-      // watermark is explicitly harmless (extra dedup only), so a
-      // retained entry older than a dropped one weakens nothing. Check 1
-      // plus the already-verified watermark monotonicity is the whole of
+      // The consumed dedup index may shrink only by a watermark-passed
+      // prune: a consumed entry dropped from the prior tree must have a
+      // receivedAt strictly below the prospective watermark (you may
+      // prune only what the watermark passed). Combined with the
+      // already-verified watermark monotonicity, this is the whole of
       // the exactly-once retention contract: pruning is bound to the
       // watermark and the watermark only advances.
-      if (BENCH_DELTA_SCOPE_CLAIMCHECK) {
-        // Re-review before any productionization: relative to the
-        // exhaustive path this delta check drops two properties the suffix
-        // guard also provided. (1) It no longer proves consumed/ is an
-        // age-ordered contiguous window -- a below-watermark prune may now
-        // leave a "hole" (a dropped entry older than a retained one),
-        // which is harmless for exactly-once (every dropped entry is below
-        // the watermark, so a resubmit is stale-rejected) but means
-        // consumed/ is no longer a provable suffix. (2) It reduces
-        // defense-in-depth against a buggy claim-check writer: the suffix
-        // relation would have caught a writer that selectively dropped a
-        // recent entry, whereas here only the below-watermark bound
-        // catches it. The below-watermark bound plus watermark
-        // monotonicity is the whole of the exactly-once contract; these
-        // two dropped properties are structural hardening, not correctness.
-        for (const e of priorBucket.consumed) {
-          if (prospectiveConsumedPaths.has(e.blobPath)) continue;
-          const priorParsed = await parseConsumedBlobFrom(e, priorReadBlob);
-          if (!priorParsed.ok) return priorParsed;
-          const receivedAt = priorParsed.body.receivedAt;
-          if (receivedAt >= prospectiveWatermark) {
-            return {
-              ok: false,
-              reason: `consumed ${e.blobPath} present in the prior tree is missing from the prospective tree but its receivedAt ${String(receivedAt)} is not below the retention watermark ${String(prospectiveWatermark)}; consumed entries may be pruned only once the watermark has passed them`,
-            };
-          }
-        }
-      } else {
-        let maxDroppedReceivedAt = Number.NEGATIVE_INFINITY;
-        let minRetainedReceivedAt = Number.POSITIVE_INFINITY;
-        for (const e of priorBucket.consumed) {
-          const priorParsed = await parseConsumedBlobFrom(e, priorReadBlob);
-          if (!priorParsed.ok) return priorParsed;
-          const receivedAt = priorParsed.body.receivedAt;
-          if (prospectiveConsumedPaths.has(e.blobPath)) {
-            minRetainedReceivedAt = Math.min(minRetainedReceivedAt, receivedAt);
-            continue;
-          }
-          if (receivedAt >= prospectiveWatermark) {
-            return {
-              ok: false,
-              reason: `consumed ${e.blobPath} present in the prior tree is missing from the prospective tree but its receivedAt ${String(receivedAt)} is not below the retention watermark ${String(prospectiveWatermark)}; consumed entries may be pruned only once the watermark has passed them`,
-            };
-          }
-          maxDroppedReceivedAt = Math.max(maxDroppedReceivedAt, receivedAt);
-        }
-        if (maxDroppedReceivedAt > minRetainedReceivedAt) {
+      //
+      // The suffix relation (dropped entries older than every retained
+      // entry) is deliberately NOT enforced. A RETAINED entry is NOT
+      // required to sit at or above the watermark: a message consumed
+      // long after receipt (or replayed back in-flight) may
+      // legitimately carry a below-watermark receivedAt and survive
+      // until a later commit prunes it. Holding it gives EXTRA dedup (a
+      // re-submission at or above the watermark still hits the retained
+      // entry; one below is stale-rejected at enqueue), so a hole left
+      // by an out-of-order prune weakens nothing.
+      //
+      // Only the dropped entries are read. A retained entry (present in
+      // both trees) is proven byte-identical by the OID compare above,
+      // so its receivedAt is unchanged and need not be read. The
+      // receivedAt lives in the body; read it from the prior tree
+      // (retained bytes are immutable, so prior and prospective agree).
+      for (const e of priorBucket.consumed) {
+        if (prospectiveConsumedPaths.has(e.blobPath)) continue;
+        const priorParsed = await parseConsumedBlobFrom(e, priorReadBlob);
+        if (!priorParsed.ok) return priorParsed;
+        const receivedAt = priorParsed.body.receivedAt;
+        if (receivedAt >= prospectiveWatermark) {
           return {
             ok: false,
-            reason: `address ${JSON.stringify(decodedAddress)} consumed prune is not a suffix: a dropped entry (receivedAt ${String(maxDroppedReceivedAt)}) is newer than a retained entry (receivedAt ${String(minRetainedReceivedAt)}); only the oldest age-ordered tail may be pruned`,
+            reason: `consumed ${e.blobPath} present in the prior tree is missing from the prospective tree but its receivedAt ${String(receivedAt)} is not below the retention watermark ${String(prospectiveWatermark)}; consumed entries may be pruned only once the watermark has passed them`,
           };
         }
       }

@@ -2993,9 +2993,9 @@ describe("workflow-run substrate — pack-path per-run scope completeness", () =
 // markConsumed commit advances it and prunes consumed entries below it
 // (the oldest tail only); enqueueInbox refuses any inbound below it as
 // definitively-stale. These tests prove the gate items: the structural
-// contract relaxation (validate-level: suffix-only prune, monotonic
-// watermark, retained-floor) and the end-to-end exactly-once + bounded
-// behaviour against a real on-disk store.
+// contract relaxation (validate-level: below-watermark prune,
+// monotonic watermark, retained-floor) and the end-to-end
+// exactly-once + bounded behaviour against a real on-disk store.
 
 describe("workflowRunKindHandler.validatePush — retention watermark contract", () => {
   // Gate 3: a watermark regression is rejected.
@@ -3027,12 +3027,14 @@ describe("workflowRunKindHandler.validatePush — retention watermark contract",
     expect(r.reason).toMatch(/watermark regressed/);
   });
 
-  // Gate 2: a non-suffix deletion (drop a recent consumed entry while
-  // keeping an older one) is rejected. Dropping msg-recent (receivedAt
-  // 200) while retaining msg-old (receivedAt 100) is not a suffix of
-  // the age-ordered set -- the suffix guard fires (max dropped 200 >
-  // min retained 100), regardless of where the watermark sits.
-  test("rejects dropping a recent consumed entry while keeping an older one", async () => {
+  // A non-suffix deletion (drop a recent consumed entry while keeping
+  // an older one) is ACCEPTED when both entries sit below the
+  // watermark. The suffix relation is not enforced; a retained entry
+  // below the watermark only adds dedup (every resubmit in that region
+  // is stale-rejected at enqueue), so the prune opens no reprocess. The
+  // production markConsumed writer still prunes only the oldest tail,
+  // so a non-suffix tree never arises in practice.
+  test("accepts a non-suffix consumed prune below the watermark and locks the boundary", async () => {
     const prior = {
       [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(0),
       [consumedPathFor(ADDRESS_SEG, "msg-old")]: consumedBody(
@@ -3049,10 +3051,9 @@ describe("workflowRunKindHandler.validatePush — retention watermark contract",
       ),
     };
     // Drop msg-recent (the younger one), keep msg-old (the older one).
-    // To "permit" the drop the writer must claim a watermark above 200
-    // (so the dropped 200 is below it); the retained 100 is then newer
-    // than nothing dropped above it, but the dropped 200 is newer than
-    // the retained 100 -- a non-suffix prune.
+    // The writer claims a watermark above 200 so the dropped 200 is
+    // below it; the retained 100 is below it too. Both sit below the
+    // watermark, so every resubmit in that region is stale-rejected.
     const r = await validate(
       {
         [WORKFLOW_RUN_GITIGNORE_PATH]: "",
@@ -3066,81 +3067,71 @@ describe("workflowRunKindHandler.validatePush — retention watermark contract",
       },
       { priorFiles: prior },
     );
-    if (process.env.BENCH_DELTA_SCOPE_CLAIMCHECK === "1") {
-      // The delta-scoped path does NOT enforce the suffix relation:
-      // computing the min receivedAt over all retained entries would
-      // require reading every retained consumed blob, the O(retained)
-      // work the delta walk exists to avoid. WHY DROPPING IT IS SAFE
-      // HERE: both the dropped (receivedAt 200) and the retained
-      // (receivedAt 100) entries are strictly below the stored watermark
-      // (201), so `claim_check_stale_enqueue` refuses every resubmit in
-      // that region at the enqueue boundary regardless of the consumed/
-      // shape -- the retained entry only adds dedup, so a non-suffix
-      // prune below the watermark cannot open a reprocess. The delta path
-      // therefore accepts this prune; the exhaustive path below rejects
-      // it. The production markConsumed writer always prunes the oldest
-      // tail, so it never produces a non-suffix tree on either path.
-      expect(r.ok).toBe(true);
+    // The consumed walk does NOT enforce the suffix relation: computing
+    // the min receivedAt over all retained entries would require
+    // reading every retained consumed blob, the O(retained) work the
+    // delta walk exists to avoid. Both the dropped (receivedAt 200) and
+    // retained (receivedAt 100) entries are strictly below the stored
+    // watermark (201), so `claim_check_stale_enqueue` refuses every
+    // resubmit in that region at the enqueue boundary regardless of the
+    // consumed/ shape -- the retained entry only adds dedup, so a
+    // non-suffix prune below the watermark cannot open a reprocess.
+    expect(r.ok).toBe(true);
 
-      // Boundary lock. The delta removed-check rejects a dropped entry at
-      // receivedAt >= watermark (strict, mirroring the strict
-      // `receivedAt < watermark` stale-reject so the entry AT the
-      // watermark is both retained and not stale-rejected -- no gap).
-      // Assert BOTH sides of the boundary so a later refactor cannot
-      // silently widen `>=` to `>` and drop the entry sitting exactly at
-      // the watermark, which would let a resubmit at that receivedAt miss
-      // dedup.
-      // (a) strictly above the watermark -> rejected.
-      const droppedAbove = await validate(
-        {
-          [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+    // Boundary lock. The removed-check rejects a dropped entry at
+    // receivedAt >= watermark (strict, mirroring the strict
+    // `receivedAt < watermark` stale-reject so the entry AT the
+    // watermark is both retained and not stale-rejected -- no gap).
+    // Assert BOTH sides of the boundary so a later refactor cannot
+    // silently widen `>=` to `>` and drop the entry sitting exactly at
+    // the watermark, which would let a resubmit at that receivedAt miss
+    // dedup.
+    // (a) strictly above the watermark -> rejected.
+    const droppedAbove = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(200),
+      },
+      {
+        priorFiles: {
           [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(200),
+          [consumedPathFor(ADDRESS_SEG, "msg-above")]: consumedBody(
+            "msg-above",
+            300,
+            "run-above",
+            350,
+          ),
         },
-        {
-          priorFiles: {
-            [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(200),
-            [consumedPathFor(ADDRESS_SEG, "msg-above")]: consumedBody(
-              "msg-above",
-              300,
-              "run-above",
-              350,
-            ),
-          },
-        },
-      );
-      expect(droppedAbove.ok).toBe(false);
-      if (droppedAbove.ok) throw new Error("unreachable");
-      expect(droppedAbove.reason).toMatch(/not below the retention watermark/);
+      },
+    );
+    expect(droppedAbove.ok).toBe(false);
+    if (droppedAbove.ok) throw new Error("unreachable");
+    expect(droppedAbove.reason).toMatch(/not below the retention watermark/);
 
-      // (b) exactly equal to the watermark -> rejected (the off-by-one
-      // that widening `>=` to `>` would open).
-      const droppedAtBoundary = await validate(
-        {
-          [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+    // (b) exactly equal to the watermark -> rejected (the off-by-one
+    // that widening `>=` to `>` would open).
+    const droppedAtBoundary = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(200),
+      },
+      {
+        priorFiles: {
           [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(200),
+          [consumedPathFor(ADDRESS_SEG, "msg-at")]: consumedBody(
+            "msg-at",
+            200,
+            "run-at",
+            250,
+          ),
         },
-        {
-          priorFiles: {
-            [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(200),
-            [consumedPathFor(ADDRESS_SEG, "msg-at")]: consumedBody(
-              "msg-at",
-              200,
-              "run-at",
-              250,
-            ),
-          },
-        },
-      );
-      expect(droppedAtBoundary.ok).toBe(false);
-      if (droppedAtBoundary.ok) throw new Error("unreachable");
-      expect(droppedAtBoundary.reason).toMatch(
-        /not below the retention watermark/,
-      );
-      return;
-    }
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error("unreachable");
-    expect(r.reason).toMatch(/prune is not a suffix/);
+      },
+    );
+    expect(droppedAtBoundary.ok).toBe(false);
+    if (droppedAtBoundary.ok) throw new Error("unreachable");
+    expect(droppedAtBoundary.reason).toMatch(
+      /not below the retention watermark/,
+    );
   });
 
   // A dropped entry that the watermark has NOT passed is rejected (you
