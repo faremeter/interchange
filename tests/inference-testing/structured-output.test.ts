@@ -34,7 +34,20 @@ import type {
   ConversationTurn,
   InferenceEvent,
   InferenceOptions,
+  LastCycleSource,
 } from "@intx/types/runtime";
+
+const OPENAI_SOURCE: LastCycleSource = {
+  sourceId: "test-openai",
+  provider: "openai",
+  model: "test-openai-model",
+};
+
+const GOOGLE_SOURCE: LastCycleSource = {
+  sourceId: "test-google-genai",
+  provider: "google-genai",
+  model: "test-google-genai-model",
+};
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -271,7 +284,7 @@ const CapturedGeminiBody = type({
 
 describe("translation drift guard — adapter vs discovery plug-in", () => {
   test("OpenAI: adapter.response_format matches captured request body", () => {
-    const adapter = createOpenAIAdapter();
+    const adapter = createOpenAIAdapter(OPENAI_SOURCE);
     const adapterReq = adapter.buildRequest(
       [PROMPT_TURN],
       "gpt-5.4-mini",
@@ -290,7 +303,7 @@ describe("translation drift guard — adapter vs discovery plug-in", () => {
   });
 
   test("Google GenAI: adapter.generationConfig matches captured request body", () => {
-    const adapter = createGoogleGenAIAdapter();
+    const adapter = createGoogleGenAIAdapter(GOOGLE_SOURCE);
     const adapterReq = adapter.buildRequest(
       [PROMPT_TURN],
       "gemini-2.5-flash",
