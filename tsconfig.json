@@ -66,6 +66,9 @@
     { "path": "tests/agent-structured-payload" },
     { "path": "tests/coding-agent" },
     { "path": "tests/workflow" },
-    { "path": "bin" }
+    { "path": "bin" },
+    { "path": "./tsconfig.eslint.json" },
+    { "path": "apps/admin-ui/tsconfig.node.json" },
+    { "path": "packages/db/tsconfig.config.json" }
   ]
 }

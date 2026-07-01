@@ -2,7 +2,7 @@
 *\#*
 dist
 node_modules
-tsconfig.tsbuildinfo
+*.tsbuildinfo
 .tap
 keypairs
 .env
