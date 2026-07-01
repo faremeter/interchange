@@ -1,5 +1,4 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["**/*.ts"],
-  "exclude": ["transform-cutover.test.ts"]
+  "include": ["**/*.ts"]
 }
