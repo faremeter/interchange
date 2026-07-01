@@ -1,4 +1,6 @@
 export { parseSSE } from "./sse";
+export { encodeToolName, decodeToolName } from "./tool-name";
+export type { ToolNameLimit } from "./tool-name";
 export {
   runInference,
   createDependencies,
