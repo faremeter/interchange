@@ -502,12 +502,19 @@ export async function createDurableConversationStore(
   }
 
   async function mirrorToSubstrate(): Promise<void> {
-    const loaded = await baseStorage.load();
-    const metadata = {
-      pendingOperations: loaded.pendingOperations,
-      tokenUsage: loaded.tokenUsage,
-      connectorState: loaded.connectorState,
-    };
+    // Slice the new turns from the reactor's in-memory array (retained
+    // by the local single-writer store at the last writeTurns) instead
+    // of re-reading and re-parsing the whole turns.jsonl every
+    // boundary; only the bounded metadata.json is read from disk. This
+    // rests on a sequencing invariant the store cannot enforce: nothing
+    // mutates the reactor's turn array between its last writeTurns and
+    // this read. The mirror runs at onRunBoundary after send() settles,
+    // and the reactor only appends inside a cycle (each ending in
+    // writeTurns), so peekTurns() equals the on-disk state here. A
+    // second, concurrent mirror trigger would have to preserve that
+    // ordering or slice from a snapshot.
+    const turns = baseStorage.peekTurns();
+    const metadata = await baseStorage.loadMetadata();
 
     // First mirror in this store's lifetime that did not run through
     // `restoreFromSubstrate` (which sets the counts): learn the durable
@@ -532,11 +539,11 @@ export async function createDurableConversationStore(
     // turn DELTA plus bounded metadata -- never the whole conversation, so
     // the O(N^2) growth stays gone. This is the single synchronous write
     // per boundary on the reply path.
-    const newTurns = loaded.turns.slice(mirroredTurnCount);
+    const newTurns = turns.slice(mirroredTurnCount);
     const boundarySeq = mirroredBoundaryCount;
     await appendWalEntry(boundarySeq, newTurns, metadata);
     mirroredBoundaryCount = boundarySeq + 1;
-    mirroredTurnCount = loaded.turns.length;
+    mirroredTurnCount = turns.length;
 
     // Compact once the live WAL reaches the interval (measured in mirror
     // boundaries = WAL entries, which bounds both the bucket fan-out and the
@@ -546,7 +553,7 @@ export async function createDurableConversationStore(
     if (mirroredBoundaryCount - checkpointBoundarySeq >= CHECKPOINT_INTERVAL) {
       await writeCheckpoint(
         mirroredBoundaryCount,
-        loaded.turns.slice(0, mirroredTurnCount),
+        turns.slice(0, mirroredTurnCount),
         metadata,
       );
       checkpointBoundarySeq = mirroredBoundaryCount;

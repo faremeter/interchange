@@ -1,6 +1,6 @@
 import type { ContextStore, AuditStore } from "@intx/types/runtime";
 import { initAgentRepo } from "./init";
-import { IsogitStore } from "./store";
+import { IsogitStore, type DurableMirrorReads } from "./store";
 import type { CommitSigner } from "./signer";
 import type { GCPolicy } from "./gc";
 
@@ -11,6 +11,7 @@ export type {
   TreeValidatorResult,
 } from "./pack-receive";
 export { IsogitStore };
+export type { DurableMirrorReads };
 export {
   switchBranch,
   createAndSwitchBranch,
@@ -63,7 +64,7 @@ export async function createIsogitStore(
   dir: string,
   signer?: CommitSigner,
   gcPolicy?: GCPolicy,
-): Promise<ContextStore & AuditStore> {
+): Promise<ContextStore & AuditStore & DurableMirrorReads> {
   await initAgentRepo(dir);
   return new IsogitStore(dir, signer, gcPolicy);
 }

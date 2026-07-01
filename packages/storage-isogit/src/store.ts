@@ -252,11 +252,40 @@ function parseTurns(text: string): ConversationTurn[] {
  * `dir`. The caller is responsible for calling `initAgentRepo(dir)` before
  * constructing.
  */
-export class IsogitStore implements ContextStore, AuditStore {
+/**
+ * Extra reads the durable WAL mirror needs beyond `ContextStore`, kept
+ * off the shared interface because they are isogit-specific.
+ */
+export interface DurableMirrorReads {
+  /**
+   * The turns most recently handed to `writeTurns`, by reference -- the
+   * reactor's live array, not a copy. Lets the WAL mirror slice the new
+   * turns from memory instead of re-reading and re-parsing `turns.jsonl`
+   * every boundary. Safe because the local store is single-writer and
+   * in-process: nothing else writes `turns.jsonl`, so the last-written
+   * array equals the on-disk state at the mirror boundary.
+   */
+  peekTurns(): ConversationTurn[];
+  /**
+   * Read only `metadata.json` (pending operations, token usage, connector
+   * state), skipping the O(N) turns parse `load` pays. The mirror gets
+   * its turns from `peekTurns`.
+   */
+  loadMetadata(): Promise<{
+    pendingOperations: PendingOperation[];
+    tokenUsage: TokenUsage;
+    connectorState: ConnectorThreadState | null;
+  }>;
+}
+
+export class IsogitStore
+  implements ContextStore, AuditStore, DurableMirrorReads
+{
   private readonly dir: string;
   private readonly signer: CommitSigner | undefined;
   private readonly gcPolicy: GCPolicy | undefined;
   private pendingConnectorState: ConnectorThreadState | null = null;
+  private lastTurns: ConversationTurn[] = [];
 
   constructor(dir: string, signer?: CommitSigner, gcPolicy?: GCPolicy) {
     this.dir = dir;
@@ -286,7 +315,6 @@ export class IsogitStore implements ContextStore, AuditStore {
     connectorState: ConnectorThreadState | null;
   }> {
     const turnsPath = path.join(this.dir, TURNS_FILE);
-    const metadataPath = path.join(this.dir, METADATA_FILE);
 
     let turns: ConversationTurn[] = [];
     if (await pathExists(turnsPath)) {
@@ -294,20 +322,31 @@ export class IsogitStore implements ContextStore, AuditStore {
       turns = parseTurns(text);
     }
 
-    let pendingOperations: PendingOperation[] = [];
-    let tokenUsage: TokenUsage = { ...EMPTY_USAGE };
-    let connectorState: ConnectorThreadState | null = null;
+    const metadata = await this.loadMetadata();
+    return { turns, ...metadata };
+  }
 
-    if (await pathExists(metadataPath)) {
-      const text = await fs.promises.readFile(metadataPath, "utf-8");
-      const parsed: unknown = JSON.parse(text);
-      const data = parseMetadata(parsed);
-      pendingOperations = data.pendingOperations;
-      tokenUsage = data.tokenUsage;
-      connectorState = data.connectorState;
+  async loadMetadata(): Promise<{
+    pendingOperations: PendingOperation[];
+    tokenUsage: TokenUsage;
+    connectorState: ConnectorThreadState | null;
+  }> {
+    const metadataPath = path.join(this.dir, METADATA_FILE);
+    if (!(await pathExists(metadataPath))) {
+      return {
+        pendingOperations: [],
+        tokenUsage: { ...EMPTY_USAGE },
+        connectorState: null,
+      };
     }
-
-    return { turns, pendingOperations, tokenUsage, connectorState };
+    const text = await fs.promises.readFile(metadataPath, "utf-8");
+    const parsed: unknown = JSON.parse(text);
+    const data = parseMetadata(parsed);
+    return {
+      pendingOperations: data.pendingOperations,
+      tokenUsage: data.tokenUsage,
+      connectorState: data.connectorState,
+    };
   }
 
   async commit(
@@ -467,10 +506,15 @@ export class IsogitStore implements ContextStore, AuditStore {
     turns: ConversationTurn[],
     _signal?: AbortSignal,
   ): Promise<void> {
+    this.lastTurns = turns;
     await fs.promises.writeFile(
       path.join(this.dir, TURNS_FILE),
       encodeJsonlLines(turns),
     );
+  }
+
+  peekTurns(): ConversationTurn[] {
+    return this.lastTurns;
   }
 
   /**
