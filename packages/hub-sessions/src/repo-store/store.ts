@@ -126,6 +126,62 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   const { dataDir, signingKey, handlers, authorize, signingCallback, gc } =
     config;
 
+  // Per-repo-directory isomorphic-git memoization cache. Every git.*
+  // call the store makes against a `dir` threads that dir's cache, so
+  // isomorphic-git reuses the parsed on-disk index across the repo's
+  // serialized write sequence instead of re-reading and re-parsing it
+  // on every git.add / remove / updateIndex / commit / listFiles, and
+  // reuses parsed packfile indexes across object reads. The store is
+  // the single writer under withRepoLock, so a long-lived per-repo
+  // cache never races a concurrent mutator.
+  //
+  // The cache stays a pure accelerator, never a second source of truth,
+  // because the on-disk repo remains authoritative on every axis:
+  // isomorphic-git persists the index to disk on each dirty mutation and
+  // re-reads it on a stat mismatch; the object cache is OID-keyed
+  // (content-addressed, so it is never stale for a committed object);
+  // object reads enumerate pack files from disk on every call (so a GC
+  // repack's now-pruned packs are simply never consulted again); and
+  // refs are not cached at all — resolveRef and friends take no cache —
+  // so the cache can never serve a stale ref tip. Those same properties
+  // make it safe to drop a dir's cache at any instant: the next call
+  // just re-reads from disk.
+  //
+  // Two bounds keep a long-lived store from retaining parsed packfiles
+  // (and their pack bytes) without limit: a dir's cache is rebuilt once
+  // it has served GIT_CACHE_MAX_OPS calls, and the store holds at most
+  // GIT_CACHE_MAX_REPOS dir caches, evicting the least-recently-used.
+  // `invalidateGitCache` additionally drops a dir's cache after an
+  // out-of-band mutation that bypasses it — a received pack writes
+  // objects and advances a ref without threading this cache — so the
+  // next read rebuilds from the mutated repo.
+  const GIT_CACHE_MAX_OPS = 8192;
+  const GIT_CACHE_MAX_REPOS = 256;
+  type RepoGitCache = { cache: object; ops: number };
+  const gitCaches = new Map<string, RepoGitCache>();
+  function cacheFor(dir: string): object {
+    let entry = gitCaches.get(dir);
+    if (entry === undefined) {
+      entry = { cache: {}, ops: 0 };
+    } else {
+      // Re-insert so this dir ranks most-recently-used for the LRU
+      // eviction below; rebuild once it has spent its op budget.
+      gitCaches.delete(dir);
+      if (entry.ops >= GIT_CACHE_MAX_OPS) entry = { cache: {}, ops: 0 };
+    }
+    entry.ops += 1;
+    gitCaches.set(dir, entry);
+    while (gitCaches.size > GIT_CACHE_MAX_REPOS) {
+      const lru = gitCaches.keys().next().value;
+      if (lru === undefined) break;
+      gitCaches.delete(lru);
+    }
+    return entry.cache;
+  }
+  function invalidateGitCache(dir: string): void {
+    gitCaches.delete(dir);
+  }
+
   // Per-(repoId, ref) seq cache. Value is the seq of the ref's
   // current tip; the next commit on the ref gets `cached + 1`. The
   // cache is populated lazily — on each ref update we either bump
@@ -202,7 +258,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   // tip's seq is `count - 1`).
   async function countCommits(dir: string, ref: string): Promise<number> {
     try {
-      const entries = await git.log({ fs, dir, ref });
+      const entries = await git.log({ fs, dir, cache: cacheFor(dir), ref });
       return entries.length;
     } catch (err) {
       if (hasCode(err) && err.code === "NotFoundError") return 0;
@@ -220,7 +276,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   ): Promise<SubscribeEntry[]> {
     let entries: Awaited<ReturnType<typeof git.log>>;
     try {
-      entries = await git.log({ fs, dir, ref });
+      entries = await git.log({ fs, dir, cache: cacheFor(dir), ref });
     } catch (err) {
       if (hasCode(err) && err.code === "NotFoundError") return [];
       throw err;
@@ -452,11 +508,16 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     // walk becomes O(prefix) rather than O(repo). A prefix with no
     // tracked entries (a first write) yields an empty matrix and clears
     // nothing.
-    const matrix = await git.statusMatrix({ fs, dir, filepaths: [prefix] });
+    const matrix = await git.statusMatrix({
+      fs,
+      dir,
+      cache: cacheFor(dir),
+      filepaths: [prefix],
+    });
     for (const row of matrix) {
       const filepath = row[0];
       if (filepath.startsWith(prefix)) {
-        await git.remove({ fs, dir, filepath });
+        await git.remove({ fs, dir, cache: cacheFor(dir), filepath });
       }
     }
   }
@@ -469,7 +530,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     const fullPath = path.join(dir, relPath);
     await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
     await fs.promises.writeFile(fullPath, contents);
-    await git.add({ fs, dir, filepath: relPath });
+    await git.add({ fs, dir, cache: cacheFor(dir), filepath: relPath });
   }
 
   // Read the set of paths present in the tree at the given ref so a
@@ -487,7 +548,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       }
       throw err;
     }
-    const entries = await git.listFiles({ fs, dir, ref: sha });
+    const entries = await git.listFiles({
+      fs,
+      dir,
+      cache: cacheFor(dir),
+      ref: sha,
+    });
     return new Set(entries);
   }
 
@@ -518,7 +584,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
         continue;
       }
       try {
-        await git.remove({ fs, dir, filepath: relPath });
+        await git.remove({ fs, dir, cache: cacheFor(dir), filepath: relPath });
       } catch (err) {
         if (!hasCode(err) || err.code !== "NotFoundError") throw err;
       }
@@ -550,6 +616,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
             const result = await git.readBlob({
               fs,
               dir,
+              cache: cacheFor(dir),
               oid: refSha,
               filepath: relPath,
             });
@@ -561,7 +628,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
           const fullPath = path.join(dir, relPath);
           await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
           await fs.promises.writeFile(fullPath, blob);
-          await git.add({ fs, dir, filepath: relPath });
+          await git.add({ fs, dir, cache: cacheFor(dir), filepath: relPath });
         }
       }
     }
@@ -575,6 +642,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
         await git.checkout({
           fs,
           dir,
+          cache: cacheFor(dir),
           ref: "HEAD",
           force: true,
           filepaths: [args.clearedPrefix],
@@ -597,7 +665,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     relPath: string,
     expectedType: "blob" | "tree",
   ): Promise<string | null> {
-    const { commit } = await git.readCommit({ fs, dir, oid: commitSha });
+    const { commit } = await git.readCommit({
+      fs,
+      dir,
+      cache: cacheFor(dir),
+      oid: commitSha,
+    });
     if (relPath === "") {
       return expectedType === "tree" ? commit.tree : null;
     }
@@ -607,7 +680,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       const segment = segments[i];
       if (segment === undefined) throw new Error("unreachable");
       const isLast = i === segments.length - 1;
-      const { tree } = await git.readTree({ fs, dir, oid: currentOid });
+      const { tree } = await git.readTree({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid: currentOid,
+      });
       const entry = tree.find((e) => e.path === segment);
       if (entry === undefined) return null;
       if (isLast) {
@@ -649,13 +727,23 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     ): Promise<Uint8Array | null> => {
       const oid = await resolveTreeEntry(dir, commitSha, relPath, "blob");
       if (oid === null) return null;
-      const { blob } = await git.readBlob({ fs, dir, oid });
+      const { blob } = await git.readBlob({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid,
+      });
       return blob;
     };
     const priorListDir = async (relPath: string): Promise<string[]> => {
       const oid = await resolveTreeEntry(dir, commitSha, relPath, "tree");
       if (oid === null) return [];
-      const { tree } = await git.readTree({ fs, dir, oid });
+      const { tree } = await git.readTree({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid,
+      });
       return tree.map((e) => e.path);
     };
     // Same walk as `priorListDir` but carries each child's git object id
@@ -667,7 +755,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     ): Promise<{ name: string; oid: string }[]> => {
       const oid = await resolveTreeEntry(dir, commitSha, relPath, "tree");
       if (oid === null) return [];
-      const { tree } = await git.readTree({ fs, dir, oid });
+      const { tree } = await git.readTree({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid,
+      });
       return tree.map((e) => ({ name: e.path, oid: e.oid }));
     };
     return { priorReadBlob, priorListDir, priorListDirOids };
@@ -686,10 +779,16 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     readBlob: (path: string) => Promise<Uint8Array>;
     listDir: (path: string) => Promise<string[]>;
   }> {
-    const { commit } = await git.readCommit({ fs, dir, oid: commitSha });
+    const { commit } = await git.readCommit({
+      fs,
+      dir,
+      cache: cacheFor(dir),
+      oid: commitSha,
+    });
     const { tree: rootTree } = await git.readTree({
       fs,
       dir,
+      cache: cacheFor(dir),
       oid: commit.tree,
     });
     const topLevelTreePaths = rootTree.map((e) => e.path);
@@ -700,7 +799,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
           `readBlob: path ${relPath} not found in commit ${commitSha} tree`,
         );
       }
-      const { blob } = await git.readBlob({ fs, dir, oid });
+      const { blob } = await git.readBlob({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid,
+      });
       return blob;
     };
     const listDir = async (relPath: string): Promise<string[]> => {
@@ -715,7 +819,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       // `path_violation` reason instead of a raw substrate throw. A real
       // read fault inside `git.readTree` below still bubbles.
       if (oid === null) return [];
-      const { tree } = await git.readTree({ fs, dir, oid });
+      const { tree } = await git.readTree({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid,
+      });
       return tree.map((e) => e.path);
     };
     return { topLevelTreePaths, readBlob, listDir };
@@ -732,10 +841,17 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   ): Promise<Map<string, string> | null> {
     const oid =
       relPath === ""
-        ? (await git.readCommit({ fs, dir, oid: commitSha })).commit.tree
+        ? (
+            await git.readCommit({
+              fs,
+              dir,
+              cache: cacheFor(dir),
+              oid: commitSha,
+            })
+          ).commit.tree
         : await resolveTreeEntry(dir, commitSha, relPath, "tree");
     if (oid === null) return null;
-    const { tree } = await git.readTree({ fs, dir, oid });
+    const { tree } = await git.readTree({ fs, dir, cache: cacheFor(dir), oid });
     const out = new Map<string, string>();
     for (const e of tree) out.set(e.path, e.oid);
     return out;
@@ -803,7 +919,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
         if (out.has(oid)) continue;
         let parsed: Awaited<ReturnType<typeof git.readCommit>>;
         try {
-          parsed = await git.readCommit({ fs, dir, oid });
+          parsed = await git.readCommit({ fs, dir, cache: cacheFor(dir), oid });
         } catch (err) {
           // A previously-received single-commit pack may leave the
           // tip's `parent` field pointing at a SHA the receiver has
@@ -865,7 +981,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       if (existingCommits.has(current)) break;
       let parsed: Awaited<ReturnType<typeof git.readCommit>>;
       try {
-        parsed = await git.readCommit({ fs, dir, oid: current });
+        parsed = await git.readCommit({
+          fs,
+          dir,
+          cache: cacheFor(dir),
+          oid: current,
+        });
       } catch (err) {
         if (hasCode(err) && err.code === "NotFoundError") break;
         throw err;
@@ -912,11 +1033,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
         throw err;
       }
     }
-    const indexFiles = new Set(await git.listFiles({ fs, dir }));
+    const indexFiles = new Set(
+      await git.listFiles({ fs, dir, cache: cacheFor(dir) }),
+    );
     if (refSha === null) {
       for (const filepath of indexFiles) {
         try {
-          await git.remove({ fs, dir, filepath });
+          await git.remove({ fs, dir, cache: cacheFor(dir), filepath });
         } catch (err) {
           if (!hasCode(err) || err.code !== "NotFoundError") throw err;
         }
@@ -927,13 +1050,20 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     for (const filepath of indexFiles) {
       if (refBlobs.has(filepath)) continue;
       try {
-        await git.remove({ fs, dir, filepath });
+        await git.remove({ fs, dir, cache: cacheFor(dir), filepath });
       } catch (err) {
         if (!hasCode(err) || err.code !== "NotFoundError") throw err;
       }
     }
     for (const [filepath, oid] of refBlobs) {
-      await git.updateIndex({ fs, dir, filepath, oid, add: true });
+      await git.updateIndex({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        filepath,
+        oid,
+        add: true,
+      });
     }
   }
 
@@ -947,9 +1077,19 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     commitSha: string,
   ): Promise<Map<string, string>> {
     const out = new Map<string, string>();
-    const { commit } = await git.readCommit({ fs, dir, oid: commitSha });
+    const { commit } = await git.readCommit({
+      fs,
+      dir,
+      cache: cacheFor(dir),
+      oid: commitSha,
+    });
     const recurse = async (treeOid: string, prefix: string): Promise<void> => {
-      const { tree } = await git.readTree({ fs, dir, oid: treeOid });
+      const { tree } = await git.readTree({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid: treeOid,
+      });
       for (const entry of tree) {
         const childPath =
           prefix === "" ? entry.path : `${prefix}/${entry.path}`;
@@ -1161,6 +1301,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     const commitSha = await git.commit({
       fs,
       dir,
+      cache: cacheFor(dir),
       message: content.message,
       author: AUTHOR,
       parent: [parentSha],
@@ -1221,21 +1362,36 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     if (!repoExists) return out;
     const commitSha = await resolveRefSha(dir, ref);
     if (commitSha === null) return out;
-    const { commit } = await git.readCommit({ fs, dir, oid: commitSha });
+    const { commit } = await git.readCommit({
+      fs,
+      dir,
+      cache: cacheFor(dir),
+      oid: commitSha,
+    });
     let currentOid = commit.tree;
     const segments = prefix
       .replace(/\/$/, "")
       .split("/")
       .filter((s) => s !== "");
     for (const segment of segments) {
-      const { tree } = await git.readTree({ fs, dir, oid: currentOid });
+      const { tree } = await git.readTree({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid: currentOid,
+      });
       const entry = tree.find((e) => e.path === segment);
       if (entry === undefined || entry.type !== "tree") {
         return out;
       }
       currentOid = entry.oid;
     }
-    const { tree } = await git.readTree({ fs, dir, oid: currentOid });
+    const { tree } = await git.readTree({
+      fs,
+      dir,
+      cache: cacheFor(dir),
+      oid: currentOid,
+    });
     // N+1 isomorphic-git round-trips: one tree read plus one
     // readBlob per blob entry. Acceptable at the current scale
     // (single-digit tarballs per registry); when a registry grows
@@ -1247,6 +1403,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       const { blob } = await git.readBlob({
         fs,
         dir,
+        cache: cacheFor(dir),
         oid: commitSha,
         filepath: `${prefix}${entry.path}`,
       });
@@ -1340,6 +1497,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
             const { commit: parsed } = await git.readCommit({
               fs,
               dir,
+              cache: cacheFor(dir),
               oid: newCommit,
             });
             const parents = parsed.parent;
@@ -1368,7 +1526,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
             let parentSha: string | null = null;
             if (declaredParent !== null) {
               try {
-                await git.readCommit({ fs, dir, oid: declaredParent });
+                await git.readCommit({
+                  fs,
+                  dir,
+                  cache: cacheFor(dir),
+                  oid: declaredParent,
+                });
                 parentSha = declaredParent;
               } catch (err) {
                 if (!hasCode(err) || err.code !== "NotFoundError") throw err;
@@ -1415,6 +1578,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       // index cache must be cleared so the next writeTreeUnderLock
       // resets the index against the chosen target ref.
       indexRefCache.delete(indexCacheKey(repoId));
+      // receivePackObjects wrote new objects and advanced the ref
+      // straight to disk without threading the memoization cache, so
+      // drop the dir's cache; the next read rebuilds against the packed
+      // objects and the new tip.
+      invalidateGitCache(dir);
       for (const sha of newCommitsFromPack) existingCommits.add(sha);
       await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
       await emitRefUpdate(repoId, ref, oldSha, commitSha);
@@ -1447,6 +1615,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       const result = await git.packObjects({
         fs,
         dir,
+        cache: cacheFor(dir),
         oids,
         write: false,
       });
@@ -1489,7 +1658,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       for (const o of perCommit) seen.add(o);
       let parsed: Awaited<ReturnType<typeof git.readCommit>>;
       try {
-        parsed = await git.readCommit({ fs, dir, oid: current });
+        parsed = await git.readCommit({
+          fs,
+          dir,
+          cache: cacheFor(dir),
+          oid: current,
+        });
       } catch (err) {
         if (hasCode(err) && err.code === "NotFoundError") break;
         throw err;
