@@ -67,6 +67,14 @@ export function createEventCollectorRegistry(
   const { db, onTurnFinalized } = config;
   const collectors = new Map<string, EventCollector>();
   const statuses = new Map<string, SessionStatus>();
+  // Per-address serialization queue. Events for one agent MUST be persisted in
+  // arrival order: beginTurn() inserts the inference_turn row, and later events
+  // insertPart() rows that FK-reference it. Without serialization the async
+  // db.insert()s interleave, a turn_part can hit the FK before its inference_turn
+  // commits (FK violation), the onEvent promise throws, and finalizeTurn ->
+  // onTurnFinalized -> turn.committed is never emitted — so the live client never
+  // receives the finished turn and the report only appears after a hard reload.
+  const queues = new Map<string, Promise<void>>();
 
   function create(
     agentAddress: string,
@@ -115,16 +123,22 @@ export function createEventCollectorRegistry(
       event.type === "reactor.done" ||
       (event.type === "reactor.error" && event.data.fatal);
 
-    collector
-      .onEvent(event)
+    // Serialize onEvent per agent so the collector's order-dependent state
+    // machine (currentTurnId / ordinal / finalized) and its DB writes never
+    // interleave. Chain each event onto the previous one's tail promise.
+    const prev = queues.get(agentAddress) ?? Promise.resolve();
+    const next = prev
+      .then(() => collector.onEvent(event))
       .catch((err: unknown) => {
         log.warn`Failed to persist event ${event.type} seq=${String(event.seq)} for ${agentAddress}: ${err instanceof Error ? err.message : String(err)}`;
       })
       .finally(() => {
         if (isTerminal) {
           removeCollector(agentAddress);
+          queues.delete(agentAddress);
         }
       });
+    queues.set(agentAddress, next);
   }
 
   function abandon(agentAddress: string): void {
