@@ -65,6 +65,7 @@
     { "path": "tests/agent-rich-tool" },
     { "path": "tests/agent-structured-payload" },
     { "path": "tests/coding-agent" },
+    { "path": "tests/workflow" },
     { "path": "bin" }
   ]
 }

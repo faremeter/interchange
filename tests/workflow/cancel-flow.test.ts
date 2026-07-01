@@ -146,8 +146,9 @@ describe("cancellation log invariants", () => {
     const result = await run.complete;
     expect(result.terminalStatus).toBe("cancelled");
 
-    const lastKind = result.events[result.events.length - 1]?.kind;
-    expect(["RunCancelled"]).toContain(lastKind);
+    const lastEvent = result.events[result.events.length - 1];
+    if (lastEvent === undefined) throw new Error("run emitted no events");
+    expect(["RunCancelled"]).toContain(lastEvent.kind);
     const replay = resumeFromLog(result.runId, result.events);
     expect(replay.phase).toBe("cancelled");
   });
