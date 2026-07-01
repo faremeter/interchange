@@ -70,6 +70,7 @@ import {
   type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
 import { createDefaultDirectorRegistry } from "@intx/agent";
+import { decodeToolName } from "@intx/inference";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { ApprovalSet } from "@intx/workflow-deploy";
@@ -281,6 +282,13 @@ export function startMockInference(
     async fetch(req) {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- this is a test mock server that only receives requests from the sidecar under test; the shape is known
       const body = (await req.json()) as InferenceRequest;
+      // The adapter encodes tool names for the provider wire charset. Decode
+      // them back to the qualified names the rest of the mock — and the tests
+      // asserting on `requests` — reason about, so this double stays in terms
+      // of the logical tool identity rather than the on-wire form.
+      for (const tool of body.tools ?? []) {
+        tool.name = decodeToolName(tool.name);
+      }
       requests.push(body);
 
       const toolNames = (body.tools ?? []).map((t) => t.name);

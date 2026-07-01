@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { type } from "arktype";
 
 import type {
   ConversationTurn,
@@ -767,5 +768,52 @@ describe("Anthropic adapter — responseFormat boundary", () => {
         },
       }),
     ).toThrow(/json-schema/);
+  });
+});
+
+describe("Anthropic adapter — tool-name codec round-trip", () => {
+  const PREFIXED = "@intx/tools-posix/sidecar-bundle:run_shell";
+  const ToolsBody = type({ tools: type({ name: "string" }).array() });
+
+  function wireToolName(body: string): string {
+    const parsed = ToolsBody(JSON.parse(body));
+    if (parsed instanceof type.errors) {
+      throw new Error(`unexpected request body shape: ${parsed.summary}`);
+    }
+    const name = parsed.tools[0]?.name;
+    if (name === undefined) throw new Error("request body carried no tool");
+    return name;
+  }
+
+  test("buildRequest encodes a package-qualified tool name to the wire charset", () => {
+    const req = createAnthropicAdapter(TEST_SOURCE).buildRequest([], "claude", {
+      maxTokens: 100,
+      tools: [
+        { name: PREFIXED, description: "run a shell command", inputSchema: {} },
+      ],
+    });
+    expect(wireToolName(req.body)).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(req.body).not.toContain(PREFIXED);
+  });
+
+  test("a tool_use start echoing the encoded name decodes back to the prefixed name", () => {
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
+    const req = adapter.buildRequest([], "claude", {
+      maxTokens: 100,
+      tools: [
+        { name: PREFIXED, description: "run a shell command", inputSchema: {} },
+      ],
+    });
+    const events = parse(adapter, {
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "tool_use",
+        id: "toolu_1",
+        name: wireToolName(req.body),
+        input: {},
+      },
+    });
+    expect(pickFirstToolCallStart(events).data.name).toBe(PREFIXED);
   });
 });

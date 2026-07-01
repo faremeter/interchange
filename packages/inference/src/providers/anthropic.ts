@@ -14,6 +14,19 @@ import { CitationBlock as CitationBlockType } from "@intx/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { CREDENTIAL_SENTINEL } from "../auth";
 import { ProtocolMismatchError } from "../errors";
+import {
+  decodeToolName,
+  encodeToolName,
+  type ToolNameLimit,
+} from "../tool-name";
+
+// Anthropic's tool-name constraint is `^[a-zA-Z0-9_-]{1,128}$`, which rejects
+// the raw package-qualified names for the same out-of-charset characters as
+// the OpenAI family.
+const ANTHROPIC_TOOL_NAME_LIMIT: ToolNameLimit = {
+  provider: "anthropic",
+  maxLength: 128,
+};
 
 // ---------------------------------------------------------------------------
 // Request building
@@ -73,7 +86,7 @@ function buildRequest(
 
   if (options.tools !== undefined && options.tools.length > 0) {
     const tools: Record<string, unknown>[] = options.tools.map((t) => ({
-      name: t.name,
+      name: encodeToolName(t.name, ANTHROPIC_TOOL_NAME_LIMIT),
       description: t.description,
       input_schema: t.inputSchema,
     }));
@@ -330,7 +343,7 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
       return {
         type: "tool_use",
         id: block.id,
-        name: block.name,
+        name: encodeToolName(block.name, ANTHROPIC_TOOL_NAME_LIMIT),
         input: block.arguments,
       };
 
@@ -636,7 +649,7 @@ function parseResponse(
         const { index } = event;
         const callId = block.id ?? String(index);
         blockIndexToCallId.set(index, callId);
-        const name = block.name ?? "";
+        const name = decodeToolName(block.name ?? "");
         return [
           {
             type: "inference.tool_call.start",
