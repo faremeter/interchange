@@ -2557,6 +2557,10 @@ function addressSegmentFor(address: string): string {
   return encodeURIComponent(address);
 }
 
+function addressPrefix(addressSegment: string): string {
+  return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/`;
+}
+
 function inboxPath(addressSegment: string, key: string): string {
   return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_INBOX_DIR}/${key}.json`;
 }
@@ -2565,41 +2569,60 @@ function processingPath(addressSegment: string, key: string): string {
   return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_PROCESSING_DIR}/${key}.json`;
 }
 
+function consumedPath(addressSegment: string, messageId: string): string {
+  return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_CONSUMED_DIR}/${messageId}.json`;
+}
+
+function watermarkPath(addressSegment: string): string {
+  return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_WATERMARK_FILE}`;
+}
+
 function filenameKey(receivedAt: number, messageId: string): string {
   return `${String(receivedAt)}-${messageId}`;
 }
 
+type ClaimCheckEntry = { name: string; oid: string };
+
+type AddressListing = {
+  inbox: ClaimCheckEntry[];
+  processing: ClaimCheckEntry[];
+  consumed: ClaimCheckEntry[];
+  watermark: number;
+};
+
 /**
- * Read the full state of one address subtree from the ref's tip via
- * `isomorphic-git`. The substrate's `writeTreePreservingPrefix` only
- * surfaces direct-child blobs; the address subtree's blobs live one
- * level deeper, so the merge callback uses this helper to assemble
- * the full pre-image inside the per-repo lock.
- *
- * Returns the bytes of every entry under
- * `addresses/<addressSegment>/{inbox,processing,consumed}/` keyed by
- * repo-root-relative path. An empty map covers the cases where the
- * repo, ref, or address subtree do not yet exist — all legitimate
- * first-write states for a brand-new claim-check operation.
+ * Read one address's claim-check listing from the parent commit: the
+ * filenames and blob OIDs directly under
+ * `addresses/<addressSegment>/{inbox,processing,consumed}/` (NOT their
+ * bytes), plus the retention watermark. The bytes of the single entry a
+ * leg actually moves are read separately by OID via
+ * {@link readClaimCheckBlob}, so the unbounded consumed/ dedup index is
+ * enumerated (one `readTree`, filenames only) but never read
+ * blob-by-blob. An empty listing covers the repo/ref/address-absent
+ * first-write states — all legitimate for a brand-new operation.
  */
-async function readAddressSubtree(
+async function readAddressListing(
   repoDir: string,
-  ref: string,
+  parentCommitSha: string | null,
   addressSegment: string,
-): Promise<Map<string, Uint8Array>> {
-  const out = new Map<string, Uint8Array>();
-  let commitSha: string;
-  try {
-    commitSha = await git.resolveRef({ fs, dir: repoDir, ref });
-  } catch {
-    return out;
-  }
-  const commit = await git.readCommit({ fs, dir: repoDir, oid: commitSha });
+): Promise<AddressListing> {
+  const listing: AddressListing = {
+    inbox: [],
+    processing: [],
+    consumed: [],
+    watermark: 0,
+  };
+  if (parentCommitSha === null) return listing;
+  const commit = await git.readCommit({
+    fs,
+    dir: repoDir,
+    oid: parentCommitSha,
+  });
   const addrTreeOid = await resolveSubtreeOid(repoDir, commit.commit.tree, [
     WORKFLOW_RUN_ADDRESSES_PREFIX,
     addressSegment,
   ]);
-  if (addrTreeOid === null) return out;
+  if (addrTreeOid === null) return listing;
   const { tree: addrChildren } = await git.readTree({
     fs,
     dir: repoDir,
@@ -2607,36 +2630,40 @@ async function readAddressSubtree(
   });
   for (const child of addrChildren) {
     if (child.type === "blob" && child.path === WORKFLOW_RUN_WATERMARK_FILE) {
-      const { blob } = await git.readBlob({
-        fs,
-        dir: repoDir,
-        oid: child.oid,
-      });
-      out.set(
-        `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_WATERMARK_FILE}`,
-        blob,
-      );
+      const { blob } = await git.readBlob({ fs, dir: repoDir, oid: child.oid });
+      listing.watermark = parseWatermark(blob, watermarkPath(addressSegment));
       continue;
     }
     if (child.type !== "tree") continue;
-    if (!CLAIM_CHECK_SUBDIRS.has(child.path)) continue;
-    const { tree: children } = await git.readTree({
+    const bucket =
+      child.path === WORKFLOW_RUN_INBOX_DIR
+        ? listing.inbox
+        : child.path === WORKFLOW_RUN_PROCESSING_DIR
+          ? listing.processing
+          : child.path === WORKFLOW_RUN_CONSUMED_DIR
+            ? listing.consumed
+            : null;
+    if (bucket === null) continue;
+    const { tree: entries } = await git.readTree({
       fs,
       dir: repoDir,
       oid: child.oid,
     });
-    for (const blobEntry of children) {
-      if (blobEntry.type !== "blob") continue;
-      const { blob } = await git.readBlob({
-        fs,
-        dir: repoDir,
-        oid: blobEntry.oid,
-      });
-      const blobPath = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${child.path}/${blobEntry.path}`;
-      out.set(blobPath, blob);
+    for (const entry of entries) {
+      if (entry.type !== "blob") continue;
+      bucket.push({ name: entry.path, oid: entry.oid });
     }
   }
-  return out;
+  return listing;
+}
+
+/** Read a single claim-check blob by its git object id. */
+async function readClaimCheckBlob(
+  repoDir: string,
+  oid: string,
+): Promise<Uint8Array> {
+  const { blob } = await git.readBlob({ fs, dir: repoDir, oid });
+  return blob;
 }
 
 async function resolveSubtreeOid(
@@ -2698,17 +2725,11 @@ function decodeConsumedReceivedAtOrThrow(
 }
 
 /**
- * Read the per-address watermark from a claim-check subtree map keyed
- * by repo-root-relative path. An absent watermark blob means the
- * address has never pruned; treat it as watermark 0 (nothing pruned,
- * nothing refused).
+ * Decode the per-address retention watermark from its blob bytes. The
+ * caller treats an absent watermark blob as 0 (the address has never
+ * pruned; nothing refused).
  */
-function readWatermarkFromMap(
-  existing: Map<string, Uint8Array>,
-  watermarkFull: string,
-): number {
-  const bytes = existing.get(watermarkFull);
-  if (bytes === undefined) return 0;
+function parseWatermark(bytes: Uint8Array, watermarkFull: string): number {
   let parsed: unknown;
   try {
     parsed = JSON.parse(new TextDecoder().decode(bytes));
@@ -2776,81 +2797,64 @@ export async function enqueueInbox(
     ...(args.rawMessage !== undefined ? { rawMessage: args.rawMessage } : {}),
   };
   const newInboxPath = inboxPath(addressSegment, inboxKey);
-  const { commitSha } = await store.writeTreePreservingPrefix(
-    principal,
-    repoId,
-    ref,
-    {
-      preservePrefix: `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/`,
-      merge: async () => {
-        const existing = await readAddressSubtree(repoDir, ref, addressSegment);
-        const inboxPrefix = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_INBOX_DIR}/`;
-        const processingPrefix = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_PROCESSING_DIR}/`;
-        const consumedPrefix = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_CONSUMED_DIR}/`;
-        const watermarkFull = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_WATERMARK_FILE}`;
-        const messageIdSuffix = `-${args.messageId}.json`;
-        // Refuse a definitively-stale enqueue: a message whose
-        // receivedAt is strictly below the retention watermark could
-        // have had its consumed/ dedup entry pruned, so a duplicate can
-        // no longer be ruled out. Reject it LOUDLY rather than risk
-        // reprocessing. This is the second half of the exactly-once
-        // guarantee: above the watermark the consumed/ index is
-        // authoritative; below it, refuse.
-        const watermark = readWatermarkFromMap(existing, watermarkFull);
-        if (args.receivedAt < watermark) {
-          throw new Error(
-            `claim_check_stale_enqueue: address ${args.address} message ${args.messageId} receivedAt ${String(args.receivedAt)} is below the retention watermark ${String(watermark)}; its dedup entry may have been pruned, so it is refused as definitively-stale`,
-          );
-        }
-        for (const [blobPath] of existing) {
-          if (blobPath === watermarkFull) continue;
-          if (blobPath === newInboxPath) {
-            throw new Error(
-              `claim_check_duplicate_inbox: ${newInboxPath} already exists`,
-            );
-          }
-          if (blobPath.startsWith(consumedPrefix)) {
-            const fname = blobPath.slice(consumedPrefix.length);
-            if (fname === `${args.messageId}.json`) {
-              throw new Error(
-                `claim_check_already_consumed: address ${args.address} message ${args.messageId} is already in the consumed dedup index`,
-              );
-            }
-          }
-          if (blobPath.startsWith(processingPrefix)) {
-            const fname = blobPath.slice(processingPrefix.length);
-            if (fname.endsWith(messageIdSuffix)) {
-              throw new Error(
-                `claim_check_already_processing: address ${args.address} message ${args.messageId} is currently in processing`,
-              );
-            }
-          }
-          // Reject a second inbox entry for the same messageId at a
-          // different receivedAt. The validatePush atomicity check
-          // also catches this on the commit path, but the inbox
-          // scan here surfaces the rejection at the API boundary so
-          // the caller sees a precise error (rather than a generic
-          // tree-validation failure) and the bad tree never reaches
-          // the substrate.
-          if (blobPath.startsWith(inboxPrefix)) {
-            const fname = blobPath.slice(inboxPrefix.length);
-            if (fname.endsWith(messageIdSuffix)) {
-              throw new Error(
-                `claim_check_already_inbox: address ${args.address} message ${args.messageId} is already in the inbox at ${blobPath}`,
-              );
-            }
-          }
-        }
-        const files: Record<string, string | Uint8Array> = {};
-        for (const [blobPath, bytes] of existing) {
-          files[blobPath] = bytes;
-        }
-        files[newInboxPath] = utf8(JSON.stringify(envelope));
-        return files;
-      },
-      message: `enqueue inbox ${args.address} ${args.messageId}`,
+  const inboxFname = `${inboxKey}.json`;
+  const consumedFname = `${args.messageId}.json`;
+  const messageIdSuffix = `-${args.messageId}.json`;
+  const { commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
+    changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
+    message: `enqueue inbox ${args.address} ${args.messageId}`,
+    computeDelta: async (parentCommitSha) => {
+      const listing = await readAddressListing(
+        repoDir,
+        parentCommitSha,
+        addressSegment,
+      );
+      // Refuse a definitively-stale enqueue: a message whose receivedAt
+      // is strictly below the retention watermark could have had its
+      // consumed/ dedup entry pruned, so a duplicate can no longer be
+      // ruled out. Reject it LOUDLY rather than risk reprocessing. This
+      // is the second half of the exactly-once guarantee: above the
+      // watermark the consumed/ index is authoritative; below it, refuse.
+      if (args.receivedAt < listing.watermark) {
+        throw new Error(
+          `claim_check_stale_enqueue: address ${args.address} message ${args.messageId} receivedAt ${String(args.receivedAt)} is below the retention watermark ${String(listing.watermark)}; its dedup entry may have been pruned, so it is refused as definitively-stale`,
+        );
+      }
+      if (listing.inbox.some((e) => e.name === inboxFname)) {
+        throw new Error(
+          `claim_check_duplicate_inbox: ${newInboxPath} already exists`,
+        );
+      }
+      // consumed/ is keyed by messageId alone, so this is an exact
+      // filename lookup against the dedup index.
+      if (listing.consumed.some((e) => e.name === consumedFname)) {
+        throw new Error(
+          `claim_check_already_consumed: address ${args.address} message ${args.messageId} is already in the consumed dedup index`,
+        );
+      }
+      if (listing.processing.some((e) => e.name.endsWith(messageIdSuffix))) {
+        throw new Error(
+          `claim_check_already_processing: address ${args.address} message ${args.messageId} is currently in processing`,
+        );
+      }
+      // Reject a second inbox entry for the same messageId at a
+      // different receivedAt. The validatePush atomicity check also
+      // catches this on the commit path, but surfacing it here gives the
+      // caller a precise error and keeps the bad tree off the substrate.
+      const inboxDup = listing.inbox.find((e) =>
+        e.name.endsWith(messageIdSuffix),
+      );
+      if (inboxDup !== undefined) {
+        throw new Error(
+          `claim_check_already_inbox: address ${args.address} message ${args.messageId} is already in the inbox at ${inboxPath(addressSegment, inboxDup.name.slice(0, -".json".length))}`,
+        );
+      }
+      return {
+        puts: { [newInboxPath]: utf8(JSON.stringify(envelope)) },
+        deletes: [],
+      };
     },
-  );
+  });
   return { commitSha, inboxKey, envelope };
 }
 
@@ -2881,68 +2885,62 @@ export async function dequeueToProcessing(
   const ref = claimCheckCommitRef();
   const repoDir = store.getRepoDir(repoId);
   let dequeued: { key: string; envelope: ClaimCheckEnvelope } | null = null;
-  const { commitSha } = await store.writeTreePreservingPrefix(
-    principal,
-    repoId,
-    ref,
-    {
-      preservePrefix: `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/`,
-      merge: async () => {
-        const existing = await readAddressSubtree(repoDir, ref, addressSegment);
-        const inboxPrefix = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_INBOX_DIR}/`;
-        // Parse each inbox path's filename and sort by numeric
-        // receivedAt with a messageId tiebreak. A raw string sort
-        // would not agree with chronological order when receivedAt
-        // values have non-uniform digit widths.
-        type InboxCandidate = {
-          path: string;
-          receivedAt: number;
-          messageId: string;
-        };
-        const candidates: InboxCandidate[] = [];
-        for (const p of existing.keys()) {
-          if (!p.startsWith(inboxPrefix)) continue;
-          const fname = p.slice(inboxPrefix.length);
-          const m = QUEUE_FILENAME_RE.exec(fname);
-          if (m === null || m[1] === undefined || m[2] === undefined) {
-            throw new Error(`claim_check_invalid_inbox_filename: ${p}`);
-          }
-          candidates.push({
-            path: p,
-            receivedAt: Number.parseInt(m[1], 10),
-            messageId: m[2],
-          });
+  const { commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
+    changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
+    message: `dequeue ${address}`,
+    computeDelta: async (parentCommitSha) => {
+      const listing = await readAddressListing(
+        repoDir,
+        parentCommitSha,
+        addressSegment,
+      );
+      const inboxDir = `${addressPrefix(addressSegment)}${WORKFLOW_RUN_INBOX_DIR}/`;
+      // Sort by numeric receivedAt with a messageId tiebreak. A raw
+      // string sort would not agree with chronological order when
+      // receivedAt values have non-uniform digit widths.
+      type InboxCandidate = {
+        entry: ClaimCheckEntry;
+        receivedAt: number;
+        messageId: string;
+      };
+      const candidates: InboxCandidate[] = [];
+      for (const entry of listing.inbox) {
+        const m = QUEUE_FILENAME_RE.exec(entry.name);
+        if (m === null || m[1] === undefined || m[2] === undefined) {
+          throw new Error(
+            `claim_check_invalid_inbox_filename: ${inboxDir}${entry.name}`,
+          );
         }
-        candidates.sort((a, b) => {
-          if (a.receivedAt !== b.receivedAt) return a.receivedAt - b.receivedAt;
-          if (a.messageId < b.messageId) return -1;
-          if (a.messageId > b.messageId) return 1;
-          return 0;
+        candidates.push({
+          entry,
+          receivedAt: Number.parseInt(m[1], 10),
+          messageId: m[2],
         });
-        if (candidates.length === 0) {
-          dequeued = null;
-          return Object.fromEntries(existing);
-        }
-        const first = candidates[0];
-        if (first === undefined) throw new Error("unreachable");
-        const firstPath = first.path;
-        const bytes = existing.get(firstPath);
-        if (bytes === undefined) throw new Error("unreachable");
-        const fname = firstPath.slice(inboxPrefix.length);
-        const key = fname.slice(0, -".json".length);
-        const envelope = decodeQueueEnvelopeOrThrow(bytes, firstPath);
-        dequeued = { key, envelope };
-        const files: Record<string, string | Uint8Array> = {};
-        for (const [blobPath, blobBytes] of existing) {
-          if (blobPath === firstPath) continue;
-          files[blobPath] = blobBytes;
-        }
-        files[processingPath(addressSegment, key)] = bytes;
-        return files;
-      },
-      message: `dequeue ${address}`,
+      }
+      candidates.sort((a, b) => {
+        if (a.receivedAt !== b.receivedAt) return a.receivedAt - b.receivedAt;
+        if (a.messageId < b.messageId) return -1;
+        if (a.messageId > b.messageId) return 1;
+        return 0;
+      });
+      const first = candidates[0];
+      if (first === undefined) {
+        // Empty inbox: nothing to move. The commit is a no-op rewrite of
+        // the same tree; the caller reads `dequeued === null`.
+        dequeued = null;
+        return { puts: {}, deletes: [] };
+      }
+      const firstPath = `${inboxDir}${first.entry.name}`;
+      const key = first.entry.name.slice(0, -".json".length);
+      const bytes = await readClaimCheckBlob(repoDir, first.entry.oid);
+      const envelope = decodeQueueEnvelopeOrThrow(bytes, firstPath);
+      dequeued = { key, envelope };
+      return {
+        puts: { [processingPath(addressSegment, key)]: bytes },
+        deletes: [firstPath],
+      };
     },
-  );
+  });
   if (dequeued === null) return null;
   const captured: { key: string; envelope: ClaimCheckEnvelope } = dequeued;
   return { commitSha, key: captured.key, envelope: captured.envelope };
@@ -3076,97 +3074,94 @@ export async function markConsumed(
   let consumedEnvelope: ConsumedEnvelope | null = null;
   let advancedWatermark = 0;
   const prunedMessageIds: string[] = [];
-  const { commitSha } = await store.writeTreePreservingPrefix(
-    principal,
-    repoId,
-    ref,
-    {
-      preservePrefix: `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/`,
-      merge: async () => {
-        const existing = await readAddressSubtree(repoDir, ref, addressSegment);
-        const processingPrefix = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_PROCESSING_DIR}/`;
-        const consumedPrefix = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_CONSUMED_DIR}/`;
-        const watermarkFull = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_WATERMARK_FILE}`;
-        const consumedFname = `${args.messageId}.json`;
-        const consumedFull = `${consumedPrefix}${consumedFname}`;
-        if (existing.has(consumedFull)) {
-          throw new Error(
-            `claim_check_already_consumed: ${consumedFull} already in the dedup index`,
-          );
-        }
-        let processingFull: string | null = null;
-        let processingBytes: Uint8Array | null = null;
-        for (const [blobPath, bytes] of existing) {
-          if (!blobPath.startsWith(processingPrefix)) continue;
-          const fname = blobPath.slice(processingPrefix.length);
-          if (fname.endsWith(`-${args.messageId}.json`)) {
-            processingFull = blobPath;
-            processingBytes = bytes;
-            break;
-          }
-        }
-        if (processingFull === null || processingBytes === null) {
-          throw new Error(
-            `claim_check_processing_not_found: address ${args.address} message ${args.messageId} has no processing entry`,
-          );
-        }
-        const processingEnvelope = decodeQueueEnvelopeOrThrow(
-          processingBytes,
-          processingFull,
+  const { commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
+    changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
+    message: `consume ${args.address} ${args.messageId}`,
+    computeDelta: async (parentCommitSha) => {
+      const listing = await readAddressListing(
+        repoDir,
+        parentCommitSha,
+        addressSegment,
+      );
+      const consumedFull = consumedPath(addressSegment, args.messageId);
+      const consumedFname = `${args.messageId}.json`;
+      if (listing.consumed.some((e) => e.name === consumedFname)) {
+        throw new Error(
+          `claim_check_already_consumed: ${consumedFull} already in the dedup index`,
         );
-        const envelope: ConsumedEnvelope = {
-          messageId: args.messageId,
-          receivedAt: processingEnvelope.receivedAt,
-          address: args.address,
-          runId: args.runId,
-          consumedAt: args.consumedAt,
-          mailAuditRef: processingEnvelope.mailAuditRef,
-        };
-        consumedEnvelope = envelope;
+      }
+      const processingDir = `${addressPrefix(addressSegment)}${WORKFLOW_RUN_PROCESSING_DIR}/`;
+      const processingEntry = listing.processing.find((e) =>
+        e.name.endsWith(`-${args.messageId}.json`),
+      );
+      if (processingEntry === undefined) {
+        throw new Error(
+          `claim_check_processing_not_found: address ${args.address} message ${args.messageId} has no processing entry`,
+        );
+      }
+      const processingFull = `${processingDir}${processingEntry.name}`;
+      const processingBytes = await readClaimCheckBlob(
+        repoDir,
+        processingEntry.oid,
+      );
+      const processingEnvelope = decodeQueueEnvelopeOrThrow(
+        processingBytes,
+        processingFull,
+      );
+      const envelope: ConsumedEnvelope = {
+        messageId: args.messageId,
+        receivedAt: processingEnvelope.receivedAt,
+        address: args.address,
+        runId: args.runId,
+        consumedAt: args.consumedAt,
+        mailAuditRef: processingEnvelope.mailAuditRef,
+      };
+      consumedEnvelope = envelope;
 
-        const priorWatermark = readWatermarkFromMap(existing, watermarkFull);
-        // The watermark may only advance, and never past the entry
-        // this commit writes (so the new entry is always retained --
-        // a message consumed long after receipt may legitimately sit
-        // below `consumedAt - horizon`, and it is pruned on a later
-        // commit once the watermark passes ITS receivedAt).
-        const horizonBoundary = args.consumedAt - retentionHorizonMs;
-        const newWatermark = Math.max(
-          priorWatermark,
-          Math.min(horizonBoundary, envelope.receivedAt),
-        );
-        advancedWatermark = newWatermark;
+      // The watermark may only advance, and never past the entry this
+      // commit writes (so the new entry is always retained -- a message
+      // consumed long after receipt may legitimately sit below
+      // `consumedAt - horizon`, and it is pruned on a later commit once
+      // the watermark passes ITS receivedAt).
+      const horizonBoundary = args.consumedAt - retentionHorizonMs;
+      const newWatermark = Math.max(
+        listing.watermark,
+        Math.min(horizonBoundary, envelope.receivedAt),
+      );
+      advancedWatermark = newWatermark;
 
-        const files: Record<string, string | Uint8Array> = {};
-        for (const [blobPath, blobBytes] of existing) {
-          if (blobPath === processingFull) continue;
-          if (blobPath === watermarkFull) continue;
-          if (blobPath.startsWith(consumedPrefix)) {
-            // Prune the oldest consumed tail: drop any retained entry
-            // whose receivedAt has fallen strictly below the new
-            // watermark. The new entry (added below) is never below
-            // the watermark by construction.
-            const consumedReceivedAt = decodeConsumedReceivedAtOrThrow(
-              blobBytes,
-              blobPath,
-            );
-            if (consumedReceivedAt < newWatermark) {
-              const prunedFname = blobPath.slice(consumedPrefix.length);
-              prunedMessageIds.push(prunedFname.slice(0, -".json".length));
-              continue;
-            }
-          }
-          files[blobPath] = blobBytes;
-        }
-        files[consumedFull] = utf8(JSON.stringify(envelope));
-        files[watermarkFull] = utf8(
-          JSON.stringify({ watermark: newWatermark }),
+      // Prune the oldest consumed tail: read each retained consumed
+      // entry's receivedAt and drop any that has fallen strictly below
+      // the new watermark. This is the one leg that must scan the
+      // consumed index — its filenames carry only the messageId, so the
+      // receivedAt lives in the bytes — and is the residual the
+      // consumed-shard lever removes. The new entry (added via puts) is
+      // never below the watermark by construction.
+      const consumedDir = `${addressPrefix(addressSegment)}${WORKFLOW_RUN_CONSUMED_DIR}/`;
+      const deletes: string[] = [processingFull];
+      for (const entry of listing.consumed) {
+        const blobPath = `${consumedDir}${entry.name}`;
+        const bytes = await readClaimCheckBlob(repoDir, entry.oid);
+        const consumedReceivedAt = decodeConsumedReceivedAtOrThrow(
+          bytes,
+          blobPath,
         );
-        return files;
-      },
-      message: `consume ${args.address} ${args.messageId}`,
+        if (consumedReceivedAt < newWatermark) {
+          prunedMessageIds.push(entry.name.slice(0, -".json".length));
+          deletes.push(blobPath);
+        }
+      }
+      return {
+        puts: {
+          [consumedFull]: utf8(JSON.stringify(envelope)),
+          [watermarkPath(addressSegment)]: utf8(
+            JSON.stringify({ watermark: newWatermark }),
+          ),
+        },
+        deletes,
+      };
     },
-  );
+  });
   if (consumedEnvelope === null) throw new Error("unreachable");
   const captured: ConsumedEnvelope = consumedEnvelope;
   return {
@@ -3215,43 +3210,39 @@ export async function replayProcessingToInbox(
   const ref = claimCheckCommitRef();
   const repoDir = store.getRepoDir(repoId);
   const replayedKeys: string[] = [];
-  const { commitSha } = await store.writeTreePreservingPrefix(
-    principal,
-    repoId,
-    ref,
-    {
-      preservePrefix: `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/`,
-      merge: async () => {
-        const existing = await readAddressSubtree(repoDir, ref, addressSegment);
-        const processingPrefix = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_PROCESSING_DIR}/`;
-        const inboxPrefix = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_INBOX_DIR}/`;
-        const files: Record<string, string | Uint8Array> = {};
-        for (const [blobPath, bytes] of existing) {
-          if (blobPath.startsWith(processingPrefix)) {
-            const fname = blobPath.slice(processingPrefix.length);
-            const key = fname.slice(0, -".json".length);
-            const inboxFull = `${inboxPrefix}${fname}`;
-            if (existing.has(inboxFull)) {
-              throw new Error(
-                `claim_check_replay_collision: ${inboxFull} already exists; cannot replay processing entry`,
-              );
-            }
-            // Re-admit the in-flight entry WITHOUT the watermark
-            // stale-reject enqueueInbox applies: it was already past
-            // dedup, so a below-watermark receivedAt is no reason to
-            // refuse it. Applying the stale-check here would lose a
-            // legitimately in-flight message after a crash. Do not
-            // tighten this.
-            files[inboxFull] = bytes;
-            replayedKeys.push(key);
-            continue;
-          }
-          files[blobPath] = bytes;
+  const { commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
+    changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
+    message: `replay processing ${address}`,
+    computeDelta: async (parentCommitSha) => {
+      const listing = await readAddressListing(
+        repoDir,
+        parentCommitSha,
+        addressSegment,
+      );
+      const processingDir = `${addressPrefix(addressSegment)}${WORKFLOW_RUN_PROCESSING_DIR}/`;
+      const inboxDir = `${addressPrefix(addressSegment)}${WORKFLOW_RUN_INBOX_DIR}/`;
+      const inboxNames = new Set(listing.inbox.map((e) => e.name));
+      const puts: Record<string, string | Uint8Array> = {};
+      const deletes: string[] = [];
+      for (const entry of listing.processing) {
+        const inboxFull = `${inboxDir}${entry.name}`;
+        if (inboxNames.has(entry.name)) {
+          throw new Error(
+            `claim_check_replay_collision: ${inboxFull} already exists; cannot replay processing entry`,
+          );
         }
-        return files;
-      },
-      message: `replay processing ${address}`,
+        // Re-admit the in-flight entry WITHOUT the watermark stale-reject
+        // enqueueInbox applies: it was already past dedup, so a
+        // below-watermark receivedAt is no reason to refuse it. Applying
+        // the stale-check here would lose a legitimately in-flight
+        // message after a crash. Do not tighten this.
+        const bytes = await readClaimCheckBlob(repoDir, entry.oid);
+        puts[inboxFull] = bytes;
+        deletes.push(`${processingDir}${entry.name}`);
+        replayedKeys.push(entry.name.slice(0, -".json".length));
+      }
+      return { puts, deletes };
     },
-  );
+  });
   return { commitSha, replayedKeys };
 }

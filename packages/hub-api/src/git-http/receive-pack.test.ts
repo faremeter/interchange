@@ -97,6 +97,9 @@ function createStubStore(stub: ReceivePackStub): {
     writeTreePreservingPrefix: async () => {
       throw new Error("writeTreePreservingPrefix: not used in this test");
     },
+    writeTreeDelta: async () => {
+      throw new Error("writeTreeDelta: not used in this test");
+    },
     createPack: async () => {
       throw new Error("createPack: not used in this test");
     },

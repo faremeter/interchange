@@ -184,6 +184,28 @@ export type WriteTreePreservingPrefixArgs = {
   message: string;
 };
 
+/**
+ * Per-call options for `RepoStore.writeTreeDelta`. `computeDelta` runs
+ * under the per-repo lock against the pinned parent tip (`parentCommitSha`,
+ * null when the ref does not yet exist) and returns the exact files to
+ * write and paths to delete; the substrate carries every other entry
+ * forward by its object id. A delete ending in `/` removes a whole
+ * subtree; any other delete removes a single file.
+ *
+ * `changedPathPrefixes` is the validation scoping hint for the touched
+ * region (e.g. `addresses/<seg>/`), supplied by the caller because a
+ * delta has no single clear-prefix to derive it from; `undefined` means
+ * validate the whole tree.
+ */
+export type WriteTreeDeltaArgs = {
+  computeDelta: (parentCommitSha: string | null) => Promise<{
+    puts: Record<string, string | Uint8Array>;
+    deletes: readonly string[];
+  }>;
+  changedPathPrefixes: ReadonlySet<string> | undefined;
+  message: string;
+};
+
 export interface KindHandler {
   kind: RepoKind;
   /**
@@ -316,6 +338,22 @@ export interface RepoStore {
     repoId: RepoId,
     ref: string,
     args: WriteTreePreservingPrefixArgs,
+  ): Promise<WriteResult>;
+  /**
+   * Delta variant for mutating a few named entries in a large subtree
+   * without re-materializing the untouched siblings. `computeDelta` runs
+   * under the per-repo lock against the pinned parent tip and returns the
+   * files to put and the paths to delete; everything else is carried
+   * forward by object id. Use this over `writeTreePreservingPrefix` when
+   * the untouched remainder of the prefix is large (e.g. a claim-check
+   * move that adds one entry and deletes another while the consumed dedup
+   * index carries forward unchanged).
+   */
+  writeTreeDelta(
+    principal: Principal,
+    repoId: RepoId,
+    ref: string,
+    args: WriteTreeDeltaArgs,
   ): Promise<WriteResult>;
   /**
    * Receive a packfile and advance `ref` to `commitSha`.

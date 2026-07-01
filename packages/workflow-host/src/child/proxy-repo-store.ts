@@ -41,6 +41,7 @@ type WriteTreeArgs = Parameters<RepoStore["writeTree"]>[3];
 type WriteTreePreservingPrefixArgs = Parameters<
   RepoStore["writeTreePreservingPrefix"]
 >[3];
+type WriteTreeDeltaArgs = Parameters<RepoStore["writeTreeDelta"]>[3];
 
 type SubscribeOpts = Parameters<RepoStore["subscribe"]>[3];
 
@@ -164,6 +165,16 @@ export function createProxyWorkflowRunRepoStore(
     ): Promise<void> => {
       throw new Error(
         "workflow-child proxy substrate: receivePack is not supported (writes are proxied to the supervisor)",
+      );
+    },
+    writeTreeDelta: (
+      _principal: Principal,
+      _repoId: RepoId,
+      _ref: string,
+      _args: WriteTreeDeltaArgs,
+    ): Promise<WriteResult> => {
+      throw new Error(
+        "workflow-child proxy substrate: writeTreeDelta is not supported (claim-check writes run supervisor-side)",
       );
     },
     async writeTreePreservingPrefix(

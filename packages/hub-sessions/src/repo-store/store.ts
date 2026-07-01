@@ -26,6 +26,7 @@ import type {
   RepoStoreSubscribeEvent,
   TreeContent,
   WriteResult,
+  WriteTreeDeltaArgs,
   WriteTreePreservingPrefixArgs,
 } from "./types";
 import { SAFE_REPO_ID } from "./types";
@@ -401,6 +402,21 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       clearPrefix.split("/").includes("..");
     if (malformed) {
       throw new Error(`clear_prefix_invalid: ${clearPrefix}`);
+    }
+  }
+
+  // Validate a delta write path. A put is always a file (no trailing
+  // slash); a delete is either an exact file or a subtree prefix
+  // (trailing slash allowed). Both reject empties, absolute paths, and
+  // any `..` traversal segment.
+  function validateDeltaPath(p: string, isDelete: boolean): void {
+    const malformed =
+      p.length === 0 ||
+      p.startsWith("/") ||
+      p.split("/").includes("..") ||
+      (!isDelete && p.endsWith("/"));
+    if (malformed) {
+      throw new Error(`delta_path_invalid: ${JSON.stringify(p)}`);
     }
   }
 
@@ -857,31 +873,42 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return chain.reverse();
   }
 
-  // Assemble a new root tree by splicing `puts` (repo-root-relative
-  // path -> blob oid) and an optional `clearPrefix` deletion onto the
-  // parent's root tree, reusing every unchanged subtree by oid. The
-  // result is committed directly via `git.commit({ tree })`, so the
-  // on-disk index is never touched.
+  // Assemble a new root tree by splicing `puts` (repo-root-relative path
+  // -> blob oid) and `deletes` onto the parent's root tree, reusing every
+  // unchanged entry by oid. The result is committed directly via
+  // `git.commit({ tree })`, so the on-disk index is never touched.
+  //
+  // `deletes` is a set of repo-root-relative paths. Removal is by NAME,
+  // not by base-entry type: a trailing-slash entry names a subtree
+  // prefix and clears it (the clear-prefix shape); a no-slash entry
+  // clears whatever sits at that exact path -- a blob, or an entire
+  // subtree if the name happens to be a directory in the base. A
+  // no-slash delete is therefore NOT git-rm single-file semantics, and
+  // a trailing-slash delete whose leading segment is a base blob drops
+  // that blob rather than no-op'ing. Every caller emits only exact
+  // paths of entries that exist as blobs, or an intended clear-prefix,
+  // so neither name-vs-type case arises; a caller that builds deletes
+  // more freely must not rely on per-type git-rm behavior here. A `put`
+  // at a path overrides a delete of the same path.
   //
   // Recursion is scoped to the touched subtrees: a level is read and
-  // rewritten only when a put lands under it or `clearPrefix` deletes
-  // within it. Every sibling the write does not touch is carried
-  // forward by its existing oid without a re-hash or a walk, so the
-  // per-commit cost tracks the size of the change rather than the repo.
-  // Deletions are confined to `clearPrefix`; outside it the splice is
-  // additive, so reusing a sibling subtree can never drop a deletion.
-  // Returns the new tree oid, or `null` when the subtree ends up empty
-  // (the caller writes an empty root tree when the whole repo empties).
+  // rewritten only when a put lands under it or a delete removes within
+  // it. Every entry the write does not touch — sibling subtrees AND
+  // sibling blobs inside a subtree being touched — is carried forward by
+  // its existing oid without a re-hash or a walk, so the per-commit cost
+  // tracks the size of the change rather than the repo. Returns the new
+  // tree oid, or `null` when the subtree ends up empty (the caller writes
+  // an empty root tree when the whole repo empties).
   async function assembleTree(
     dir: string,
     baseTreeOid: string | null,
     prefix: string,
     puts: ReadonlyMap<string, string>,
-    clearPrefix: string | undefined,
+    deletes: ReadonlySet<string>,
   ): Promise<string | null> {
-    // At the exact node `clearPrefix` names, the base subtree is dropped
-    // wholesale — only merge-output puts under the prefix survive.
-    const cleared = clearPrefix !== undefined && clearPrefix === prefix;
+    // A subtree-delete naming exactly this node drops the base wholesale;
+    // only puts under it survive.
+    const cleared = prefix !== "" && deletes.has(prefix);
     const baseEntries = new Map<
       string,
       { mode: string; oid: string; type: TreeEntry["type"] }
@@ -898,11 +925,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       }
     }
 
-    // Names to rebuild at this level: a direct blob put, a subtree some
-    // put descends into, or the subtree `clearPrefix` descends into (so
-    // its deletion is applied even when no put touches that subtree).
+    // Classify what changes at this level: direct blob puts, exact-file
+    // deletes here, and subtrees a put or a delete descends into.
     const blobPutsHere = new Set<string>();
     const subtreeNames = new Set<string>();
+    const fileDeletesHere = new Set<string>();
     for (const full of puts.keys()) {
       if (prefix !== "" && !full.startsWith(prefix)) continue;
       const rest = full.slice(prefix.length);
@@ -911,15 +938,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       if (slash === -1) blobPutsHere.add(rest);
       else subtreeNames.add(rest.slice(0, slash));
     }
-    if (
-      clearPrefix !== undefined &&
-      clearPrefix !== prefix &&
-      clearPrefix.startsWith(prefix)
-    ) {
-      const rest = clearPrefix.slice(prefix.length);
+    for (const del of deletes) {
+      if (prefix !== "" && !del.startsWith(prefix)) continue;
+      const rest = del.slice(prefix.length);
+      if (rest.length === 0) continue; // del === prefix, handled by `cleared`
       const slash = rest.indexOf("/");
-      const seg = slash === -1 ? rest : rest.slice(0, slash);
-      if (seg.length > 0) subtreeNames.add(seg);
+      if (slash === -1) fileDeletesHere.add(rest);
+      else subtreeNames.add(rest.slice(0, slash));
     }
 
     const names = new Set<string>([
@@ -932,7 +957,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       const full = prefix + name;
       const putOid = puts.get(full);
       if (putOid !== undefined) {
-        // A direct blob put overrides whatever the base held here.
+        // A put overrides whatever the base held and any delete of the
+        // same path.
         entries.push({
           mode: "100644",
           path: name,
@@ -941,6 +967,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
         });
         continue;
       }
+      if (fileDeletesHere.has(name)) continue; // file removed
       if (subtreeNames.has(name)) {
         const base = baseEntries.get(name);
         const baseChildOid =
@@ -950,7 +977,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
           baseChildOid,
           `${full}/`,
           puts,
-          clearPrefix,
+          deletes,
         );
         if (childOid !== null) {
           entries.push({
@@ -1037,7 +1064,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     principal: Principal,
     repoId: RepoId,
     ref: string,
-    content: TreeContent,
+    w: {
+      files: Record<string, string | Uint8Array>;
+      deletes: ReadonlySet<string>;
+      changedPathPrefixes: ReadonlySet<string> | undefined;
+      message: string;
+    },
   ): Promise<WriteResult> {
     const dir = repoDir(repoId);
     await storageInitRepo(dir, storageOptsFor(repoId, undefined));
@@ -1049,13 +1081,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     // repo-global structure shared across refs; routing writes through
     // it forced a full index rebuild on every events<->workflow-run ref
     // flip and re-serialized the whole index once per staged blob.
-    // Splicing the tree from the parent's root tree instead reuses every
-    // untouched subtree by oid, so the per-commit cost tracks the change
-    // rather than the accumulated history.
-    if (content.clearPrefix !== undefined) {
-      validateClearPrefix(content.clearPrefix);
-    }
-    const clearPrefix = content.clearPrefix;
+    // Splicing the tree from the parent's root tree — applying `w.files`
+    // as puts and `w.deletes` as removals, reusing every untouched entry
+    // by oid — keeps the per-commit cost tracking the change rather than
+    // the accumulated history.
 
     // Pin the parent under the lock: the new commit's parent is the
     // ref's tip, and the splice runs against THAT commit's root tree,
@@ -1075,12 +1104,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       baseRootTreeOid = commit.tree;
     }
 
-    // Write the merge-output blobs, then splice them (and the
-    // clearPrefix deletion) onto the parent root tree. writeBlob and
-    // writeTree emit unreferenced objects; nothing the ref can reach
-    // moves until the commit below lands.
+    // Write the put blobs, then splice them and `w.deletes` onto the
+    // parent root tree. writeBlob and writeTree emit unreferenced
+    // objects; nothing the ref can reach moves until the commit lands.
     const puts = new Map<string, string>();
-    for (const [relPath, contents] of Object.entries(content.files)) {
+    for (const [relPath, contents] of Object.entries(w.files)) {
       const bytes =
         typeof contents === "string"
           ? new TextEncoder().encode(contents)
@@ -1093,22 +1121,20 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       baseRootTreeOid,
       "",
       puts,
-      clearPrefix,
+      w.deletes,
     );
     const newRootTreeOid =
       assembled ?? (await git.writeTree({ fs, dir, tree: [] }));
 
     // validatePush sees the full prospective tree via closures over the
     // assembled tree oid; the prior-side closures read the parent commit
-    // (`parentCommitSha`) exactly as before. The change set the handler
-    // may scope to is `{clearPrefix}` when one is present — writes under
-    // it are a full replace and every other path is carried forward — and
-    // unbounded (validate-all) otherwise.
+    // (`parentCommitSha`) exactly as before. `w.changedPathPrefixes` is
+    // the handler's scoping hint — the prefixes this write may have
+    // touched — and stays undefined for an unbounded (validate-all) write.
     const { priorReadBlob, priorListDir, priorListDirOids } =
       buildPriorTreeClosures(dir, parentCommitSha);
     const prospective = buildTreeReadClosures(dir, newRootTreeOid);
-    const changedPathPrefixes =
-      clearPrefix === undefined ? undefined : new Set([clearPrefix]);
+    const changedPathPrefixes = w.changedPathPrefixes;
     const validation = await handler.validatePush({
       repoId,
       ref,
@@ -1130,22 +1156,23 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     }
 
     // Materialize the working tree for the paths this write touched:
-    // clear the replaced prefix, then write each put file. The store's
-    // own reads resolve through the object store, but some consumers
-    // (the workflow-run claim-check processing scan) read these files
-    // straight from disk, so the working tree must mirror the committed
-    // change. Only merge-output paths are written and only the cleared
-    // prefix is removed, so this is O(change), not O(repo). It runs only
-    // after validation passes, so a rejected push leaves the working
-    // tree untouched — the failure atomicity the old index rollback
-    // provided, now without any rollback.
-    if (clearPrefix !== undefined) {
-      await fs.promises.rm(path.join(dir, clearPrefix), {
+    // remove each deleted path, then write each put file. The store's own
+    // reads resolve through the object store, but some consumers (the
+    // workflow-run claim-check processing scan) read these files straight
+    // from disk, so the working tree must mirror the committed change.
+    // Only the deleted paths and the put paths are touched, so this is
+    // O(change), not O(repo). It runs only after validation passes, so a
+    // rejected push leaves the working tree untouched — the failure
+    // atomicity the old index rollback provided, now without any
+    // rollback. `rm` with `force` no-ops a missing path and `recursive`
+    // covers both a file delete and a subtree-prefix delete.
+    for (const del of w.deletes) {
+      await fs.promises.rm(path.join(dir, del), {
         recursive: true,
         force: true,
       });
     }
-    for (const [relPath, contents] of Object.entries(content.files)) {
+    for (const [relPath, contents] of Object.entries(w.files)) {
       const fullPath = path.join(dir, relPath);
       await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
       await fs.promises.writeFile(fullPath, contents);
@@ -1163,7 +1190,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       dir,
       cache: cacheFor(dir),
       tree: newRootTreeOid,
-      message: content.message,
+      message: w.message,
       author: AUTHOR,
       parent: [parentSha],
       ref,
@@ -1187,6 +1214,33 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return { commitSha, newlyTerminalRuns: validation.newlyTerminalRuns ?? [] };
   }
 
+  // Normalize a `TreeContent` (files + optional clearPrefix) into the
+  // puts/deletes/scope shape writeTreeUnderLock consumes. A clearPrefix
+  // becomes a single subtree-delete and the handler's change scope; its
+  // absence is a purely-additive write validated in full.
+  function normalizeTreeContent(content: TreeContent): {
+    files: Record<string, string | Uint8Array>;
+    deletes: ReadonlySet<string>;
+    changedPathPrefixes: ReadonlySet<string> | undefined;
+    message: string;
+  } {
+    if (content.clearPrefix !== undefined) {
+      validateClearPrefix(content.clearPrefix);
+      return {
+        files: content.files,
+        deletes: new Set([content.clearPrefix]),
+        changedPathPrefixes: new Set([content.clearPrefix]),
+        message: content.message,
+      };
+    }
+    return {
+      files: content.files,
+      deletes: new Set<string>(),
+      changedPathPrefixes: undefined,
+      message: content.message,
+    };
+  }
+
   async function writeTree(
     principal: Principal,
     repoId: RepoId,
@@ -1195,12 +1249,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   ): Promise<WriteResult> {
     gateAccess(principal, repoId, ref, "writeTree");
 
-    // The lock spans the entire substrate body of writeTree: index
-    // mutation, validatePush, commit, and the onRefUpdated hook. Holding
+    // The lock spans the entire substrate body of writeTree: tree
+    // assembly, validatePush, commit, and the onRefUpdated hook. Holding
     // the lock through onRefUpdated keeps post-update consumers
     // serialized against the same ref's next writer.
     return withRepoLock(repoId, () =>
-      writeTreeUnderLock(principal, repoId, ref, content),
+      writeTreeUnderLock(principal, repoId, ref, normalizeTreeContent(content)),
     );
   }
 
@@ -1291,7 +1345,44 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       const files = await args.merge(existing);
       return writeTreeUnderLock(principal, repoId, ref, {
         files,
-        clearPrefix: args.preservePrefix,
+        deletes: new Set([args.preservePrefix]),
+        changedPathPrefixes: new Set([args.preservePrefix]),
+        message: args.message,
+      });
+    });
+  }
+
+  // Commit a targeted delta: `computeDelta` runs under the per-repo lock
+  // against the pinned parent tip and returns the exact files to put and
+  // paths to delete; everything else is carried forward by oid. Unlike
+  // writeTreePreservingPrefix — which clears and rebuilds a whole prefix
+  // from a full merge output — a delta touches only the entries it names,
+  // so a caller that mutates one file in a large directory (a claim-check
+  // move that adds one entry and deletes another) does not re-hash or
+  // re-materialize the untouched siblings. `changedPathPrefixes` is the
+  // handler's scoping hint for the touched region; the caller supplies it
+  // because the delta has no single clear-prefix to derive it from.
+  async function writeTreeDelta(
+    principal: Principal,
+    repoId: RepoId,
+    ref: string,
+    args: WriteTreeDeltaArgs,
+  ): Promise<WriteResult> {
+    gateAccess(principal, repoId, ref, "writeTree");
+    return withRepoLock(repoId, async () => {
+      const dir = repoDir(repoId);
+      await storageInitRepo(dir, storageOptsFor(repoId, undefined));
+      // Pin the parent tip under the lock and hand it to computeDelta so
+      // its dedup reads and the tree assembly below observe the same
+      // pre-image — no lost-update window between the read and the write.
+      const parentCommitSha = await resolveRefSha(dir, ref);
+      const delta = await args.computeDelta(parentCommitSha);
+      for (const p of Object.keys(delta.puts)) validateDeltaPath(p, false);
+      for (const d of delta.deletes) validateDeltaPath(d, true);
+      return writeTreeUnderLock(principal, repoId, ref, {
+        files: delta.puts,
+        deletes: new Set(delta.deletes),
+        changedPathPrefixes: args.changedPathPrefixes,
         message: args.message,
       });
     });
@@ -1707,6 +1798,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     initRepo,
     writeTree,
     writeTreePreservingPrefix,
+    writeTreeDelta,
     receivePack,
     createPack,
     resolveRef,

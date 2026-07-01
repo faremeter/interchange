@@ -502,6 +502,31 @@ export function createWorkflowRunPackPushingRepoStore(
       schedulePush(agentAddress, repoId, ref);
       return result;
     },
+    async writeTreeDelta(principal, repoId, ref, args) {
+      if (repoId.kind === "workflow-run") {
+        const latched = takeLatchedError(repoId, ref);
+        if (latched !== null) {
+          throw latched;
+        }
+      }
+      const result = await underlying.writeTreeDelta(
+        principal,
+        repoId,
+        ref,
+        args,
+      );
+      if (repoId.kind !== "workflow-run") {
+        return result;
+      }
+      const agentAddress = registry.resolve(repoId.id);
+      if (agentAddress === null) {
+        throw new Error(
+          `workflow-run pack push: no agent address registered for deployment ${repoId.id}; the deploy router must record the mapping before the supervisor commits run events`,
+        );
+      }
+      schedulePush(agentAddress, repoId, ref);
+      return result;
+    },
   };
   return wrapped;
 }

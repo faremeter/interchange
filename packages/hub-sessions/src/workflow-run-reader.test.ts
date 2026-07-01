@@ -20,6 +20,7 @@ function repoStoreFor(dirById: Map<string, string>): RepoStore {
     initRepo: unused,
     writeTree: unused,
     writeTreePreservingPrefix: unused,
+    writeTreeDelta: unused,
     receivePack: unused,
     createPack: unused,
     resolveRef: unused,
