@@ -245,3 +245,96 @@ test("cascade prune emptying dir and parent == canonical git", async () => {
     await canonicalTreeOid("adv-cascade2-oracle-", expected),
   );
 });
+
+test("no-slash delete of a directory is rejected (delete_type_mismatch)", async () => {
+  const base = {
+    "foo/a.json": `{"in":"dir"}`,
+    "keep.json": `{"keep":true}`,
+  };
+  const store = await freshStore("adv-del-dir-");
+  await seed(store, base);
+  await expect(
+    store.writeTreeDelta(principal, repoId, REF, {
+      changedPathPrefixes: new Set(["foo"]),
+      message: "delete-dir-as-file",
+      computeDelta: async () => ({
+        puts: {},
+        deletes: ["foo"],
+      }),
+    }),
+  ).rejects.toThrow(/delete_type_mismatch/);
+});
+
+test("trailing-slash delete descending into a base blob is rejected (delete_type_mismatch)", async () => {
+  const base = {
+    foo: `{"is":"blob"}`,
+    "keep.json": `{"keep":true}`,
+  };
+  const store = await freshStore("adv-del-blob-");
+  await seed(store, base);
+  await expect(
+    store.writeTreeDelta(principal, repoId, REF, {
+      changedPathPrefixes: new Set(["foo/bar/"]),
+      message: "delete-blob-as-subtree",
+      computeDelta: async () => ({
+        puts: {},
+        deletes: ["foo/bar/"],
+      }),
+    }),
+  ).rejects.toThrow(/delete_type_mismatch/);
+});
+
+test("put descending into a base blob is not mislabeled a delete mismatch", async () => {
+  const base = {
+    foo: `{"is":"blob"}`,
+    "keep.json": `{"keep":true}`,
+  };
+  const store = await freshStore("adv-file2dir-");
+  await seed(store, base);
+  const run = store.writeTreeDelta(principal, repoId, REF, {
+    changedPathPrefixes: new Set(["foo/"]),
+    message: "put-under-base-blob",
+    computeDelta: async () => ({
+      puts: { "foo/bar.json": `{"now":"dir"}` },
+      deletes: [],
+    }),
+  });
+  // The carve-out holds: a put-driven descent into a base blob is a
+  // file-to-directory replacement, not a delete against the wrong base
+  // type, so it must NOT raise delete_type_mismatch. The store cannot
+  // complete the swap end-to-end today -- working-tree materialization
+  // mkdir's over the base file and EEXISTs -- a separate, unreachable
+  // limitation. The load-bearing assertion is the absence of
+  // delete_type_mismatch; the EEXIST pins where the store gives out.
+  await expect(run).rejects.toThrow();
+  await run.catch((e: unknown) => {
+    expect(String(e)).not.toContain("delete_type_mismatch");
+    expect(String(e)).toContain("EEXIST");
+  });
+});
+
+test("trailing-slash delete clearing a base directory still succeeds, OID == canonical git", async () => {
+  const base = {
+    "deploy/x.json": `{"x":1}`,
+    "deploy/y.json": `{"y":2}`,
+    "keep.json": `{"keep":true}`,
+  };
+  const store = await freshStore("adv-clear-dir-");
+  await seed(store, base);
+  await store.writeTreeDelta(principal, repoId, REF, {
+    changedPathPrefixes: new Set(["deploy/"]),
+    message: "clear-deploy",
+    computeDelta: async () => ({
+      puts: {},
+      deletes: ["deploy/"],
+    }),
+  });
+  const paths = await readTreePaths(store);
+  expect([...paths].some((p) => p.startsWith("deploy/"))).toBe(false);
+  expect(paths.has("keep.json")).toBe(true);
+
+  const expected = { "keep.json": `{"keep":true}` };
+  expect(await committedTreeOid(store)).toBe(
+    await canonicalTreeOid("adv-clear-dir-oracle-", expected),
+  );
+});

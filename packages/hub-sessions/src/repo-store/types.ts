@@ -189,8 +189,10 @@ export type WriteTreePreservingPrefixArgs = {
  * under the per-repo lock against the pinned parent tip (`parentCommitSha`,
  * null when the ref does not yet exist) and returns the exact files to
  * write and paths to delete; the substrate carries every other entry
- * forward by its object id. A delete ending in `/` removes a whole
- * subtree; any other delete removes a single file.
+ * forward by its object id. A delete ending in `/` clears that subtree;
+ * any other delete clears the single file at that path. A delete whose
+ * base entry is the wrong type -- a no-slash delete naming a directory,
+ * or a trailing-slash delete descending into a file -- is rejected.
  *
  * `changedPathPrefixes` is the validation scoping hint for the touched
  * region (e.g. `addresses/<seg>/`), supplied by the caller because a

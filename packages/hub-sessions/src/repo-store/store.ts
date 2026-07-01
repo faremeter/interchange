@@ -938,21 +938,20 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   // unchanged entry by oid. The result is committed directly via
   // `git.commit({ tree })`, so the on-disk index is never touched.
   //
-  // `deletes` is a set of repo-root-relative paths. Removal is by NAME,
-  // not by base-entry type: a trailing-slash entry names a subtree
-  // prefix and clears it (the clear-prefix shape); a no-slash entry
-  // clears whatever sits at that exact path -- a blob, or an entire
-  // subtree if the name happens to be a directory in the base. A
-  // no-slash delete is therefore NOT git-rm single-file semantics, and
-  // a trailing-slash delete whose leading segment is a base blob drops
-  // that blob rather than no-op'ing. Every caller emits only exact
-  // paths of entries that exist as blobs, or an intended clear-prefix,
-  // so neither name-vs-type case arises; a caller that builds deletes
-  // more freely must not rely on per-type git-rm behavior here. A `put`
-  // at a path overrides a delete of the same path. A delete of a path
-  // absent from the parent tree is an idempotent no-op (the entry is
-  // simply never emitted), matching `git rm --ignore-unmatch` and the
-  // working-tree `rm` with `force: true`.
+  // `deletes` is a set of repo-root-relative paths, and removal must
+  // match the base entry's type. A no-slash entry names an exact path
+  // and clears the blob there; deleting a path that is a directory in
+  // the base is rejected with `delete_type_mismatch` (there is no
+  // git-rm-style recursive drop). A trailing-slash entry names a
+  // subtree prefix and clears it (the clear-prefix shape); a
+  // trailing-slash delete whose leading segment is a base blob is
+  // rejected with `delete_type_mismatch`, unless a `put` drives the
+  // same descent -- that is a legitimate file-to-directory replacement
+  // and is accepted (the put wins). A `put` at a path overrides a
+  // delete of the same path. A delete of a path absent from the parent
+  // tree is an idempotent no-op (the entry is simply never emitted),
+  // matching `git rm --ignore-unmatch` and the working-tree `rm` with
+  // `force: true`.
   //
   // Recursion is scoped to the touched subtrees: a level is read and
   // rewritten only when a put lands under it or a delete removes within
@@ -992,6 +991,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     // deletes here, and subtrees a put or a delete descends into.
     const blobPutsHere = new Set<string>();
     const subtreeNames = new Set<string>();
+    const subtreePutNames = new Set<string>();
     const fileDeletesHere = new Set<string>();
     for (const full of puts.keys()) {
       if (prefix !== "" && !full.startsWith(prefix)) continue;
@@ -999,7 +999,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       if (rest.length === 0) continue;
       const slash = rest.indexOf("/");
       if (slash === -1) blobPutsHere.add(rest);
-      else subtreeNames.add(rest.slice(0, slash));
+      else {
+        const child = rest.slice(0, slash);
+        subtreeNames.add(child);
+        subtreePutNames.add(child);
+      }
     }
     for (const del of deletes) {
       if (prefix !== "" && !del.startsWith(prefix)) continue;
@@ -1053,9 +1057,40 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
         });
         continue;
       }
-      if (fileDeletesHere.has(name)) continue; // file removed
+      if (fileDeletesHere.has(name)) {
+        const base = baseEntries.get(name);
+        if (base !== undefined && base.type === "tree") {
+          throw new Error(
+            `delete_type_mismatch: ${JSON.stringify(
+              prefix + name,
+            )} is deleted as a file but is a directory in the base tree`,
+          );
+        }
+        continue; // file removed
+      }
       if (subtreeNames.has(name)) {
         const base = baseEntries.get(name);
+        // A trailing-slash delete descending into a base blob
+        // contradicts the base type -- reject it. The
+        // `!subtreePutNames` carve-out lets a put-driven descent
+        // through: a `put` under `name/` is a file-to-directory
+        // replacement, not a delete mismatch, so it must not raise
+        // delete_type_mismatch. That replacement still dead-ends at
+        // working-tree materialization in writeTreeUnderLock (mkdir
+        // over the base file EEXISTs) -- a separate limitation the
+        // claim-check callers never reach, which must not be masked by
+        // mislabeling a put as a delete mismatch.
+        if (
+          base !== undefined &&
+          base.type === "blob" &&
+          !subtreePutNames.has(name)
+        ) {
+          throw new Error(
+            `delete_type_mismatch: ${JSON.stringify(
+              prefix + name,
+            )} is deleted as a subtree but is a file in the base tree`,
+          );
+        }
         const baseChildOid =
           base !== undefined && base.type === "tree" ? base.oid : null;
         const childOid = await assembleTree(
