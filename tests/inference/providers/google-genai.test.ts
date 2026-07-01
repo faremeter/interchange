@@ -4133,3 +4133,73 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
     expect(request.id).toBe("synth-1");
   });
 });
+
+describe("Google GenAI adapter: tool-name codec round-trip", () => {
+  const PREFIXED = "@intx/tools-posix/sidecar-bundle:run_shell";
+  const ToolsDecl = type({
+    tools: type({
+      functionDeclarations: type({ name: "string" }).array(),
+    }).array(),
+  });
+
+  function wireToolName(body: string): string {
+    const parsed = ToolsDecl(JSON.parse(body));
+    if (parsed instanceof type.errors) {
+      throw new Error(`unexpected request body shape: ${parsed.summary}`);
+    }
+    const name = parsed.tools[0]?.functionDeclarations[0]?.name;
+    if (name === undefined) throw new Error("request body carried no tool");
+    return name;
+  }
+
+  function requestWithTool(): string {
+    return adapter.buildRequest(
+      [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: 0 }],
+      "gemini-2.5-flash",
+      {
+        tools: [
+          {
+            name: PREFIXED,
+            description: "run a shell command",
+            inputSchema: {},
+          },
+        ],
+      },
+    ).body;
+  }
+
+  test("buildRequest encodes a package-qualified tool name to the wire charset", () => {
+    const body = requestWithTool();
+    const wireName = wireToolName(body);
+    expect(wireName).toMatch(/^[A-Za-z_][A-Za-z0-9_-]*$/);
+    expect(body).not.toContain(PREFIXED);
+  });
+
+  test("a functionCall echoing the encoded name decodes back to the prefixed name", async () => {
+    const wireName = wireToolName(requestWithTool());
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ functionCall: { name: wireName, args: {} } }],
+            },
+            finishReason: "STOP",
+            index: 0,
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 5,
+          candidatesTokenCount: 3,
+          totalTokenCount: 8,
+        },
+      }),
+    ]);
+    const start = events[0];
+    if (start?.type !== "inference.tool_call.start") {
+      throw new Error("expected inference.tool_call.start");
+    }
+    expect(start.data.name).toBe(PREFIXED);
+  });
+});

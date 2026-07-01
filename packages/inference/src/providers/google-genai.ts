@@ -15,6 +15,19 @@ import type {
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { CREDENTIAL_SENTINEL } from "../auth";
 import { ProtocolMismatchError } from "../errors";
+import {
+  decodeToolName,
+  encodeToolName,
+  type ToolNameLimit,
+} from "../tool-name";
+
+// Gemini rejects function names with out-of-charset characters and requires a
+// letter/underscore leading character; the raw package-qualified names fail
+// both. The documented function-name limit is 64 characters.
+const GOOGLE_TOOL_NAME_LIMIT: ToolNameLimit = {
+  provider: "google-genai",
+  maxLength: 64,
+};
 
 // Runtime validator for "parsed JSON value is a plain object." Used
 // by `tryParseJSONObject` to narrow `JSON.parse(string)` from its
@@ -89,7 +102,7 @@ function buildRequest(
     body["tools"] = [
       {
         functionDeclarations: options.tools.map((t) => ({
-          name: t.name,
+          name: encodeToolName(t.name, GOOGLE_TOOL_NAME_LIMIT),
           description: t.description,
           parameters: t.inputSchema,
         })),
@@ -296,7 +309,10 @@ function toGeminiPart(
 
     case "tool_call":
       return {
-        functionCall: { name: block.name, args: block.arguments },
+        functionCall: {
+          name: encodeToolName(block.name, GOOGLE_TOOL_NAME_LIMIT),
+          args: block.arguments,
+        },
       };
 
     case "tool_result":
@@ -444,7 +460,12 @@ function toGeminiFunctionResponse(
     response = { result: text };
   }
 
-  return { functionResponse: { name, response } };
+  return {
+    functionResponse: {
+      name: encodeToolName(name, GOOGLE_TOOL_NAME_LIMIT),
+      response,
+    },
+  };
 }
 
 // Returns the parsed value when `text` is a JSON-encoded plain
@@ -1002,7 +1023,7 @@ function emitPart(
       seq,
       data: {
         callId,
-        name: fc.name,
+        name: decodeToolName(fc.name),
         partial: EMPTY_PARTIAL,
         index,
       },
