@@ -641,12 +641,27 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     priorListDirOids: (
       path: string,
     ) => Promise<{ name: string; oid: string }[]>;
+    readBlobByOid: (oid: string) => Promise<Uint8Array>;
   } {
+    // Read any blob by its object id, cache-backed. Object ids are
+    // content addresses, so this is independent of `commitSha` and is
+    // available even on the no-prior-commit branch (where callers have
+    // no ids to read).
+    const readBlobByOid = async (oid: string): Promise<Uint8Array> => {
+      const { blob } = await git.readBlob({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid,
+      });
+      return blob;
+    };
     if (commitSha === null) {
       return {
         priorReadBlob: async () => null,
         priorListDir: async () => [],
         priorListDirOids: async () => [],
+        readBlobByOid,
       };
     }
     const priorReadBlob = async (
@@ -690,7 +705,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       });
       return tree.map((e) => ({ name: e.path, oid: e.oid }));
     };
-    return { priorReadBlob, priorListDir, priorListDirOids };
+    return { priorReadBlob, priorListDir, priorListDirOids, readBlobByOid };
   }
 
   // Build the `(readBlob, listDir, topLevelTreePaths)` triple a kind
@@ -1534,7 +1549,14 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       // it is committed against — no lost-update window, no second
       // resolve that could (in principle) observe a different tip.
       const parentCommitSha = await resolveRefSha(dir, ref);
-      const delta = await args.computeDelta(parentCommitSha);
+      const { priorListDirOids, readBlobByOid } = buildPriorTreeClosures(
+        dir,
+        parentCommitSha,
+      );
+      const delta = await args.computeDelta(parentCommitSha, {
+        readBlobByOid,
+        listDirOids: priorListDirOids,
+      });
       for (const p of Object.keys(delta.puts)) validateDeltaPath(p, false);
       for (const d of delta.deletes) validateDeltaPath(d, true);
       assertDeltaUnambiguous(delta.puts, delta.deletes);

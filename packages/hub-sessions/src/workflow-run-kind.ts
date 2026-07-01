@@ -176,6 +176,7 @@ import {
   type AuthorizeFn,
   type KindHandler,
   type NewlyTerminalRun,
+  type PriorDeltaReads,
   type Principal,
   type RepoId,
   type RepoStore,
@@ -2613,14 +2614,15 @@ type AddressListing = {
  * `addresses/<addressSegment>/{inbox,processing,consumed}/` (NOT their
  * bytes), plus the retention watermark. The bytes of the single entry a
  * leg actually moves are read separately by OID via
- * {@link readClaimCheckBlob}, so the unbounded consumed/ dedup index is
- * enumerated (one `readTree`, filenames only) but never read
- * blob-by-blob. An empty listing covers the repo/ref/address-absent
- * first-write states — all legitimate for a brand-new operation.
+ * `prior.readBlobByOid`, so the unbounded consumed/ dedup index is
+ * enumerated (one `listDirOids` per bucket, names and OIDs only) but
+ * never read blob-by-blob. Every read goes through the store's
+ * cache-backed `prior` closures under the write lock. An empty listing
+ * covers the repo/ref/address-absent first-write states -- all
+ * legitimate for a brand-new operation.
  */
 async function readAddressListing(
-  repoDir: string,
-  parentCommitSha: string | null,
+  prior: PriorDeltaReads,
   addressSegment: string,
 ): Promise<AddressListing> {
   const listing: AddressListing = {
@@ -2629,74 +2631,27 @@ async function readAddressListing(
     consumed: [],
     watermark: 0,
   };
-  if (parentCommitSha === null) return listing;
-  const commit = await git.readCommit({
-    fs,
-    dir: repoDir,
-    oid: parentCommitSha,
-  });
-  const addrTreeOid = await resolveSubtreeOid(repoDir, commit.commit.tree, [
-    WORKFLOW_RUN_ADDRESSES_PREFIX,
-    addressSegment,
-  ]);
-  if (addrTreeOid === null) return listing;
-  const { tree: addrChildren } = await git.readTree({
-    fs,
-    dir: repoDir,
-    oid: addrTreeOid,
-  });
-  for (const child of addrChildren) {
-    if (child.type === "blob" && child.path === WORKFLOW_RUN_WATERMARK_FILE) {
-      const { blob } = await git.readBlob({ fs, dir: repoDir, oid: child.oid });
+  const addrDir = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}`;
+  for (const child of await prior.listDirOids(addrDir)) {
+    if (child.name === WORKFLOW_RUN_WATERMARK_FILE) {
+      const blob = await prior.readBlobByOid(child.oid);
       listing.watermark = parseWatermark(blob, watermarkPath(addressSegment));
       continue;
     }
-    if (child.type !== "tree") continue;
     const bucket =
-      child.path === WORKFLOW_RUN_INBOX_DIR
+      child.name === WORKFLOW_RUN_INBOX_DIR
         ? listing.inbox
-        : child.path === WORKFLOW_RUN_PROCESSING_DIR
+        : child.name === WORKFLOW_RUN_PROCESSING_DIR
           ? listing.processing
-          : child.path === WORKFLOW_RUN_CONSUMED_DIR
+          : child.name === WORKFLOW_RUN_CONSUMED_DIR
             ? listing.consumed
             : null;
     if (bucket === null) continue;
-    const { tree: entries } = await git.readTree({
-      fs,
-      dir: repoDir,
-      oid: child.oid,
-    });
-    for (const entry of entries) {
-      if (entry.type !== "blob") continue;
-      bucket.push({ name: entry.path, oid: entry.oid });
+    for (const entry of await prior.listDirOids(`${addrDir}/${child.name}`)) {
+      bucket.push({ name: entry.name, oid: entry.oid });
     }
   }
   return listing;
-}
-
-/** Read a single claim-check blob by its git object id. */
-async function readClaimCheckBlob(
-  repoDir: string,
-  oid: string,
-): Promise<Uint8Array> {
-  const { blob } = await git.readBlob({ fs, dir: repoDir, oid });
-  return blob;
-}
-
-async function resolveSubtreeOid(
-  repoDir: string,
-  rootTreeOid: string,
-  segments: readonly string[],
-): Promise<string | null> {
-  let current = rootTreeOid;
-  for (const segment of segments) {
-    const { tree } = await git.readTree({ fs, dir: repoDir, oid: current });
-    const entry = tree.find((e) => e.path === segment);
-    if (entry === undefined) return null;
-    if (entry.type !== "tree") return null;
-    current = entry.oid;
-  }
-  return current;
 }
 
 function utf8(s: string): Uint8Array {
@@ -2804,7 +2759,6 @@ export async function enqueueInbox(
 ): Promise<EnqueueInboxResult> {
   const addressSegment = addressSegmentFor(args.address);
   const ref = claimCheckCommitRef();
-  const repoDir = store.getRepoDir(repoId);
   const inboxKey = filenameKey(args.receivedAt, args.messageId);
   const envelope: ClaimCheckEnvelope = {
     messageId: args.messageId,
@@ -2820,12 +2774,8 @@ export async function enqueueInbox(
   const { commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
     changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
     message: `enqueue inbox ${args.address} ${args.messageId}`,
-    computeDelta: async (parentCommitSha) => {
-      const listing = await readAddressListing(
-        repoDir,
-        parentCommitSha,
-        addressSegment,
-      );
+    computeDelta: async (_parentCommitSha, prior) => {
+      const listing = await readAddressListing(prior, addressSegment);
       // Refuse a definitively-stale enqueue: a message whose receivedAt
       // is strictly below the retention watermark could have had its
       // consumed/ dedup entry pruned, so a duplicate can no longer be
@@ -2900,17 +2850,12 @@ export async function dequeueToProcessing(
 ): Promise<DequeueToProcessingResult> {
   const addressSegment = addressSegmentFor(address);
   const ref = claimCheckCommitRef();
-  const repoDir = store.getRepoDir(repoId);
   let dequeued: { key: string; envelope: ClaimCheckEnvelope } | null = null;
   const { commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
     changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
     message: `dequeue ${address}`,
-    computeDelta: async (parentCommitSha) => {
-      const listing = await readAddressListing(
-        repoDir,
-        parentCommitSha,
-        addressSegment,
-      );
+    computeDelta: async (_parentCommitSha, prior) => {
+      const listing = await readAddressListing(prior, addressSegment);
       const inboxDir = `${addressPrefix(addressSegment)}${WORKFLOW_RUN_INBOX_DIR}/`;
       // Sort by numeric receivedAt with a messageId tiebreak. A raw
       // string sort would not agree with chronological order when
@@ -2949,7 +2894,7 @@ export async function dequeueToProcessing(
       }
       const firstPath = `${inboxDir}${first.entry.name}`;
       const key = first.entry.name.slice(0, -".json".length);
-      const bytes = await readClaimCheckBlob(repoDir, first.entry.oid);
+      const bytes = await prior.readBlobByOid(first.entry.oid);
       const envelope = decodeQueueEnvelopeOrThrow(bytes, firstPath);
       dequeued = { key, envelope };
       return {
@@ -3085,7 +3030,6 @@ export async function markConsumed(
 ): Promise<MarkConsumedResult> {
   const addressSegment = addressSegmentFor(args.address);
   const ref = claimCheckCommitRef();
-  const repoDir = store.getRepoDir(repoId);
   const retentionHorizonMs =
     args.retentionHorizonMs ?? DEFAULT_CONSUMED_RETENTION_MS;
   let consumedEnvelope: ConsumedEnvelope | null = null;
@@ -3094,12 +3038,8 @@ export async function markConsumed(
   const { commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
     changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
     message: `consume ${args.address} ${args.messageId}`,
-    computeDelta: async (parentCommitSha) => {
-      const listing = await readAddressListing(
-        repoDir,
-        parentCommitSha,
-        addressSegment,
-      );
+    computeDelta: async (_parentCommitSha, prior) => {
+      const listing = await readAddressListing(prior, addressSegment);
       const consumedFull = consumedPath(addressSegment, args.messageId);
       const consumedFname = `${args.messageId}.json`;
       if (listing.consumed.some((e) => e.name === consumedFname)) {
@@ -3117,10 +3057,7 @@ export async function markConsumed(
         );
       }
       const processingFull = `${processingDir}${processingEntry.name}`;
-      const processingBytes = await readClaimCheckBlob(
-        repoDir,
-        processingEntry.oid,
-      );
+      const processingBytes = await prior.readBlobByOid(processingEntry.oid);
       const processingEnvelope = decodeQueueEnvelopeOrThrow(
         processingBytes,
         processingFull,
@@ -3158,7 +3095,7 @@ export async function markConsumed(
       const deletes: string[] = [processingFull];
       for (const entry of listing.consumed) {
         const blobPath = `${consumedDir}${entry.name}`;
-        const bytes = await readClaimCheckBlob(repoDir, entry.oid);
+        const bytes = await prior.readBlobByOid(entry.oid);
         const consumedReceivedAt = decodeConsumedReceivedAtOrThrow(
           bytes,
           blobPath,
@@ -3225,17 +3162,12 @@ export async function replayProcessingToInbox(
 ): Promise<ReplayProcessingToInboxResult> {
   const addressSegment = addressSegmentFor(address);
   const ref = claimCheckCommitRef();
-  const repoDir = store.getRepoDir(repoId);
   const replayedKeys: string[] = [];
   const { commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
     changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
     message: `replay processing ${address}`,
-    computeDelta: async (parentCommitSha) => {
-      const listing = await readAddressListing(
-        repoDir,
-        parentCommitSha,
-        addressSegment,
-      );
+    computeDelta: async (_parentCommitSha, prior) => {
+      const listing = await readAddressListing(prior, addressSegment);
       const processingDir = `${addressPrefix(addressSegment)}${WORKFLOW_RUN_PROCESSING_DIR}/`;
       const inboxDir = `${addressPrefix(addressSegment)}${WORKFLOW_RUN_INBOX_DIR}/`;
       const inboxNames = new Set(listing.inbox.map((e) => e.name));
@@ -3253,7 +3185,7 @@ export async function replayProcessingToInbox(
         // below-watermark receivedAt is no reason to refuse it. Applying
         // the stale-check here would lose a legitimately in-flight
         // message after a crash. Do not tighten this.
-        const bytes = await readClaimCheckBlob(repoDir, entry.oid);
+        const bytes = await prior.readBlobByOid(entry.oid);
         puts[inboxFull] = bytes;
         deletes.push(`${processingDir}${entry.name}`);
         replayedKeys.push(entry.name.slice(0, -".json".length));

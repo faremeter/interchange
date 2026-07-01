@@ -3,6 +3,7 @@ export type {
   InitRepoOpts,
   KindHandler,
   NewlyTerminalRun,
+  PriorDeltaReads,
   Principal,
   RefEntry,
   RepoAction,

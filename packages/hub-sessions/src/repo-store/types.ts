@@ -198,9 +198,23 @@ export type WriteTreePreservingPrefixArgs = {
  * region (e.g. `addresses/<seg>/`), supplied by the caller because a
  * delta has no single clear-prefix to derive it from; `undefined` means
  * validate the whole tree.
+ *
+ * The `prior` argument exposes cache-backed reads of that pinned parent
+ * tree -- `listDirOids` for a directory's `{name, oid}` children and
+ * `readBlobByOid` for a blob by its object id -- so the callback reads
+ * through the store's per-repo object cache under the same lock rather
+ * than re-opening the repo.
  */
+export type PriorDeltaReads = {
+  readBlobByOid: (oid: string) => Promise<Uint8Array>;
+  listDirOids: (path: string) => Promise<{ name: string; oid: string }[]>;
+};
+
 export type WriteTreeDeltaArgs = {
-  computeDelta: (parentCommitSha: string | null) => Promise<{
+  computeDelta: (
+    parentCommitSha: string | null,
+    prior: PriorDeltaReads,
+  ) => Promise<{
     puts: Record<string, string | Uint8Array>;
     deletes: readonly string[];
   }>;
