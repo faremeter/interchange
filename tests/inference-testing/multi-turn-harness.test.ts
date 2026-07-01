@@ -615,10 +615,8 @@ describe("inference-testing harness — multi-turn round-trip", () => {
     // The harness must NOT call the dispatch callback until that promise
     // resolves; running `harness.run()` is what awaits the in-flight
     // promise and surfaces the dispatch.
-    let releaseHandler: ((value: unknown) => void) | null = null;
-    const handlerGate = new Promise<unknown>((resolve) => {
-      releaseHandler = resolve;
-    });
+    const { promise: handlerGate, resolve: releaseHandler } =
+      Promise.withResolvers<unknown>();
     harness.scenario.onTool("weather", async () => {
       const value = await handlerGate;
       return value;
@@ -672,7 +670,6 @@ describe("inference-testing harness — multi-turn round-trip", () => {
     // Release the gate. The microtask resolution propagates through the
     // harness's in-flight tracker; `harness.run()` is the entry point that
     // awaits any pending in-flight promises before declaring quiescence.
-    if (releaseHandler === null) throw new Error("gate never assigned");
     releaseHandler({ temperatureF: 33, conditions: "snow" });
 
     await harness.run();
