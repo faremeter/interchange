@@ -52,7 +52,6 @@ export default defineConfig(
             "eslint.config.ts",
             "apps/admin-ui/vite.config.ts",
             "packages/db/drizzle.config.ts",
-            "tests/workflow/*.ts",
           ],
           maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 40,
         },
