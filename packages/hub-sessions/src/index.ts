@@ -76,6 +76,7 @@ export {
 export {
   workflowRunKindHandler,
   workflowRunAuthorize,
+  claimCheckDeltaScopeEnabled,
   enqueueInbox,
   dequeueToProcessing,
   readProcessingEntry,

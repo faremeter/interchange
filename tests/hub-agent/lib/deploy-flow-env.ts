@@ -765,6 +765,18 @@ export async function startSidecarSubprocess(opts: {
     SIDECAR_ID,
     SIDECAR_TOKEN: TOKEN,
     SIDECAR_DATA_DIR: dataDir,
+    // The spawned sidecar runs the supervisor that owns every
+    // workflow-run write, so its process is the one whose
+    // `workflow-run-kind` module const decides which claim-check
+    // validation path `validatePush` takes. The curated env above does
+    // not inherit the parent's `process.env`, so a bench that sets
+    // `BENCH_DELTA_SCOPE_CLAIMCHECK` on its own command would otherwise
+    // leave the child on the default (exhaustive) path -- the flag would
+    // never reach the process it gates. Forward it here so parent and
+    // child agree. Unset in the parent stays `undefined`, which
+    // `Bun.spawn` drops, so the default-OFF behaviour is unchanged for
+    // every normal test run.
+    BENCH_DELTA_SCOPE_CLAIMCHECK: process.env["BENCH_DELTA_SCOPE_CLAIMCHECK"],
     ...(opts.extraEnv ?? {}),
   };
 

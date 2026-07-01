@@ -1,6 +1,6 @@
 import { appendFileSync } from "node:fs";
 import path from "node:path";
-import { setup } from "@intx/log";
+import { getLogger, setup } from "@intx/log";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import {
   createEd25519Crypto,
@@ -10,7 +10,10 @@ import {
 } from "@intx/crypto";
 import { createSidecarOrchestrator, type HubLink } from "@intx/hub-agent";
 import { hexEncode } from "@intx/types";
-import { createAgentRepoStore } from "@intx/hub-sessions";
+import {
+  claimCheckDeltaScopeEnabled,
+  createAgentRepoStore,
+} from "@intx/hub-sessions";
 import { createTarballCache } from "@intx/tool-packaging";
 
 import { loadAdapterRegistry } from "@intx/inference/providers";
@@ -46,6 +49,24 @@ import {
 import { loadOrMintSidecarKeypair } from "./signing-keypair";
 
 await setup();
+
+const logger = getLogger(["sidecar"]);
+
+// One-line startup marker naming the effective delta-scope claim-check
+// state for THIS process. The sidecar's supervisor owns every
+// workflow-run write, so this is the process whose module const decides
+// which `validateClaimCheckSubtree` path a benchmark actually exercises.
+// Emitting the imported const (not a fresh env read) makes a run's live
+// state observable straight from the captured sidecar output, so a
+// latency bench never has to be inferred back from its per-leg slopes.
+// Each branch's message is a static template so the marker prints
+// verbatim (`claim-check-delta-scope=ON`) under any log renderer, rather
+// than as a quoted interpolated value.
+if (claimCheckDeltaScopeEnabled) {
+  logger.info`claim-check-delta-scope=ON`;
+} else {
+  logger.info`claim-check-delta-scope=OFF`;
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name];

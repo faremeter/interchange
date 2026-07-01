@@ -204,6 +204,18 @@ const logger = getLogger(["hub-sessions", "workflow-run-kind"]);
 const BENCH_DELTA_SCOPE_CLAIMCHECK =
   process.env.BENCH_DELTA_SCOPE_CLAIMCHECK === "1";
 
+/**
+ * The resolved delta-scope claim-check state for the process that loaded
+ * this module. Exported so the process actually running `validatePush`
+ * (the sidecar's supervisor, which owns every workflow-run write) can
+ * emit an unambiguous startup marker reflecting the ACTUAL module const,
+ * rather than a fresh `process.env` read that could diverge from what the
+ * validation walk observes. This is the observable that proves whether
+ * the delta path is live for a given process, so a benchmark run can be
+ * read directly rather than inferred from its timing slopes.
+ */
+export const claimCheckDeltaScopeEnabled = BENCH_DELTA_SCOPE_CLAIMCHECK;
+
 export type WorkflowRunHubPrincipal = { readonly kind: "hub" };
 
 export type WorkflowRunSidecarPrincipal = {
