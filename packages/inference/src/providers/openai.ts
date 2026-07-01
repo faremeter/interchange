@@ -12,6 +12,19 @@ import type {
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { BEARER_CREDENTIAL_SENTINEL } from "../auth";
 import { ProtocolMismatchError } from "../errors";
+import {
+  decodeToolName,
+  encodeToolName,
+  type ToolNameLimit,
+} from "../tool-name";
+
+// OpenAI's function-name constraint is `^[a-zA-Z0-9_-]{1,64}$`; the
+// OpenAI-compatible backends this adapter also serves (DeepSeek, Kimi) share
+// that charset and reject the raw package-qualified names outright.
+const OPENAI_TOOL_NAME_LIMIT: ToolNameLimit = {
+  provider: "openai",
+  maxLength: 64,
+};
 
 // ---------------------------------------------------------------------------
 // Request building
@@ -39,7 +52,7 @@ function buildRequest(
     body["tools"] = options.tools.map((t) => ({
       type: "function",
       function: {
-        name: t.name,
+        name: encodeToolName(t.name, OPENAI_TOOL_NAME_LIMIT),
         description: t.description,
         parameters: t.inputSchema,
       },
@@ -189,7 +202,7 @@ function toOpenAIMessage(msg: ConversationTurn): unknown[] {
         id: tc.id,
         type: "function",
         function: {
-          name: tc.name,
+          name: encodeToolName(tc.name, OPENAI_TOOL_NAME_LIMIT),
           arguments: JSON.stringify(tc.arguments),
         },
       }));
@@ -560,7 +573,9 @@ function parseResponse(
       // absent so the start / fragment branches below remain simple.
       const id = tcDelta.id ?? undefined;
       const fn = tcDelta.function;
-      const name = fn?.name ?? undefined;
+      const wireName = fn?.name ?? undefined;
+      const name =
+        wireName !== undefined ? decodeToolName(wireName) : undefined;
       const argFragment = fn?.arguments ?? undefined;
 
       // Different providers shape these deltas differently:

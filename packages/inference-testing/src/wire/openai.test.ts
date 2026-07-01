@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test";
+import { type } from "arktype";
 
 import { parseSSE } from "@intx/inference";
 import { createOpenAIAdapter } from "@intx/inference/providers";
@@ -11,6 +12,20 @@ const TEST_SOURCE: LastCycleSource = {
 };
 
 import * as openai from "./openai";
+
+const ToolsBody = type({
+  tools: type({ function: type({ name: "string" }) }).array(),
+});
+
+function wireToolName(builtBody: string): string {
+  const parsed = ToolsBody(JSON.parse(builtBody));
+  if (parsed instanceof type.errors) {
+    throw new Error(`unexpected request body shape: ${parsed.summary}`);
+  }
+  const name = parsed.tools[0]?.function.name;
+  if (name === undefined) throw new Error("request body carried no tool");
+  return name;
+}
 
 async function drive(chunks: Uint8Array[]): Promise<InferenceEvent[]> {
   const stream = new ReadableStream<Uint8Array>({
@@ -193,5 +208,38 @@ describe("openai wire DSL", () => {
     ]);
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("inference.text.delta");
+  });
+});
+
+describe("openai tool-name codec round-trip", () => {
+  const PREFIXED = "@intx/tools-posix/sidecar-bundle:run_shell";
+
+  test("buildRequest emits a wire-charset-safe function name", () => {
+    const built = createOpenAIAdapter(TEST_SOURCE).buildRequest([], "m", {
+      tools: [
+        { name: PREFIXED, description: "run a shell command", inputSchema: {} },
+      ],
+    });
+    const wireName = wireToolName(built.body);
+    expect(wireName).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(built.body).not.toContain(PREFIXED);
+  });
+
+  test("a tool call echoing the encoded name decodes back to the prefixed name", async () => {
+    const built = createOpenAIAdapter(TEST_SOURCE).buildRequest([], "m", {
+      tools: [
+        { name: PREFIXED, description: "run a shell command", inputSchema: {} },
+      ],
+    });
+    const wireName = wireToolName(built.body);
+    const events = await drive([
+      openai.toolCallStart(0, "call_1", wireName),
+      openai.done(),
+    ]);
+    const start = events.find((e) => e.type === "inference.tool_call.start");
+    expect(start?.type).toBe("inference.tool_call.start");
+    if (start?.type === "inference.tool_call.start") {
+      expect(start.data.name).toBe(PREFIXED);
+    }
   });
 });
