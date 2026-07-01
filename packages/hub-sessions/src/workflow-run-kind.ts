@@ -1751,6 +1751,20 @@ async function validateClaimCheckSubtree(
       // the exactly-once retention contract: pruning is bound to the
       // watermark and the watermark only advances.
       if (BENCH_DELTA_SCOPE_CLAIMCHECK) {
+        // Re-review before any productionization: relative to the
+        // exhaustive path this delta check drops two properties the suffix
+        // guard also provided. (1) It no longer proves consumed/ is an
+        // age-ordered contiguous window -- a below-watermark prune may now
+        // leave a "hole" (a dropped entry older than a retained one),
+        // which is harmless for exactly-once (every dropped entry is below
+        // the watermark, so a resubmit is stale-rejected) but means
+        // consumed/ is no longer a provable suffix. (2) It reduces
+        // defense-in-depth against a buggy claim-check writer: the suffix
+        // relation would have caught a writer that selectively dropped a
+        // recent entry, whereas here only the below-watermark bound
+        // catches it. The below-watermark bound plus watermark
+        // monotonicity is the whole of the exactly-once contract; these
+        // two dropped properties are structural hardening, not correctness.
         for (const e of priorBucket.consumed) {
           if (prospectiveConsumedPaths.has(e.blobPath)) continue;
           const priorParsed = await parseConsumedBlobFrom(e, priorReadBlob);

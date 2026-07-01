@@ -2975,6 +2975,78 @@ describe("workflowRunKindHandler.validatePush — retention watermark contract",
       },
       { priorFiles: prior },
     );
+    if (process.env.BENCH_DELTA_SCOPE_CLAIMCHECK === "1") {
+      // The delta-scoped path does NOT enforce the suffix relation:
+      // computing the min receivedAt over all retained entries would
+      // require reading every retained consumed blob, the O(retained)
+      // work the delta walk exists to avoid. WHY DROPPING IT IS SAFE
+      // HERE: both the dropped (receivedAt 200) and the retained
+      // (receivedAt 100) entries are strictly below the stored watermark
+      // (201), so `claim_check_stale_enqueue` refuses every resubmit in
+      // that region at the enqueue boundary regardless of the consumed/
+      // shape -- the retained entry only adds dedup, so a non-suffix
+      // prune below the watermark cannot open a reprocess. The delta path
+      // therefore accepts this prune; the exhaustive path below rejects
+      // it. The production markConsumed writer always prunes the oldest
+      // tail, so it never produces a non-suffix tree on either path.
+      expect(r.ok).toBe(true);
+
+      // Boundary lock. The delta removed-check rejects a dropped entry at
+      // receivedAt >= watermark (strict, mirroring the strict
+      // `receivedAt < watermark` stale-reject so the entry AT the
+      // watermark is both retained and not stale-rejected -- no gap).
+      // Assert BOTH sides of the boundary so a later refactor cannot
+      // silently widen `>=` to `>` and drop the entry sitting exactly at
+      // the watermark, which would let a resubmit at that receivedAt miss
+      // dedup.
+      // (a) strictly above the watermark -> rejected.
+      const droppedAbove = await validate(
+        {
+          [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+          [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(200),
+        },
+        {
+          priorFiles: {
+            [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(200),
+            [consumedPathFor(ADDRESS_SEG, "msg-above")]: consumedBody(
+              "msg-above",
+              300,
+              "run-above",
+              350,
+            ),
+          },
+        },
+      );
+      expect(droppedAbove.ok).toBe(false);
+      if (droppedAbove.ok) throw new Error("unreachable");
+      expect(droppedAbove.reason).toMatch(/not below the retention watermark/);
+
+      // (b) exactly equal to the watermark -> rejected (the off-by-one
+      // that widening `>=` to `>` would open).
+      const droppedAtBoundary = await validate(
+        {
+          [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+          [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(200),
+        },
+        {
+          priorFiles: {
+            [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(200),
+            [consumedPathFor(ADDRESS_SEG, "msg-at")]: consumedBody(
+              "msg-at",
+              200,
+              "run-at",
+              250,
+            ),
+          },
+        },
+      );
+      expect(droppedAtBoundary.ok).toBe(false);
+      if (droppedAtBoundary.ok) throw new Error("unreachable");
+      expect(droppedAtBoundary.reason).toMatch(
+        /not below the retention watermark/,
+      );
+      return;
+    }
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
     expect(r.reason).toMatch(/prune is not a suffix/);
