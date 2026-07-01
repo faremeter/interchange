@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import git from "isomorphic-git";
+import git, { type TreeEntry } from "isomorphic-git";
 import { createSSHSignature } from "@intx/crypto";
 import {
   initRepo as storageInitRepo,
@@ -195,14 +195,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   // subscribers do not interfere with each other.
   const subscribers = new Map<string, Set<SubscriberState>>();
 
-  // Per-repoId cache of "the ref whose tree currently matches the
-  // on-disk index". When the next writeTreeUnderLock call targets
-  // the same `(repoId, ref)` pair as the last successful commit, the
-  // index already mirrors that ref's tip and the resetIndexToRef
-  // pass is a no-op — skip it. The cache is invalidated on any
-  // commit, ref update, or pack receive that advances or replaces
-  // the ref.
-  const indexRefCache = new Map<string, string>();
+  // Repo-scoped cache key shared by the per-repoId caches below
+  // (existing-commit set, and any future per-repo bookkeeping).
   function indexCacheKey(repoId: RepoId): string {
     return `${repoId.kind}/${repoId.id}`;
   }
@@ -499,183 +493,21 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     }
   }
 
-  async function clearIndexPrefix(dir: string, prefix: string): Promise<void> {
-    // `filepaths: [prefix]` scopes statusMatrix to the cleared subtree
-    // instead of walking every tracked file in the repo and discarding
-    // the non-prefix rows. The narrowed call returns status rows only
-    // for files under `prefix` -- exactly the set this loop then
-    // removes -- so the removal set is identical while the per-commit
-    // walk becomes O(prefix) rather than O(repo). A prefix with no
-    // tracked entries (a first write) yields an empty matrix and clears
-    // nothing.
-    const matrix = await git.statusMatrix({
-      fs,
-      dir,
-      cache: cacheFor(dir),
-      filepaths: [prefix],
-    });
-    for (const row of matrix) {
-      const filepath = row[0];
-      if (filepath.startsWith(prefix)) {
-        await git.remove({ fs, dir, cache: cacheFor(dir), filepath });
-      }
-    }
-  }
-
-  async function writeFileEntry(
+  // Walk from a tree object's root to the tree-or-blob entry at
+  // `relPath`. Returns `null` when any path segment is missing, or when
+  // the final entry does not match `expectedType`. `relPath === ""`
+  // resolves to the root tree itself, and only when a tree is expected.
+  async function resolveTreeOid(
     dir: string,
-    relPath: string,
-    contents: string | Uint8Array,
-  ): Promise<void> {
-    const fullPath = path.join(dir, relPath);
-    await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
-    await fs.promises.writeFile(fullPath, contents);
-    await git.add({ fs, dir, cache: cacheFor(dir), filepath: relPath });
-  }
-
-  // Read the set of paths present in the tree at the given ref so a
-  // post-validation rollback can distinguish genuinely-new staged paths
-  // (which the rollback must unlink) from paths that existed at the
-  // ref's tip and were merely overwritten by the staging pass (which
-  // the rollback must restore, not delete).
-  async function refPathSet(dir: string, ref: string): Promise<Set<string>> {
-    let sha: string;
-    try {
-      sha = await git.resolveRef({ fs, dir, ref });
-    } catch (err) {
-      if (hasCode(err) && err.code === "NotFoundError") {
-        return new Set();
-      }
-      throw err;
-    }
-    const entries = await git.listFiles({
-      fs,
-      dir,
-      cache: cacheFor(dir),
-      ref: sha,
-    });
-    return new Set(entries);
-  }
-
-  // Undo the staged writes from a failed writeTreeUnderLock pass. For
-  // each newly-staged file: if the push target ref held that path,
-  // restore it from the ref's tip so the working tree and index match
-  // the ref bit-for-bit; otherwise drop the file from disk and the
-  // index because it had no prior presence to restore. Then re-checkout
-  // any prefix that the clearPrefix step removed wholesale. The
-  // combination leaves the working tree and index bit-identical to the
-  // ref for every path the failed pass touched, so a subsequent
-  // legitimate push does not pick up half-applied state and does not
-  // lose ref content that the rejected push happened to overwrite
-  // outside `clearedPrefix`.
-  async function resetWorkingTreeToRef(
-    dir: string,
-    ref: string,
-    args: {
-      stagedFiles: string[];
-      clearedPrefix: string | undefined;
-      refPaths: ReadonlySet<string>;
-    },
-  ): Promise<void> {
-    const toRestore: string[] = [];
-    for (const relPath of args.stagedFiles) {
-      if (args.refPaths.has(relPath)) {
-        toRestore.push(relPath);
-        continue;
-      }
-      try {
-        await git.remove({ fs, dir, cache: cacheFor(dir), filepath: relPath });
-      } catch (err) {
-        if (!hasCode(err) || err.code !== "NotFoundError") throw err;
-      }
-      try {
-        await fs.promises.unlink(path.join(dir, relPath));
-      } catch (err) {
-        if (!hasCode(err) || err.code !== "ENOENT") throw err;
-      }
-    }
-    if (toRestore.length > 0) {
-      // Read each ref-existing path's blob directly and rewrite the
-      // working-tree file plus stage it. `git.checkout` with the
-      // `filepaths` narrowing does not consistently re-materialize a
-      // working-tree file that the rollback flow has already touched
-      // (isomorphic-git treats the narrowed checkout as a subtree-walk
-      // hint and leaves the working tree untouched for paths already
-      // present in the index), so the rollback restores each path
-      // explicitly from the ref's tree.
-      let refSha: string | undefined;
-      try {
-        refSha = await git.resolveRef({ fs, dir, ref });
-      } catch (err) {
-        if (!hasCode(err) || err.code !== "NotFoundError") throw err;
-      }
-      if (refSha !== undefined) {
-        for (const relPath of toRestore) {
-          let blob: Uint8Array;
-          try {
-            const result = await git.readBlob({
-              fs,
-              dir,
-              cache: cacheFor(dir),
-              oid: refSha,
-              filepath: relPath,
-            });
-            blob = result.blob;
-          } catch (err) {
-            if (hasCode(err) && err.code === "NotFoundError") continue;
-            throw err;
-          }
-          const fullPath = path.join(dir, relPath);
-          await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
-          await fs.promises.writeFile(fullPath, blob);
-          await git.add({ fs, dir, cache: cacheFor(dir), filepath: relPath });
-        }
-      }
-    }
-    if (args.clearedPrefix !== undefined) {
-      // Re-checkout the prefix from HEAD so the files the clearPrefix
-      // step removed reappear in the working tree and the index.
-      // `force: true` overwrites any leftover writes from the failed
-      // pass; the filepaths array narrows the checkout to just the
-      // prefix so we do not perturb unrelated paths.
-      try {
-        await git.checkout({
-          fs,
-          dir,
-          cache: cacheFor(dir),
-          ref: "HEAD",
-          force: true,
-          filepaths: [args.clearedPrefix],
-        });
-      } catch (err) {
-        if (!hasCode(err) || err.code !== "NotFoundError") throw err;
-      }
-    }
-  }
-
-  // Walk from a commit's root tree to the tree-or-blob entry at
-  // `relPath`. Returns `null` when any path segment is missing, or
-  // when the final entry does not match `expectedType`. Used to back
-  // both `priorReadBlob` and `priorListDir` so a handler can inspect
-  // the parent commit's tree from inside validatePush without each
-  // call duplicating the tree-walk.
-  async function resolveTreeEntry(
-    dir: string,
-    commitSha: string,
+    rootTreeOid: string,
     relPath: string,
     expectedType: "blob" | "tree",
   ): Promise<string | null> {
-    const { commit } = await git.readCommit({
-      fs,
-      dir,
-      cache: cacheFor(dir),
-      oid: commitSha,
-    });
     if (relPath === "") {
-      return expectedType === "tree" ? commit.tree : null;
+      return expectedType === "tree" ? rootTreeOid : null;
     }
     const segments = relPath.split("/").filter((s) => s !== "");
-    let currentOid = commit.tree;
+    let currentOid = rootTreeOid;
     for (let i = 0; i < segments.length; i++) {
       const segment = segments[i];
       if (segment === undefined) throw new Error("unreachable");
@@ -696,6 +528,25 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       currentOid = entry.oid;
     }
     return currentOid;
+  }
+
+  // Walk from a commit's root tree to the tree-or-blob entry at
+  // `relPath`. Used to back both `priorReadBlob` and `priorListDir` so a
+  // handler can inspect the parent commit's tree from inside validatePush
+  // without each call duplicating the tree-walk.
+  async function resolveTreeEntry(
+    dir: string,
+    commitSha: string,
+    relPath: string,
+    expectedType: "blob" | "tree",
+  ): Promise<string | null> {
+    const { commit } = await git.readCommit({
+      fs,
+      dir,
+      cache: cacheFor(dir),
+      oid: commitSha,
+    });
+    return resolveTreeOid(dir, commit.tree, relPath, expectedType);
   }
 
   // Build the `(priorReadBlob, priorListDir)` pair fed into a kind
@@ -1006,102 +857,175 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return chain.reverse();
   }
 
-  // Reset the index so it bit-matches the tree at `ref`'s tip
-  // without re-materialising the working tree. The substrate uses
-  // the index — not the working tree — when it builds the next
-  // commit's tree via `git.commit({ref})`, so re-pointing index
-  // entries at the ref-tree's oids is correct and substantially
-  // cheaper than walking disk for every path. When the ref does not
-  // yet exist the index is cleared so the next staging pass starts
-  // from an empty repo state.
+  // Assemble a new root tree by splicing `puts` (repo-root-relative
+  // path -> blob oid) and an optional `clearPrefix` deletion onto the
+  // parent's root tree, reusing every unchanged subtree by oid. The
+  // result is committed directly via `git.commit({ tree })`, so the
+  // on-disk index is never touched.
   //
-  // isomorphic-git's index is a single repo-global structure shared
-  // across refs, and `git.add` mutates it in place; without this
-  // reset, every commit's tree is the union of `ref`'s tree and
-  // whatever was last staged for a different ref. The reset reads
-  // `ref` (the push target) rather than HEAD because HEAD may point
-  // at a different branch the repo was initialised on, so seeding
-  // from HEAD would mis-construct trees that target a named ref.
-  async function resetIndexToRef(dir: string, ref: string): Promise<void> {
-    let refSha: string | null;
-    try {
-      refSha = await git.resolveRef({ fs, dir, ref });
-    } catch (err) {
-      if (hasCode(err) && err.code === "NotFoundError") {
-        refSha = null;
-      } else {
-        throw err;
-      }
-    }
-    const indexFiles = new Set(
-      await git.listFiles({ fs, dir, cache: cacheFor(dir) }),
-    );
-    if (refSha === null) {
-      for (const filepath of indexFiles) {
-        try {
-          await git.remove({ fs, dir, cache: cacheFor(dir), filepath });
-        } catch (err) {
-          if (!hasCode(err) || err.code !== "NotFoundError") throw err;
-        }
-      }
-      return;
-    }
-    const refBlobs = await walkRefBlobs(dir, refSha);
-    for (const filepath of indexFiles) {
-      if (refBlobs.has(filepath)) continue;
-      try {
-        await git.remove({ fs, dir, cache: cacheFor(dir), filepath });
-      } catch (err) {
-        if (!hasCode(err) || err.code !== "NotFoundError") throw err;
-      }
-    }
-    for (const [filepath, oid] of refBlobs) {
-      await git.updateIndex({
-        fs,
-        dir,
-        cache: cacheFor(dir),
-        filepath,
-        oid,
-        add: true,
-      });
-    }
-  }
-
-  // Walk every blob entry reachable from a commit's tree, returning
-  // a (filepath -> blob oid) map. Avoids the O(n^2) cost of pairing
-  // `git.listFiles` with per-file `resolveTreeEntry` calls — both of
-  // which walk the tree top-to-bottom — by doing a single recursive
-  // walk and emitting blob entries as we encounter them.
-  async function walkRefBlobs(
+  // Recursion is scoped to the touched subtrees: a level is read and
+  // rewritten only when a put lands under it or `clearPrefix` deletes
+  // within it. Every sibling the write does not touch is carried
+  // forward by its existing oid without a re-hash or a walk, so the
+  // per-commit cost tracks the size of the change rather than the repo.
+  // Deletions are confined to `clearPrefix`; outside it the splice is
+  // additive, so reusing a sibling subtree can never drop a deletion.
+  // Returns the new tree oid, or `null` when the subtree ends up empty
+  // (the caller writes an empty root tree when the whole repo empties).
+  async function assembleTree(
     dir: string,
-    commitSha: string,
-  ): Promise<Map<string, string>> {
-    const out = new Map<string, string>();
-    const { commit } = await git.readCommit({
-      fs,
-      dir,
-      cache: cacheFor(dir),
-      oid: commitSha,
-    });
-    const recurse = async (treeOid: string, prefix: string): Promise<void> => {
+    baseTreeOid: string | null,
+    prefix: string,
+    puts: ReadonlyMap<string, string>,
+    clearPrefix: string | undefined,
+  ): Promise<string | null> {
+    // At the exact node `clearPrefix` names, the base subtree is dropped
+    // wholesale — only merge-output puts under the prefix survive.
+    const cleared = clearPrefix !== undefined && clearPrefix === prefix;
+    const baseEntries = new Map<
+      string,
+      { mode: string; oid: string; type: TreeEntry["type"] }
+    >();
+    if (baseTreeOid !== null && !cleared) {
       const { tree } = await git.readTree({
         fs,
         dir,
         cache: cacheFor(dir),
-        oid: treeOid,
+        oid: baseTreeOid,
       });
-      for (const entry of tree) {
-        const childPath =
-          prefix === "" ? entry.path : `${prefix}/${entry.path}`;
-        if (entry.type === "blob") {
-          out.set(childPath, entry.oid);
-        } else if (entry.type === "tree") {
-          await recurse(entry.oid, childPath);
-        }
+      for (const e of tree) {
+        baseEntries.set(e.path, { mode: e.mode, oid: e.oid, type: e.type });
       }
+    }
+
+    // Names to rebuild at this level: a direct blob put, a subtree some
+    // put descends into, or the subtree `clearPrefix` descends into (so
+    // its deletion is applied even when no put touches that subtree).
+    const blobPutsHere = new Set<string>();
+    const subtreeNames = new Set<string>();
+    for (const full of puts.keys()) {
+      if (prefix !== "" && !full.startsWith(prefix)) continue;
+      const rest = full.slice(prefix.length);
+      if (rest.length === 0) continue;
+      const slash = rest.indexOf("/");
+      if (slash === -1) blobPutsHere.add(rest);
+      else subtreeNames.add(rest.slice(0, slash));
+    }
+    if (
+      clearPrefix !== undefined &&
+      clearPrefix !== prefix &&
+      clearPrefix.startsWith(prefix)
+    ) {
+      const rest = clearPrefix.slice(prefix.length);
+      const slash = rest.indexOf("/");
+      const seg = slash === -1 ? rest : rest.slice(0, slash);
+      if (seg.length > 0) subtreeNames.add(seg);
+    }
+
+    const names = new Set<string>([
+      ...baseEntries.keys(),
+      ...blobPutsHere,
+      ...subtreeNames,
+    ]);
+    const entries: TreeEntry[] = [];
+    for (const name of names) {
+      const full = prefix + name;
+      const putOid = puts.get(full);
+      if (putOid !== undefined) {
+        // A direct blob put overrides whatever the base held here.
+        entries.push({
+          mode: "100644",
+          path: name,
+          oid: putOid,
+          type: "blob",
+        });
+        continue;
+      }
+      if (subtreeNames.has(name)) {
+        const base = baseEntries.get(name);
+        const baseChildOid =
+          base !== undefined && base.type === "tree" ? base.oid : null;
+        const childOid = await assembleTree(
+          dir,
+          baseChildOid,
+          `${full}/`,
+          puts,
+          clearPrefix,
+        );
+        if (childOid !== null) {
+          entries.push({
+            mode: "040000",
+            path: name,
+            oid: childOid,
+            type: "tree",
+          });
+        }
+        continue;
+      }
+      const base = baseEntries.get(name);
+      if (base === undefined) continue;
+      entries.push({
+        mode: base.mode,
+        path: name,
+        oid: base.oid,
+        type: base.type,
+      });
+    }
+    if (entries.length === 0) return null;
+    return await git.writeTree({ fs, dir, tree: entries });
+  }
+
+  // Prospective-side validatePush closures sourced from the assembled
+  // tree oid, so a handler sees exactly the tree the commit will carry.
+  // The blobs and trees the assembly wrote are unreferenced objects
+  // until the commit lands, so reading them here advances nothing.
+  function buildTreeReadClosures(
+    dir: string,
+    rootTreeOid: string,
+  ): {
+    topLevelTreePaths: () => Promise<string[]>;
+    readBlob: (relPath: string) => Promise<Uint8Array>;
+    listDir: (relPath: string) => Promise<string[]>;
+  } {
+    const topLevelTreePaths = async (): Promise<string[]> => {
+      const { tree } = await git.readTree({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid: rootTreeOid,
+      });
+      return tree.map((e) => e.path);
     };
-    await recurse(commit.tree, "");
-    return out;
+    const readBlob = async (relPath: string): Promise<Uint8Array> => {
+      const oid = await resolveTreeOid(dir, rootTreeOid, relPath, "blob");
+      if (oid === null) {
+        throw new Error(
+          `readBlob: path ${relPath} not present in prospective tree`,
+        );
+      }
+      const { blob } = await git.readBlob({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid,
+      });
+      return blob;
+    };
+    const listDir = async (relPath: string): Promise<string[]> => {
+      const oid =
+        relPath === ""
+          ? rootTreeOid
+          : await resolveTreeOid(dir, rootTreeOid, relPath, "tree");
+      if (oid === null) return [];
+      const { tree } = await git.readTree({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid,
+      });
+      return tree.map((e) => e.path);
+    };
+    return { topLevelTreePaths, readBlob, listDir };
   }
 
   // Unlocked body of writeTree. The caller is responsible for
@@ -1120,188 +1044,125 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
 
     const handler = handlerFor(repoId);
 
-    // Reset the working tree and index to the target ref's tip so a
-    // commit to ref A does not pick up index state left behind by a
-    // prior commit to ref B. isomorphic-git's index is a single
-    // repo-global structure shared across refs, and `git.add` /
-    // `writeFileEntry` mutate it in place; without this reset, every
-    // commit's tree is the union of `ref`'s tree and whatever was last
-    // staged for a different ref. The reset reads `ref` (the push
-    // target) rather than HEAD: writes target a named ref, and HEAD
-    // may point at a different branch the repo was initialized on, so
-    // checking out HEAD would seed the new commit from the wrong tip.
-    //
-    // Skip the reset when the index cache says the on-disk index
-    // already mirrors `ref` — i.e. the previous commit on this repo
-    // also targeted this ref. The cache is invalidated on every
-    // successful commit so a write to a different ref always pays the
-    // reset cost on the next return.
-    const indexKey = indexCacheKey(repoId);
-    if (indexRefCache.get(indexKey) !== ref) {
-      await resetIndexToRef(dir, ref);
-      indexRefCache.set(indexKey, ref);
-    }
-
-    // Snapshot the target ref's path set before the clearPrefix +
-    // writeFileEntry pass mutates the index. A post-validation rollback
-    // uses this set to decide whether each staged path needs to be
-    // restored from the ref's tip (it existed there and was
-    // overwritten) or unlinked (it had no prior presence). Captured
-    // here, not inside resetWorkingTreeToHead, because the rollback
-    // runs after the index has been mutated. The snapshot reads `ref`
-    // (the push target) rather than HEAD: writes target a named ref
-    // and HEAD may point at a different branch the repo was
-    // initialized on, so reading HEAD would mis-classify every staged
-    // path as new and fall back to the unlink path.
-    const refPaths = await refPathSet(dir, ref);
-
+    // Assemble the commit's tree directly and commit that tree oid,
+    // never staging into the on-disk index. The index is a single
+    // repo-global structure shared across refs; routing writes through
+    // it forced a full index rebuild on every events<->workflow-run ref
+    // flip and re-serialized the whole index once per staged blob.
+    // Splicing the tree from the parent's root tree instead reuses every
+    // untouched subtree by oid, so the per-commit cost tracks the change
+    // rather than the accumulated history.
     if (content.clearPrefix !== undefined) {
       validateClearPrefix(content.clearPrefix);
-      await clearIndexPrefix(dir, content.clearPrefix);
-      await fs.promises.rm(path.join(dir, content.clearPrefix), {
-        recursive: true,
-        force: true,
+    }
+    const clearPrefix = content.clearPrefix;
+
+    // Pin the parent under the lock: the new commit's parent is the
+    // ref's tip, and the splice runs against THAT commit's root tree,
+    // read under the same lock, so the pre-image is race-free. A ref
+    // that does not yet exist has no base tree (the splice starts from
+    // empty) and parents on HEAD, matching the prior index-reset path
+    // which seeded an empty index for a missing ref.
+    const parentCommitSha = await resolveRefSha(dir, ref);
+    let baseRootTreeOid: string | null = null;
+    if (parentCommitSha !== null) {
+      const { commit } = await git.readCommit({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid: parentCommitSha,
       });
+      baseRootTreeOid = commit.tree;
     }
 
+    // Write the merge-output blobs, then splice them (and the
+    // clearPrefix deletion) onto the parent root tree. writeBlob and
+    // writeTree emit unreferenced objects; nothing the ref can reach
+    // moves until the commit below lands.
+    const puts = new Map<string, string>();
     for (const [relPath, contents] of Object.entries(content.files)) {
-      await writeFileEntry(dir, relPath, contents);
+      const bytes =
+        typeof contents === "string"
+          ? new TextEncoder().encode(contents)
+          : contents;
+      const oid = await git.writeBlob({ fs, dir, blob: bytes });
+      puts.set(relPath, oid);
     }
-
-    // The prior tree is whatever the ref points at the moment
-    // validatePush runs — i.e. the parent of the commit we are about
-    // to produce. `refPaths` above was snapshotted from the same
-    // commit, so both reads observe the same pre-image.
-    const priorCommitSha = await resolveRefSha(dir, ref);
-    const { priorReadBlob, priorListDir, priorListDirOids } =
-      buildPriorTreeClosures(dir, priorCommitSha);
-
-    // The prospective tree is the actual commit `git.commit` will
-    // produce: the prior tree, minus paths cleared by `clearPrefix`,
-    // unioned with paths newly staged via `writeFileEntry`. The
-    // closures handed to validatePush must reflect that union — not
-    // just `content.files` — so a kind handler that walks the prior
-    // tree (workflow-run's append-only event check) can see every
-    // path the commit will carry. Building the closures from
-    // `content.files` alone would advertise only the writer's
-    // explicitly-staged paths, hiding prior-tree paths the writer
-    // did not touch and tripping prior-vs-prospective comparisons
-    // that the substrate does not actually delete.
-    const clearedPrefix = content.clearPrefix;
-    const survivingPriorPaths: string[] = [];
-    for (const p of refPaths) {
-      if (clearedPrefix !== undefined && p.startsWith(clearedPrefix)) continue;
-      if (Object.prototype.hasOwnProperty.call(content.files, p)) continue;
-      survivingPriorPaths.push(p);
-    }
-    const prospectivePaths = new Set<string>([
-      ...Object.keys(content.files),
-      ...survivingPriorPaths,
-    ]);
-    const survivingPriorPathSet = new Set(survivingPriorPaths);
-    const topLevelTreePaths = Array.from(
-      new Set(
-        Array.from(prospectivePaths, (p) => {
-          const slash = p.indexOf("/");
-          return slash === -1 ? p : p.substring(0, slash);
-        }),
-      ),
+    const assembled = await assembleTree(
+      dir,
+      baseRootTreeOid,
+      "",
+      puts,
+      clearPrefix,
     );
-    const readBlob = async (relPath: string): Promise<Uint8Array> => {
-      const entry = content.files[relPath];
-      if (entry !== undefined) {
-        if (typeof entry === "string") {
-          return new TextEncoder().encode(entry);
-        }
-        return entry;
-      }
-      if (survivingPriorPathSet.has(relPath)) {
-        const blob = await priorReadBlob(relPath);
-        if (blob === null) {
-          throw new Error(
-            `readBlob: path ${relPath} listed in prior tree but unreadable from prior commit ${String(priorCommitSha)}`,
-          );
-        }
-        return blob;
-      }
-      throw new Error(
-        `readBlob: path ${relPath} not present in prospective tree`,
-      );
-    };
-    const listDir = async (dirPath: string): Promise<string[]> => {
-      const prefix = dirPath === "" ? "" : `${dirPath}/`;
-      const names = new Set<string>();
-      for (const p of prospectivePaths) {
-        if (prefix !== "" && !p.startsWith(prefix)) continue;
-        const rest = p.slice(prefix.length);
-        if (rest.length === 0) continue;
-        const slash = rest.indexOf("/");
-        names.add(slash === -1 ? rest : rest.substring(0, slash));
-      }
-      return Array.from(names);
-    };
-    // A writeTree carrying a `clearPrefix` mutates only paths under that
-    // prefix: the clearPrefix step removes the prefix's prior entries and
-    // `writeFileEntry` restages the writer's files, while every other
-    // prior path is carried forward verbatim in `survivingPriorPaths`
-    // above. So the change set the handler may scope to is exactly
-    // `{clearPrefix}`. Without a clearPrefix the write is purely additive
-    // over an arbitrary set of paths the substrate does not summarise, so
-    // leave the change set unbounded (validate-all).
+    const newRootTreeOid =
+      assembled ?? (await git.writeTree({ fs, dir, tree: [] }));
+
+    // validatePush sees the full prospective tree via closures over the
+    // assembled tree oid; the prior-side closures read the parent commit
+    // (`parentCommitSha`) exactly as before. The change set the handler
+    // may scope to is `{clearPrefix}` when one is present — writes under
+    // it are a full replace and every other path is carried forward — and
+    // unbounded (validate-all) otherwise.
+    const { priorReadBlob, priorListDir, priorListDirOids } =
+      buildPriorTreeClosures(dir, parentCommitSha);
+    const prospective = buildTreeReadClosures(dir, newRootTreeOid);
     const changedPathPrefixes =
-      clearedPrefix === undefined ? undefined : new Set([clearedPrefix]);
+      clearPrefix === undefined ? undefined : new Set([clearPrefix]);
     const validation = await handler.validatePush({
       repoId,
       ref,
       principal,
-      topLevelTreePaths,
-      readBlob,
-      listDir,
+      topLevelTreePaths: await prospective.topLevelTreePaths(),
+      readBlob: prospective.readBlob,
+      listDir: prospective.listDir,
       priorReadBlob,
       priorListDir,
       priorListDirOids,
       changedPathPrefixes,
     });
     if (!validation.ok) {
-      // Roll the working tree and index back to HEAD before
-      // surfacing the validation refusal. Otherwise the staged
-      // writeFileEntry / clearPrefix steps above leave files and
-      // index entries on disk that the next legitimate push would
-      // either include silently (statusMatrix re-reports them) or
-      // trip a second validation refusal against. The reset is
-      // best-effort but logged loudly: a failure here means the
-      // repo is in a half-applied state the operator needs to fix
-      // by hand, which is strictly better than the silent-leak
-      // alternative.
-      try {
-        await resetWorkingTreeToRef(dir, ref, {
-          stagedFiles: Object.keys(content.files),
-          clearedPrefix: content.clearPrefix,
-          refPaths,
-        });
-      } catch (resetErr) {
-        logger.warn`repo-store rollback after validation refusal failed for ${repoId.kind}/${repoId.id}; the repo is in a half-applied state and may need manual cleanup — ${resetErr instanceof Error ? resetErr.message : String(resetErr)}`;
-      }
+      // Nothing was staged and no ref advanced: the assembly wrote only
+      // unreferenced blob and tree objects, which the next GC reclaims.
+      // There is no half-applied index or working-tree state to roll
+      // back, so the refusal just surfaces.
       throw new Error(`path_violation: ${validation.reason}`);
     }
 
-    // Resolve the previous ref value for the post-update hook (precise:
-    // null only when the ref truly doesn't exist) and the parent SHA for
-    // the new commit (best-effort: any error falls back to HEAD, so a
-    // first write on a never-touched ref produces a commit parented on
-    // the repo's initial commit instead of failing).
-    const oldSha = await resolveRefSha(dir, ref);
-    let parentSha: string;
-    try {
-      parentSha = await git.resolveRef({ fs, dir, ref });
-    } catch {
-      parentSha = await git.resolveRef({ fs, dir, ref: "HEAD" });
+    // Materialize the working tree for the paths this write touched:
+    // clear the replaced prefix, then write each put file. The store's
+    // own reads resolve through the object store, but some consumers
+    // (the workflow-run claim-check processing scan) read these files
+    // straight from disk, so the working tree must mirror the committed
+    // change. Only merge-output paths are written and only the cleared
+    // prefix is removed, so this is O(change), not O(repo). It runs only
+    // after validation passes, so a rejected push leaves the working
+    // tree untouched — the failure atomicity the old index rollback
+    // provided, now without any rollback.
+    if (clearPrefix !== undefined) {
+      await fs.promises.rm(path.join(dir, clearPrefix), {
+        recursive: true,
+        force: true,
+      });
     }
+    for (const [relPath, contents] of Object.entries(content.files)) {
+      const fullPath = path.join(dir, relPath);
+      await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
+      await fs.promises.writeFile(fullPath, contents);
+    }
+
+    // The parent is the pinned tip, or HEAD for a never-written ref so a
+    // first write parents on the repo's initial commit. `oldSha` is
+    // precise: null only when the ref truly does not exist.
+    const oldSha = parentCommitSha;
+    const parentSha =
+      parentCommitSha ?? (await git.resolveRef({ fs, dir, ref: "HEAD" }));
 
     const commitSha = await git.commit({
       fs,
       dir,
       cache: cacheFor(dir),
+      tree: newRootTreeOid,
       message: content.message,
       author: AUTHOR,
       parent: [parentSha],
@@ -1572,12 +1433,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
         },
       );
 
-      // receivePack does not touch the index — it goes straight from
-      // pack bytes to ref pointer — so the index now points at
-      // whatever was last committed (possibly a different ref). The
-      // index cache must be cleared so the next writeTreeUnderLock
-      // resets the index against the chosen target ref.
-      indexRefCache.delete(indexCacheKey(repoId));
       // receivePackObjects wrote new objects and advanced the ref
       // straight to disk without threading the memoization cache, so
       // drop the dir's cache; the next read rebuilds against the packed
