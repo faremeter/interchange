@@ -53,6 +53,7 @@
     { "path": "tests/tool-packaging" },
     { "path": "tests/workflow-deploy" },
     { "path": "tests/inference" },
+    { "path": "tests/inference-testing" },
     { "path": "tests/agent" },
     { "path": "tests/agent-audit-log" },
     { "path": "tests/agent-blob-spill" },
