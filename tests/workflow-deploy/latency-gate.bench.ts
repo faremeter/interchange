@@ -59,7 +59,8 @@ import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
 import { createAgent, type Agent } from "@intx/agent";
 import type { BaseEnv } from "@intx/agent";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { generateKeyPair, createSSHSignature } from "@intx/crypto";
+import { createIsogitStore, type CommitSigner } from "@intx/storage-isogit";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
@@ -251,7 +252,13 @@ async function runBaseline(opts: {
   // A real isogit ContextStore (the same store kind the unified step
   // agent uses for its conversation) so the baseline pays the same
   // per-turn context-commit cost the in-process runtime pays today.
-  const storage = await createIsogitStore(storeDir);
+  // Sign each commit's sshsig exactly as `agent-repo.ts` does for the
+  // unified path; without a signer the baseline would skip the
+  // per-commit signature and undercount its own floor.
+  const signingKey = await generateKeyPair();
+  const signer: CommitSigner = (payload) =>
+    createSSHSignature(payload, signingKey.privateKey, signingKey.publicKey);
+  const storage = await createIsogitStore(storeDir, signer);
 
   const def = defineAgent({
     id: "latency-baseline-agent",
