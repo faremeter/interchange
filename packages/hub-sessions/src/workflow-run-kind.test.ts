@@ -2134,6 +2134,25 @@ describe("claim-check API — enqueueInbox per-messageId atomicity in inbox", ()
     const entries = await fs.promises.readdir(inboxDir);
     expect(entries.sort()).toEqual(["100-msg-X.json"]);
   });
+
+  test("rejects a duplicate enqueue for the same messageId at the same receivedAt", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-enq-dup-key-");
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-D",
+      receivedAt: 100,
+      mailAuditRef: { store: "audit", path: "mail/D" },
+    });
+    await expect(
+      enqueueInbox(store, principal, repoId, {
+        address: ADDRESS,
+        messageId: "msg-D",
+        receivedAt: 100,
+        mailAuditRef: { store: "audit", path: "mail/D" },
+      }),
+    ).rejects.toThrow(/claim_check_duplicate_inbox/);
+  });
 });
 
 // Regression at the validatePush layer for the same intra-state
@@ -2151,6 +2170,43 @@ describe("workflowRunKindHandler.validatePush — claim-check intra-state atomic
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
     expect(r.reason).toMatch(/appears at multiple inbox positions/);
+  });
+});
+
+describe("claim-check API — replayProcessingToInbox collision guard", () => {
+  test("rejects when a processing entry collides with an existing inbox entry", async () => {
+    // The real handler's atomicity check forbids the same key in both
+    // inbox/ and processing/, so seed that (impossible-in-practice) state
+    // through a permissive handler and confirm replay refuses rather than
+    // clobbering the inbox entry.
+    const dataDir = await makeClaimCheckTempDir("cc-replay-collide-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey: claimCheckSigningKey,
+      handlers: {
+        "workflow-run": {
+          kind: "workflow-run",
+          directoryPrefix: "workflow-runs",
+          validatePush: () => ({ ok: true }),
+          onRefUpdated: () => undefined,
+        },
+      },
+      authorize: () => ({ allowed: true }),
+    });
+    const repoId: RepoId = { kind: "workflow-run", id: "dep-replaycollide" };
+    await store.initRepo(repoId);
+    const body = inboxBody("msg-1", 100);
+    await store.writeTree(HUB_PRINCIPAL, repoId, "refs/heads/events", {
+      files: {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [inboxPathFor(ADDRESS_SEG, 100, "msg-1")]: body,
+        [processingPathFor(ADDRESS_SEG, 100, "msg-1")]: body,
+      },
+      message: "seed colliding inbox+processing state",
+    });
+    await expect(
+      replayProcessingToInbox(store, HUB_PRINCIPAL, repoId, ADDRESS),
+    ).rejects.toThrow(/claim_check_replay_collision/);
   });
 });
 

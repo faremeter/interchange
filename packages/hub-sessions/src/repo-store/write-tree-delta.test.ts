@@ -4,9 +4,12 @@
 // the byte-identical tree that a full-replace writeTree of the same
 // logical final state produces. SHA-1 tree hashing is deterministic
 // given identical content and structure, so equal commit-tree oids prove
-// the delta path never diverges from canonical git for the claim-check
-// move shapes: enqueue-add, dequeue-move, markConsumed-move,
-// empty->first-entry, and prune-to-empty.
+// the delta path never diverges from canonical git across the move
+// shapes: enqueue-add, dequeue-move (delete+put), markConsumed-move,
+// empty->first-entry, prune-to-empty, a standalone exact-file-delete, and
+// a cascade-delete that empties a directory and its parent. It also pins
+// the ambiguity (put and delete of the same path, or a put under a
+// deleted subtree) and out-of-scope guards that fail loud.
 
 import { test, expect, afterAll, beforeAll } from "bun:test";
 import fs from "node:fs";
@@ -197,4 +200,67 @@ test("delta prune-to-empty matches full-replace", async () => {
     { [`${SCOPE}watermark.json`]: `{"watermark":9}` },
     [`${SCOPE}consumed/m1.json`, `${SCOPE}consumed/m2.json`],
   );
+});
+
+test("delta exact-file-delete matches full-replace", async () => {
+  await assertDeltaMatchesFullReplace("exactdel", consumedBase, {}, [
+    `${SCOPE}consumed/m1.json`,
+  ]);
+});
+
+test("delta cascade-delete (empties dir and parent) matches full-replace", async () => {
+  // The only entry under SCOPE is one inbox blob; deleting it empties
+  // inbox/, then addresses/a/, then addresses/, so all three subtrees
+  // must vanish exactly as a full clearPrefix of an emptied scope does.
+  await assertDeltaMatchesFullReplace(
+    "cascade",
+    { [`${SCOPE}inbox/10-m1.json`]: `{"messageId":"m1"}` },
+    {},
+    [`${SCOPE}inbox/10-m1.json`],
+  );
+});
+
+test("writeTreeDelta rejects a path in both puts and deletes", async () => {
+  const store = await freshStore("wtd-ambig-both-");
+  await store.initRepo(repoId);
+  await expect(
+    store.writeTreeDelta(principal, repoId, REF, {
+      changedPathPrefixes: new Set([SCOPE]),
+      message: "ambiguous",
+      computeDelta: async () => ({
+        puts: { [`${SCOPE}inbox/x.json`]: "v" },
+        deletes: [`${SCOPE}inbox/x.json`],
+      }),
+    }),
+  ).rejects.toThrow(/delta_ambiguous/);
+});
+
+test("writeTreeDelta rejects a put under a deleted subtree", async () => {
+  const store = await freshStore("wtd-ambig-under-");
+  await store.initRepo(repoId);
+  await expect(
+    store.writeTreeDelta(principal, repoId, REF, {
+      changedPathPrefixes: new Set([SCOPE]),
+      message: "ambiguous",
+      computeDelta: async () => ({
+        puts: { [`${SCOPE}inbox/x.json`]: "v" },
+        deletes: [`${SCOPE}inbox/`],
+      }),
+    }),
+  ).rejects.toThrow(/delta_ambiguous/);
+});
+
+test("writeTreeDelta rejects a delta path outside changedPathPrefixes", async () => {
+  const store = await freshStore("wtd-scope-");
+  await store.initRepo(repoId);
+  await expect(
+    store.writeTreeDelta(principal, repoId, REF, {
+      changedPathPrefixes: new Set([SCOPE]),
+      message: "out of scope",
+      computeDelta: async () => ({
+        puts: { "addresses/b/inbox/x.json": "v" },
+        deletes: [],
+      }),
+    }),
+  ).rejects.toThrow(/delta_out_of_scope/);
 });

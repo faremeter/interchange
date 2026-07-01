@@ -420,6 +420,66 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     }
   }
 
+  // Reject an ambiguous delta rather than silently pick a winner: a path
+  // that is both put and deleted, or a put that lands under a
+  // subtree-prefix delete. assembleTree would let the put win in both
+  // cases; making the contradiction loud keeps a caller from committing a
+  // tree that does not match its stated intent.
+  function assertDeltaUnambiguous(
+    puts: Record<string, string | Uint8Array>,
+    deletes: readonly string[],
+  ): void {
+    const deleteSet = new Set(deletes);
+    const deletePrefixes = deletes.filter((d) => d.endsWith("/"));
+    for (const p of Object.keys(puts)) {
+      if (deleteSet.has(p)) {
+        throw new Error(
+          `delta_ambiguous: path ${JSON.stringify(p)} is in both puts and deletes`,
+        );
+      }
+      for (const dp of deletePrefixes) {
+        if (p.startsWith(dp)) {
+          throw new Error(
+            `delta_ambiguous: put ${JSON.stringify(p)} lands under deleted subtree ${JSON.stringify(dp)}`,
+          );
+        }
+      }
+    }
+  }
+
+  // When a delta declares a change scope, every put and delete must fall
+  // under it — otherwise a handler that scopes validation to
+  // `changedPathPrefixes` would skip a region the write actually mutated,
+  // an exactly-once hole. An undefined scope means validate-all, so there
+  // is nothing to under-cover.
+  function assertDeltaScoped(
+    puts: Record<string, string | Uint8Array>,
+    deletes: readonly string[],
+    changedPathPrefixes: ReadonlySet<string> | undefined,
+  ): void {
+    if (changedPathPrefixes === undefined) return;
+    const covered = (p: string): boolean => {
+      for (const prefix of changedPathPrefixes) {
+        if (p === prefix || p.startsWith(prefix)) return true;
+      }
+      return false;
+    };
+    for (const p of Object.keys(puts)) {
+      if (!covered(p)) {
+        throw new Error(
+          `delta_out_of_scope: put ${JSON.stringify(p)} is not under any changedPathPrefix`,
+        );
+      }
+    }
+    for (const d of deletes) {
+      if (!covered(d)) {
+        throw new Error(
+          `delta_out_of_scope: delete ${JSON.stringify(d)} is not under any changedPathPrefix`,
+        );
+      }
+    }
+  }
+
   function storageOptsFor(
     repoId: RepoId,
     opts: InitRepoOpts | undefined,
@@ -889,7 +949,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   // paths of entries that exist as blobs, or an intended clear-prefix,
   // so neither name-vs-type case arises; a caller that builds deletes
   // more freely must not rely on per-type git-rm behavior here. A `put`
-  // at a path overrides a delete of the same path.
+  // at a path overrides a delete of the same path. A delete of a path
+  // absent from the parent tree is an idempotent no-op (the entry is
+  // simply never emitted), matching `git rm --ignore-unmatch` and the
+  // working-tree `rm` with `force: true`.
   //
   // Recursion is scoped to the touched subtrees: a level is read and
   // rewritten only when a put lands under it or a delete removes within
@@ -1070,6 +1133,14 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       changedPathPrefixes: ReadonlySet<string> | undefined;
       message: string;
     },
+    // When present, the parent tip already resolved under this lock. The
+    // delta path pins it once and hands the SAME oid to both computeDelta
+    // (its dedup reads) and this assembly, so the dedup snapshot, the
+    // committed tree, and validation are provably one pre-image. Absent,
+    // the write resolves its own (the writeTree / preserving-prefix path,
+    // which has no prior read to keep consistent with). `{ sha }` wraps
+    // the value so a genuinely-null pin is distinct from "not provided".
+    pinnedParent?: { sha: string | null },
   ): Promise<WriteResult> {
     const dir = repoDir(repoId);
     await storageInitRepo(dir, storageOptsFor(repoId, undefined));
@@ -1092,7 +1163,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     // that does not yet exist has no base tree (the splice starts from
     // empty) and parents on HEAD, matching the prior index-reset path
     // which seeded an empty index for a missing ref.
-    const parentCommitSha = await resolveRefSha(dir, ref);
+    const parentCommitSha =
+      pinnedParent !== undefined
+        ? pinnedParent.sha
+        : await resolveRefSha(dir, ref);
     let baseRootTreeOid: string | null = null;
     if (parentCommitSha !== null) {
       const { commit } = await git.readCommit({
@@ -1372,19 +1446,29 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return withRepoLock(repoId, async () => {
       const dir = repoDir(repoId);
       await storageInitRepo(dir, storageOptsFor(repoId, undefined));
-      // Pin the parent tip under the lock and hand it to computeDelta so
-      // its dedup reads and the tree assembly below observe the same
-      // pre-image — no lost-update window between the read and the write.
+      // Pin the parent tip ONCE under the lock and hand the same oid to
+      // computeDelta's dedup reads and to the assembly below, so the
+      // pre-image the delta is computed against is exactly the pre-image
+      // it is committed against — no lost-update window, no second
+      // resolve that could (in principle) observe a different tip.
       const parentCommitSha = await resolveRefSha(dir, ref);
       const delta = await args.computeDelta(parentCommitSha);
       for (const p of Object.keys(delta.puts)) validateDeltaPath(p, false);
       for (const d of delta.deletes) validateDeltaPath(d, true);
-      return writeTreeUnderLock(principal, repoId, ref, {
-        files: delta.puts,
-        deletes: new Set(delta.deletes),
-        changedPathPrefixes: args.changedPathPrefixes,
-        message: args.message,
-      });
+      assertDeltaUnambiguous(delta.puts, delta.deletes);
+      assertDeltaScoped(delta.puts, delta.deletes, args.changedPathPrefixes);
+      return writeTreeUnderLock(
+        principal,
+        repoId,
+        ref,
+        {
+          files: delta.puts,
+          deletes: new Set(delta.deletes),
+          changedPathPrefixes: args.changedPathPrefixes,
+          message: args.message,
+        },
+        { sha: parentCommitSha },
+      );
     });
   }
 
