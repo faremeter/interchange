@@ -28,9 +28,8 @@ import type {
   ReactorDirector,
   ToolRunner,
   TokenUsage,
-  TransformRecord,
 } from "@intx/types/runtime";
-import { createBlobReader } from "@intx/types/runtime";
+import { createBlobReader, TransformRecord } from "@intx/types/runtime";
 import { createPosixTools } from "@intx/tools-posix";
 import { setupHarness, wire } from "@intx/inference-testing";
 import type { Harness } from "@intx/inference-testing";
@@ -314,7 +313,7 @@ describe("Phase 4 headline tests", () => {
       .decode(manifestBlob)
       .split("\n")
       .filter((l) => l.length > 0);
-    const records = lines.map((l) => JSON.parse(l) as TransformRecord);
+    const records = lines.map((l) => TransformRecord.assert(JSON.parse(l)));
     const sizeCap = records.find((r) => r.strategy === "size-cap");
     expect(sizeCap).toBeDefined();
     expect(sizeCap?.reason).toBe("exceeded-cap");
