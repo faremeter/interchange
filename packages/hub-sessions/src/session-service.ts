@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 import {
   createDefaultDirectorRegistry,
   defaultDirectorFactory,
+  type DirectorRegistry,
 } from "@intx/agent";
 import { getLogger } from "@intx/log";
 import {
@@ -53,6 +54,8 @@ import {
   wrapHarnessAsTrivialAgent,
   type ApprovalSet,
   type DeployContent as OrchestratorDeployContent,
+  type DeployWorkflowArgs,
+  type DeployWorkflowResult,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
@@ -818,6 +821,50 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   }
 
   /**
+   * Build the workflow-deploy orchestrator (with its launch-session and
+   * multi-step callbacks) and run one deploy. Shared by `launchSession`
+   * and `deployWorkflowDefinition`, which differ only in the workflow
+   * repo writer, the director registry, and the deploy args.
+   */
+  async function runWorkflowDeploy(args: {
+    workflowRepo: WorkflowRepoWriter;
+    directorRegistry: DirectorRegistry;
+    deployArgs: DeployWorkflowArgs;
+  }): Promise<DeployWorkflowResult> {
+    const launchSessionCallback: LaunchSessionFn = async (orchestratorParams) =>
+      executeLaunchPhases({
+        agentAddress: orchestratorParams.agentAddress,
+        agentId: orchestratorParams.agentId,
+        instanceId: orchestratorParams.instanceId,
+        config: orchestratorParams.config,
+        deployContent: bridgeOrchestratorDeployContent(
+          orchestratorParams.deployContent,
+        ),
+        ...(orchestratorParams.toolPackagePins !== undefined
+          ? { toolPackagePins: orchestratorParams.toolPackagePins }
+          : {}),
+      });
+
+    const sendMultiStepDeployCallback: SendMultiStepDeployFn = (deployParams) =>
+      sendMultiStepDeployFrame({
+        sidecarRouter,
+        agentAddress: deployParams.agentAddress,
+        config: deployParams.config,
+        definition: deployParams.definition,
+        sources: deployParams.sources,
+      });
+
+    const orchestrator = createWorkflowDeployOrchestrator({
+      directorRegistry: args.directorRegistry,
+      workflowRepo: args.workflowRepo,
+      launchSession: launchSessionCallback,
+      sendMultiStepDeploy: sendMultiStepDeployCallback,
+    });
+
+    return orchestrator.deployWorkflow(args.deployArgs);
+  }
+
+  /**
    * Legacy agent-deploy entry point preserved bit-for-bit at its wire
    * shape. The body now constructs a single-step trivial workflow from
    * the deploy's `HarnessConfig` + `DeployContent`, synthesizes the
@@ -851,45 +898,19 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       config,
     });
 
-    const launchSessionCallback: LaunchSessionFn = async (orchestratorParams) =>
-      executeLaunchPhases({
-        agentAddress: orchestratorParams.agentAddress,
-        agentId: orchestratorParams.agentId,
-        instanceId: orchestratorParams.instanceId,
-        config: orchestratorParams.config,
-        deployContent: bridgeOrchestratorDeployContent(
-          orchestratorParams.deployContent,
-        ),
-        ...(orchestratorParams.toolPackagePins !== undefined
-          ? { toolPackagePins: orchestratorParams.toolPackagePins }
-          : {}),
-      });
-
-    const sendMultiStepDeployCallback: SendMultiStepDeployFn = (params) =>
-      sendMultiStepDeployFrame({
-        sidecarRouter,
-        agentAddress: params.agentAddress,
-        config: params.config,
-        definition: params.definition,
-        sources: params.sources,
-      });
-
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry: createDefaultDirectorRegistry(),
+    await runWorkflowDeploy({
       workflowRepo: createNoopWorkflowRepoWriter(),
-      launchSession: launchSessionCallback,
-      sendMultiStepDeploy: sendMultiStepDeployCallback,
-    });
-
-    await orchestrator.deployWorkflow({
-      workflow,
-      trivialBindings: { agentAddress, agentId, instanceId },
-      config,
-      deployContent,
-      ...(params.toolPackagePins !== undefined
-        ? { toolPackagePins: params.toolPackagePins }
-        : {}),
-      operatorApprovals,
+      directorRegistry: createDefaultDirectorRegistry(),
+      deployArgs: {
+        workflow,
+        trivialBindings: { agentAddress, agentId, instanceId },
+        config,
+        deployContent,
+        ...(params.toolPackagePins !== undefined
+          ? { toolPackagePins: params.toolPackagePins }
+          : {}),
+        operatorApprovals,
+      },
     });
   }
 
@@ -919,47 +940,21 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       ]),
     );
 
-    const launchSessionCallback: LaunchSessionFn = async (orchestratorParams) =>
-      executeLaunchPhases({
-        agentAddress: orchestratorParams.agentAddress,
-        agentId: orchestratorParams.agentId,
-        instanceId: orchestratorParams.instanceId,
-        config: orchestratorParams.config,
-        deployContent: bridgeOrchestratorDeployContent(
-          orchestratorParams.deployContent,
-        ),
-        ...(orchestratorParams.toolPackagePins !== undefined
-          ? { toolPackagePins: orchestratorParams.toolPackagePins }
-          : {}),
-      });
-
-    const sendMultiStepDeployCallback: SendMultiStepDeployFn = (deployParams) =>
-      sendMultiStepDeployFrame({
-        sidecarRouter,
-        agentAddress: deployParams.agentAddress,
-        config: deployParams.config,
-        definition: deployParams.definition,
-        sources: deployParams.sources,
-      });
-
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry,
+    const result = await runWorkflowDeploy({
       workflowRepo: createHubWorkflowRepoWriter(agentRepoStore),
-      launchSession: launchSessionCallback,
-      sendMultiStepDeploy: sendMultiStepDeployCallback,
-    });
-
-    const result = await orchestrator.deployWorkflow({
-      workflow: definition,
-      deploymentId,
-      deploymentDomain,
-      config,
-      deployContent,
-      operatorApprovals,
-      hubPublicKey: hexEncode(agentRepoStore.getSigningPublicKey()),
-      ...(params.toolPackagePins !== undefined
-        ? { toolPackagePins: params.toolPackagePins }
-        : {}),
+      directorRegistry,
+      deployArgs: {
+        workflow: definition,
+        deploymentId,
+        deploymentDomain,
+        config,
+        deployContent,
+        operatorApprovals,
+        hubPublicKey: hexEncode(agentRepoStore.getSigningPublicKey()),
+        ...(params.toolPackagePins !== undefined
+          ? { toolPackagePins: params.toolPackagePins }
+          : {}),
+      },
     });
     if (result.kind !== "multi-step") {
       // The general deploy path always omits trivialBindings, so the
