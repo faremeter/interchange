@@ -2981,12 +2981,12 @@ export type ReadProcessingEntryResult = {
  * input.
  *
  * The read is a flat working-tree read of
- * `addresses/<seg>/processing/`. The substrate materializes every
- * claim-check commit into the repo's working tree (each
- * `writeTreePreservingPrefix` resets the working tree to the ref tip),
- * so a read issued after `dequeueToProcessing` committed -- which is
- * exactly when the supervisor forwards `trigger.fired` -- observes the
- * processing entry. Reading the working tree (rather than walking the
+ * `addresses/<seg>/processing/`. The substrate materializes each
+ * claim-check commit's touched paths into the repo's working tree (the
+ * delta write removes each deleted path and writes each put after
+ * validation passes), so a read issued after `dequeueToProcessing`
+ * committed -- which is exactly when the supervisor forwards
+ * `trigger.fired` -- observes the processing entry. Reading the working tree (rather than walking the
  * committed git tree) matches the workflow-process child's sibling
  * reads of `workflow.json` and `runs/<runId>/events/`. Because the
  * read issues no commit it cannot race the supervisor's `markConsumed`

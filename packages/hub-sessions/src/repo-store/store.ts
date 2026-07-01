@@ -1010,6 +1010,23 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       else subtreeNames.add(rest.slice(0, slash));
     }
 
+    // A name written both as a direct blob and as a directory (a put/base
+    // `foo` plus a put or delete under `foo/`) is contradictory. Left
+    // implicit, the blob-put branch below wins and the subtree side is
+    // silently dropped; reject it loudly instead. This covers every
+    // caller — writeTree's `content.files`, writeTreePreservingPrefix's
+    // merge output, and writeTreeDelta's puts/deletes — since all funnel
+    // into this same classification.
+    for (const name of blobPutsHere) {
+      if (subtreeNames.has(name)) {
+        throw new Error(
+          `tree_name_collision: ${JSON.stringify(
+            prefix + name,
+          )} is written both as a file and as a directory`,
+        );
+      }
+    }
+
     const names = new Set<string>([
       ...baseEntries.keys(),
       ...blobPutsHere,
@@ -1021,7 +1038,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       const putOid = puts.get(full);
       if (putOid !== undefined) {
         // A put overrides whatever the base held and any delete of the
-        // same path.
+        // same path. Puts are always regular files (mode 100644). If a
+        // put ever overwrites a base entry with a different mode (an
+        // executable 100755 blob, a symlink 120000, or a submodule), this
+        // downgrades it to 100644 — the store only ever writes 100644
+        // content blobs today, so no caller hits it, but a future caller
+        // that needs to preserve an executable bit would have to carry
+        // the mode through `puts` rather than assume 100644.
         entries.push({
           mode: "100644",
           path: name,

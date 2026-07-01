@@ -2210,6 +2210,41 @@ describe("claim-check API — replayProcessingToInbox collision guard", () => {
   });
 });
 
+describe("claim-check API — dequeueToProcessing filename guard", () => {
+  test("rejects an inbox entry whose filename is not <receivedAt>-<messageId>.json", async () => {
+    // Seed a malformed inbox filename via a permissive handler (the real
+    // handler's shape check would reject it), then confirm the FIFO
+    // dequeue refuses it rather than mis-parsing.
+    const dataDir = await makeClaimCheckTempDir("cc-bad-inbox-fname-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey: claimCheckSigningKey,
+      handlers: {
+        "workflow-run": {
+          kind: "workflow-run",
+          directoryPrefix: "workflow-runs",
+          validatePush: () => ({ ok: true }),
+          onRefUpdated: () => undefined,
+        },
+      },
+      authorize: () => ({ allowed: true }),
+    });
+    const repoId: RepoId = { kind: "workflow-run", id: "dep-badinboxfname" };
+    await store.initRepo(repoId);
+    await store.writeTree(HUB_PRINCIPAL, repoId, "refs/heads/events", {
+      files: {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${WORKFLOW_RUN_ADDRESSES_PREFIX}/${ADDRESS_SEG}/${WORKFLOW_RUN_INBOX_DIR}/bad.json`]:
+          "{}",
+      },
+      message: "seed malformed inbox filename",
+    });
+    await expect(
+      dequeueToProcessing(store, HUB_PRINCIPAL, repoId, ADDRESS),
+    ).rejects.toThrow(/claim_check_invalid_inbox_filename/);
+  });
+});
+
 // Regression for per-commit-walk pack validation. A single pack
 // carrying [enqueue, dequeue] commits — produced by the supervisor's
 // first-mail bootstrap — must validate cleanly against a fresh target
