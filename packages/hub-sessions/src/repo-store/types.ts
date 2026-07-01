@@ -241,6 +241,16 @@ export interface KindHandler {
    * log) uses this to skip re-validating subtrees the commit provably
    * did not touch; a handler with no such structure ignores it and
    * validates unconditionally.
+   *
+   * `priorListDirOids` mirrors `priorListDir` but returns each child
+   * entry's git object id alongside its name, read straight from the
+   * prior commit's tree (git trees are content-addressed, so the listing
+   * already carries the OID). A handler that validates a large retained
+   * subtree by its per-commit delta uses it to prove a retained entry is
+   * byte-unchanged by OID equality instead of re-reading the blob. It is
+   * `undefined` when no prior commit exists; a handler that needs OIDs
+   * for a prospective-side compare hashes the (usually in-memory)
+   * prospective bytes itself.
    */
   validatePush: (args: {
     repoId: RepoId;
@@ -251,6 +261,9 @@ export interface KindHandler {
     listDir: (path: string) => Promise<string[]>;
     priorReadBlob: (path: string) => Promise<Uint8Array | null>;
     priorListDir: (path: string) => Promise<string[]>;
+    priorListDirOids?: (
+      path: string,
+    ) => Promise<{ name: string; oid: string }[]>;
     changedPathPrefixes?: ReadonlySet<string> | undefined;
   }) => Promise<ValidatePushResult> | ValidatePushResult;
   /**

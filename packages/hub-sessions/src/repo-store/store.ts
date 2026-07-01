@@ -633,11 +633,15 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   ): {
     priorReadBlob: (path: string) => Promise<Uint8Array | null>;
     priorListDir: (path: string) => Promise<string[]>;
+    priorListDirOids: (
+      path: string,
+    ) => Promise<{ name: string; oid: string }[]>;
   } {
     if (commitSha === null) {
       return {
         priorReadBlob: async () => null,
         priorListDir: async () => [],
+        priorListDirOids: async () => [],
       };
     }
     const priorReadBlob = async (
@@ -654,7 +658,19 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       const { tree } = await git.readTree({ fs, dir, oid });
       return tree.map((e) => e.path);
     };
-    return { priorReadBlob, priorListDir };
+    // Same walk as `priorListDir` but carries each child's git object id
+    // out of the tree listing. A kind handler validating a large subtree
+    // by its per-commit delta uses the OID to prove a retained entry is
+    // byte-unchanged without re-reading the blob.
+    const priorListDirOids = async (
+      relPath: string,
+    ): Promise<{ name: string; oid: string }[]> => {
+      const oid = await resolveTreeEntry(dir, commitSha, relPath, "tree");
+      if (oid === null) return [];
+      const { tree } = await git.readTree({ fs, dir, oid });
+      return tree.map((e) => ({ name: e.path, oid: e.oid }));
+    };
+    return { priorReadBlob, priorListDir, priorListDirOids };
   }
 
   // Build the `(readBlob, listDir, topLevelTreePaths)` triple a kind
@@ -1017,10 +1033,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     // to produce. `refPaths` above was snapshotted from the same
     // commit, so both reads observe the same pre-image.
     const priorCommitSha = await resolveRefSha(dir, ref);
-    const { priorReadBlob, priorListDir } = buildPriorTreeClosures(
-      dir,
-      priorCommitSha,
-    );
+    const { priorReadBlob, priorListDir, priorListDirOids } =
+      buildPriorTreeClosures(dir, priorCommitSha);
 
     // The prospective tree is the actual commit `git.commit` will
     // produce: the prior tree, minus paths cleared by `clearPrefix`,
@@ -1105,6 +1119,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       listDir,
       priorReadBlob,
       priorListDir,
+      priorListDirOids,
       changedPathPrefixes,
     });
     if (!validation.ok) {
@@ -1364,10 +1379,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
                 }
               }
             }
-            const { priorReadBlob, priorListDir } = buildPriorTreeClosures(
-              dir,
-              parentSha,
-            );
+            const { priorReadBlob, priorListDir, priorListDirOids } =
+              buildPriorTreeClosures(dir, parentSha);
             const { topLevelTreePaths, readBlob, listDir } =
               await buildCommitTreeClosures(dir, newCommit);
             const changedPathPrefixes = await computeChangedPathPrefixes(
@@ -1384,6 +1397,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
               listDir,
               priorReadBlob,
               priorListDir,
+              priorListDirOids,
               changedPathPrefixes,
             });
             if (!result.ok) {

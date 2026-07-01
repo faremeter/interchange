@@ -189,6 +189,21 @@ import {
 
 const logger = getLogger(["hub-sessions", "workflow-run-kind"]);
 
+/**
+ * Experiment flag (latency gate, default OFF). When set, the claim-check
+ * validation walk in `validateClaimCheckSubtree` validates only the
+ * per-commit DELTA of the consumed dedup index against the prior tree --
+ * keyed by (filename, blob OID) -- instead of re-reading, re-parsing and
+ * re-validating the ENTIRE retained consumed set on every commit. Read
+ * once at module load; OFF reproduces the exhaustive walk byte-for-byte,
+ * so nothing changes unless the flag is explicitly set.
+ *
+ * A second, independent experiment flag (commit batching) is intended to
+ * live alongside this one; it is deliberately NOT defined here yet.
+ */
+const BENCH_DELTA_SCOPE_CLAIMCHECK =
+  process.env.BENCH_DELTA_SCOPE_CLAIMCHECK === "1";
+
 export type WorkflowRunHubPrincipal = { readonly kind: "hub" };
 
 export type WorkflowRunSidecarPrincipal = {
@@ -1033,6 +1048,16 @@ type ClaimCheckBlob = {
    */
   messageIdFromFilename: string;
   blobPath: string;
+  /**
+   * Git blob object id of the entry, populated only for `consumed`
+   * entries and only when the delta-scoped claim-check path is enabled
+   * (`BENCH_DELTA_SCOPE_CLAIMCHECK`). Two entries at the same path whose
+   * OIDs match are byte-identical (git trees are content-addressed), so
+   * the delta path skips the immutability byte-comparison for retained
+   * consumed entries. Left `undefined` on the exhaustive (flag-OFF) path
+   * and on inbox/processing entries, which the delta path does not scope.
+   */
+  oid?: string;
 };
 
 /**
@@ -1075,6 +1100,7 @@ type ClaimCheckAddressBucket = {
 
 async function enumerateClaimCheckBlobs(
   listDir: (path: string) => Promise<string[]>,
+  resolveConsumedOid?: (blobPath: string) => Promise<string>,
 ): Promise<
   | { ok: true; perAddress: Map<string, ClaimCheckAddressBucket> }
   | { ok: false; reason: string }
@@ -1154,15 +1180,20 @@ async function enumerateClaimCheckBlobs(
               reason: `${WORKFLOW_RUN_CONSUMED_DIR} filename ${dirPath}/${filename} produced no message-id capture`,
             };
           }
-          bucket.consumed.push({
+          const consumedBlobPath = `${dirPath}/${filename}`;
+          const consumedEntry: ClaimCheckBlob = {
             kind: "consumed",
             addressSegment: segment,
             decodedAddress: roundTrip.decoded,
             filename,
             receivedAtFromFilename: null,
             messageIdFromFilename: messageId,
-            blobPath: `${dirPath}/${filename}`,
-          });
+            blobPath: consumedBlobPath,
+          };
+          if (resolveConsumedOid !== undefined) {
+            consumedEntry.oid = await resolveConsumedOid(consumedBlobPath);
+          }
+          bucket.consumed.push(consumedEntry);
         }
       }
     }
@@ -1379,22 +1410,112 @@ async function checkPriorBytesImmutable(
 }
 
 /**
+ * Compute the git blob OID of a consumed entry from a byte reader,
+ * used only when the delta-scoped path lacks a substrate-provided prior
+ * OID listing (e.g. a hand-built test validatePush). `git.hashBlob`
+ * reproduces the same content-addressed OID a `git.readTree` listing
+ * carries, so the delta path's intersection compare is identical
+ * whether the OID came from the tree listing or from hashing the bytes.
+ */
+async function hashConsumedBlobOid(bytes: Uint8Array): Promise<string> {
+  const { oid } = await git.hashBlob({ object: bytes });
+  return oid;
+}
+
+/**
+ * Build the resolver that surfaces each PRIOR consumed entry's git blob
+ * OID for the delta-scoped path. When the substrate supplies
+ * `priorListDirOids` the OID comes straight from the prior commit's tree
+ * listing (one `readTree` per consumed directory, cached), so the prior
+ * side is not re-read blob-by-blob. When it is absent (a hand-built
+ * validatePush in a unit test) the resolver falls back to hashing the
+ * prior bytes via `priorReadBlob`; that fallback is O(retained) rather
+ * than free but preserves identical semantics, which is all a
+ * correctness test needs.
+ */
+function makePriorConsumedOidResolver(
+  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
+  priorListDirOids:
+    | ((path: string) => Promise<{ name: string; oid: string }[]>)
+    | undefined,
+): (blobPath: string) => Promise<string> {
+  const dirOidCache = new Map<string, Map<string, string>>();
+  return async (blobPath) => {
+    if (priorListDirOids !== undefined) {
+      const slash = blobPath.lastIndexOf("/");
+      const dir = blobPath.slice(0, slash);
+      const name = blobPath.slice(slash + 1);
+      let byName = dirOidCache.get(dir);
+      if (byName === undefined) {
+        byName = new Map<string, string>();
+        for (const entry of await priorListDirOids(dir)) {
+          byName.set(entry.name, entry.oid);
+        }
+        dirOidCache.set(dir, byName);
+      }
+      const oid = byName.get(name);
+      if (oid === undefined) {
+        throw new Error(
+          `delta claim-check: prior tree listing has no OID for enumerated consumed entry ${blobPath}`,
+        );
+      }
+      return oid;
+    }
+    const bytes = await priorReadBlob(blobPath);
+    if (bytes === null) {
+      throw new Error(
+        `delta claim-check: consumed entry ${blobPath} was enumerated in the prior tree but its bytes could not be read`,
+      );
+    }
+    return hashConsumedBlobOid(bytes);
+  };
+}
+
+/**
  * Validate the `addresses/<urlEncoded>/{inbox,processing,consumed}`
  * subtree as a whole. The walk enforces filename shape, JSON envelope
  * structure, address round-trip, per-messageId atomicity across the
  * three queue states, consumed-blob immutability via prior-bytes
  * equality, and the inbox→processing / processing→consumed
  * transition invariants against the prior tree.
+ *
+ * When `BENCH_DELTA_SCOPE_CLAIMCHECK` is set the consumed dedup index is
+ * validated by its per-commit DELTA against the prior tree rather than
+ * by re-walking the whole retained set: retained entries (same filename,
+ * same blob OID) are skipped as already-validated-and-immutable, added
+ * entries are parsed and validated, and removed entries are checked
+ * against the retention watermark. `priorListDirOids`, when supplied by
+ * the substrate, surfaces prior consumed OIDs straight from the prior
+ * commit's tree so the prior side is not re-read blob-by-blob.
  */
 async function validateClaimCheckSubtree(
   listDir: (path: string) => Promise<string[]>,
   readBlob: (path: string) => Promise<Uint8Array>,
   priorReadBlob: (path: string) => Promise<Uint8Array | null>,
   priorListDir: (path: string) => Promise<string[]>,
+  priorListDirOids?: (path: string) => Promise<{ name: string; oid: string }[]>,
 ): Promise<ValidatePushResult> {
-  const enumerated = await enumerateClaimCheckBlobs(listDir);
+  // When the delta path is on, surface each consumed entry's git blob
+  // OID during enumeration: prospective OIDs by hashing the (in the
+  // measured writeTree path, in-memory) prospective bytes, prior OIDs
+  // from the substrate tree listing when available. The resolvers are
+  // omitted entirely on the exhaustive path so it stays byte-identical.
+  const prospectiveConsumedOid = BENCH_DELTA_SCOPE_CLAIMCHECK
+    ? async (blobPath: string) => hashConsumedBlobOid(await readBlob(blobPath))
+    : undefined;
+  const priorConsumedOid = BENCH_DELTA_SCOPE_CLAIMCHECK
+    ? makePriorConsumedOidResolver(priorReadBlob, priorListDirOids)
+    : undefined;
+
+  const enumerated = await enumerateClaimCheckBlobs(
+    listDir,
+    prospectiveConsumedOid,
+  );
   if (!enumerated.ok) return enumerated;
-  const priorEnumerated = await enumerateClaimCheckBlobs(priorListDir);
+  const priorEnumerated = await enumerateClaimCheckBlobs(
+    priorListDir,
+    priorConsumedOid,
+  );
   if (!priorEnumerated.ok) {
     // The prior tree is the committed state — if its claim-check
     // shape is already broken, surface it with a distinct rejection
@@ -1452,8 +1573,17 @@ async function validateClaimCheckSubtree(
       messageIdToLocations.set(entry.messageIdFromFilename, list);
     }
     for (const entry of bucket.consumed) {
-      const parsed = await parseConsumedBlob(entry, readBlob);
-      if (!parsed.ok) return parsed;
+      // Cross-state atomicity needs each consumed messageId in the map;
+      // the messageId is the filename stem, so on the delta path this
+      // needs no blob read. Retained consumed entries are not re-parsed
+      // (their envelope was validated when first written and their bytes
+      // are proven immutable by the OID compare below); added consumed
+      // entries are parsed and validated by the transition check further
+      // down. The exhaustive path re-parses every consumed entry here.
+      if (!BENCH_DELTA_SCOPE_CLAIMCHECK) {
+        const parsed = await parseConsumedBlob(entry, readBlob);
+        if (!parsed.ok) return parsed;
+      }
       const list = messageIdToLocations.get(entry.messageIdFromFilename) ?? [];
       list.push({ kind: entry.kind, filename: entry.filename });
       messageIdToLocations.set(entry.messageIdFromFilename, list);
@@ -1482,16 +1612,52 @@ async function validateClaimCheckSubtree(
       }
     }
 
-    // Consumed entries are immutable: enforce byte-equality against
-    // the prior tree for every consumed blob that already existed.
-    for (const entry of bucket.consumed) {
-      const immutability = await checkPriorBytesImmutable(
-        entry.blobPath,
-        readBlob,
-        priorReadBlob,
-        "consumed",
-      );
-      if (!immutability.ok) return immutability;
+    // Consumed entries are immutable. The exhaustive path re-reads both
+    // the prospective and the prior bytes of every retained consumed
+    // entry and compares them. The delta path instead compares the git
+    // blob OID the enumeration surfaced: a consumed entry present in the
+    // prior tree at the same path must carry the same OID (git trees are
+    // content-addressed, so equal OID proves byte-equality without
+    // reading either blob). A diverging OID is the same immutability
+    // violation the byte compare catches. Immutability is load-bearing
+    // for exactly-once: a mutated `receivedAt` on a retained consumed
+    // entry could fake it below the watermark, get it pruned, and let a
+    // re-submission miss dedup -- so this compare is not optional.
+    if (BENCH_DELTA_SCOPE_CLAIMCHECK) {
+      const priorConsumedOidByPath = new Map<string, string>();
+      for (const e of priorBucket?.consumed ?? []) {
+        if (e.oid === undefined) {
+          throw new Error(
+            `delta claim-check: prior consumed entry ${e.blobPath} was enumerated without an OID`,
+          );
+        }
+        priorConsumedOidByPath.set(e.blobPath, e.oid);
+      }
+      for (const entry of bucket.consumed) {
+        const priorOid = priorConsumedOidByPath.get(entry.blobPath);
+        if (priorOid === undefined) continue; // newly added; validated below
+        if (entry.oid === undefined) {
+          throw new Error(
+            `delta claim-check: prospective consumed entry ${entry.blobPath} was enumerated without an OID`,
+          );
+        }
+        if (entry.oid !== priorOid) {
+          return {
+            ok: false,
+            reason: `consumed ${entry.blobPath} bytes diverge from the prior tree (blob OID ${entry.oid} vs ${priorOid}); consumed entries are immutable once written`,
+          };
+        }
+      }
+    } else {
+      for (const entry of bucket.consumed) {
+        const immutability = await checkPriorBytesImmutable(
+          entry.blobPath,
+          readBlob,
+          priorReadBlob,
+          "consumed",
+        );
+        if (!immutability.ok) return immutability;
+      }
     }
 
     const prospectiveConsumedPaths = new Set<string>(
@@ -1569,29 +1735,59 @@ async function validateClaimCheckSubtree(
       // stale-rejected at enqueue), so it never weakens exactly-once.
       // The receivedAt lives in the body; read it from the prior tree
       // (retained bytes are immutable, so prior and prospective agree).
-      let maxDroppedReceivedAt = Number.NEGATIVE_INFINITY;
-      let minRetainedReceivedAt = Number.POSITIVE_INFINITY;
-      for (const e of priorBucket.consumed) {
-        const priorParsed = await parseConsumedBlobFrom(e, priorReadBlob);
-        if (!priorParsed.ok) return priorParsed;
-        const receivedAt = priorParsed.body.receivedAt;
-        if (prospectiveConsumedPaths.has(e.blobPath)) {
-          minRetainedReceivedAt = Math.min(minRetainedReceivedAt, receivedAt);
-          continue;
+      //
+      // The delta path reads ONLY the dropped entries. A retained entry
+      // (present in both trees) is proven byte-identical by the OID
+      // compare above, so its receivedAt is unchanged and need not be
+      // read -- the O(retained) prior read the exhaustive path pays is
+      // exactly what the delta path exists to avoid. It also omits the
+      // suffix relation (2): computing `minRetainedReceivedAt` would
+      // require reading every retained entry, and the relation is
+      // redundant for exactly-once here -- every dropped entry is below
+      // the watermark (check 1), and a retained entry below the
+      // watermark is explicitly harmless (extra dedup only), so a
+      // retained entry older than a dropped one weakens nothing. Check 1
+      // plus the already-verified watermark monotonicity is the whole of
+      // the exactly-once retention contract: pruning is bound to the
+      // watermark and the watermark only advances.
+      if (BENCH_DELTA_SCOPE_CLAIMCHECK) {
+        for (const e of priorBucket.consumed) {
+          if (prospectiveConsumedPaths.has(e.blobPath)) continue;
+          const priorParsed = await parseConsumedBlobFrom(e, priorReadBlob);
+          if (!priorParsed.ok) return priorParsed;
+          const receivedAt = priorParsed.body.receivedAt;
+          if (receivedAt >= prospectiveWatermark) {
+            return {
+              ok: false,
+              reason: `consumed ${e.blobPath} present in the prior tree is missing from the prospective tree but its receivedAt ${String(receivedAt)} is not below the retention watermark ${String(prospectiveWatermark)}; consumed entries may be pruned only once the watermark has passed them`,
+            };
+          }
         }
-        if (receivedAt >= prospectiveWatermark) {
+      } else {
+        let maxDroppedReceivedAt = Number.NEGATIVE_INFINITY;
+        let minRetainedReceivedAt = Number.POSITIVE_INFINITY;
+        for (const e of priorBucket.consumed) {
+          const priorParsed = await parseConsumedBlobFrom(e, priorReadBlob);
+          if (!priorParsed.ok) return priorParsed;
+          const receivedAt = priorParsed.body.receivedAt;
+          if (prospectiveConsumedPaths.has(e.blobPath)) {
+            minRetainedReceivedAt = Math.min(minRetainedReceivedAt, receivedAt);
+            continue;
+          }
+          if (receivedAt >= prospectiveWatermark) {
+            return {
+              ok: false,
+              reason: `consumed ${e.blobPath} present in the prior tree is missing from the prospective tree but its receivedAt ${String(receivedAt)} is not below the retention watermark ${String(prospectiveWatermark)}; consumed entries may be pruned only once the watermark has passed them`,
+            };
+          }
+          maxDroppedReceivedAt = Math.max(maxDroppedReceivedAt, receivedAt);
+        }
+        if (maxDroppedReceivedAt > minRetainedReceivedAt) {
           return {
             ok: false,
-            reason: `consumed ${e.blobPath} present in the prior tree is missing from the prospective tree but its receivedAt ${String(receivedAt)} is not below the retention watermark ${String(prospectiveWatermark)}; consumed entries may be pruned only once the watermark has passed them`,
+            reason: `address ${JSON.stringify(decodedAddress)} consumed prune is not a suffix: a dropped entry (receivedAt ${String(maxDroppedReceivedAt)}) is newer than a retained entry (receivedAt ${String(minRetainedReceivedAt)}); only the oldest age-ordered tail may be pruned`,
           };
         }
-        maxDroppedReceivedAt = Math.max(maxDroppedReceivedAt, receivedAt);
-      }
-      if (maxDroppedReceivedAt > minRetainedReceivedAt) {
-        return {
-          ok: false,
-          reason: `address ${JSON.stringify(decodedAddress)} consumed prune is not a suffix: a dropped entry (receivedAt ${String(maxDroppedReceivedAt)}) is newer than a retained entry (receivedAt ${String(minRetainedReceivedAt)}); only the oldest age-ordered tail may be pruned`,
-        };
       }
       for (const e of priorBucket.processing) {
         if (prospectiveProcessingPaths.has(e.blobPath)) continue;
@@ -1834,6 +2030,7 @@ export const workflowRunKindHandler: KindHandler = {
     listDir,
     priorReadBlob,
     priorListDir,
+    priorListDirOids,
     changedPathPrefixes,
   }): Promise<ValidatePushResult> {
     // Bound the per-run event/blob walks to the runs this commit could
@@ -1902,6 +2099,7 @@ export const workflowRunKindHandler: KindHandler = {
         readBlob,
         priorReadBlob,
         priorListDir,
+        priorListDirOids,
       );
       if (!claimCheck.ok) {
         logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${claimCheck.reason}`;
