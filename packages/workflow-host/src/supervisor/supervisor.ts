@@ -115,8 +115,27 @@ import {
   createTerminalBroadcaster,
   type TerminalBroadcaster,
 } from "./terminal-broadcaster";
+import {
+  DEFAULT_KILL_TIMEOUT_MS,
+  defaultClearTimer,
+  defaultSetTimer,
+  killChildHandle,
+  waitDeadline,
+} from "./child-termination";
 
 const logger = getLogger(["workflow-host", "supervisor"]);
+
+/**
+ * Default bound on the child's spawn-time `ready` handshake. A spawned
+ * child that neither emits `ready` nor exits would otherwise block
+ * `spawn` forever; on expiry the supervisor kills the child and rejects
+ * the spawn. Generous enough for a real child to boot, open its IPC
+ * channels, and sign `ready` under load; short enough that a wedged child
+ * does not stall the spawn (and, on the sidecar, boot-time restore)
+ * indefinitely. Operator-overridable via `WorkflowSupervisorBindings.
+ * readyTimeoutMs`.
+ */
+const DEFAULT_READY_TIMEOUT_MS = 30_000;
 
 /**
  * Default watchdog timeout for the supervisor's
@@ -554,6 +573,14 @@ export function createWorkflowSupervisor(
   // consumedRetentionMs` for the operator-owned invariant.
   const consumedRetentionMs =
     bindings.consumedRetentionMs ?? DEFAULT_CONSUMED_RETENTION_MS;
+  // Resolve the spawn ready-handshake timeout and its timers once at the
+  // bindings edge. The timers reuse the same injectable pair the drain
+  // path resolves (`bindings.setTimer`/`clearTimer`); the ready-timeout
+  // race and its kill-escalation drive them, and tests substitute a
+  // deterministic timer through the same bindings.
+  const readyTimeoutMs = bindings.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
+  const readySetTimer = bindings.setTimer ?? defaultSetTimer;
+  const readyClearTimer = bindings.clearTimer ?? defaultClearTimer;
   /**
    * Resolved on every successful `enqueueInbox`; the dispatch loop
    * awaits this promise after a null dequeue so it returns to
@@ -1463,7 +1490,41 @@ export function createWorkflowSupervisor(
     );
     state.mailUnsubscribe = mailUnsubscribe;
 
-    const readyInfo = await wired.readyPromise;
+    // Bound the `ready` handshake. `wired.readyPromise` resolves on `ready`
+    // and rejects when the control channel ends (the child exited); a child
+    // that neither readies nor exits would block here forever. Fold all three
+    // outcomes into values so the single `readyClearTimer` below runs on every
+    // path -- ready, child-exit failure, and timeout -- before we act on the
+    // result. A `Promise.race` that could reject would skip the clear on the
+    // child-exit path and leak an armed deadline that keeps the event loop
+    // alive for up to `readyTimeoutMs`. The deadline is resolve-only, so it
+    // contributes no rejection of its own. Kill on timeout uses the
+    // SIGTERM->SIGKILL escalation because a wedged child may ignore SIGTERM;
+    // SIGKILL guarantees `exited` settles.
+    const readyOutcome = wired.readyPromise.then(
+      (info) => ({ kind: "ready" as const, info }),
+      (err: unknown) => ({ kind: "failed" as const, err }),
+    );
+    const readyDeadline = waitDeadline(readySetTimer, readyTimeoutMs);
+    const readyRace = await Promise.race([
+      readyOutcome,
+      readyDeadline.promise.then(() => ({ kind: "timeout" as const })),
+    ]);
+    readyClearTimer(readyDeadline.handle);
+    if (readyRace.kind === "timeout") {
+      await killChildHandle(wired.wiring.handle, DEFAULT_KILL_TIMEOUT_MS, {
+        setTimer: readySetTimer,
+        clearTimer: readyClearTimer,
+        logger,
+      });
+      throw new Error(
+        `workflow-host supervisor: child did not emit ready within ${readyTimeoutMs}ms; killed`,
+      );
+    }
+    if (readyRace.kind === "failed") {
+      throw readyRace.err;
+    }
+    const readyInfo = readyRace.info;
 
     // Push the assembled credentialsSnapshot to the child before the
     // mail buffer drains. Without this, the child's
@@ -2508,15 +2569,6 @@ async function waitForReady(
 
 function defaultNow(): number {
   return Date.now();
-}
-
-function defaultSetTimer(cb: () => void, ms: number): unknown {
-  return setTimeout(cb, ms);
-}
-
-function defaultClearTimer(handle: unknown): void {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the handle is the value `setTimeout` returned, narrowed back at the boundary
-  clearTimeout(handle as ReturnType<typeof setTimeout>);
 }
 
 /**

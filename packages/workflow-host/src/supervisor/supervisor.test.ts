@@ -740,6 +740,130 @@ describe("createWorkflowSupervisor", () => {
     expect(mailBus.registered()).not.toContain("deployment-x@example.com");
   });
 
+  // Harness for the ready-timeout tests: an injected FakeTimer registry
+  // (deterministic, per greybeard's ruling against real timers) plus a
+  // controllable child whose control reader the test can close to model a
+  // child that exits before signalling ready. `createdTimers` retains every
+  // timer even after it is cleared, so a test can capture the ready deadline
+  // and later assert it was cancelled.
+  async function makeReadyTimeoutHarness(readyTimeoutMs: number) {
+    type FakeTimer = { cb: () => void; ms: number; cancelled: boolean };
+    const timers = new Set<FakeTimer>();
+    const createdTimers: FakeTimer[] = [];
+
+    const baseDir = await makeTempDir("supervisor-ready-timeout-");
+    const supervisorIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    const killSignals: string[] = [];
+
+    const spawner: SubprocessSpawner = ({ env: _env }) => ({
+      pid: 5150,
+      controlWriter: supervisorToChild.writer,
+      controlReader: childToSupervisor.reader,
+      eventReader: eventChildToSupervisor.reader,
+      kill: (signal) => {
+        killSignals.push(
+          typeof signal === "string" ? signal : String(signal ?? ""),
+        );
+        childToSupervisor.close();
+        eventChildToSupervisor.close();
+        resolveExit?.(0);
+      },
+      exited,
+    });
+
+    const mailBus = createMockMailBus();
+    const baseBindings = await buildBindings({
+      baseDir,
+      spawner,
+      signSpy: () => ({ sig: new Uint8Array(64), principalKind: "supervisor" }),
+      mailBus,
+    });
+    const bindings: WorkflowSupervisorBindings = {
+      ...baseBindings,
+      ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
+      readyTimeoutMs,
+      setTimer: (cb, ms) => {
+        const t: FakeTimer = { cb, ms, cancelled: false };
+        timers.add(t);
+        createdTimers.push(t);
+        return t;
+      },
+      clearTimer: (handle) => {
+        if (handle === null || typeof handle !== "object") return;
+        for (const t of timers) {
+          if (t === handle) {
+            t.cancelled = true;
+            timers.delete(t);
+            return;
+          }
+        }
+      },
+    };
+    const supervisor = createWorkflowSupervisor(bindings);
+
+    // Resolve once the spawn has armed its ready deadline (which happens
+    // after the spawner is invoked, so this also confirms the child spawned).
+    async function waitForReadyDeadline(): Promise<FakeTimer> {
+      for (;;) {
+        const t = createdTimers.find((x) => x.ms === readyTimeoutMs);
+        if (t !== undefined) return t;
+        await new Promise((r) => setTimeout(r, 1));
+      }
+    }
+
+    return { supervisor, killSignals, childToSupervisor, waitForReadyDeadline };
+  }
+
+  const readyTimeoutSpawnOpts = {
+    stepOrder: ["step-1"],
+    definitionHash: "def-hash-abc",
+    warmKeep: false,
+    onInferenceEvent: () => {
+      /* unused in the ready-timeout tests */
+    },
+  };
+
+  test("spawn times out, kills the child, rejects, and clears the ready deadline", async () => {
+    const h = await makeReadyTimeoutHarness(7_777);
+    // Never send `ready`. Spawn blocks on the handshake until the deadline.
+    const spawnPromise = h.supervisor.spawn(readyTimeoutSpawnOpts);
+    const readyDeadline = await h.waitForReadyDeadline();
+    readyDeadline.cb();
+
+    await expect(spawnPromise).rejects.toThrow(
+      /child did not emit ready within 7777ms; killed/,
+    );
+    expect(h.killSignals).toContain("SIGTERM");
+    // The unconditional deadline-timer clear ran on the timeout path.
+    expect(readyDeadline.cancelled).toBe(true);
+  });
+
+  test("spawn clears the ready deadline when the child exits before ready", async () => {
+    const h = await makeReadyTimeoutHarness(8_888);
+    const spawnPromise = h.supervisor.spawn(readyTimeoutSpawnOpts);
+    const readyDeadline = await h.waitForReadyDeadline();
+
+    // The child exits before signalling ready: closing the control reader
+    // ends `waitForReady`, rejecting the ready promise. Because the outcomes
+    // are folded to values, the race resolves to the failed outcome rather
+    // than rejecting, so the unconditional deadline-timer clear still runs.
+    // A race that rejected here would skip the clear and leak an armed
+    // deadline that keeps the event loop alive for up to readyTimeoutMs.
+    h.childToSupervisor.close();
+
+    await expect(spawnPromise).rejects.toThrow(
+      /control channel ended before child emitted ready/,
+    );
+    expect(readyDeadline.cancelled).toBe(true);
+  });
+
   test("drain() forwards the `drain` control frame and arms a drainTimeout accumulator per in-flight run", async () => {
     const baseDir = await makeTempDir("supervisor-drain-arm-");
     await seedStepGrants(

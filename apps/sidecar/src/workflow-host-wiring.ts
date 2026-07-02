@@ -471,6 +471,13 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    * supervisor applies `DEFAULT_CONSUMED_RETENTION_MS` (24h).
    */
   consumedRetentionMs?: number;
+  /**
+   * Spawn ready-handshake timeout (ms), forwarded to the supervisor's
+   * `readyTimeoutMs` binding. The boot edge resolves the operator's
+   * `CHILD_READY_TIMEOUT_MS` config; absent, the supervisor applies
+   * `DEFAULT_READY_TIMEOUT_MS` (30s).
+   */
+  readyTimeoutMs?: number;
 };
 
 export type SidecarWorkflowSupervisor = {
@@ -869,6 +876,15 @@ export function createSidecarDeployRouter(deps: {
    * handler for the operator-owned horizon invariant.
    */
   consumedRetentionMs?: number;
+  /**
+   * Spawn ready-handshake timeout (ms) forwarded to every supervisor the
+   * router constructs. The sidecar boot edge resolves the operator's
+   * `CHILD_READY_TIMEOUT_MS` config; absent, the supervisor applies
+   * `DEFAULT_READY_TIMEOUT_MS` (30s). A child that spawns but never
+   * signals ready is killed and its spawn rejected rather than hanging
+   * the deploy or boot-time restore.
+   */
+  readyTimeoutMs?: number;
 }): SidecarDeployRouter {
   // Validate the signing seed at construction so a malformed key fails
   // sidecar boot rather than the first multi-step deploy, where the
@@ -1149,6 +1165,9 @@ export function createSidecarDeployRouter(deps: {
           : {}),
         ...(deps.consumedRetentionMs !== undefined
           ? { consumedRetentionMs: deps.consumedRetentionMs }
+          : {}),
+        ...(deps.readyTimeoutMs !== undefined
+          ? { readyTimeoutMs: deps.readyTimeoutMs }
           : {}),
       });
 
@@ -1526,6 +1545,9 @@ export function createSidecarDeployRouter(deps: {
           },
           ...(deps.consumedRetentionMs !== undefined
             ? { consumedRetentionMs: deps.consumedRetentionMs }
+            : {}),
+          ...(deps.readyTimeoutMs !== undefined
+            ? { readyTimeoutMs: deps.readyTimeoutMs }
             : {}),
         });
         await wired.supervisor.deploy({
@@ -1909,6 +1931,9 @@ export function createSidecarWorkflowSupervisor(
       : {}),
     ...(opts.consumedRetentionMs !== undefined
       ? { consumedRetentionMs: opts.consumedRetentionMs }
+      : {}),
+    ...(opts.readyTimeoutMs !== undefined
+      ? { readyTimeoutMs: opts.readyTimeoutMs }
       : {}),
   });
   return {

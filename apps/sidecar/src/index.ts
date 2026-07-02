@@ -166,6 +166,23 @@ if (consumedRetentionRaw !== undefined && consumedRetentionRaw.trim() !== "") {
   consumedRetentionMs = parsed;
 }
 
+// Bound on the child's spawn-time `ready` handshake. Threaded to every
+// per-deployment supervisor; on expiry the supervisor kills the child and
+// rejects the spawn, so a child that spawns but never signals ready fails
+// the deploy (or is skipped by boot-time restore) instead of hanging it.
+// Absent, the supervisor applies its 30s default.
+const readyTimeoutRaw = process.env["CHILD_READY_TIMEOUT_MS"];
+let readyTimeoutMs: number | undefined;
+if (readyTimeoutRaw !== undefined && readyTimeoutRaw.trim() !== "") {
+  const parsed = Number.parseInt(readyTimeoutRaw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(
+      `CHILD_READY_TIMEOUT_MS must be a positive integer (milliseconds), got ${readyTimeoutRaw}`,
+    );
+  }
+  readyTimeoutMs = parsed;
+}
+
 // Sweep any tmp staging directories left behind by a `put` or
 // `extractTarball` that crashed between staging and the final rename
 // on a previous boot. Running here, before the orchestrator starts
@@ -382,6 +399,7 @@ const orchestrator = createSidecarOrchestrator({
       ...(onDispatchTiming !== undefined ? { onDispatchTiming } : {}),
       ...(repackEveryMessages !== undefined ? { repackEveryMessages } : {}),
       ...(consumedRetentionMs !== undefined ? { consumedRetentionMs } : {}),
+      ...(readyTimeoutMs !== undefined ? { readyTimeoutMs } : {}),
     });
     // Capture the router so the boot edge can drive its restore pass before
     // connecting. `createDeployRouter` runs synchronously during

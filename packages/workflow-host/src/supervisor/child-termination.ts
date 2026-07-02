@@ -73,8 +73,8 @@ export async function killChildHandle(
 /**
  * A resolve-only deadline: a promise that resolves after `ms` via the
  * injected `setTimer`, plus the timer handle so the caller can cancel it
- * with the matching `clearTimer` once the race settles. Never rejects, so
- * racing it against a rejecting promise leaves no unhandled rejection.
+ * with the matching `clearTimer` once the race settles. It only ever
+ * resolves, so it contributes no rejection of its own to a race.
  */
 export function waitDeadline(
   setTimer: (cb: () => void, ms: number) => unknown,

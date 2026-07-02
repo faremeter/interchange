@@ -478,10 +478,11 @@ export interface WorkflowSupervisorBindings {
    */
   now?: () => number;
   /**
-   * Scheduling primitive the supervisor threads into the drainTimeout
-   * accumulator. Production wires `(cb, ms) => setTimeout(cb, ms)`;
-   * tests inject a deterministic timer host. Defaults to
-   * `setTimeout` when omitted.
+   * General scheduling primitive the supervisor threads into its timed
+   * waits: the drainTimeout accumulator, the spawn ready-handshake
+   * timeout, and that timeout's SIGTERM->SIGKILL kill escalation.
+   * Production wires `(cb, ms) => setTimeout(cb, ms)`; tests inject a
+   * deterministic timer host. Defaults to `setTimeout` when omitted.
    */
   setTimer?: (cb: () => void, ms: number) => unknown;
   /**
@@ -571,6 +572,17 @@ export interface WorkflowSupervisorBindings {
    * refused stale enqueue, not silent double-processing).
    */
   consumedRetentionMs?: number;
+  /**
+   * Bound on the child's spawn-time `ready` handshake, in milliseconds.
+   * A spawned child that neither emits `ready` nor exits would block
+   * `spawn` forever; on expiry the supervisor kills the child (SIGTERM,
+   * then SIGKILL) and rejects the spawn. The boot edge resolves the
+   * operator's config and supplies it; absent, `DEFAULT_READY_TIMEOUT_MS`
+   * (30s) applies. Callers surface the rejection through their existing
+   * spawn-failure path, so a wedged child fails the deploy (or, on the
+   * sidecar, is skipped by boot-time restore) instead of hanging it.
+   */
+  readyTimeoutMs?: number;
   /**
    * Watchdog timeout (ms) for the supervisor's substrate-write
    * handler's wait on the dispatch loop's `markConsumed` when a

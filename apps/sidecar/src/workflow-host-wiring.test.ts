@@ -1155,6 +1155,13 @@ describe("createSidecarDeployRouter multi-step branch", () => {
      * restart starts with an empty registration table).
      */
     transport?: ReturnType<typeof createInMemoryTransport>;
+    /**
+     * Spawn ready-handshake timeout (ms) threaded to every supervisor the
+     * router constructs. The ready-timeout test uses a small value with a
+     * spawner that never drives `ready`, asserting the deploy rejects with
+     * the threaded value echoed in the message.
+     */
+    readyTimeoutMs?: number;
   }) {
     const transport = opts.transport ?? createInMemoryTransport();
     const keyPair = await generateKeyPair();
@@ -1223,6 +1230,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         : {}),
       ...(opts.multistepMailRouter !== undefined
         ? { multistepMailRouter: opts.multistepMailRouter }
+        : {}),
+      ...(opts.readyTimeoutMs !== undefined
+        ? { readyTimeoutMs: opts.readyTimeoutMs }
         : {}),
     });
     return {
@@ -2369,5 +2379,31 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // The record survives so a later boot, once the provider is buildable
     // again, can retry it.
     expect(await recordExists(dataDir, deploymentId)).toBe(true);
+  });
+
+  test("a deploy whose child never signals ready times out and rejects", async () => {
+    const dataDir = await createTempBaseDir("sidecar-ready-timeout-data-");
+    const head = "ins_readytimeout@example.com";
+    const deploymentId = deriveTrivialDeploymentId(head);
+
+    // A spawner whose child is created but never driven through the `ready`
+    // handshake. With a small threaded readyTimeoutMs the supervisor times
+    // out, kills the child, and rejects the spawn. The message echoes the
+    // threaded value, so this also proves readyTimeoutMs reaches the
+    // supervisor across the router's forwarding.
+    const spawner = makeReadyDrivingSpawner(10100);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      readyTimeoutMs: 40,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    await expect(
+      router.deploy(singleStepFrame(head, "wf-readytimeout")),
+    ).rejects.toThrow(/did not emit ready within 40ms/);
+
+    // The deploy soft-failed, so its restore record was cleaned up -- a
+    // wedged deploy leaves nothing for a later boot to re-spawn.
+    expect(await recordExists(dataDir, deploymentId)).toBe(false);
   });
 });
