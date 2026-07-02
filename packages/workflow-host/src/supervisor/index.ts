@@ -46,10 +46,11 @@ export {
   type DrainTimeoutOpts,
 } from "./drain-timeout";
 
+export { DEFAULT_KILL_TIMEOUT_MS } from "./child-termination";
+
 export {
   createRecyclePolicy,
   triggerRecycle,
-  DEFAULT_KILL_TIMEOUT_MS,
   DEFAULT_POLICY_INTERVAL_MS,
   MAX_BUFFERED_MAIL,
   type ChildWiring,

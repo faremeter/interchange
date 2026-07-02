@@ -101,6 +101,7 @@ import {
   type CredentialsSnapshot,
 } from "./credentials";
 import type { SubprocessHandle, WorkflowSupervisorBindings } from "./types";
+import { DEFAULT_KILL_TIMEOUT_MS, killChildHandle } from "./child-termination";
 
 const logger = getLogger(["workflow-host", "supervisor", "recycle"]);
 
@@ -111,13 +112,6 @@ const logger = getLogger(["workflow-host", "supervisor", "recycle"]);
  * stuck partway through. Either case is one the operator must see.
  */
 export const MAX_BUFFERED_MAIL = 256;
-
-/**
- * Default kill-timeout between SIGTERM and SIGKILL during step 2.
- * Operator-overridable per deployment via the supervisor's recycle
- * bindings; this is the value used when no override is supplied.
- */
-export const DEFAULT_KILL_TIMEOUT_MS = 5_000;
 
 /**
  * Default supervisor-policy check interval. The policy thread wakes
@@ -304,7 +298,11 @@ export async function triggerRecycle(
   // `killTimeoutMs`, the handle's hard kill lands. The injected
   // spawner's `SubprocessHandle.kill()` is the surface the recycle
   // path touches; the spawner owns the Node primitives.
-  await killChildHandle(ctx.current.handle, killTimeoutMs, ctx);
+  await killChildHandle(ctx.current.handle, killTimeoutMs, {
+    logger,
+    ...(ctx.setTimer !== undefined ? { setTimer: ctx.setTimer } : {}),
+    ...(ctx.clearTimer !== undefined ? { clearTimer: ctx.clearTimer } : {}),
+  });
 
   // Step 3: respawn. Fresh channelId, fresh HMAC key, fresh Ed25519
   // IPC keypair. Per-step credentials are re-read so a grants update
@@ -401,60 +399,6 @@ export async function triggerRecycle(
     newChannelId: channelId,
     previousChannelId,
   };
-}
-
-/**
- * Issue SIGTERM and wait for the child to exit. If the exit does not
- * land within `killTimeoutMs`, escalate to SIGKILL and wait again.
- * The supervisor's spawner returns the `exited` promise; the recycle
- * path does not consult OS primitives directly.
- */
-async function killChildHandle(
-  handle: SubprocessHandle,
-  killTimeoutMs: number,
-  ctx: RecycleContext,
-): Promise<void> {
-  const setTimer = ctx.setTimer ?? defaultSetTimer;
-  const clearTimer = ctx.clearTimer ?? defaultClearTimer;
-
-  handle.kill("SIGTERM");
-  const sigTermDeadline = waitDeadline(setTimer, killTimeoutMs);
-  const exitedFirst = await Promise.race([
-    handle.exited.then(() => "exited" as const),
-    sigTermDeadline.promise.then(() => "deadline" as const),
-  ]);
-  if (exitedFirst === "exited") {
-    clearTimer(sigTermDeadline.handle);
-    return;
-  }
-  clearTimer(sigTermDeadline.handle);
-  logger.warn`recycle: SIGTERM did not land within ${String(killTimeoutMs)}ms; escalating to SIGKILL`;
-  handle.kill("SIGKILL");
-  await handle.exited.catch(() => {
-    /* swallowed: a non-zero exit on SIGKILL is the expected outcome;
-       the recycle path treats handle exit as success regardless of
-       code. */
-  });
-}
-
-function waitDeadline(
-  setTimer: (cb: () => void, ms: number) => unknown,
-  ms: number,
-): { promise: Promise<void>; handle: unknown } {
-  let h: unknown;
-  const promise = new Promise<void>((resolve) => {
-    h = setTimer(() => resolve(), ms);
-  });
-  return { promise, handle: h };
-}
-
-function defaultSetTimer(cb: () => void, ms: number): unknown {
-  return setTimeout(cb, ms);
-}
-
-function defaultClearTimer(handle: unknown): void {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- production wiring; the handle is the value `setTimeout` returned, narrowed back at the boundary
-  clearTimeout(handle as ReturnType<typeof setTimeout>);
 }
 
 /**
