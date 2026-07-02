@@ -33,6 +33,7 @@ import {
   createWorkflowDeployOrchestrator,
   deriveDeploymentAddress,
   type ApprovalSet,
+  type DeploySingleStepFn,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
@@ -160,6 +161,9 @@ describe("single-step real-agent round-trip", () => {
         sources: params.sources,
       });
 
+    const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
+      env.hub.sessionService.deploySingleStepAtHead(params);
+
     const workflowRepo: WorkflowRepoWriter = {
       async writeWorkflowRepo(args) {
         const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
@@ -185,6 +189,7 @@ describe("single-step real-agent round-trip", () => {
       workflowRepo,
       launchSession,
       sendMultiStepDeploy,
+      deploySingleStepAtHead,
     });
 
     let result: Awaited<ReturnType<typeof orchestrator.deployWorkflow>>;

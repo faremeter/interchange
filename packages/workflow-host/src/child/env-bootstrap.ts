@@ -32,6 +32,12 @@ const SpawnTimeEnvShape = type({
   DEPLOYMENT_ID: "string > 0",
   DEFINITION_HASH: "string > 0",
   MAILBOX_ADDRESS: "string > 0",
+  // Step count of the deployed `WorkflowDefinition` (`stepOrder.length`),
+  // stringified by the supervisor. The child's deploy-tree read collapses
+  // onto the head for a single-step deployment (`resolveStepAddress`), so
+  // producer and consumer never derive divergent step addresses. Parsed to
+  // a positive integer below; a non-integer or non-positive value throws.
+  STEP_COUNT: "string > 0",
   // Warm-keep signal (design §3b). The supervisor sets this to the
   // string `"true"` only for the single-step long-lived deployment the
   // deploy projection marked a warm candidate; any other value (or the
@@ -60,6 +66,13 @@ export interface SpawnTimeEnv {
   definitionHash: string;
   /** Mail address the deployment registered on the bus. */
   mailboxAddress: string;
+  /**
+   * Number of steps in the deployed `WorkflowDefinition`
+   * (`stepOrder.length`). Selects the head/step collapse in the sidecar's
+   * `resolveStepAddress`: a single-step deployment reads its deploy tree
+   * at the head, a multi-step deployment at the per-step address.
+   */
+  stepCount: number;
   /**
    * Whether this deployment's agent is warm-kept across messages (design
    * §3b). True only for the single-step long-lived deployment the deploy
@@ -113,6 +126,12 @@ export function parseSpawnTimeEnv(
       `workflow-child IPC_CHANNEL_ID must be ${String(expectedChannelIdHex)} hex chars; got ${String(validated.IPC_CHANNEL_ID.length)}`,
     );
   }
+  const stepCount = Number(validated.STEP_COUNT);
+  if (!Number.isInteger(stepCount) || stepCount <= 0) {
+    throw new Error(
+      `workflow-child STEP_COUNT must be a positive integer; got ${JSON.stringify(validated.STEP_COUNT)}`,
+    );
+  }
   return {
     channelId: validated.IPC_CHANNEL_ID,
     hmacKey,
@@ -120,6 +139,7 @@ export function parseSpawnTimeEnv(
     deploymentId: validated.DEPLOYMENT_ID,
     definitionHash: validated.DEFINITION_HASH,
     mailboxAddress: validated.MAILBOX_ADDRESS,
+    stepCount,
     // Strict `=== "true"` so any other value (including the key's
     // absence) reads false. Warm-keep is opt-in and deterministic; a
     // typo'd or partial value must not silently enable it.

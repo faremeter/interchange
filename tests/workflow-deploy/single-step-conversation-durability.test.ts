@@ -622,6 +622,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         DEPLOYMENT_ID,
         DEFINITION_HASH: "definition-hash",
         MAILBOX_ADDRESS: MAILBOX,
+        STEP_COUNT: "1",
         WARM_KEEP: "true",
       });
 

@@ -35,6 +35,7 @@ import {
   createWorkflowDeployOrchestrator,
   WorkflowDefinitionInvalidError,
   type DeployContent,
+  type DeploySingleStepFn,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
@@ -113,13 +114,29 @@ function createRecordingDeps() {
     sources.push(params.sources);
     return { publicKey: "00".repeat(32) };
   };
+  // A one-step workflow deploys once at the head via this hand-off; it
+  // records the pinned sources exactly as the multi-step hand-off does so
+  // the source-pin assertions read the same `sources` array regardless of
+  // which branch the deploy took.
+  const singleStep: DeploySingleStepFn = async (params) => {
+    sources.push(params.sources);
+    return { publicKey: "00".repeat(32) };
+  };
   const repoWrites: { workflowRepoId: string }[] = [];
   const workflowRepo: WorkflowRepoWriter = {
     async writeWorkflowRepo(params) {
       repoWrites.push({ workflowRepoId: params.workflowRepoId });
     },
   };
-  return { launches, launch, sources, multiStep, workflowRepo, repoWrites };
+  return {
+    launches,
+    launch,
+    sources,
+    multiStep,
+    singleStep,
+    workflowRepo,
+    repoWrites,
+  };
 }
 
 describe("pickStepInferenceSource (non-agent step)", () => {
@@ -133,6 +150,7 @@ describe("pickStepInferenceSource (non-agent step)", () => {
       workflowRepo: deps.workflowRepo,
       launchSession: deps.launch,
       sendMultiStepDeploy: deps.multiStep,
+      deploySingleStepAtHead: deps.singleStep,
     });
 
     // HarnessConfig carries TWO sources: the agent's preferred and a
@@ -209,6 +227,7 @@ describe("pickStepInferenceSource (non-agent step)", () => {
       workflowRepo: deps.workflowRepo,
       launchSession: deps.launch,
       sendMultiStepDeploy: deps.multiStep,
+      deploySingleStepAtHead: deps.singleStep,
     });
 
     const config = makeConfig({
@@ -256,6 +275,7 @@ describe("pickStepInferenceSource (non-agent step)", () => {
       workflowRepo: deps.workflowRepo,
       launchSession: deps.launch,
       sendMultiStepDeploy: deps.multiStep,
+      deploySingleStepAtHead: deps.singleStep,
     });
 
     const config = makeConfig({

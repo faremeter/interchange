@@ -31,8 +31,8 @@ import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
   deriveDeploymentAddress,
-  deriveStepAddress,
   type ApprovalSet,
+  type DeploySingleStepFn,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
@@ -184,6 +184,9 @@ describe("single-step posix-tool in-child execution", () => {
         sources: params.sources,
       });
 
+    const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
+      env.hub.sessionService.deploySingleStepAtHead(params);
+
     const workflowRepo: WorkflowRepoWriter = {
       async writeWorkflowRepo(args) {
         const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
@@ -209,6 +212,7 @@ describe("single-step posix-tool in-child execution", () => {
       workflowRepo,
       launchSession,
       sendMultiStepDeploy,
+      deploySingleStepAtHead,
     });
 
     let result: Awaited<ReturnType<typeof orchestrator.deployWorkflow>>;
@@ -312,20 +316,21 @@ describe("single-step posix-tool in-child execution", () => {
     expect(fs.readFileSync(sentinelPath, "utf-8")).toBe(SENTINEL_CONTENT);
 
     // The step's deploy tree (carrying the resolved tool-package
-    // manifest) landed at the step's legacy agent dir on the child --
-    // the on-disk source the child read for materialization.
-    const stepAddress = deriveStepAddress({
+    // manifest) landed at the HEAD's legacy agent dir on the child -- the
+    // on-disk source the child read for materialization. A single-step
+    // workflow collapses its lone step onto the head, so the deploy tree
+    // is staged at the deployment (head) address, not a per-step address.
+    const headAddress = deriveDeploymentAddress({
       deploymentId: DEPLOYMENT_ID,
-      stepId: STEP_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
     });
-    const stepDeployDir = path.join(
+    const headDeployDir = path.join(
       env.sidecar.dataDir,
-      sanitizeAddress(stepAddress),
+      sanitizeAddress(headAddress),
       "deploy",
     );
     expect(
-      fs.existsSync(path.join(stepDeployDir, "tool-packages-manifest.json")),
+      fs.existsSync(path.join(headDeployDir, "tool-packages-manifest.json")),
     ).toBe(true);
   });
 });

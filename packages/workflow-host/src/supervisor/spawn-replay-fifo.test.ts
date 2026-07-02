@@ -548,6 +548,7 @@ async function boot(opts: { prefix: string }): Promise<
     workflowRunRepoId,
     workflowRunRef: "refs/heads/main",
     deploymentId: "deployment-x",
+    stepCount: 1,
     deploymentMailAddress,
     readPrincipal: { kind: "supervisor" },
     deriveStepAddress: ({ deploymentId, stepId }) =>

@@ -31,6 +31,7 @@ import {
   WorkflowDefinitionInvalidError,
   wrapHarnessAsTrivialAgent,
   type DeployContent,
+  type DeploySingleStepFn,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
@@ -198,6 +199,20 @@ function createRecordingMultiStepDeploy(publicKey = "ff".repeat(32)): {
 } {
   const calls: RecordedMultiStepDeploy[] = [];
   const fn: SendMultiStepDeployFn = async (params) => {
+    calls.push(params);
+    return { publicKey };
+  };
+  return { fn, calls };
+}
+
+type RecordedSingleStepDeploy = Parameters<DeploySingleStepFn>[0];
+
+function createRecordingSingleStepDeploy(publicKey = "ff".repeat(32)): {
+  fn: DeploySingleStepFn;
+  calls: RecordedSingleStepDeploy[];
+} {
+  const calls: RecordedSingleStepDeploy[] = [];
+  const fn: DeploySingleStepFn = async (params) => {
     calls.push(params);
     return { publicKey };
   };
@@ -578,22 +593,24 @@ describe("createWorkflowDeployOrchestrator", () => {
       ).rejects.toBeInstanceOf(MultiStepDeploymentArgsMissingError);
     });
 
-    test("single-step workflow without trivialBindings takes the derived path", async () => {
+    test("single-step workflow without trivialBindings deploys once at the head", async () => {
       const agent = makeAgent("only");
       const workflow = makeTrivialWorkflow(agent);
       const directorRegistry = createDefaultDirectorRegistry();
       const workflowRepo = createRecordingWorkflowRepoWriter();
       const launch = createRecordingLaunch();
       const multiStep = createRecordingMultiStepDeploy();
+      const singleStep = createRecordingSingleStepDeploy();
       const orchestrator = createWorkflowDeployOrchestrator({
         directorRegistry,
         workflowRepo,
         launchSession: launch.fn,
         sendMultiStepDeploy: multiStep.fn,
+        deploySingleStepAtHead: singleStep.fn,
       });
       const approvals = approvedGrantsForWorkflow(workflow, [agent]);
 
-      await orchestrator.deployWorkflow({
+      const result = await orchestrator.deployWorkflow({
         workflow,
         deploymentId: "dep_xyz",
         deploymentDomain: "workflow.interchange",
@@ -603,17 +620,23 @@ describe("createWorkflowDeployOrchestrator", () => {
         operatorApprovals: approvals,
       });
 
-      expect(launch.launches).toHaveLength(1);
-      const launched = launch.launches[0];
-      if (launched === undefined) throw new Error("missing launch");
+      // A one-step workflow deploys ONCE at the head: the lone step
+      // collapses onto the deployment (head) address, so there is no
+      // per-step `launchSession` and no separate multi-step frame.
+      expect(launch.launches).toHaveLength(0);
+      expect(multiStep.calls).toHaveLength(0);
+      expect(singleStep.calls).toHaveLength(1);
+      const call = singleStep.calls[0];
+      if (call === undefined) throw new Error("missing single-step deploy");
+      expect(call.agentAddress).toBe("ins_dep_xyz@workflow.interchange");
+      expect(call.agentId).toBe("ins_dep_xyz");
+      expect(call.instanceId).toBe("ins_dep_xyz");
       const expectedStepId = workflow.stepOrder[0];
       if (expectedStepId === undefined) {
         throw new Error("missing step id");
       }
-      expect(launched.agentAddress).toBe(
-        `ins_dep_xyz-${expectedStepId}@workflow.interchange`,
-      );
-      expect(multiStep.calls).toHaveLength(1);
+      expect(call.sources[expectedStepId]).toBeDefined();
+      expect(result.kind).toBe("multi-step");
     });
 
     test("source-pin failure carries workflow.id and names the offending provider+model", async () => {

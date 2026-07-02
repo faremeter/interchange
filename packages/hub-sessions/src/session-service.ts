@@ -56,6 +56,7 @@ import {
   type DeployContent as OrchestratorDeployContent,
   type DeployWorkflowArgs,
   type DeployWorkflowResult,
+  type DeploySingleStepFn,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
@@ -127,6 +128,17 @@ export type SessionService = {
      */
     toolPackagePins?: readonly ToolPackagePin[];
   }): Promise<void>;
+
+  /**
+   * Deploy a one-step workflow once at the head through the deploy core,
+   * without the DB-backed `workflow_deployment` projection row. Stages the
+   * head's deploy tree (deploy-tree write, pack, asset fan-out), fires the
+   * deployment `agent.deploy` frame carrying the workflow definition +
+   * source pin (the sidecar initializes the head repo and spawns the
+   * workflow-process child), then delivers the pack to the head. Returns
+   * the sidecar supervisor's principal public key. See `DeploySingleStepFn`.
+   */
+  deploySingleStepAtHead: DeploySingleStepFn;
 
   /**
    * Deploy a multi-step `WorkflowDefinition` through the workflow-deploy
@@ -597,9 +609,23 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     config: HarnessConfig;
     deployContent: DeployContent;
     toolPackagePins?: readonly ToolPackagePin[];
-  }): Promise<void> {
+    /**
+     * Single-step workflow deploy. When present, Phase 1 fires the
+     * deployment `agent.deploy` frame carrying the workflow definition +
+     * source pins (the sidecar initializes the head repo on receipt and
+     * spawns the workflow-process child) instead of the plain provision
+     * frame, and Phase 3's warm-harness `sendSessionStart` is skipped (the
+     * supervised child drives the agent, not a warm hub-agent harness).
+     * The returned supervisor public key comes from that frame's ack.
+     */
+    workflowFrame?: {
+      definition: WorkflowDefinition;
+      sources: Record<string, InferenceSource>;
+    };
+  }): Promise<{ publicKey: string } | undefined> {
     const { agentAddress, agentId, instanceId, config, deployContent } = params;
     const toolPackagePins = params.toolPackagePins ?? [];
+    const workflowFrame = params.workflowFrame;
 
     // Phase 0: Resolve attached assets first so the skill index is in
     // hand before the deploy tree is written. The `<available_skills>`
@@ -749,9 +775,29 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       throw new SessionLaunchError("write", err, false);
     }
 
-    // Phase 1: Provision on sidecar.
+    // Phase 1: Provision on sidecar. A single-step workflow deploy sends
+    // the deployment `agent.deploy` frame carrying the workflow definition
+    // + source pins INSTEAD of the plain provision frame: the sidecar's
+    // deploy router initializes the head repo on receipt (so the Phase 2
+    // pack has a repo to apply into) and spawns the workflow-process
+    // child. The plain-provision frame stays for the legacy agent-deploy
+    // passthrough. Firing the frame before the Phase 2 pack is the
+    // ordering barrier -- the head repo must exist before the pack
+    // applies. The ack's supervisor public key is surfaced to the caller.
+    let deployAckPublicKey: string | undefined;
     try {
-      await sidecarRouter.sendAgentDeploy(agentAddress, config);
+      if (workflowFrame !== undefined) {
+        const ack = await sendMultiStepDeployFrame({
+          sidecarRouter,
+          agentAddress,
+          config,
+          definition: workflowFrame.definition,
+          sources: workflowFrame.sources,
+        });
+        deployAckPublicKey = ack.publicKey;
+      } else {
+        await sidecarRouter.sendAgentDeploy(agentAddress, config);
+      }
     } catch (err) {
       throw new SessionLaunchError("provision", err, false);
     }
@@ -812,13 +858,60 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       }
     }
 
-    try {
-      await sidecarRouter.sendSessionStart(agentAddress);
-    } catch (err) {
-      await attemptCleanup(agentAddress, "start", err);
-      throw new SessionLaunchError("start", err, false);
+    // Phase 3: Warm-harness session start. A single-step workflow deploy
+    // skips this: the supervised workflow-process child drives the agent
+    // per message through the supervisor, so there is no warm hub-agent
+    // harness to start. The legacy agent-deploy path starts its warm
+    // harness here.
+    if (workflowFrame === undefined) {
+      try {
+        await sidecarRouter.sendSessionStart(agentAddress);
+      } catch (err) {
+        await attemptCleanup(agentAddress, "start", err);
+        throw new SessionLaunchError("start", err, false);
+      }
     }
+
+    return deployAckPublicKey === undefined
+      ? undefined
+      : { publicKey: deployAckPublicKey };
   }
+
+  /**
+   * Deploy a one-step workflow once at the head. Reuses the full
+   * launch-phase machinery (deploy-tree write, pack, asset fan-out) via
+   * `executeLaunchPhases`, swapping the Phase 1 provision frame for the
+   * workflow frame and skipping the Phase 3 warm-harness start. The
+   * workflow frame makes the sidecar initialize the head repo and spawn
+   * the workflow-process child; the follow-up pack lands the head's deploy
+   * tree. Returns the supervisor's principal public key from the frame's
+   * ack. A workflow-frame launch always yields a deploy-ack key; its
+   * absence is a wiring bug, not a tolerable case.
+   */
+  const deploySingleStepAtHead: DeploySingleStepFn = async (deployParams) => {
+    const result = await executeLaunchPhases({
+      agentAddress: deployParams.agentAddress,
+      agentId: deployParams.agentId,
+      instanceId: deployParams.instanceId,
+      config: deployParams.config,
+      deployContent: bridgeOrchestratorDeployContent(
+        deployParams.deployContent,
+      ),
+      workflowFrame: {
+        definition: deployParams.definition,
+        sources: deployParams.sources,
+      },
+      ...(deployParams.toolPackagePins !== undefined
+        ? { toolPackagePins: deployParams.toolPackagePins }
+        : {}),
+    });
+    if (result === undefined) {
+      throw new Error(
+        "single-step deploy at head: executeLaunchPhases returned no deploy-ack public key for a workflow-frame deploy",
+      );
+    }
+    return result;
+  };
 
   /**
    * Build the workflow-deploy orchestrator (with its launch-session and
@@ -831,8 +924,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     directorRegistry: DirectorRegistry;
     deployArgs: DeployWorkflowArgs;
   }): Promise<DeployWorkflowResult> {
-    const launchSessionCallback: LaunchSessionFn = async (orchestratorParams) =>
-      executeLaunchPhases({
+    const launchSessionCallback: LaunchSessionFn = async (
+      orchestratorParams,
+    ) => {
+      // The legacy launch path (no `workflowFrame`) provisions a warm
+      // agent and returns no deploy-ack key; the void return is discarded.
+      await executeLaunchPhases({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
         instanceId: orchestratorParams.instanceId,
@@ -844,6 +941,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           ? { toolPackagePins: orchestratorParams.toolPackagePins }
           : {}),
       });
+    };
 
     const sendMultiStepDeployCallback: SendMultiStepDeployFn = (deployParams) =>
       sendMultiStepDeployFrame({
@@ -859,6 +957,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       workflowRepo: args.workflowRepo,
       launchSession: launchSessionCallback,
       sendMultiStepDeploy: sendMultiStepDeployCallback,
+      deploySingleStepAtHead,
     });
 
     return orchestrator.deployWorkflow(args.deployArgs);
@@ -1396,6 +1495,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
   return {
     launchSession,
+    deploySingleStepAtHead,
     deployWorkflowDefinition,
     sendUserMessage,
     endSession,

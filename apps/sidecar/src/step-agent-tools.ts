@@ -44,7 +44,7 @@ import {
 } from "@intx/hub-agent/paths";
 import { getLogger } from "@intx/log";
 import type { LoadedToolFactory } from "@intx/tool-packaging";
-import { deriveStepAddress } from "@intx/workflow-deploy";
+import { resolveStepAddress } from "@intx/workflow-deploy";
 import { parseAgentAddress } from "@intx/types";
 
 import { materializeToolPackages } from "./tool-materialization";
@@ -133,18 +133,23 @@ function isStepToolMaterialization(
  * substrate's `agent-state/<id>` layout -- the multi-step deploy path
  * never pushes step `agent-state` packs to the child's substrate.
  *
- * The step's mail address is the orchestrator's
- * `deriveStepAddress(deploymentId, stepId, deploymentDomain)`. The
- * orchestrator's `deploymentId`/`deploymentDomain` are recovered from
- * the deployment mailbox address the supervisor threaded into the
+ * The step's mail address is `resolveStepAddress(...)`, the single owner
+ * of the head/step collapse: for a single-step deployment the lone step
+ * IS the head (the deployment mailbox itself), so the tree is read at the
+ * head; for multi-step it is `deriveStepAddress(deploymentId, stepId,
+ * deploymentDomain)`. The `deploymentId`/`deploymentDomain` are recovered
+ * from the deployment mailbox address the supervisor threaded into the
  * child as `MAILBOX_ADDRESS` (`ins_<deploymentId>@<domain>`): the
- * instance-id local part minus the `ins_` prefix is the deploymentId,
- * and the address domain is the deploymentDomain.
+ * instance-id local part minus the `ins_` prefix is the deploymentId, and
+ * the address domain is the deploymentDomain. `stepCount` is sourced from
+ * the host (via `substrateEnv`) so producer and consumer never derive
+ * divergent addresses.
  */
 export function stepDeployTreeDir(args: {
   dataDir: string;
   mailboxAddress: string;
   stepId: string;
+  stepCount: number;
 }): string {
   const parsed = parseAgentAddress(args.mailboxAddress);
   if (parsed === null) {
@@ -158,10 +163,11 @@ export function stepDeployTreeDir(args: {
     );
   }
   const deploymentId = parsed.instanceId.slice(INSTANCE_PREFIX.length);
-  const stepAddress = deriveStepAddress({
+  const stepAddress = resolveStepAddress({
     deploymentId,
     stepId: args.stepId,
     deploymentDomain: parsed.domain,
+    stepCount: args.stepCount,
   });
   return path.join(args.dataDir, sanitizeAddress(stepAddress));
 }
@@ -183,6 +189,7 @@ export async function materializeStepTools(args: {
   dataDir: string;
   mailboxAddress: string;
   stepId: string;
+  stepCount: number;
   /** Per-step state root; cache + instance dir + workspace live under it. */
   storeDir: string;
   cache: StepToolCacheConfig;
@@ -192,6 +199,7 @@ export async function materializeStepTools(args: {
     dataDir: args.dataDir,
     mailboxAddress: args.mailboxAddress,
     stepId: args.stepId,
+    stepCount: args.stepCount,
   });
   const deployTree = await readDeployTree(deployTreeDir);
 

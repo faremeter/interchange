@@ -120,6 +120,35 @@ export type SendMultiStepDeployFn = (params: {
 }) => Promise<MultiStepDeployResult>;
 
 /**
+ * Single-step deploy hand-off. A one-step workflow has no distinct steps
+ * (the lone step IS the head), so it does NOT take the per-step
+ * provisioning loop: it deploys once at the head, staging the head's
+ * deploy tree AND firing the deployment `agent.deploy` frame that carries
+ * the workflow definition and the sole step's source pin. The caller-site
+ * closure produces the deploy pack, sends the workflow frame (the sidecar
+ * initializes the head repo on receipt), then delivers the pack to the
+ * head; it waits on the `agent.deploy.ack` and surfaces the supervisor's
+ * principal public key back through the result.
+ *
+ * This carries the head deploy content and tool pins (which the head-tree
+ * staging needs) alongside the definition + sources (which the frame
+ * needs) -- the union of what `LaunchSessionFn` and `SendMultiStepDeployFn`
+ * carry, because for one step the tree staging and the frame collapse onto
+ * a single head deploy.
+ */
+export type DeploySingleStepFn = (params: {
+  agentAddress: string;
+  agentId: string;
+  instanceId: string;
+  config: HarnessConfig;
+  deployContent: DeployContent;
+  definition: WorkflowDefinition;
+  sources: Record<string, InferenceSource>;
+  hubPublicKey: string;
+  toolPackagePins?: readonly ToolPackagePin[];
+}) => Promise<MultiStepDeployResult>;
+
+/**
  * Result returned by `sendMultiStepDeploy`. Surfaces the sidecar
  * supervisor's principal public key (hex-encoded Ed25519) from the
  * `agent.deploy.ack` frame back through `deployWorkflow` so the
@@ -187,6 +216,17 @@ export interface WorkflowDeployOrchestratorDeps {
    * `MultiStepDeployHandoffMissingError` if the dep is absent.
    */
   readonly sendMultiStepDeploy?: SendMultiStepDeployFn;
+  /**
+   * Deploys a single-step workflow once at the head: stages the head's
+   * deploy tree and fires the deployment `agent.deploy` frame in one
+   * hand-off (see `DeploySingleStepFn`). The single-step branch calls
+   * this exactly once and never runs the per-step `launchSession` loop.
+   *
+   * Optional for the same reason as `sendMultiStepDeploy`; the single-step
+   * branch fails fast with `SingleStepDeployHandoffMissingError` if the
+   * dep is absent.
+   */
+  readonly deploySingleStepAtHead?: DeploySingleStepFn;
 }
 
 export interface DeployWorkflowArgs {
@@ -299,6 +339,21 @@ export class MultiStepDeployHandoffMissingError extends Error {
 }
 
 /**
+ * Error thrown when the single-step branch is reached but the
+ * `deploySingleStepAtHead` dependency was not wired. Parallel to
+ * `MultiStepDeployHandoffMissingError`; the trivial branch does not
+ * consult this dep, so it is optional on the deps record.
+ */
+export class SingleStepDeployHandoffMissingError extends Error {
+  constructor() {
+    super(
+      "single-step deploy requires deploySingleStepAtHead dep; wire it on the orchestrator's WorkflowDeployOrchestratorDeps record",
+    );
+    this.name = "SingleStepDeployHandoffMissingError";
+  }
+}
+
+/**
  * Error thrown when the capability-approval gate rejects the deploy.
  * Carries the per-step `pending` delta and the unresolvable director
  * ids so the caller can surface the exact remediation surface to the
@@ -341,8 +396,13 @@ function formatApprovalDeniedMessage(
 export function createWorkflowDeployOrchestrator(
   deps: WorkflowDeployOrchestratorDeps,
 ): WorkflowDeployOrchestrator {
-  const { directorRegistry, workflowRepo, launchSession, sendMultiStepDeploy } =
-    deps;
+  const {
+    directorRegistry,
+    workflowRepo,
+    launchSession,
+    sendMultiStepDeploy,
+    deploySingleStepAtHead,
+  } = deps;
 
   return {
     async deployWorkflow(
@@ -380,6 +440,19 @@ export function createWorkflowDeployOrchestrator(
         return { kind: "trivial" };
       }
 
+      // A one-step workflow has no distinct steps: the lone step IS the
+      // head. It deploys once at the head (no per-step provisioning loop),
+      // so it routes through the dedicated single-step hand-off rather
+      // than `runMultiStepBranch`. The multi-step branch is reached only
+      // for `stepOrder.length >= 2`.
+      if (args.workflow.stepOrder.length === 1) {
+        const result = await runSingleStepAtHead({
+          args,
+          deploySingleStepAtHead,
+        });
+        return { kind: "multi-step", publicKey: result.publicKey };
+      }
+
       const result = await runMultiStepBranch({
         args,
         launchSession,
@@ -405,6 +478,97 @@ function isTrivialDeploy(
   if (args.workflow.stepOrder.length !== 1) return null;
   if (args.trivialBindings === undefined) return null;
   return { bindings: args.trivialBindings };
+}
+
+/**
+ * Deploy a one-step workflow once at the head. The lone step has no
+ * distinct per-step address -- it IS the head (`deriveDeploymentAddress`)
+ * -- so this pins the sole step's inference source, builds the head
+ * config + deploy content, and hands the whole thing to
+ * `deploySingleStepAtHead` in a single call. There is no per-step
+ * `launchSession` loop and no separate deployment frame: the tree staging
+ * and the `agent.deploy` frame collapse onto one head deploy. The result
+ * surfaces the sidecar supervisor's principal public key, same as the
+ * multi-step branch.
+ */
+async function runSingleStepAtHead(args: {
+  args: DeployWorkflowArgs;
+  deploySingleStepAtHead: DeploySingleStepFn | undefined;
+}): Promise<MultiStepDeployResult> {
+  const { args: deploy, deploySingleStepAtHead } = args;
+  const deploymentId = deploy.deploymentId;
+  const deploymentDomain = deploy.deploymentDomain;
+  if (deploymentId === undefined) {
+    throw new MultiStepDeploymentArgsMissingError("deploymentId");
+  }
+  if (deploymentDomain === undefined) {
+    throw new MultiStepDeploymentArgsMissingError("deploymentDomain");
+  }
+  if (deploySingleStepAtHead === undefined) {
+    throw new SingleStepDeployHandoffMissingError();
+  }
+  if (deploy.hubPublicKey === undefined) {
+    throw new MultiStepDeploymentArgsMissingError("hubPublicKey");
+  }
+
+  // The sole step. `validateWorkflowDefinition` already guaranteed
+  // `stepOrder` is non-empty and every entry has a matching `steps`
+  // primitive; the index access is re-narrowed here for the compiler.
+  const stepId = deploy.workflow.stepOrder[0];
+  if (stepId === undefined) {
+    throw new WorkflowDefinitionInvalidError(
+      deploy.workflow.id,
+      "single-step deploy requires a non-empty stepOrder",
+    );
+  }
+  const primitive = deploy.workflow.steps[stepId];
+  if (primitive === undefined) {
+    throw new WorkflowDefinitionInvalidError(
+      deploy.workflow.id,
+      `step ${stepId} listed in stepOrder is missing from steps`,
+    );
+  }
+  const stepAgent = extractAgent(primitive);
+  const source = pickStepInferenceSource({
+    stepAgent,
+    stepId,
+    workflowId: deploy.workflow.id,
+    config: deploy.config,
+    operatorApprovals: deploy.operatorApprovals,
+  });
+
+  // The lone step IS the head: one deploy at the deployment address, no
+  // per-step derivation. The head's agentId and instanceId are the same
+  // `ins_<deploymentId>` identity.
+  const headAddress = deriveDeploymentAddress({
+    deploymentId,
+    deploymentDomain,
+  });
+  const headId = deriveDeploymentAgentId({ deploymentId });
+  const headConfig: HarnessConfig = {
+    ...deploy.config,
+    agentAddress: headAddress,
+    agentId: headId,
+    ...(stepAgent !== null ? { systemPrompt: stepAgent.systemPrompt } : {}),
+  };
+  const headDeployContent: DeployContent =
+    stepAgent !== null
+      ? { ...deploy.deployContent, systemPrompt: stepAgent.systemPrompt }
+      : deploy.deployContent;
+
+  return deploySingleStepAtHead({
+    agentAddress: headAddress,
+    agentId: headId,
+    instanceId: headId,
+    config: headConfig,
+    deployContent: headDeployContent,
+    definition: deploy.workflow,
+    sources: { [stepId]: source },
+    hubPublicKey: deploy.hubPublicKey,
+    ...(deploy.toolPackagePins !== undefined
+      ? { toolPackagePins: deploy.toolPackagePins }
+      : {}),
+  });
 }
 
 async function runMultiStepBranch(args: {
@@ -626,6 +790,37 @@ export function deriveDeploymentAddress(args: {
   deploymentDomain: string;
 }): string {
   return `ins_${args.deploymentId}@${args.deploymentDomain}`;
+}
+
+/**
+ * Resolve where a step's deploy tree lives, given the deployment's step
+ * count. This is the single owner of the head/step collapse DECISION for
+ * a consumer that must choose the address without knowing the deploy
+ * shape: a one-step workflow has no distinct steps, so its lone step IS
+ * the head (`deriveDeploymentAddress`); a multi-step deployment keeps the
+ * head distinct from its per-step addresses (`deriveStepAddress`). The
+ * sidecar child reads its deploy tree from the address this returns,
+ * keyed only off the deployment mailbox and the host-sourced `stepCount`.
+ *
+ * The producers do not route through here -- each handles one shape
+ * unconditionally: the single-step deploy stages the tree at the head,
+ * the multi-step deploy at each per-step address. Because `stepCount` is
+ * the deployed definition's `stepOrder.length`, sourced from the host,
+ * the consumer's collapse always agrees with whichever producer staged
+ * the tree; the two processes never derive divergent addresses.
+ */
+export function resolveStepAddress(args: {
+  deploymentId: string;
+  stepId: string;
+  deploymentDomain: string;
+  stepCount: number;
+}): string {
+  return args.stepCount === 1
+    ? deriveDeploymentAddress({
+        deploymentId: args.deploymentId,
+        deploymentDomain: args.deploymentDomain,
+      })
+    : deriveStepAddress(args);
 }
 
 /**

@@ -402,6 +402,16 @@ export interface WorkflowSupervisorBindings {
   /** Deployment id baked into the supervisor's principal claims. */
   deploymentId: string;
   /**
+   * Number of steps in the deployed `WorkflowDefinition`
+   * (`stepOrder.length`). The supervisor threads this into the child's
+   * spawn-time env (`STEP_COUNT`) so the child's deploy-tree read
+   * (`resolveStepAddress` in the sidecar step tools) collapses onto the
+   * head for a single-step deployment exactly as the host's producer
+   * push does -- one source of truth for the head/step collapse across
+   * the two processes. Fixed for the deployment's lifetime.
+   */
+  stepCount: number;
+  /**
    * Mail address the deployment registers on the bus. The
    * supervisor registers this on spawn and unregisters on teardown;
    * inbound mail at this address flows through the supervisor's

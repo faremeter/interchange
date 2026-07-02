@@ -264,6 +264,7 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
       workflowRunRepoId: { kind: "workflow-run", id: "outbound-dep" },
       workflowRunRef: "refs/heads/main",
       deploymentId: "outbound-dep",
+      stepCount: 1,
       deploymentMailAddress: AGENT_ADDRESS,
       readPrincipal: { kind: "supervisor" },
       deriveStepAddress: () => AGENT_ADDRESS,

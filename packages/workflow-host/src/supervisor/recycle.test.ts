@@ -471,6 +471,7 @@ async function buildBindings(opts: {
     workflowRunRepoId: { kind: "workflow-run", id: "deployment-x" },
     workflowRunRef: "refs/heads/main",
     deploymentId: "deployment-x",
+    stepCount: 1,
     deploymentMailAddress: "deployment-x@example.com",
     readPrincipal: { kind: "supervisor" },
     deriveStepAddress: ({ deploymentId, stepId }) =>

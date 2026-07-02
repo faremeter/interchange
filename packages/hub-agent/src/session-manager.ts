@@ -131,6 +131,16 @@ export type AgentEventListener = (event: InferenceEvent) => void;
 
 export type SessionManager = {
   provisionAgent(config: AgentConfig): Promise<ProvisionResult>;
+  /**
+   * Initialize the on-disk deploy-tree repo for an address without
+   * minting a keypair, persisting config, or entering the
+   * provisioned/pending bookkeeping. A single-step workflow deploy uses
+   * this at the head so the follow-up deploy-pack apply has a repo to
+   * apply into; the supervised workflow-process child mints its own
+   * keypair at boot, so `provisionAgent`'s keypair, `persistConfig`, and
+   * duplicate-address guard are neither needed nor wanted on that path.
+   */
+  initRepo(address: string): Promise<void>;
   startSession(agentAddress: string): Promise<void>;
   destroySession(agentAddress: string): Promise<void>;
   abortSession(agentAddress: string, reason: string): Promise<void>;
@@ -812,6 +822,7 @@ export function createSessionManager(
 
   return {
     provisionAgent,
+    initRepo: (address: string) => repoStore.initRepo(address),
     startSession,
     destroySession,
     abortSession,

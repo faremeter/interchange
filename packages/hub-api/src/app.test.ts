@@ -28,6 +28,11 @@ const sessionService: SessionService = {
       "mock: sessionService.deployWorkflowDefinition not implemented",
     );
   },
+  deploySingleStepAtHead(_params) {
+    throw new Error(
+      "mock: sessionService.deploySingleStepAtHead not implemented",
+    );
+  },
   sendUserMessage(_params) {
     throw new Error("mock: sessionService.sendUserMessage not implemented");
   },

@@ -79,6 +79,7 @@ describe("createSidecarWorkflowSupervisor", () => {
       workflowRunRepoId: { kind: "workflow-run", id: "wire-test" },
       workflowRunRef: "refs/heads/main",
       deploymentId: "wire-test",
+      stepCount: 1,
       deploymentMailAddress: "wire-test@example.com",
       deriveStepAddress: ({ deploymentId, stepId }) =>
         `${deploymentId}-${stepId}@example.com`,
@@ -114,6 +115,7 @@ describe("createSidecarWorkflowSupervisor", () => {
       workflowRunRepoId: { kind: "workflow-run", id: "inbound" },
       workflowRunRef: "refs/heads/main",
       deploymentId: "inbound",
+      stepCount: 1,
       deploymentMailAddress: "inbound@example.com",
       deriveStepAddress: ({ deploymentId, stepId }) =>
         `${deploymentId}-${stepId}@example.com`,
@@ -338,7 +340,7 @@ describe("createSidecarDeployRouter wires the InferenceEvent subscription to rec
     };
 
     const router = createSidecarDeployRouter({
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the deploy-router test exercises only provisionAgent + persistHubPublicKey
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the single-step branch exercises initRepo; provisionAgent/persistHubPublicKey remain stubbed for the trivial-branch cases in this file
       sessions: {
         provisionAgent: async (_config: unknown) => ({
           publicKey: "pk-trivial",
@@ -348,6 +350,9 @@ describe("createSidecarDeployRouter wires the InferenceEvent subscription to rec
           },
         }),
         persistHubPublicKey: async (_a: string, _h: string) => {
+          /* no-op */
+        },
+        initRepo: async (_a: string) => {
           /* no-op */
         },
       } as unknown as Parameters<
@@ -1148,24 +1153,23 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       ...(opts.multistepSubstrateEnv ?? {}),
     };
     const router = createSidecarDeployRouter({
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch never invokes provisionAgent; the stub throws if it does
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path never invokes provisionAgent/persistHubPublicKey (single-step uses the narrow initRepo; the child mints its own key); the stubs throw if it does. initRepo is a no-op for the single-step head repo.
       sessions: {
         provisionAgent: async () => {
-          throw new Error("multi-step branch must not invoke provisionAgent");
+          throw new Error("workflow branch must not invoke provisionAgent");
         },
         persistHubPublicKey: async () => {
           throw new Error(
-            "multi-step branch must not invoke persistHubPublicKey",
+            "workflow branch must not invoke persistHubPublicKey",
           );
         },
+        initRepo: async () => undefined,
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["sessions"],
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; the single-step head deploy records the hub key for pack verification
       keyStore: {
-        recordHubKey: () => {
-          throw new Error("multi-step branch must not invoke recordHubKey");
-        },
+        recordHubKey: () => undefined,
         loadOrGenerateKey: async () => ({
           keyPair: await generateKeyPair(),
           isNew: false,

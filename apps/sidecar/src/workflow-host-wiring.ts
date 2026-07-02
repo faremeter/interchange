@@ -402,6 +402,12 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   workflowRunRef: string;
   /** Deployment id baked into principal claims and address derivation. */
   deploymentId: string;
+  /**
+   * Step count of the deployed `WorkflowDefinition` (`stepOrder.length`).
+   * Threaded into the child's spawn-time env so its deploy-tree read
+   * collapses onto the head for a single-step deployment.
+   */
+  stepCount: number;
   /** Deployment's mail address. */
   deploymentMailAddress: string;
   /** Per-step mail-address derivation. */
@@ -1059,6 +1065,7 @@ export function createSidecarDeployRouter(deps: {
         },
         workflowRunRef: "refs/heads/main",
         deploymentId,
+        stepCount: projection.definition.stepOrder.length,
         deploymentMailAddress: frame.agentAddress,
         deriveStepAddress: stepStrategy.deriveStepAddress,
         deriveStepRepoId: stepStrategy.deriveStepRepoId,
@@ -1135,6 +1142,26 @@ export function createSidecarDeployRouter(deps: {
           deps.createAgentCrypto(keyPair),
         );
         agentTransportRegistered = true;
+
+        // A single-step workflow stages its deploy tree at the head (the
+        // lone step IS the head). Initialize the head's on-disk
+        // deploy-tree repo now, before this frame's ack, so the hub's
+        // follow-up deploy-pack push has a repo to `applyDeployPack` into.
+        // The narrow `initRepo` (not `provisionAgent`) is deliberate: the
+        // supervised child mints its own keypair at boot and persists no
+        // hub-agent config, and `provisionAgent`'s duplicate-address guard
+        // would reject the head the deployment machinery already tracks.
+        await deps.sessions.initRepo(frame.agentAddress);
+
+        // Record the hub's public key at the head so the follow-up
+        // deploy-pack apply can verify the hub-signed deploy-tree commit.
+        // The verifier resolves the key from the in-memory key store's
+        // `recordHubKey` map, not the persisted `agent.json`, so this alone
+        // satisfies verification -- `persistHubPublicKey` (agent.json
+        // durability) is skipped along with `persistConfig`, which the
+        // workflow head has no agent.json to write into. Without this
+        // `applyDeployPack` rejects the pack as `signature_invalid`.
+        deps.keyStore.recordHubKey(frame.agentAddress, frame.hubPublicKey);
       }
 
       const stepOrder = [...projection.definition.stepOrder];
@@ -1304,6 +1331,9 @@ export function createSidecarDeployRouter(deps: {
           },
           workflowRunRef: "refs/heads/main",
           deploymentId,
+          // A trivial deploy is a single agent: one step, so the child's
+          // deploy-tree read collapses onto the head.
+          stepCount: 1,
           deploymentMailAddress: frame.agentAddress,
           deriveStepAddress: ({ deploymentId: dep, stepId }) =>
             `${dep}-${stepId}`,
@@ -1622,6 +1652,7 @@ export function createSidecarWorkflowSupervisor(
     workflowRunRepoId: opts.workflowRunRepoId,
     workflowRunRef: opts.workflowRunRef,
     deploymentId: opts.deploymentId,
+    stepCount: opts.stepCount,
     deploymentMailAddress: opts.deploymentMailAddress,
     readPrincipal: supervisorPrincipal,
     deriveStepAddress: opts.deriveStepAddress,

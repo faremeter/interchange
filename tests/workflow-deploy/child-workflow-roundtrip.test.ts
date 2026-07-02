@@ -245,6 +245,10 @@ describe("parent -> child workflow round-trip", () => {
       workflowRepo,
       launchSession,
       sendMultiStepDeploy,
+      // A single-step (child-spawning) workflow deploys once at the head
+      // through the deploy core's single-step hand-off.
+      deploySingleStepAtHead: (params) =>
+        env.hub.sessionService.deploySingleStepAtHead(params),
     });
 
     const childResult = await orchestrator.deployWorkflow({
@@ -620,6 +624,10 @@ describe("parent -> child workflow round-trip", () => {
       workflowRepo,
       launchSession,
       sendMultiStepDeploy,
+      // A single-step (child-spawning) workflow deploys once at the head
+      // through the deploy core's single-step hand-off.
+      deploySingleStepAtHead: (params) =>
+        env.hub.sessionService.deploySingleStepAtHead(params),
     });
 
     // Deploy grandchild and child as workflow assets so the parent's
@@ -975,6 +983,10 @@ describe("parent -> child workflow round-trip", () => {
       workflowRepo,
       launchSession,
       sendMultiStepDeploy,
+      // A single-step (child-spawning) workflow deploys once at the head
+      // through the deploy core's single-step hand-off.
+      deploySingleStepAtHead: (params) =>
+        env.hub.sessionService.deploySingleStepAtHead(params),
     });
 
     for (let i = 0; i < SIBLINGS_CHILD_COUNT; i += 1) {

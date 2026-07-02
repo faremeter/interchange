@@ -170,6 +170,7 @@ function createMockSessionManager(): SessionManager & {
         },
       };
     },
+    initRepo: (_address: string) => Promise.resolve(),
     async startSession(agentAddress: string): Promise<void> {
       if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
       mock.started.push(agentAddress);

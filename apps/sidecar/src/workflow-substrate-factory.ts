@@ -443,6 +443,15 @@ export interface SidecarStepBuildEnvDeps {
    */
   mailboxAddress: string;
   /**
+   * Step count of the deployed `WorkflowDefinition` (`stepOrder.length`),
+   * threaded from the host through the spawn-time env. Selects the
+   * head/step collapse when locating a step's deploy tree
+   * (`stepDeployTreeDir` -> `resolveStepAddress`): a single-step
+   * deployment reads at the head, a multi-step deployment at the per-step
+   * address, matching the host's producer push.
+   */
+  stepCount: number;
+  /**
    * Child-side outbound-mail bridge over the upstream control channel
    * (OUTBOUND half of mailbox ownership, §3a). The per-step env builder
    * wraps it in a supervisor-backed `MessageTransport` it supplies as
@@ -573,6 +582,7 @@ export function createSidecarStepBuildEnv(
       dataDir: deps.dataDir,
       mailboxAddress: deps.mailboxAddress,
       stepId,
+      stepCount: deps.stepCount,
       storeDir,
       cache: deps.cache,
     });
@@ -1016,6 +1026,7 @@ export function createSidecarSubstrateFactory(
       workflowRunRepoId,
       signer: conversationSigner,
       mailboxAddress: env.spawn.mailboxAddress,
+      stepCount: env.spawn.stepCount,
       outboundMailBridge: env.outboundMailBridge,
       cache: stepToolCache,
       adapters: childAdapterRegistry,

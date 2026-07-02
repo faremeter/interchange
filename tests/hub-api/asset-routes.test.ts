@@ -165,6 +165,9 @@ function createMockSessionService(): SessionService {
     deployWorkflowDefinition: notImplemented(
       "sessionService.deployWorkflowDefinition",
     ),
+    deploySingleStepAtHead: notImplemented(
+      "sessionService.deploySingleStepAtHead",
+    ),
     sendUserMessage: notImplemented("sessionService.sendUserMessage"),
     endSession: notImplemented("sessionService.endSession"),
   };

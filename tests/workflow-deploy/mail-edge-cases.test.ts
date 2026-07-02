@@ -60,6 +60,7 @@ import {
   createWorkflowDeployOrchestrator,
   deriveDeploymentAddress,
   type ApprovalSet,
+  type DeploySingleStepFn,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
@@ -430,6 +431,9 @@ async function deployEdgeWorkflow(
       sources: params.sources,
     });
 
+  const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
+    env.hub.sessionService.deploySingleStepAtHead(params);
+
   const workflowRepo: WorkflowRepoWriter = {
     async writeWorkflowRepo(args) {
       const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
@@ -455,6 +459,7 @@ async function deployEdgeWorkflow(
     workflowRepo,
     launchSession,
     sendMultiStepDeploy,
+    deploySingleStepAtHead,
   });
 
   const result = await orchestrator.deployWorkflow({

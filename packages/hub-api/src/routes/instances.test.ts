@@ -290,6 +290,9 @@ function createMockSessionService(): SessionService {
     deployWorkflowDefinition(_params) {
       return notImpl("deployWorkflowDefinition");
     },
+    deploySingleStepAtHead(_params) {
+      return notImpl("deploySingleStepAtHead");
+    },
     sendUserMessage(_params) {
       return notImpl("sendUserMessage");
     },
@@ -660,6 +663,9 @@ describe("POST /agents/instances/:instanceId/mail", () => {
       deployWorkflowDefinition() {
         throw new Error("not implemented");
       },
+      deploySingleStepAtHead() {
+        throw new Error("not implemented");
+      },
       endSession() {
         throw new Error("not implemented");
       },
@@ -806,6 +812,9 @@ describe("POST /agents/instances/:instanceId/mail attachments", () => {
         throw new Error("not implemented");
       },
       deployWorkflowDefinition() {
+        throw new Error("not implemented");
+      },
+      deploySingleStepAtHead() {
         throw new Error("not implemented");
       },
       endSession() {
@@ -1238,6 +1247,9 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       deployWorkflowDefinition: () => {
         throw new Error("mock: deployWorkflowDefinition not implemented");
       },
+      deploySingleStepAtHead: () => {
+        throw new Error("mock: deploySingleStepAtHead not implemented");
+      },
       sendUserMessage: () => {
         throw new Error("mock: sendUserMessage not implemented");
       },
@@ -1453,6 +1465,9 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       },
       deployWorkflowDefinition: () => {
         throw new Error("mock: deployWorkflowDefinition not implemented");
+      },
+      deploySingleStepAtHead: () => {
+        throw new Error("mock: deploySingleStepAtHead not implemented");
       },
       sendUserMessage: () => {
         throw new Error("mock: sendUserMessage not implemented");

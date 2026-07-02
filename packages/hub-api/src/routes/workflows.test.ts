@@ -231,6 +231,7 @@ function createMockSessionService(
       }
       return Promise.resolve(result);
     },
+    deploySingleStepAtHead: () => notImpl("deploySingleStepAtHead"),
     sendUserMessage: () => notImpl("sendUserMessage"),
     endSession: () => notImpl("endSession"),
   };

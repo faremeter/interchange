@@ -1358,6 +1358,7 @@ export function createWorkflowSupervisor(
       DEPLOYMENT_ID: bindings.deploymentId,
       DEFINITION_HASH: opts.definitionHash,
       MAILBOX_ADDRESS: bindings.deploymentMailAddress,
+      STEP_COUNT: String(bindings.stepCount),
       WARM_KEEP: opts.warmKeep ? "true" : "false",
     };
 

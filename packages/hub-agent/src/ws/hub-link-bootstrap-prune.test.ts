@@ -123,6 +123,7 @@ function createMockSessionManager(): SessionManager & {
         },
       };
     },
+    initRepo: (_address: string) => Promise.resolve(),
     async startSession(_agentAddress: string): Promise<void> {
       /* unused */
     },

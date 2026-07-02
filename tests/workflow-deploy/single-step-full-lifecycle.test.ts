@@ -78,6 +78,7 @@ import {
   deriveDeploymentAddress,
   isWorkflowDerivedAddress,
   type ApprovalSet,
+  type DeploySingleStepFn,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
@@ -263,6 +264,14 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
         sources: params.sources,
       });
 
+    // A single-step workflow routes through the deploy core's single-step
+    // hand-off, which deploys once at the head: the service stages the
+    // head's deploy tree and fires the workflow frame in one call. The
+    // per-step `launchSession`/`sendMultiStepDeploy` callbacks above are
+    // reached only by the multi-step branch (>= 2 steps).
+    const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
+      env.hub.sessionService.deploySingleStepAtHead(params);
+
     const workflowRepo: WorkflowRepoWriter = {
       async writeWorkflowRepo(args) {
         const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
@@ -288,6 +297,7 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
       workflowRepo,
       launchSession,
       sendMultiStepDeploy,
+      deploySingleStepAtHead,
     });
 
     let result: Awaited<ReturnType<typeof orchestrator.deployWorkflow>>;

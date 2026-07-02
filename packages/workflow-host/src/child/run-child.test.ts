@@ -347,6 +347,7 @@ function makeSpawnEnv(opts: {
     DEPLOYMENT_ID: "deployment-x",
     DEFINITION_HASH: "definition-hash-abc",
     MAILBOX_ADDRESS: "deployment-x@example.com",
+    STEP_COUNT: "1",
   };
 }
 
