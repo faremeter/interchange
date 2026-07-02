@@ -9,6 +9,7 @@ import {
   WorkflowDeploymentRecord,
   writeWorkflowDeploymentRecord,
   deleteWorkflowDeploymentRecord,
+  scanWorkflowDeploymentRecords,
 } from "./workflow-deployment-record";
 
 async function makeDataDir(): Promise<string> {
@@ -119,6 +120,59 @@ describe("workflow deployment record store", () => {
 
     await deleteWorkflowDeploymentRecord(dataDir, deploymentId);
     expect(await fileExists(recordPath(dataDir, deploymentId))).toBe(false);
+
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
+});
+
+describe("scanWorkflowDeploymentRecords", () => {
+  test("returns an empty list when the workflow-runs directory is absent", async () => {
+    const dataDir = await makeDataDir();
+    // First boot: nothing has been deployed, so `workflow-runs/` does not
+    // exist. That is the legitimate empty case, not an error.
+    expect(await scanWorkflowDeploymentRecords(dataDir)).toEqual([]);
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
+
+  test("returns every schema-valid record keyed by its directory name", async () => {
+    const dataDir = await makeDataDir();
+    await writeWorkflowDeploymentRecord(dataDir, "dep-a", SINGLE_STEP);
+    await writeWorkflowDeploymentRecord(dataDir, "dep-b", MULTI_STEP);
+
+    const scanned = await scanWorkflowDeploymentRecords(dataDir);
+    const byId = new Map(scanned.map((s) => [s.deploymentId, s.record]));
+    expect(byId.size).toBe(2);
+    expect(byId.get("dep-a")).toEqual(SINGLE_STEP);
+    expect(byId.get("dep-b")).toEqual(MULTI_STEP);
+
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
+
+  test("soft-fails a corrupt or schema-invalid record while returning the valid ones", async () => {
+    const dataDir = await makeDataDir();
+    await writeWorkflowDeploymentRecord(dataDir, "dep-valid", SINGLE_STEP);
+
+    // A directory whose record is not valid JSON.
+    const corruptDir = path.join(dataDir, "workflow-runs", "dep-corrupt");
+    await fs.mkdir(corruptDir, { recursive: true });
+    await fs.writeFile(path.join(corruptDir, "deployment.json"), "{ not json");
+
+    // A directory whose record parses but fails the schema (missing fields).
+    const invalidDir = path.join(dataDir, "workflow-runs", "dep-invalid");
+    await fs.mkdir(invalidDir, { recursive: true });
+    await fs.writeFile(
+      path.join(invalidDir, "deployment.json"),
+      JSON.stringify({ version: 1 }),
+    );
+
+    // A bare run directory with no record at all.
+    await fs.mkdir(path.join(dataDir, "workflow-runs", "dep-empty"), {
+      recursive: true,
+    });
+
+    const scanned = await scanWorkflowDeploymentRecords(dataDir);
+    expect(scanned.map((s) => s.deploymentId)).toEqual(["dep-valid"]);
+    expect(scanned[0]?.record).toEqual(SINGLE_STEP);
 
     await fs.rm(dataDir, { recursive: true, force: true });
   });

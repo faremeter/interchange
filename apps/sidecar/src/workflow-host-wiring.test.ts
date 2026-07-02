@@ -35,6 +35,10 @@ import {
   createMultistepMailRouter,
   type MultistepMailRouter,
 } from "./workflow-run-pack-client";
+import {
+  writeWorkflowDeploymentRecord,
+  type WorkflowDeploymentRecord,
+} from "./workflow-deployment-record";
 
 function createMinimalStubRepoStore(): RepoStore {
   const stub: Partial<RepoStore> = {
@@ -1143,8 +1147,16 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     assertSourceBuildable?: Parameters<
       typeof createSidecarDeployRouter
     >[0]["assertSourceBuildable"];
+    /**
+     * Reuse an existing transport instead of a fresh one. The restore
+     * tests deploy through one fixture, then build a SECOND fixture over
+     * the same on-disk data dir with a FRESH transport to model a sidecar
+     * process restart (the in-memory transport is process-local, so a
+     * restart starts with an empty registration table).
+     */
+    transport?: ReturnType<typeof createInMemoryTransport>;
   }) {
-    const transport = createInMemoryTransport();
+    const transport = opts.transport ?? createInMemoryTransport();
     const keyPair = await generateKeyPair();
     const tempBase = await createTempBaseDir("sidecar-multistep-");
     const repoStore = createSpawnTestRepoStore(tempBase);
@@ -1213,7 +1225,13 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         ? { multistepMailRouter: opts.multistepMailRouter }
         : {}),
     });
-    return { router, tempBase, keyPair, substrateEnv: mergedSubstrateEnv };
+    return {
+      router,
+      tempBase,
+      keyPair,
+      substrateEnv: mergedSubstrateEnv,
+      transport,
+    };
   }
 
   test("validates the projection, constructs SpawnOpts from the frame, drives spawn, and surfaces the supervisor's principal pubkey", async () => {
@@ -1970,5 +1988,386 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const secondResult = await secondDeploy;
     expect(secondResult.publicKey).toMatch(/^[0-9a-f]{64}$/);
     expect(registerCallCount).toBe(2);
+  });
+
+  // ------------------------------------------------------------------
+  // Boot-time restore of persisted workflow deployments
+  // ------------------------------------------------------------------
+
+  // A mock spawner that serves a fresh control/event channel per spawn and
+  // lets the test complete each child's `ready` handshake. Both `deploy` and
+  // `restoreWorkflowDeployments` block on `supervisor.spawn` until `ready`
+  // lands, so every spawned child needs its handshake driven.
+  function makeReadyDrivingSpawner(pidBase: number) {
+    type Spawn = {
+      env: Record<string, string>;
+      childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>;
+      eventChildToSupervisor: ReturnType<typeof createMemoryFrameStream>;
+    };
+    const spawns: Spawn[] = [];
+    const spawner: SubprocessSpawner = ({ env }) => {
+      const supervisorToChild = createMemoryNdjsonStream();
+      const childToSupervisor = createMemoryNdjsonStream();
+      const eventChildToSupervisor = createMemoryFrameStream();
+      let resolveExit: ((code: number) => void) | undefined;
+      const exited = new Promise<number>((resolve) => {
+        resolveExit = resolve;
+      });
+      spawns.push({ env, childToSupervisor, eventChildToSupervisor });
+      const handle: SubprocessHandle = {
+        pid: pidBase + spawns.length,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      return handle;
+    };
+    async function driveReadyFor(index: number): Promise<void> {
+      while (spawns.length <= index) {
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      const spawn = spawns[index];
+      if (spawn === undefined) {
+        throw new Error(`spawn ${String(index)} missing`);
+      }
+      const channelId = spawn.env.IPC_CHANNEL_ID;
+      if (channelId === undefined) {
+        throw new Error("IPC_CHANNEL_ID missing in spawn env");
+      }
+      const childIpcKeyPair = await generateKeyPair();
+      const childSender = createControlChannelSender({
+        privateKeySeed: childIpcKeyPair.privateKey,
+        channelId,
+        writer: {
+          write(line: string) {
+            spawn.childToSupervisor.inject(line);
+            return Promise.resolve();
+          },
+        },
+      });
+      await childSender.send({
+        type: "ready",
+        data: {
+          childPid: pidBase + index,
+          childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString(
+            "hex",
+          ),
+        },
+      });
+    }
+    return { spawner, driveReadyFor, spawnCount: () => spawns.length };
+  }
+
+  function isRegistered(
+    transport: ReturnType<typeof createInMemoryTransport>,
+    address: string,
+  ): boolean {
+    try {
+      transport.getTransportFor(address);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function recordExists(
+    dataDir: string,
+    deploymentId: string,
+  ): Promise<boolean> {
+    return fs
+      .access(
+        path.join(dataDir, "workflow-runs", deploymentId, "deployment.json"),
+      )
+      .then(
+        () => true,
+        () => false,
+      );
+  }
+
+  function singleStepFrame(
+    agentAddress: string,
+    definitionId: string,
+  ): AgentDeployFrame {
+    return makeMultistepFrame({
+      agentAddress,
+      definition: {
+        id: definitionId,
+        triggers: [{ type: "manual" }],
+        stepOrder: ["step-1"],
+        steps: { "step-1": { kind: "step" } },
+      },
+      sources: { "step-1": makeInferenceSource("step-1") },
+    });
+  }
+
+  test("restore re-spawns a persisted single-step deployment and re-registers its head on a fresh transport", async () => {
+    const dataDir = await createTempBaseDir("sidecar-restore-restart-data-");
+    const head = "ins_restart@example.com";
+
+    // First process: deploy a single-step workflow. The deploy persists a
+    // restore record under `dataDir` and materializes its `workflow.json`.
+    const first = makeReadyDrivingSpawner(9100);
+    const { router: routerA } = await buildMultistepFixture({
+      spawner: first.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const deployPromise = routerA.deploy(singleStepFrame(head, "wf-restart"));
+    await first.driveReadyFor(0);
+    await deployPromise;
+
+    // Second process (simulated restart): a FRESH transport (empty
+    // registration table) and fresh in-memory router state over the SAME
+    // on-disk data dir.
+    const second = makeReadyDrivingSpawner(9200);
+    const freshTransport = createInMemoryTransport();
+    const { router: routerB } = await buildMultistepFixture({
+      spawner: second.spawner,
+      transport: freshTransport,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    // Nothing is registered before restore -- the restart started clean.
+    expect(isRegistered(freshTransport, head)).toBe(false);
+
+    const restorePromise = routerB.restoreWorkflowDeployments();
+    await second.driveReadyFor(0);
+    await restorePromise;
+
+    // The deployment was re-spawned exactly once and its head is live again.
+    expect(second.spawnCount()).toBe(1);
+    expect(isRegistered(freshTransport, head)).toBe(true);
+  });
+
+  test("restore soft-fails a record whose workflow.json is missing and restores the rest", async () => {
+    const dataDir = await createTempBaseDir("sidecar-restore-softfail-data-");
+    const goodHead = "ins_good@example.com";
+    const badHead = "ins_bad@example.com";
+
+    const first = makeReadyDrivingSpawner(9300);
+    const { router: routerA } = await buildMultistepFixture({
+      spawner: first.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const deployGood = routerA.deploy(singleStepFrame(goodHead, "wf-good"));
+    await first.driveReadyFor(0);
+    await deployGood;
+    const deployBad = routerA.deploy(singleStepFrame(badHead, "wf-bad"));
+    await first.driveReadyFor(1);
+    await deployBad;
+
+    // Remove the bad deployment's definition so its restore read faults.
+    await fs.rm(
+      path.join(dataDir, "assets", "workflow", "wf-bad", "workflow.json"),
+    );
+
+    const second = makeReadyDrivingSpawner(9400);
+    const freshTransport = createInMemoryTransport();
+    const { router: routerB } = await buildMultistepFixture({
+      spawner: second.spawner,
+      transport: freshTransport,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    // The good deployment re-spawns (exactly one handshake to drive);
+    // scan order is filesystem-dependent, but only the good record spawns.
+    const restorePromise = routerB.restoreWorkflowDeployments();
+    await second.driveReadyFor(0);
+    await restorePromise;
+
+    expect(second.spawnCount()).toBe(1);
+    expect(isRegistered(freshTransport, goodHead)).toBe(true);
+    expect(isRegistered(freshTransport, badHead)).toBe(false);
+    // The failed record is KEPT on disk -- never deleted, unlike a
+    // soft-failed deploy -- so a later boot can retry it.
+    expect(
+      await recordExists(dataDir, deriveTrivialDeploymentId(badHead)),
+    ).toBe(true);
+  });
+
+  test("restore applies validateWorkflowProjection: a stepOrder entry with no matching steps is skipped", async () => {
+    const dataDir = await createTempBaseDir("sidecar-restore-validator-data-");
+    const head = "ins_validator@example.com";
+    const deploymentId = deriveTrivialDeploymentId(head);
+
+    // Hand-write a record plus a workflow.json whose `stepOrder` names a step
+    // `steps` does not define. This clears the wire arktype
+    // (`AgentDeployWorkflow` only checks that `sources` cover `stepOrder`) but
+    // MUST be rejected by `validateWorkflowProjection`, the second gate the
+    // deploy path applies. If restore ran only the arktype it would spawn a
+    // child for a structurally invalid definition.
+    const record: WorkflowDeploymentRecord = {
+      version: 1,
+      agentAddress: head,
+      definitionId: "wf-missing-step",
+      sources: { "step-1": makeInferenceSource("step-1") },
+      hubPublicKey: "hub-pk",
+    };
+    await writeWorkflowDeploymentRecord(dataDir, deploymentId, record);
+    const workflowJsonPath = path.join(
+      dataDir,
+      "assets",
+      "workflow",
+      "wf-missing-step",
+      "workflow.json",
+    );
+    await fs.mkdir(path.dirname(workflowJsonPath), { recursive: true });
+    await fs.writeFile(
+      workflowJsonPath,
+      JSON.stringify({
+        id: "wf-missing-step",
+        triggers: [{ type: "manual" }],
+        stepOrder: ["step-1"],
+        steps: {},
+      }),
+      "utf8",
+    );
+
+    const spawner = makeReadyDrivingSpawner(9500);
+    const freshTransport = createInMemoryTransport();
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      transport: freshTransport,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    await router.restoreWorkflowDeployments();
+
+    expect(spawner.spawnCount()).toBe(0);
+    expect(isRegistered(freshTransport, head)).toBe(false);
+  });
+
+  test("restore is a no-op for a deployment already live in this process", async () => {
+    const dataDir = await createTempBaseDir("sidecar-restore-guard-data-");
+    const head = "ins_guard@example.com";
+
+    const spawner = makeReadyDrivingSpawner(9600);
+    const { router, transport } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    const deployPromise = router.deploy(singleStepFrame(head, "wf-guard"));
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+    expect(spawner.spawnCount()).toBe(1);
+
+    // The record is on disk and the address is live in this same process. A
+    // restore pass must NOT spawn a second child for an address the core's
+    // double-spawn guard already owns (the transition guard the B-reroute
+    // follow-up leans on).
+    await router.restoreWorkflowDeployments();
+
+    expect(spawner.spawnCount()).toBe(1);
+    expect(isRegistered(transport, head)).toBe(true);
+  });
+
+  test("a second deploy for a live address is rejected without orphaning its restore record", async () => {
+    const dataDir = await createTempBaseDir("sidecar-restore-dup-data-");
+    const head = "ins_dup@example.com";
+    const deploymentId = deriveTrivialDeploymentId(head);
+
+    const spawner = makeReadyDrivingSpawner(9700);
+    const { router, transport } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    const deployPromise = router.deploy(singleStepFrame(head, "wf-dup"));
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+    expect(await recordExists(dataDir, deploymentId)).toBe(true);
+
+    // A second deploy for the already-live address must be rejected WITHOUT
+    // touching the running deployment's durable state. The reject fires
+    // before any overwrite; without it, deployMultiStep's catch would delete
+    // the live deployment's record and release its slug, silently breaking
+    // the next restart for a still-running agent.
+    await expect(
+      router.deploy(singleStepFrame(head, "wf-dup")),
+    ).rejects.toThrow(/already deployed/);
+    expect(spawner.spawnCount()).toBe(1);
+    expect(await recordExists(dataDir, deploymentId)).toBe(true);
+    expect(isRegistered(transport, head)).toBe(true);
+  });
+
+  test("restore skips a record whose address does not derive its directory name", async () => {
+    const dataDir = await createTempBaseDir("sidecar-restore-mismatch-data-");
+    const head = "ins_mismatch@example.com";
+    // A record filed under a directory that is NOT its own derived slug --
+    // a corrupt or misplaced record that must not be restored under the
+    // wrong slug.
+    const wrongDir = "not-the-right-slug";
+    const record: WorkflowDeploymentRecord = {
+      version: 1,
+      agentAddress: head,
+      definitionId: "wf-mismatch",
+      sources: { "step-1": makeInferenceSource("step-1") },
+      hubPublicKey: "hub-pk",
+    };
+    await writeWorkflowDeploymentRecord(dataDir, wrongDir, record);
+
+    const spawner = makeReadyDrivingSpawner(9800);
+    const freshTransport = createInMemoryTransport();
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      transport: freshTransport,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    await router.restoreWorkflowDeployments();
+
+    expect(spawner.spawnCount()).toBe(0);
+    expect(isRegistered(freshTransport, head)).toBe(false);
+    // The record is kept on a skip, not deleted.
+    expect(await recordExists(dataDir, wrongDir)).toBe(true);
+  });
+
+  test("restore soft-fails and keeps the record when the pinned source is no longer buildable", async () => {
+    const dataDir = await createTempBaseDir(
+      "sidecar-restore-unbuildable-data-",
+    );
+    const head = "ins_unbuildable_restore@example.com";
+    const deploymentId = deriveTrivialDeploymentId(head);
+
+    // First process: a permissive gate lets the deploy through, persisting
+    // the record and its workflow.json.
+    const first = makeReadyDrivingSpawner(9900);
+    const { router: routerA } = await buildMultistepFixture({
+      spawner: first.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const deployPromise = routerA.deploy(
+      singleStepFrame(head, "wf-unbuildable-restore"),
+    );
+    await first.driveReadyFor(0);
+    await deployPromise;
+
+    // Restart with a gate that now rejects the pinned provider.
+    const second = makeReadyDrivingSpawner(10000);
+    const freshTransport = createInMemoryTransport();
+    const { router: routerB } = await buildMultistepFixture({
+      spawner: second.spawner,
+      transport: freshTransport,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      assertSourceBuildable: (source) => {
+        throw new Error(
+          `Source provider "${source.provider}" is not registered`,
+        );
+      },
+    });
+
+    await routerB.restoreWorkflowDeployments();
+
+    expect(second.spawnCount()).toBe(0);
+    expect(isRegistered(freshTransport, head)).toBe(false);
+    // The record survives so a later boot, once the provider is buildable
+    // again, can retry it.
+    expect(await recordExists(dataDir, deploymentId)).toBe(true);
   });
 });

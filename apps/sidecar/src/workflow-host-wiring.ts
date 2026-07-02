@@ -58,7 +58,10 @@ import {
   type InferenceSource,
   type KeyPair,
 } from "@intx/types/runtime";
-import type { AgentDeployFrame } from "@intx/types/sidecar";
+import {
+  AgentDeployWorkflow,
+  type AgentDeployFrame,
+} from "@intx/types/sidecar";
 import { STEP_ID_PATTERN } from "@intx/workflow";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
@@ -69,6 +72,7 @@ import type {
 } from "./workflow-run-pack-client";
 import {
   deleteWorkflowDeploymentRecord,
+  scanWorkflowDeploymentRecords,
   writeWorkflowDeploymentRecord,
   type WorkflowDeploymentRecord,
 } from "./workflow-deployment-record";
@@ -659,6 +663,26 @@ async function derivePrincipalPublicKeyHex(
   return hexEncode(await derivePublicKeyBytes(signingKeySeed));
 }
 
+/**
+ * The sidecar's `DeployRouter` plus the boot-time restore driver. The link
+ * routes `agent.deploy`/`agent.undeploy` through the `DeployRouter` surface;
+ * the sidecar boot edge additionally calls `restoreWorkflowDeployments` once,
+ * before connecting to the hub, to re-establish the deployments a prior
+ * process persisted. The extra method is sidecar-app-only, so it rides on the
+ * concrete router type rather than the shared `DeployRouter` contract.
+ */
+export interface SidecarDeployRouter extends DeployRouter {
+  /**
+   * Re-establish every persisted workflow deployment on this sidecar's local
+   * substrate. Runs once at boot, before `hubLink.connect()`, so a single-step
+   * head's mailbox/transport registration is live before the hub routes to it.
+   * Soft-fails per deployment: a record that cannot be restored (unbuildable
+   * provider, corrupt `workflow.json`, spawn failure) is logged and left on
+   * disk for a later boot to retry -- it is never deleted here.
+   */
+  restoreWorkflowDeployments(): Promise<void>;
+}
+
 export function createSidecarDeployRouter(deps: {
   sessions: SessionManager;
   keyStore: AgentKeyStore;
@@ -845,7 +869,7 @@ export function createSidecarDeployRouter(deps: {
    * handler for the operator-owned horizon invariant.
    */
   consumedRetentionMs?: number;
-}): DeployRouter {
+}): SidecarDeployRouter {
   // Validate the signing seed at construction so a malformed key fails
   // sidecar boot rather than the first multi-step deploy, where the
   // public key is derived from it (`derivePrincipalPublicKeyHex`). The
@@ -974,6 +998,31 @@ export function createSidecarDeployRouter(deps: {
   }
 
   /**
+   * Read a workflow definition back off the sidecar's local substrate for a
+   * boot-time restore. Mirrors `materializeWorkflowJson`'s path derivation
+   * (`${dataDir}/assets/workflow/<definitionId>/workflow.json`). Returns the
+   * parsed-but-unvalidated JSON: the on-disk file is untrusted at restore
+   * (partial write, corruption, tamper), so the caller re-validates it through
+   * the same wire + structural gates the deploy path applies. A missing file
+   * or unparseable JSON throws; the restore loop's per-record catch converts
+   * that into a warn-and-skip.
+   */
+  async function readWorkflowJson(
+    sidecarDataDir: string,
+    definitionId: string,
+  ): Promise<unknown> {
+    const workflowAssetPath = pathJoin(
+      sidecarDataDir,
+      "assets",
+      "workflow",
+      definitionId,
+      "workflow.json",
+    );
+    const raw = await readFile(workflowAssetPath, "utf8");
+    return JSON.parse(raw);
+  }
+
+  /**
    * The per-deployment inputs the shared spawn core needs to stand up a
    * workflow deployment, independent of the live deploy frame. The live
    * deploy path builds this from `frame`/`projection`; a boot-time restore
@@ -1009,6 +1058,19 @@ export function createSidecarDeployRouter(deps: {
   async function spawnWorkflowDeployment(
     spec: WorkflowDeploySpec,
   ): Promise<DeployRouterResult> {
+    // Fail loud if this address already has a live supervisor. A single-step
+    // deploy would fault anyway (its `transport.register` throws on a
+    // duplicate), but a genuine multi-step head never registers on the
+    // transport and the `activeSupervisors.set` below would silently clobber
+    // the running deployment's handle. Both the deploy path and the boot
+    // restore path route through here, so this is the single transition guard
+    // against a double-spawn -- notably a boot restore racing a legacy
+    // restore for the same address (the B-reroute follow-up relies on it).
+    if (activeSupervisors.has(spec.agentAddress)) {
+      throw new Error(
+        `sidecar deploy router: a supervisor is already active for ${spec.agentAddress}; refusing to spawn a second`,
+      );
+    }
     const deploymentId = deriveTrivialDeploymentId(spec.agentAddress);
 
     // Single-step launched-agent deploy vs. derived multi-step deploy. A
@@ -1252,6 +1314,27 @@ export function createSidecarDeployRouter(deps: {
     for (const stepId of projection.definition.stepOrder) {
       const source = projection.sources[stepId];
       if (source !== undefined) deps.assertSourceBuildable(source);
+    }
+
+    // Reject a re-deploy of an address already live in this process BEFORE
+    // touching any durable state. The durable writes below (the restore
+    // record, workflow.json, step grants) are destructive overwrites of state
+    // owned by whatever deployment currently holds the address; overwriting is
+    // only legal when this deploy owns the address. `spawnWorkflowDeployment`
+    // carries the same guard as its single-owner backstop, but it throws only
+    // after this method has already overwritten -- so the guard must also sit
+    // ahead of the writes, or a duplicate frame would clobber a live
+    // deployment's record (and the catch below would then delete it). A
+    // re-deploy after `undeploy` passes: `undeploy` drops the
+    // `activeSupervisors` entry; a failed deploy that unwound is not in the
+    // map either. Known boundary: the trivial branch (`frame.workflow`
+    // undefined) never enters `activeSupervisors`, so a trivial re-deploy
+    // against a live multi-step address is not caught here; that path is
+    // slated for removal, taking the boundary with it.
+    if (activeSupervisors.has(frame.agentAddress)) {
+      throw new Error(
+        `sidecar deploy router: ${frame.agentAddress} is already deployed; undeploy it before redeploying`,
+      );
     }
 
     const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
@@ -1545,6 +1628,105 @@ export function createSidecarDeployRouter(deps: {
         deploymentId,
         agentAddress: frame.agentAddress,
       });
+    },
+    async restoreWorkflowDeployments(): Promise<void> {
+      const dataDir = stepStateDataDir;
+      if (dataDir === undefined) {
+        // No substrate config was wired (a trivial-only or test router that
+        // never spawns a child): nothing was ever persisted under this data
+        // dir, so there is nothing to restore.
+        return;
+      }
+
+      const scanned = await scanWorkflowDeploymentRecords(dataDir);
+      // Restore serially, not in parallel: deterministic boot-log ordering,
+      // one isolable warning per failed record, and no concurrent
+      // child-spawn / transport-register storm. Restore runs before
+      // `hubLink.connect()`, so there are no concurrent deploys to contend
+      // with. Each record's failure is caught so one bad deployment cannot
+      // strand the rest.
+      for (const { deploymentId, record } of scanned) {
+        try {
+          // Integrity: the stored address must re-derive to its own directory
+          // name. A mismatch means a corrupt or misplaced record; skip it
+          // rather than restore a deployment under the wrong slug.
+          const derived = deriveTrivialDeploymentId(record.agentAddress);
+          if (derived !== deploymentId) {
+            logger.warn`skipping workflow deployment restore: ${record.agentAddress} derives slug ${derived}, not its directory ${deploymentId}`;
+            continue;
+          }
+
+          // Re-read and RE-VALIDATE the definition off disk with the exact
+          // gates the deploy path applies: the wire arktype
+          // (`AgentDeployWorkflow`) to narrow the untrusted on-disk shape,
+          // then `validateWorkflowProjection` for the structural invariants
+          // the arktype does not cover (non-empty stepOrder, every stepOrder
+          // entry backed by a `steps` entry). The on-disk `workflow.json` is
+          // untrusted at restore, so it must clear the same bar a fresh
+          // deploy frame clears -- no weaker.
+          const definitionRaw = await readWorkflowJson(
+            dataDir,
+            record.definitionId,
+          );
+          const projection = AgentDeployWorkflow({
+            definition: definitionRaw,
+            sources: record.sources,
+          });
+          if (projection instanceof type.errors) {
+            logger.warn`skipping workflow deployment restore for ${record.agentAddress}: workflow.json failed validation: ${projection.summary}`;
+            continue;
+          }
+          validateWorkflowProjection(projection);
+
+          // Re-run the source-admission gate: refuse to restore a deployment
+          // whose pinned provider this sidecar can no longer build. The
+          // record is KEPT (not deleted) so a later boot with the provider
+          // restored retries it.
+          for (const stepId of projection.definition.stepOrder) {
+            const source = projection.sources[stepId];
+            if (source !== undefined) deps.assertSourceBuildable(source);
+          }
+
+          const spec: WorkflowDeploySpec = {
+            agentAddress: record.agentAddress,
+            definition: projection.definition,
+            sources: projection.sources,
+            sessionId: record.sessionId,
+            hubPublicKey: record.hubPublicKey,
+          };
+
+          // The slug is the caller's, matching `deployMultiStep`: claim before
+          // the spawn, release on failure. Unlike deploy's soft-fail, restore
+          // does NOT delete the record and does NOT re-materialize
+          // `workflow.json` or the step grants -- all of that is already on
+          // disk from the original deploy. A failed restore just warns and
+          // leaves the record for the next boot; there is deliberately no GC
+          // of a permanently-unrestorable record here (an operator reclaims it
+          // by undeploying the address).
+          //
+          // Release only a slug THIS pass newly claimed: if the address is
+          // already live (its slug still held by the running deployment), the
+          // core's double-spawn guard throws, and freeing the slug then would
+          // strand a live deployment's collision guard. `claimSlug` is a
+          // no-op for an already-held (deploymentId, address) pair, so the
+          // pre-claim check distinguishes the two.
+          const slugNewlyClaimed =
+            slugClaims.get(deploymentId) !== record.agentAddress;
+          claimSlug(deploymentId, record.agentAddress);
+          try {
+            await spawnWorkflowDeployment(spec);
+            logger.info`Restored workflow deployment for ${record.agentAddress}`;
+          } catch (cause) {
+            if (slugNewlyClaimed) {
+              releaseSlug(deploymentId, record.agentAddress);
+            }
+            throw cause;
+          }
+        } catch (cause) {
+          const reason = cause instanceof Error ? cause.message : String(cause);
+          logger.warn`Failed to restore workflow deployment ${deploymentId}: ${reason}`;
+        }
+      }
     },
   };
 }

@@ -34,6 +34,7 @@ import type { DispatchTimingMark } from "@intx/workflow-host";
 import {
   createSidecarDeployRouter,
   createSidecarWorkflowSupervisor,
+  type SidecarDeployRouter,
 } from "./workflow-host-wiring";
 import {
   createDeploymentAddressRegistry,
@@ -331,6 +332,11 @@ const buildHarness = createDefaultHarnessBuilder({
   gcPolicy: agentGCPolicy,
 });
 
+// Set by the `createDeployRouter` callback below (invoked synchronously
+// during construction) so the boot edge can drive the router's restore pass
+// before `orchestrator.start()` connects to the hub.
+let sidecarDeployRouter: SidecarDeployRouter | undefined;
+
 const orchestrator = createSidecarOrchestrator({
   hubURL: hubWsUrl,
   sidecarId,
@@ -352,8 +358,8 @@ const orchestrator = createSidecarOrchestrator({
     keyStore,
     onAgentEvent,
     publishWorkflowInferenceEvent,
-  }) =>
-    createSidecarDeployRouter({
+  }) => {
+    const router = createSidecarDeployRouter({
       sessions,
       keyStore,
       onAgentEvent,
@@ -376,10 +382,31 @@ const orchestrator = createSidecarOrchestrator({
       ...(onDispatchTiming !== undefined ? { onDispatchTiming } : {}),
       ...(repackEveryMessages !== undefined ? { repackEveryMessages } : {}),
       ...(consumedRetentionMs !== undefined ? { consumedRetentionMs } : {}),
-    }),
+    });
+    // Capture the router so the boot edge can drive its restore pass before
+    // connecting. `createDeployRouter` runs synchronously during
+    // `createSidecarOrchestrator` construction (exactly once, before the
+    // handle returns), so `sidecarDeployRouter` is populated by the time the
+    // restore call below runs.
+    sidecarDeployRouter = router;
+    return router;
+  },
 });
 
 resolvedHubLink = orchestrator.hubLink;
+
+// Re-establish the workflow deployments a prior sidecar process persisted,
+// BEFORE opening the hub connection: each single-step head must have its
+// mailbox/transport registration live before the hub can route to it.
+// Assert the router was captured rather than optional-chaining it, so a
+// future refactor that made `createDeployRouter` fire lazily would fail loud
+// here instead of silently skipping restore.
+if (sidecarDeployRouter === undefined) {
+  throw new Error(
+    "sidecar boot: deploy router was not constructed before workflow-deployment restore",
+  );
+}
+await sidecarDeployRouter.restoreWorkflowDeployments();
 
 orchestrator.start();
 
