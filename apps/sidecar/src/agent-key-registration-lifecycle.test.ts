@@ -246,6 +246,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
       repoStore,
       signingKeySeed: keyPair.privateKey,
       createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: () => undefined,
       registerDeployment: () => undefined,
       unregisterDeployment: () => undefined,
       multistepSubprocessSpawner: spawner,

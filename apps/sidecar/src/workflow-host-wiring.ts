@@ -55,6 +55,7 @@ import {
   parseInferenceEvent,
   type CryptoProvider,
   type InferenceEvent,
+  type InferenceSource,
   type KeyPair,
 } from "@intx/types/runtime";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
@@ -675,6 +676,21 @@ export function createSidecarDeployRouter(deps: {
    */
   createAgentCrypto: (keyPair: KeyPair) => CryptoProvider;
   /**
+   * Source-admission gate: throws if a step's pinned inference source
+   * names a provider this sidecar cannot build. The buildable-provider
+   * set is sidecar config (the boot edge's adapter registry), so this
+   * admission control lives at the sidecar -- the hub is a different
+   * process and cannot know a given sidecar's providers. Production wires
+   * the default harness builder's `canBuildSource` verbatim, so a rejected
+   * provider carries the same `"... is not registered"` message.
+   *
+   * Distinct from the orchestrator's operator-approval check
+   * (`pickStepInferenceSource`): that gates on whether the operator
+   * approved a `provider:model`; this gates on whether the provider is
+   * buildable at all. A source can be approved yet unbuildable.
+   */
+  assertSourceBuildable: (source: InferenceSource) => void;
+  /**
    * Record a `(deploymentId -> agentAddress)` mapping the boot edge's
    * workflow-run pack push facade consults when it must address an
    * outbound pack frame. Fires once per inbound `agent.deploy` frame
@@ -904,6 +920,19 @@ export function createSidecarDeployRouter(deps: {
     // surfaces a structured failure rather than a hung `starting`
     // supervisor.
     validateWorkflowProjection(projection);
+
+    // Source-admission gate: reject a deploy whose any step pins an
+    // inference provider this sidecar cannot build, BEFORE any state is
+    // claimed or the child is spawned. The throw propagates back through
+    // the deploy frame so the hub's `deployWorkflow` rejects synchronously
+    // at deploy time, rather than the child failing the run when the
+    // step's inference first resolves. Covers single- and multi-step: the
+    // projection's `narrow` guarantees every stepOrder entry has a
+    // `sources` entry.
+    for (const stepId of projection.definition.stepOrder) {
+      const source = projection.sources[stepId];
+      if (source !== undefined) deps.assertSourceBuildable(source);
+    }
 
     const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
 

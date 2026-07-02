@@ -291,25 +291,15 @@ describe("cross-process custom inference adapter (INTR-233)", () => {
     expect(reply).toContain(body);
   });
 
-  // PENDING an operator security-posture decision: a single-step workflow
-  // now deploys at the head, which skips the hub's provision/session-start
-  // path where `canBuildSource` used to reject an unregistered provider at
-  // deploy time. The no-conjure invariant still holds (the child's
-  // exact-match `registry.resolve` throws with no adapter substitution),
-  // but the rejection is deferred to run-time (`RunFailed`) instead of
-  // synchronous at deploy. The intended fix is a deploy-core source-
-  // admission gate owned by the instance-routing work, covering single-
-  // and multi-step uniformly; the trivial/warm-path cleanup depends on
-  // that gate existing first (multi-step's gate currently rides the same
-  // per-step warm provisioning). This test asserts deploy-time rejection
-  // and is held (not rewritten) until the operator rules whether to
-  // restore the deploy-time gate or accept run-time-only enforcement.
-  test.skip("a provider absent from the manifest is rejected at the source gate", async () => {
+  test("a provider absent from the manifest is rejected at the source gate", async () => {
     // The firewall: the operator registry holds only the built-ins plus the
     // manifest's "custom-x". A provider id that no manifest entry and no
-    // built-in supplies is rejected by `canBuildSource` against that same
-    // registry, before the agent ever launches -- so a provider string (which
-    // deploy/tenant config controls) cannot conjure an adapter.
+    // built-in supplies is rejected by the sidecar deploy router's
+    // source-admission gate (which reuses `canBuildSource` against that same
+    // registry) before the workflow-process child is spawned -- so a
+    // provider string (which deploy/tenant config controls) cannot conjure
+    // an adapter, and the deploy is rejected synchronously at deploy time
+    // rather than failing the first run.
     await expect(
       deployCustomProviderWorkflow(
         "cross-process-custom-negative",

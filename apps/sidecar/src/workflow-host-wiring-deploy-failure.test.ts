@@ -104,6 +104,7 @@ describe("deploy-failure registry leak", () => {
       >[0]["repoStore"],
       signingKeySeed: new Uint8Array(32),
       createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: () => undefined,
       registerDeployment: ({ deploymentId, agentAddress }) => {
         registry.record(deploymentId, agentAddress);
       },
@@ -188,6 +189,7 @@ describe("deploy-failure registry leak", () => {
       repoStore: repoStoreStub as RepoStore,
       signingKeySeed: new Uint8Array(32),
       createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: () => undefined,
       registerDeployment: ({ deploymentId, agentAddress }) => {
         registry.record(deploymentId, agentAddress);
       },

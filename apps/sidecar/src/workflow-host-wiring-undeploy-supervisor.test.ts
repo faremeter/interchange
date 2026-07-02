@@ -265,6 +265,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       repoStore,
       signingKeySeed: keyPair.privateKey,
       createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: () => undefined,
       registerDeployment: () => {
         /* no-op */
       },

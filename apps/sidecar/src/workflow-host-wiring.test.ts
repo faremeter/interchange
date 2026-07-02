@@ -375,6 +375,7 @@ describe("createSidecarDeployRouter wires the InferenceEvent subscription to rec
       repoStore,
       signingKeySeed: keyPair.privateKey,
       createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: () => undefined,
       registerDeployment: () => {
         /* the in-test repoStore is a stub; the pack-push facade is exercised separately */
       },
@@ -758,6 +759,7 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       repoStore,
       signingKeySeed: keyPair.privateKey,
       createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: () => undefined,
       registerDeployment: () => {
         /* no-op */
       },
@@ -831,6 +833,7 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       repoStore,
       signingKeySeed: keyPair.privateKey,
       createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: () => undefined,
       registerDeployment: () => {
         /* no-op */
       },
@@ -919,6 +922,7 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       repoStore,
       signingKeySeed: keyPair.privateKey,
       createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: () => undefined,
       registerDeployment: () => undefined,
       unregisterDeployment: () => undefined,
       multistepSubprocessSpawner: () => {
@@ -994,6 +998,7 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       repoStore,
       signingKeySeed: keyPair.privateKey,
       createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: () => undefined,
       registerDeployment: () => undefined,
       unregisterDeployment: () => undefined,
       multistepSubprocessSpawner: () => {
@@ -1079,6 +1084,7 @@ describe("createSidecarDeployRouter trivial-frame regression", () => {
       repoStore,
       signingKeySeed: keyPair.privateKey,
       createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: () => undefined,
       registerDeployment: () => undefined,
       unregisterDeployment: () => undefined,
       multistepSubprocessSpawner: () => {
@@ -1133,6 +1139,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       deploymentId: string;
       agentAddress: string;
     }) => void;
+    assertSourceBuildable?: Parameters<
+      typeof createSidecarDeployRouter
+    >[0]["assertSourceBuildable"];
   }) {
     const transport = createInMemoryTransport();
     const keyPair = await generateKeyPair();
@@ -1184,6 +1193,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       repoStore,
       signingKeySeed: keyPair.privateKey,
       createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: opts.assertSourceBuildable ?? (() => undefined),
       registerDeployment: opts.registerDeployment ?? (() => undefined),
       unregisterDeployment: () => {
         /* no-op */
@@ -1442,6 +1452,50 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(mailRouter.tryRoute(frame.agentAddress, new Uint8Array([1]))).toBe(
       false,
     );
+  });
+
+  test("rejects a deploy whose step pins an unbuildable provider before spawning", async () => {
+    // The source-admission gate runs before any state is claimed or the
+    // child is spawned. A step whose pinned source names a provider the
+    // sidecar cannot build must reject the whole deploy synchronously --
+    // the admission control property -- rather than spawning a child that
+    // fails when the step's inference first resolves.
+    let spawnCount = 0;
+    const trackingSpawner: SubprocessSpawner = () => {
+      spawnCount++;
+      throw new Error("spawn must not be reached for an inadmissible source");
+    };
+    const { router } = await buildMultistepFixture({
+      spawner: trackingSpawner,
+      assertSourceBuildable: (source) => {
+        if (source.provider === "ghost-provider") {
+          throw new Error(
+            `Source provider "${source.provider}" is not registered`,
+          );
+        }
+      },
+    });
+
+    const frame = makeMultistepFrame({
+      agentAddress: "ins_unbuildable@example.com",
+      definition: {
+        id: "wf-unbuildable",
+        triggers: [{ type: "manual" }],
+        stepOrder: ["step-1"],
+        steps: { "step-1": { kind: "step" } },
+      },
+      sources: {
+        "step-1": {
+          ...makeInferenceSource("step-1"),
+          provider: "ghost-provider",
+        },
+      },
+    });
+
+    await expect(router.deploy(frame)).rejects.toThrow(
+      /ghost-provider.*not registered/,
+    );
+    expect(spawnCount).toBe(0);
   });
 
   test("a spawner that throws synchronously surfaces a structured rejection rather than hanging in starting", async () => {

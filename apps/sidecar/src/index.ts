@@ -320,19 +320,24 @@ if (hostTmpdir !== undefined) {
   multistepSubstrateEnv["TMPDIR"] = hostTmpdir;
 }
 
+// Hoisted so the deploy router's source-admission gate reuses the exact
+// same `canBuildSource` predicate the harness builder enforces, against
+// the one adapter registry, rather than a second copy of the check.
+const buildHarness = createDefaultHarnessBuilder({
+  cacheRoot,
+  cacheMaxBytes,
+  registryMaxTarballBytes,
+  adapters,
+  gcPolicy: agentGCPolicy,
+});
+
 const orchestrator = createSidecarOrchestrator({
   hubURL: hubWsUrl,
   sidecarId,
   token: sidecarToken,
   dataDir,
   transport,
-  buildHarness: createDefaultHarnessBuilder({
-    cacheRoot,
-    cacheMaxBytes,
-    registryMaxTarballBytes,
-    adapters,
-    gcPolicy: agentGCPolicy,
-  }),
+  buildHarness,
   createAgentCrypto: createEd25519Crypto,
   cryptoOps: {
     generateKeyPair,
@@ -356,6 +361,7 @@ const orchestrator = createSidecarOrchestrator({
       repoStore: wrappedRepoStore,
       signingKeySeed: sidecarSigningKey.privateKey,
       createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: buildHarness.canBuildSource,
       registerDeployment: ({ deploymentId, agentAddress }) => {
         deploymentAddressRegistry.record(deploymentId, agentAddress);
       },
