@@ -67,6 +67,11 @@ import type {
   MultistepMailRouter,
   MultistepSignalRouter,
 } from "./workflow-run-pack-client";
+import {
+  deleteWorkflowDeploymentRecord,
+  writeWorkflowDeploymentRecord,
+  type WorkflowDeploymentRecord,
+} from "./workflow-deployment-record";
 
 const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
 
@@ -1278,16 +1283,54 @@ export function createSidecarDeployRouter(deps: {
     // deploy keeps it (the undeploy hook releases it at teardown). The
     // spawn core owns unwinding the supervisor and registrations it stands
     // up; the slug is the caller's.
+    // Resolve the sidecar data dir once: the deployment record, workflow.json,
+    // and the per-step scratch all root under it. Required for any deployment
+    // that spawns a child.
+    const dataDir = stepStateDataDir;
+    if (typeof dataDir !== "string" || dataDir.length === 0) {
+      throw new Error(
+        "sidecar deploy router: SIDECAR_DATA_DIR must be present in the multi-step substrate env; the deployment record and workflow-process child root under it",
+      );
+    }
+
+    // The spec the shared spawn core consumes, and the durable record that
+    // lets a boot-time restore rebuild the SAME spec (definition re-read from
+    // workflow.json by id, grants from the step repos, and the record's
+    // frame/in-memory-only inputs: sources, session id, single-step hub key).
+    const spec: WorkflowDeploySpec = {
+      agentAddress: frame.agentAddress,
+      definition: projection.definition,
+      sources: projection.sources,
+      sessionId: frame.config.sessionId,
+      hubPublicKey:
+        projection.definition.stepOrder.length === 1
+          ? frame.hubPublicKey
+          : undefined,
+    };
+    const record: WorkflowDeploymentRecord = {
+      version: 1,
+      agentAddress: spec.agentAddress,
+      definitionId: spec.definition.id,
+      sources: spec.sources,
+      ...(spec.sessionId !== undefined ? { sessionId: spec.sessionId } : {}),
+      ...(spec.hubPublicKey !== undefined
+        ? { hubPublicKey: spec.hubPublicKey }
+        : {}),
+    };
+
     claimSlug(deploymentId, frame.agentAddress);
     try {
+      // Persist the deployment record BEFORE the spawn so a crash mid-spawn
+      // leaves a record the boot scan re-drives (an idempotent re-spawn; the
+      // child's in-flight-run discovery resumes any run). A soft-failed deploy
+      // deletes it below, so only a crash-interrupted deploy leaves one.
+      await writeWorkflowDeploymentRecord(dataDir, deploymentId, record);
+
       // Materialize the deploy-only durable state the spawned child and the
       // supervisor read from disk: the workflow definition (`workflow.json`)
       // and each step's grants. The restore path finds both already on disk
       // and skips this; both land before the shared spawn core runs.
-      await materializeWorkflowJson(
-        multistepSubstrateEnv.SIDECAR_DATA_DIR,
-        projection.definition,
-      );
+      await materializeWorkflowJson(dataDir, projection.definition);
 
       // Grants bridge: the spawned child does not see the frame; it reads
       // each step's grants out of `state/grants.json` in the step's
@@ -1303,19 +1346,13 @@ export function createSidecarDeployRouter(deps: {
         grants: frame.config.grants,
       });
 
-      // Hand off to the shared spawn core. A single-step deployment records
-      // its hub key at the head; a multi-step deployment carries none.
-      return await spawnWorkflowDeployment({
-        agentAddress: frame.agentAddress,
-        definition: projection.definition,
-        sources: projection.sources,
-        sessionId: frame.config.sessionId,
-        hubPublicKey:
-          projection.definition.stepOrder.length === 1
-            ? frame.hubPublicKey
-            : undefined,
-      });
+      // Hand off to the shared spawn core.
+      return await spawnWorkflowDeployment(spec);
     } catch (cause) {
+      // Soft failure (this process survived, the deploy threw): drop the
+      // record and release the slug so the failed deploy is neither restored
+      // nor leaks its slug.
+      await deleteWorkflowDeploymentRecord(dataDir, deploymentId);
       releaseSlug(deploymentId, frame.agentAddress);
       throw cause;
     }
@@ -1495,6 +1532,13 @@ export function createSidecarDeployRouter(deps: {
             { recursive: true, force: true },
           );
         }
+      }
+      // Drop the deployment record so a boot-time restore does not re-spawn a
+      // torn-down deployment. Runs on every undeploy -- not only when a
+      // supervisor was active -- so a record left behind by a
+      // crash-interrupted deploy is reclaimed too.
+      if (stepStateDataDir !== undefined) {
+        await deleteWorkflowDeploymentRecord(stepStateDataDir, deploymentId);
       }
       releaseSlug(deploymentId, frame.agentAddress);
       deps.unregisterDeployment({

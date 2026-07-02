@@ -25,6 +25,7 @@ import {
   computeWireDefinitionHash,
   createSidecarDeployRouter,
   createSidecarWorkflowSupervisor,
+  deriveTrivialDeploymentId,
   driveTrivialRunChain,
   STEP_INFERENCE_SOURCES_ENV_KEY,
   validateWorkflowProjection,
@@ -1452,6 +1453,48 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(mailRouter.tryRoute(frame.agentAddress, new Uint8Array([1]))).toBe(
       false,
     );
+  });
+
+  test("a soft-failed deploy (spawn rejects) leaves no restore record", async () => {
+    const crashSpawner: SubprocessSpawner = () => {
+      throw new Error("ENOENT: binary missing");
+    };
+    const { router, substrateEnv } = await buildMultistepFixture({
+      spawner: crashSpawner,
+    });
+    const agentAddress = "ins_softfail@example.com";
+    const frame = makeMultistepFrame({
+      agentAddress,
+      definition: {
+        id: "wf-softfail",
+        triggers: [{ type: "manual" }],
+        stepOrder: ["step-1"],
+        steps: { "step-1": { kind: "step" } },
+      },
+      sources: { "step-1": makeInferenceSource("step-1") },
+    });
+
+    await expect(router.deploy(frame)).rejects.toThrow(/ENOENT/);
+
+    // The record is written before the spawn, so the soft-failure catch must
+    // delete it -- a boot-time restore must not re-spawn a deploy that never
+    // completed. (A hard crash mid-spawn, by contrast, deliberately leaves
+    // the record for the restore to re-drive.)
+    const dataDir = substrateEnv.SIDECAR_DATA_DIR;
+    if (dataDir === undefined)
+      throw new Error("fixture SIDECAR_DATA_DIR unset");
+    const recordFile = path.join(
+      dataDir,
+      "workflow-runs",
+      deriveTrivialDeploymentId(agentAddress),
+      "deployment.json",
+    );
+    expect(
+      await fs.access(recordFile).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false);
   });
 
   test("rejects a deploy whose step pins an unbuildable provider before spawning", async () => {

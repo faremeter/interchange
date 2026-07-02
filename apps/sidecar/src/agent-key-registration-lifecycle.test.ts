@@ -29,7 +29,13 @@ import {
 } from "@intx/workflow-host";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 
-import { createSidecarDeployRouter } from "./workflow-host-wiring";
+import { type } from "arktype";
+
+import {
+  createSidecarDeployRouter,
+  deriveTrivialDeploymentId,
+} from "./workflow-host-wiring";
+import { WorkflowDeploymentRecord } from "./workflow-deployment-record";
 import {
   createMultistepDrainRouter,
   createMultistepMailRouter,
@@ -316,6 +322,26 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
     // (b) Registered after deploy -- the supervisor can now sign agent mail.
     expect(isRegistered(transport)).toBe(true);
 
+    // (b') The deploy persisted a schema-valid restore record for the
+    // deployment, carrying the head address so a boot-time restore can
+    // re-establish it.
+    const deploymentId = deriveTrivialDeploymentId(AGENT_ADDRESS);
+    const recordFile = path.join(
+      dataDir,
+      "workflow-runs",
+      deploymentId,
+      "deployment.json",
+    );
+    const parsedRecord = WorkflowDeploymentRecord(
+      JSON.parse(await fs.readFile(recordFile, "utf8")),
+    );
+    if (parsedRecord instanceof type.errors) {
+      throw new Error(
+        `deployment record failed validation: ${parsedRecord.summary}`,
+      );
+    }
+    expect(parsedRecord.agentAddress).toBe(AGENT_ADDRESS);
+
     const undeploy = router.undeploy;
     if (undeploy === undefined) throw new Error("router.undeploy undefined");
     await undeploy({
@@ -326,6 +352,15 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
 
     // (c) Unregistered after undeploy -- no leaked key for a torn-down agent.
     expect(isRegistered(transport)).toBe(false);
+
+    // (c') Undeploy dropped the restore record so a boot-time restore will
+    // not re-spawn the torn-down deployment.
+    expect(
+      await fs.access(recordFile).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false);
 
     await fs.rm(tempBase, { recursive: true, force: true });
     await fs.rm(dataDir, { recursive: true, force: true });
