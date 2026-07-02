@@ -911,6 +911,321 @@ export function createSidecarDeployRouter(deps: {
     if (existing === agentAddress) slugClaims.delete(deploymentId);
   }
 
+  /**
+   * Materialize the workflow definition on the sidecar's local substrate so
+   * the workflow-process child's `loadWorkflowDefinition` can read
+   * `workflow.json` out of the workflow-asset repo's working tree. The
+   * destination mirrors the bare RepoStore's `getRepoDir` for
+   * `{ kind: "workflow", id }`:
+   * `${SIDECAR_DATA_DIR}/assets/workflow/<id>/workflow.json`. The child reads
+   * via `fs.readFile`, so writing the bytes outside git suffices. This is
+   * deploy-only durable state; the restore path finds it already on disk.
+   */
+  async function materializeWorkflowJson(
+    sidecarDataDir: string | undefined,
+    definition: NonNullable<AgentDeployFrame["workflow"]>["definition"],
+  ): Promise<void> {
+    if (typeof sidecarDataDir !== "string" || sidecarDataDir.length === 0) {
+      throw new Error(
+        "sidecar deploy router: SIDECAR_DATA_DIR must be present in the multi-step substrate env; the workflow-process child resolves the workflow-asset repo dir against this data dir",
+      );
+    }
+    const workflowAssetPath = pathJoin(
+      sidecarDataDir,
+      "assets",
+      "workflow",
+      definition.id,
+      "workflow.json",
+    );
+    const workflowAssetBytes = JSON.stringify(definition, null, 2);
+    try {
+      await mkdir(dirname(workflowAssetPath), { recursive: true });
+      // Idempotent: only rewrite when the on-disk content differs. Treats a
+      // missing file as different.
+      let existing: string | null = null;
+      try {
+        existing = await readFile(workflowAssetPath, "utf8");
+      } catch (cause) {
+        if (
+          !(
+            cause instanceof Error &&
+            "code" in cause &&
+            (cause as { code: unknown }).code === "ENOENT"
+          )
+        ) {
+          throw cause;
+        }
+      }
+      if (existing !== workflowAssetBytes) {
+        await writeFile(workflowAssetPath, workflowAssetBytes, "utf8");
+      }
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      throw new Error(
+        `sidecar deploy router: failed to materialize workflow.json at ${workflowAssetPath}: ${reason}`,
+        { cause },
+      );
+    }
+  }
+
+  /**
+   * The per-deployment inputs the shared spawn core needs to stand up a
+   * workflow deployment, independent of the live deploy frame. The live
+   * deploy path builds this from `frame`/`projection`; a boot-time restore
+   * path builds the same shape from the persisted deployment record.
+   */
+  interface WorkflowDeploySpec {
+    agentAddress: string;
+    definition: NonNullable<AgentDeployFrame["workflow"]>["definition"];
+    sources: NonNullable<AgentDeployFrame["workflow"]>["sources"];
+    /** Correlates the child's inference events to the deploy's session. */
+    sessionId: string | undefined;
+    /**
+     * Hub public key recorded at the head for deploy-pack verification and
+     * inbound hub-frame verification. Required for a single-step
+     * deployment (whose head IS the agent identity); undefined for a
+     * genuine multi-step deployment, which derives per-step addresses and
+     * records no head key.
+     */
+    hubPublicKey: string | undefined;
+  }
+
+  /**
+   * The single owner of the workflow-deployment spawn sequence: construct
+   * the supervisor, register the single-step agent's outbound key + head
+   * repo + hub key, spawn the workflow-process child, then register the
+   * live deployment (supervisor, mail/signal/drain routers, address
+   * mapping). Its `try/finally` unwinds every piece of partial state if any
+   * step throws, so a failed spawn leaks nothing. Both the live deploy path
+   * and the boot-time restore path route through here so the two can never
+   * diverge on how a deployment is stood up. Callers materialize the
+   * deploy-only durable state (`workflow.json`, step grants) before calling.
+   */
+  async function spawnWorkflowDeployment(
+    spec: WorkflowDeploySpec,
+  ): Promise<DeployRouterResult> {
+    const deploymentId = deriveTrivialDeploymentId(spec.agentAddress);
+
+    // Single-step launched-agent deploy vs. derived multi-step deploy. A
+    // one-step deployment keeps the deployment's own (legacy) mail address
+    // and its grants in the legacy agent-state repo keyed by the legacy
+    // instance id. A multi-step deployment derives `<deploymentId>-<stepId>`
+    // per step for both the mail address and the agent-state repo id.
+    const stepStrategy = createStepStrategy({
+      legacyAddress: spec.agentAddress,
+      stepOrder: spec.definition.stepOrder,
+      multistepDeriveStepAddress,
+    });
+
+    // Unwind every piece of spawn state if any step between here and
+    // `registerDeployment` throws, so a failed spawn leaks no
+    // freshly-spawned workflow-process child, `activeSupervisors` entry,
+    // transport registration, or multistep router registration. The
+    // ordering inside the finally is the reverse of the success-path
+    // registration order. The caller owns the deployment slug: it must
+    // claim the collision guard before any durable write and release it on
+    // failure, so the slug is not touched here.
+    let succeeded = false;
+    let wiredForUnwind: SidecarWorkflowSupervisor | undefined;
+    let supervisorRegistered = false;
+    let routersRegistered = false;
+    let agentTransportRegistered = false;
+    try {
+      const definitionHash = await computeWireDefinitionHash(spec.definition);
+
+      // Per-deployment substrate-config keys the workflow-substrate-factory
+      // validator requires. The boot edge's `multistepSubstrateEnv` carries
+      // the boot-edge constants; the four workflow-definition / workflow-run
+      // identity keys are derived per-deploy here. `STEP_INFERENCE_SOURCES`
+      // threads the pinned per-step sources into the child.
+      const substrateEnv: Record<string, string> = {
+        ...multistepSubstrateEnv,
+        WORKFLOW_DEFINITION_REPO_ID: spec.definition.id,
+        WORKFLOW_DEFINITION_REF: "refs/heads/main",
+        WORKFLOW_RUN_REPO_ID: deploymentId,
+        WORKFLOW_RUN_REF: "refs/heads/main",
+        [STEP_INFERENCE_SOURCES_ENV_KEY]: JSON.stringify(spec.sources),
+      };
+
+      const wired = createSidecarWorkflowSupervisor({
+        transport: deps.transport,
+        repoStore: deps.repoStore,
+        signingKeySeed: deps.signingKeySeed,
+        workflowRunRepoId: {
+          kind: "workflow-run",
+          id: deploymentId,
+        },
+        workflowRunRef: "refs/heads/main",
+        deploymentId,
+        stepCount: spec.definition.stepOrder.length,
+        deploymentMailAddress: spec.agentAddress,
+        deriveStepAddress: stepStrategy.deriveStepAddress,
+        deriveStepRepoId: stepStrategy.deriveStepRepoId,
+        substrateEnv,
+        subprocessSpawner: multistepSpawner,
+        ...(deps.multistepBinaryPath !== undefined
+          ? { binaryPath: deps.multistepBinaryPath }
+          : {}),
+        // The multi-step branch never invokes trivialLaunch, but the
+        // supervisor's constructor requires the binding. Wire a sentinel
+        // that throws so a stray invocation surfaces loudly.
+        trivialLaunch: () => {
+          throw new Error(
+            "sidecar deploy router: trivialLaunch invoked on the multi-step branch; this is a programming bug",
+          );
+        },
+        ...(deps.onDispatchTiming !== undefined
+          ? { onDispatchTiming: deps.onDispatchTiming }
+          : {}),
+        ...(deps.repackEveryMessages !== undefined
+          ? { repackEveryMessages: deps.repackEveryMessages }
+          : {}),
+        ...(deps.consumedRetentionMs !== undefined
+          ? { consumedRetentionMs: deps.consumedRetentionMs }
+          : {}),
+      });
+
+      // OUTBOUND half of mailbox ownership (§3a): register the spawned
+      // agent's signing key on the host transport so the supervisor signs
+      // the agent's replies as the AGENT's identity. Gated on the
+      // single-step deploy, where the deployment mail address IS the legacy
+      // agent identity whose keypair lives in the keyStore. Registration
+      // happens before `spawn()` so the address is live the instant the
+      // first reply routes outbound.
+      if (spec.definition.stepOrder.length === 1) {
+        const { keyPair } = await deps.keyStore.loadOrGenerateKey(
+          spec.agentAddress,
+        );
+        deps.transport.register(
+          spec.agentAddress,
+          deps.createAgentCrypto(keyPair),
+        );
+        agentTransportRegistered = true;
+
+        // A single-step workflow stages its deploy tree at the head (the
+        // lone step IS the head). Initialize the head's on-disk deploy-tree
+        // repo (idempotent) so the hub's deploy-pack push has a repo to
+        // apply into. The narrow `initRepo` (not `provisionAgent`) is
+        // deliberate: the supervised child mints its own keypair and
+        // persists no hub-agent config.
+        await deps.sessions.initRepo(spec.agentAddress);
+
+        // Record the hub's public key at the head so the deploy-pack apply
+        // (and any inbound hub-signed frame) verifies against it. The
+        // verifier resolves the key from the in-memory key store's
+        // `recordHubKey` map, so a single-step deployment cannot stand up
+        // without it.
+        if (spec.hubPublicKey === undefined) {
+          throw new Error(
+            "sidecar deploy router: a single-step workflow deployment requires a hubPublicKey to record at the head; none was supplied",
+          );
+        }
+        deps.keyStore.recordHubKey(spec.agentAddress, spec.hubPublicKey);
+      }
+
+      const stepOrder = [...spec.definition.stepOrder];
+      // Warm-keep is the single-step launched-agent deploy: the sole step
+      // IS the long-lived agent, so the child warm-keeps it across
+      // messages. A multi-step deploy keeps instantiate-send-teardown per
+      // step. The signal is carried explicitly down through the spawn env.
+      const warmKeep = spec.definition.stepOrder.length === 1;
+      const spawnOpts: SpawnOpts = {
+        stepOrder,
+        definitionHash,
+        warmKeep,
+        onInferenceEvent: (event) => {
+          // The event arrives HMAC-verified over the child's event channel.
+          // Re-narrow it to the hub's `InferenceEvent` union; a parse
+          // failure means upstream corruption, so drop it loudly rather
+          // than forwarding an unvalidated payload onto the hub timeline.
+          const validated = parseInferenceEvent(event);
+          if (validated instanceof type.errors) {
+            logger.warn`dropping workflow inference event for ${spec.agentAddress}: ${validated.summary}`;
+            return;
+          }
+          publishInferenceEvent(spec.agentAddress, validated, spec.sessionId);
+        },
+      };
+
+      // Surface spawn-time errors structurally: a subprocess spawner that
+      // crashes immediately rejects here, and the caller converts the
+      // rejection into a structured failure frame. The supervisor is
+      // registered against the deployment address only after spawn succeeds,
+      // so a spawn-time rejection leaves the registry untouched.
+      await wired.supervisor.spawn(spawnOpts);
+      wiredForUnwind = wired;
+      activeSupervisors.set(spec.agentAddress, wired);
+      supervisorRegistered = true;
+
+      // Bind the deployment's mail address to this supervisor's
+      // `routeInbound` so the hub-link dispatches inbound mail into the
+      // supervisor's mail-bus subscription. Registration happens after
+      // `spawn` succeeds so a spawn-time rejection leaves the registry
+      // untouched.
+      deps.multistepMailRouter?.register(spec.agentAddress, (message) => {
+        wired.routeInbound(message);
+      });
+      // Register the signal-delivery handler so a hub `signal.deliver` frame
+      // dispatches through the supervisor's `deliverSignal`.
+      deps.multistepSignalRouter?.register(spec.agentAddress, async (args) => {
+        await wired.supervisor.deliverSignal({
+          runId: args.runId,
+          signalName: args.signalName,
+          signalId: args.signalId,
+          payload: args.payload,
+        });
+      });
+      // Register the drain handler so a hub `drain.deliver` frame dispatches
+      // through the supervisor's `drain`.
+      deps.multistepDrainRouter?.register(spec.agentAddress, async (args) => {
+        await wired.supervisor.drain({ deadlineMs: args.deadlineMs });
+      });
+      routersRegistered = true;
+
+      // Register the deployment-address mapping last so a failure in any
+      // earlier step leaves the boot-edge `DeploymentAddressRegistry`
+      // untouched.
+      deps.registerDeployment({
+        deploymentId,
+        agentAddress: spec.agentAddress,
+      });
+
+      // Derive the ack public key BEFORE marking the spawn succeeded so an
+      // (unreachable, deterministic) derivation failure unwinds the spawn
+      // rather than leaving a live-but-unacked deployment whose slug the
+      // caller then frees. Once `succeeded` is set the finally is a no-op
+      // and the deployment is retained.
+      const publicKey = await derivePrincipalPublicKeyHex(deps.signingKeySeed);
+      succeeded = true;
+      return { publicKey };
+    } finally {
+      if (!succeeded) {
+        // Unwind in reverse registration order so each step undoes state
+        // the success path confirmed; ordering matches the `undeploy` hook.
+        if (routersRegistered) {
+          deps.multistepMailRouter?.unregister(spec.agentAddress);
+          deps.multistepSignalRouter?.unregister(spec.agentAddress);
+          deps.multistepDrainRouter?.unregister(spec.agentAddress);
+        }
+        if (supervisorRegistered) {
+          activeSupervisors.delete(spec.agentAddress);
+        }
+        if (wiredForUnwind !== undefined) {
+          await wiredForUnwind.supervisor.shutdown().catch((cause) => {
+            const message =
+              cause instanceof Error ? cause.message : String(cause);
+            logger.warn`multi-step deploy unwind: supervisor.shutdown failed: ${message}`;
+          });
+        }
+        if (agentTransportRegistered) {
+          // Drop the agent's transport registration so a failed deploy does
+          // not leave the address live with a dangling `CryptoProvider`.
+          deps.transport.unregister(spec.agentAddress);
+        }
+      }
+    }
+  }
+
   async function deployMultiStep(
     frame: AgentDeployFrame,
     projection: NonNullable<AgentDeployFrame["workflow"]>,
@@ -955,190 +1270,31 @@ export function createSidecarDeployRouter(deps: {
       multistepDeriveStepAddress,
     });
 
+    // Claim the deployment slug BEFORE any durable write so a colliding
+    // deploymentId (two distinct addresses projecting to the same slug) is
+    // rejected before `workflow.json`, the step grants, or the supervisor
+    // touch disk -- the router's "no repo state touched before rejection"
+    // guarantee. The claim is released on any failure below; a successful
+    // deploy keeps it (the undeploy hook releases it at teardown). The
+    // spawn core owns unwinding the supervisor and registrations it stands
+    // up; the slug is the caller's.
     claimSlug(deploymentId, frame.agentAddress);
-    // Release every piece of partial state if any step between here
-    // and `registerDeployment` throws. The undeploy hook -- the only
-    // other release caller -- never fires for failed deploys, so
-    // without this finally the slug, the freshly-spawned
-    // workflow-process child, the `activeSupervisors` entry, and the
-    // three multistep router registrations would all leak. The
-    // ordering inside the finally is the reverse of the success-path
-    // registration order so each release runs against state the
-    // success path has already established.
-    let claimedSlugSucceeded = false;
-    let wiredForUnwind: SidecarWorkflowSupervisor | undefined;
-    let supervisorRegistered = false;
-    let routersRegistered = false;
-    let agentTransportRegistered = false;
     try {
-      const definitionHash = await computeWireDefinitionHash(
+      // Materialize the deploy-only durable state the spawned child and the
+      // supervisor read from disk: the workflow definition (`workflow.json`)
+      // and each step's grants. The restore path finds both already on disk
+      // and skips this; both land before the shared spawn core runs.
+      await materializeWorkflowJson(
+        multistepSubstrateEnv.SIDECAR_DATA_DIR,
         projection.definition,
       );
 
-      // Per-deployment substrate-config keys the workflow-substrate-factory
-      // validator requires (`SIDECAR_SUBSTRATE_CONFIG_KEYS` /
-      // `SubstrateConfig` in `workflow-substrate-factory.ts`). The boot
-      // edge's `multistepSubstrateEnv` only carries the boot-edge constants
-      // (`SIDECAR_DATA_DIR`, signing keys, hub link anchors); the four
-      // workflow-definition / workflow-run identity keys must be derived
-      // per-deploy here so the child's substrate-config validator passes
-      // at startup.
-      //
-      // `WORKFLOW_RUN_REPO_ID` mirrors `workflowRunRepoId.id` (the
-      // substrate-safe slug of the deployment address) and
-      // `WORKFLOW_RUN_REF` mirrors `workflowRunRef`, so the child resolves
-      // the same workflow-run repo the supervisor is writing into.
-      //
-      // `WORKFLOW_DEFINITION_REPO_ID` is set to `projection.definition.id`
-      // (the workflow asset's repo id; see the orchestrator's
-      // `WorkflowRepoWriter.writeWorkflowRepo` call, which writes the
-      // asset repo keyed by `workflow.id`). The child's
-      // `loadWorkflowDefinition` in
-      // `packages/workflow-host/src/child/run-child.ts` reads
-      // `workflow.json` out of this repo's working tree. The current
-      // Phase I multi-step test path does not yet stage the workflow
-      // asset on the sidecar's substrate (the orchestrator writes the
-      // asset to the hub repo store, not the sidecar's data dir), so the
-      // child's `loadWorkflowDefinition` will not actually find a
-      // `workflow.json` until the workflow-asset deploy lands on the
-      // sidecar. The value is structurally correct -- a consistent,
-      // deterministic id derived from the definition -- so the substrate-
-      // config validator passes and the next gap (if any) surfaces
-      // structurally rather than at the env-keys boundary.
-      //
-      // `WORKFLOW_DEFINITION_REF` is `"refs/heads/main"` to mirror the
-      // hub's `DEFAULT_ASSET_REF` and the workflow-run ref the supervisor
-      // uses.
-      const substrateEnv: Record<string, string> = {
-        ...multistepSubstrateEnv,
-        WORKFLOW_DEFINITION_REPO_ID: projection.definition.id,
-        WORKFLOW_DEFINITION_REF: "refs/heads/main",
-        WORKFLOW_RUN_REPO_ID: deploymentId,
-        WORKFLOW_RUN_REF: "refs/heads/main",
-        [STEP_INFERENCE_SOURCES_ENV_KEY]: JSON.stringify(projection.sources),
-      };
-
-      // Materialize the workflow asset on the sidecar's local substrate
-      // so the workflow-process child's `loadWorkflowDefinition` can read
-      // `workflow.json` out of the workflow-asset repo's working tree
-      // (`packages/workflow-host/src/child/run-child.ts`). The hub's
-      // orchestrator writes the asset to the hub's repo store; the
-      // sidecar's substrate is a separate data dir on disk, and nothing
-      // replicates between the two today.
-      //
-      // The frame inlines the validated `WorkflowDefinition` already
-      // (see `AgentDeployFrame.workflow.definition`), so the router has
-      // the bytes in scope. The destination path mirrors the bare
-      // RepoStore's `getRepoDir` for `{ kind: "workflow", id }`:
-      // `${SIDECAR_DATA_DIR}/assets/workflow/<id>/workflow.json`. The
-      // workflow-asset repo kind handler's `directoryPrefix` is
-      // `assets/workflow` (see `packages/hub-sessions/src/workflow-kind.ts`).
-      //
-      // The child reads via `fs.readFile`, not via a git ref resolution,
-      // so writing the bytes outside any git operation is sufficient.
-      const sidecarDataDir = substrateEnv.SIDECAR_DATA_DIR;
-      if (typeof sidecarDataDir !== "string" || sidecarDataDir.length === 0) {
-        throw new Error(
-          "sidecar deploy router: SIDECAR_DATA_DIR must be present in the multi-step substrate env for the multi-step branch; the workflow-process child resolves the workflow-asset repo dir against this data dir",
-        );
-      }
-      const workflowAssetPath = pathJoin(
-        sidecarDataDir,
-        "assets",
-        "workflow",
-        projection.definition.id,
-        "workflow.json",
-      );
-      const workflowAssetBytes = JSON.stringify(projection.definition, null, 2);
-      try {
-        await mkdir(dirname(workflowAssetPath), { recursive: true });
-        // Idempotent: only rewrite when the on-disk content differs from
-        // the projection. Treats a missing file as different.
-        let existing: string | null = null;
-        try {
-          existing = await readFile(workflowAssetPath, "utf8");
-        } catch (cause) {
-          if (
-            !(
-              cause instanceof Error &&
-              "code" in cause &&
-              (cause as { code: unknown }).code === "ENOENT"
-            )
-          ) {
-            throw cause;
-          }
-        }
-        if (existing !== workflowAssetBytes) {
-          await writeFile(workflowAssetPath, workflowAssetBytes, "utf8");
-        }
-      } catch (cause) {
-        const reason = cause instanceof Error ? cause.message : String(cause);
-        throw new Error(
-          `sidecar deploy router: failed to materialize workflow.json at ${workflowAssetPath}: ${reason}`,
-          { cause },
-        );
-      }
-
-      const wired = createSidecarWorkflowSupervisor({
-        // Hold the constructed supervisor in the outer scope so the
-        // failure-path finally can `shutdown()` it; assignment
-        // happens immediately so even a synchronous throw inside
-        // the closure's call sites below is covered.
-        // (See the wiredForUnwind declaration above the try.)
-        transport: deps.transport,
-        repoStore: deps.repoStore,
-        signingKeySeed: deps.signingKeySeed,
-        workflowRunRepoId: {
-          kind: "workflow-run",
-          id: deploymentId,
-        },
-        workflowRunRef: "refs/heads/main",
-        deploymentId,
-        stepCount: projection.definition.stepOrder.length,
-        deploymentMailAddress: frame.agentAddress,
-        deriveStepAddress: stepStrategy.deriveStepAddress,
-        deriveStepRepoId: stepStrategy.deriveStepRepoId,
-        substrateEnv,
-        subprocessSpawner: multistepSpawner,
-        ...(deps.multistepBinaryPath !== undefined
-          ? { binaryPath: deps.multistepBinaryPath }
-          : {}),
-        // The multi-step branch never invokes trivialLaunch, but the
-        // supervisor's constructor requires the binding. Wire a sentinel
-        // that throws so a stray invocation surfaces loudly rather than
-        // silently succeeding.
-        trivialLaunch: () => {
-          throw new Error(
-            "sidecar deploy router: trivialLaunch invoked on the multi-step branch; this is a programming bug",
-          );
-        },
-        ...(deps.onDispatchTiming !== undefined
-          ? { onDispatchTiming: deps.onDispatchTiming }
-          : {}),
-        ...(deps.repackEveryMessages !== undefined
-          ? { repackEveryMessages: deps.repackEveryMessages }
-          : {}),
-        ...(deps.consumedRetentionMs !== undefined
-          ? { consumedRetentionMs: deps.consumedRetentionMs }
-          : {}),
-      });
-
-      // Grants bridge (the sharp edge of the always-spawn convergence).
-      //
-      // The legacy agent-deploy path shipped grants in-band on the
-      // deploy frame; the in-process runtime loaded them straight into
-      // its grant store and never wrote them to disk. The spawned child
-      // does not see the frame: it reads each step's grants out of
-      // `state/grants.json` in the step's agent-state repo while the
-      // supervisor assembles the credentialsSnapshot inside `spawn()`.
-      //
-      // Write every step's grants to the step's agent-state repo BEFORE
-      // `spawn()` so the supervisor's read sees them. The hub is the
-      // source of truth -- `frame.config.grants` is the operator-approved
-      // grant set the hub shipped -- and the same `deriveStepRepoId` the
-      // supervisor reads with keys the write so the read and the write
-      // address the same repo. A missing or empty file would make every
-      // authorize fail closed, so the write must surface its failure.
+      // Grants bridge: the spawned child does not see the frame; it reads
+      // each step's grants out of `state/grants.json` in the step's
+      // agent-state repo while the supervisor assembles the
+      // credentialsSnapshot. Write the operator-approved
+      // `frame.config.grants` to the same repo the supervisor reads via
+      // `deriveStepRepoId`, before the spawn core, so the read sees them.
       await writeStepGrants({
         repoStore: deps.repoStore,
         deploymentId,
@@ -1147,192 +1303,21 @@ export function createSidecarDeployRouter(deps: {
         grants: frame.config.grants,
       });
 
-      // OUTBOUND half of mailbox ownership (§3a): register the spawned
-      // agent's signing key on the host transport so the supervisor's
-      // outbound mail path (`MailBusBindings.sendOutbound`) signs the
-      // agent's replies as the AGENT's identity, with parity to the
-      // in-process path's `transport.register(address, crypto)`.
-      //
-      // Gated on the single-step launched-agent deploy: there the
-      // deployment mail address IS the legacy agent identity whose
-      // keypair lives in the keyStore, so the supervisor can sign
-      // outbound mail as that address. A genuine multi-step deploy
-      // derives a distinct per-step address with no keypair on the host;
-      // per-step outbound signing for multi-step is out of 4.3 scope
-      // (the unified single-agent path 4.3 targets is the single-step
-      // case). The registration happens before `spawn()` so the agent's
-      // address is live the instant the first reply routes outbound.
-      if (projection.definition.stepOrder.length === 1) {
-        const { keyPair } = await deps.keyStore.loadOrGenerateKey(
-          frame.agentAddress,
-        );
-        deps.transport.register(
-          frame.agentAddress,
-          deps.createAgentCrypto(keyPair),
-        );
-        agentTransportRegistered = true;
-
-        // A single-step workflow stages its deploy tree at the head (the
-        // lone step IS the head). Initialize the head's on-disk
-        // deploy-tree repo now, before this frame's ack, so the hub's
-        // follow-up deploy-pack push has a repo to `applyDeployPack` into.
-        // The narrow `initRepo` (not `provisionAgent`) is deliberate: the
-        // supervised child mints its own keypair at boot and persists no
-        // hub-agent config, and `provisionAgent`'s duplicate-address guard
-        // would reject the head the deployment machinery already tracks.
-        await deps.sessions.initRepo(frame.agentAddress);
-
-        // Record the hub's public key at the head so the follow-up
-        // deploy-pack apply can verify the hub-signed deploy-tree commit.
-        // The verifier resolves the key from the in-memory key store's
-        // `recordHubKey` map, not the persisted `agent.json`, so this alone
-        // satisfies verification -- `persistHubPublicKey` (agent.json
-        // durability) is skipped along with `persistConfig`, which the
-        // workflow head has no agent.json to write into. Without this
-        // `applyDeployPack` rejects the pack as `signature_invalid`.
-        deps.keyStore.recordHubKey(frame.agentAddress, frame.hubPublicKey);
-      }
-
-      const stepOrder = [...projection.definition.stepOrder];
-      // Warm-keep is the single-step launched-agent deploy (design §3b):
-      // the sole step IS the long-lived agent, so the child warm-keeps it
-      // across messages. A genuine multi-step deploy keeps
-      // instantiate-send-teardown per step -- warm-keeping N steps would
-      // hold N agents and N LSP subprocesses for no benefit. The signal
-      // is carried explicitly from this projection-level recognition down
-      // through the spawn env to the child's run-loop, never re-derived
-      // heuristically there.
-      const warmKeep = projection.definition.stepOrder.length === 1;
-      const spawnOpts: SpawnOpts = {
-        stepOrder,
-        definitionHash,
-        warmKeep,
-        onInferenceEvent: (event) => {
-          // The event arrives already HMAC-verified and validated as an
-          // `EventPayload` over the child's event channel. Re-narrow it
-          // to the manually-defined `InferenceEvent` union the hub's
-          // `agent.event` sink consumes (the arktype-inferred
-          // `EventPayload` widens a few discriminants the hand-written
-          // type narrows). A parse failure here means the channel
-          // delivered something the validator rejects, which would be a
-          // corruption upstream -- drop it loudly rather than forwarding
-          // an unvalidated payload onto the hub timeline.
-          const validated = parseInferenceEvent(event);
-          if (validated instanceof type.errors) {
-            logger.warn`dropping workflow inference event for ${frame.agentAddress}: ${validated.summary}`;
-            return;
-          }
-          publishInferenceEvent(
-            frame.agentAddress,
-            validated,
-            frame.config.sessionId,
-          );
-        },
-      };
-
-      // Surface spawn-time errors structurally: if the subprocess
-      // spawner crashes immediately (binary missing, env malformed,
-      // EXEC error) the supervisor's `wireChild` races the child's
-      // `exited` against `readyPromise` and the rejection propagates
-      // here. The router lets it surface; the link's deploy handler
-      // converts the rejection into a structured failure frame. The
-      // supervisor is registered against the deployment address only
-      // after spawn succeeds; a spawn-time rejection leaves the
-      // registry untouched so the undeploy hook does not chase a
-      // supervisor that never owned a child.
-      await wired.supervisor.spawn(spawnOpts);
-      // Child process is live after `spawn` resolves; the failure
-      // unwind needs the supervisor handle from here on.
-      wiredForUnwind = wired;
-      activeSupervisors.set(frame.agentAddress, wired);
-      supervisorRegistered = true;
-
-      // Bind the deployment's mail address to this supervisor's
-      // `routeInbound` so the sidecar's hub-link dispatches inbound
-      // mail for the deployment address into the supervisor's mail-bus
-      // subscription rather than the legacy session path. The legacy
-      // path is the wrong receiver for multi-step deployments: the
-      // deployment address is never registered on `transport` (no
-      // `startSession` runs against it) and there is no `sessions`
-      // entry to satisfy `commitInboundMail`. Registration happens
-      // after `spawn` succeeds so a spawn-time rejection leaves the
-      // registry untouched.
-      deps.multistepMailRouter?.register(frame.agentAddress, (message) => {
-        wired.routeInbound(message);
-      });
-      // Register the signal-delivery handler against the deployment
-      // address so a hub-side `signal.deliver` frame dispatches through
-      // the supervisor's `deliverSignal`, which forwards a control IPC
-      // `signal.deliver` to the workflow-process child. The child writes
-      // the resulting `SignalReceived` event through its own substrate;
-      // the workflow-run pack-push pipeline then propagates the commit
-      // to the hub with no concurrent writer at the workflow-run ref.
-      deps.multistepSignalRouter?.register(frame.agentAddress, async (args) => {
-        await wired.supervisor.deliverSignal({
-          runId: args.runId,
-          signalName: args.signalName,
-          signalId: args.signalId,
-          payload: args.payload,
-        });
-      });
-      // Register the drain handler against the deployment address so a
-      // hub-side `drain.deliver` frame dispatches through the
-      // supervisor's `drain`, which forwards a `drain` control IPC frame
-      // to the workflow-process child and arms one `drainTimeout`
-      // accumulator per in-flight run. Cancel-mode in-flight steps abort
-      // on the child side; wait-mode steps continue. Each accumulator
-      // commits a signed `CancelRequested{origin: "supervisor-drain"}`
-      // against the workflow-run repo when the deadline expires.
-      deps.multistepDrainRouter?.register(frame.agentAddress, async (args) => {
-        await wired.supervisor.drain({ deadlineMs: args.deadlineMs });
-      });
-      routersRegistered = true;
-
-      // Register the deployment-address mapping last so a failure in any
-      // earlier step (asset materialization, supervisor.spawn) leaves the
-      // boot-edge `DeploymentAddressRegistry` untouched. The link's
-      // `handleAgentDeploy` catches a rejection here and surfaces
-      // `agent.error` without invoking the undeploy hook; a partial
-      // registration would persist a `(deploymentId -> agentAddress)`
-      // entry for a deployment that never finished standing up.
-      deps.registerDeployment({
-        deploymentId,
+      // Hand off to the shared spawn core. A single-step deployment records
+      // its hub key at the head; a multi-step deployment carries none.
+      return await spawnWorkflowDeployment({
         agentAddress: frame.agentAddress,
+        definition: projection.definition,
+        sources: projection.sources,
+        sessionId: frame.config.sessionId,
+        hubPublicKey:
+          projection.definition.stepOrder.length === 1
+            ? frame.hubPublicKey
+            : undefined,
       });
-
-      claimedSlugSucceeded = true;
-      return {
-        publicKey: await derivePrincipalPublicKeyHex(deps.signingKeySeed),
-      };
-    } finally {
-      if (!claimedSlugSucceeded) {
-        // Unwind in reverse registration order so each step undoes
-        // state the success path has confirmed; ordering matches
-        // the `undeploy` hook for consistency.
-        if (routersRegistered) {
-          deps.multistepMailRouter?.unregister(frame.agentAddress);
-          deps.multistepSignalRouter?.unregister(frame.agentAddress);
-          deps.multistepDrainRouter?.unregister(frame.agentAddress);
-        }
-        if (supervisorRegistered) {
-          activeSupervisors.delete(frame.agentAddress);
-        }
-        if (wiredForUnwind !== undefined) {
-          await wiredForUnwind.supervisor.shutdown().catch((cause) => {
-            const message =
-              cause instanceof Error ? cause.message : String(cause);
-            logger.warn`multi-step deploy unwind: supervisor.shutdown failed: ${message}`;
-          });
-        }
-        if (agentTransportRegistered) {
-          // Drop the agent's transport registration so a failed deploy
-          // does not leave the address live on the host transport with a
-          // dangling `CryptoProvider`. `unregister` is safe to call even
-          // if the address was never registered.
-          deps.transport.unregister(frame.agentAddress);
-        }
-        releaseSlug(deploymentId, frame.agentAddress);
-      }
+    } catch (cause) {
+      releaseSlug(deploymentId, frame.agentAddress);
+      throw cause;
     }
   }
 
@@ -1344,10 +1329,10 @@ export function createSidecarDeployRouter(deps: {
       let publicKey: string | undefined;
       const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
       claimSlug(deploymentId, frame.agentAddress);
-      // See deployMultiStep's `claimedSlugSucceeded` guard: without
-      // it, any failure between `claimSlug` and the
-      // `registerDeployment` call below leaves the slug claimed
-      // forever (the undeploy hook never fires for failed deploys).
+      // Same slug-release discipline as deployMultiStep's claim/try/catch:
+      // without it, any failure between `claimSlug` and the
+      // `registerDeployment` call below leaves the slug claimed forever
+      // (the undeploy hook never fires for failed deploys).
       let trivialClaimedSlugSucceeded = false;
       try {
         const wired = createSidecarWorkflowSupervisor({
