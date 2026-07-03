@@ -315,6 +315,9 @@ function createMockSessionService(): SessionService {
     launchSession: () => {
       throw new Error("mock: sessionService.launchSession not implemented");
     },
+    stageWorkflowStep: () => {
+      throw new Error("mock: sessionService.stageWorkflowStep not implemented");
+    },
     deployInstanceAtHead: () => {
       throw new Error(
         "mock: sessionService.deployInstanceAtHead not implemented",

@@ -238,7 +238,7 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
     ]);
 
     const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-      await env.hub.sessionService.launchSession({
+      await env.hub.sessionService.stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
         instanceId: orchestratorParams.instanceId,

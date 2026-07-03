@@ -23,6 +23,9 @@ const sessionService: SessionService = {
   launchSession(_params) {
     throw new Error("mock: sessionService.launchSession not implemented");
   },
+  stageWorkflowStep(_params) {
+    throw new Error("mock: sessionService.stageWorkflowStep not implemented");
+  },
   deployInstanceAtHead(_params) {
     throw new Error(
       "mock: sessionService.deployInstanceAtHead not implemented",

@@ -200,7 +200,7 @@ describe("single-step launched-agent grants bridge via spawned child", () => {
     ]);
 
     const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-      await env.hub.sessionService.launchSession({
+      await env.hub.sessionService.stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
         instanceId: orchestratorParams.instanceId,

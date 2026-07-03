@@ -196,7 +196,7 @@ describe("FIFO mail-trigger serialization under load", () => {
 
     const launchSession: LaunchSessionFn = async (orchestratorParams) => {
       const deployContent = orchestratorParams.deployContent;
-      await env.hub.sessionService.launchSession({
+      await env.hub.sessionService.stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
         instanceId: orchestratorParams.instanceId,

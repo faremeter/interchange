@@ -227,6 +227,7 @@ function createMockSessionService(
   }
   return {
     launchSession: () => notImpl("launchSession"),
+    stageWorkflowStep: () => notImpl("stageWorkflowStep"),
     deployInstanceAtHead: () => notImpl("deployInstanceAtHead"),
     deployWorkflowDefinition: (params) => {
       deployCalls.push(params);

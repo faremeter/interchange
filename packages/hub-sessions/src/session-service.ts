@@ -129,6 +129,24 @@ export type SessionService = {
   }): Promise<void>;
 
   /**
+   * Stage one step of a multi-step workflow deploy: bind a transient route
+   * for the step address, fire a no-spawn provision frame (init the step's
+   * agent-state repo and record the hub key), deliver the deploy + asset
+   * packs, and unbind the route -- no warm harness. The multi-step branch
+   * stages every step this way before firing the deployment-level workflow
+   * frame that spawns the supervised child; the child reads each staged step
+   * tree from disk and runs the step itself.
+   */
+  stageWorkflowStep(params: {
+    agentAddress: string;
+    agentId: string;
+    instanceId: string;
+    config: HarnessConfig;
+    deployContent: DeployContent;
+    toolPackagePins?: readonly ToolPackagePin[];
+  }): Promise<void>;
+
+  /**
    * Deploy a single-agent instance through the single-step-at-head path,
    * wrapping the harness as a one-step workflow and routing it through the
    * deploy core with the instance's real identity. Replaces `launchSession`
@@ -565,10 +583,15 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    * the deploy tree, provision the agent, and deliver the deploy + asset
    * packs (Phases 0-2b). Does NOT start the warm harness -- callers that
    * want one (the legacy agent-deploy path) invoke `startWarmSession`
-   * afterward. Shared by the public `launchSession` (warm-harness provision,
-   * no workflow frame) and the single-step head hand-off
-   * (`deploySingleStepAtHead`, which passes a `workflowFrame` so the sidecar
-   * spawns the workflow-process child instead of a warm harness).
+   * afterward. Phase 1's provision has three shapes:
+   *   - `workflowFrame` set: the single-step head hand-off fires the
+   *     deployment `agent.deploy` frame that spawns the workflow-process
+   *     child. Returns the supervisor public key.
+   *   - `stageOnly` set: a multi-step per-step stage binds a transient route
+   *     for the step address, fires a no-spawn provision frame (init repo +
+   *     record hub key), and unbinds the route once the packs land. No warm
+   *     harness, no child.
+   *   - neither: the legacy plain provision frame (warm harness).
    */
   async function executeLaunchPhases(params: {
     agentAddress: string;
@@ -584,14 +607,32 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
      * spawns the workflow-process child) instead of the plain provision
      * frame. The returned supervisor public key comes from that frame's
      * ack; the caller skips `startWarmSession` for a workflow deploy.
+     *
+     * Mutually exclusive with `stageOnly`.
      */
     workflowFrame?: {
       definition: WorkflowDefinition;
       sources: Record<string, InferenceSource[]>;
     };
+    /**
+     * Multi-step per-step stage. When true, Phase 1 binds a transient route
+     * for the step address, fires a no-spawn provision frame (the sidecar
+     * inits the step's agent-state repo and records the hub key), delivers
+     * the deploy + asset packs, and unbinds the route -- no provision of a
+     * warm harness and no child. The deployment-level workflow frame, sent
+     * once after every step is staged, spawns the child. Returns no ack.
+     * Mutually exclusive with `workflowFrame`.
+     */
+    stageOnly?: boolean;
   }): Promise<{ publicKey: string } | undefined> {
     const { agentAddress, agentId, instanceId, config, deployContent } = params;
     const toolPackagePins = params.toolPackagePins ?? [];
+    const stageOnly = params.stageOnly ?? false;
+    if (params.workflowFrame !== undefined && stageOnly) {
+      throw new Error(
+        "executeLaunchPhases: workflowFrame and stageOnly are mutually exclusive",
+      );
+    }
     const workflowFrame = params.workflowFrame;
 
     // Phase 0: Resolve attached assets first so the skill index is in
@@ -742,92 +783,118 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       throw new SessionLaunchError("write", err, false);
     }
 
-    // Phase 1: Provision on sidecar. A single-step workflow deploy sends
-    // the deployment `agent.deploy` frame carrying the workflow definition
-    // + source pins INSTEAD of the plain provision frame: the sidecar's
-    // deploy router initializes the head repo on receipt (so the Phase 2
-    // pack has a repo to apply into) and spawns the workflow-process
-    // child. The plain-provision frame stays for the legacy agent-deploy
-    // passthrough. Firing the frame before the Phase 2 pack is the
-    // ordering barrier -- the head repo must exist before the pack
-    // applies. The ack's supervisor public key is surfaced to the caller.
-    let deployAckPublicKey: string | undefined;
-    try {
-      if (workflowFrame !== undefined) {
-        const ack = await sendMultiStepDeployFrame({
-          sidecarRouter,
-          agentAddress,
-          config,
-          definition: workflowFrame.definition,
-          sources: workflowFrame.sources,
-        });
-        deployAckPublicKey = ack.publicKey;
-      } else {
-        await sidecarRouter.sendAgentDeploy(agentAddress, config);
+    // A stage-only per-step deploy binds a transient route for the step
+    // address so the packs below route to the deployment's sidecar; the
+    // route is held only for the pack window and dropped in the `finally`.
+    if (stageOnly) {
+      try {
+        sidecarRouter.bindStepRoute(agentAddress);
+      } catch (err) {
+        throw new SessionLaunchError("provision", err, false);
       }
-    } catch (err) {
-      throw new SessionLaunchError("provision", err, false);
     }
-
-    // Phases 2-3: Pack delivery and session start. If either fails,
-    // attempt cleanup so the sidecar doesn't retain a zombie agent.
     try {
-      await sidecarRouter.sendPack(agentAddress, pack, ref, commitSha);
-    } catch (err) {
-      await attemptCleanup(agentAddress, "pack", err);
-      throw new SessionLaunchError("pack", err, false);
-    }
+      // Phase 1: Provision on sidecar. A single-step workflow deploy sends
+      // the deployment `agent.deploy` frame carrying the workflow definition
+      // + source pins: the sidecar's deploy router initializes the head repo
+      // on receipt (so the Phase 2 pack has a repo to apply into) and spawns
+      // the workflow-process child. A stage-only per-step deploy sends a
+      // no-spawn provision frame: the sidecar inits the step's agent-state
+      // repo and records the hub key, but spawns nothing. The plain-provision
+      // frame stays for the legacy agent-deploy passthrough. Firing the frame
+      // before the Phase 2 pack is the ordering barrier -- the repo must
+      // exist before the pack applies. A workflow frame's ack surfaces the
+      // supervisor public key to the caller.
+      let deployAckPublicKey: string | undefined;
+      try {
+        if (workflowFrame !== undefined) {
+          const ack = await sendMultiStepDeployFrame({
+            sidecarRouter,
+            agentAddress,
+            config,
+            definition: workflowFrame.definition,
+            sources: workflowFrame.sources,
+          });
+          deployAckPublicKey = ack.publicKey;
+        } else if (stageOnly) {
+          await sidecarRouter.sendProvisionStep(agentAddress, config);
+        } else {
+          await sidecarRouter.sendAgentDeploy(agentAddress, config);
+        }
+      } catch (err) {
+        throw new SessionLaunchError("provision", err, false);
+      }
 
-    // Phase 2b: Asset-pack fan-out. For each attached asset, build a
-    // pack, insert the manifest row, then send the pack. The manifest
-    // insert MUST happen before the pack send: if the sidecar acks
-    // but the row is missing, the session has materialization without
-    // a recorded manifest. If the row insert fails, the pack send
-    // must not happen.
-    //
-    // The fan-out covers two sources: the agent's direct attachments
-    // (skills, today) and the package-registry assets the tool-package
-    // resolver picked from. The latter live behind tenant inheritance
-    // rather than a per-agent attachment row, so the session service
-    // synthesizes the attachment view in `manifestAssetAttachments`.
-    //
-    // Both sources can name the same `package-registry` asset — a
-    // direct attachment and a resolver pin would each compute
-    // `mountPath = "package-registries/<asset.name>/"` and collide on
-    // the `(instanceId, mountPath)` PK in `session_asset`. Dedup by
-    // asset id BEFORE the inserts and let the direct attachment win:
-    // it is an explicit operator action and carries an `agentAssetId`
-    // the audit query joins against. The resolver-derived row would
-    // produce the same materialized contents, so dropping it is
-    // semantically lossless.
-    const fanOut: ResolvedAttachment[] = dedupAttachmentsByAssetId({
-      direct: attachments,
-      resolved: manifestAssetAttachments,
-    });
-    if (assetService !== undefined && fanOut.length > 0) {
-      // Track every successfully committed attachment so a later
-      // fan-out failure can roll back the earlier rows in lockstep
-      // with the sidecar undeploy. Without this, fan-out[0] succeeds,
-      // fan-out[1] fails, attemptCleanup tears down the sidecar — but
-      // fan-out[0]'s session_asset row survives and a future
-      // materialization query reads a manifest the sidecar no longer
-      // honors.
-      const committed: ResolvedAttachment[] = [];
-      for (const att of fanOut) {
-        try {
-          await sendAttachmentPack(instanceId, agentAddress, att);
-          committed.push(att);
-        } catch (err) {
-          await rollbackCommittedAttachments(instanceId, committed);
-          await attemptCleanup(agentAddress, "pack", err);
-          throw new SessionLaunchError("pack", err, false);
+      // Phase 2: Pack delivery. On failure, the warm/workflow paths tear the
+      // sidecar deployment down; a stage-only step has no supervisor to
+      // undeploy, so it only drops its transient route (in the `finally`).
+      // The step's inited agent-state repo is left on the sidecar: the
+      // orchestrator aborts the whole deploy before the deployment frame is
+      // sent, so there is nothing to undeploy, and a redeploy of the same
+      // deployment overwrites the orphaned repo. This is an acceptable minor
+      // leak on the exceptional staging-failure path, not a live-path cost.
+      try {
+        await sidecarRouter.sendPack(agentAddress, pack, ref, commitSha);
+      } catch (err) {
+        if (!stageOnly) await attemptCleanup(agentAddress, "pack", err);
+        throw new SessionLaunchError("pack", err, false);
+      }
+
+      // Phase 2b: Asset-pack fan-out. For each attached asset, build a
+      // pack, insert the manifest row, then send the pack. The manifest
+      // insert MUST happen before the pack send: if the sidecar acks
+      // but the row is missing, the session has materialization without
+      // a recorded manifest. If the row insert fails, the pack send
+      // must not happen.
+      //
+      // The fan-out covers two sources: the agent's direct attachments
+      // (skills, today) and the package-registry assets the tool-package
+      // resolver picked from. The latter live behind tenant inheritance
+      // rather than a per-agent attachment row, so the session service
+      // synthesizes the attachment view in `manifestAssetAttachments`.
+      //
+      // Both sources can name the same `package-registry` asset — a
+      // direct attachment and a resolver pin would each compute
+      // `mountPath = "package-registries/<asset.name>/"` and collide on
+      // the `(instanceId, mountPath)` PK in `session_asset`. Dedup by
+      // asset id BEFORE the inserts and let the direct attachment win:
+      // it is an explicit operator action and carries an `agentAssetId`
+      // the audit query joins against. The resolver-derived row would
+      // produce the same materialized contents, so dropping it is
+      // semantically lossless.
+      const fanOut: ResolvedAttachment[] = dedupAttachmentsByAssetId({
+        direct: attachments,
+        resolved: manifestAssetAttachments,
+      });
+      if (assetService !== undefined && fanOut.length > 0) {
+        // Track every successfully committed attachment so a later
+        // fan-out failure can roll back the earlier rows in lockstep
+        // with the sidecar undeploy. Without this, fan-out[0] succeeds,
+        // fan-out[1] fails, attemptCleanup tears down the sidecar — but
+        // fan-out[0]'s session_asset row survives and a future
+        // materialization query reads a manifest the sidecar no longer
+        // honors.
+        const committed: ResolvedAttachment[] = [];
+        for (const att of fanOut) {
+          try {
+            await sendAttachmentPack(instanceId, agentAddress, att);
+            committed.push(att);
+          } catch (err) {
+            await rollbackCommittedAttachments(instanceId, committed);
+            if (!stageOnly) await attemptCleanup(agentAddress, "pack", err);
+            throw new SessionLaunchError("pack", err, false);
+          }
         }
       }
-    }
 
-    return deployAckPublicKey === undefined
-      ? undefined
-      : { publicKey: deployAckPublicKey };
+      return deployAckPublicKey === undefined
+        ? undefined
+        : { publicKey: deployAckPublicKey };
+    } finally {
+      if (stageOnly) {
+        sidecarRouter.unbindStepRoute(agentAddress);
+      }
+    }
   }
 
   /**
@@ -896,11 +963,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     directorRegistry: DirectorRegistry;
     deployArgs: DeployWorkflowArgs;
   }): Promise<DeployWorkflowResult> {
-    // The per-step launcher: the same warm-harness provision the public
-    // `launchSession` runs, with the orchestrator's structural
-    // `DeployContent` narrowed back to the hub-sessions shape first.
+    // The per-step launcher: stage each step's deploy tree WITHOUT a warm
+    // harness (the supervised child runs the step), with the orchestrator's
+    // structural `DeployContent` narrowed back to the hub-sessions shape
+    // first.
     const launchSessionCallback: LaunchSessionFn = (orchestratorParams) =>
-      launchSession({
+      stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
         instanceId: orchestratorParams.instanceId,
@@ -936,11 +1004,10 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   /**
    * Provision one agent at its address: stage the deploy tree + packs
    * (`executeLaunchPhases` with no workflow frame) and then start its warm
-   * harness. This is the launcher the multi-step workflow branch drives per
-   * step via the orchestrator's `launchSession` callback, and the launcher
-   * the integration-test fixture drives directly. A single-agent instance
-   * deploy uses `deployInstanceAtHead` and a single-step workflow uses the
-   * head hand-off; neither routes here. The method carries no workflow
+   * harness. This is the legacy warm-harness deploy with no production
+   * caller: a multi-step step stages without a harness (`stageWorkflowStep`),
+   * a single-agent instance uses `deployInstanceAtHead`, and a single-step
+   * workflow uses the head hand-off. The method carries no workflow
    * projection of its own.
    */
   async function launchSession(params: {
@@ -962,6 +1029,37 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         : {}),
     });
     await startWarmSession(params.agentAddress);
+  }
+
+  /**
+   * Stage one step of a multi-step workflow deploy: bind a transient route
+   * for the step address, fire a no-spawn provision frame (the sidecar inits
+   * the step's agent-state repo and records the hub key), deliver the deploy
+   * and asset packs, and unbind the route -- no warm harness. The multi-step
+   * branch stages every step this way, then fires ONE deployment-level
+   * workflow frame that writes the step grants and spawns the supervised
+   * workflow-process child; the child reads each step's staged deploy tree
+   * from disk and runs the step itself.
+   */
+  async function stageWorkflowStep(params: {
+    agentAddress: string;
+    agentId: string;
+    instanceId: string;
+    config: HarnessConfig;
+    deployContent: DeployContent;
+    toolPackagePins?: readonly ToolPackagePin[];
+  }): Promise<void> {
+    await executeLaunchPhases({
+      agentAddress: params.agentAddress,
+      agentId: params.agentId,
+      instanceId: params.instanceId,
+      config: params.config,
+      deployContent: params.deployContent,
+      stageOnly: true,
+      ...(params.toolPackagePins !== undefined
+        ? { toolPackagePins: params.toolPackagePins }
+        : {}),
+    });
   }
 
   /**
@@ -1516,6 +1614,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
   return {
     launchSession,
+    stageWorkflowStep,
     deployInstanceAtHead,
     deploySingleStepAtHead,
     deployWorkflowDefinition,

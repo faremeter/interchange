@@ -1100,12 +1100,13 @@ export async function deployWorkflow(
 
   // Route every per-step launch through the session service, mirroring
   // the production multi-step branch, which drives the orchestrator's
-  // per-step `launchSession` callback against the same method. The
-  // orchestrator's `DeployContent` widens `toolPackageManifest` to
-  // `unknown`; `bridgeOrchestratorDeployContent` narrows and validates it
-  // back to the hub-sessions shape -- the same bridge production uses.
+  // per-step launch callback against `stageWorkflowStep` (stage-only, no
+  // warm harness). The orchestrator's `DeployContent` widens
+  // `toolPackageManifest` to `unknown`; `bridgeOrchestratorDeployContent`
+  // narrows and validates it back to the hub-sessions shape -- the same
+  // bridge production uses.
   const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-    await env.hub.sessionService.launchSession({
+    await env.hub.sessionService.stageWorkflowStep({
       agentAddress: orchestratorParams.agentAddress,
       agentId: orchestratorParams.agentId,
       instanceId: orchestratorParams.instanceId,

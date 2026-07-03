@@ -98,8 +98,12 @@ function createMockRouter(): SidecarRouter & {
     sendProvisionStep: track(
       "sendProvisionStep",
     ) as SidecarRouter["sendProvisionStep"],
-    bindStepRoute: () => undefined,
-    unbindStepRoute: () => undefined,
+    bindStepRoute(stepAddress: string) {
+      calls.push({ method: "bindStepRoute", args: [stepAddress] });
+    },
+    unbindStepRoute(stepAddress: string) {
+      calls.push({ method: "unbindStepRoute", args: [stepAddress] });
+    },
     sendSyncRequest: track(
       "sendSyncRequest",
     ) as SidecarRouter["sendSyncRequest"],
@@ -354,6 +358,67 @@ describe("SessionService", () => {
       "sendPack",
       "sendSessionStart",
     ]);
+  });
+
+  test("stageWorkflowStep stages without a warm harness", async () => {
+    const service = createSessionService({
+      sidecarRouter: router,
+      agentRepoStore: repoStore,
+    });
+
+    await service.stageWorkflowStep({
+      agentAddress: AGENT_ADDRESS,
+      agentId: AGENT_ID,
+      instanceId: INSTANCE_ID,
+      config: MOCK_CONFIG,
+      deployContent: MOCK_CONTENT,
+    });
+
+    const methods = [
+      ...repoStore.calls.map((c) => c.method),
+      ...router.calls.map((c) => c.method),
+    ];
+
+    // A stage-only per-step deploy binds a transient route, fires the
+    // no-spawn provision frame, delivers the deploy pack, and unbinds the
+    // route -- and NEVER provisions a warm harness (`sendAgentDeploy` with
+    // no workflow frame) or starts a session (`sendSessionStart`).
+    expect(methods).toEqual([
+      "writeDeployTree",
+      "createDeployPack",
+      "bindStepRoute",
+      "sendProvisionStep",
+      "sendPack",
+      "unbindStepRoute",
+    ]);
+    expect(methods).not.toContain("sendAgentDeploy");
+    expect(methods).not.toContain("sendSessionStart");
+  });
+
+  test("stageWorkflowStep unbinds the route even when the pack fails", async () => {
+    router.sendPack = () => Promise.reject(new Error("pack failed"));
+
+    const service = createSessionService({
+      sidecarRouter: router,
+      agentRepoStore: repoStore,
+    });
+
+    await service
+      .stageWorkflowStep({
+        agentAddress: AGENT_ADDRESS,
+        agentId: AGENT_ID,
+        instanceId: INSTANCE_ID,
+        config: MOCK_CONFIG,
+        deployContent: MOCK_CONTENT,
+      })
+      .catch((e: unknown) => e);
+
+    const routerMethods = router.calls.map((c) => c.method);
+    // The transient route is dropped in the `finally`, even on failure, so no
+    // stale per-step route leaks. A stage-only step has no warm harness to
+    // tear down, so it never undeploys.
+    expect(routerMethods).toContain("unbindStepRoute");
+    expect(routerMethods).not.toContain("sendAgentUndeploy");
   });
 
   test("launchSession cleans up on pack failure", async () => {
