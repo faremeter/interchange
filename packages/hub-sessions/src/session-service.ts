@@ -3,7 +3,6 @@ import { and, eq } from "drizzle-orm";
 
 import {
   createDefaultDirectorRegistry,
-  defaultDirectorFactory,
   type DirectorRegistry,
 } from "@intx/agent";
 import { getLogger } from "@intx/log";
@@ -436,53 +435,18 @@ function resolveMountPath(row: AgentAssetWithAsset): string {
 }
 
 /**
- * Compute the operator-approval set the workflow-deploy orchestrator
- * needs for a trivial-wrap deploy. The wrapped agent carries no
- * capability list and no director ref (see `wrapHarnessAsTrivialAgent`),
- * but `HarnessConfig.tools` projects onto the synthesized agent's
- * `toolFactories` so the walk emits `tool:<name>` grants the gate
- * checks. The approval set mirrors that projection: every tool the
- * `HarnessConfig` already names gets the matching `tool:` approval,
- * the per-source inference grants land alongside the default-director
- * grant, and the trigger-derived mail grants close the set out.
- *
- * The legacy agent-deploy path has already authorized the deployment
- * in toto -- the harness's `tools` array is the operator-supplied
- * surface the hub ships to the sidecar -- and re-running deploy
- * through the workflow surface must not synthesize a fresh approval
- * prompt for grants the legacy path implicitly approved. The shape
- * here keeps the gate honest (an unapproved tool fails the deploy)
- * while the legacy passthrough remains bit-for-bit on the wire.
- */
-function buildTrivialApprovalSet(args: {
-  agentAddress: string;
-  config: HarnessConfig;
-}): ApprovalSet {
-  const approvals = new Set<string>();
-  for (const tool of args.config.tools) {
-    approvals.add(`tool:${tool.name}`);
-  }
-  for (const source of args.config.sources) {
-    approvals.add(`inference.source:${source.provider}:${source.model}`);
-  }
-  approvals.add(`director:${defaultDirectorFactory.id}`);
-  approvals.add(`mail.address:${args.agentAddress}`);
-  const at = args.agentAddress.lastIndexOf("@");
-  if (at >= 0 && at < args.agentAddress.length - 1) {
-    approvals.add(`mail.send:${args.agentAddress.slice(at + 1)}`);
-  }
-  return approvals;
-}
-
-/**
  * Translate the orchestrator's structural `DeployContent` (which types
  * `toolPackageManifest` as `unknown`) back into the hub-sessions
  * `DeployContent` shape. The orchestrator round-trips whatever the
  * caller supplied, but the surface type widens `toolPackageManifest` to
  * `unknown`; the validator narrows it back to the canonical shape
  * `agentRepoStore.writeDeployTree` consumes.
+ *
+ * Exported so a test fixture that forwards orchestrator-shaped deploy
+ * content into `launchSession` narrows it the same validated way the
+ * production multi-step callback does, rather than casting `unknown`.
  */
-function bridgeOrchestratorDeployContent(
+export function bridgeOrchestratorDeployContent(
   content: OrchestratorDeployContent,
 ): DeployContent {
   const bridged: DeployContent = { systemPrompt: content.systemPrompt };
@@ -546,22 +510,6 @@ export async function sendMultiStepDeployFrame(args: {
     definition: wireDefinition,
     sources: args.sources,
   });
-}
-
-/**
- * No-op `WorkflowRepoWriter` used by the legacy `launchSession`
- * delegate. The workflow-deploy orchestrator writes a workflow repo
- * tree before per-step launch; the legacy agent-deploy path never
- * materialized a workflow repo and the integration-test surface does
- * not exercise one, so the trivial wrap skips the write rather than
- * inventing a phantom repo.
- */
-function createNoopWorkflowRepoWriter(): WorkflowRepoWriter {
-  return {
-    async writeWorkflowRepo(_args) {
-      return;
-    },
-  };
 }
 
 /**
@@ -942,12 +890,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     directorRegistry: DirectorRegistry;
     deployArgs: DeployWorkflowArgs;
   }): Promise<DeployWorkflowResult> {
-    const launchSessionCallback: LaunchSessionFn = async (
-      orchestratorParams,
-    ) => {
-      // The legacy launch path (no `workflowFrame`) provisions a warm
-      // agent and returns no deploy-ack key; the void return is discarded.
-      await executeLaunchPhases({
+    // The per-step launcher: the same warm-harness provision the public
+    // `launchSession` runs, with the orchestrator's structural
+    // `DeployContent` narrowed back to the hub-sessions shape first.
+    const launchSessionCallback: LaunchSessionFn = (orchestratorParams) =>
+      launchSession({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
         instanceId: orchestratorParams.instanceId,
@@ -959,7 +906,6 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           ? { toolPackagePins: orchestratorParams.toolPackagePins }
           : {}),
       });
-    };
 
     const sendMultiStepDeployCallback: SendMultiStepDeployFn = (deployParams) =>
       sendMultiStepDeployFrame({
@@ -982,14 +928,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   }
 
   /**
-   * Legacy agent-deploy entry point preserved bit-for-bit at its wire
-   * shape. The body now constructs a single-step trivial workflow from
-   * the deploy's `HarnessConfig` + `DeployContent`, synthesizes the
-   * matching operator-approval set, and delegates to the workflow-deploy
-   * orchestrator. The orchestrator's trivial branch round-trips back
-   * into `executeLaunchPhases` with the original `trivialBindings`,
-   * which preserves every on-disk and wire-level surface the legacy
-   * agent-deploy path exposed.
+   * Provision one agent at its address through the deploy-tree + pack +
+   * session-start phases (`executeLaunchPhases` with no workflow frame --
+   * the warm-harness provision path). This is the launcher the multi-step
+   * workflow branch drives per step via the orchestrator's `launchSession`
+   * callback, and the launcher the integration-test fixture drives
+   * directly. A single-agent instance deploy uses `deployInstanceAtHead`
+   * and a single-step workflow uses the head hand-off; neither routes
+   * here. The method carries no workflow projection of its own.
    */
   async function launchSession(params: {
     agentAddress: string;
@@ -999,35 +945,15 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     deployContent: DeployContent;
     toolPackagePins?: readonly ToolPackagePin[];
   }): Promise<void> {
-    const { agentAddress, agentId, instanceId, config, deployContent } = params;
-
-    const trivialAgent = wrapHarnessAsTrivialAgent({
-      config,
-      deployContent,
-    });
-    const workflow = defineWorkflow({
-      id: `wf_${agentId}`,
-      agent: trivialAgent,
-      trigger: { type: "mail", to: agentAddress },
-    });
-    const operatorApprovals = buildTrivialApprovalSet({
-      agentAddress,
-      config,
-    });
-
-    await runWorkflowDeploy({
-      workflowRepo: createNoopWorkflowRepoWriter(),
-      directorRegistry: createDefaultDirectorRegistry(),
-      deployArgs: {
-        workflow,
-        trivialBindings: { agentAddress, agentId, instanceId },
-        config,
-        deployContent,
-        ...(params.toolPackagePins !== undefined
-          ? { toolPackagePins: params.toolPackagePins }
-          : {}),
-        operatorApprovals,
-      },
+    await executeLaunchPhases({
+      agentAddress: params.agentAddress,
+      agentId: params.agentId,
+      instanceId: params.instanceId,
+      config: params.config,
+      deployContent: params.deployContent,
+      ...(params.toolPackagePins !== undefined
+        ? { toolPackagePins: params.toolPackagePins }
+        : {}),
     });
   }
 

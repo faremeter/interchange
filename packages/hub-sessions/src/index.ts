@@ -6,6 +6,7 @@ export {
 export {
   createSessionService,
   SessionLaunchError,
+  bridgeOrchestratorDeployContent,
   type SessionService,
   type DeployWorkflowDefinitionParams,
   type DeployWorkflowDefinitionResult,

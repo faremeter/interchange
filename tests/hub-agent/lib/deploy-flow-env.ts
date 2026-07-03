@@ -45,6 +45,7 @@ import {
   type MessageHeaders,
 } from "@intx/mime";
 import {
+  bridgeOrchestratorDeployContent,
   createAgentRepoStore,
   createSessionService,
   createSidecarRouter,
@@ -1121,29 +1122,21 @@ export async function deployWorkflow(
     id: workflowRunRepoSlug,
   };
 
-  // Route every per-step launch through the session service. The
-  // session service's `launchSession` itself routes through the
-  // orchestrator's trivial branch, so this preserves the bit-identical
-  // trivial round-trip the existing deploy-flow test asserts.
-  //
-  // `launchSession`'s `deployContent` parameter widens
-  // `toolPackageManifest` to `unknown` in the orchestrator's surface
-  // shape; the session-service's `bridgeOrchestratorDeployContent`
-  // narrows it back at the inner boundary, so the cast here only
-  // crosses the structural-shape gap between the orchestrator's
-  // `OrchestratorDeployContent` and the session-service's
-  // `DeployContent`.
+  // Route every per-step launch through the session service, mirroring
+  // the production multi-step branch, which drives the orchestrator's
+  // per-step `launchSession` callback against the same method. The
+  // orchestrator's `DeployContent` widens `toolPackageManifest` to
+  // `unknown`; `bridgeOrchestratorDeployContent` narrows and validates it
+  // back to the hub-sessions shape -- the same bridge production uses.
   const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-    const deployContent = orchestratorParams.deployContent;
     await env.hub.sessionService.launchSession({
       agentAddress: orchestratorParams.agentAddress,
       agentId: orchestratorParams.agentId,
       instanceId: orchestratorParams.instanceId,
       config: orchestratorParams.config,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the session-service's launchSession invokes the orchestrator internally and re-narrows `toolPackageManifest` via arktype; this fixture forwards the orchestrator-shaped deploy content as-is
-      deployContent: deployContent as Parameters<
-        SessionService["launchSession"]
-      >[0]["deployContent"],
+      deployContent: bridgeOrchestratorDeployContent(
+        orchestratorParams.deployContent,
+      ),
       ...(orchestratorParams.toolPackagePins !== undefined
         ? { toolPackagePins: orchestratorParams.toolPackagePins }
         : {}),
