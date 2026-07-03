@@ -218,6 +218,8 @@ function createMockSidecarRouter(): SidecarRouter {
     sendGrantsUpdate: () => notImpl("sendGrantsUpdate"),
     sendSourcesUpdate: () => notImpl("sendSourcesUpdate"),
     sendPack: () => notImpl("sendPack"),
+    bindStepRoute: () => notImpl("bindStepRoute"),
+    unbindStepRoute: () => notImpl("unbindStepRoute"),
     sendSyncRequest: () => notImpl("sendSyncRequest"),
     sendSignalDeliver: () => notImpl("sendSignalDeliver"),
     sendDrain: () => notImpl("sendDrain"),

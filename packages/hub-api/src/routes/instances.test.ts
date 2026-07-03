@@ -255,6 +255,12 @@ function createMockSidecarRouter(
     sendPack(_addr, _pack, _ref, _sha) {
       return notImpl("sendPack");
     },
+    bindStepRoute(_stepAddress) {
+      notImpl("bindStepRoute");
+    },
+    unbindStepRoute(_stepAddress) {
+      notImpl("unbindStepRoute");
+    },
     sendSyncRequest(_addr) {
       notImpl("sendSyncRequest");
     },

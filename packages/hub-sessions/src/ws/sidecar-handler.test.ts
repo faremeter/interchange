@@ -289,6 +289,101 @@ describe("SidecarRouter", () => {
     });
   });
 
+  describe("per-step route bind/unbind", () => {
+    const DEPLOYMENT_ADDR = "ins_dep_multi@local";
+    const STEP_ADDR = "ins_dep_multi-step1@local";
+    const ZERO_SHA = "0".repeat(40);
+
+    function registerDeploymentSidecar(): ReturnType<typeof createMockWs> {
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [DEPLOYMENT_ADDR],
+        }),
+      );
+      return ws;
+    }
+
+    test("bind makes a step address routable; unbind removes it", async () => {
+      registerDeploymentSidecar();
+
+      // An unbound step address has no route: `sendPack` rejects before
+      // touching the wire.
+      await expect(
+        router.sendPack(
+          STEP_ADDR,
+          new Uint8Array([1]),
+          "refs/heads/main",
+          ZERO_SHA,
+        ),
+      ).rejects.toThrow(/No sidecar connected/);
+
+      router.bindStepRoute(STEP_ADDR);
+      expect(router.getRoutableAddresses()).toContain(STEP_ADDR);
+      // Routable: `routeMail` (and `sendPack`) now resolve the sidecar.
+      expect(router.routeMail(STEP_ADDR, "dGVzdA==")).toBe(true);
+
+      router.unbindStepRoute(STEP_ADDR);
+      expect(router.getRoutableAddresses()).not.toContain(STEP_ADDR);
+      await expect(
+        router.sendPack(
+          STEP_ADDR,
+          new Uint8Array([1]),
+          "refs/heads/main",
+          ZERO_SHA,
+        ),
+      ).rejects.toThrow(/No sidecar connected/);
+    });
+
+    test("a reconnect after unbind does not resurrect the transient route", () => {
+      const ws = registerDeploymentSidecar();
+      router.bindStepRoute(STEP_ADDR);
+      router.unbindStepRoute(STEP_ADDR);
+
+      // The sidecar reconnects announcing only the deployment's workflow
+      // address -- never the transient per-step address -- so the step route
+      // stays gone (the binding never entered the reconnect set).
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+          workflowAddresses: [DEPLOYMENT_ADDR],
+        }),
+      );
+
+      expect(router.getRoutableAddresses()).not.toContain(STEP_ADDR);
+    });
+
+    test("bind throws when no sidecar is connected", () => {
+      expect(() => router.bindStepRoute(STEP_ADDR)).toThrow(/No sidecar/);
+    });
+
+    test("unbind is a no-op for an address that was never bound", () => {
+      registerDeploymentSidecar();
+      expect(() => router.unbindStepRoute(STEP_ADDR)).not.toThrow();
+      expect(router.getRoutableAddresses()).not.toContain(STEP_ADDR);
+    });
+
+    test("handleClose reclaims a still-bound step route", () => {
+      const ws = registerDeploymentSidecar();
+      router.bindStepRoute(STEP_ADDR);
+      expect(router.getRoutableAddresses()).toContain(STEP_ADDR);
+
+      // A sidecar drop mid-stage tears the transient binding down with the
+      // rest of the connection's addresses -- no stale route survives.
+      router.handleClose(ws);
+      expect(router.getRoutableAddresses()).not.toContain(STEP_ADDR);
+    });
+  });
+
   describe("mail routing", () => {
     test("routes mail between two sidecars", () => {
       const ws1 = createMockWs();

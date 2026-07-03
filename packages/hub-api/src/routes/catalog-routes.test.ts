@@ -194,6 +194,8 @@ function createMockSidecarRouter(): SidecarRouter {
     // Mutations fire a fire-and-forget source push; resolve so it is a no-op.
     sendSourcesUpdate: () => Promise.resolve(),
     sendPack: () => notImpl("sendPack"),
+    bindStepRoute: () => notImpl("bindStepRoute"),
+    unbindStepRoute: () => notImpl("unbindStepRoute"),
     sendSyncRequest: () => notImpl("sendSyncRequest"),
     sendSignalDeliver: () => notImpl("sendSignalDeliver"),
     sendDrain: () => notImpl("sendDrain"),

@@ -141,6 +141,20 @@ export type SidecarRouter = {
     commitSha: string,
     options?: SendPackOptions,
   ): Promise<void>;
+  /**
+   * Bind a per-step workflow-substrate address to a sidecar for the staging
+   * window of a multi-step deploy, so `sendPack` can route the step's deploy
+   * and asset packs before the deployment-level frame spawns the child. The
+   * address enters the keyless `workflowAddresses` routing set; call
+   * `unbindStepRoute` once the step's packs land. Throws if no sidecar is
+   * available.
+   */
+  bindStepRoute(stepAddress: string): void;
+  /**
+   * Remove a per-step route bound by `bindStepRoute`. Idempotent: an unbound
+   * address is a no-op.
+   */
+  unbindStepRoute(stepAddress: string): void;
   sendSyncRequest(agentAddress: string): void;
   /**
    * Deliver a workflow-run signal to the sidecar that hosts the named
@@ -1385,6 +1399,53 @@ export function createSidecarRouter(
     }
   }
 
+  /**
+   * Bind a per-step workflow-substrate address to a sidecar for the staging
+   * window of a multi-step deploy, so `sendPack` can route the step's deploy
+   * and asset packs before the deployment-level frame spawns the child.
+   *
+   * The address is hub-minted and workflow-derived (no per-address key), so
+   * it enters the keyless `workflowAddresses` set -- never the challenged
+   * `agentAddresses` set -- and is torn down by `unbindStepRoute` once the
+   * step's packs land. `handleClose` reclaims it if the sidecar drops
+   * mid-stage. Per-step addresses are not runtime-routed (mail, signals, and
+   * drains use the deployment address), so the binding is transient: it is
+   * never persisted into the reconnect set and never resurrected on
+   * reconnect.
+   */
+  function bindStepRoute(stepAddress: string): void {
+    const ws =
+      addressIndex.get(stepAddress) ?? findSidecarForNewAgent(stepAddress);
+    if (ws === undefined) {
+      throw new Error(
+        `No sidecar available to stage workflow step "${stepAddress}"`,
+      );
+    }
+    const conn = connections.get(ws);
+    if (conn === undefined) {
+      throw new Error(
+        `No sidecar connected to stage workflow step "${stepAddress}"`,
+      );
+    }
+    conn.workflowAddresses.add(stepAddress);
+    addressIndex.set(stepAddress, ws);
+  }
+
+  /**
+   * Remove a per-step route bound by `bindStepRoute` once the step's packs
+   * have landed. Idempotent: an address that was never bound (or already
+   * unbound, e.g. by a mid-stage `handleClose`) is a no-op.
+   */
+  function unbindStepRoute(stepAddress: string): void {
+    const ws = addressIndex.get(stepAddress);
+    if (ws === undefined) return;
+    const conn = connections.get(ws);
+    if (conn !== undefined) {
+      conn.workflowAddresses.delete(stepAddress);
+    }
+    addressIndex.delete(stepAddress);
+  }
+
   // Pack transfers may take longer than session requests due to data volume.
   const PACK_TIMEOUT_MS = requestTimeoutMs * 4;
 
@@ -1892,6 +1953,8 @@ export function createSidecarRouter(
     sendGrantsUpdate,
     sendSourcesUpdate,
     sendPack,
+    bindStepRoute,
+    unbindStepRoute,
     sendSyncRequest,
     sendSignalDeliver,
     sendDrain,
