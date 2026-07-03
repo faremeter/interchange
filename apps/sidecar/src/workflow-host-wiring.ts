@@ -1189,10 +1189,23 @@ export function createSidecarDeployRouter(deps: {
       // agent identity whose keypair lives in the keyStore. Registration
       // happens before `spawn()` so the address is live the instant the
       // first reply routes outbound.
+      // The public key the deploy ack surfaces to the hub. For a single-step
+      // head it is the AGENT key, set inside the block below; a genuine
+      // multi-step deployment has no head agent identity and falls back to the
+      // supervisor principal key at the return.
+      let headAgentPublicKey: string | undefined;
       if (spec.definition.stepOrder.length === 1) {
         const { keyPair } = await deps.keyStore.loadOrGenerateKey(
           spec.agentAddress,
         );
+        // A single-step head IS an agent identity: it signs its own outbound
+        // mail AND its reconnect challenges with this agent key (via the key
+        // store's signChallenge). The hub records the ack's key into
+        // `agent_instance.publicKey` (for a rerouted instance head, which has
+        // an instance row and is not workflow-derived) and verifies the
+        // reconnect challenge against it, so the ack MUST carry the agent key,
+        // not the supervisor principal key -- otherwise verification fails.
+        headAgentPublicKey = hexEncode(keyPair.publicKey);
         deps.transport.register(
           spec.agentAddress,
           deps.createAgentCrypto(keyPair),
@@ -1287,12 +1300,16 @@ export function createSidecarDeployRouter(deps: {
         agentAddress: spec.agentAddress,
       });
 
-      // Derive the ack public key BEFORE marking the spawn succeeded so an
+      // Resolve the ack public key BEFORE marking the spawn succeeded so an
       // (unreachable, deterministic) derivation failure unwinds the spawn
       // rather than leaving a live-but-unacked deployment whose slug the
       // caller then frees. Once `succeeded` is set the finally is a no-op
-      // and the deployment is retained.
-      const publicKey = await derivePrincipalPublicKeyHex(deps.signingKeySeed);
+      // and the deployment is retained. A single-step head acks its agent
+      // key (captured above); a multi-step deployment acks the supervisor
+      // principal key its workflow-run events are signed with.
+      const publicKey =
+        headAgentPublicKey ??
+        (await derivePrincipalPublicKeyHex(deps.signingKeySeed));
       succeeded = true;
       return { publicKey };
     } finally {

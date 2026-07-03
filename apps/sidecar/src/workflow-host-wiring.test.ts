@@ -1162,6 +1162,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
      * the threaded value echoed in the message.
      */
     readyTimeoutMs?: number;
+    /**
+     * Fixed keypair the keyStore's `loadOrGenerateKey` returns for the head.
+     * The B-key test pins the single-step deploy ack to this agent key; when
+     * omitted a fresh keypair is minted per call as before.
+     */
+    headKeyPair?: Awaited<ReturnType<typeof generateKeyPair>>;
   }) {
     const transport = opts.transport ?? createInMemoryTransport();
     const keyPair = await generateKeyPair();
@@ -1200,7 +1206,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       keyStore: {
         recordHubKey: () => undefined,
         loadOrGenerateKey: async () => ({
-          keyPair: await generateKeyPair(),
+          keyPair: opts.headKeyPair ?? (await generateKeyPair()),
           isNew: false,
         }),
       } as unknown as Parameters<
@@ -2405,5 +2411,37 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // The deploy soft-failed, so its restore record was cleaned up -- a
     // wedged deploy leaves nothing for a later boot to re-spawn.
     expect(await recordExists(dataDir, deploymentId)).toBe(false);
+  });
+
+  test("a single-step deploy acks the agent key, not the supervisor key", async () => {
+    // The single-step head IS an agent identity: it signs its own reconnect
+    // challenges with the agent key, and the hub records the ack's key into
+    // agent_instance.publicKey and verifies the challenge against it. So the
+    // ack must surface the AGENT key, not the supervisor principal key --
+    // otherwise a rerouted instance's reconnect signature never matches.
+    const headKeyPair = await generateKeyPair();
+    const spawner = makeReadyDrivingSpawner(10300);
+    const { router, keyPair: fixtureKeyPair } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      headKeyPair,
+      multistepSubstrateEnv: {
+        SIDECAR_DATA_DIR: await createTempBaseDir("sidecar-bkey-data-"),
+      },
+    });
+
+    const deployPromise = router.deploy(
+      singleStepFrame("ins_bkey@example.com", "wf-bkey"),
+    );
+    await spawner.driveReadyFor(0);
+    const result = await deployPromise;
+
+    // The supervisor principal key is derived from the fixture's signing seed
+    // (fixtureKeyPair); the head's agent key is the distinct headKeyPair.
+    expect(result.publicKey).toBe(
+      Buffer.from(headKeyPair.publicKey).toString("hex"),
+    );
+    expect(result.publicKey).not.toBe(
+      Buffer.from(fixtureKeyPair.publicKey).toString("hex"),
+    );
   });
 });
