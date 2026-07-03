@@ -255,6 +255,9 @@ function createMockSidecarRouter(
     sendPack(_addr, _pack, _ref, _sha) {
       return notImpl("sendPack");
     },
+    sendProvisionStep(_agentAddress, _config) {
+      return notImpl("sendProvisionStep");
+    },
     bindStepRoute(_stepAddress) {
       notImpl("bindStepRoute");
     },

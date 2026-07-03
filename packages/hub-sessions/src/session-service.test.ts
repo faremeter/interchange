@@ -95,6 +95,9 @@ function createMockRouter(): SidecarRouter & {
       });
       return Promise.resolve();
     }) as SidecarRouter["sendPack"],
+    sendProvisionStep: track(
+      "sendProvisionStep",
+    ) as SidecarRouter["sendProvisionStep"],
     bindStepRoute: () => undefined,
     unbindStepRoute: () => undefined,
     sendSyncRequest: track(

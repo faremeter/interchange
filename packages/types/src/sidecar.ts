@@ -317,10 +317,17 @@ export type AgentDeployWorkflow = typeof AgentDeployWorkflow.infer;
  * Deploy an agent to this sidecar. The sidecar initializes a harness from
  * the config.
  *
- * `workflow` is set only on multi-step deployments. Absent on every
- * trivial-shape frame (every frame the system currently emits); the
- * deploy router uses field presence to discriminate the two branches
- * without consulting `config`.
+ * The deploy router discriminates three shapes by field presence without
+ * consulting `config`:
+ *   - `workflow` set: a workflow deployment (single-step head or multi-step)
+ *     that spawns the supervised workflow-process child.
+ *   - `provisionStep` true: a no-spawn per-step provision of a multi-step
+ *     deploy -- the sidecar initializes the step's agent-state repo and
+ *     records the hub key so the follow-up deploy pack applies and verifies,
+ *     but spawns nothing. The deployment-level `workflow` frame (sent once
+ *     after every step is provisioned) spawns the child.
+ *   - neither: the legacy trivial in-process harness deploy.
+ * `workflow` and `provisionStep` are mutually exclusive.
  */
 export const AgentDeployFrame = type({
   type: "'agent.deploy'",
@@ -329,6 +336,7 @@ export const AgentDeployFrame = type({
   config: HarnessConfig,
   hubPublicKey: "string",
   "workflow?": AgentDeployWorkflow,
+  "provisionStep?": "boolean",
 });
 export type AgentDeployFrame = typeof AgentDeployFrame.infer;
 

@@ -443,6 +443,89 @@ describe("createSidecarDeployRouter wires the InferenceEvent subscription to rec
   });
 });
 
+describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
+  test("a provisionStep frame inits the repo and records the hub key without spawning", async () => {
+    const transport = createInMemoryTransport();
+    const keyPair = await generateKeyPair();
+
+    const initRepoCalls: string[] = [];
+    const recordHubKeyCalls: { address: string; hubKey: string }[] = [];
+    // A spawn registers one per-agent InferenceEvent listener; a no-spawn
+    // provision registers none.
+    const agentEventRegistrations: string[] = [];
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- provisionStep touches no RepoStore method; the Proxy throws if it ever does
+    const repoStore = new Proxy({} as RepoStore, {
+      get(_target, prop) {
+        return () => {
+          throw new Error(`stub RepoStore: ${String(prop)} not implemented`);
+        };
+      },
+    });
+
+    const router = createSidecarDeployRouter({
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- provisionStep exercises only initRepo
+      sessions: {
+        initRepo: async (a: string) => {
+          initRepoCalls.push(a);
+        },
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["sessions"],
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- provisionStep exercises only recordHubKey
+      keyStore: {
+        recordHubKey: (a: string, h: string) => {
+          recordHubKeyCalls.push({ address: a, hubKey: h });
+        },
+      } as unknown as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["keyStore"],
+      onAgentEvent: (address: string) => {
+        agentEventRegistrations.push(address);
+        return () => undefined;
+      },
+      transport,
+      repoStore,
+      signingKeySeed: keyPair.privateKey,
+      createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: () => undefined,
+      registerDeployment: () => undefined,
+      unregisterDeployment: () => undefined,
+    });
+
+    const STEP_ADDR = "ins_dep_abc-step1@example.com";
+    const HUB_KEY = "aa".repeat(32);
+    const result = await router.deploy({
+      type: "agent.deploy",
+      agentAddress: STEP_ADDR,
+      agentId: "ins_dep_abc-step1",
+      hubPublicKey: HUB_KEY,
+      provisionStep: true,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- provisionStep never inspects config
+      config: {} as unknown as Parameters<
+        ReturnType<typeof createSidecarDeployRouter>["deploy"]
+      >[0]["config"],
+    });
+
+    // The step's agent-state repo is initialized and the hub key recorded,
+    // so the follow-up full-closure deploy pack applies into a repo and
+    // verifies against the recorded key.
+    expect(initRepoCalls).toEqual([STEP_ADDR]);
+    expect(recordHubKeyCalls).toEqual([
+      { address: STEP_ADDR, hubKey: HUB_KEY },
+    ]);
+
+    // The ack carries the sidecar principal key (the hub discards it for a
+    // workflow-derived per-step address).
+    expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
+
+    // Nothing spawned: no supervisor, so no active address and no per-agent
+    // event listener registered.
+    expect(router.activeAddresses()).toEqual([]);
+    expect(agentEventRegistrations).toEqual([]);
+  });
+});
+
 // --------------------------------------------------------------------
 // Multi-step branch tests
 // --------------------------------------------------------------------

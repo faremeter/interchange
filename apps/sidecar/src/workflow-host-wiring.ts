@@ -1360,6 +1360,32 @@ export function createSidecarDeployRouter(deps: {
     }
   }
 
+  /**
+   * Provision one step of a multi-step deploy WITHOUT spawning. The hub
+   * stages each step's deploy tree before firing the deployment-level
+   * workflow frame; a full-closure deploy pack still needs an initialized
+   * agent-state repo to apply into and the hub key recorded to verify the
+   * pack commit signature. This does exactly those two things -- the same
+   * harness-free `initRepo` + `recordHubKey` seam the single-step head uses
+   * -- and constructs no supervisor or child. The deployment-level workflow
+   * frame (fired once after every step is provisioned) spawns the child,
+   * which reads each step's staged deploy tree from disk.
+   *
+   * Returns the sidecar's principal public key so the link's
+   * `agent.deploy.ack` carries a key, matching the multi-step ack. A
+   * per-step address is workflow-derived and records no `agent_instance`
+   * key, so the hub discards this value.
+   */
+  async function provisionStep(
+    frame: AgentDeployFrame,
+  ): Promise<DeployRouterResult> {
+    await deps.sessions.initRepo(frame.agentAddress);
+    deps.keyStore.recordHubKey(frame.agentAddress, frame.hubPublicKey);
+    return {
+      publicKey: await derivePrincipalPublicKeyHex(deps.signingKeySeed),
+    };
+  }
+
   async function deployMultiStep(
     frame: AgentDeployFrame,
     projection: NonNullable<AgentDeployFrame["workflow"]>,
@@ -1514,6 +1540,9 @@ export function createSidecarDeployRouter(deps: {
 
   return {
     async deploy(frame): Promise<DeployRouterResult> {
+      if (frame.provisionStep === true) {
+        return await provisionStep(frame);
+      }
       if (frame.workflow !== undefined) {
         return await deployMultiStep(frame, frame.workflow);
       }

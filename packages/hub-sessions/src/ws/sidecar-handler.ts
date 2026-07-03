@@ -155,6 +155,14 @@ export type SidecarRouter = {
    * address is a no-op.
    */
   unbindStepRoute(stepAddress: string): void;
+  /**
+   * Provision one step of a multi-step deploy on the sidecar WITHOUT
+   * spawning: the sidecar initializes the step's agent-state repo and
+   * records the hub key so the follow-up deploy pack applies and verifies.
+   * The step address must already be bound via `bindStepRoute`. Resolves
+   * once the sidecar acks, so the caller can then deliver the deploy pack.
+   */
+  sendProvisionStep(agentAddress: string, config: HarnessConfig): Promise<void>;
   sendSyncRequest(agentAddress: string): void;
   /**
    * Deliver a workflow-run signal to the sidecar that hosts the named
@@ -1681,6 +1689,78 @@ export function createSidecarRouter(
     });
   }
 
+  /**
+   * Provision one step of a multi-step deploy on the sidecar WITHOUT
+   * spawning: the sidecar initializes the step's agent-state repo and
+   * records the hub key, so the follow-up deploy pack applies into a repo
+   * and verifies against the recorded key -- but no supervisor or child is
+   * constructed. The deployment-level workflow frame, sent once after every
+   * step is provisioned, spawns the child.
+   *
+   * The step address must already be bound via `bindStepRoute`, which
+   * resolves and records the sidecar; this reuses that route rather than
+   * touching `agentAddresses`. Waits for the sidecar's `agent.deploy.ack`
+   * so the caller can safely deliver the deploy pack afterward. On failure
+   * the caller owns tearing the route down via `unbindStepRoute`.
+   */
+  function sendProvisionStep(
+    agentAddress: string,
+    harnessConfig: HarnessConfig,
+  ): Promise<void> {
+    if (hubPublicKeyHex === undefined) {
+      throw new Error("Hub signing key is required for step provisioning");
+    }
+    if (pendingDeploys.has(agentAddress)) {
+      throw new Error(`Deploy already in progress for agent "${agentAddress}"`);
+    }
+    const ws = addressIndex.get(agentAddress);
+    if (ws === undefined) {
+      throw new Error(
+        `Step route for "${agentAddress}" is not bound; call bindStepRoute before provisioning`,
+      );
+    }
+    const conn = connections.get(ws);
+    if (conn === undefined) {
+      throw new Error(`No sidecar connected for agent "${agentAddress}"`);
+    }
+
+    const hubKey = hubPublicKeyHex;
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingDeploys.delete(agentAddress);
+        reject(
+          new Error(
+            `Step provision of "${agentAddress}" timed out after ${requestTimeoutMs}ms`,
+          ),
+        );
+      }, requestTimeoutMs);
+      // The sidecar's `agent.deploy.ack` resolves this through
+      // `resolveDeployPending` -> `req.resolve()`. The per-step address is
+      // workflow-derived and records no hub-side key, so the ack's public
+      // key is not needed and this resolves void.
+      pendingDeploys.set(agentAddress, {
+        agentAddress,
+        ws,
+        resolve() {
+          resolve();
+        },
+        reject(error: string) {
+          reject(new Error(error));
+        },
+        timer,
+      });
+
+      conn.send({
+        type: "agent.deploy",
+        agentAddress,
+        agentId: harnessConfig.agentId,
+        config: harnessConfig,
+        hubPublicKey: hubKey,
+        provisionStep: true,
+      });
+    });
+  }
+
   function findSidecarForNewAgent(_agentAddress: string): WsHandle | undefined {
     const first = connections.entries().next();
     if (first.done) return undefined;
@@ -1955,6 +2035,7 @@ export function createSidecarRouter(
     sendPack,
     bindStepRoute,
     unbindStepRoute,
+    sendProvisionStep,
     sendSyncRequest,
     sendSignalDeliver,
     sendDrain,
