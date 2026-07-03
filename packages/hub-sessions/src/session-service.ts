@@ -130,6 +130,24 @@ export type SessionService = {
   }): Promise<void>;
 
   /**
+   * Deploy a single-agent instance through the single-step-at-head path,
+   * wrapping the harness as a one-step workflow and routing it through the
+   * deploy core with the instance's real identity. Replaces `launchSession`
+   * as the production instance-deploy entry point: the instance runs as a
+   * supervised workflow-process child rather than the legacy trivial
+   * in-process path. Writes no `workflow_deployment` row. Returns the head's
+   * agent-key ack (the key the head signs its reconnect challenges with).
+   */
+  deployInstanceAtHead(params: {
+    agentAddress: string;
+    agentId: string;
+    instanceId: string;
+    config: HarnessConfig;
+    deployContent: DeployContent;
+    toolPackagePins?: readonly ToolPackagePin[];
+  }): Promise<{ publicKey: string }>;
+
+  /**
    * Deploy a one-step workflow once at the head through the deploy core,
    * without the DB-backed `workflow_deployment` projection row. Stages the
    * head's deploy tree (deploy-tree write, pack, asset fan-out), fires the
@@ -1013,6 +1031,72 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     });
   }
 
+  /**
+   * Deploy a single-agent instance through the single-step-at-head path: wrap
+   * the harness as a one-step workflow (the same wrap `launchSession` uses) and
+   * route it through `deploySingleStepAtHead` with the instance's REAL identity
+   * -- so the head address IS the instance address and the deploy runs as a
+   * supervised workflow-process child, not the legacy trivial in-process path.
+   *
+   * Unlike the orchestrator's `runSingleStepAtHead`, this calls
+   * `deploySingleStepAtHead` directly with the route's real `agentId`
+   * (`row.id`), NOT a `deriveDeploymentAgentId(deploymentId)` -- the child
+   * resolves skills, deploy tree, and tool-package pins by `agentId`, so
+   * collapsing it to the deployment id would strip the instance's attachments.
+   * It writes no `workflow_deployment` row (a plain instance has no workflow
+   * asset) and carries no `trivialBindings`. Returns the head's agent-key ack.
+   */
+  async function deployInstanceAtHead(params: {
+    agentAddress: string;
+    agentId: string;
+    instanceId: string;
+    config: HarnessConfig;
+    deployContent: DeployContent;
+    toolPackagePins?: readonly ToolPackagePin[];
+  }): Promise<{ publicKey: string }> {
+    const { agentAddress, agentId, instanceId, config, deployContent } = params;
+
+    const trivialAgent = wrapHarnessAsTrivialAgent({ config, deployContent });
+    const workflow = defineWorkflow({
+      id: `wf_${agentId}`,
+      agent: trivialAgent,
+      trigger: { type: "mail", to: agentAddress },
+    });
+
+    // The sole step's id, read off the built definition.
+    const stepId = workflow.stepOrder[0];
+    if (stepId === undefined) {
+      throw new Error(
+        `instance deploy for ${agentAddress}: the wrapped single-step workflow has an empty stepOrder`,
+      );
+    }
+
+    // Pin the step's inference source to the instance's default source. The
+    // instance route already resolved and authorized it against the tenant
+    // catalog, so the source is selected directly rather than re-run through
+    // the orchestrator's operator-approval gate.
+    const source = config.sources.find((s) => s.id === config.defaultSource);
+    if (source === undefined) {
+      throw new Error(
+        `instance deploy for ${agentAddress}: config.defaultSource ${JSON.stringify(config.defaultSource)} does not resolve to a HarnessConfig.sources entry`,
+      );
+    }
+
+    return deploySingleStepAtHead({
+      agentAddress,
+      agentId,
+      instanceId,
+      config,
+      deployContent,
+      definition: workflow,
+      sources: { [stepId]: source },
+      hubPublicKey: hexEncode(agentRepoStore.getSigningPublicKey()),
+      ...(params.toolPackagePins !== undefined
+        ? { toolPackagePins: params.toolPackagePins }
+        : {}),
+    });
+  }
+
   async function deployWorkflowDefinition(
     params: DeployWorkflowDefinitionParams,
   ): Promise<DeployWorkflowDefinitionResult> {
@@ -1495,6 +1579,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
   return {
     launchSession,
+    deployInstanceAtHead,
     deploySingleStepAtHead,
     deployWorkflowDefinition,
     sendUserMessage,

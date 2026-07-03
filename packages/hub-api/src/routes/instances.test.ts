@@ -287,6 +287,9 @@ function createMockSessionService(): SessionService {
     launchSession(_params) {
       return notImpl("launchSession");
     },
+    deployInstanceAtHead(_params) {
+      return notImpl("deployInstanceAtHead");
+    },
     deployWorkflowDefinition(_params) {
       return notImpl("deployWorkflowDefinition");
     },
@@ -660,6 +663,9 @@ describe("POST /agents/instances/:instanceId/mail", () => {
       launchSession() {
         throw new Error("not implemented");
       },
+      deployInstanceAtHead() {
+        throw new Error("not implemented");
+      },
       deployWorkflowDefinition() {
         throw new Error("not implemented");
       },
@@ -809,6 +815,9 @@ describe("POST /agents/instances/:instanceId/mail attachments", () => {
     const captured: (MessageAttachment[] | undefined)[] = [];
     const service: SessionService = {
       launchSession() {
+        throw new Error("not implemented");
+      },
+      deployInstanceAtHead() {
         throw new Error("not implemented");
       },
       deployWorkflowDefinition() {
@@ -1244,6 +1253,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
   function createCapturingSessionService(): SessionService {
     return {
       launchSession: async () => undefined,
+      deployInstanceAtHead: async () => ({ publicKey: "pk-instance-mock" }),
       deployWorkflowDefinition: () => {
         throw new Error("mock: deployWorkflowDefinition not implemented");
       },
@@ -1454,14 +1464,18 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     expect(JSON.stringify(await res.json())).toContain("wallet_backed");
   });
 
-  test("passes catalog-ordered sources to launchSession and persists modelPreferences", async () => {
+  test("passes catalog-ordered sources to deployInstanceAtHead and persists modelPreferences", async () => {
     const inserts: TableInsert[] = [];
     let launchedSources: unknown;
     let launchedDefaultSource: unknown;
     const sessionService: SessionService = {
-      launchSession: async (params) => {
+      launchSession: () => {
+        throw new Error("mock: launchSession not implemented");
+      },
+      deployInstanceAtHead: async (params) => {
         launchedSources = params.config.sources;
         launchedDefaultSource = params.config.defaultSource;
+        return { publicKey: "pk-instance-mock" };
       },
       deployWorkflowDefinition: () => {
         throw new Error("mock: deployWorkflowDefinition not implemented");
