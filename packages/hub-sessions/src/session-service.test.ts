@@ -516,7 +516,7 @@ describe("SessionService", () => {
     });
 
     const err = await service
-      .launchSession({
+      .stageWorkflowStep({
         agentAddress: AGENT_ADDRESS,
         agentId: AGENT_ID,
         instanceId: INSTANCE_ID,
@@ -533,7 +533,7 @@ describe("SessionService", () => {
   });
 
   test("launchSession does not send pack on provision failure", async () => {
-    router.sendAgentDeploy = () =>
+    router.sendProvisionStep = () =>
       Promise.reject(new Error("provision failed"));
 
     const service = createSessionService({
@@ -542,7 +542,7 @@ describe("SessionService", () => {
     });
 
     const err = await service
-      .launchSession({
+      .stageWorkflowStep({
         agentAddress: AGENT_ADDRESS,
         agentId: AGENT_ID,
         instanceId: INSTANCE_ID,
@@ -804,7 +804,7 @@ describe("SessionService", () => {
       >,
     });
 
-    await service.launchSession({
+    await service.stageWorkflowStep({
       agentAddress: AGENT_ADDRESS,
       agentId: AGENT_ID,
       instanceId: INSTANCE_ID,
@@ -961,7 +961,7 @@ describe("SessionService", () => {
       >,
     });
 
-    await service.launchSession({
+    await service.stageWorkflowStep({
       agentAddress: AGENT_ADDRESS,
       agentId: AGENT_ID,
       instanceId: INSTANCE_ID,
@@ -1012,7 +1012,7 @@ describe("SessionService", () => {
       agentRepoStore: repoStore,
     });
 
-    await service.launchSession({
+    await service.stageWorkflowStep({
       agentAddress: AGENT_ADDRESS,
       agentId: AGENT_ID,
       instanceId: INSTANCE_ID,
@@ -1198,7 +1198,7 @@ describe("SessionService", () => {
       },
     });
 
-    await service.launchSession({
+    await service.stageWorkflowStep({
       agentAddress: AGENT_ADDRESS,
       agentId: AGENT_ID,
       instanceId: INSTANCE_ID,
@@ -1313,7 +1313,7 @@ describe("SessionService", () => {
 
     let err: unknown;
     try {
-      await service.launchSession({
+      await service.stageWorkflowStep({
         agentAddress: AGENT_ADDRESS,
         agentId: AGENT_ID,
         instanceId: INSTANCE_ID,
@@ -1484,7 +1484,7 @@ describe("SessionService", () => {
 
     let caught: unknown;
     try {
-      await service.launchSession({
+      await service.stageWorkflowStep({
         agentAddress: AGENT_ADDRESS,
         agentId: AGENT_ID,
         instanceId: INSTANCE_ID,
