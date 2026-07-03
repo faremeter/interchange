@@ -561,12 +561,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   }
 
   /**
-   * Drive the per-agent deploy + session-start phases (deploy-tree write,
-   * asset-pack fan-out, provision frame, pack, session start). Shared by
-   * the public `launchSession` (warm-harness provision, no workflow frame)
-   * and the single-step head hand-off (`deploySingleStepAtHead`, which
-   * passes a `workflowFrame` so the sidecar spawns the workflow-process
-   * child instead of a warm harness).
+   * Stage a deploy on the sidecar: resolve assets and tool packages, write
+   * the deploy tree, provision the agent, and deliver the deploy + asset
+   * packs (Phases 0-2b). Does NOT start the warm harness -- callers that
+   * want one (the legacy agent-deploy path) invoke `startWarmSession`
+   * afterward. Shared by the public `launchSession` (warm-harness provision,
+   * no workflow frame) and the single-step head hand-off
+   * (`deploySingleStepAtHead`, which passes a `workflowFrame` so the sidecar
+   * spawns the workflow-process child instead of a warm harness).
    */
   async function executeLaunchPhases(params: {
     agentAddress: string;
@@ -580,9 +582,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
      * deployment `agent.deploy` frame carrying the workflow definition +
      * source pins (the sidecar initializes the head repo on receipt and
      * spawns the workflow-process child) instead of the plain provision
-     * frame, and Phase 3's warm-harness `sendSessionStart` is skipped (the
-     * supervised child drives the agent, not a warm hub-agent harness).
-     * The returned supervisor public key comes from that frame's ack.
+     * frame. The returned supervisor public key comes from that frame's
+     * ack; the caller skips `startWarmSession` for a workflow deploy.
      */
     workflowFrame?: {
       definition: WorkflowDefinition;
@@ -824,32 +825,37 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       }
     }
 
-    // Phase 3: Warm-harness session start. A single-step workflow deploy
-    // skips this: the supervised workflow-process child drives the agent
-    // per message through the supervisor, so there is no warm hub-agent
-    // harness to start. The legacy agent-deploy path starts its warm
-    // harness here.
-    if (workflowFrame === undefined) {
-      try {
-        await sidecarRouter.sendSessionStart(agentAddress);
-      } catch (err) {
-        await attemptCleanup(agentAddress, "start", err);
-        throw new SessionLaunchError("start", err, false);
-      }
-    }
-
     return deployAckPublicKey === undefined
       ? undefined
       : { publicKey: deployAckPublicKey };
   }
 
   /**
+   * Start the warm hub-agent harness for a staged deploy. The legacy
+   * agent-deploy path calls this after `executeLaunchPhases` stages the
+   * deploy tree and packs; a single-step workflow deploy skips it entirely,
+   * because the supervised workflow-process child drives the agent per
+   * message through the supervisor and there is no warm harness to start.
+   * A failed start tears the sidecar deployment down so no zombie agent is
+   * left behind.
+   */
+  async function startWarmSession(agentAddress: string): Promise<void> {
+    try {
+      await sidecarRouter.sendSessionStart(agentAddress);
+    } catch (err) {
+      await attemptCleanup(agentAddress, "start", err);
+      throw new SessionLaunchError("start", err, false);
+    }
+  }
+
+  /**
    * Deploy a one-step workflow once at the head. Reuses the full
    * launch-phase machinery (deploy-tree write, pack, asset fan-out) via
    * `executeLaunchPhases`, swapping the Phase 1 provision frame for the
-   * workflow frame and skipping the Phase 3 warm-harness start. The
-   * workflow frame makes the sidecar initialize the head repo and spawn
-   * the workflow-process child; the follow-up pack lands the head's deploy
+   * workflow frame; it never calls `startWarmSession`, so no warm harness
+   * starts. The workflow frame makes the sidecar initialize the head repo
+   * and spawn the workflow-process child; the follow-up pack lands the
+   * head's deploy
    * tree. Returns the supervisor's principal public key from the frame's
    * ack. A workflow-frame launch always yields a deploy-ack key; its
    * absence is a wiring bug, not a tolerable case.
@@ -928,14 +934,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   }
 
   /**
-   * Provision one agent at its address through the deploy-tree + pack +
-   * session-start phases (`executeLaunchPhases` with no workflow frame --
-   * the warm-harness provision path). This is the launcher the multi-step
-   * workflow branch drives per step via the orchestrator's `launchSession`
-   * callback, and the launcher the integration-test fixture drives
-   * directly. A single-agent instance deploy uses `deployInstanceAtHead`
-   * and a single-step workflow uses the head hand-off; neither routes
-   * here. The method carries no workflow projection of its own.
+   * Provision one agent at its address: stage the deploy tree + packs
+   * (`executeLaunchPhases` with no workflow frame) and then start its warm
+   * harness. This is the launcher the multi-step workflow branch drives per
+   * step via the orchestrator's `launchSession` callback, and the launcher
+   * the integration-test fixture drives directly. A single-agent instance
+   * deploy uses `deployInstanceAtHead` and a single-step workflow uses the
+   * head hand-off; neither routes here. The method carries no workflow
+   * projection of its own.
    */
   async function launchSession(params: {
     agentAddress: string;
@@ -955,6 +961,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         ? { toolPackagePins: params.toolPackagePins }
         : {}),
     });
+    await startWarmSession(params.agentAddress);
   }
 
   /**
