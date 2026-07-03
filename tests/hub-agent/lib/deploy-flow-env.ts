@@ -469,6 +469,13 @@ export type HubEnv = {
   deployAcks: Map<string, string>;
   statePacks: { agentAddress: string; ref: string; commitSha: string }[];
   statePackReceiveFailures: { agentAddress: string; error: string }[];
+  /**
+   * Every delivered `mail.outbound` frame the sidecar forwarded to the hub
+   * for persistence, keyed by the signing sender. A frame reaches here only
+   * after the sidecar signed and delivered the send, so its presence proves
+   * the sender's identity was registered on the host transport.
+   */
+  outboundMail: { senderAddress: string; recipients: string[] }[];
   hubDataDir: string;
 };
 
@@ -486,6 +493,7 @@ export async function startHub(
   const deployAcks = new Map<string, string>();
   const statePacks: HubEnv["statePacks"] = [];
   const statePackReceiveFailures: HubEnv["statePackReceiveFailures"] = [];
+  const outboundMail: HubEnv["outboundMail"] = [];
 
   const hubDataDir = await fs.promises.mkdtemp(
     path.join(os.tmpdir(), "hub-data-"),
@@ -561,6 +569,14 @@ export async function startHub(
           return { accepted: false, reason: "corrupt" as const };
         }
         return { accepted: true };
+      },
+      // Capture delivered outbound mail the sidecar forwards for
+      // persistence. Recording the signing sender is enough for the
+      // integration assertions; no durable row is minted, so this returns
+      // an empty result set.
+      persistMail({ senderAddress, recipients }) {
+        outboundMail.push({ senderAddress, recipients });
+        return Promise.resolve([]);
       },
     },
   });
@@ -722,6 +738,7 @@ export async function startHub(
     deployAcks,
     statePacks,
     statePackReceiveFailures,
+    outboundMail,
     hubDataDir,
   };
 }

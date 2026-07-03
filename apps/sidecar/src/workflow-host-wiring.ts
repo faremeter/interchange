@@ -1096,14 +1096,15 @@ export function createSidecarDeployRouter(deps: {
   async function spawnWorkflowDeployment(
     spec: WorkflowDeploySpec,
   ): Promise<DeployRouterResult> {
-    // Fail loud if this address already has a live supervisor. A single-step
-    // deploy would fault anyway (its `transport.register` throws on a
-    // duplicate), but a genuine multi-step head never registers on the
-    // transport and the `activeSupervisors.set` below would silently clobber
-    // the running deployment's handle. Both the deploy path and the boot
-    // restore path route through here, so this is the single transition guard
-    // against a double-spawn -- notably a boot restore racing a legacy
-    // restore for the same address (the B-reroute follow-up relies on it).
+    // Fail loud if this address already has a live supervisor. Both single-
+    // and multi-step now register on the transport, so both carry the
+    // `transport.register` duplicate-throw backstop; this `has()` check is the
+    // primary early guard that gives a clean error before that lower-level
+    // throw and before the `activeSupervisors.set` below could clobber the
+    // running deployment's handle. Both the deploy path and the boot restore
+    // path route through here, so this is the single transition guard against
+    // a double-spawn -- notably a boot restore racing a legacy restore for the
+    // same address (the B-reroute follow-up relies on it).
     if (activeSupervisors.has(spec.agentAddress)) {
       throw new Error(
         `sidecar deploy router: a supervisor is already active for ${spec.agentAddress}; refusing to spawn a second`,
@@ -1194,22 +1195,34 @@ export function createSidecarDeployRouter(deps: {
           : {}),
       });
 
-      // OUTBOUND half of mailbox ownership (§3a): register the spawned
-      // agent's signing key on the host transport so the supervisor signs
-      // the agent's replies as the AGENT's identity. Gated on the
-      // single-step deploy, where the deployment mail address IS the legacy
-      // agent identity whose keypair lives in the keyStore. Registration
-      // happens before `spawn()` so the address is live the instant the
-      // first reply routes outbound.
+      // OUTBOUND half of mailbox ownership (§3a): register a signing key for
+      // the deployment mail address on the host transport so the supervisor
+      // signs the deployment's outbound mail. Every step -- single- or
+      // multi-step -- signs its outbound sends as `spec.agentAddress` (the
+      // one deployment mail address; no per-step sender reaches the host
+      // transport), so the transport MUST hold a `CryptoProvider` for it or
+      // `getTransportFor(senderAddress).send` throws "not registered".
+      // Registration happens before `spawn()` so the address is live the
+      // instant the first reply routes outbound.
+      const { keyPair } = await deps.keyStore.loadOrGenerateKey(
+        spec.agentAddress,
+      );
+      deps.transport.register(
+        spec.agentAddress,
+        deps.createAgentCrypto(keyPair),
+      );
+      agentTransportRegistered = true;
+
       // The public key the deploy ack surfaces to the hub. For a single-step
       // head it is the AGENT key, set inside the block below; a genuine
       // multi-step deployment has no head agent identity and falls back to the
-      // supervisor principal key at the return.
+      // supervisor principal key at the return. (The registered deployment
+      // keypair above is used purely for outbound signing; a multi-step
+      // deployment address is workflow-derived, incurs no reconnect challenge,
+      // and so records no `agent_instance.publicKey` -- carrying it on the ack
+      // would be data written nowhere and read nowhere.)
       let headAgentPublicKey: string | undefined;
       if (spec.definition.stepOrder.length === 1) {
-        const { keyPair } = await deps.keyStore.loadOrGenerateKey(
-          spec.agentAddress,
-        );
         // A single-step head IS an agent identity: it signs its own outbound
         // mail AND its reconnect challenges with this agent key (via the key
         // store's signChallenge). The hub records the ack's key into
@@ -1218,11 +1231,6 @@ export function createSidecarDeployRouter(deps: {
         // reconnect challenge against it, so the ack MUST carry the agent key,
         // not the supervisor principal key -- otherwise verification fails.
         headAgentPublicKey = hexEncode(keyPair.publicKey);
-        deps.transport.register(
-          spec.agentAddress,
-          deps.createAgentCrypto(keyPair),
-        );
-        agentTransportRegistered = true;
 
         // A single-step workflow stages its deploy tree at the head (the
         // lone step IS the head). Initialize the head's on-disk deploy-tree
@@ -1657,12 +1665,12 @@ export function createSidecarDeployRouter(deps: {
       if (wired !== undefined) {
         activeSupervisors.delete(frame.agentAddress);
         await wired.supervisor.shutdown();
-        // Drop the agent's transport registration installed at spawn for
-        // the single-step launched-agent deploy (OUTBOUND half of
-        // mailbox ownership, §3a). `unregister` is a no-op when the
-        // address was never registered (a genuine multi-step deploy
-        // whose derived per-step addresses carry no host keypair), so it
-        // is safe to call unconditionally for any spawned deployment.
+        // Drop the deployment address's transport registration installed at
+        // spawn (OUTBOUND half of mailbox ownership, §3a). Both single- and
+        // multi-step register the deployment address for outbound signing, so
+        // this tears down a real registration for either; `unregister` is a
+        // no-op only if the spawn failed before registering, so it is safe to
+        // call unconditionally for any spawned deployment.
         deps.transport.unregister(frame.agentAddress);
         // Reclaim the deployment's per-step local-disk scratch now that
         // its supervisor + workflow-process child are torn down. The
