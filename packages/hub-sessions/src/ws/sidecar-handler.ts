@@ -36,8 +36,34 @@ const logger = getLogger(["hub", "ws", "sidecar"]);
 export type SidecarConnection = {
   sidecarId: string;
   agentAddresses: Set<string>;
+  // Workflow-substrate deployment addresses (ins_dep_...) this connection
+  // hosts. Kept separate from `agentAddresses`: these are hub-minted and
+  // registered for routing WITHOUT the per-address challenge, so they must
+  // not be dragged through the challenge/re-add dance the session addresses
+  // take. `handleClose` cleans both sets out of `addressIndex`.
+  workflowAddresses: Set<string>;
   send(frame: HubFrame): void;
 };
+
+/**
+ * Whether this connection owns `address` for routing/lifecycle purposes --
+ * as a challenged session address OR a hub-minted workflow-substrate address.
+ * The two sets are kept physically distinct (they differ on the challenge /
+ * re-add path), but ownership readers -- pack-transfer authorization,
+ * in-flight cancellation, disconnect teardown -- must see the union, or a
+ * reconnected workflow deployment (which lives only in `workflowAddresses`)
+ * is silently treated as unowned even though its mail routes.
+ */
+function connOwnsAddress(conn: SidecarConnection, address: string): boolean {
+  return (
+    conn.agentAddresses.has(address) || conn.workflowAddresses.has(address)
+  );
+}
+
+/** The deduped set of every address this connection owns (session + workflow). */
+function ownedAddresses(conn: SidecarConnection): Set<string> {
+  return new Set([...conn.agentAddresses, ...conn.workflowAddresses]);
+}
 
 type PendingRequest = {
   requestId: string;
@@ -379,7 +405,13 @@ export function createSidecarRouter(
 
     switch (frame.type) {
       case "register":
-        handleRegister(ws, frame.sidecarId, frame.token, frame.agentAddresses);
+        handleRegister(
+          ws,
+          frame.sidecarId,
+          frame.token,
+          frame.agentAddresses,
+          frame.workflowAddresses ?? [],
+        );
         break;
       case "reconnect":
         void handleReconnect(
@@ -387,6 +419,7 @@ export function createSidecarRouter(
           frame.sidecarId,
           frame.token,
           frame.agentAddresses,
+          frame.workflowAddresses ?? [],
           frame.deployRefs ?? {},
         );
         break;
@@ -499,6 +532,7 @@ export function createSidecarRouter(
     sidecarId: string,
     token: string,
     agentAddresses: string[],
+    workflowAddresses: string[] = [],
   ): void {
     if (validateToken !== undefined && !validateToken(sidecarId, token)) {
       logger.warn`Rejected registration from sidecar ${sidecarId}: invalid token`;
@@ -519,9 +553,15 @@ export function createSidecarRouter(
       for (const addr of existing.agentAddresses) {
         addressIndex.delete(addr);
       }
+      for (const addr of existing.workflowAddresses) {
+        addressIndex.delete(addr);
+      }
     }
 
     const addrSet = new Set(agentAddresses);
+    // The frame carries the COMPLETE current live workflow-address set, so
+    // this replaces (not merges) the connection's workflow routing.
+    const workflowSet = new Set(workflowAddresses);
 
     // Clean up ghost entries from other connections that previously
     // owned addresses this sidecar is now claiming.
@@ -550,9 +590,28 @@ export function createSidecarRouter(
       }
     }
 
+    // Same ghost cleanup for reclaimed workflow-substrate addresses: evict the
+    // address from the prior owner's set. Without this, when the superseded
+    // connection later closes (the abrupt-restart overlap window), its
+    // `handleClose` teardown would iterate the stale address and cancel THIS
+    // connection's live in-flight pack transfer / abandon its collector for
+    // the deployment it just took over. `cancelByAgent` is keyed by address,
+    // not by connection, so the stale close would hit the new owner. The
+    // session loop above evicts the reclaimed address the same way.
+    for (const addr of workflowSet) {
+      const prevWs = addressIndex.get(addr);
+      if (prevWs !== undefined && prevWs !== ws) {
+        const prevConn = connections.get(prevWs);
+        if (prevConn !== undefined) {
+          prevConn.workflowAddresses.delete(addr);
+        }
+      }
+    }
+
     const conn: SidecarConnection = {
       sidecarId,
       agentAddresses: addrSet,
+      workflowAddresses: workflowSet,
       send(frame: HubFrame) {
         ws.send(JSON.stringify(frame));
       },
@@ -573,8 +632,17 @@ export function createSidecarRouter(
         disconnectedAgents.delete(addr);
       }
     }
+    // Re-register workflow-substrate addresses for routing directly. They are
+    // hub-minted with no per-address key (no `agent_instance` row), so there
+    // is no challenge to run -- the same way they first entered `addressIndex`
+    // at deploy time via `sendAgentDeploy`. A later-connecting ws claiming the
+    // same address overwrites the pointer here; the prior owner's `handleClose`
+    // then no-ops on it via its ownership guard.
+    for (const addr of workflowSet) {
+      addressIndex.set(addr, ws);
+    }
 
-    logger.info`Sidecar ${sidecarId} registered with ${String(agentAddresses.length)} agents`;
+    logger.info`Sidecar ${sidecarId} registered with ${String(agentAddresses.length)} agents and ${String(workflowSet.size)} workflow deployments`;
   }
 
   async function handleReconnect(
@@ -582,6 +650,7 @@ export function createSidecarRouter(
     sidecarId: string,
     token: string,
     agentAddresses: string[],
+    workflowAddresses: string[] = [],
     deployRefs: Record<string, string> = {},
   ): Promise<void> {
     if (validateToken !== undefined && !validateToken(sidecarId, token)) {
@@ -614,9 +683,10 @@ export function createSidecarRouter(
     // freshly-deployed agent from routing.
     const previouslyOwned = new Set(connections.get(ws)?.agentAddresses);
 
-    // Register the sidecar connection immediately (with no addresses)
-    // so it can receive frames while the challenge is pending.
-    handleRegister(ws, sidecarId, token, []);
+    // Register the sidecar connection immediately (with no session addresses,
+    // but WITH the workflow-substrate addresses -- those need no challenge)
+    // so it can receive frames while the session challenge is pending.
+    handleRegister(ws, sidecarId, token, [], workflowAddresses);
 
     const conn = connections.get(ws);
     if (conn === undefined) return;
@@ -970,6 +1040,17 @@ export function createSidecarRouter(
         }
       }
     }
+    // Remove this connection's workflow-substrate routes. No disconnect queue
+    // is created: these addresses re-register (with the complete live set)
+    // when the sidecar reconnects, and their in-flight run state is
+    // reconstructed sidecar-locally, not from a hub-side queue. The ownership
+    // guard mirrors the session loop above so a takeover by a newer ws is not
+    // clobbered by the prior owner's close.
+    for (const addr of conn.workflowAddresses) {
+      if (addressIndex.get(addr) === ws) {
+        addressIndex.delete(addr);
+      }
+    }
     connections.delete(ws);
 
     // Cancel the liveness timer for this connection.
@@ -1022,14 +1103,20 @@ export function createSidecarRouter(
     // across both receivers. The two receivers track their own in-
     // flight transferIds, so a pending workflow-run transfer for an
     // agent that just disconnected won't outlive the connection just
-    // because the agent-state receiver has nothing to cancel.
-    for (const addr of conn.agentAddresses) {
+    // because the agent-state receiver has nothing to cancel. Iterate the
+    // owned union so a reconnected workflow deployment's transfer is
+    // cancelled too; the deduped set avoids a double-cancel for an address
+    // that is in both sets. A reclaimed address is not present here -- the
+    // ghost cleanup in handleRegister evicts it from this (superseded)
+    // connection -- so a stale close does not cancel the new owner's work.
+    const owned = ownedAddresses(conn);
+    for (const addr of owned) {
       agentStatePackReceiver.cancelByAgent(addr);
       workflowRunPackReceiver.cancelByAgent(addr);
     }
 
     events.emit("sidecar.disconnect", {
-      agentAddresses: [...conn.agentAddresses],
+      ownedAddresses: [...owned],
     });
 
     logger.info`Sidecar ${conn.sidecarId} disconnected`;
@@ -1192,7 +1279,7 @@ export function createSidecarRouter(
   function handlePackPush(ws: WsHandle, frame: PackPushFrame): void {
     const conn = connections.get(ws);
     if (conn === undefined) return;
-    if (!conn.agentAddresses.has(frame.agentAddress)) {
+    if (!connOwnsAddress(conn, frame.agentAddress)) {
       logger.warn`Received repo.pack.push for unrouted agent ${frame.agentAddress}`;
       return;
     }
@@ -1228,7 +1315,7 @@ export function createSidecarRouter(
   ): Promise<void> {
     const conn = connections.get(ws);
     if (conn === undefined) return;
-    if (!conn.agentAddresses.has(frame.agentAddress)) {
+    if (!connOwnsAddress(conn, frame.agentAddress)) {
       logger.warn`Received repo.pack.done for unrouted agent ${frame.agentAddress}`;
       return;
     }

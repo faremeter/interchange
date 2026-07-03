@@ -28,7 +28,7 @@ describe("createSidecarEmitter", () => {
       order.push("b");
     });
 
-    emitter.emit("sidecar.disconnect", { agentAddresses: [] });
+    emitter.emit("sidecar.disconnect", { ownedAddresses: [] });
 
     expect(order).toEqual(["a", "b"]);
   });
@@ -40,9 +40,9 @@ describe("createSidecarEmitter", () => {
       count++;
     });
 
-    emitter.emit("sidecar.disconnect", { agentAddresses: [] });
+    emitter.emit("sidecar.disconnect", { ownedAddresses: [] });
     unsubscribe();
-    emitter.emit("sidecar.disconnect", { agentAddresses: [] });
+    emitter.emit("sidecar.disconnect", { ownedAddresses: [] });
 
     expect(count).toBe(1);
   });
@@ -57,7 +57,7 @@ describe("createSidecarEmitter", () => {
       seen.push("ran");
     });
 
-    emitter.emit("sidecar.disconnect", { agentAddresses: [] });
+    emitter.emit("sidecar.disconnect", { ownedAddresses: [] });
 
     expect(seen).toEqual(["ran"]);
   });

@@ -53,10 +53,11 @@ export type SidecarEventMap = {
   };
 
   /** Notification. Emitted once when a sidecar's connection closes,
-   * carrying the set of agent addresses that were registered on that
-   * connection. */
+   * carrying every address the connection owned -- challenged session
+   * addresses and hub-minted workflow-substrate deployment addresses
+   * alike -- so lifecycle teardown covers both. */
   "sidecar.disconnect": {
-    agentAddresses: string[];
+    ownedAddresses: string[];
   };
 
   /** Notification. Emitted when a mail.outbound frame from a sidecar

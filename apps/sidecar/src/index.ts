@@ -370,6 +370,20 @@ const orchestrator = createSidecarOrchestrator({
   mailInboundRouter: multistepMailRouter,
   signalInboundRouter: multistepSignalRouter,
   drainInboundRouter: multistepDrainRouter,
+  // The hub link calls this on every (re)connect to announce the workflow
+  // deployments this sidecar hosts so the hub re-registers their routes.
+  // `createDeployRouter` runs synchronously during construction (below), so
+  // the router is captured before the link ever connects; assert rather than
+  // optional-chain so a wiring regression fails loud instead of silently
+  // announcing no deployments.
+  getWorkflowAddresses: () => {
+    if (sidecarDeployRouter === undefined) {
+      throw new Error(
+        "sidecar boot: deploy router was not constructed before the hub link requested workflow addresses",
+      );
+    }
+    return sidecarDeployRouter.activeAddresses();
+  },
   createDeployRouter: ({
     sessions,
     keyStore,

@@ -688,6 +688,17 @@ export interface SidecarDeployRouter extends DeployRouter {
    * disk for a later boot to retry -- it is never deleted here.
    */
   restoreWorkflowDeployments(): Promise<void>;
+  /**
+   * The workflow-substrate deployment addresses (`ins_dep_...`) this router
+   * currently hosts a live supervisor for -- the set of addresses this
+   * sidecar can route mail to. The boot edge announces these to the hub on
+   * (re)connect so the hub re-registers them for routing: they are hub-minted
+   * and carry no per-address key, so unlike single-agent sessions they are
+   * not re-established by the challenge flow, and without this announcement
+   * the hub drops their route on a WS reconnect. Reflects `deploy`/`undeploy`
+   * and boot-time restore live, so a caller re-reads it per connect.
+   */
+  activeAddresses(): string[];
 }
 
 export function createSidecarDeployRouter(deps: {
@@ -1749,6 +1760,13 @@ export function createSidecarDeployRouter(deps: {
           logger.warn`Failed to restore workflow deployment ${deploymentId}: ${reason}`;
         }
       }
+    },
+    activeAddresses(): string[] {
+      // `activeSupervisors` is keyed by deployment agent address and holds
+      // exactly the deployments with a live supervisor (deploy and restore
+      // add; undeploy and spawn-unwind remove), so its keys are the addresses
+      // this sidecar can currently route mail to.
+      return [...activeSupervisors.keys()];
     },
   };
 }

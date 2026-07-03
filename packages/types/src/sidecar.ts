@@ -31,6 +31,12 @@ export const RegisterFrame = type({
   sidecarId: "string",
   token: "string",
   agentAddresses: "string[]",
+  // Live workflow-substrate deployment addresses (ins_dep_...) this sidecar
+  // currently hosts. Unlike `agentAddresses`, these are hub-minted and
+  // carry no per-address key, so the hub re-registers them for routing
+  // directly (no challenge) -- the same way they were first registered at
+  // deploy time. Absent on sidecars/paths that host none.
+  "workflowAddresses?": "string[]",
 });
 export type RegisterFrame = typeof RegisterFrame.infer;
 
@@ -44,6 +50,10 @@ export const ReconnectFrame = type({
   sidecarId: "string",
   token: "string",
   agentAddresses: "string[]",
+  // See `RegisterFrame.workflowAddresses`. Carried on the reconnect frame too
+  // so a sidecar restoring both single-agent sessions and workflow
+  // deployments re-registers both in one connect.
+  "workflowAddresses?": "string[]",
   "deployRefs?": "Record<string, string>",
 });
 export type ReconnectFrame = typeof ReconnectFrame.infer;

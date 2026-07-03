@@ -228,6 +228,16 @@ export type HubLinkConfig = {
    * observable rather than silent.
    */
   drainInboundRouter?: DrainInboundRouter;
+  /**
+   * Returns the workflow-substrate deployment addresses this sidecar
+   * currently hosts a live supervisor for. Called on every (re)connect to
+   * announce them to the hub for routing: they are hub-minted with no
+   * per-address key, so they re-register WITHOUT the challenge flow, and
+   * without this announcement the hub drops their route on a WS reconnect.
+   * Defaults to none when omitted (tests / deployments with no workflow
+   * substrate).
+   */
+  getWorkflowAddresses?: () => string[];
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
   scheduleReconnect?: ReconnectScheduler;
@@ -280,6 +290,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     mailInboundRouter,
     signalInboundRouter,
     drainInboundRouter,
+    getWorkflowAddresses = () => [],
     pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
     reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
     scheduleReconnect = defaultScheduleReconnect,
@@ -1038,6 +1049,15 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         try {
           const { restored, failed } = await sessions.restoreSessions();
 
+          // The live workflow-substrate deployment addresses this sidecar
+          // hosts, re-read AFTER restore so any deploy that arrived during the
+          // restore window is included. These are hub-minted (no per-address
+          // key) and re-register for routing WITHOUT a challenge -- the hub
+          // otherwise drops their route on a WS reconnect. Carried on whichever
+          // terminal frame fires below; the frame carries the complete current
+          // set, so a plain register does not wipe them.
+          const workflowAddresses = getWorkflowAddresses();
+
           if (restored.length > 0) {
             const deployRefs: Record<string, string> = {};
             for (const entry of restored) {
@@ -1058,6 +1078,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
               sidecarId,
               token,
               agentAddresses: restored.map((e) => e.address),
+              ...(workflowAddresses.length > 0 ? { workflowAddresses } : {}),
               deployRefs,
             });
             if (failed.length > 0) {
@@ -1066,22 +1087,23 @@ export function createHubLink(config: HubLinkConfig): HubLink {
               logger.info`Sent reconnect with ${String(restored.length)} agent(s)`;
             }
           } else {
-            // Reached only when nothing was restored from disk. The
-            // empty register on open already established routability, so
-            // skip a second empty frame. Any address present here belongs
-            // to an agent provisioned during the restore window —
-            // provisions route on that open register — which the hub
-            // already placed in addressIndex when it routed the deploy.
-            // Re-announcing those is consistent with that entry, not an
-            // unchallenged write of a disk-restored address; those take
-            // the reconnect branch above.
+            // Nothing was restored from disk. The empty register on open
+            // already established routability for session addresses. Send a
+            // register when there are session addresses to re-announce OR
+            // workflow deployments to (re-)register -- a workflow-only sidecar
+            // restores nothing here yet must still announce its deployments.
+            // Session addresses present here belong to agents provisioned
+            // during the restore window (already in addressIndex from their
+            // deploy); disk-restored sessions take the challenged reconnect
+            // branch above.
             const addresses = sessions.getAddresses();
-            if (addresses.length > 0) {
+            if (addresses.length > 0 || workflowAddresses.length > 0) {
               send({
                 type: "register",
                 sidecarId,
                 token,
                 agentAddresses: addresses,
+                ...(workflowAddresses.length > 0 ? { workflowAddresses } : {}),
               });
             }
           }

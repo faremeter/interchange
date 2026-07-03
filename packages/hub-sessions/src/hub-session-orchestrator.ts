@@ -91,8 +91,8 @@ export function createHubSessionOrchestrator(
   );
 
   unsubscribers.push(
-    events.on("sidecar.disconnect", ({ agentAddresses }) => {
-      for (const addr of agentAddresses) {
+    events.on("sidecar.disconnect", ({ ownedAddresses }) => {
+      for (const addr of ownedAddresses) {
         eventCollectors.abandon(addr);
       }
     }),

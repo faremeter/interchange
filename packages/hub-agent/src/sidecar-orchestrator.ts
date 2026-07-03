@@ -127,6 +127,14 @@ export type SidecarOrchestratorConfig = {
    * orchestrator forwards the binding unchanged to `createHubLink`.
    */
   drainInboundRouter?: DrainInboundRouter;
+  /**
+   * Returns the workflow-substrate deployment addresses this sidecar
+   * currently hosts. Forwarded to the hub link, which announces them on
+   * every (re)connect so the hub re-registers them for routing without a
+   * challenge. Production wires this to the deploy router's
+   * `activeAddresses`; omitted, the link announces none.
+   */
+  getWorkflowAddresses?: () => string[];
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
   scheduleReconnect?: ReconnectScheduler;
@@ -160,6 +168,7 @@ export function createSidecarOrchestrator(
     mailInboundRouter,
     signalInboundRouter,
     drainInboundRouter,
+    getWorkflowAddresses,
     pingIntervalMs,
     reconnectDelayMs,
     scheduleReconnect,
@@ -249,6 +258,7 @@ export function createSidecarOrchestrator(
     ...(mailInboundRouter !== undefined ? { mailInboundRouter } : {}),
     ...(signalInboundRouter !== undefined ? { signalInboundRouter } : {}),
     ...(drainInboundRouter !== undefined ? { drainInboundRouter } : {}),
+    ...(getWorkflowAddresses !== undefined ? { getWorkflowAddresses } : {}),
     ...(pingIntervalMs !== undefined ? { pingIntervalMs } : {}),
     ...(reconnectDelayMs !== undefined ? { reconnectDelayMs } : {}),
     ...(scheduleReconnect !== undefined ? { scheduleReconnect } : {}),

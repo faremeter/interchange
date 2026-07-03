@@ -346,7 +346,7 @@ describe("createHubSessionOrchestrator", () => {
   describe("sidecar.disconnect", () => {
     test("abandons every collector for the closed connection", () => {
       harness.events.emit("sidecar.disconnect", {
-        agentAddresses: ["a@x", "b@x", "c@x"],
+        ownedAddresses: ["a@x", "b@x", "c@x"],
       });
       const abandonedAddrs = harness.collectors.calls
         .filter((c) => c.kind === "abandon")
@@ -522,7 +522,7 @@ describe("createHubSessionOrchestrator", () => {
     test("removes all subscriptions so later emits are inert", () => {
       harness.dispose();
       harness.events.emit("sidecar.disconnect", {
-        agentAddresses: [AGENT_ADDRESS],
+        ownedAddresses: [AGENT_ADDRESS],
       });
       const abandoned = harness.collectors.calls.find(
         (c) => c.kind === "abandon",
