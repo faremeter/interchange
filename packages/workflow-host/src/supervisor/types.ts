@@ -207,7 +207,7 @@ export type SubprocessSpawner = (args: {
  * to branch into `supervisor.spawn()` instead of `trivialLaunch`. The
  * field carries the workflow definition (so the supervisor can
  * construct the per-step substrate env without round-tripping the
- * hub) and the per-step inference source pins keyed by
+ * hub) and each step's ordered inference-source failover chain keyed by
  * `definition.stepOrder` step ids.
  */
 export interface SupervisorDeployFrame {
@@ -217,7 +217,7 @@ export interface SupervisorDeployFrame {
   hubPublicKey: string;
   workflow?: {
     definition: WorkflowDefinition;
-    sources: Record<string, InferenceSource>;
+    sources: Record<string, InferenceSource[]>;
   };
 }
 

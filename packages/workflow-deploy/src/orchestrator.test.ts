@@ -409,8 +409,10 @@ describe("createWorkflowDeployOrchestrator", () => {
       expect(Object.keys(handoff.sources).sort()).toEqual(["execute", "plan"]);
       const baseSource = HARNESS_CONFIG_BASE.sources[0];
       if (baseSource === undefined) throw new Error("missing base source");
-      expect(handoff.sources.plan).toEqual(baseSource);
-      expect(handoff.sources.execute).toEqual(baseSource);
+      // Each step pins a single-element failover chain: the multi-step branch
+      // wraps its one picked source in a list.
+      expect(handoff.sources.plan).toEqual([baseSource]);
+      expect(handoff.sources.execute).toEqual([baseSource]);
       expect(result).toEqual({
         kind: "multi-step",
         publicKey: "ff".repeat(32),

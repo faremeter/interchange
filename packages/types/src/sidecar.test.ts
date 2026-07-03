@@ -160,7 +160,7 @@ describe("AgentDeployFrame", () => {
           stepOrder: ["plan", "act"],
           steps: { plan: {}, act: {} },
         },
-        sources: { plan: stepSource, act: stepSource },
+        sources: { plan: [stepSource], act: [stepSource] },
       },
     });
     expect(result instanceof type.errors).toBe(false);
@@ -191,7 +191,7 @@ describe("AgentDeployFrame", () => {
           stepOrder: ["plan", "act"],
           steps: { plan: {}, act: {} },
         },
-        sources: { plan: stepSource },
+        sources: { plan: [stepSource] },
       },
     });
     expect(result instanceof type.errors).toBe(true);
@@ -210,7 +210,7 @@ describe("AgentDeployFrame", () => {
           stepOrder: ["plan"],
           steps: { plan: {} },
         },
-        sources: { plan: stepSource },
+        sources: { plan: [stepSource] },
       },
     });
     expect(result instanceof type.errors).toBe(true);

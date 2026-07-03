@@ -299,13 +299,15 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
           steps: { "step-1": { kind: "step" } },
         },
         sources: {
-          "step-1": {
-            id: "step-1",
-            provider: "anthropic",
-            baseURL: "https://api.anthropic.com",
-            apiKey: "sk-step-1",
-            model: "claude-3-5",
-          },
+          "step-1": [
+            {
+              id: "step-1",
+              provider: "anthropic",
+              baseURL: "https://api.anthropic.com",
+              apiKey: "sk-step-1",
+              model: "claude-3-5",
+            },
+          ],
         },
       },
     };

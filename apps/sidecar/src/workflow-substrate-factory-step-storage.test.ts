@@ -86,9 +86,10 @@ function stubDurableConversationRegistry(): DurableConversationRegistry {
 function buildDeps(opts: {
   dataDir: string;
   durableConversation?: DurableConversationRegistry;
+  sourceChain?: InferenceSource[];
 }): SidecarStepBuildEnvDeps {
   return {
-    table: { [STEP_ID]: SOURCE },
+    table: { [STEP_ID]: opts.sourceChain ?? [SOURCE] },
     dataDir: opts.dataDir,
     workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
     signer: (payload: string) => Promise.resolve(`sig:${payload.length}`),
@@ -172,5 +173,30 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     expect(env2.workdir).toContain(path.join("runs", "run-2"));
     // The cold path never parks scratch under the warm sub-root.
     expect(env1.workdir).not.toContain(path.join("warm", STEP_ID));
+  });
+
+  test("feeds the reactor the whole failover chain with the head pinned as default", async () => {
+    // The reactor resolves its initial source by `defaultSource` and fails
+    // over forward across `sources`; the child must hand it the full ordered
+    // chain, not just the active source, or cross-provider failover is lost.
+    const failoverSource: InferenceSource = {
+      id: "failover",
+      provider: "openai",
+      baseURL: "https://api.openai.com",
+      apiKey: "sk-failover",
+      model: "gpt-failover",
+    };
+    const chain = [SOURCE, failoverSource];
+    const dataDir = await makeTempDir();
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({ dataDir, sourceChain: chain }),
+    );
+
+    const env: StepEnvBase = await buildEnv(requestForRun("run-1"));
+
+    // The whole chain reaches the reactor, ordered, with element 0 as the
+    // initial source.
+    expect(env.sources).toEqual(chain);
+    expect(env.defaultSource).toBe(SOURCE.id);
   });
 });

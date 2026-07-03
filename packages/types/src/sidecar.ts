@@ -280,11 +280,16 @@ export type DrainDeliverFrame = typeof DrainDeliverFrame.infer;
  * of authoring-time primitive shape lives on the workflow definition
  * surface in `@intx/workflow`, not on the wire.
  *
- * `sources` pins one inference source per step in `definition.stepOrder`
- * so the workflow-process child can resolve inference at step invocation
- * without a round trip to the hub. Every `stepOrder` entry must have a
- * matching `sources` entry; the validator rejects frames that violate
- * this invariant at the boundary.
+ * `sources` pins an ordered, non-empty inference-source list per step in
+ * `definition.stepOrder` so the workflow-process child can resolve inference
+ * at step invocation without a round trip to the hub. The list is the step's
+ * failover chain: element 0 is the active source (its id is the step's
+ * `defaultSource`), and the reactor fails over forward through the tail on a
+ * transient inference error. A workflow step pins a single-element list (no
+ * per-step failover); a single-agent instance pins the instance's full
+ * ordered source chain. Every `stepOrder` entry must have a matching
+ * `sources` entry; the validator rejects frames that violate this at the
+ * boundary.
  */
 export const AgentDeployWorkflow = type({
   definition: type({
@@ -295,7 +300,7 @@ export const AgentDeployWorkflow = type({
     "state?": "Record<string, unknown>",
     "+": "delete",
   }),
-  sources: { "[string]": InferenceSource },
+  sources: { "[string]": InferenceSource.array().atLeastLength(1) },
 }).narrow((value, ctx) => {
   for (const stepId of value.definition.stepOrder) {
     if (!Object.prototype.hasOwnProperty.call(value.sources, stepId)) {

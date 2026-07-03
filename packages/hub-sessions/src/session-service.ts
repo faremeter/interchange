@@ -520,7 +520,7 @@ export async function sendMultiStepDeployFrame(args: {
   agentAddress: string;
   config: HarnessConfig;
   definition: WorkflowDefinition;
-  sources: Record<string, InferenceSource>;
+  sources: Record<string, InferenceSource[]>;
 }): Promise<{ publicKey: string }> {
   // The wire validator's projection types `stepOrder` and `triggers`
   // as mutable arrays while `WorkflowDefinition` declares them as
@@ -638,7 +638,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
      */
     workflowFrame?: {
       definition: WorkflowDefinition;
-      sources: Record<string, InferenceSource>;
+      sources: Record<string, InferenceSource[]>;
     };
   }): Promise<{ publicKey: string } | undefined> {
     const { agentAddress, agentId, instanceId, config, deployContent } = params;
@@ -1071,14 +1071,28 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       );
     }
 
-    // Pin the step's inference source to the instance's default source. The
-    // instance route already resolved and authorized it against the tenant
-    // catalog, so the source is selected directly rather than re-run through
-    // the orchestrator's operator-approval gate.
-    const source = config.sources.find((s) => s.id === config.defaultSource);
-    if (source === undefined) {
+    // Pin the step's inference sources to the instance's FULL ordered source
+    // chain so the workflow-process child's reactor fails over across it at
+    // runtime, matching the legacy in-process harness. The route already
+    // resolved and authorized `config.sources` against the tenant catalog, so
+    // it is pinned directly rather than re-run through the orchestrator's
+    // operator-approval gate.
+    //
+    // Fail loud on the invariant the reactor depends on: the reactor resolves
+    // its initial source by id (`defaultSource`) and fails over FORWARD-ONLY
+    // with no wrap, so the default must be element 0 or part of the chain is
+    // unreachable -- and if the default were last, failover would silently
+    // no-op. The route guarantees `config.sources[0].id === config.defaultSource`
+    // (head = active); assert it here so a future reordering fails loudly
+    // rather than silently disabling failover.
+    if (config.sources.length === 0) {
       throw new Error(
-        `instance deploy for ${agentAddress}: config.defaultSource ${JSON.stringify(config.defaultSource)} does not resolve to a HarnessConfig.sources entry`,
+        `instance deploy for ${agentAddress}: config.sources is empty; at least the default source is required`,
+      );
+    }
+    if (config.sources[0]?.id !== config.defaultSource) {
+      throw new Error(
+        `instance deploy for ${agentAddress}: config.sources[0] (${JSON.stringify(config.sources[0]?.id)}) must be the default source ${JSON.stringify(config.defaultSource)}; the reactor fails over forward from the default and would otherwise skip the head`,
       );
     }
 
@@ -1089,7 +1103,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       config,
       deployContent,
       definition: workflow,
-      sources: { [stepId]: source },
+      sources: { [stepId]: config.sources },
       hubPublicKey: hexEncode(agentRepoStore.getSigningPublicKey()),
       ...(params.toolPackagePins !== undefined
         ? { toolPackagePins: params.toolPackagePins }

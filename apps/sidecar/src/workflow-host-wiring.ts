@@ -516,11 +516,12 @@ export type SidecarWorkflowSupervisor = {
 const TRIVIAL_STEP_ID = "trivial";
 
 /**
- * Env key the multi-step branch uses to carry per-step inference source
- * pins from `frame.workflow.sources` down to the workflow-process child.
- * The substrate factory's `buildEnv` reads this and resolves a source
- * per step at step invocation; the supervisor itself is opaque to the
- * value (it is plumbed through `bindings.substrateEnv` verbatim).
+ * Env key the multi-step branch uses to carry each step's ordered
+ * inference-source failover chain from `frame.workflow.sources` down to
+ * the workflow-process child. The substrate factory's `buildEnv` reads
+ * this and resolves a step's chain at step invocation, feeding it to the
+ * reactor for forward-only failover; the supervisor itself is opaque to
+ * the value (it is plumbed through `bindings.substrateEnv` verbatim).
  *
  * Listed here so the router and the future substrate-factory consumer
  * spell the key the same way without a magic-string trip hazard.
@@ -550,11 +551,14 @@ export const STEP_INFERENCE_SOURCES_ENV_KEY = "STEP_INFERENCE_SOURCES";
  *     entry be absent; presence is required so the workflow-process
  *     child can resolve each step's primitive at run time.
  *   - Every `stepOrder` entry has a corresponding `sources[id]`
- *     entry. The arktype narrow already enforces this; the re-check
- *     here surfaces a structured router-side error instead of an
- *     arktype validation failure at the wire boundary, which keeps
+ *     entry, and that entry is a non-empty array (the step's ordered
+ *     failover chain). The arktype narrow already enforces both; the
+ *     re-check here surfaces a structured router-side error instead of
+ *     an arktype validation failure at the wire boundary, which keeps
  *     the failure shape consistent with the rest of the validations
- *     this function owns.
+ *     this function owns. An empty chain would leave the reactor with
+ *     no initial source, so it is rejected here rather than deferred to
+ *     a deep-stack child failure.
  *
  * A rejection here surfaces as a thrown `Error` the link's deploy
  * frame caller converts into a structured failure reply.
@@ -605,6 +609,13 @@ export function validateWorkflowProjection(projection: {
     if (!Object.prototype.hasOwnProperty.call(sources, stepId)) {
       throw new Error(
         `sidecar deploy router: workflow.sources is missing entry for stepId ${JSON.stringify(stepId)}`,
+      );
+    }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- sources is checked to be a non-null object above; this reads a value to re-check its array shape
+    const stepSources = (sources as Record<string, unknown>)[stepId];
+    if (!Array.isArray(stepSources) || stepSources.length === 0) {
+      throw new Error(
+        `sidecar deploy router: workflow.sources[${JSON.stringify(stepId)}] must be a non-empty array (the step's ordered inference-source failover chain)`,
       );
     }
   }
@@ -1131,7 +1142,8 @@ export function createSidecarDeployRouter(deps: {
       // validator requires. The boot edge's `multistepSubstrateEnv` carries
       // the boot-edge constants; the four workflow-definition / workflow-run
       // identity keys are derived per-deploy here. `STEP_INFERENCE_SOURCES`
-      // threads the pinned per-step sources into the child.
+      // threads each step's ordered inference-source failover chain into the
+      // child.
       const substrateEnv: Record<string, string> = {
         ...multistepSubstrateEnv,
         WORKFLOW_DEFINITION_REPO_ID: spec.definition.id,
@@ -1350,17 +1362,21 @@ export function createSidecarDeployRouter(deps: {
     // supervisor.
     validateWorkflowProjection(projection);
 
-    // Source-admission gate: reject a deploy whose any step pins an
+    // Source-admission gate: reject a deploy where any step pins an
     // inference provider this sidecar cannot build, BEFORE any state is
     // claimed or the child is spawned. The throw propagates back through
     // the deploy frame so the hub's `deployWorkflow` rejects synchronously
     // at deploy time, rather than the child failing the run when the
     // step's inference first resolves. Covers single- and multi-step: the
     // projection's `narrow` guarantees every stepOrder entry has a
-    // `sources` entry.
+    // `sources` entry. Every source in a step's failover chain must be
+    // buildable -- a chain with an unbuildable tail would fail only after
+    // the reactor failed over onto it -- so this iterates the whole list.
     for (const stepId of projection.definition.stepOrder) {
-      const source = projection.sources[stepId];
-      if (source !== undefined) deps.assertSourceBuildable(source);
+      const chain = projection.sources[stepId];
+      if (chain !== undefined) {
+        for (const source of chain) deps.assertSourceBuildable(source);
+      }
     }
 
     // Reject a re-deploy of an address already live in this process BEFORE
@@ -1729,12 +1745,15 @@ export function createSidecarDeployRouter(deps: {
           validateWorkflowProjection(projection);
 
           // Re-run the source-admission gate: refuse to restore a deployment
-          // whose pinned provider this sidecar can no longer build. The
-          // record is KEPT (not deleted) so a later boot with the provider
-          // restored retries it.
+          // whose pinned provider this sidecar can no longer build. Every
+          // source in a step's failover chain must be buildable, so this
+          // iterates the whole list. The record is KEPT (not deleted) so a
+          // later boot with the provider restored retries it.
           for (const stepId of projection.definition.stepOrder) {
-            const source = projection.sources[stepId];
-            if (source !== undefined) deps.assertSourceBuildable(source);
+            const chain = projection.sources[stepId];
+            if (chain !== undefined) {
+              for (const source of chain) deps.assertSourceBuildable(source);
+            }
           }
 
           const spec: WorkflowDeploySpec = {

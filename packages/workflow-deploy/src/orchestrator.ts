@@ -115,7 +115,7 @@ export type SendMultiStepDeployFn = (params: {
   agentId: string;
   config: HarnessConfig;
   definition: WorkflowDefinition;
-  sources: Record<string, InferenceSource>;
+  sources: Record<string, InferenceSource[]>;
   hubPublicKey: string;
 }) => Promise<MultiStepDeployResult>;
 
@@ -143,7 +143,7 @@ export type DeploySingleStepFn = (params: {
   config: HarnessConfig;
   deployContent: DeployContent;
   definition: WorkflowDefinition;
-  sources: Record<string, InferenceSource>;
+  sources: Record<string, InferenceSource[]>;
   hubPublicKey: string;
   toolPackagePins?: readonly ToolPackagePin[];
 }) => Promise<MultiStepDeployResult>;
@@ -563,7 +563,11 @@ async function runSingleStepAtHead(args: {
     config: headConfig,
     deployContent: headDeployContent,
     definition: deploy.workflow,
-    sources: { [stepId]: source },
+    // A workflow step pins a single source (no per-step failover): wrap the
+    // one operator-approved source in a one-element list. The per-step
+    // failover chain is intentionally an instance-only concern; a workflow
+    // step preserves its prior single-source behavior.
+    sources: { [stepId]: [source] },
     hubPublicKey: deploy.hubPublicKey,
     ...(deploy.toolPackagePins !== undefined
       ? { toolPackagePins: deploy.toolPackagePins }
@@ -606,7 +610,7 @@ async function runMultiStepBranch(args: {
     config: HarnessConfig;
     deployContent: DeployContent;
   };
-  const sources: Record<string, InferenceSource> = {};
+  const sources: Record<string, InferenceSource[]> = {};
   const prepared: PreparedStep[] = [];
   for (const stepId of deploy.workflow.stepOrder) {
     const primitive = deploy.workflow.steps[stepId];
@@ -617,13 +621,18 @@ async function runMultiStepBranch(args: {
       );
     }
     const stepAgent = extractAgent(primitive);
-    sources[stepId] = pickStepInferenceSource({
-      stepAgent,
-      stepId,
-      workflowId: deploy.workflow.id,
-      config: deploy.config,
-      operatorApprovals: deploy.operatorApprovals,
-    });
+    // A workflow step pins a single source (no per-step failover), wrapped in
+    // a one-element list. Per-step failover chains are an instance-only
+    // concern; this preserves prior workflow-step behavior.
+    sources[stepId] = [
+      pickStepInferenceSource({
+        stepAgent,
+        stepId,
+        workflowId: deploy.workflow.id,
+        config: deploy.config,
+        operatorApprovals: deploy.operatorApprovals,
+      }),
+    ];
     const agentAddress = deriveStepAddress({
       deploymentId,
       stepId,

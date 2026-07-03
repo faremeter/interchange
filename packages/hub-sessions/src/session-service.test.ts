@@ -1679,21 +1679,26 @@ describe("sendMultiStepDeployFrame", () => {
         execute: step({ agent: stubAgent, after: ["plan"] }),
       },
     });
+    // Each step's value is its ordered inference-source failover chain.
     const sources = {
-      plan: {
-        id: "src-plan",
-        provider: "anthropic",
-        baseURL: "https://api.example/anthropic",
-        apiKey: "secret-plan",
-        model: "mock-model",
-      },
-      execute: {
-        id: "src-execute",
-        provider: "anthropic",
-        baseURL: "https://api.example/anthropic",
-        apiKey: "secret-execute",
-        model: "mock-model",
-      },
+      plan: [
+        {
+          id: "src-plan",
+          provider: "anthropic",
+          baseURL: "https://api.example/anthropic",
+          apiKey: "secret-plan",
+          model: "mock-model",
+        },
+      ],
+      execute: [
+        {
+          id: "src-execute",
+          provider: "anthropic",
+          baseURL: "https://api.example/anthropic",
+          apiKey: "secret-execute",
+          model: "mock-model",
+        },
+      ],
     };
     const config: HarnessConfig = {
       sessionId: "ses-multi",
@@ -1704,7 +1709,7 @@ describe("sendMultiStepDeployFrame", () => {
       systemPrompt: "deployment-level",
       tools: [],
       grants: [],
-      sources: Object.values(sources),
+      sources: Object.values(sources).flat(),
       defaultSource: "src-plan",
     };
 
@@ -1729,5 +1734,97 @@ describe("sendMultiStepDeployFrame", () => {
       "plan",
     ]);
     expect(sent.sources).toEqual(sources);
+  });
+});
+
+describe("deployInstanceAtHead inference-source pinning", () => {
+  const MULTI_SOURCE_CONFIG: HarnessConfig = {
+    ...MOCK_CONFIG,
+    sources: [
+      {
+        id: "primary",
+        provider: "anthropic",
+        baseURL: "https://api.example/anthropic",
+        apiKey: "sk-primary",
+        model: "claude-mock",
+      },
+      {
+        id: "failover",
+        provider: "openai",
+        baseURL: "https://api.example/openai",
+        apiKey: "sk-failover",
+        model: "gpt-mock",
+      },
+    ],
+    defaultSource: "primary",
+  };
+
+  test("pins the instance's full ordered source chain to the sole step", async () => {
+    const router = createMockRouter();
+    // Capture the workflow frame off `sendAgentDeploy` with its typed
+    // signature rather than casting the tracker's `unknown[]` args.
+    const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
+    router.sendAgentDeploy = ((
+      _agentAddress: string,
+      _config: HarnessConfig,
+      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+    ) => {
+      sentWorkflows.push(workflow);
+      return Promise.resolve({ publicKey: "mock-public-key" });
+    }) as SidecarRouter["sendAgentDeploy"];
+    const repoStore = createMockRepoStore();
+    const service = createSessionService({
+      sidecarRouter: router,
+      agentRepoStore: repoStore,
+    });
+
+    await service.deployInstanceAtHead({
+      agentAddress: AGENT_ADDRESS,
+      agentId: AGENT_ID,
+      instanceId: INSTANCE_ID,
+      config: MULTI_SOURCE_CONFIG,
+      deployContent: MOCK_CONTENT,
+    });
+
+    const workflow = sentWorkflows[0];
+    if (workflow === undefined) {
+      throw new Error("sendAgentDeploy was not called with a workflow frame");
+    }
+    const chains = Object.values(workflow.sources);
+    // A single-step-at-head deploy has exactly one step, so one chain.
+    expect(chains).toHaveLength(1);
+    // The reactor fails over forward across the whole chain, so the head
+    // pins `config.sources` verbatim rather than only the default source.
+    expect(chains[0]).toEqual(MULTI_SOURCE_CONFIG.sources);
+  });
+
+  test("rejects a config whose first source is not the default source", async () => {
+    const router = createMockRouter();
+    const repoStore = createMockRepoStore();
+    const service = createSessionService({
+      sidecarRouter: router,
+      agentRepoStore: repoStore,
+    });
+
+    // The reactor resolves its initial source by `defaultSource` and fails
+    // over forward with no wrap; a default that is not element 0 would leave
+    // the head unreachable, so the deploy must fail loudly.
+    const misordered: HarnessConfig = {
+      ...MULTI_SOURCE_CONFIG,
+      defaultSource: "failover",
+    };
+    await expect(
+      service.deployInstanceAtHead({
+        agentAddress: AGENT_ADDRESS,
+        agentId: AGENT_ID,
+        instanceId: INSTANCE_ID,
+        config: misordered,
+        deployContent: MOCK_CONTENT,
+      }),
+    ).rejects.toThrow(/must be the default source/);
+
+    expect(router.calls.some((c) => c.method === "sendAgentDeploy")).toBe(
+      false,
+    );
   });
 });

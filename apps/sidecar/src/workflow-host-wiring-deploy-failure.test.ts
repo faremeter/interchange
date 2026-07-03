@@ -236,13 +236,15 @@ describe("deploy-failure registry leak", () => {
           steps: { s1: { kind: "step" } },
         },
         sources: {
-          s1: {
-            id: "primary",
-            provider: "anthropic",
-            baseURL: "https://api.anthropic.com",
-            apiKey: "sk-x",
-            model: "claude-3-5",
-          },
+          s1: [
+            {
+              id: "primary",
+              provider: "anthropic",
+              baseURL: "https://api.anthropic.com",
+              apiKey: "sk-x",
+              model: "claude-3-5",
+            },
+          ],
         },
       },
     };

@@ -591,10 +591,12 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
 }
 
 type WorkflowProjection = NonNullable<AgentDeployFrame["workflow"]>;
-type InferenceSourceFixture = WorkflowProjection["sources"][string];
+// A single source: each step's `sources` value is an ordered failover chain,
+// so the fixture element type is the chain's member.
+type InferenceSourceFixture = WorkflowProjection["sources"][string][number];
 
 type MultistepDeployArgs = {
-  sources: Record<string, InferenceSourceFixture>;
+  sources: WorkflowProjection["sources"];
   definition: {
     id: string;
     triggers: unknown[];
@@ -642,10 +644,10 @@ function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
   };
 }
 
-function defaultMultistepSources(): Record<string, InferenceSourceFixture> {
+function defaultMultistepSources(): WorkflowProjection["sources"] {
   return {
-    "step-1": makeInferenceSource("step-1"),
-    "step-2": makeInferenceSource("step-2"),
+    "step-1": [makeInferenceSource("step-1")],
+    "step-2": [makeInferenceSource("step-2")],
   };
 }
 
@@ -685,6 +687,32 @@ describe("validateWorkflowProjection", () => {
     ).toThrow(/sources is missing entry/);
   });
 
+  test("rejects an empty sources chain for a stepOrder id", () => {
+    expect(() =>
+      validateWorkflowProjection({
+        definition: {
+          id: "w-1",
+          stepOrder: ["step-1"],
+          steps: { "step-1": {} },
+        },
+        sources: { "step-1": [] },
+      }),
+    ).toThrow(/must be a non-empty array/);
+  });
+
+  test("rejects a non-array sources entry for a stepOrder id", () => {
+    expect(() =>
+      validateWorkflowProjection({
+        definition: {
+          id: "w-1",
+          stepOrder: ["step-1"],
+          steps: { "step-1": {} },
+        },
+        sources: { "step-1": {} },
+      }),
+    ).toThrow(/must be a non-empty array/);
+  });
+
   test("accepts a well-formed projection", () => {
     expect(() =>
       validateWorkflowProjection({
@@ -693,7 +721,7 @@ describe("validateWorkflowProjection", () => {
           stepOrder: ["step-1", "step-2"],
           steps: { "step-1": {}, "step-2": {} },
         },
-        sources: { "step-1": {}, "step-2": {} },
+        sources: { "step-1": [{}], "step-2": [{}] },
       }),
     ).not.toThrow();
   });
@@ -1477,7 +1505,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         stepOrder: ["step-1"],
         steps: { "step-1": { kind: "step" } },
       },
-      sources: { "step-1": makeInferenceSource("step-1") },
+      sources: { "step-1": [makeInferenceSource("step-1")] },
     });
 
     await expect(router.deploy(frame)).rejects.toThrow(
@@ -1505,7 +1533,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         stepOrder: ["step-1"],
         steps: { "step-1": { kind: "step" } },
       },
-      sources: { "step-1": makeInferenceSource("step-1") },
+      sources: { "step-1": [makeInferenceSource("step-1")] },
     });
 
     await expect(router.deploy(frame)).rejects.toThrow(/ENOENT/);
@@ -1562,10 +1590,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         steps: { "step-1": { kind: "step" } },
       },
       sources: {
-        "step-1": {
-          ...makeInferenceSource("step-1"),
-          provider: "ghost-provider",
-        },
+        "step-1": [
+          {
+            ...makeInferenceSource("step-1"),
+            provider: "ghost-provider",
+          },
+        ],
       },
     });
 
@@ -1594,7 +1624,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         steps: { "step-1": { kind: "step" } },
       },
       sources: {
-        "step-1": makeInferenceSource("step-1"),
+        "step-1": [makeInferenceSource("step-1")],
       },
     });
 
@@ -1621,7 +1651,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         steps: { "step-1": { kind: "step" } },
       },
       sources: {
-        "step-1": makeInferenceSource("step-1"),
+        "step-1": [makeInferenceSource("step-1")],
       },
     });
 
@@ -2118,7 +2148,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         stepOrder: ["step-1"],
         steps: { "step-1": { kind: "step" } },
       },
-      sources: { "step-1": makeInferenceSource("step-1") },
+      sources: { "step-1": [makeInferenceSource("step-1")] },
     });
   }
 
@@ -2221,7 +2251,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       version: 1,
       agentAddress: head,
       definitionId: "wf-missing-step",
-      sources: { "step-1": makeInferenceSource("step-1") },
+      sources: { "step-1": [makeInferenceSource("step-1")] },
       hubPublicKey: "hub-pk",
     };
     await writeWorkflowDeploymentRecord(dataDir, deploymentId, record);
@@ -2323,7 +2353,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       version: 1,
       agentAddress: head,
       definitionId: "wf-mismatch",
-      sources: { "step-1": makeInferenceSource("step-1") },
+      sources: { "step-1": [makeInferenceSource("step-1")] },
       hubPublicKey: "hub-pk",
     };
     await writeWorkflowDeploymentRecord(dataDir, wrongDir, record);

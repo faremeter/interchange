@@ -312,14 +312,17 @@ describe("pickStepInferenceSource (non-agent step)", () => {
     expect(deps.sources).toHaveLength(1);
     const sources = deps.sources[0];
     if (sources === undefined) throw new Error("missing sources");
-    // Both steps land on the approved source.
+    // Both steps land on the approved source, each pinned as a single-element
+    // failover chain.
     expect(sources.worker).toBeDefined();
-    expect(sources.cooldown).toEqual({
-      id: "src-anthropic",
-      provider: "anthropic",
-      baseURL: "https://api.example/anthropic",
-      apiKey: "secret-a",
-      model: "worker-model",
-    });
+    expect(sources.cooldown).toEqual([
+      {
+        id: "src-anthropic",
+        provider: "anthropic",
+        baseURL: "https://api.example/anthropic",
+        apiKey: "secret-a",
+        model: "worker-model",
+      },
+    ]);
   });
 });

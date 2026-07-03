@@ -6,8 +6,9 @@
 // deployments beside the run state they resume.
 //
 // It carries only the inputs that are otherwise frame/in-memory only:
-// `sources` (pinned per-step inference sources, threaded to the child via
-// the spawn env and durable nowhere else), `sessionId` (inference-event
+// `sources` (each step's ordered inference-source failover chain, threaded to
+// the child via the spawn env and durable nowhere else), `sessionId`
+// (inference-event
 // correlation), and `hubPublicKey` (the head's deploy-pack / inbound
 // verification key, recorded only in memory today). The definition itself
 // lives in `assets/workflow/<definitionId>/workflow.json`, referenced by
@@ -49,7 +50,7 @@ export const WorkflowDeploymentRecord = type({
   agentAddress: "string > 0",
   definitionId: "string > 0",
   sources: {
-    "[string]": InferenceSource,
+    "[string]": InferenceSource.array().atLeastLength(1),
   },
   "sessionId?": "string > 0",
   "hubPublicKey?": "string > 0",

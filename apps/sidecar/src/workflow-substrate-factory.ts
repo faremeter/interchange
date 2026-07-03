@@ -179,15 +179,17 @@ function parseByteCap(raw: string, name: string): number {
 }
 
 /**
- * Per-step `InferenceSource` table parsed from the spawn-time
+ * Per-step inference-source table parsed from the spawn-time
  * `STEP_INFERENCE_SOURCES` env entry. The deploy router serializes
- * `frame.workflow.sources` (a `Record<stepId, InferenceSource>`) as
+ * `frame.workflow.sources` (a `Record<stepId, InferenceSource[]>`) as
  * JSON and threads it through the supervisor's `substrateEnv`; the
  * factory parses and validates the table once at construction time
- * and pins it for `buildEnv` lookups.
+ * and pins it for `buildEnv` lookups. Each value is the step's ordered
+ * failover chain -- element 0 is the active source, the tail are the
+ * reactor's forward-only failover targets -- so the list is non-empty.
  */
 const StepInferenceSourceTable = type({
-  "[string]": InferenceSource,
+  "[string]": InferenceSource.array().atLeastLength(1),
 });
 type StepInferenceSourceTable = typeof StepInferenceSourceTable.infer;
 
@@ -260,24 +262,26 @@ export function parseAdapterManifest(raw: string): AdapterManifest {
 }
 
 /**
- * Resolve the per-step `InferenceSource` pinned at factory
- * construction. The supervisor's multi-step branch only invokes a
- * step whose `stepId` appears in `frame.workflow.sources`; a lookup
+ * Resolve the per-step inference-source failover chain pinned at
+ * factory construction. The supervisor's multi-step branch only invokes
+ * a step whose `stepId` appears in `frame.workflow.sources`; a lookup
  * miss here is a programmer error in the supervisor, not a wire-side
  * failure, and the resolver surfaces it with the missing `stepId`
- * named.
+ * named. The returned list is the step's ordered chain (element 0 the
+ * active source, the tail the reactor's failover targets); the table's
+ * arktype guarantees it is non-empty.
  */
 function createStepInferenceSourceResolver(
   table: StepInferenceSourceTable,
-): (stepId: string) => InferenceSource {
-  return (stepId: string): InferenceSource => {
-    const source = table[stepId];
-    if (source === undefined) {
+): (stepId: string) => InferenceSource[] {
+  return (stepId: string): InferenceSource[] => {
+    const sources = table[stepId];
+    if (sources === undefined) {
       throw new Error(
         `sidecar workflow-child step invoker buildEnv: no InferenceSource pinned for stepId ${JSON.stringify(stepId)}; the supervisor must populate frame.workflow.sources for every stepOrder entry`,
       );
     }
-    return source;
+    return sources;
   };
 }
 
@@ -526,7 +530,16 @@ export function createSidecarStepBuildEnv(
         "sidecar workflow-child step invoker buildEnv: AuthorizeContext.attempt is required to root per-step storage per attempt; the workflow runtime must populate attempt on every step-originated invocation",
       );
     }
-    const source = resolveStepInferenceSource(stepId);
+    const sources = resolveStepInferenceSource(stepId);
+    // The resolver's arktype guarantees a non-empty chain; assert it here so
+    // the reactor's initial-source pin (element 0) is a checked fact rather
+    // than an unchecked index.
+    const activeSource = sources[0];
+    if (activeSource === undefined) {
+      throw new Error(
+        `sidecar workflow-child step invoker buildEnv: empty InferenceSource chain pinned for stepId ${JSON.stringify(stepId)}`,
+      );
+    }
 
     // Root the per-step scratch (workspace + tool tarball-cache +
     // apply-state). The cold (multi-step) path keys it per
@@ -612,8 +625,13 @@ export function createSidecarStepBuildEnv(
     // narrower type).
     const env: StepEnvBase & { transport: MessageTransport; address: string } =
       {
-        sources: [source],
-        defaultSource: source.id,
+        // Feed the reactor the step's full ordered failover chain and pin
+        // its initial source to element 0. The reactor resolves the initial
+        // source by id and fails over forward through `sources`, so this
+        // restores cross-source failover inside the workflow-child, matching
+        // the legacy in-process harness.
+        sources,
+        defaultSource: activeSource.id,
         storage,
         workdir,
         audit: storage,

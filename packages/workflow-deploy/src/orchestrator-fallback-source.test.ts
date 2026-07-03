@@ -240,13 +240,16 @@ describe("pickStepInferenceSource (agent step)", () => {
     expect(deps.sources).toHaveLength(1);
     const sources = deps.sources[0];
     if (sources === undefined) throw new Error("missing sources");
-    expect(sources.only).toEqual({
-      id: "src-default",
-      provider: "openai",
-      baseURL: "https://api.example/openai",
-      apiKey: "secret",
-      model: "default-model",
-    });
+    // The step pins a single-element failover chain around the picked source.
+    expect(sources.only).toEqual([
+      {
+        id: "src-default",
+        provider: "openai",
+        baseURL: "https://api.example/openai",
+        apiKey: "secret",
+        model: "default-model",
+      },
+    ]);
   });
 
   test("uses the agent's preferred source when it matches an approved HarnessConfig source", async () => {
@@ -305,13 +308,16 @@ describe("pickStepInferenceSource (agent step)", () => {
     expect(deps.sources).toHaveLength(1);
     const sources = deps.sources[0];
     if (sources === undefined) throw new Error("missing sources");
-    expect(sources.only).toEqual({
-      id: "src-preferred",
-      provider: "anthropic",
-      baseURL: "https://api.example/anthropic",
-      apiKey: "secret-a",
-      model: "preferred-model",
-    });
+    // The step pins a single-element failover chain around the picked source.
+    expect(sources.only).toEqual([
+      {
+        id: "src-preferred",
+        provider: "anthropic",
+        baseURL: "https://api.example/anthropic",
+        apiKey: "secret-a",
+        model: "preferred-model",
+      },
+    ]);
   });
 
   test("regression: unapproved fallback is also rejected at the approval gate when the walk surfaces it", async () => {

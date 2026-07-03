@@ -34,13 +34,15 @@ const SINGLE_STEP: WorkflowDeploymentRecord = {
   agentAddress: "ins_abc123@tenant.example",
   definitionId: "wf_abc123",
   sources: {
-    "step-1": {
-      id: "anthropic:mock",
-      provider: "anthropic",
-      baseURL: "https://api.example/anthropic",
-      apiKey: "sk-x",
-      model: "claude-mock",
-    },
+    "step-1": [
+      {
+        id: "anthropic:mock",
+        provider: "anthropic",
+        baseURL: "https://api.example/anthropic",
+        apiKey: "sk-x",
+        model: "claude-mock",
+      },
+    ],
   },
   sessionId: "ses_1",
   hubPublicKey: "deadbeef",
@@ -53,20 +55,24 @@ const MULTI_STEP: WorkflowDeploymentRecord = {
   agentAddress: "ins_dep_xyz@tenant.example",
   definitionId: "wf_xyz",
   sources: {
-    plan: {
-      id: "anthropic:mock",
-      provider: "anthropic",
-      baseURL: "https://api.example/anthropic",
-      apiKey: "sk-y",
-      model: "claude-mock",
-    },
-    execute: {
-      id: "openai:mock",
-      provider: "openai",
-      baseURL: "https://api.example/openai",
-      apiKey: "sk-z",
-      model: "gpt-mock",
-    },
+    plan: [
+      {
+        id: "anthropic:mock",
+        provider: "anthropic",
+        baseURL: "https://api.example/anthropic",
+        apiKey: "sk-y",
+        model: "claude-mock",
+      },
+    ],
+    execute: [
+      {
+        id: "openai:mock",
+        provider: "openai",
+        baseURL: "https://api.example/openai",
+        apiKey: "sk-z",
+        model: "gpt-mock",
+      },
+    ],
   },
 };
 
