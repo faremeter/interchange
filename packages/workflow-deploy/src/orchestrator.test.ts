@@ -220,10 +220,14 @@ function createRecordingSingleStepDeploy(publicKey = "ff".repeat(32)): {
 }
 
 describe("createWorkflowDeployOrchestrator", () => {
-  describe("trivial branch", () => {
-    test("preserves the existing agent address and launches once", async () => {
-      const agent = makeAgent("legacy-agent");
-      const workflow = makeTrivialWorkflow(agent);
+  describe("deploy provisioning", () => {
+    test("passes through toolPackagePins to every step launch", async () => {
+      const workflow = makeMultiStepWorkflow();
+      const planAgent = workflow.steps.plan;
+      const executeAgent = workflow.steps.execute;
+      if (planAgent?.kind !== "step" || executeAgent?.kind !== "step") {
+        throw new Error("expected both steps to be step primitives");
+      }
       const directorRegistry = createDefaultDirectorRegistry();
       const workflowRepo = createRecordingWorkflowRepoWriter();
       const launch = createRecordingLaunch();
@@ -234,72 +238,37 @@ describe("createWorkflowDeployOrchestrator", () => {
         launchSession: launch.fn,
         sendMultiStepDeploy: multiStep.fn,
       });
-
-      const approvals = approvedGrantsForWorkflow(workflow, [agent]);
-
-      const result = await orchestrator.deployWorkflow({
-        workflow,
-        trivialBindings: {
-          agentAddress: "ins_legacy-agent@integration.interchange",
-          agentId: "legacy-agent",
-          instanceId: "instance-legacy",
-        },
-        config: HARNESS_CONFIG_BASE,
-        deployContent: DEPLOY_CONTENT_BASE,
-        operatorApprovals: approvals,
-      });
-
-      expect(launch.launches).toHaveLength(1);
-      const launched = launch.launches[0];
-      if (launched === undefined) throw new Error("missing launch");
-      expect(launched.agentAddress).toBe(
-        "ins_legacy-agent@integration.interchange",
-      );
-      expect(launched.agentId).toBe("legacy-agent");
-      expect(launched.instanceId).toBe("instance-legacy");
-      expect(launched.config).toEqual(HARNESS_CONFIG_BASE);
-      expect(launched.deployContent).toEqual(DEPLOY_CONTENT_BASE);
-      // Regression: the trivial branch does NOT invoke the multi-step
-      // deploy hand-off.
-      expect(multiStep.calls).toHaveLength(0);
-      expect(result).toEqual({ kind: "trivial" });
-    });
-
-    test("passes through toolPackagePins to the launch", async () => {
-      const agent = makeAgent("legacy-agent");
-      const workflow = makeTrivialWorkflow(agent);
-      const directorRegistry = createDefaultDirectorRegistry();
-      const workflowRepo = createRecordingWorkflowRepoWriter();
-      const launch = createRecordingLaunch();
-      const orchestrator = createWorkflowDeployOrchestrator({
-        directorRegistry,
-        workflowRepo,
-        launchSession: launch.fn,
-      });
-      const approvals = approvedGrantsForWorkflow(workflow, [agent]);
+      const approvals = approvedGrantsForWorkflow(workflow, [
+        planAgent.agent,
+        executeAgent.agent,
+      ]);
       const pins = [{ name: "@vendor/pkg", version: "1.0.0" }] as const;
 
       await orchestrator.deployWorkflow({
         workflow,
-        trivialBindings: {
-          agentAddress: "ins_legacy-agent@integration.interchange",
-          agentId: "legacy-agent",
-          instanceId: "instance-legacy",
-        },
+        deploymentId: "dep_pins",
+        deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
+        hubPublicKey: "00".repeat(32),
         toolPackagePins: pins,
         operatorApprovals: approvals,
       });
 
-      expect(launch.launches[0]?.toolPackagePins).toEqual(pins);
+      expect(launch.launches).toHaveLength(2);
+      for (const launched of launch.launches) {
+        expect(launched.toolPackagePins).toEqual(pins);
+      }
     });
 
-    test("writes the workflow repo before launching", async () => {
-      const agent = makeAgent("legacy-agent");
-      const workflow = makeTrivialWorkflow(agent);
+    test("writes the workflow repo before launching any step", async () => {
+      const workflow = makeMultiStepWorkflow();
+      const planAgent = workflow.steps.plan;
+      const executeAgent = workflow.steps.execute;
+      if (planAgent?.kind !== "step" || executeAgent?.kind !== "step") {
+        throw new Error("expected both steps to be step primitives");
+      }
       const directorRegistry = createDefaultDirectorRegistry();
-      const workflowRepo = createRecordingWorkflowRepoWriter();
       const order: string[] = [];
       const launch: LaunchSessionFn = async () => {
         order.push("launch");
@@ -307,39 +276,35 @@ describe("createWorkflowDeployOrchestrator", () => {
       const recordingRepo: WorkflowRepoWriter = {
         async writeWorkflowRepo(args) {
           order.push("repo");
-          workflowRepo.writes.push({
-            workflowRepoId: args.workflowRepoId,
-            files: new Map(args.files),
-          });
+          expect(args.files.has("workflow.json")).toBe(true);
+          expect(args.files.has("capability-declarations.json")).toBe(true);
+          expect(args.files.has(".gitignore")).toBe(true);
         },
       };
+      const multiStep = createRecordingMultiStepDeploy();
       const orchestrator = createWorkflowDeployOrchestrator({
         directorRegistry,
         workflowRepo: recordingRepo,
         launchSession: launch,
+        sendMultiStepDeploy: multiStep.fn,
       });
-      const approvals = approvedGrantsForWorkflow(workflow, [agent]);
+      const approvals = approvedGrantsForWorkflow(workflow, [
+        planAgent.agent,
+        executeAgent.agent,
+      ]);
 
       await orchestrator.deployWorkflow({
         workflow,
-        trivialBindings: {
-          agentAddress: "ins_legacy-agent@integration.interchange",
-          agentId: "legacy-agent",
-          instanceId: "instance-legacy",
-        },
+        deploymentId: "dep_order",
+        deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
+        hubPublicKey: "00".repeat(32),
         operatorApprovals: approvals,
       });
 
-      expect(order).toEqual(["repo", "launch"]);
-      expect(workflowRepo.writes).toHaveLength(1);
-      const write = workflowRepo.writes[0];
-      if (write === undefined) throw new Error("missing write");
-      expect(write.workflowRepoId).toBe("wf_trivial");
-      expect(write.files.has("workflow.json")).toBe(true);
-      expect(write.files.has("capability-declarations.json")).toBe(true);
-      expect(write.files.has(".gitignore")).toBe(true);
+      // The workflow repo lands before any per-step agent-state write.
+      expect(order).toEqual(["repo", "launch", "launch"]);
     });
   });
 
@@ -595,7 +560,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       ).rejects.toBeInstanceOf(MultiStepDeploymentArgsMissingError);
     });
 
-    test("single-step workflow without trivialBindings deploys once at the head", async () => {
+    test("single-step workflow deploys once at the head", async () => {
       const agent = makeAgent("only");
       const workflow = makeTrivialWorkflow(agent);
       const directorRegistry = createDefaultDirectorRegistry();
@@ -725,11 +690,8 @@ describe("createWorkflowDeployOrchestrator", () => {
       try {
         await orchestrator.deployWorkflow({
           workflow,
-          trivialBindings: {
-            agentAddress: "ins_legacy-agent@integration.interchange",
-            agentId: "legacy-agent",
-            instanceId: "instance-legacy",
-          },
+          deploymentId: "dep_legacy",
+          deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
           operatorApprovals: incompleteApprovals,
@@ -765,11 +727,8 @@ describe("createWorkflowDeployOrchestrator", () => {
       try {
         await orchestrator.deployWorkflow({
           workflow,
-          trivialBindings: {
-            agentAddress: "ins_legacy-agent@integration.interchange",
-            agentId: "legacy-agent",
-            instanceId: "instance-legacy",
-          },
+          deploymentId: "dep_legacy",
+          deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
           operatorApprovals: new Set(),
@@ -824,11 +783,8 @@ describe("createWorkflowDeployOrchestrator", () => {
       try {
         await orchestrator.deployWorkflow({
           workflow,
-          trivialBindings: {
-            agentAddress: "ins_legacy-agent@integration.interchange",
-            agentId: "legacy-agent",
-            instanceId: "instance-legacy",
-          },
+          deploymentId: "dep_legacy",
+          deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
           operatorApprovals: broad,

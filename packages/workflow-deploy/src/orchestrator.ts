@@ -1,38 +1,26 @@
 // Workflow-deploy orchestrator.
 //
-// =========================================================================
-// THE LOAD-BEARING DICHOTOMY
-// =========================================================================
+// A deploy validates the workflow, runs the capability walk, and gates on
+// operator approval, then routes by step count.
 //
-// Trivial-workflow path preserves the legacy address shape; multi-step
-// uses the derived shape; this asymmetry is the agent-deploy uniformity
-// claim's escape hatch.
+// A one-step workflow has no distinct step address: the lone step IS the
+// deployment head. It deploys once at the head (`deriveDeploymentAddress`)
+// through the single-step hand-off -- the tree staging and the
+// `agent.deploy` frame collapse onto one head deploy, with no per-step
+// provisioning loop.
 //
-// A workflow with exactly one step that arrives with `trivialBindings`
-// reuses the deployment's existing `<agentAddress, agentId, instanceId>`
-// triple unchanged. The deploy tree lands on the same per-agent
-// `agent-state` repo the legacy agent-deploy path writes to, and the
-// per-step content (system prompt, tool-package pins, asset attachments)
-// flows through `launchSession` with bit-identical wire and on-disk
-// shape. The legacy `tests/hub-agent/deploy-flow.test.ts` is the
-// invariant the trivial branch must round-trip.
-//
-// A workflow with more than one step (or one without `trivialBindings`)
-// derives per-step agent addresses of the form
-// `ins_<deploymentId>-<stepId>@<deploymentDomain>`, instantiates one
-// agent-state repo per step keyed by the derived address, and writes
+// A workflow with more than one step derives per-step agent addresses of
+// the form `ins_<deploymentId>-<stepId>@<deploymentDomain>`, instantiates
+// one agent-state repo per step keyed by the derived address, and writes
 // each step's deploy tree onto its own repo. The derivation is a pure
 // function of `(deploymentId, stepId, deploymentDomain)`, so the
 // supervisor reconstructs the same addresses at spawn time without any
 // per-deploy state.
 //
-// Both branches first validate the workflow, run the capability walk,
-// and gate on operator approval. The workflow definition envelope plus
-// the walk's per-step grant declarations land on a `workflow` repo
-// before any agent-state write happens; if the workflow repo write
-// fails, no agent-state repo is created.
-//
-// =========================================================================
+// The workflow definition envelope plus the walk's per-step grant
+// declarations land on a `workflow` repo before any agent-state write
+// happens; if the workflow repo write fails, no agent-state repo is
+// created.
 
 import type {
   AgentDefinition,
@@ -160,14 +148,14 @@ export interface MultiStepDeployResult {
 }
 
 /**
- * Result returned by `deployWorkflow`. The trivial branch returns
- * `{ kind: "trivial" }`; the multi-step branch surfaces the supervisor
- * public key collected from the sidecar's `agent.deploy.ack` so the
- * caller can stash it alongside the deployment record.
+ * Result returned by `deployWorkflow`. Surfaces the supervisor public key
+ * collected from the sidecar's `agent.deploy.ack` so the caller can stash
+ * it alongside the deployment record.
  */
-export type DeployWorkflowResult =
-  | { readonly kind: "trivial" }
-  | { readonly kind: "multi-step"; readonly publicKey: string };
+export type DeployWorkflowResult = {
+  readonly kind: "multi-step";
+  readonly publicKey: string;
+};
 
 /**
  * Minimal interface for writing the workflow repo. The orchestrator
@@ -191,28 +179,22 @@ export interface WorkflowDeployOrchestratorDeps {
    * orchestrator.
    */
   readonly directorRegistry: DirectorRegistry;
-  /**
-   * Writes the workflow repo's deploy tree. The trivial-branch and the
-   * multi-step branch both call this once.
-   */
+  /** Writes the workflow repo's deploy tree. Every deploy calls this once. */
   readonly workflowRepo: WorkflowRepoWriter;
   /**
-   * Performs the per-agent deploy + session start. The orchestrator
-   * calls this once per step (once total in the trivial branch). In
-   * production this is `SessionService.launchSession`; tests pass a
-   * tracking stub.
+   * Performs the per-agent deploy + session start. The multi-step branch
+   * calls this once per step. In production this is
+   * `SessionService.launchSession`; tests pass a tracking stub.
    */
   readonly launchSession: LaunchSessionFn;
   /**
    * Fires the deployment-level `agent.deploy` frame that carries the
    * workflow definition and per-step source pins to the sidecar. The
    * multi-step branch calls this exactly once, after every per-step
-   * `agent-state` repo has been provisioned via `launchSession`. The
-   * trivial branch never calls it.
+   * `agent-state` repo has been provisioned via `launchSession`.
    *
-   * Optional so existing callers that only exercise the trivial branch
-   * (e.g. the legacy agent-deploy passthrough) do not have to wire a
-   * stub. The multi-step branch fails fast with
+   * Optional so a caller that only exercises the single-step branch does
+   * not have to wire a stub. The multi-step branch fails fast with
    * `MultiStepDeployHandoffMissingError` if the dep is absent.
    */
   readonly sendMultiStepDeploy?: SendMultiStepDeployFn;
@@ -233,30 +215,15 @@ export interface DeployWorkflowArgs {
   /** The workflow definition the orchestrator validates and deploys. */
   readonly workflow: WorkflowDefinition;
   /**
-   * Pre-existing per-agent address binding. Required for the trivial
-   * branch (workflow with exactly one step that wraps an existing
-   * agent-deploy). Absent for the multi-step branch -- the orchestrator
-   * derives per-step addresses from `deploymentId` and the workflow.
-   */
-  readonly trivialBindings?: {
-    readonly agentAddress: string;
-    readonly agentId: string;
-    readonly instanceId: string;
-  };
-  /**
-   * Stable identifier the multi-step branch concatenates into derived
-   * agent addresses. Required when `trivialBindings` is absent.
+   * Stable identifier the branch concatenates into derived agent
+   * addresses. Required.
    */
   readonly deploymentId?: string;
   /**
-   * Mail-domain for the deployment. Required when `trivialBindings` is
-   * absent. The multi-step branch derives per-step addresses as
-   * `ins_<deploymentId>-<stepId>@<deploymentDomain>`.
-   *
-   * The plan's `deployWorkflow` shape lists `deploymentId` but elides
-   * `deploymentDomain`; the derivation needs both, so the API surfaces
-   * the second parameter explicitly. Trivial deployments do not consume
-   * it because they reuse the existing `agentAddress`.
+   * Mail-domain for the deployment. Required. The multi-step branch
+   * derives per-step addresses as
+   * `ins_<deploymentId>-<stepId>@<deploymentDomain>`; the single-step
+   * branch deploys the lone step at `ins_<deploymentId>@<deploymentDomain>`.
    */
   readonly deploymentDomain?: string;
   /**
@@ -281,11 +248,9 @@ export interface DeployWorkflowArgs {
    */
   readonly operatorApprovals: ApprovalSet;
   /**
-   * Hex-encoded hub Ed25519 public key the multi-step branch threads
-   * onto the `agent.deploy` frame so the sidecar can verify the
-   * deploy-tree commit signatures. Required when the multi-step branch
-   * is reached; ignored by the trivial branch (whose `launchSession`
-   * delegate already carries the hub key through its own wire surface).
+   * Hex-encoded hub Ed25519 public key threaded onto the `agent.deploy`
+   * frame so the sidecar can verify the deploy-tree commit signatures.
+   * Required for both deploy paths (single-step head and multi-step).
    */
   readonly hubPublicKey?: string;
 }
@@ -317,7 +282,7 @@ export class WorkflowDefinitionInvalidError extends Error {
 export class MultiStepDeploymentArgsMissingError extends Error {
   constructor(missing: string) {
     super(
-      `multi-step deploy requires ${missing}; supply both deploymentId and deploymentDomain (or pass trivialBindings for a single-step workflow)`,
+      `deploy requires ${missing}; supply both deploymentId and deploymentDomain`,
     );
     this.name = "MultiStepDeploymentArgsMissingError";
   }
@@ -325,7 +290,7 @@ export class MultiStepDeploymentArgsMissingError extends Error {
 
 /**
  * Error thrown when the multi-step branch is reached but the
- * `sendMultiStepDeploy` dependency was not wired. The trivial branch
+ * `sendMultiStepDeploy` dependency was not wired. The single-step branch
  * does not consult this dep, so the dep is optional on the deps record;
  * callers that may take the multi-step branch must wire it.
  */
@@ -341,7 +306,7 @@ export class MultiStepDeployHandoffMissingError extends Error {
 /**
  * Error thrown when the single-step branch is reached but the
  * `deploySingleStepAtHead` dependency was not wired. Parallel to
- * `MultiStepDeployHandoffMissingError`; the trivial branch does not
+ * `MultiStepDeployHandoffMissingError`; the multi-step branch does not
  * consult this dep, so it is optional on the deps record.
  */
 export class SingleStepDeployHandoffMissingError extends Error {
@@ -391,7 +356,8 @@ function formatApprovalDeniedMessage(
 
 /**
  * Build a `WorkflowDeployOrchestrator`. The orchestrator owns the
- * trivial-vs-multi-step decision; its deps own everything else.
+ * step-count routing (single-step head vs multi-step derived); its deps
+ * own everything else.
  */
 export function createWorkflowDeployOrchestrator(
   deps: WorkflowDeployOrchestratorDeps,
@@ -425,21 +391,6 @@ export function createWorkflowDeployOrchestrator(
         workflowRepo,
       });
 
-      const trivial = isTrivialDeploy(args);
-      if (trivial !== null) {
-        await launchSession({
-          agentAddress: trivial.bindings.agentAddress,
-          agentId: trivial.bindings.agentId,
-          instanceId: trivial.bindings.instanceId,
-          config: args.config,
-          deployContent: args.deployContent,
-          ...(args.toolPackagePins !== undefined
-            ? { toolPackagePins: args.toolPackagePins }
-            : {}),
-        });
-        return { kind: "trivial" };
-      }
-
       // A one-step workflow has no distinct steps: the lone step IS the
       // head. It deploys once at the head (no per-step provisioning loop),
       // so it routes through the dedicated single-step hand-off rather
@@ -461,23 +412,6 @@ export function createWorkflowDeployOrchestrator(
       return { kind: "multi-step", publicKey: result.publicKey };
     },
   };
-}
-
-/**
- * Decide whether the deploy takes the trivial branch. A trivial deploy
- * requires a single-step workflow AND a `trivialBindings` triple from
- * the caller. Either condition alone is not enough: multi-step
- * workflows never reuse a single legacy address, and a single-step
- * workflow without `trivialBindings` is the multi-step branch's
- * degenerate case (one derived address). The asymmetry is the
- * load-bearing escape hatch documented in this module's header.
- */
-function isTrivialDeploy(
-  args: DeployWorkflowArgs,
-): { bindings: NonNullable<DeployWorkflowArgs["trivialBindings"]> } | null {
-  if (args.workflow.stepOrder.length !== 1) return null;
-  if (args.trivialBindings === undefined) return null;
-  return { bindings: args.trivialBindings };
 }
 
 /**
@@ -972,28 +906,21 @@ function serializeWalk(walk: CapabilityWalkResult): unknown {
 }
 
 /**
- * Build a trivial `AgentDefinition` from a `HarnessConfig` and a
- * `DeployContent`. The orchestrator's trivial branch hands the resulting
- * shape off to consumers that want to inspect an agent definition for a
- * legacy agent-deploy that never went through the workflow surface.
- *
- * The wrap is the load-bearing transformation behind the trivial
- * round-trip claim: the legacy deploy-flow exposes `HarnessConfig` plus
- * `DeployContent`, and `SessionService.launchSession` collapses onto
- * `deployWorkflow` by synthesizing a single-step workflow from those
- * two values via this function. The deploy tree itself
- * (`deployContent.systemPrompt`, the harness's `tools` and `grants`
- * arrays) is the source of truth for runtime behaviour; the wrap
- * synthesizes only the surfaces the capability walk needs to gate the
- * deploy against the operator-approval set.
+ * Build an `AgentDefinition` from a `HarnessConfig` and a
+ * `DeployContent`. `SessionService.deployInstanceAtHead` uses it to wrap
+ * a single-agent instance's harness as a one-step workflow and deploy it
+ * at the head. The deploy tree itself (`deployContent.systemPrompt`, the
+ * harness's `tools` and `grants` arrays) is the source of truth for
+ * runtime behaviour; the wrap synthesizes only the surfaces the
+ * capability walk needs to gate the deploy against the operator-approval
+ * set.
  *
  * The walk inspects `agent.toolFactories[i].id` to emit `tool:<id>`
  * grants. The wrap projects each `HarnessConfig.tools[i].name` onto a
  * synthesized `AnnotatedToolFactory` whose `id` matches; the factory
  * function itself is never invoked on the walk path. Skipping this
- * projection would let the gate admit every trivial deploy regardless
- * of what `HarnessConfig.tools` named, breaking the uniformity claim's
- * substance at the approval layer.
+ * projection would let the gate admit every deploy regardless of what
+ * `HarnessConfig.tools` named, weakening the approval gate.
  */
 export function wrapHarnessAsTrivialAgent(args: {
   config: HarnessConfig;

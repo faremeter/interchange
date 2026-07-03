@@ -6,25 +6,17 @@ and the workflow deploy orchestrator.
 This package is the deploy-side counterpart to `@intx/workflow`. It
 takes a `WorkflowDefinition`, computes the per-step grant
 declarations the workflow will require, gates them against an
-operator-supplied `ApprovalSet`, and routes the deployment along
-one of two paths.
+operator-supplied `ApprovalSet`, and routes the deployment by step
+count:
 
-The orchestrator branches on the trivial-vs-multi-step dichotomy:
-
-- **Trivial workflow** (single step, caller supplies
-  `trivialBindings`): preserve the caller's existing agent address
-  and write the underlying agent's deploy tree onto the existing
-  `agent-state` repo via the legacy path. The on-disk and on-wire
-  surfaces stay bit-identical to what the pre-collapse
-  `SessionService.launchSession` produced.
+- **Single-step workflow**: the lone step has no distinct address --
+  it IS the deployment head. Deploy once at the head
+  (`ins_<deploymentId>@<deploymentDomain>`) through the single-step
+  hand-off, staging the head's deploy tree and firing the
+  `agent.deploy` frame in one call.
 - **Multi-step workflow**: derive per-step agent addresses as
   `ins_<deploymentId>-<stepId>@<deploymentDomain>`, instantiate one
   `agent-state` repo per step, and write per-step deploy trees.
-
-The asymmetry is intentional: it is the agent-deploy uniformity
-claim's escape hatch. Without it, the existing
-`tests/hub-agent/deploy-flow.test.ts` could not pass with zero
-source changes after the collapse.
 
 Public surface:
 

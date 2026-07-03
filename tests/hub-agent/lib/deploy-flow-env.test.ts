@@ -10,7 +10,6 @@ import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 
 import {
   WORKFLOW_RUN_TERMINAL_TYPES,
-  deployWorkflow,
   injectSignal,
   readWorkflowRunEvents,
   simulateProcessingCrash,
@@ -20,13 +19,6 @@ import {
   type DeploymentHandle,
   type HubEnv,
 } from "./deploy-flow-env";
-import { deriveTrivialDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import { defaultDirectorFactory } from "@intx/agent";
-import { defineWorkflow } from "@intx/workflow/definition";
-import { wrapHarnessAsTrivialAgent } from "@intx/workflow-deploy";
-import type { ApprovalSet } from "@intx/workflow-deploy";
-import type { HarnessConfig } from "@intx/types/runtime";
-import type { SessionService } from "@intx/hub-sessions";
 
 import fs from "node:fs";
 
@@ -145,88 +137,6 @@ describe("deploy-flow-env helpers smoke tests", () => {
         timeoutMs: 100,
       }),
     ).rejects.toThrow(/timed out/);
-  });
-
-  test("deployWorkflow returns a slug-derived workflowRunRepoId.id for trivial deploys", async () => {
-    // The supervisor's trivial branch projects the agent address
-    // through `deriveTrivialDeploymentId` before writing workflow-run
-    // events; downstream helpers (and the consumer in 13a) read the
-    // resulting slug off the handle. Verify the helper's reported
-    // id matches what the supervisor will actually commit to.
-    const agentAddress = "ins_slug-probe@integration.interchange";
-    const agentId = "slug-probe";
-    const expectedSlug = deriveTrivialDeploymentId(agentAddress);
-    expect(expectedSlug).not.toBe(agentAddress);
-
-    const config: HarnessConfig = {
-      sessionId: "ses-slug-1",
-      agentId,
-      tenantId: "tenant-1",
-      principalId: "prin-1",
-      agentAddress,
-      systemPrompt: "slug-probe-prompt",
-      tools: [],
-      grants: [],
-      sources: [
-        {
-          id: "src-slug-1",
-          provider: "anthropic",
-          baseURL: "https://api.example/anthropic",
-          apiKey: "secret-key",
-          model: "mock-model",
-        },
-      ],
-      defaultSource: "src-slug-1",
-    };
-    const deployContent = { systemPrompt: "slug-probe-prompt" };
-    const trivialAgent = wrapHarnessAsTrivialAgent({ config, deployContent });
-    const workflow = defineWorkflow({
-      id: `wf_${agentId}`,
-      agent: trivialAgent,
-      trigger: { type: "mail", to: agentAddress },
-    });
-    const approvals = new Set<string>();
-    for (const source of config.sources) {
-      approvals.add(`inference.source:${source.provider}:${source.model}`);
-    }
-    approvals.add(`director:${defaultDirectorFactory.id}`);
-    approvals.add(`mail.address:${agentAddress}`);
-    const at = agentAddress.lastIndexOf("@");
-    if (at < 0 || at >= agentAddress.length - 1) {
-      throw new Error("unreachable");
-    }
-    approvals.add(`mail.send:${agentAddress.slice(at + 1)}`);
-    const operatorApprovals: ApprovalSet = approvals;
-
-    // Replace `launchSession` with a no-op so deployWorkflow's
-    // trivial path completes without engaging sidecar provisioning.
-    // The slug derivation is the contract under test and happens
-    // independently of the launch payload.
-    const originalLaunch = env.hub.sessionService.launchSession.bind(
-      env.hub.sessionService,
-    );
-    const stubLaunch: SessionService["launchSession"] = async () => {
-      // The trivial branch's launch is not the contract under test;
-      // a no-op completes the deploy without engaging the sidecar.
-    };
-    env.hub.sessionService.launchSession = stubLaunch;
-    try {
-      const handle = await deployWorkflow(env, workflow, {
-        config,
-        deployContent,
-        operatorApprovals,
-        trivialBindings: {
-          agentAddress,
-          agentId,
-          instanceId: `inst_${agentId}`,
-        },
-      });
-      expect(handle.workflowRunRepoId.kind).toBe("workflow-run");
-      expect(handle.workflowRunRepoId.id).toBe(expectedSlug);
-      expect(handle.workflowRunRepoId.id).not.toBe(agentAddress);
-    } finally {
-      env.hub.sessionService.launchSession = originalLaunch;
-    }
   });
 
   test("simulateProcessingCrash composes enqueueInbox + dequeueToProcessing", async () => {

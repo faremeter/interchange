@@ -134,13 +134,10 @@ describe("FIFO mail-trigger serialization under load", () => {
 
   test(`${String(LOAD_MAIL_COUNT)} mails dispatch in arrival order under load`, async () => {
     // Coverage-gap follow-up to the 3-mail case in
-    // fifo-mail.test.ts. The orchestrator's `isTrivialDeploy` requires
-    // `stepOrder.length === 1` AND `trivialBindings` present;
-    // absent the trivial-bindings (this fixture does not pass
-    // them), a single-step workflow still routes through the
-    // supervisor's FIFO inbox dispatch loop. The load test
-    // therefore uses a single-step workflow to keep per-mail
-    // commit pressure tractable in CI: every mail run still
+    // fifo-mail.test.ts. A single-step workflow still routes through
+    // the supervisor's FIFO inbox dispatch loop, so the load test
+    // uses one to keep per-mail commit pressure tractable in CI:
+    // every mail run still
     // exercises inbox -> processing -> trigger.fire -> wait for
     // terminal -> markConsumed, but trims one StepStarted +
     // StepCompleted commit pair off the per-run pack-push

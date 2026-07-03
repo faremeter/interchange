@@ -160,9 +160,9 @@ export type SessionService = {
   /**
    * Deploy a multi-step `WorkflowDefinition` through the workflow-deploy
    * orchestrator's multi-step branch. This is the general workflow
-   * deploy entry point: it carries no `trivialBindings` and is not
-   * coupled to a single agent's credential/session model the way
-   * `launchSession` is. The orchestrator derives every per-step address
+   * deploy entry point: it is not coupled to a single agent's
+   * credential/session model the way `launchSession` is. The
+   * orchestrator derives every per-step address
    * from `deploymentId` + `deploymentDomain`, provisions each step's
    * agent-state repo via the shared per-agent deploy phases, writes the
    * workflow repo, and fires the deployment-level `agent.deploy` frame.
@@ -561,12 +561,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   }
 
   /**
-   * Drive the per-agent deploy + session-start phases. Factored out of
-   * `launchSession` so the workflow-deploy orchestrator's trivial branch
-   * can call back into the exact phases the legacy agent-deploy path
-   * owns. The body here is the legacy `launchSession` body verbatim;
-   * `launchSession` itself now wraps the call in a single-step workflow
-   * and routes through the orchestrator.
+   * Drive the per-agent deploy + session-start phases (deploy-tree write,
+   * asset-pack fan-out, provision frame, pack, session start). Shared by
+   * the public `launchSession` (warm-harness provision, no workflow frame)
+   * and the single-step head hand-off (`deploySingleStepAtHead`, which
+   * passes a `workflowFrame` so the sidecar spawns the workflow-process
+   * child instead of a warm harness).
    */
   async function executeLaunchPhases(params: {
     agentAddress: string;
@@ -970,7 +970,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    * resolves skills, deploy tree, and tool-package pins by `agentId`, so
    * collapsing it to the deployment id would strip the instance's attachments.
    * It writes no `workflow_deployment` row (a plain instance has no workflow
-   * asset) and carries no `trivialBindings`. Returns the head's agent-key ack.
+   * asset). Returns the head's agent-key ack.
    */
   async function deployInstanceAtHead(params: {
     agentAddress: string;
@@ -1079,16 +1079,6 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           : {}),
       },
     });
-    if (result.kind !== "multi-step") {
-      // The general deploy path always omits trivialBindings, so the
-      // orchestrator must take the multi-step branch. A trivial result
-      // here means the orchestrator's branch decision diverged from this
-      // method's contract; surface it loudly rather than recording a
-      // projection row for a deployment that never reached the sidecar.
-      throw new Error(
-        `deployWorkflowDefinition expected a multi-step deploy for ${deploymentId} but the orchestrator returned a ${result.kind} result`,
-      );
-    }
 
     if (db === undefined) {
       throw new Error(

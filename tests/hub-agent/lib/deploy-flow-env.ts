@@ -76,7 +76,6 @@ import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { ApprovalSet } from "@intx/workflow-deploy";
 import type { WorkflowDefinition } from "@intx/workflow";
-import { deriveTrivialDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 
 export const AGENT_ADDRESS = "ins_test-agent@integration.interchange";
 export const AGENT_ID = "ins_test-agent";
@@ -1011,22 +1010,14 @@ export type DeployWorkflowOpts = {
    * branch from the step's agent definition.
    */
   deployContent: { systemPrompt: string };
-  /** Pre-existing per-agent address binding for the trivial branch. */
-  trivialBindings?: {
-    agentAddress: string;
-    agentId: string;
-    instanceId: string;
-  };
   /**
-   * Stable identifier the multi-step branch concatenates into derived
-   * agent addresses. Required when `trivialBindings` is absent.
+   * Stable identifier the branch concatenates into derived agent
+   * addresses. Required.
    */
-  deploymentId?: string;
+  deploymentId: string;
   /**
-   * Mail-domain for the deployment. Required when `trivialBindings` is
-   * absent. Defaults to the integration test's canonical domain so
-   * callers that exercise the multi-step branch with the default
-   * fixture wiring do not have to thread the domain through.
+   * Mail-domain for the deployment. Defaults to the integration test's
+   * canonical domain so callers do not have to thread the domain through.
    */
   deploymentDomain?: string;
   /** Tool-package pins to ship with every step's deploy. */
@@ -1044,8 +1035,7 @@ export type DeployWorkflowOpts = {
   workflowRunRef?: string;
   /**
    * Optional override for the deployment's mail address. Defaults to
-   * the trivial bindings' `agentAddress` (trivial branch) or
-   * `ins_<deploymentId>@<deploymentDomain>` (multi-step branch).
+   * `ins_<deploymentId>@<deploymentDomain>`.
    */
   deploymentMailAddress?: string;
 };
@@ -1064,11 +1054,9 @@ export type DeployWorkflowHandle = {
 
 /**
  * Build a workflow-deploy orchestrator wired against the env's hub
- * substrate and run it against the supplied workflow. Trivial
- * single-step workflows route through `env.hub.sessionService.launchSession`
- * (which itself invokes the orchestrator's trivial branch); multi-step
- * workflows derive per-step addresses and route each launch through
- * the same `launchSession` callback.
+ * substrate and run it against the supplied workflow. The orchestrator
+ * derives per-step addresses and routes each launch through the
+ * `launchSession` callback.
  *
  * Registers the resulting handle on `env.deployments` so the other
  * Phase I helpers (event reads, signal injection, drain initiation,
@@ -1081,45 +1069,16 @@ export async function deployWorkflow(
 ): Promise<DeployWorkflowHandle> {
   const workflowRunRef = opts.workflowRunRef ?? DEFAULT_WORKFLOW_RUN_REF;
 
-  let deploymentId: string;
-  let mailAddress: string;
-  if (opts.trivialBindings !== undefined) {
-    if (workflow.stepOrder.length !== 1) {
-      throw new Error(
-        `deployWorkflow: trivialBindings supplied for a ${String(workflow.stepOrder.length)}-step workflow; trivial deploy requires exactly one step`,
-      );
-    }
-    deploymentId = opts.trivialBindings.agentAddress;
-    mailAddress =
-      opts.deploymentMailAddress ?? opts.trivialBindings.agentAddress;
-  } else {
-    const explicit = opts.deploymentId;
-    if (explicit === undefined) {
-      throw new Error(
-        "deployWorkflow: deploymentId is required when trivialBindings is absent",
-      );
-    }
-    deploymentId = explicit;
-    const deploymentDomain = opts.deploymentDomain ?? DEFAULT_DEPLOYMENT_DOMAIN;
-    mailAddress =
-      opts.deploymentMailAddress ?? `ins_${deploymentId}@${deploymentDomain}`;
-  }
+  const deploymentId = opts.deploymentId;
+  const deploymentDomain = opts.deploymentDomain ?? DEFAULT_DEPLOYMENT_DOMAIN;
+  const mailAddress =
+    opts.deploymentMailAddress ?? `ins_${deploymentId}@${deploymentDomain}`;
 
-  // The supervisor's trivial branch projects the agent address into
-  // a substrate-safe slug via `deriveTrivialDeploymentId` before
-  // writing workflow-run events (see
-  // `apps/sidecar/src/workflow-host-wiring.ts`). The fixture must
-  // report the same slug so downstream helpers query the repo the
-  // supervisor actually committed to. Multi-step deployments supply
-  // their own substrate-safe `deploymentId` and pass through
-  // unchanged.
-  const workflowRunRepoSlug =
-    opts.trivialBindings !== undefined
-      ? deriveTrivialDeploymentId(opts.trivialBindings.agentAddress)
-      : deploymentId;
+  // The deployment supplies its own substrate-safe `deploymentId`, which
+  // is the workflow-run repo slug the supervisor commits under.
   const workflowRunRepoId: RepoId = {
     kind: "workflow-run",
-    id: workflowRunRepoSlug,
+    id: deploymentId,
   };
 
   // Route every per-step launch through the session service, mirroring
@@ -1171,18 +1130,11 @@ export async function deployWorkflow(
 
   await orchestrator.deployWorkflow({
     workflow,
+    deploymentId,
+    deploymentDomain,
     config: opts.config,
     deployContent: opts.deployContent,
     operatorApprovals: opts.operatorApprovals,
-    ...(opts.trivialBindings !== undefined
-      ? { trivialBindings: opts.trivialBindings }
-      : {}),
-    ...(opts.trivialBindings === undefined
-      ? {
-          deploymentId,
-          deploymentDomain: opts.deploymentDomain ?? DEFAULT_DEPLOYMENT_DOMAIN,
-        }
-      : {}),
     ...(opts.toolPackagePins !== undefined
       ? { toolPackagePins: opts.toolPackagePins }
       : {}),
