@@ -340,15 +340,36 @@ describe("SidecarRouter", () => {
       ).rejects.toThrow(/No sidecar connected/);
     });
 
-    test("a reconnect after unbind does not resurrect the transient route", () => {
-      const ws = registerDeploymentSidecar();
-      router.bindStepRoute(STEP_ADDR);
-      router.unbindStepRoute(STEP_ADDR);
+    test("a reconnect after unbind does not resurrect the transient route", async () => {
+      // A real reconnect only runs when `lookupPublicKey` is configured
+      // (otherwise `handleReconnect` bails before re-registering anything).
+      // Use a dedicated router with the lookup so the reconnect actually
+      // executes and this exercises the re-registration path.
+      const reconnectRouter = createSidecarRouter({
+        requestTimeoutMs: 500,
+        hubPublicKey: TEST_HUB_KEY,
+        lookups: { lookupPublicKey: async () => null },
+      });
+      const ws = createMockWs();
+      reconnectRouter.handleOpen(ws);
+      // The deployment address is a workflow-substrate address (no challenge).
+      reconnectRouter.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+          workflowAddresses: [DEPLOYMENT_ADDR],
+        }),
+      );
+      reconnectRouter.bindStepRoute(STEP_ADDR);
+      reconnectRouter.unbindStepRoute(STEP_ADDR);
 
       // The sidecar reconnects announcing only the deployment's workflow
-      // address -- never the transient per-step address -- so the step route
-      // stays gone (the binding never entered the reconnect set).
-      router.handleMessage(
+      // address -- never the transient per-step address, which was never
+      // persisted into the reconnect announcement.
+      reconnectRouter.handleMessage(
         ws,
         JSON.stringify({
           type: "reconnect",
@@ -358,8 +379,15 @@ describe("SidecarRouter", () => {
           workflowAddresses: [DEPLOYMENT_ADDR],
         }),
       );
+      // Let the async reconnect re-registration settle.
+      await new Promise((r) => setTimeout(r, 0));
 
-      expect(router.getRoutableAddresses()).not.toContain(STEP_ADDR);
+      // The reconnect actually ran (it did not bail and close the socket).
+      expect(ws.closed).toBe(false);
+      // The deployment address is routable again; the transient step route
+      // stays gone.
+      expect(reconnectRouter.getRoutableAddresses()).toContain(DEPLOYMENT_ADDR);
+      expect(reconnectRouter.getRoutableAddresses()).not.toContain(STEP_ADDR);
     });
 
     test("bind throws when no sidecar is connected", () => {
