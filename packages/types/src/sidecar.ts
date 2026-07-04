@@ -170,17 +170,6 @@ export const SessionErrorFrame = type({
 export type SessionErrorFrame = typeof SessionErrorFrame.infer;
 
 /**
- * Acknowledges that the inference session has started for a provisioned
- * agent. Sent in response to a session.start frame after the harness is
- * running.
- */
-export const SessionStartAckFrame = type({
-  type: "'session.start.ack'",
-  agentAddress: "string",
-});
-export type SessionStartAckFrame = typeof SessionStartAckFrame.infer;
-
-/**
  * Acknowledges that an agent has been fully undeployed: harness stopped,
  * state pushed (best-effort), and directory deleted.
  */
@@ -351,17 +340,6 @@ export const AgentUndeployFrame = type({
   reason: "string",
 });
 export type AgentUndeployFrame = typeof AgentUndeployFrame.infer;
-
-/**
- * Start the inference session for a provisioned agent. Sent after the
- * deploy pack has been applied so the harness can read deploy-tree tools
- * and prompt from disk.
- */
-export const SessionStartFrame = type({
-  type: "'session.start'",
-  agentAddress: "string",
-});
-export type SessionStartFrame = typeof SessionStartFrame.infer;
 
 /**
  * Per-address cryptographic challenge. The sidecar must sign
@@ -739,7 +717,6 @@ export const SidecarFrame = RegisterFrame.or(ReconnectFrame)
   .or(PingFrame)
   .or(SessionAckFrame)
   .or(SessionErrorFrame)
-  .or(SessionStartAckFrame)
   .or(AgentUndeployAckFrame)
   .or(PackPushFrame)
   .or(PackDoneFrame)
@@ -751,7 +728,6 @@ export type SidecarFrame = typeof SidecarFrame.infer;
 /** All frame types the hub sends to the sidecar. */
 export const HubFrame = MailInboundFrame.or(AgentDeployFrame)
   .or(AgentUndeployFrame)
-  .or(SessionStartFrame)
   .or(ChallengeFrame)
   .or(ChallengeFailedFrame)
   .or(PongFrame)

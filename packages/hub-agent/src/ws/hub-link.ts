@@ -18,7 +18,6 @@ import {
   type ChallengeFrame,
   type ChallengeFailedFrame,
   type SessionAbortFrame,
-  type SessionStartFrame,
   type GrantsUpdateFrame,
   type SourcesUpdateFrame,
   type PackPushFrame,
@@ -387,24 +386,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         publicKey: result.publicKey,
       });
       logger.info`Provisioned agent ${frame.agentAddress}`;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      send({
-        type: "agent.error",
-        agentAddress: frame.agentAddress,
-        error: message,
-      });
-    }
-  }
-
-  async function handleSessionStart(frame: SessionStartFrame): Promise<void> {
-    try {
-      await sessions.startSession(frame.agentAddress);
-      send({
-        type: "session.start.ack",
-        agentAddress: frame.agentAddress,
-      });
-      logger.info`Started session for ${frame.agentAddress}`;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       send({
@@ -938,9 +919,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       }
       case "agent.deploy":
         await handleAgentDeploy(frame);
-        break;
-      case "session.start":
-        await handleSessionStart(frame);
         break;
       case "agent.undeploy":
         await handleAgentUndeploy(frame);

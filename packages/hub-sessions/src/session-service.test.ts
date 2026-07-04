@@ -70,9 +70,6 @@ function createMockRouter(): SidecarRouter & {
     sendAgentUndeploy: track(
       "sendAgentUndeploy",
     ) as SidecarRouter["sendAgentUndeploy"],
-    sendSessionStart: track(
-      "sendSessionStart",
-    ) as SidecarRouter["sendSessionStart"],
     sendSessionAbort: track(
       "sendSessionAbort",
     ) as SidecarRouter["sendSessionAbort"],
@@ -354,7 +351,7 @@ describe("SessionService", () => {
     // A stage-only per-step deploy binds a transient route, fires the
     // no-spawn provision frame, delivers the deploy pack, and unbinds the
     // route -- and NEVER provisions a warm harness (`sendAgentDeploy` with
-    // no workflow frame) or starts a session (`sendSessionStart`).
+    // no workflow frame).
     expect(methods).toEqual([
       "writeDeployTree",
       "createDeployPack",
@@ -364,7 +361,6 @@ describe("SessionService", () => {
       "unbindStepRoute",
     ]);
     expect(methods).not.toContain("sendAgentDeploy");
-    expect(methods).not.toContain("sendSessionStart");
   });
 
   test("stageWorkflowStep unbinds the route even when the pack fails", async () => {

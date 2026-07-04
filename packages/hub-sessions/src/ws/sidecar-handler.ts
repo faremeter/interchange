@@ -126,7 +126,6 @@ export type SidecarRouter = {
     workflow?: AgentDeployFrame["workflow"],
   ): Promise<{ publicKey: string }>;
   sendAgentUndeploy(agentAddress: string, reason: string): Promise<void>;
-  sendSessionStart(agentAddress: string): Promise<void>;
   sendSessionAbort(agentAddress: string, reason: AbortReason): Promise<void>;
   sendGrantsUpdate(agentAddress: string, grants: GrantRule[]): Promise<void>;
   sendSourcesUpdate(
@@ -319,16 +318,6 @@ export function createSidecarRouter(
   const pendingPacks = new Map<string, PendingPack>();
   let packCounter = 0;
 
-  // agentAddress → pending session start (resolved by session.start.ack)
-  type PendingSessionStart = {
-    agentAddress: string;
-    ws: WsHandle;
-    resolve(): void;
-    reject(error: string): void;
-    timer: ReturnType<typeof setTimeout>;
-  };
-  const pendingSessionStarts = new Map<string, PendingSessionStart>();
-
   // agentAddress → pending undeploy (resolved by agent.undeploy.ack)
   type PendingUndeploy = {
     agentAddress: string;
@@ -453,11 +442,7 @@ export function createSidecarRouter(
         break;
       case "agent.error":
         rejectDeployPending(frame.agentAddress, frame.error);
-        rejectSessionStartPending(frame.agentAddress, frame.error);
         rejectUndeployPending(frame.agentAddress, frame.error);
-        break;
-      case "session.start.ack":
-        resolveSessionStartPending(frame.agentAddress);
         break;
       case "agent.undeploy.ack":
         resolveUndeployPending(frame.agentAddress);
@@ -1051,10 +1036,9 @@ export function createSidecarRouter(
         }
 
         // Create a queue entry so messages can accumulate while the
-        // sidecar is disconnected. Skip if the agent is being undeployed
-        // or has a pending session start — there is no point queuing
-        // messages for an agent being torn down or one that never started.
-        if (!pendingUndeploys.has(addr) && !pendingSessionStarts.has(addr)) {
+        // sidecar is disconnected. Skip if the agent is being undeployed --
+        // there is no point queuing messages for an agent being torn down.
+        if (!pendingUndeploys.has(addr)) {
           const timer = setTimeout(() => {
             disconnectedAgents.delete(addr);
           }, disconnectQueueTTLMs);
@@ -1103,14 +1087,6 @@ export function createSidecarRouter(
       clearTimeout(pack.timer);
       pendingPacks.delete(transferId);
       pack.reject(`Sidecar ${conn.sidecarId} disconnected`);
-    }
-
-    // Reject any in-flight session starts for this sidecar.
-    for (const [addr, req] of pendingSessionStarts) {
-      if (req.ws !== ws) continue;
-      clearTimeout(req.timer);
-      pendingSessionStarts.delete(addr);
-      req.reject(`Sidecar ${conn.sidecarId} disconnected`);
     }
 
     // Reject any in-flight undeploys for this sidecar.
@@ -1222,28 +1198,6 @@ export function createSidecarRouter(
     clearTimeout(entry.timer);
     pendingPacks.delete(transferId);
     entry.reject(reason);
-  }
-
-  function resolveSessionStartPending(agentAddress: string): void {
-    const req = pendingSessionStarts.get(agentAddress);
-    if (req === undefined) {
-      logger.warn`Received session.start.ack for "${agentAddress}" with no pending start`;
-      return;
-    }
-    clearTimeout(req.timer);
-    pendingSessionStarts.delete(agentAddress);
-    req.resolve();
-  }
-
-  function rejectSessionStartPending(
-    agentAddress: string,
-    error: string,
-  ): void {
-    const req = pendingSessionStarts.get(agentAddress);
-    if (req === undefined) return;
-    clearTimeout(req.timer);
-    pendingSessionStarts.delete(agentAddress);
-    req.reject(error);
   }
 
   function resolveUndeployPending(agentAddress: string): void {
@@ -1817,51 +1771,6 @@ export function createSidecarRouter(
     });
   }
 
-  function sendSessionStart(agentAddress: string): Promise<void> {
-    const ws = addressIndex.get(agentAddress);
-    if (ws === undefined) {
-      return Promise.reject(
-        new Error(`No sidecar connected for agent "${agentAddress}"`),
-      );
-    }
-    const conn = connections.get(ws);
-    if (conn === undefined) {
-      return Promise.reject(
-        new Error(`No sidecar connected for agent "${agentAddress}"`),
-      );
-    }
-
-    return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pendingSessionStarts.delete(agentAddress);
-        removeAgentAddress(ws, agentAddress);
-        reject(
-          new Error(
-            `Session start for "${agentAddress}" timed out after ${requestTimeoutMs}ms`,
-          ),
-        );
-      }, requestTimeoutMs);
-
-      pendingSessionStarts.set(agentAddress, {
-        agentAddress,
-        ws,
-        resolve() {
-          resolve();
-        },
-        reject(error: string) {
-          removeAgentAddress(ws, agentAddress);
-          reject(new Error(error));
-        },
-        timer,
-      });
-
-      conn.send({
-        type: "session.start",
-        agentAddress,
-      });
-    });
-  }
-
   async function sendSessionAbort(
     agentAddress: string,
     reason: AbortReason,
@@ -2028,7 +1937,6 @@ export function createSidecarRouter(
     routeMail,
     sendAgentDeploy,
     sendAgentUndeploy,
-    sendSessionStart,
     sendSessionAbort,
     sendGrantsUpdate,
     sendSourcesUpdate,

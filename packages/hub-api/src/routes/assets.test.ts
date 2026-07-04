@@ -290,7 +290,6 @@ function createMockSidecarRouter(): SidecarRouter {
     routeMail: () => notImpl("routeMail"),
     sendAgentDeploy: () => notImpl("sendAgentDeploy"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
-    sendSessionStart: () => notImpl("sendSessionStart"),
     sendSessionAbort: () => notImpl("sendSessionAbort"),
     sendGrantsUpdate: () => notImpl("sendGrantsUpdate"),
     sendSourcesUpdate: () => notImpl("sendSourcesUpdate"),
